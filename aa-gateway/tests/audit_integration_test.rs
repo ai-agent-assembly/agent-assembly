@@ -7,6 +7,9 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use aa_core::{AuditEntry, AuditEventType};
+use aa_gateway::iam::{auth_interceptor, CREDENTIAL_METADATA_KEY};
+use aa_gateway::registry::convert::proto_agent_id_to_key;
+use aa_gateway::registry::{AgentRecord, AgentRegistry, AgentStatus};
 use aa_gateway::service::{AuditServiceImpl, PolicyServiceImpl};
 use aa_gateway::PolicyEngine;
 use aa_proto::assembly::audit::v1::audit_service_client::AuditServiceClient;
@@ -30,6 +33,67 @@ tools:
     allow: false
 "#;
 
+// AAASM-3869 — the audit RPCs now bind events to the verified caller, so the
+// e2e tests must authenticate. These agents are registered with the test server
+// and their credential tokens presented by the client.
+const AGENT_1_TOKEN: &str = "tok-agent-1";
+const AGENT_S_TOKEN: &str = "tok-agent-s";
+
+fn proto_agent(agent_id: &str) -> ProtoAgentId {
+    ProtoAgentId {
+        org_id: "org".into(),
+        team_id: "team".into(),
+        agent_id: agent_id.into(),
+    }
+}
+
+/// Build a minimal active [`AgentRecord`] keyed by `proto`'s composite identity
+/// and addressable by `token` via the credential reverse-index.
+fn audit_caller_record(proto: &ProtoAgentId, token: &str) -> AgentRecord {
+    AgentRecord {
+        agent_id: proto_agent_id_to_key(proto),
+        name: proto.agent_id.clone(),
+        framework: "test".into(),
+        version: "0.0.1".into(),
+        risk_tier: 0,
+        tool_names: vec![],
+        public_key: "pk".into(),
+        credential_token: token.into(),
+        metadata: std::collections::BTreeMap::new(),
+        registered_at: chrono::Utc::now(),
+        last_heartbeat: chrono::Utc::now(),
+        status: AgentStatus::Active,
+        pid: None,
+        session_count: 0,
+        last_event: None,
+        policy_violations_count: 0,
+        active_sessions: vec![],
+        recent_events: std::collections::VecDeque::new(),
+        recent_traces: vec![],
+        layer: None,
+        governance_level: aa_core::GovernanceLevel::default(),
+        parent_agent_id: None,
+        team_id: Some(proto.team_id.clone()),
+        depth: 0,
+        delegation_reason: None,
+        spawned_by_tool: None,
+        root_agent_id: None,
+        children: vec![],
+        parent_key: None,
+        enforcement_mode: None,
+        org_id: Some(proto.org_id.clone()),
+    }
+}
+
+/// Attach a credential token to a unary request so the auth interceptor resolves
+/// a [`VerifiedCaller`](aa_gateway::iam::VerifiedCaller).
+fn with_token<T>(message: T, token: &str) -> tonic::Request<T> {
+    let mut req = tonic::Request::new(message);
+    req.metadata_mut()
+        .insert(CREDENTIAL_METADATA_KEY, token.parse().unwrap());
+    req
+}
+
 /// Start a server wired to an audit channel where the receiver is returned so
 /// the test can consume and inspect entries.
 async fn start_server_with_audit_rx() -> (SocketAddr, mpsc::Receiver<AuditEntry>, Arc<AtomicU64>) {
@@ -44,6 +108,16 @@ async fn start_server_with_audit_rx() -> (SocketAddr, mpsc::Receiver<AuditEntry>
     let policy_svc = PolicyServiceImpl::new(Arc::new(engine), audit_tx.clone(), Arc::clone(&audit_drops), [0u8; 32]);
     let audit_svc = AuditServiceImpl::new(audit_tx, Arc::clone(&audit_drops), [0u8; 32]);
 
+    // AAASM-3869 — register the audit callers and front the audit service with the
+    // fail-closed auth interceptor so the e2e tests exercise the caller binding.
+    let registry = Arc::new(AgentRegistry::new());
+    registry
+        .register(audit_caller_record(&proto_agent("agent-1"), AGENT_1_TOKEN))
+        .unwrap();
+    registry
+        .register(audit_caller_record(&proto_agent("agent-s"), AGENT_S_TOKEN))
+        .unwrap();
+
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -52,7 +126,10 @@ async fn start_server_with_audit_rx() -> (SocketAddr, mpsc::Receiver<AuditEntry>
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         Server::builder()
             .add_service(PolicyServiceServer::new(policy_svc))
-            .add_service(AuditServiceServer::new(audit_svc))
+            .add_service(AuditServiceServer::with_interceptor(
+                audit_svc,
+                auth_interceptor(Arc::clone(&registry)),
+            ))
             .serve_with_incoming(incoming)
             .await
             .unwrap();
@@ -183,7 +260,7 @@ async fn report_events_ingests_batch() {
     ];
 
     let resp = client
-        .report_events(ReportEventsRequest { events })
+        .report_events(with_token(ReportEventsRequest { events }, AGENT_1_TOKEN))
         .await
         .unwrap()
         .into_inner();
@@ -274,7 +351,11 @@ async fn stream_events_ingests_client_stream() {
     ];
 
     let stream = tokio_stream::iter(events);
-    let resp = client.stream_events(stream).await.unwrap().into_inner();
+    let resp = client
+        .stream_events(with_token(stream, AGENT_S_TOKEN))
+        .await
+        .unwrap()
+        .into_inner();
 
     assert_eq!(resp.events_received, 3);
 
@@ -375,7 +456,14 @@ async fn audit_service_populates_lineage_from_registry() {
         ..Default::default()
     };
 
-    let req = tonic::Request::new(ReportEventsRequest { events: vec![event] });
+    // AAASM-3869 — inject the verified caller bound to the event's own agent
+    // identity, as the fail-closed auth interceptor would in production.
+    let mut req = tonic::Request::new(ReportEventsRequest { events: vec![event] });
+    req.extensions_mut().insert(aa_gateway::iam::VerifiedCaller {
+        agent_key: agent_registry_key,
+        team_id: Some("team-alpha".into()),
+        org_id: None,
+    });
     svc.report_events(req).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

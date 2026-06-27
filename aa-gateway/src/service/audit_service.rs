@@ -270,3 +270,117 @@ impl AuditService for AuditServiceImpl {
         Ok(Response::new(StreamEventsResponse { events_received }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
+
+    /// Build a proto [`AgentId`](ProtoAgentId) for a given agent.
+    fn proto_agent(agent: &str) -> ProtoAgentId {
+        ProtoAgentId {
+            org_id: "org-x".into(),
+            team_id: "team-a".into(),
+            agent_id: agent.into(),
+        }
+    }
+
+    /// Build a [`VerifiedCaller`] whose `agent_key` matches `proto`, mirroring how
+    /// the auth interceptor derives the caller key from the registration identity.
+    fn caller_for(proto: &ProtoAgentId) -> VerifiedCaller {
+        VerifiedCaller {
+            agent_key: registry_convert::proto_agent_id_to_key(proto),
+            team_id: Some("team-a".into()),
+            org_id: Some("org-x".into()),
+        }
+    }
+
+    /// Build a minimal audit event attributed to `proto`.
+    fn event_for(proto: &ProtoAgentId) -> AuditEvent {
+        AuditEvent {
+            event_id: "evt-1".into(),
+            agent_id: Some(proto.clone()),
+            ..Default::default()
+        }
+    }
+
+    /// Fresh service with a roomy audit channel so `try_send` never drops.
+    fn service() -> AuditServiceImpl {
+        let (tx, _rx) = mpsc::channel(64);
+        AuditServiceImpl::new(tx, Arc::new(AtomicU64::new(0)), [0u8; 32])
+    }
+
+    #[tokio::test]
+    async fn report_events_rejects_cross_agent_forgery() {
+        // Agent A submits an event attributed to victim B → permission_denied.
+        let attacker = proto_agent("did:key:zAttacker");
+        let victim = proto_agent("did:key:zVictim");
+
+        let mut req = Request::new(ReportEventsRequest {
+            events: vec![event_for(&victim)],
+        });
+        req.extensions_mut().insert(caller_for(&attacker));
+
+        let err = service().report_events(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn report_events_admits_self_attributed_event() {
+        // Agent A submits its own agent_id → ok.
+        let agent = proto_agent("did:key:zSelf");
+
+        let mut req = Request::new(ReportEventsRequest {
+            events: vec![event_for(&agent)],
+        });
+        req.extensions_mut().insert(caller_for(&agent));
+
+        let resp = service().report_events(req).await.unwrap().into_inner();
+        assert_eq!(resp.event_ids, vec!["evt-1".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn report_events_missing_caller_is_unauthenticated() {
+        // No VerifiedCaller in extensions ⇒ fail closed.
+        let agent = proto_agent("did:key:zSelf");
+        let req = Request::new(ReportEventsRequest {
+            events: vec![event_for(&agent)],
+        });
+
+        let err = service().report_events(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn report_events_rejects_event_without_agent_id() {
+        // An absent agent_id cannot identify the caller ⇒ rejected.
+        let agent = proto_agent("did:key:zSelf");
+        let mut req = Request::new(ReportEventsRequest {
+            events: vec![AuditEvent {
+                event_id: "evt-1".into(),
+                agent_id: None,
+                ..Default::default()
+            }],
+        });
+        req.extensions_mut().insert(caller_for(&agent));
+
+        let err = service().report_events(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn report_events_rejects_mixed_batch_atomically() {
+        // A batch mixing a self-attributed event with a forged one is rejected
+        // wholesale so the poisoned entry is never ingested.
+        let agent = proto_agent("did:key:zSelf");
+        let victim = proto_agent("did:key:zVictim");
+
+        let mut req = Request::new(ReportEventsRequest {
+            events: vec![event_for(&agent), event_for(&victim)],
+        });
+        req.extensions_mut().insert(caller_for(&agent));
+
+        let err = service().report_events(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+}
