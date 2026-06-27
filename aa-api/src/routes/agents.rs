@@ -233,15 +233,32 @@ pub struct ResumeResponse {
     tag = "agents"
 )]
 pub async fn list_agents(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<PaginationParams>,
 ) -> impl IntoResponse {
-    let all = state.agent_registry.list();
-    let total = all.len() as u64;
+    // AAASM-3865: confine the listing to agents the caller's tenant owns. The
+    // single-record sibling `get_agent` gates on `authorize_agent_access`
+    // (AAASM-3790); the collection path was missed, letting any authenticated
+    // key enumerate every tenant's agents. Filter BEFORE pagination so `total`
+    // reflects only the caller's own agents. An admin sees all; a team-scoped
+    // caller sees only its team's agents; an agent with no team is visible only
+    // to an admin.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let visible: Vec<_> = state
+        .agent_registry
+        .list()
+        .into_iter()
+        .filter(|r| match r.team_id.as_deref() {
+            Some(team) => caller.can_access_team(team),
+            None => is_admin,
+        })
+        .collect();
+    let total = visible.len() as u64;
     let offset = params.offset();
     let per_page = params.per_page();
 
-    let items: Vec<AgentResponse> = all
+    let items: Vec<AgentResponse> = visible
         .into_iter()
         .skip(offset)
         .take(per_page as usize)
