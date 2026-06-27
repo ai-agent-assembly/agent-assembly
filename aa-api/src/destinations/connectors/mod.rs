@@ -112,11 +112,44 @@ pub(crate) fn shared_client() -> &'static Client {
 }
 
 /// Cap a response body at 2048 bytes so error envelopes stay bounded.
+///
+/// Truncates on a UTF-8 char boundary at or below the 2048-byte cap. A naive
+/// `body[..2048]` byte slice panics when 2048 lands in the middle of a
+/// multibyte character, which a connector `/test` could trigger with a crafted
+/// >2048-byte response body (remote DoS, AAASM-3843).
 #[allow(dead_code)] // wired up by per-kind connectors in subsequent commits
 pub(crate) fn truncate_body(body: String) -> String {
-    if body.len() > 2048 {
-        body[..2048].to_string()
+    const MAX: usize = 2048;
+    if body.len() > MAX {
+        let mut end = MAX;
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        body[..end].to_string()
     } else {
         body
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_body_handles_multibyte_boundary() {
+        // 683 × 3-byte '€' = 2049 bytes, so the 2048-byte cap lands mid-character.
+        // A naive `body[..2048]` slice would panic (AAASM-3843 remote DoS). The
+        // truncation must back up to a valid char boundary at or below the cap.
+        let over = "€".repeat(683);
+        assert_eq!(over.len(), 2049);
+        let out = truncate_body(over);
+        assert!(out.len() <= 2048);
+        assert!(out.is_char_boundary(out.len()));
+        assert_eq!(out.chars().count(), 682);
+    }
+
+    #[test]
+    fn truncate_body_leaves_short_body_untouched() {
+        assert_eq!(truncate_body("hi".to_string()), "hi");
     }
 }
