@@ -386,6 +386,60 @@ pub struct GraphResponse {
     pub edges: Vec<EdgeResponse>,
 }
 
+/// `edge_repo.list_outgoing` with the route's uniform 500 mapping.
+///
+/// Factored out so the BFS traversal and the edge-collection pass share one
+/// error-mapping site instead of duplicating it.
+async fn list_outgoing_or_500(state: &AppState, node: AgentId) -> Result<Vec<Edge>, ProblemDetail> {
+    state.edge_repo.list_outgoing(node, None, 1000).await.map_err(|e| {
+        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+    })
+}
+
+/// BFS outward from `root` up to `depth` hops, returning the set of reachable
+/// nodes. A neighbour is admitted only when `node_authorized` returns true, so
+/// the walk never crosses a tenant boundary (AAASM-3825). `root` is always
+/// included.
+async fn collect_reachable_nodes(
+    state: &AppState,
+    root: AgentId,
+    depth: u32,
+    node_authorized: impl Fn(AgentId) -> bool,
+) -> Result<HashSet<AgentId>, ProblemDetail> {
+    let mut visited: HashSet<AgentId> = HashSet::new();
+    let mut queue: VecDeque<(AgentId, u32)> = VecDeque::new();
+    queue.push_back((root, 0));
+    visited.insert(root);
+
+    while let Some((node, d)) = queue.pop_front() {
+        if d >= depth {
+            continue;
+        }
+        for edge in list_outgoing_or_500(state, node).await? {
+            // Never traverse into another tenant's agent; short-circuit keeps
+            // an unauthorized target out of `visited`.
+            if node_authorized(edge.target) && visited.insert(edge.target) {
+                queue.push_back((edge.target, d + 1));
+            }
+        }
+    }
+    Ok(visited)
+}
+
+/// Collect every edge whose source and target both lie within `nodes`, i.e.
+/// the edges internal to the already-authorized subgraph.
+async fn collect_internal_edges(state: &AppState, nodes: &HashSet<AgentId>) -> Result<Vec<Edge>, ProblemDetail> {
+    let mut all_edges: Vec<Edge> = Vec::new();
+    for &node in nodes {
+        for edge in list_outgoing_or_500(state, node).await? {
+            if nodes.contains(&edge.target) {
+                all_edges.push(edge);
+            }
+        }
+    }
+    Ok(all_edges)
+}
+
 /// Return the topology subgraph reachable from an agent.
 ///
 /// Performs BFS outward from `id` up to `depth` hops (default 2, max 5).
@@ -433,43 +487,9 @@ pub async fn get_agent_graph(
         }
     };
 
-    // BFS: collect unique node IDs within `depth` hops
-    let mut visited: HashSet<AgentId> = HashSet::new();
-    let mut queue: VecDeque<(AgentId, u32)> = VecDeque::new();
-    queue.push_back((root_id, 0));
-    visited.insert(root_id);
-
-    while let Some((node, d)) = queue.pop_front() {
-        if d >= depth {
-            continue;
-        }
-        let outgoing = state.edge_repo.list_outgoing(node, None, 1000).await.map_err(|e| {
-            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
-        })?;
-        for edge in outgoing {
-            // Never traverse into another tenant's agent.
-            if !node_authorized(edge.target) {
-                continue;
-            }
-            if visited.insert(edge.target) {
-                queue.push_back((edge.target, d + 1));
-            }
-        }
-    }
-
-    // Batch-fetch all edges where source is in the visited set
-    let mut all_edges: Vec<Edge> = Vec::new();
-    for &node in &visited {
-        let outgoing = state.edge_repo.list_outgoing(node, None, 1000).await.map_err(|e| {
-            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
-        })?;
-        // Keep only edges whose target is also in the subgraph
-        for edge in outgoing {
-            if visited.contains(&edge.target) {
-                all_edges.push(edge);
-            }
-        }
-    }
+    // BFS the tenant-bounded subgraph, then collect the edges internal to it.
+    let visited = collect_reachable_nodes(&state, root_id, depth, node_authorized).await?;
+    let all_edges = collect_internal_edges(&state, &visited).await?;
 
     let cross_team_flags = compute_cross_team(&all_edges, &state);
     let edge_responses: Vec<EdgeResponse> = all_edges
