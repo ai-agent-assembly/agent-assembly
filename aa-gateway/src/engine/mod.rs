@@ -1833,6 +1833,34 @@ mod tests {
     }
 
     #[test]
+    fn schedule_invalid_timezone_fails_closed() {
+        // AAASM-3847: an unparseable tz on the single-policy `evaluate_primary`
+        // path must DENY, not silently fall back to UTC. The window is the full
+        // day, so the only reason to deny is the invalid timezone — proving the
+        // fail-closed behaviour rather than a coincidental out-of-window deny.
+        let mut doc = empty_doc();
+        doc.schedule = Some(SchedulePolicy {
+            active_hours: Some(ActiveHours {
+                start: "00:00".to_string(),
+                end: "23:59".to_string(),
+                timezone: "Not/AZone".to_string(),
+            }),
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "");
+        match engine.evaluate(&ctx, &action).decision {
+            PolicyResult::Deny { reason } => {
+                assert!(
+                    reason.contains("invalid schedule timezone"),
+                    "expected invalid-timezone deny, got: {reason}"
+                );
+            }
+            other => panic!("expected fail-closed Deny, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn network_denies_unlisted_host() {
         let mut doc = empty_doc();
         doc.network = Some(NetworkPolicy {
