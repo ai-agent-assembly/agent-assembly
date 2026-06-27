@@ -24,6 +24,7 @@ use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
 
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
+use crate::auth::scope::RequireRead;
 use crate::error::ProblemDetail;
 use crate::models::capability::{
     AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, CapabilityOverrideRequest,
@@ -293,11 +294,15 @@ pub struct MatrixQueryParams {
     path = "/api/v1/capability/matrix",
     params(MatrixQueryParams),
     responses(
-        (status = 200, description = "Capability matrix snapshot (filtered)", body = CapabilityMatrix)
+        (status = 200, description = "Capability matrix snapshot (filtered)", body = CapabilityMatrix),
+        (status = 401, description = "Missing or invalid credentials")
     ),
     tag = "capability"
 )]
 pub async fn get_matrix(
+    // AAASM-3846 — the capability matrix is sensitive policy state; require an
+    // authenticated reader rather than serving it unauthenticated.
+    RequireRead(_caller): RequireRead,
     Query(params): Query<MatrixQueryParams>,
     Extension(state): Extension<AppState>,
 ) -> (StatusCode, Json<CapabilityMatrix>) {
@@ -410,11 +415,15 @@ pub struct ListOverridesParams {
     path = "/api/v1/capability/override",
     params(("agent_id" = Option<String>, Query, description = "Filter results to overrides that affect this agent id")),
     responses(
-        (status = 200, description = "Active override records", body = Vec<OverrideRecord>)
+        (status = 200, description = "Active override records", body = Vec<OverrideRecord>),
+        (status = 401, description = "Missing or invalid credentials")
     ),
     tag = "capability"
 )]
 pub async fn list_overrides(
+    // AAASM-3846 — require an authenticated reader before disclosing the
+    // override log.
+    RequireRead(_caller): RequireRead,
     Query(params): Query<ListOverridesParams>,
     Extension(state): Extension<AppState>,
 ) -> (StatusCode, Json<Vec<OverrideRecord>>) {
@@ -436,11 +445,23 @@ pub async fn list_overrides(
     ),
     responses(
         (status = 204, description = "Override revoked; cells restored to base policy"),
+        (status = 403, description = "Caller lacks the role required to mutate capability state"),
         (status = 404, description = "No active override with this id", body = ProblemDetail)
     ),
     tag = "capability"
 )]
-pub async fn revoke_override(Extension(state): Extension<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+pub async fn revoke_override(
+    // AAASM-3846 — revoking an override mutates capability state, so it must be
+    // gated identically to `apply_override` (a `Global`-scope policy update),
+    // not left open to any caller.
+    policy_auth: PolicyWriteAuth,
+    Extension(state): Extension<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(denied) = policy_auth.check_mutation(&PolicyScope::Global, MutationKind::Update) {
+        return denied.into_response();
+    }
+
     match state.capability_store.revoke_override(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(RevokeOverrideError::NotFound) => ProblemDetail::from_status(StatusCode::NOT_FOUND)
