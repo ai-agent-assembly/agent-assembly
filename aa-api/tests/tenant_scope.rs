@@ -960,6 +960,212 @@ async fn silence_alert_cross_tenant_is_403() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// AAASM-3865 — post-authN scope/tenant gaps round 2. list_agents leaked every
+// tenant's agents (no RequireRead, no filter); register_op took no write scope;
+// the policy reads took no caller at all.
+// ---------------------------------------------------------------------------
+
+/// list_agents must confine the listing to the caller's own team: an
+/// alpha-scoped read caller sees its own agent and not a beta agent, with
+/// `total` counting only its own.
+#[tokio::test]
+async fn list_agents_is_scoped_to_caller_team() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0x01, "alpha")).unwrap();
+    state.agent_registry.register(agent_with_team(0x02, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let response = app.oneshot(bearer("/api/v1/agents", &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["total"], 1, "total must count only the caller's team's agents");
+    let items = json["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "an alpha caller sees only its own agent");
+    assert_eq!(
+        items[0]["id"],
+        hex_id(0x01),
+        "the beta agent must not leak to an alpha caller"
+    );
+}
+
+/// A non-admin caller with no team scope at all sees an empty agent list, never
+/// a cross-tenant dump.
+#[tokio::test]
+async fn list_agents_unscoped_caller_sees_nothing() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0x03, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[Scope::Read]);
+    let response = app.oneshot(bearer("/api/v1/agents", &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["total"], 0, "an unscoped non-admin caller sees no agents");
+}
+
+/// Positive control: an admin sees every tenant's agents.
+#[tokio::test]
+async fn list_agents_admin_sees_all_teams() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0x04, "alpha")).unwrap();
+    state.agent_registry.register(agent_with_team(0x05, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("admin", &[Scope::Admin]);
+    let response = app.oneshot(bearer("/api/v1/agents", &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["total"], 2, "an admin sees every team's agents");
+}
+
+/// register_op is a mutation; a read-only caller must be denied.
+#[tokio::test]
+async fn register_op_read_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let response = app
+        .oneshot(json_bearer("POST", "/api/v1/ops", &token, r#"{"op_id":"op-x"}"#))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not register an op"
+    );
+}
+
+/// Positive control: a write caller may register an op.
+#[tokio::test]
+async fn register_op_write_token_is_allowed() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+    let response = app
+        .oneshot(json_bearer("POST", "/api/v1/ops", &token, r#"{"op_id":"op-y"}"#))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "a write caller may register an op"
+    );
+}
+
+/// The policy list read must reject an unauthenticated caller (it previously
+/// took no caller, so any request could dump the policy YAML).
+#[tokio::test]
+async fn list_policies_requires_authentication() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/policies")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "the policy list must reject an unauthenticated caller"
+    );
+}
+
+/// The active-policy read must reject an unauthenticated caller.
+#[tokio::test]
+async fn get_active_policy_requires_authentication() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/policies/active")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "the active-policy read must reject an unauthenticated caller"
+    );
+}
+
+/// Positive control: an authenticated read caller may list policies.
+#[tokio::test]
+async fn list_policies_authenticated_read_caller_is_ok() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[Scope::Read]);
+    let response = app.oneshot(bearer("/api/v1/policies", &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "an authenticated read caller may list policies"
+    );
+}
+
+/// An authenticated caller with no read scope is denied the agent listing —
+/// the deny-by-default gate authenticates, but RequireRead enforces the scope.
+#[tokio::test]
+async fn list_agents_no_read_scope_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0x06, "alpha")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[]);
+    let response = app.oneshot(bearer("/api/v1/agents", &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a caller with no read scope must not list agents"
+    );
+}
+
+/// An authenticated caller with no read scope is denied the policy list — this
+/// is the gap the global auth gate alone did not close (it never checks scope).
+#[tokio::test]
+async fn list_policies_no_read_scope_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[]);
+    let response = app.oneshot(bearer("/api/v1/policies", &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a caller with no read scope must not list policies"
+    );
+}
+
+/// An authenticated caller with no read scope is denied the active policy read.
+#[tokio::test]
+async fn get_active_policy_no_read_scope_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[]);
+    let response = app.oneshot(bearer("/api/v1/policies/active", &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a caller with no read scope must not read the active policy"
+    );
+}
+
 // AAASM-3824 — get_agent_capabilities exposed any team's effective-permission
 // cascade with no auth. An alpha-scoped caller must not read a beta agent's
 // capabilities; the gate fires before any existence check, so there is no
