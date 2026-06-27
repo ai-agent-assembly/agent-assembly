@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
+use crate::auth::scope::RequireAdmin;
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -173,11 +174,18 @@ pub struct GenerateApiKeyRequest {
     get,
     path = "/api/v1/iam/api-keys",
     responses(
-        (status = 200, description = "All API keys, newest first", body = [ApiKeyResponse])
+        (status = 200, description = "All API keys, newest first", body = [ApiKeyResponse]),
+        (status = 403, description = "Caller lacks the admin role required to read IAM state")
     ),
     tag = "iam"
 )]
-pub async fn list_api_keys(Extension(state): Extension<AppState>) -> (StatusCode, Json<Vec<ApiKeyResponse>>) {
+pub async fn list_api_keys(
+    // AAASM-3846 — listing API keys discloses sensitive IAM state (labels,
+    // scopes, owners, activity), so it requires the same admin authority as the
+    // generate / revoke / rotate mutations rather than being open to any caller.
+    RequireAdmin(_caller): RequireAdmin,
+    Extension(state): Extension<AppState>,
+) -> (StatusCode, Json<Vec<ApiKeyResponse>>) {
     let keys = state
         .iam_api_key_store
         .list()
