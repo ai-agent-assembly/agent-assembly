@@ -165,3 +165,42 @@ fn run_use(args: UseArgs) -> ExitCode {
     println!("Switched to context '{}'.", args.name);
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_key_flag_takes_precedence_over_env() {
+        let _guard = crate::test_support::env_guard();
+        std::env::set_var(API_KEY_ENV, "env-key");
+        let resolved = resolve_set_api_key(Some("flag-key".to_string()));
+        std::env::remove_var(API_KEY_ENV);
+        assert_eq!(resolved.as_deref(), Some("flag-key"));
+    }
+
+    #[test]
+    fn api_key_read_from_env_when_flag_absent() {
+        let _guard = crate::test_support::env_guard();
+        std::env::set_var(API_KEY_ENV, "env-key");
+        let resolved = resolve_set_api_key(None);
+        std::env::remove_var(API_KEY_ENV);
+        assert_eq!(resolved.as_deref(), Some("env-key"));
+    }
+
+    #[test]
+    fn api_key_none_when_neither_flag_nor_env_set() {
+        let _guard = crate::test_support::env_guard();
+        std::env::remove_var(API_KEY_ENV);
+        assert!(resolve_set_api_key(None).is_none());
+    }
+
+    #[test]
+    fn api_key_empty_env_treated_as_unset() {
+        let _guard = crate::test_support::env_guard();
+        std::env::set_var(API_KEY_ENV, "");
+        let resolved = resolve_set_api_key(None);
+        std::env::remove_var(API_KEY_ENV);
+        assert!(resolved.is_none());
+    }
+}
