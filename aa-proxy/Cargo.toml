@@ -14,10 +14,10 @@ name = "aa-proxy"
 path = "src/main.rs"
 
 [dependencies]
-aa-core    = { path = "../aa-core", version = "0.0.1-rc.1", features = ["serde"] }
-aa-security = { path = "../aa-security", version = "0.0.1-rc.1", features = ["serde"] }
-aa-proto   = { path = "../aa-proto", version = "0.0.1-rc.1" }
-aa-runtime = { path = "../aa-runtime", version = "0.0.1-rc.1" }
+aa-core    = { path = "../aa-core", version = "0.0.1-rc.2", features = ["serde"] }
+aa-security = { path = "../aa-security", version = "0.0.1-rc.2", features = ["serde"] }
+aa-proto   = { path = "../aa-proto", version = "0.0.1-rc.2" }
+aa-runtime = { path = "../aa-runtime", version = "0.0.1-rc.2" }
 clap       = { workspace = true, features = ["derive"] }
 tokio      = { workspace = true, features = ["full"] }
 hyper      = { workspace = true, features = ["server", "http1"] }

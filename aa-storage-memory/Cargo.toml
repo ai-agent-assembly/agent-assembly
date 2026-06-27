@@ -7,8 +7,8 @@ repository.workspace = true
 description = "In-memory aa-storage driver (DashMap-backed) for tests and local development"
 
 [dependencies]
-aa-core = { path = "../aa-core", version = "0.0.1-rc.1" }
-aa-storage = { path = "../aa-storage", version = "0.0.1-rc.1" }
+aa-core = { path = "../aa-core", version = "0.0.1-rc.2" }
+aa-storage = { path = "../aa-storage", version = "0.0.1-rc.2" }
 async-trait = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
