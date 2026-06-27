@@ -159,6 +159,7 @@ pub async fn run(
                             &response_router,
                             &gateway_client,
                             &op_control,
+                            &config.agent_id,
                             config.gateway_fail_closed,
                             &broadcast_tx,
                             &seq,
@@ -404,21 +405,39 @@ async fn handle_policy_query(
     response_router: &ResponseRouter,
     gateway_client: &Option<Arc<Mutex<GatewayClient>>>,
     op_control: &crate::op_control::OpControlStore,
+    agent_id: &str,
     fail_closed: bool,
     broadcast_tx: &broadcast::Sender<PipelineEvent>,
     sequence_counter: &AtomicU64,
 ) {
-    // ── Op-control kill switch (AAASM-3491) ─────────────────────────────
+    // ── Op-control kill switch (AAASM-3491; hardened AAASM-3873) ─────────
     // Consult the operator-driven op lifecycle BEFORE any policy evaluation:
     // a terminated op must fast-fail and a paused op must block, regardless of
-    // what the policy would otherwise decide. The op_id mirrors the gateway's
-    // form ("{trace_id}:{span_id}"); an empty trace_id means the request is not
-    // part of a tracked op, so there is nothing to halt.
+    // what the policy would otherwise decide.
+    //
+    // AAASM-3873: the kill switch must not be evadable via an agent-supplied
+    // trace_id. The op-specific id ("{trace_id}:{span_id}") is built from
+    // attacker-controlled request fields, so a non-cooperative SDK could omit or
+    // alter trace_id to dodge a terminate/pause. We therefore always consult
+    // halts bound to a *server-side* identity — a global kill switch and an
+    // agent-scoped halt keyed by the agent identity the runtime itself knows
+    // (`agent_id`) — on every request. The op-specific id is an additional,
+    // finer-grained match used only when a trace_id is actually supplied; it can
+    // never reduce coverage. An empty/absent or forged trace_id therefore no
+    // longer bypasses an active agent-level or global halt. (Defeating a halt
+    // scoped to a *specific* op by claiming a different op remains inherent to
+    // the advisory SDK fast-path — an unlabelled request cannot be attributed to
+    // that op — but the operator's agent-wide and global kill switches are now
+    // unbypassable.)
+    let mut halt_op_ids = vec![
+        crate::op_control::GLOBAL_HALT_OP_ID.to_string(),
+        crate::op_control::agent_halt_op_id(agent_id),
+    ];
     if !req.trace_id.is_empty() {
-        let op_id = format!("{}:{}", req.trace_id, req.span_id);
-        if op_control_halts(connection_id, &op_id, op_control, response_router).await {
-            return;
-        }
+        halt_op_ids.push(format!("{}:{}", req.trace_id, req.span_id));
+    }
+    if op_control_halts(connection_id, &halt_op_ids, op_control, response_router).await {
+        return;
     }
 
     // ── Gateway forwarding path ─────────────────────────────────────────
@@ -513,21 +532,26 @@ async fn handle_policy_query(
     .await;
 }
 
-/// Enforce the op-control kill switch for `op_id` before the action proceeds.
+/// Enforce the op-control kill switch across all `op_ids` bound to this request
+/// before the action proceeds.
+///
+/// `op_ids` carries the server-side halt keys (global + agent-scoped) plus the
+/// optional op-specific key (AAASM-3873). A halt on **any** of them applies —
+/// terminate takes priority over pause.
 ///
 /// Returns `true` when the action was **halted** and a response already sent —
-/// the caller must stop processing. Returns `false` when the op is runnable
+/// the caller must stop processing. Returns `false` when every key is runnable
 /// (no signal, or a pause that was subsequently resumed).
 ///
 /// - **Terminated:** fast-fail the in-flight action with a `Deny`
 ///   (`OpTerminatedError`); the kill switch reached the agent.
-/// - **Paused:** cooperatively block until the gateway pushes a resume (op
+/// - **Paused:** cooperatively block until the gateway pushes a resume (the op
 ///   leaves the store) or a terminate. This parks the per-tool check on the
 ///   store's change notification rather than busy-polling, so a paused agent
 ///   makes no further progress until the operator resumes it.
 async fn op_control_halts(
     connection_id: u64,
-    op_id: &str,
+    op_ids: &[String],
     op_control: &crate::op_control::OpControlStore,
     response_router: &ResponseRouter,
 ) -> bool {
@@ -536,23 +560,40 @@ async fn op_control_halts(
         // Register interest before reading state so a resume/terminate that
         // lands during this iteration cannot be missed (see `changed`).
         let changed = op_control.changed();
-        match op_control.state(op_id) {
-            Some(OpState::Terminated) => {
-                ::metrics::counter!("aa_op_control_terminations_total").increment(1);
-                tracing::warn!(connection_id, op_id, "op terminated by operator — fast-failing action");
-                send_ipc_response(
-                    connection_id,
-                    IpcResponse::PolicyResponse(CheckActionResponse {
-                        decision: Decision::Deny as i32,
-                        reason: "OpTerminatedError: operator terminated this op via the live kill switch".to_string(),
-                        ..Default::default()
-                    }),
-                    response_router,
-                )
-                .await;
-                return true;
+
+        // Scan every bound key. A terminate on any key wins outright; otherwise
+        // remember the first paused key so the action blocks until it changes.
+        let mut terminated_op: Option<&str> = None;
+        let mut paused_op: Option<&str> = None;
+        for op_id in op_ids {
+            match op_control.state(op_id) {
+                Some(OpState::Terminated) => {
+                    terminated_op = Some(op_id);
+                    break;
+                }
+                Some(OpState::Paused) if paused_op.is_none() => paused_op = Some(op_id),
+                _ => {}
             }
-            Some(OpState::Paused) => {
+        }
+
+        if let Some(op_id) = terminated_op {
+            ::metrics::counter!("aa_op_control_terminations_total").increment(1);
+            tracing::warn!(connection_id, op_id, "op terminated by operator — fast-failing action");
+            send_ipc_response(
+                connection_id,
+                IpcResponse::PolicyResponse(CheckActionResponse {
+                    decision: Decision::Deny as i32,
+                    reason: "OpTerminatedError: operator terminated this op via the live kill switch".to_string(),
+                    ..Default::default()
+                }),
+                response_router,
+            )
+            .await;
+            return true;
+        }
+
+        match paused_op {
+            Some(op_id) => {
                 ::metrics::counter!("aa_op_control_pauses_total").increment(1);
                 tracing::info!(
                     connection_id,
