@@ -4688,6 +4688,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     get_violations_by_lineage: {
@@ -4715,6 +4722,13 @@ export interface operations {
             };
             /** @description Invalid query parameter */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4799,6 +4813,13 @@ export interface operations {
                     "application/json": components["schemas"]["CapabilityMatrix"];
                 };
             };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     list_overrides: {
@@ -4821,6 +4842,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["OverrideRecord"][];
                 };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -4885,6 +4913,13 @@ export interface operations {
         responses: {
             /** @description Override revoked; cells restored to base policy */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the role required to mutate capability state */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5034,6 +5069,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiKeyResponse"][];
                 };
+            };
+            /** @description Caller lacks the admin role required to read IAM state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
