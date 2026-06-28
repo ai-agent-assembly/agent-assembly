@@ -359,4 +359,38 @@ mod tests {
             other => panic!("expected ApprovalResolved, got {other:?}"),
         }
     }
+
+    /// AAASM-3890 regression: a tenant-scoped approval resolution reaches only
+    /// its owning tenant's subscriber, never another tenant's — neither on the
+    /// live channel nor via the replay ring on reconnect.
+    #[tokio::test]
+    async fn approval_fan_out_is_scoped_to_owning_tenant() {
+        let hub = InvalidationHub::new();
+        let mut team_a = hub.subscribe("asm-a", Some("team-a".to_string()), 0);
+        let mut team_b = hub.subscribe("asm-b", Some("team-b".to_string()), 0);
+
+        // Resolve an approval owned by team-a.
+        hub.broadcast_approval_resolved("req-a", Decision::Approved, Some("team-a"));
+
+        // team-a receives its own event.
+        let event = tokio::time::timeout(Duration::from_millis(100), team_a.receiver.recv())
+            .await
+            .expect("team-a event delivered within 100 ms")
+            .expect("channel open");
+        match event.payload.expect("payload set") {
+            Payload::ApprovalResolved(ar) => assert_eq!(ar.request_id, "req-a"),
+            other => panic!("expected ApprovalResolved, got {other:?}"),
+        }
+
+        // team-b must NOT receive team-a's event on its live channel.
+        let leaked = tokio::time::timeout(Duration::from_millis(50), team_b.receiver.recv()).await;
+        assert!(leaked.is_err(), "team-b must not receive team-a's approval event");
+
+        // Nor may it surface via replay: team-b's ring never recorded the event.
+        let reconnect_b = hub.subscribe("asm-b", Some("team-b".to_string()), 0);
+        assert!(
+            reconnect_b.replay.is_empty(),
+            "team-b replay ring must not contain team-a's event"
+        );
+    }
 }
