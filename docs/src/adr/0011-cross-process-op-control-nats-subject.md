@@ -1,8 +1,18 @@
 # ADR 0011: Cross-Process Op-Control Delivery via a NATS Subject
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-06
-**Ticket**: [AAASM-3883](https://lightning-dust-mite.atlassian.net/browse/AAASM-3883)
+**Ticket**: [AAASM-3883](https://lightning-dust-mite.atlassian.net/browse/AAASM-3883),
+upgraded to durable JetStream by
+[AAASM-3885](https://lightning-dust-mite.atlassian.net/browse/AAASM-3885)
+
+> **Update (AAASM-3885).** The original design below shipped over **core NATS**
+> (at-most-once). The transport has since been upgraded to **NATS JetStream**
+> (durable stream + awaited publish ACK) so a halt `200` means *persisted and will
+> be delivered to a gateway that (re)subscribes within retention*, not merely
+> *accepted onto the bus*. See the
+> [AAASM-3885 update section](#update--aaasm-3885-durable-jetstream-delivery) at the
+> end; it supersedes the "Delivery semantics" consequence.
 
 ---
 
@@ -126,10 +136,11 @@ in-process behavior — no new mandatory config, no behavior change for local mo
   single-process deployment uses the in-process publisher unchanged. The two paths
   are mutually exclusive per process (NATS preferred when configured), so a halt is
   never double-delivered from one publisher.
-- **Delivery semantics.** Core NATS pub/sub is **at-most-once live** delivery — the
-  same semantics as the in-process broadcast it extends (which also drops when no
-  subscriber is connected). `flush()` makes NATS *unavailability* an honest error,
-  but a halt published while a gateway is momentarily disconnected from NATS is not
+- **Delivery semantics.** *(Superseded by AAASM-3885 — see the update section
+  below.)* Core NATS pub/sub is **at-most-once live** delivery — the same semantics
+  as the in-process broadcast it extends (which also drops when no subscriber is
+  connected). `flush()` makes NATS *unavailability* an honest error, but a halt
+  published while a gateway is momentarily disconnected from NATS is not
   redelivered. A JetStream-durable op-control stream is a deliberate **future**
   enhancement, out of scope for this additive-wiring fix.
 - **No new dependency / no new feature flag.** `async-nats` is already a
@@ -142,3 +153,100 @@ in-process behavior — no new mandatory config, no behavior change for local mo
   kill path is the agent-wide / global halt, which binds to the server-side agent
   identity and is what this ADR makes cross-process. Per-op `pause`/`terminate`
   remain same-process for now.
+
+---
+
+## Update — AAASM-3885: Durable JetStream Delivery
+
+**Ticket**: [AAASM-3885](https://lightning-dust-mite.atlassian.net/browse/AAASM-3885)
+(found in the AAASM-3883 review). This section **supersedes the "Delivery
+semantics" consequence** above; everything else (subject naming, envelope schema,
+fail-mode, multi-replica, per-op locality) is unchanged.
+
+### Problem
+
+Core NATS is **at-most-once**: a successful publish + `flush()` only confirms bytes
+reached the NATS server, not that any gateway bridge consumed the halt or that a
+runtime halted. If no gateway is subscribed at that instant (restart / rollout
+window, partition), the halt endpoint returns `200` while the halt reaches no
+runtime — wrong for a safety kill switch, where `200` should mean "the agent was
+provably told to halt."
+
+### Decision
+
+Carry op-control on a **durable NATS JetStream stream** instead of core pub/sub.
+The subject scheme, JSON envelope, and reserved keys are unchanged — only the
+transport guarantee changes.
+
+#### Stream
+
+- **Name**: `AA_OPCONTROL`.
+- **Subjects**: `assembly.opcontrol.>` (the same wildcard the bridge consumed before).
+- **Retention**: `Limits` with a bounded **`max_age` = 10 minutes**, **`File`
+  storage**. Halts are tiny and time-sensitive: a bounded max-age covers a gateway
+  restart / rollout window (a halt published in that gap is redelivered to the
+  gateway that resubscribes within it) while keeping the stream small and preventing
+  an indefinitely-replayed *stale* kill switch. File storage makes the halt survive
+  a NATS server restart as well.
+- **Created idempotently at boot** by every process via `create_or_update_stream`
+  (`ensure_op_control_stream`). The NATS server **must have JetStream enabled**
+  (`-js`) — a deployment requirement; without it, stream setup / publish ACK fails
+  and the halt endpoint honestly returns `503`.
+
+#### Publish (aa-api)
+
+`OpControlNatsPublisher` now holds a `jetstream::Context` and **awaits the publish
+ACK** (`context.publish(subject, payload).await?.await?`). The second await resolves
+the JetStream server ACK, which only arrives once the message is **persisted** in
+the stream. The ACK wait is bounded by a timeout so the operator surface never
+hangs. The aa-api process does **not** create the stream — that is the gateway's
+job — so a publish before the stream is ready is an honest failure (below).
+
+#### Consume (gateway)
+
+The bridge ensures the stream, then reads it via an **ephemeral JetStream consumer**
+with `DeliverPolicy::All` and **explicit ack**:
+
+- **Ephemeral, not a shared durable consumer.** A named durable consumer shared by
+  all gateway replicas would *queue-group* halts to a single replica, so a runtime
+  streamed from a different replica would miss its kill switch. An ephemeral
+  consumer per replica gives each replica its **own** copy of every halt —
+  preserving the AAASM-3883 multi-replica fan-out.
+- **`DeliverPolicy::All`** replays everything still within retention when the
+  consumer is (re)created. This is what delivers a halt **published while this
+  gateway had no consumer attached** — the durability property of this ticket. The
+  *stream's retention*, not consumer durability, is what makes the halt survive; the
+  consumer just replays from the start of the retained stream on each (re)subscribe.
+- Re-reading an already-applied halt after a gateway restart is **safe** because
+  `Terminate` is sticky/idempotent in the runtime `OpControlStore` (and `ack`
+  removes it from the consumer's pending set during steady state).
+
+### What a halt `200` now guarantees
+
+The halt was **durably persisted** to the `AA_OPCONTROL` JetStream stream (the
+server ACK was received). Every gateway whose bridge is subscribed receives it
+live, **and** any gateway that (re)subscribes **within the retention window
+(10 min)** is replayed the persisted halt. An operator is never told an agent was
+halted when the signal was dropped onto a bus with no consumer.
+
+### Residual caveats
+
+- **Not an end-to-end runtime-ack.** `200` means *durably persisted and will be
+  delivered to a (re)subscribing gateway within retention*, **not** a per-runtime
+  acknowledgement that a specific agent process applied the halt. A runtime that is
+  disconnected for longer than the 10-minute retention, or permanently gone, is not
+  tracked. A true end-to-end runtime-level ack would require a return path from the
+  runtime and is out of scope.
+- **Per-op vs agent-wide.** Unchanged from the base ADR: per-op `pause`/`terminate`
+  remain bounded by op→agent registry locality. The durable cross-process path is
+  the agent-wide / global halt, which binds to the server-side agent identity.
+- **Deployment requirement.** The op-control NATS server must run with JetStream
+  enabled (`-js`). This reuses the existing `AA_OPCONTROL_NATS_URL` connection — no
+  new config — but a non-JetStream server now degrades op-control to honest `503`s
+  rather than the previous best-effort core-NATS delivery.
+
+### Fail-mode (unchanged invariant, JetStream-specific triggers)
+
+- JetStream unavailable / stream not ready / **publish not ACKed** → real `503`
+  (`HaltDelivery::ChannelError`), never a false `200`.
+- No op-control channel configured at all → `503` (`HaltDelivery::NotConfigured`).

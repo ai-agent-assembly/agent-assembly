@@ -9,26 +9,35 @@
 //! the existing audit subsystem (`assembly.audit.>`) rather than inventing a
 //! parallel NATS stack. See ADR 0011.
 //!
-//! Two halves:
+//! Two halves, both running over **NATS JetStream** (AAASM-3885) so a halt is
+//! durably persisted and redelivered to a gateway that (re)subscribes — not merely
+//! "accepted onto the bus" (the at-most-once CORE-NATS behavior AAASM-3883 shipped):
 //!
 //! * **Publish** ([`OpControlNatsPublisher`]) — used by the aa-api halt handlers
 //!   to publish an [`OpControlWireEnvelope`] to `assembly.opcontrol.<tenant>.<agent>`
-//!   (or `assembly.opcontrol.global`). It `flush()`es after every publish so a
-//!   NATS outage surfaces as a real error, never a silent-drop `200`.
-//! * **Consume** ([`spawn_bridge`]) — a gateway boot task that subscribes to
-//!   `assembly.opcontrol.>` and forwards each received envelope into the gateway's
-//!   in-process [`OpControlPublisher`](super::OpControlPublisher), so the existing
+//!   (or `assembly.opcontrol.global`) **and await the JetStream publish ACK**, so a
+//!   successful return means the halt is persisted in the durable stream. A missing
+//!   stream / NATS outage / un-acked publish surfaces as a real error, never a
+//!   silent-drop `200`.
+//! * **Consume** ([`spawn_bridge`]) — a gateway boot task that ensures the durable
+//!   [`STREAM_NAME`] stream, creates a JetStream consumer over `assembly.opcontrol.>`
+//!   (replaying everything still within retention, so a halt published while this
+//!   gateway had no consumer attached is still delivered), and forwards each received
+//!   envelope into the gateway's in-process
+//!   [`OpControlPublisher`](super::OpControlPublisher) — acking it — so the existing
 //!   `op_control_stream` filtering / reserved-key matching delivers it to runtimes
 //!   unchanged.
 //!
 //! `async-nats` is already a non-optional dependency (via `aa-runtime`'s audit
 //! publisher), so this module is always compiled and activated purely by the
 //! `AA_OPCONTROL_NATS_URL` environment variable — matching the always-on runtime
-//! audit publisher rather than the feature-gated audit consumer.
+//! audit publisher rather than the feature-gated audit consumer. The configured NATS
+//! server **must have JetStream enabled** (a deployment requirement; see ADR 0011).
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_nats::jetstream;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
@@ -54,6 +63,20 @@ const UNKNOWN_AGENT: &str = "unknown";
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 /// Upper bound on the bridge reconnect delay (1s → 2 → 4 → … → 32s cap).
 const MAX_BACKOFF: Duration = Duration::from_secs(32);
+
+/// Name of the durable JetStream stream that persists every op-control subject
+/// (AAASM-3885). All processes ensure this stream idempotently at boot.
+pub const STREAM_NAME: &str = "AA_OPCONTROL";
+/// Retention window for persisted op-control halts. Halts are tiny and
+/// time-sensitive, so a bounded max-age is the right retention: it covers a
+/// gateway restart / rollout window (a halt published in that gap is redelivered
+/// to the gateway that resubscribes within it) while keeping the stream small and
+/// preventing an indefinitely-replayed stale kill switch. See ADR 0011.
+pub const STREAM_MAX_AGE: Duration = Duration::from_secs(600);
+/// Upper bound on how long a publish waits for the JetStream server ACK before the
+/// halt endpoint reports an honest failure (`503`) rather than hanging. Keeps a
+/// missing-stream / JetStream-disabled server from blocking the operator surface.
+const PUBLISH_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Wire form of an op-control signal carried over NATS.
 ///
@@ -133,6 +156,12 @@ pub enum OpControlNatsError {
     /// Serializing the envelope to JSON failed.
     #[error("op-control envelope serialization failed: {0}")]
     Serialize(String),
+    /// Ensuring / fetching the durable JetStream stream failed (AAASM-3885).
+    #[error("op-control JetStream stream setup failed: {0}")]
+    Stream(String),
+    /// Creating or reading the JetStream consumer failed (AAASM-3885).
+    #[error("op-control JetStream consumer failed: {0}")]
+    Consumer(String),
 }
 
 /// Runtime configuration for the op-control NATS bridge / publisher.
@@ -158,16 +187,56 @@ impl OpControlNatsConfig {
     }
 }
 
-/// Publishes op-control signals onto the shared NATS subject (aa-api side).
+/// Idempotently create (or update) the durable JetStream stream that persists
+/// every op-control subject (AAASM-3885).
+///
+/// Bounded by [`STREAM_MAX_AGE`] with `Limits` retention and `File` storage so a
+/// halt published while no gateway consumer is attached is durably persisted and
+/// **redelivered** to a gateway that (re)subscribes within the retention window —
+/// the core durability guarantee of this ticket. Safe to call from every process
+/// at boot (create-or-update is idempotent). The NATS server must have JetStream
+/// enabled; if it does not, this call fails with [`OpControlNatsError::Stream`].
+pub async fn ensure_op_control_stream(
+    jetstream: &jetstream::Context,
+) -> Result<jetstream::stream::Stream, OpControlNatsError> {
+    jetstream
+        .create_or_update_stream(jetstream::stream::Config {
+            name: STREAM_NAME.to_string(),
+            subjects: vec![SUBJECT_WILDCARD.to_string()],
+            retention: jetstream::stream::RetentionPolicy::Limits,
+            max_age: STREAM_MAX_AGE,
+            storage: jetstream::stream::StorageType::File,
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| OpControlNatsError::Stream(e.to_string()))?;
+    jetstream
+        .get_stream(STREAM_NAME)
+        .await
+        .map_err(|e| OpControlNatsError::Stream(e.to_string()))
+}
+
+/// Publishes op-control signals onto the durable JetStream stream (aa-api side).
 #[derive(Clone)]
 pub struct OpControlNatsPublisher {
-    client: async_nats::Client,
+    jetstream: jetstream::Context,
+    ack_timeout: Duration,
 }
 
 impl OpControlNatsPublisher {
-    /// Wrap an already-connected NATS client.
+    /// Wrap an already-connected NATS client in a JetStream context.
     pub fn new(client: async_nats::Client) -> Self {
-        Self { client }
+        Self {
+            jetstream: jetstream::new(client),
+            ack_timeout: PUBLISH_ACK_TIMEOUT,
+        }
+    }
+
+    /// Override the publish-ACK timeout (tests use a short bound so the
+    /// honest-failure path returns quickly).
+    pub fn with_ack_timeout(mut self, ack_timeout: Duration) -> Self {
+        self.ack_timeout = ack_timeout;
+        self
     }
 
     /// Connect to the server described by `config` and wrap the client.
@@ -178,21 +247,32 @@ impl OpControlNatsPublisher {
         Ok(Self::new(client))
     }
 
-    /// Publish `envelope` and flush so the write reaches the server before
-    /// returning. The flush is what makes a NATS outage an honest error rather
-    /// than a buffered success the operator would misread as a delivered halt.
+    /// Publish `envelope` to JetStream and **await the publish ACK**.
+    ///
+    /// The first `await` sends the publish; the second resolves the JetStream
+    /// server ACK, which only arrives once the message is persisted in the durable
+    /// stream. A successful return therefore means the halt is durably stored and
+    /// will reach any gateway that (re)subscribes within retention — not merely
+    /// that bytes reached the bus. A missing stream / JetStream-disabled server /
+    /// outage surfaces as an honest [`OpControlNatsError::Publish`] (the endpoint
+    /// maps it to `503`), never a silent-drop `200`. The ACK wait is bounded by
+    /// `ack_timeout` so the operator surface never hangs.
     pub async fn publish(&self, envelope: &OpControlWireEnvelope) -> Result<(), OpControlNatsError> {
         let subject = subject_for(envelope);
         let payload = serde_json::to_vec(envelope).map_err(|e| OpControlNatsError::Serialize(e.to_string()))?;
-        self.client
+        let ack = self
+            .jetstream
             .publish(subject, payload.into())
             .await
             .map_err(|e| OpControlNatsError::Publish(e.to_string()))?;
-        self.client
-            .flush()
-            .await
-            .map_err(|e| OpControlNatsError::Publish(e.to_string()))?;
-        Ok(())
+        match tokio::time::timeout(self.ack_timeout, ack).await {
+            Ok(Ok(_ack)) => Ok(()),
+            Ok(Err(e)) => Err(OpControlNatsError::Publish(e.to_string())),
+            Err(_) => Err(OpControlNatsError::Publish(format!(
+                "JetStream publish ACK timed out after {:?} (stream not ready or JetStream disabled?)",
+                self.ack_timeout
+            ))),
+        }
     }
 
     /// Publish an agent-wide halt under the reserved `agent:{agent_id}` op-id.
@@ -255,10 +335,12 @@ fn forward_to_broadcast(publisher: &SharedOpControlPublisher, envelope: OpContro
     }
 }
 
-/// Spawn the gateway-side bridge task: subscribe to `assembly.opcontrol.>` and
-/// forward every received halt into `publisher` (the in-process broadcast
-/// `op_control_stream` serves). Reconnects forever with exponential backoff so a
-/// transient NATS outage never permanently silences the cross-process kill switch.
+/// Spawn the gateway-side bridge task: ensure the durable JetStream stream,
+/// consume `assembly.opcontrol.>` (replaying everything still within retention),
+/// and forward every received halt into `publisher` (the in-process broadcast
+/// `op_control_stream` serves), acking each message. Reconnects forever with
+/// exponential backoff so a transient NATS outage never permanently silences the
+/// cross-process kill switch.
 pub fn spawn_bridge(config: OpControlNatsConfig, publisher: SharedOpControlPublisher) -> JoinHandle<()> {
     tokio::spawn(run_bridge(config, publisher))
 }
@@ -284,7 +366,20 @@ async fn run_bridge(config: OpControlNatsConfig, publisher: SharedOpControlPubli
     }
 }
 
-/// Open one subscription and forward messages until the stream ends or errors.
+/// Open one JetStream consumer and forward messages until the stream ends or errors.
+///
+/// Ensures the durable stream, then creates an **ephemeral** JetStream consumer
+/// with `DeliverPolicy::All` and explicit ack. Ephemeral + `All` is deliberate:
+///
+/// * each gateway replica gets its **own** consumer and therefore its own copy of
+///   every halt — preserving the AAASM-3883 multi-replica fan-out (a named durable
+///   consumer shared across replicas would queue-group halts to a single replica,
+///   so a runtime streamed from a different replica would miss its kill switch);
+/// * `DeliverPolicy::All` replays everything still in the stream when this consumer
+///   is (re)created, so a halt published while this gateway had **no** consumer
+///   attached is delivered once the bridge comes up — the AAASM-3885 durability
+///   property. Re-reading an already-applied halt after a restart is safe because
+///   `Terminate` is sticky/idempotent in the runtime `OpControlStore`.
 async fn bridge_once(
     config: &OpControlNatsConfig,
     publisher: &SharedOpControlPublisher,
@@ -292,18 +387,29 @@ async fn bridge_once(
     let client = async_nats::connect(&config.url)
         .await
         .map_err(|e| OpControlNatsError::Connect(e.to_string()))?;
-    let mut subscription = client
-        .subscribe(SUBJECT_WILDCARD)
+    let context = jetstream::new(client);
+    let stream = ensure_op_control_stream(&context).await?;
+    let consumer = stream
+        .create_consumer(jetstream::consumer::pull::Config {
+            deliver_policy: jetstream::consumer::DeliverPolicy::All,
+            ack_policy: jetstream::consumer::AckPolicy::Explicit,
+            filter_subject: SUBJECT_WILDCARD.to_string(),
+            ..Default::default()
+        })
         .await
-        .map_err(|e| OpControlNatsError::Subscribe(e.to_string()))?;
-    // Flush so the SUB is registered server-side before we report readiness.
-    client
-        .flush()
+        .map_err(|e| OpControlNatsError::Consumer(e.to_string()))?;
+    let mut messages = consumer
+        .messages()
         .await
-        .map_err(|e| OpControlNatsError::Subscribe(e.to_string()))?;
-    tracing::info!(subject = SUBJECT_WILDCARD, "op-control NATS bridge subscribed");
+        .map_err(|e| OpControlNatsError::Consumer(e.to_string()))?;
+    tracing::info!(
+        stream = STREAM_NAME,
+        subject = SUBJECT_WILDCARD,
+        "op-control JetStream bridge subscribed"
+    );
 
-    while let Some(message) = subscription.next().await {
+    while let Some(message) = messages.next().await {
+        let message = message.map_err(|e| OpControlNatsError::Consumer(e.to_string()))?;
         match serde_json::from_slice::<OpControlWireEnvelope>(&message.payload) {
             Ok(envelope) => {
                 metrics::counter!("aa_op_control_bridge_forwarded_total").increment(1);
@@ -312,6 +418,11 @@ async fn bridge_once(
             Err(err) => {
                 tracing::warn!(%err, "op-control bridge: dropping undecodable message");
             }
+        }
+        // Ack so the halt is removed from this consumer's pending set. A failed ack
+        // only risks a redelivery, which is safe (sticky/idempotent halts).
+        if let Err(err) = message.ack().await {
+            tracing::warn!(%err, "op-control bridge: failed to ack message");
         }
     }
     Ok(())

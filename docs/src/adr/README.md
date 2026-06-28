@@ -17,4 +17,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0008](0008-saas-host-routing-auth-cookie-boundaries.md) | SaaS Host Routing, Auth & Cookie Boundaries | Proposed |
 | [0009](0009-versioned-base-image-tags-and-sdk-pinning.md) | Versioned Base-Image Tags & Reproducible SDK Pinning | Proposed |
 | [0010](0010-gateway-distribution-self-host-examples.md) | Gateway Distribution for Self-Host & Examples | Proposed |
-| [0011](0011-cross-process-op-control-nats-subject.md) | Cross-Process Op-Control Delivery via a NATS Subject | Proposed |
+| [0011](0011-cross-process-op-control-nats-subject.md) | Cross-Process Op-Control Delivery via a NATS Subject (durable JetStream) | Accepted |
