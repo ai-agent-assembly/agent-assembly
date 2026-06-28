@@ -2139,6 +2139,45 @@ mod tests {
     }
 
     #[test]
+    fn cascade_schedule_denies_despite_stale_cached_allow() {
+        // AAASM-3893 regression: the schedule stage is time-dependent and must
+        // be evaluated FRESH on every cascade request. A decision cached while
+        // the active-hours window was open must NOT be served once the window
+        // has closed. We pre-seed the cache with the stale Allow a prior
+        // in-window evaluation would have stored, then evaluate against a
+        // now-closed window: the request must be DENIED, not served the cached
+        // Allow.
+        let mut doc = empty_doc();
+        doc.schedule = Some(SchedulePolicy {
+            active_hours: Some(ActiveHours {
+                start: "00:00".to_string(),
+                // An empty window (start == end == "00:00"): `current >= end`
+                // is always true, so this window is closed at every wall-clock
+                // time — the test is deterministic regardless of when it runs.
+                end: "00:00".to_string(),
+                timezone: "UTC".to_string(),
+            }),
+        });
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let action = tool_call("any", "");
+
+        // Pre-seed the cache with the stale Allow a prior in-window eval stored.
+        let epoch = engine.policy_epoch.load(Ordering::Relaxed);
+        let key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, &action);
+        engine.decision_cache.insert(key, PolicyDecision::Allow);
+
+        let cascade = vec![Arc::new(doc)];
+        assert_eq!(
+            engine.evaluate_with_cascade(cascade, &ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "outside active hours".into()
+            },
+            "a cached Allow must not survive the active-hours window closing",
+        );
+    }
+
+    #[test]
     fn data_pattern_redacts_on_custom_match() {
         // Stage 6 no longer denies — it redacts in-memory and sets credential_findings.
         let mut doc = empty_doc();
