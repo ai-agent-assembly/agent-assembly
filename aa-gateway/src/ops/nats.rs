@@ -723,6 +723,63 @@ mod tests {
         assert_eq!(envelope.message.signal, OpControlSignal::Pause as i32);
     }
 
+    // ── AAASM-3886: fail-loud classification + bridge health handle ─────────
+
+    #[test]
+    fn stream_and_consumer_setup_failures_are_fail_loud() {
+        // A stream/consumer setup failure (after a successful connect) is the
+        // non-transient fail-loud condition — the canonical trigger is a
+        // pre-provisioned stream with an incompatible immutable config.
+        assert!(OpControlNatsError::Stream("immutable field".into()).is_stream_setup_failure());
+        assert!(OpControlNatsError::Consumer("cannot create".into()).is_stream_setup_failure());
+    }
+
+    #[test]
+    fn connect_and_other_errors_are_transient_not_fail_loud() {
+        // Server-unreachable / publish / serialize / subscribe are NOT fail-loud
+        // — they are the ordinary transient reconnect path.
+        assert!(!OpControlNatsError::Connect("refused".into()).is_stream_setup_failure());
+        assert!(!OpControlNatsError::Publish("no ack".into()).is_stream_setup_failure());
+        assert!(!OpControlNatsError::Subscribe("nope".into()).is_stream_setup_failure());
+        assert!(!OpControlNatsError::Serialize("bad json".into()).is_stream_setup_failure());
+    }
+
+    #[test]
+    fn bridge_health_starts_connecting_and_tracks_transitions() {
+        let health = OpControlBridgeHealth::new();
+        assert_eq!(health.get(), BridgeHealthState::Connecting);
+        assert!(!health.is_healthy());
+        assert!(!health.is_delivery_down());
+
+        health.set(BridgeHealthState::Subscribed);
+        assert_eq!(health.get(), BridgeHealthState::Subscribed);
+        assert!(health.is_healthy());
+        assert!(!health.is_delivery_down());
+
+        health.set(BridgeHealthState::Reconnecting);
+        assert!(!health.is_healthy());
+        assert!(!health.is_delivery_down());
+
+        health.set(BridgeHealthState::StreamUnavailable);
+        assert!(!health.is_healthy());
+        assert!(
+            health.is_delivery_down(),
+            "the fail-loud state must report op-control delivery as down",
+        );
+    }
+
+    #[test]
+    fn bridge_health_handle_clones_share_one_state() {
+        // The bridge task owns one clone and updates it; callers read another.
+        let writer = OpControlBridgeHealth::new();
+        let reader = writer.clone();
+        writer.set(BridgeHealthState::StreamUnavailable);
+        assert!(
+            reader.is_delivery_down(),
+            "a clone must observe the writer's StreamUnavailable transition",
+        );
+    }
+
     #[tokio::test]
     async fn forward_drops_unspecified_signal() {
         let publisher = Arc::new(super::super::OpControlPublisher::new());
