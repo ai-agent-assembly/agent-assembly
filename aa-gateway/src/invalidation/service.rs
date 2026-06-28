@@ -66,7 +66,7 @@ impl InvalidationService for InvalidationServiceImpl {
             _ => 0,
         };
 
-        let handle = self.hub.subscribe(assembly_id.clone(), last_seq_seen);
+        let handle = self.hub.subscribe(assembly_id.clone(), None, last_seq_seen);
 
         // Drain client→server Acks so the hub can trim each subscriber's ring.
         let hub = Arc::clone(&self.hub);

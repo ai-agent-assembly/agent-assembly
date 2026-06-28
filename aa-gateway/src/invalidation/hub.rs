@@ -38,6 +38,12 @@ struct Subscriber {
     next_seq: AtomicU64,
     /// Most recent events (≤ [`REPLAY_RING_CAPACITY`]) for replay-on-reconnect.
     ring: Mutex<VecDeque<InvalidationEvent>>,
+    /// Tenant (team) this subscriber belongs to, captured from the verified
+    /// caller at subscribe time. `None` means the caller had no resolvable
+    /// tenant; such a subscriber receives only global (untenanted) events so a
+    /// missing tenant can never leak another tenant's events (fail-closed).
+    /// AAASM-3890.
+    tenant: Option<String>,
 }
 
 /// The result of [`InvalidationHub::subscribe`]: events the Assembly missed
@@ -57,6 +63,21 @@ pub struct InvalidationHub {
     subscribers: RwLock<HashMap<AssemblyId, Arc<Subscriber>>>,
 }
 
+/// Decide whether a subscriber is entitled to an event, given the subscriber's
+/// captured tenant and the event's owning tenant (AAASM-3890).
+///
+/// A `None` `event_tenant` is global and reaches everyone. A `Some` event
+/// reaches only subscribers whose tenant equals it; a subscriber with no
+/// resolved tenant (`None`) never receives a tenant-scoped event. This is
+/// fail-closed: any ambiguity resolves to *not* delivering, so a cross-tenant
+/// leak cannot occur.
+fn event_entitled(subscriber_tenant: Option<&str>, event_tenant: Option<&str>) -> bool {
+    match event_tenant {
+        None => true,
+        Some(event_tenant) => subscriber_tenant == Some(event_tenant),
+    }
+}
+
 impl InvalidationHub {
     /// Create an empty hub.
     pub fn new() -> Arc<Self> {
@@ -69,7 +90,16 @@ impl InvalidationHub {
     /// Reconnecting with the same `assembly_id` reuses the existing sequence
     /// counter and replay ring, so `last_seq_seen` resumes exactly where the
     /// previous connection left off.
-    pub fn subscribe(&self, assembly_id: impl Into<AssemblyId>, last_seq_seen: u64) -> SubscriptionHandle {
+    ///
+    /// `tenant` is the verified caller's team, captured so [`Self::fan_out`] can
+    /// scope tenant-bound events to their owning tenant. On reconnect the
+    /// originally-registered tenant is retained.
+    pub fn subscribe(
+        &self,
+        assembly_id: impl Into<AssemblyId>,
+        tenant: Option<String>,
+        last_seq_seen: u64,
+    ) -> SubscriptionHandle {
         let assembly_id = assembly_id.into();
         let mut subscribers = self
             .subscribers
@@ -83,6 +113,7 @@ impl InvalidationHub {
                     tx,
                     next_seq: AtomicU64::new(1),
                     ring: Mutex::new(VecDeque::new()),
+                    tenant,
                 })
             })
             .clone();
@@ -111,11 +142,17 @@ impl InvalidationHub {
     /// number and a copy is appended to its replay ring (oldest trimmed past
     /// [`REPLAY_RING_CAPACITY`]). An empty `agent_id` is the "invalidate all
     /// cached agents" convention used for a global policy swap.
+    ///
+    /// A policy swap mutates the single global policy epoch, so it is fanned out
+    /// to every subscriber regardless of tenant (`event_tenant = None`).
     pub fn broadcast_policy_invalidated(&self, agent_id: impl Into<String>, policy_version: u64) {
-        self.fan_out(Payload::PolicyInvalidated(PolicyInvalidated {
-            agent_id: agent_id.into(),
-            policy_version,
-        }));
+        self.fan_out(
+            Payload::PolicyInvalidated(PolicyInvalidated {
+                agent_id: agent_id.into(),
+                policy_version,
+            }),
+            None,
+        );
     }
 
     /// Fan an `ApprovalResolved` event out to every connected Assembly.
@@ -125,20 +162,40 @@ impl InvalidationHub {
     /// instant a human reviewer's verdict is recorded, instead of polling.
     /// `request_id` identifies the resolved approval request; `decision` is
     /// the reviewer's verdict. AAASM-2378.
-    pub fn broadcast_approval_resolved(&self, request_id: impl Into<String>, decision: Decision) {
-        self.fan_out(Payload::ApprovalResolved(ApprovalResolved {
-            request_id: request_id.into(),
-            decision: decision as i32,
-        }));
+    ///
+    /// `tenant` is the resolved request's owning team; the event is delivered
+    /// only to subscribers of that tenant so one tenant's approval resolutions
+    /// never reach another tenant's Assemblies (AAASM-3890). `None` falls back
+    /// to a global fan-out.
+    pub fn broadcast_approval_resolved(&self, request_id: impl Into<String>, decision: Decision, tenant: Option<&str>) {
+        self.fan_out(
+            Payload::ApprovalResolved(ApprovalResolved {
+                request_id: request_id.into(),
+                decision: decision as i32,
+            }),
+            tenant,
+        );
     }
 
-    /// Fan a single payload out to every connected Assembly under each
-    /// subscriber's own monotonic sequence number, recording a copy in its
-    /// replay ring (oldest trimmed past [`REPLAY_RING_CAPACITY`]) so a
+    /// Fan a single payload out to the connected Assemblies entitled to it,
+    /// under each subscriber's own monotonic sequence number, recording a copy
+    /// in its replay ring (oldest trimmed past [`REPLAY_RING_CAPACITY`]) so a
     /// reconnecting Assembly can recover anything missed.
-    fn fan_out(&self, payload: Payload) {
+    ///
+    /// `event_tenant` scopes delivery (AAASM-3890): `None` is a global event
+    /// delivered to every subscriber; `Some(tenant)` is delivered only to
+    /// subscribers whose captured tenant matches. A subscriber with no resolved
+    /// tenant therefore receives only global events — a tenant mismatch (or a
+    /// missing tenant on either side) can never leak a tenant-scoped event
+    /// (fail-closed). The filter gates both the live send and the replay ring
+    /// append so a reconnect cannot replay an event the subscriber was never
+    /// entitled to.
+    fn fan_out(&self, payload: Payload, event_tenant: Option<&str>) {
         let subscribers = self.subscribers.read().expect("invalidation subscribers lock poisoned");
         for subscriber in subscribers.values() {
+            if !event_entitled(subscriber.tenant.as_deref(), event_tenant) {
+                continue;
+            }
             let seq = subscriber.next_seq.fetch_add(1, Ordering::Relaxed);
             let event = InvalidationEvent {
                 seq,
@@ -192,7 +249,7 @@ impl ApprovalResolvedNotifier for InvalidationHub {
             ApprovalDecision::Rejected { .. } => Decision::Denied,
             ApprovalDecision::TimedOut { .. } => return,
         };
-        self.broadcast_approval_resolved(request_id, wire);
+        self.broadcast_approval_resolved(request_id, wire, None);
     }
 }
 
@@ -211,7 +268,7 @@ mod tests {
     #[tokio::test]
     async fn broadcast_reaches_live_subscriber_within_100ms() {
         let hub = InvalidationHub::new();
-        let mut handle = hub.subscribe("asm-1", 0);
+        let mut handle = hub.subscribe("asm-1", None, 0);
         assert!(handle.replay.is_empty());
 
         let start = std::time::Instant::now();
@@ -230,20 +287,20 @@ mod tests {
     async fn reconnect_replays_only_events_after_last_seq() {
         let hub = InvalidationHub::new();
         // First connection registers the subscriber, then disconnects.
-        let handle = hub.subscribe("asm-1", 0);
+        let handle = hub.subscribe("asm-1", None, 0);
         drop(handle);
 
         hub.broadcast_policy_invalidated("agent-a", 1);
         hub.broadcast_policy_invalidated("agent-b", 2);
 
         // Cold reconnect replays the full backlog.
-        let full = hub.subscribe("asm-1", 0);
+        let full = hub.subscribe("asm-1", None, 0);
         assert_eq!(full.replay.len(), 2);
         assert_eq!(full.replay[0].seq, 1);
         assert_eq!(full.replay[1].seq, 2);
 
         // Reconnect having already applied seq 1 replays only seq 2.
-        let partial = hub.subscribe("asm-1", 1);
+        let partial = hub.subscribe("asm-1", None, 1);
         assert_eq!(partial.replay.len(), 1);
         assert_eq!(partial.replay[0].seq, 2);
         assert_eq!(policy_agent(&partial.replay[0]), "agent-b");
@@ -252,14 +309,14 @@ mod tests {
     #[tokio::test]
     async fn ack_trims_replay_ring() {
         let hub = InvalidationHub::new();
-        let _handle = hub.subscribe("asm-1", 0);
+        let _handle = hub.subscribe("asm-1", None, 0);
         hub.broadcast_policy_invalidated("agent-a", 1);
         hub.broadcast_policy_invalidated("agent-b", 2);
 
         hub.ack("asm-1", 1);
 
         // After acking seq 1, a cold reconnect only replays seq 2.
-        let reconnect = hub.subscribe("asm-1", 0);
+        let reconnect = hub.subscribe("asm-1", None, 0);
         assert_eq!(reconnect.replay.len(), 1);
         assert_eq!(reconnect.replay[0].seq, 2);
     }
@@ -267,15 +324,15 @@ mod tests {
     #[test]
     fn each_subscriber_gets_independent_sequence() {
         let hub = InvalidationHub::new();
-        let _a = hub.subscribe("asm-1", 0);
-        let _b = hub.subscribe("asm-2", 0);
+        let _a = hub.subscribe("asm-1", None, 0);
+        let _b = hub.subscribe("asm-2", None, 0);
         assert_eq!(hub.subscriber_count(), 2);
 
         hub.broadcast_policy_invalidated("agent-a", 1);
 
         // Each subscriber independently records the event at its own seq 1.
-        let reconnect_a = hub.subscribe("asm-1", 0);
-        let reconnect_b = hub.subscribe("asm-2", 0);
+        let reconnect_a = hub.subscribe("asm-1", None, 0);
+        let reconnect_b = hub.subscribe("asm-2", None, 0);
         assert_eq!(reconnect_a.replay.len(), 1);
         assert_eq!(reconnect_b.replay.len(), 1);
         assert_eq!(reconnect_a.replay[0].seq, 1);
@@ -285,9 +342,9 @@ mod tests {
     #[tokio::test]
     async fn broadcast_approval_resolved_reaches_subscriber() {
         let hub = InvalidationHub::new();
-        let mut handle = hub.subscribe("asm-1", 0);
+        let mut handle = hub.subscribe("asm-1", None, 0);
 
-        hub.broadcast_approval_resolved("req-42", Decision::Approved);
+        hub.broadcast_approval_resolved("req-42", Decision::Approved, None);
 
         let event = tokio::time::timeout(Duration::from_millis(100), handle.receiver.recv())
             .await
