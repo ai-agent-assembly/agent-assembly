@@ -264,6 +264,37 @@ fn setup_anomaly() -> (
     (detector, event_tx, event_rx)
 }
 
+/// Build the in-process op-control broadcast for the gRPC `op_control_stream`,
+/// and — when cross-process delivery is configured — spawn the NATS bridge that
+/// feeds it (AAASM-3883).
+///
+/// The returned [`SharedOpControlPublisher`] is attached to
+/// [`PolicyServiceImpl::with_ops_publisher`] so `op_control_stream` is live (no
+/// longer `Unavailable`) for in-process / co-located halts. When
+/// `AA_OPCONTROL_NATS_URL` is set, a bridge task subscribes to
+/// `assembly.opcontrol.>` and forwards every halt published by the aa-api process
+/// into this broadcast, so an operator halt issued on the HTTP endpoints reaches
+/// the runtimes streamed from this gateway. See ADR 0011.
+fn setup_op_control() -> crate::ops::SharedOpControlPublisher {
+    let publisher = Arc::new(crate::ops::OpControlPublisher::new());
+    match crate::ops::OpControlNatsConfig::from_env() {
+        Some(config) => {
+            tracing::info!(
+                url = %config.url,
+                "op-control NATS bridge enabled — cross-process halts will be delivered to op_control_stream"
+            );
+            crate::ops::nats::spawn_bridge(config, Arc::clone(&publisher));
+        }
+        None => {
+            tracing::info!(
+                "op-control NATS bridge disabled (AA_OPCONTROL_NATS_URL unset) — \
+                 op_control_stream serves in-process halts only"
+            );
+        }
+    }
+    publisher
+}
+
 /// Select the registration-challenge store backend from the gateway's Redis
 /// config (AAASM-3884).
 ///
@@ -529,6 +560,10 @@ pub async fn serve_tcp(
     // AAASM-3378: enable the live anomaly detector on the shipped serve path.
     let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
 
+    // AAASM-3883: attach the op-control broadcast so `op_control_stream` is live,
+    // and (when AA_OPCONTROL_NATS_URL is set) bridge cross-process halts into it.
+    let op_control_publisher = setup_op_control();
+
     let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
         Arc::clone(&engine),
         Arc::clone(&registry),
@@ -540,7 +575,8 @@ pub async fn serve_tcp(
     )
     .with_initial_seq(initial_seq)
     .with_db_scheduler(db_scheduler.clone())
-    .with_anomaly_detection(anomaly_detector, anomaly_tx);
+    .with_anomaly_detection(anomaly_detector, anomaly_tx)
+    .with_ops_publisher(op_control_publisher);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
         .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
@@ -658,6 +694,10 @@ pub async fn serve_uds(
     // AAASM-3378: enable the live anomaly detector on the shipped serve path.
     let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
 
+    // AAASM-3883: attach the op-control broadcast so `op_control_stream` is live,
+    // and (when AA_OPCONTROL_NATS_URL is set) bridge cross-process halts into it.
+    let op_control_publisher = setup_op_control();
+
     let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
         Arc::clone(&engine),
         Arc::clone(&registry),
@@ -669,7 +709,8 @@ pub async fn serve_uds(
     )
     .with_initial_seq(initial_seq)
     .with_db_scheduler(db_scheduler.clone())
-    .with_anomaly_detection(anomaly_detector, anomaly_tx);
+    .with_anomaly_detection(anomaly_detector, anomaly_tx)
+    .with_ops_publisher(op_control_publisher);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
         .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
