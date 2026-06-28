@@ -28,6 +28,7 @@ pub mod audit_bridge;
 pub mod backend;
 pub mod boot;
 pub mod cache;
+pub mod challenge;
 pub mod error;
 pub mod health;
 pub mod metric;
@@ -48,6 +49,8 @@ pub use audit_bridge::audit_entry_to_storage_event;
 pub use backend::StorageBackend;
 pub use boot::{open_postgres_backend, open_sqlite_backend};
 pub use cache::{PolicyCache, PolicyCacheLike, RedisConfig};
+#[cfg(feature = "redis-cache")]
+pub use challenge::RedisChallengeStore;
 pub use error::{StorageError, StorageResult};
 pub use health::{HealthStatus, RowCounts, StorageHealth};
 pub use metric::{Metric, MetricPoint, MetricQuery};
