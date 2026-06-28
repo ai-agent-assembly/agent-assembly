@@ -923,27 +923,19 @@ impl ProxyServer {
         }
 
         // Parse host from the target URL or Host header.
-        let host = if let Some(url_host) = target.strip_prefix("http://") {
-            url_host.split('/').next().unwrap_or(url_host)
-        } else {
-            headers
-                .iter()
-                .find_map(|h| {
-                    let lower = h.to_ascii_lowercase();
-                    lower
-                        .starts_with("host:")
-                        .then(|| h["host:".len()..].trim().to_string())
-                })
-                .unwrap_or_default()
-                .leak()
-        };
+        //
+        // AAASM-3891: this is owned (`String`) rather than `&'static str` via
+        // `.leak()`. The previous `.leak()` permanently leaked one host string
+        // per plain-HTTP request, so a steered agent issuing repeated origin-form
+        // `http://` requests caused unbounded memory growth.
+        let host: String = parse_plain_http_host(target, &headers);
 
         // AAASM-3864 (b): enforce the same egress denylist + network allowlist
         // the CONNECT path applies. Without this an `http://` scheme-downgrade
         // bypasses `denied_hosts`/`network_allowlist` — the SSRF resolved-IP
         // recheck below only guards address ranges, not policy hosts. Deny here
         // (before any upstream dial), mirroring the CONNECT path's 403.
-        let deny_host = host.split(':').next().unwrap_or(host);
+        let deny_host = host.split(':').next().unwrap_or(&host);
         if let Some(reason) = self.connect_deny_reason(deny_host) {
             tracing::info!(host = %deny_host, "plain-HTTP egress denied: {reason}");
             self.interceptor.emit_policy_decision(deny_host, true).await;
@@ -993,6 +985,30 @@ impl ProxyServer {
         }
 
         Ok(())
+    }
+}
+
+/// Parse the upstream host for a plain (non-CONNECT) HTTP request from the
+/// origin-form target (`http://host/...`) or, failing that, the `Host:` header.
+///
+/// AAASM-3891: returns an **owned** `String`. The previous inline implementation
+/// produced a `&'static str` via `.leak()` so both branches shared a type, which
+/// permanently leaked one host string per request and let repeated plain-HTTP
+/// requests grow proxy memory without bound. Returning an owned value keeps the
+/// host on the stack frame and frees it when the request completes.
+fn parse_plain_http_host(target: &str, headers: &[String]) -> String {
+    if let Some(url_host) = target.strip_prefix("http://") {
+        url_host.split('/').next().unwrap_or(url_host).to_string()
+    } else {
+        headers
+            .iter()
+            .find_map(|h| {
+                let lower = h.to_ascii_lowercase();
+                lower
+                    .starts_with("host:")
+                    .then(|| h["host:".len()..].trim().to_string())
+            })
+            .unwrap_or_default()
     }
 }
 
