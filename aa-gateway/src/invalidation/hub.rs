@@ -243,13 +243,13 @@ impl InvalidationHub {
 /// human response, and a blocked agent handles its own deadline locally via
 /// `ApprovalSink::wait_for_approval`. AAASM-2378.
 impl ApprovalResolvedNotifier for InvalidationHub {
-    fn notify_resolved(&self, request_id: &str, decision: &ApprovalDecision) {
+    fn notify_resolved(&self, request_id: &str, decision: &ApprovalDecision, tenant: Option<&str>) {
         let wire = match decision {
             ApprovalDecision::Approved { .. } => Decision::Approved,
             ApprovalDecision::Rejected { .. } => Decision::Denied,
             ApprovalDecision::TimedOut { .. } => return,
         };
-        self.broadcast_approval_resolved(request_id, wire, None);
+        self.broadcast_approval_resolved(request_id, wire, tenant);
     }
 }
 
