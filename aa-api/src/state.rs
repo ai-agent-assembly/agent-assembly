@@ -479,6 +479,32 @@ impl AppState {
         let retention_cfg = aa_gateway::storage::RetentionConfig::default();
         state.retention_engine = Some(Arc::new(RetentionEngine::new(storage, retention_cfg)));
 
+        // --- Cross-process op-control kill switch (AAASM-3883). ---
+        // When AA_OPCONTROL_NATS_URL is set, attach a NATS op-control publisher to
+        // the ops registry so the operator halt endpoints publish onto the shared
+        // subject the gateway process bridges into op_control_stream (ADR 0011).
+        // Without it the registry keeps its in-process-only behavior. A connect
+        // failure is logged and left disconnected (the halt endpoints then return
+        // an honest 503) rather than blocking startup.
+        if let Some(cfg) = crate::ops::OpControlNatsConfig::from_env() {
+            match crate::ops::OpControlNatsPublisher::connect(&cfg).await {
+                Ok(publisher) => {
+                    state.ops_registry = Arc::new(OpsRegistry::new().with_nats_publisher(Arc::new(publisher)));
+                    tracing::info!(
+                        url = %cfg.url,
+                        "op-control NATS publisher connected — operator halts will be delivered cross-process"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        url = %cfg.url,
+                        "op-control NATS publisher disabled — halt endpoints will return 503 until NATS is reachable"
+                    );
+                }
+            }
+        }
+
         Ok(state)
     }
 }

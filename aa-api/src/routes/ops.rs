@@ -26,7 +26,7 @@ use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::events::OpsChangeBroadcast;
 use crate::models::ws_payloads::OpsChangePayload;
-use crate::ops::{OpRecord, OpsError};
+use crate::ops::{HaltDelivery, OpRecord, OpsError};
 use crate::state::AppState;
 
 /// Parse a hex-encoded 16-byte agent id, or `None` if it is not 32 hex chars.
@@ -338,9 +338,19 @@ pub async fn halt_agent_for_op(
             .with_detail("Operation has no resolvable owning agent to halt".to_string())
     })?;
     let target = agent_id.agent_id.clone();
-    if !state.ops_registry.halt_agent(agent_id, signal) {
-        return Err(ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE)
-            .with_detail("Op-control channel not configured".to_string()));
+    // AAASM-3883: prefer the cross-process NATS channel when configured so the
+    // halt reaches the gateway process that owns op_control_stream; a publish
+    // failure is surfaced honestly as 503 rather than a silent-drop 200.
+    match state.ops_registry.halt_agent_delivery(agent_id, signal).await {
+        HaltDelivery::Delivered => {}
+        HaltDelivery::NotConfigured => {
+            return Err(ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE)
+                .with_detail("Op-control channel not configured".to_string()));
+        }
+        HaltDelivery::ChannelError(err) => {
+            return Err(ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE)
+                .with_detail(format!("Op-control channel error: {err}")));
+        }
     }
     tracing::info!(
         target: "aa_api::ops",
@@ -394,9 +404,17 @@ pub async fn halt_global(
             .with_detail("A global halt requires admin scope".to_string()));
     }
     let signal = parse_halt_action(&req.action)?;
-    if !state.ops_registry.halt_global(signal) {
-        return Err(ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE)
-            .with_detail("Op-control channel not configured".to_string()));
+    // AAASM-3883: cross-process NATS delivery when configured (see halt_agent_for_op).
+    match state.ops_registry.halt_global_delivery(signal).await {
+        HaltDelivery::Delivered => {}
+        HaltDelivery::NotConfigured => {
+            return Err(ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE)
+                .with_detail("Op-control channel not configured".to_string()));
+        }
+        HaltDelivery::ChannelError(err) => {
+            return Err(ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE)
+                .with_detail(format!("Op-control channel error: {err}")));
+        }
     }
     tracing::info!(target: "aa_api::ops", action = %req.action, "fleet-wide op-control halt emitted");
     Ok((
