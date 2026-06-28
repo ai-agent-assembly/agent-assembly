@@ -121,8 +121,9 @@ pub enum CredentialKind {
     /// US Social Security Number in `DDD-DD-DDDD` format.
     SsnPattern,
     // Generic
-    /// High-entropy or long-hex token: Shannon entropy > 4.5 bits/char (any
-    /// length ≥ 20), or a contiguous hex run ≥ 64 chars.
+    /// High-entropy or long encoded token: a whitespace token of length 20–64
+    /// with Shannon entropy > 4.5 bits/char, a contiguous hex run ≥ 64 chars, or
+    /// a contiguous base64 run > 64 chars above the entropy gate.
     GenericHighEntropy,
     // Policy-defined
     /// A pattern defined in the policy document's `data.sensitive_patterns` field.
@@ -367,9 +368,9 @@ impl CredentialScanner {
     ///    auth tokens, cloud credentials, database URLs, and PEM private key headers.
     /// 2. Credit card and SSN digit-sequence scan.
     /// 3. Email address scan.
-    /// 4. High-entropy / long-hex token scan (entropy > 4.5 bits/char at any
-    ///    length ≥ 20, or a contiguous hex run ≥ 64 chars — see
-    ///    [`scan_high_entropy`]).
+    /// 4. Generic high-entropy / long-encoded-blob scan: a 20–64 whitespace token
+    ///    above the entropy gate, a contiguous hex run ≥ 64 chars, or a base64
+    ///    run > 64 chars above the gate (see [`scan_high_entropy`]).
     pub fn scan(&self, text: &str) -> ScanResult {
         if self.disabled {
             return ScanResult { findings: Vec::new() };
@@ -560,23 +561,13 @@ fn shannon_entropy(s: &str) -> f64 {
         .sum()
 }
 
-/// Minimum token length before the Shannon-entropy gate is applied.
-///
-/// Tokens shorter than this are never flagged as generic high-entropy: short
-/// random-looking strings are too common to redact safely, and a secret short
-/// enough to fit below this bar carries little usable entropy.
-const ENTROPY_TOKEN_MIN_LEN: usize = 20;
-
 /// Shannon-entropy gate, in bits per character.
 ///
 /// Base64/base85 encodings of random bytes sit around 5-6 bits/char, while
 /// English prose and `snake_case` / `kebab-case` identifiers stay below this.
 /// Note hex tops out at `log2(16) = 4.0` bits/char, so hex-encoded secrets never
 /// trip this gate — they are caught by the dedicated hex rule (see
-/// [`HEX_RUN_MIN_LEN`]). There is intentionally **no upper length bound**
-/// (AAASM-3870): a long random token is more likely to be a secret, not less, so
-/// unlike the previous 64-byte cap the gate now flags arbitrarily long
-/// high-entropy tokens.
+/// [`HEX_RUN_MIN_LEN`]).
 const ENTROPY_BITS_GATE: f64 = 4.5;
 
 /// Minimum length of a contiguous hex run (`[0-9a-fA-F]`) flagged as a secret.
@@ -591,22 +582,66 @@ const ENTROPY_BITS_GATE: f64 = 4.5;
 /// indistinguishable from a hash of the same length.
 const HEX_RUN_MIN_LEN: usize = 64;
 
-/// Returns `true` if `b` can appear inside a single secret-like token.
+/// Minimum length of a contiguous base64/base64url run flagged as a secret.
 ///
-/// Covers the base64 / base64url alphabet (alphanumerics plus `+ / - _`) so a
-/// contiguous encoded blob is treated as one token. `=` padding and quote /
-/// punctuation delimiters are excluded, which keeps JSON values
-/// (`"key":"<secret>"`) and `key=value` assignments split into separate tokens.
-fn is_secret_char(b: u8) -> bool {
+/// The whitespace-token pass below already covers high-entropy tokens of length
+/// 20–64; this strictly-greater bound (> 64) is the additive AAASM-3870 rule that
+/// catches the long encoded blobs the 64-byte cap skipped, without re-flagging
+/// anything the token pass already handles. Combined with the entropy gate it
+/// stays clear of long-but-structured strings (e.g. connection strings) whose
+/// per-run entropy is below the gate.
+const BASE64_RUN_MIN_LEN: usize = 64;
+
+/// Returns `true` if `b` is in the base64 / base64url alphabet
+/// (alphanumerics plus `+ / - _`). `=` padding and all delimiters are excluded.
+fn is_base64_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_')
 }
 
-/// Returns the byte range of the longest contiguous hex run (`[0-9a-fA-F]`) in
-/// `token`, or `None` if it contains no hex characters.
-fn longest_hex_run(token: &str) -> Option<(usize, usize)> {
-    let bytes = token.as_bytes();
-    let mut best: Option<(usize, usize)> = None;
-    let mut best_len = 0usize;
+/// Scans `text` for generic secret-like tokens, reporting them as
+/// [`CredentialKind::GenericHighEntropy`]. Three additive passes run; each only
+/// *adds* findings, so the literal/URL/PEM detectors are never displaced and the
+/// conformance behaviour of the original whitespace pass is preserved exactly:
+///
+/// 1. **Whitespace-token entropy** (unchanged spec behaviour) — a whitespace
+///    token of length 20–64 with Shannon entropy > [`ENTROPY_BITS_GATE`].
+/// 2. **Long hex run** (AAASM-3870) — a contiguous hex run ≥ [`HEX_RUN_MIN_LEN`],
+///    closing the hex-encoding evasion (hex entropy is capped at 4.0 bits/char,
+///    below the gate, so pass 1 never catches it at any length).
+/// 3. **Long base64 run** (AAASM-3870) — a contiguous base64/base64url run
+///    longer than [`BASE64_RUN_MIN_LEN`] whose entropy exceeds the gate, closing
+///    the > 64-char length evasion that the pass-1 upper bound skipped.
+fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
+    // Pass 1: whitespace-delimited high-entropy tokens, length 20–64.
+    let mut offset = 0usize;
+    for token in text.split_whitespace() {
+        let token_offset = text[offset..].find(token).map(|i| offset + i).unwrap_or(offset);
+        let whitespace_end = token_offset + token.len();
+        let len = token.len();
+        if (20..=64).contains(&len) && shannon_entropy(token) > ENTROPY_BITS_GATE {
+            // The whitespace token can still carry trailing delimiters when a
+            // secret is embedded in structured text (e.g. `...key"}]}` in compact
+            // JSON). Clamp the finding's `end` at the first token-terminating
+            // character so the span covers only the credential — matching how the
+            // AC literal scan derives its `end`.
+            let end = token_end(text, token_offset);
+            findings.push(CredentialFinding::new(
+                CredentialKind::GenericHighEntropy,
+                token_offset,
+                end,
+            ));
+        }
+        offset = whitespace_end;
+    }
+
+    // Passes 2 & 3: contiguous encoded-blob runs that the token pass misses.
+    scan_long_hex_runs(text, findings);
+    scan_long_base64_runs(text, findings);
+}
+
+/// Pass 2 — flag every contiguous hex run of length ≥ [`HEX_RUN_MIN_LEN`].
+fn scan_long_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
+    let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if !bytes[i].is_ascii_hexdigit() {
@@ -617,60 +652,29 @@ fn longest_hex_run(token: &str) -> Option<(usize, usize)> {
         while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
             i += 1;
         }
-        if i - start > best_len {
-            best_len = i - start;
-            best = Some((start, i));
+        if i - start >= HEX_RUN_MIN_LEN {
+            findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
         }
     }
-    best
 }
 
-/// Scans `text` for secret-like tokens and reports them as
-/// [`CredentialKind::GenericHighEntropy`].
-///
-/// A token is a maximal run of [`is_secret_char`] bytes (so it stops at quotes,
-/// whitespace, and `= : . @ /` delimiters, isolating the encoded blob). Two
-/// rules apply, closing the encoding/length evasions tracked in AAASM-3870:
-///
-/// 1. **High Shannon entropy** — a token of length ≥ [`ENTROPY_TOKEN_MIN_LEN`]
-///    whose entropy exceeds [`ENTROPY_BITS_GATE`]. Catches random base64/base85
-///    secrets *of any length*, including the > 64-char tokens the old 20–64 rule
-///    skipped entirely.
-/// 2. **Long hex run** — a contiguous hex sub-run of length ≥ [`HEX_RUN_MIN_LEN`].
-///    Catches hex-encoded secrets, which never reach the entropy gate because hex
-///    entropy is capped at 4.0 bits/char.
-///
-/// Because the token never contains a delimiter, its byte range always lands on
-/// UTF-8 character boundaries, so the finding `end` needs no further clamping.
-fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
+/// Pass 3 — flag every contiguous base64/base64url run longer than
+/// [`BASE64_RUN_MIN_LEN`] whose Shannon entropy exceeds [`ENTROPY_BITS_GATE`].
+fn scan_long_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if !is_secret_char(bytes[i]) {
+        if !is_base64_char(bytes[i]) {
             i += 1;
             continue;
         }
         let start = i;
-        while i < bytes.len() && is_secret_char(bytes[i]) {
+        while i < bytes.len() && is_base64_char(bytes[i]) {
             i += 1;
         }
-        let token = &text[start..i];
-
-        // Rule 1: long, high-Shannon-entropy token (random base64/base85).
-        if token.len() >= ENTROPY_TOKEN_MIN_LEN && shannon_entropy(token) > ENTROPY_BITS_GATE {
+        let run = &text[start..i];
+        if run.len() > BASE64_RUN_MIN_LEN && shannon_entropy(run) > ENTROPY_BITS_GATE {
             findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
-            continue;
-        }
-
-        // Rule 2: long contiguous hex run (escapes the 4.0-bit entropy gate).
-        if let Some((h_start, h_end)) = longest_hex_run(token) {
-            if h_end - h_start >= HEX_RUN_MIN_LEN {
-                findings.push(CredentialFinding::new(
-                    CredentialKind::GenericHighEntropy,
-                    start + h_start,
-                    start + h_end,
-                ));
-            }
         }
     }
 }
@@ -1084,13 +1088,19 @@ mod tests {
         assert!(redacted.contains("[REDACTED:GenericHighEntropy]"));
     }
 
-    /// `longest_hex_run` returns the longest contiguous hex span within a token
-    /// even when non-hex characters split shorter runs.
+    /// The additive passes must not disturb the original whitespace-token
+    /// behaviour: a database URL still yields its specific URL finding plus the
+    /// whole-blob GenericHighEntropy at offset 0 (3 findings), exactly as the
+    /// conformance spec encodes it.
     #[test]
-    fn longest_hex_run_picks_the_longest_span() {
-        assert_eq!(longest_hex_run("zz"), None);
-        // "ff" (2) then "abcd" (4) — the longer run wins.
-        assert_eq!(longest_hex_run("ff-zz-abcd"), Some((6, 10)));
+    fn additive_passes_preserve_url_and_whole_blob_entropy_findings() {
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("MONGO_URI=mongodb://admin:pass@cluster0.mongodb.net/mydb");
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::MongodbUrl));
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GenericHighEntropy && f.offset == 0));
     }
 
     // --- luhn_valid helper ---
