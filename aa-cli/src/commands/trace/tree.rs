@@ -3,6 +3,7 @@
 use colored::Colorize;
 
 use super::models::{SessionTrace, TraceEvent, TraceEventKind};
+use crate::sanitize::sanitize_terminal;
 
 /// Format a duration in milliseconds into a human-readable string.
 ///
@@ -26,15 +27,16 @@ fn event_icon(kind: &TraceEventKind) -> &'static str {
 ///
 /// Policy denials are highlighted in red with the violation reason appended.
 pub fn render_event_line(event: &TraceEvent) -> String {
+    // label and violation_reason are server-supplied; strip terminal escapes.
     let line = format!(
         "{} {}  {}",
         event_icon(&event.kind),
-        event.label,
+        sanitize_terminal(&event.label),
         format_duration(event.duration_ms),
     );
 
     if event.kind == TraceEventKind::PolicyDeny {
-        let reason = event.violation_reason.as_deref().unwrap_or("no reason provided");
+        let reason = sanitize_terminal(event.violation_reason.as_deref().unwrap_or("no reason provided"));
         format!("{}", format!("{line}  ({reason})").red())
     } else {
         line
@@ -68,7 +70,7 @@ fn render_tree_recursive(events: &[TraceEvent], prefix: &str, output: &mut Strin
 
 /// Render a full session trace as an indented tree with box-drawing characters.
 pub fn render_tree(trace: &SessionTrace) -> String {
-    let mut output = format!("Trace: {}\n", trace.session_id);
+    let mut output = format!("Trace: {}\n", sanitize_terminal(&trace.session_id));
     render_tree_recursive(&trace.events, "", &mut output);
     output
 }
