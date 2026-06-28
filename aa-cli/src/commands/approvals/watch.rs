@@ -14,6 +14,7 @@ use super::models::{compute_timeout_color, format_countdown, TimeoutColor};
 
 use crate::config::ResolvedContext;
 use crate::error::CliError;
+use crate::sanitize::sanitize_terminal;
 
 use super::client;
 use super::models::ApprovalResponse;
@@ -167,11 +168,14 @@ pub fn render_interactive_view(state: &InteractiveState) {
         };
         let countdown = format_countdown(remaining);
 
+        // `agent_id` and `action` are server-supplied; strip terminal escapes
+        // so a malicious agent cannot repaint the line to spoof the operator.
+        let agent = sanitize_terminal(&item.agent_id);
+        let action = sanitize_terminal(&item.action);
+
         println!(
             "  {marker} {id}  {agent:<20} {action:<30} {color}{cd}\x1b[0m",
             id = &item.id[..8.min(item.id.len())],
-            agent = item.agent_id,
-            action = item.action,
             color = color_code,
             cd = countdown,
         );
@@ -189,9 +193,14 @@ pub async fn run_watch_stream(mut ws: WsStream) {
         match msg {
             Ok(Message::Text(text)) => {
                 if let Ok(approval) = serde_json::from_str::<ApprovalResponse>(&text) {
+                    // All four fields are server-supplied; strip terminal
+                    // escapes to prevent approve/reject decision spoofing.
                     println!(
                         "  \x1b[1;33mNEW\x1b[0m  {} | agent={} | action={} | condition={}",
-                        approval.id, approval.agent_id, approval.action, approval.reason
+                        sanitize_terminal(&approval.id),
+                        sanitize_terminal(&approval.agent_id),
+                        sanitize_terminal(&approval.action),
+                        sanitize_terminal(&approval.reason)
                     );
                     println!("        run: aasm approvals approve {} --reason \"...\"", approval.id);
                     println!();
