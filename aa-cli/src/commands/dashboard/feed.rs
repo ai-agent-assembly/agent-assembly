@@ -10,6 +10,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::commands::status::client::StatusClient;
 use crate::commands::status::fetch;
 use crate::commands::status::models::{AgentRow, ApprovalResponse, ApprovalsSummary, BudgetRow, RuntimeHealth};
+use crate::sanitize::sanitize_terminal;
 
 use super::state::EventEntry;
 
@@ -136,11 +137,13 @@ fn ws_event_to_entry(event: &WsEvent) -> EventEntry {
         serde_json::Value::String(s) => s.clone(),
         other => other.to_string(),
     };
+    // Every field is server-supplied; sanitize at ingestion so escapes can
+    // never reach the dashboard's rendered output.
     EventEntry {
-        timestamp: event.timestamp.clone(),
-        event_type: event.event_type.clone(),
-        agent_id: event.agent_id.clone(),
-        message,
+        timestamp: sanitize_terminal(&event.timestamp),
+        event_type: sanitize_terminal(&event.event_type),
+        agent_id: sanitize_terminal(&event.agent_id),
+        message: sanitize_terminal(&message),
     }
 }
 
