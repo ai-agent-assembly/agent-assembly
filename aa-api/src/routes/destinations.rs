@@ -527,16 +527,29 @@ pub async fn test_destination(
         .get(&id)
         .ok_or_else(|| TestDestinationFailure::NotFound(not_found_problem()))?;
 
-    // AAASM-3789: SSRF egress guard. Before dispatching a webhook test-fire,
+    // AAASM-3789 / AAASM-3868: SSRF egress guard. Before dispatching a test-fire,
     // reject targets that resolve to an internal address (loopback / RFC1918 /
     // link-local incl. the cloud-metadata endpoint / ULA). The resolution does
     // a blocking DNS lookup, so it runs on the blocking pool.
-    if let DestinationConfig::Webhook { url, .. } = &destination.config {
-        let parsed = url::Url::parse(url).map_err(|_| {
+    //
+    // Both the generic webhook `url` and the Slack `webhook_url` are
+    // attacker-controlled targets that egress on test-fire and must pass the
+    // guard. PagerDuty / OpsGenie POST to hard-coded vendor endpoints, so they
+    // carry no caller-controlled SSRF surface and are exempt.
+    let egress_url = match &destination.config {
+        DestinationConfig::Webhook { url, .. } => Some(url::Url::parse(url).map_err(|_| {
             TestDestinationFailure::Rejected(validation_error_to_problem(ValidationError::InvalidConfig(
                 "webhook.url is not a valid URL",
             )))
-        })?;
+        })?),
+        DestinationConfig::Slack { webhook_url, .. } => Some(url::Url::parse(webhook_url).map_err(|_| {
+            TestDestinationFailure::Rejected(validation_error_to_problem(ValidationError::InvalidConfig(
+                "slack.webhook_url is not a valid URL",
+            )))
+        })?),
+        DestinationConfig::PagerDuty { .. } | DestinationConfig::OpsGenie { .. } => None,
+    };
+    if let Some(parsed) = egress_url {
         let egress = tokio::task::spawn_blocking(move || validate_webhook_egress(&parsed))
             .await
             .map_err(|_| {
@@ -636,6 +649,35 @@ mod tests {
             .await
             .expect_err("loopback target rejected");
         assert_eq!(failure.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_destination_rejects_internal_slack_target() {
+        // AAASM-3868: the Slack `webhook_url` is attacker-controlled and must be
+        // routed through the same SSRF egress guard as the generic webhook. A
+        // loopback / cloud-metadata target is refused (400) before dispatch.
+        for url in [
+            "http://127.0.0.1:9/services/x",
+            "http://169.254.169.254/latest/meta-data/",
+        ] {
+            let state = AppState::local_in_memory().expect("state builds");
+            let dest = state.destination_store.create(
+                "internal-slack".to_string(),
+                DestinationConfig::Slack {
+                    webhook_url: url.to_string(),
+                    channel_override: None,
+                },
+                true,
+            );
+            let failure = test_destination(writer(), Extension(state), Path(dest.id), None)
+                .await
+                .expect_err("internal slack target rejected before dispatch");
+            assert_eq!(
+                failure.into_response().status(),
+                StatusCode::BAD_REQUEST,
+                "{url} must be rejected with 400"
+            );
+        }
     }
 
     #[tokio::test]
