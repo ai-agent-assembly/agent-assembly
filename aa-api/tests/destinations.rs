@@ -524,8 +524,9 @@ async fn webhook_secret_header_is_not_returned_in_cleartext() {
     let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
     let app = aa_api::build_app(state);
 
-    // A write caller creates a webhook destination with a secret.
-    let write_token = common::generate_test_jwt("w", &[Scope::Write]);
+    // An admin caller creates a webhook destination with a secret.
+    // AAASM-3894: destination mutations now require admin scope.
+    let write_token = common::generate_test_jwt("w", &[Scope::Admin]);
     let payload = json!({
         "name": "hook",
         "kind": "webhook",
