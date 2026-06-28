@@ -34,6 +34,7 @@
 //! audit publisher rather than the feature-gated audit consumer. The configured NATS
 //! server **must have JetStream enabled** (a deployment requirement; see ADR 0011).
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -164,6 +165,27 @@ pub enum OpControlNatsError {
     Consumer(String),
 }
 
+impl OpControlNatsError {
+    /// `true` when this error means the durable stream / consumer could not be
+    /// established **after a successful connection** — a non-transient
+    /// misconfiguration that retrying alone cannot fix (AAASM-3886).
+    ///
+    /// The canonical trigger is an operator who pre-provisioned an
+    /// [`STREAM_NAME`] stream with an **incompatible immutable config**
+    /// (different storage type / retention policy / non-overlapping subjects):
+    /// `create_or_update_stream` can never reconcile it, so the bridge would
+    /// otherwise loop forever setting up the stream **without ever consuming**,
+    /// while op-control publishes keep ACKing against the existing stream — a
+    /// silent non-delivery of a kill switch. JetStream being disabled or the
+    /// stream being otherwise unconsumable lands here too.
+    ///
+    /// [`Connect`](Self::Connect) (server unreachable) is genuinely transient and
+    /// returns `false` — that is the ordinary reconnect path, not a fail-loud one.
+    pub fn is_stream_setup_failure(&self) -> bool {
+        matches!(self, Self::Stream(_) | Self::Consumer(_))
+    }
+}
+
 /// Runtime configuration for the op-control NATS bridge / publisher.
 #[derive(Debug, Clone)]
 pub struct OpControlNatsConfig {
@@ -184,6 +206,109 @@ impl OpControlNatsConfig {
     pub fn from_env() -> Option<Self> {
         let url = std::env::var("AA_OPCONTROL_NATS_URL").ok().filter(|u| !u.is_empty())?;
         Some(Self::new(url))
+    }
+}
+
+/// Liveness of the gateway-side op-control bridge (AAASM-3886).
+///
+/// Reported by [`OpControlBridgeHealth`] so the bridge's structural ability to
+/// deliver halts is observable rather than buried in a silent retry loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeHealthState {
+    /// Initial state, before the first connect + consumer attempt completes.
+    Connecting,
+    /// A JetStream consumer is established; halts are being delivered. Healthy.
+    Subscribed,
+    /// A transient connection drop; reconnecting with backoff. Not fail-loud —
+    /// op-control delivery resumes automatically once NATS is reachable again.
+    Reconnecting,
+    /// **Fail-loud.** The durable stream / consumer could not be established
+    /// after connecting — op-control delivery is **DOWN** and will not recover by
+    /// retrying (e.g. a pre-provisioned [`STREAM_NAME`] stream with an
+    /// incompatible immutable config, or JetStream disabled). A halt may still be
+    /// ACKed by the publisher against the existing stream yet never reach a
+    /// runtime, so this state must be surfaced, not silently looped on.
+    StreamUnavailable,
+}
+
+impl BridgeHealthState {
+    const CONNECTING: u8 = 0;
+    const SUBSCRIBED: u8 = 1;
+    const RECONNECTING: u8 = 2;
+    const STREAM_UNAVAILABLE: u8 = 3;
+
+    const fn to_u8(self) -> u8 {
+        match self {
+            Self::Connecting => Self::CONNECTING,
+            Self::Subscribed => Self::SUBSCRIBED,
+            Self::Reconnecting => Self::RECONNECTING,
+            Self::StreamUnavailable => Self::STREAM_UNAVAILABLE,
+        }
+    }
+
+    const fn from_u8(raw: u8) -> Self {
+        match raw {
+            Self::SUBSCRIBED => Self::Subscribed,
+            Self::RECONNECTING => Self::Reconnecting,
+            Self::STREAM_UNAVAILABLE => Self::StreamUnavailable,
+            _ => Self::Connecting,
+        }
+    }
+}
+
+/// Cheap, cloneable, thread-safe handle to the op-control bridge's current
+/// [`BridgeHealthState`] (AAASM-3886).
+///
+/// The bridge task owns one clone and updates it as it (re)connects; callers
+/// (the gateway boot, tests, a future readiness probe) hold other clones to read
+/// it. Reading is lock-free. This is the **observable** half of the fail-loud
+/// behaviour — the loud `tracing::error!` is the operator-facing half.
+#[derive(Clone)]
+pub struct OpControlBridgeHealth {
+    state: Arc<AtomicU8>,
+}
+
+impl Default for OpControlBridgeHealth {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OpControlBridgeHealth {
+    /// A fresh handle in the [`BridgeHealthState::Connecting`] state.
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(AtomicU8::new(BridgeHealthState::Connecting.to_u8())),
+        }
+    }
+
+    /// Record the bridge's current state, mirroring it onto the
+    /// `aa_op_control_bridge_up` gauge (`1.0` only when delivering).
+    pub fn set(&self, state: BridgeHealthState) {
+        self.state.store(state.to_u8(), Ordering::Relaxed);
+        let up = if state == BridgeHealthState::Subscribed {
+            1.0
+        } else {
+            0.0
+        };
+        metrics::gauge!("aa_op_control_bridge_up").set(up);
+    }
+
+    /// Read the bridge's current state.
+    pub fn get(&self) -> BridgeHealthState {
+        BridgeHealthState::from_u8(self.state.load(Ordering::Relaxed))
+    }
+
+    /// `true` only when a consumer is established and halts are being delivered.
+    pub fn is_healthy(&self) -> bool {
+        self.get() == BridgeHealthState::Subscribed
+    }
+
+    /// `true` when op-control delivery is structurally **down** (the fail-loud
+    /// [`BridgeHealthState::StreamUnavailable`] state) — a misconfiguration that
+    /// will not recover by retrying.
+    pub fn is_delivery_down(&self) -> bool {
+        self.get() == BridgeHealthState::StreamUnavailable
     }
 }
 
@@ -342,18 +467,61 @@ fn forward_to_broadcast(publisher: &SharedOpControlPublisher, envelope: OpContro
 /// exponential backoff so a transient NATS outage never permanently silences the
 /// cross-process kill switch.
 pub fn spawn_bridge(config: OpControlNatsConfig, publisher: SharedOpControlPublisher) -> JoinHandle<()> {
-    tokio::spawn(run_bridge(config, publisher))
+    spawn_bridge_with_health(config, publisher).0
+}
+
+/// Like [`spawn_bridge`] but also returns an [`OpControlBridgeHealth`] handle so
+/// the caller can observe whether the bridge is actually delivering halts
+/// (AAASM-3886) — in particular to detect the fail-loud
+/// [`BridgeHealthState::StreamUnavailable`] state. The handle is independent of
+/// the [`JoinHandle`]; dropping either does not stop the bridge task.
+pub fn spawn_bridge_with_health(
+    config: OpControlNatsConfig,
+    publisher: SharedOpControlPublisher,
+) -> (JoinHandle<()>, OpControlBridgeHealth) {
+    let health = OpControlBridgeHealth::new();
+    let handle = tokio::spawn(run_bridge(config, publisher, health.clone()));
+    (handle, health)
 }
 
 /// Reconnect loop for the bridge.
-async fn run_bridge(config: OpControlNatsConfig, publisher: SharedOpControlPublisher) {
+async fn run_bridge(config: OpControlNatsConfig, publisher: SharedOpControlPublisher, health: OpControlBridgeHealth) {
     let mut backoff = INITIAL_BACKOFF;
     loop {
-        match bridge_once(&config, &publisher).await {
+        match bridge_once(&config, &publisher, &health).await {
             // The subscription ended cleanly — reconnect promptly.
             Ok(()) => backoff = INITIAL_BACKOFF,
-            Err(err) => {
+            Err(err) if err.is_stream_setup_failure() => {
+                // FAIL LOUD (AAASM-3886): the durable stream / consumer could not
+                // be established after connecting. This does not recover by
+                // retrying — the dominant cause is a pre-provisioned AA_OPCONTROL
+                // stream with an incompatible immutable config — so op-control
+                // delivery is structurally DOWN. Publishes may still ACK against
+                // the existing stream and return 200 while NO halt reaches a
+                // runtime. Surface it loudly and as unhealthy rather than burying
+                // it in a quiet reconnect warning. We keep retrying (an operator
+                // may repair the stream), but every attempt screams.
                 metrics::counter!("aa_op_control_bridge_reconnects_total").increment(1);
+                health.set(BridgeHealthState::StreamUnavailable);
+                tracing::error!(
+                    error = %err,
+                    stream = STREAM_NAME,
+                    subject = SUBJECT_WILDCARD,
+                    backoff_secs = backoff.as_secs(),
+                    "op-control JetStream bridge cannot establish its stream/consumer — \
+                     OP-CONTROL DELIVERY IS DOWN: operator halts may be ACKed (200) yet \
+                     never reach any runtime. The AA_OPCONTROL stream likely exists with an \
+                     INCOMPATIBLE immutable config (storage/retention/subjects) or JetStream \
+                     is disabled. Reconcile the stream (delete/recreate, or align its config) \
+                     to restore the kill switch."
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+            Err(err) => {
+                // Transient (e.g. NATS unreachable) — reconnect quietly with backoff.
+                metrics::counter!("aa_op_control_bridge_reconnects_total").increment(1);
+                health.set(BridgeHealthState::Reconnecting);
                 tracing::warn!(
                     error = %err,
                     backoff_secs = backoff.as_secs(),
@@ -383,6 +551,7 @@ async fn run_bridge(config: OpControlNatsConfig, publisher: SharedOpControlPubli
 async fn bridge_once(
     config: &OpControlNatsConfig,
     publisher: &SharedOpControlPublisher,
+    health: &OpControlBridgeHealth,
 ) -> Result<(), OpControlNatsError> {
     let client = async_nats::connect(&config.url)
         .await
@@ -402,6 +571,9 @@ async fn bridge_once(
         .messages()
         .await
         .map_err(|e| OpControlNatsError::Consumer(e.to_string()))?;
+    // The stream and consumer are established and we are about to deliver —
+    // healthy (AAASM-3886).
+    health.set(BridgeHealthState::Subscribed);
     tracing::info!(
         stream = STREAM_NAME,
         subject = SUBJECT_WILDCARD,

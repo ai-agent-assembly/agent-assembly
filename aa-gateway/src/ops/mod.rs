@@ -21,8 +21,8 @@ pub mod nats;
 pub mod publisher;
 
 pub use nats::{
-    OpControlNatsConfig, OpControlNatsError, OpControlNatsPublisher, OpControlWireEnvelope,
-    SharedOpControlNatsPublisher,
+    BridgeHealthState, OpControlBridgeHealth, OpControlNatsConfig, OpControlNatsError, OpControlNatsPublisher,
+    OpControlWireEnvelope, SharedOpControlNatsPublisher,
 };
 pub use publisher::{OpControlEnvelope, OpControlPublisher, SharedOpControlPublisher};
 
