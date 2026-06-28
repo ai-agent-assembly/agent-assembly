@@ -4,6 +4,7 @@ use aa_core::DevToolInfo;
 use axum::{Extension, Json};
 use utoipa::ToSchema;
 
+use crate::auth::scope::RequireRead;
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -39,7 +40,13 @@ pub struct ToolInfoSchema {
         (status = 200, description = "Discovered tools", body = Vec<ToolInfoSchema>)
     )
 )]
-pub async fn list_tools(Extension(state): Extension<AppState>) -> Result<Json<Vec<DevToolInfo>>, ProblemDetail> {
+pub async fn list_tools(
+    // AAASM-3894: require read scope. The discovered tool list includes each
+    // tool's on-host `install_path`, which must not be enumerable by any
+    // unauthenticated/unscoped principal.
+    _auth: RequireRead,
+    Extension(state): Extension<AppState>,
+) -> Result<Json<Vec<DevToolInfo>>, ProblemDetail> {
     let tools = state.discovery.discover_all().await;
     Ok(Json(tools))
 }
