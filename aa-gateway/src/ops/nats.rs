@@ -187,25 +187,103 @@ impl OpControlNatsError {
 }
 
 /// Runtime configuration for the op-control NATS bridge / publisher.
+///
+/// AAASM-3889 — the op-control bus is a **fleet kill switch**: anyone able to
+/// publish to it can pause / resume / terminate runtimes. The bus must therefore
+/// be treated as a trusted, authenticated channel, never a bare `nats://` URL on
+/// an open network. Authentication (a JWT credentials file or an nkey seed) and
+/// TLS are configured here and applied via [`async_nats::ConnectOptions`] for
+/// **both** the publisher (aa-api) and the consumer bridge (aa-gateway). They are
+/// **optional** so a single-host local/dev stack (a NATS server bound to
+/// loopback) still works unconfigured, but a production deployment MUST set
+/// `AA_OPCONTROL_NATS_CREDS` (or `AA_OPCONTROL_NATS_NKEY`) and
+/// `AA_OPCONTROL_NATS_TLS=1` so the bus is mutually-authenticated and encrypted.
+/// Payload-level forgery is additionally rejected at consume time
+/// ([`subject_authorizes_envelope`]).
 #[derive(Debug, Clone)]
 pub struct OpControlNatsConfig {
-    /// NATS server URL (e.g. `nats://127.0.0.1:4222`).
+    /// NATS server URL (e.g. `nats://127.0.0.1:4222` or `tls://host:4222`).
     pub url: String,
+    /// Path to a NATS JWT credentials file (`.creds`). `None` leaves the
+    /// connection unauthenticated (dev/local only). `AA_OPCONTROL_NATS_CREDS`.
+    pub creds_path: Option<String>,
+    /// NATS nkey seed for nkey authentication. Used when no credentials file is
+    /// set. `AA_OPCONTROL_NATS_NKEY`.
+    pub nkey: Option<String>,
+    /// Require TLS for the connection. `AA_OPCONTROL_NATS_TLS` (`1`/`true`).
+    pub tls: bool,
 }
 
 impl OpControlNatsConfig {
-    /// Build a config for the given NATS URL.
+    /// Build an unauthenticated, plaintext config for the given NATS URL
+    /// (local/dev). Production deployments use [`from_env`](Self::from_env) to
+    /// pick up credentials + TLS.
     pub fn new(url: impl Into<String>) -> Self {
-        Self { url: url.into() }
+        Self {
+            url: url.into(),
+            creds_path: None,
+            nkey: None,
+            tls: false,
+        }
     }
 
     /// Build a config from the environment, returning `None` (op-control NATS
     /// disabled) when `AA_OPCONTROL_NATS_URL` is unset — mirrors the audit
     /// consumer's `AA_AUDIT_NATS_URL` activation so both processes keep their
     /// existing in-process behavior unless explicitly configured.
+    ///
+    /// AAASM-3889: when the URL is set, the optional authentication / TLS knobs
+    /// are read too: `AA_OPCONTROL_NATS_CREDS` (JWT creds file path),
+    /// `AA_OPCONTROL_NATS_NKEY` (nkey seed), and `AA_OPCONTROL_NATS_TLS`
+    /// (`1`/`true` to require TLS). A production op-control bus should set the
+    /// credentials and TLS knobs; leaving them unset keeps the loopback dev path.
     pub fn from_env() -> Option<Self> {
         let url = std::env::var("AA_OPCONTROL_NATS_URL").ok().filter(|u| !u.is_empty())?;
-        Some(Self::new(url))
+        let creds_path = std::env::var("AA_OPCONTROL_NATS_CREDS").ok().filter(|c| !c.is_empty());
+        let nkey = std::env::var("AA_OPCONTROL_NATS_NKEY").ok().filter(|c| !c.is_empty());
+        let tls = std::env::var("AA_OPCONTROL_NATS_TLS")
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        Some(Self {
+            url,
+            creds_path,
+            nkey,
+            tls,
+        })
+    }
+
+    /// Build the [`async_nats::ConnectOptions`] described by this config, applying
+    /// the credentials file / nkey seed and TLS requirement (AAASM-3889).
+    ///
+    /// Enabling TLS requires a process-wide `rustls` crypto provider installed by
+    /// the host binary before [`connect`](Self::connect) is called.
+    async fn connect_options(&self) -> Result<async_nats::ConnectOptions, OpControlNatsError> {
+        let mut opts = async_nats::ConnectOptions::new();
+        if let Some(creds) = &self.creds_path {
+            opts = opts
+                .credentials_file(creds)
+                .await
+                .map_err(|e| OpControlNatsError::Connect(format!("loading NATS credentials file {creds}: {e}")))?;
+        } else if let Some(seed) = &self.nkey {
+            opts = opts.nkey(seed.clone());
+        }
+        if self.tls {
+            opts = opts.require_tls(true);
+        }
+        Ok(opts)
+    }
+
+    /// Connect to the configured NATS server, applying authentication + TLS
+    /// (AAASM-3889). Used by both the publisher and the consumer bridge so the
+    /// op-control bus is never reached over a bare, unauthenticated connection in
+    /// a configured deployment.
+    pub async fn connect(&self) -> Result<async_nats::Client, OpControlNatsError> {
+        self.connect_options()
+            .await?
+            .connect(self.url.clone())
+            .await
+            .map_err(|e| OpControlNatsError::Connect(e.to_string()))
     }
 }
 
@@ -365,10 +443,11 @@ impl OpControlNatsPublisher {
     }
 
     /// Connect to the server described by `config` and wrap the client.
+    ///
+    /// AAASM-3889: applies the configured NATS authentication (creds/nkey) + TLS
+    /// via [`OpControlNatsConfig::connect`] rather than a bare `connect(url)`.
     pub async fn connect(config: &OpControlNatsConfig) -> Result<Self, OpControlNatsError> {
-        let client = async_nats::connect(&config.url)
-            .await
-            .map_err(|e| OpControlNatsError::Connect(e.to_string()))?;
+        let client = config.connect().await?;
         Ok(Self::new(client))
     }
 
@@ -553,9 +632,9 @@ async fn bridge_once(
     publisher: &SharedOpControlPublisher,
     health: &OpControlBridgeHealth,
 ) -> Result<(), OpControlNatsError> {
-    let client = async_nats::connect(&config.url)
-        .await
-        .map_err(|e| OpControlNatsError::Connect(e.to_string()))?;
+    // AAASM-3889: connect with the configured auth (creds/nkey) + TLS, not a bare
+    // unauthenticated connection.
+    let client = config.connect().await?;
     let context = jetstream::new(client);
     let stream = ensure_op_control_stream(&context).await?;
     let consumer = stream
