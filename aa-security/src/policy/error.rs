@@ -21,6 +21,19 @@ pub enum PolicyParseError {
         /// Why it was rejected.
         reason: String,
     },
+    /// A structural key was not part of the known policy schema.
+    ///
+    /// Raised when a security-relevant section or field is misspelled (e.g.
+    /// `dney:` for `deny:`, `allow_list:` for `allowlist:`). Such typos would
+    /// otherwise be silently dropped by `#[serde(flatten)]` — yielding an empty,
+    /// permissive policy that parses successfully. Surfacing them keeps policy
+    /// parsing fail-closed (AAASM-3874).
+    UnknownKey {
+        /// Dotted path to the mapping that contained the unknown key.
+        path: String,
+        /// The unrecognised key.
+        key: String,
+    },
 }
 
 impl fmt::Display for PolicyParseError {
@@ -32,6 +45,9 @@ impl fmt::Display for PolicyParseError {
             }
             Self::InvalidSyscall { raw, reason } => {
                 write!(f, "invalid syscall {raw:?}: {reason}")
+            }
+            Self::UnknownKey { path, key } => {
+                write!(f, "unknown policy key {key:?} under {path}")
             }
         }
     }
@@ -56,5 +72,14 @@ mod tests {
             reason: "unknown capability: 'teleport'".to_string(),
         };
         assert!(err.to_string().contains("teleport"));
+    }
+
+    #[test]
+    fn display_unknown_key() {
+        let err = PolicyParseError::UnknownKey {
+            path: "capabilities".to_string(),
+            key: "dney".to_string(),
+        };
+        assert_eq!(err.to_string(), "unknown policy key \"dney\" under capabilities");
     }
 }

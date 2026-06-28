@@ -75,7 +75,16 @@ impl PolicyDocument {
     /// token is unrecognised.
     #[cfg(feature = "serde")]
     pub fn from_yaml(yaml_str: &str) -> Result<Self, PolicyParseError> {
-        let env: raw::Envelope = serde_yaml::from_str(yaml_str).map_err(|e| PolicyParseError::Yaml(e.to_string()))?;
+        // Parse to a generic value first so the raw mapping can be checked
+        // against the known schema. `#[serde(flatten)]` precludes
+        // `deny_unknown_fields`, so without this a misspelled security key
+        // (e.g. `dney:` for `deny:`) would be silently dropped, yielding an
+        // empty — and therefore permissive — policy that still parses
+        // successfully (AAASM-3874).
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(yaml_str).map_err(|e| PolicyParseError::Yaml(e.to_string()))?;
+        validate_schema(&value)?;
+        let env: raw::Envelope = serde_yaml::from_value(value).map_err(|e| PolicyParseError::Yaml(e.to_string()))?;
 
         // Prefer the `spec:` section; fall back to flat top-level fields.
         let spec = env.spec.unwrap_or(env.flat);
@@ -106,7 +115,12 @@ impl PolicyDocument {
             .into_iter()
             .map(|(name, t)| ToolRule {
                 name,
-                allow: t.allow.unwrap_or(true),
+                // Deny-by-default: a tool entry that omits `allow:` (or whose
+                // `allow:` key is misspelled and dropped) must not be silently
+                // permitted. Callers must opt a tool in explicitly with
+                // `allow: true` (AAASM-3874). This is a deliberate behaviour
+                // change from the previous allow-by-default.
+                allow: t.allow.unwrap_or(false),
                 requires_approval_if: t.requires_approval_if,
             })
             .collect();
@@ -147,6 +161,119 @@ fn parse_syscall(raw: &str) -> Result<super::syscall::Syscall, PolicyParseError>
         raw: raw.to_string(),
         reason,
     })
+}
+
+/// Top-level / flat-form keys. The flat form lets `spec` fields sit at the top
+/// level, so the spec section names are also accepted here.
+#[cfg(feature = "serde")]
+const TOP_LEVEL_KEYS: &[&str] = &[
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec",
+    "scope",
+    "network",
+    "capabilities",
+    "tools",
+    "syscalls",
+    "schedule",
+    "budget",
+    "data",
+    "approval_timeout_secs",
+];
+
+/// Keys accepted inside `spec:`. Mirrors the on-disk `policy-examples/*.yaml`
+/// contract. The L7-only sections (`schedule`, `budget`, `data`) are accepted
+/// but not descended into here — they are owned and validated by the gateway
+/// engine, so this crate deliberately does not couple to their inner schema.
+#[cfg(feature = "serde")]
+const SPEC_KEYS: &[&str] = &[
+    "scope",
+    "network",
+    "capabilities",
+    "tools",
+    "syscalls",
+    "schedule",
+    "budget",
+    "data",
+    "approval_timeout_secs",
+];
+
+#[cfg(feature = "serde")]
+const NETWORK_KEYS: &[&str] = &["allowlist"];
+
+#[cfg(feature = "serde")]
+const CAPABILITIES_KEYS: &[&str] = &["allow", "deny"];
+
+#[cfg(feature = "serde")]
+const SYSCALLS_KEYS: &[&str] = &["allow"];
+
+#[cfg(feature = "serde")]
+const TOOL_KEYS: &[&str] = &["allow", "requires_approval_if", "limit_per_hour"];
+
+/// Reject structural typos in the security-relevant dimensions this crate owns.
+///
+/// `#[serde(flatten)]` rules out `deny_unknown_fields`, so this walks the raw
+/// mapping and errors on any unknown key in the top-level, `spec`, and the
+/// cross-layer security sections (`network`, `capabilities`, `syscalls`,
+/// `tools.<name>`). A misspelled `deny:`/`allowlist:`/`allow:` would otherwise
+/// be silently dropped and weaken enforcement (AAASM-3874).
+#[cfg(feature = "serde")]
+fn validate_schema(root: &serde_yaml::Value) -> Result<(), PolicyParseError> {
+    let Some(map) = root.as_mapping() else {
+        // Non-mapping documents (null/empty/scalar) carry no keys to check; the
+        // typed deserialization step decides whether they are acceptable.
+        return Ok(());
+    };
+
+    check_keys(map, TOP_LEVEL_KEYS, "(root)")?;
+
+    // Resolve the effective spec exactly as `from_yaml` does: prefer `spec:`,
+    // otherwise treat the top-level mapping as the flat spec.
+    let effective = match map.get("spec").and_then(|v| v.as_mapping()) {
+        Some(spec_map) => {
+            check_keys(spec_map, SPEC_KEYS, "spec")?;
+            spec_map
+        }
+        None => map,
+    };
+
+    if let Some(net) = effective.get("network").and_then(|v| v.as_mapping()) {
+        check_keys(net, NETWORK_KEYS, "network")?;
+    }
+    if let Some(caps) = effective.get("capabilities").and_then(|v| v.as_mapping()) {
+        check_keys(caps, CAPABILITIES_KEYS, "capabilities")?;
+    }
+    if let Some(sys) = effective.get("syscalls").and_then(|v| v.as_mapping()) {
+        check_keys(sys, SYSCALLS_KEYS, "syscalls")?;
+    }
+    if let Some(tools) = effective.get("tools").and_then(|v| v.as_mapping()) {
+        for (tname, tval) in tools {
+            if let Some(tool_map) = tval.as_mapping() {
+                let tool_name = tname.as_str().unwrap_or("<non-string>");
+                check_keys(tool_map, TOOL_KEYS, &format!("tools.{tool_name}"))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Error on the first string key in `map` that is not in `allowed`.
+#[cfg(feature = "serde")]
+fn check_keys(map: &serde_yaml::Mapping, allowed: &[&str], path: &str) -> Result<(), PolicyParseError> {
+    for k in map.keys() {
+        // Non-string keys are left to the typed deserialization step.
+        if let Some(s) = k.as_str() {
+            if !allowed.contains(&s) {
+                return Err(PolicyParseError::UnknownKey {
+                    path: path.to_string(),
+                    key: s.to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(test, feature = "serde"))]
@@ -232,6 +359,95 @@ spec:
             doc.allowed_syscalls(),
             vec![Syscall::Read, Syscall::Write, Syscall::Close]
         );
+    }
+
+    #[test]
+    fn rejects_misspelled_capability_deny_key() {
+        // `dney` instead of `deny`: previously dropped silently, leaving an
+        // empty (permissive) deny floor. Must now fail closed (AAASM-3874).
+        let yaml = "spec:\n  capabilities:\n    dney:\n      - terminal_exec\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(&err, PolicyParseError::UnknownKey { path, key } if path == "capabilities" && key == "dney"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_misspelled_network_allowlist_key() {
+        let yaml = "spec:\n  network:\n    allow_list:\n      - api.openai.com\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(&err, PolicyParseError::UnknownKey { path, .. } if path == "network"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_misspelled_spec_section() {
+        // `capabilties` instead of `capabilities`: the whole deny floor would
+        // vanish silently. Must fail closed.
+        let yaml = "spec:\n  capabilties:\n    deny:\n      - file_write\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(&err, PolicyParseError::UnknownKey { path, key } if path == "spec" && key == "capabilties"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_misspelled_tool_allow_key() {
+        let yaml = "spec:\n  tools:\n    shell:\n      alow: true\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(&err, PolicyParseError::UnknownKey { path, key } if path == "tools.shell" && key == "alow"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_key() {
+        let yaml = "spec:\n  network:\n    allowlist: []\nnetwrok:\n  allowlist: []\n";
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(&err, PolicyParseError::UnknownKey { path, key } if path == "(root)" && key == "netwrok"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn tool_without_allow_defaults_to_deny() {
+        // Deny-by-default: a tool entry that omits `allow:` must not be
+        // permitted (AAASM-3874, deliberate behaviour change).
+        let yaml = "spec:\n  tools:\n    shell:\n      requires_approval_if: \"command contains \\\"rm\\\"\"\n";
+        let doc = PolicyDocument::from_yaml(yaml).unwrap();
+        let shell = doc.tools.iter().find(|t| t.name == "shell").unwrap();
+        assert!(!shell.allow, "tool without explicit allow must default to deny");
+    }
+
+    #[test]
+    fn accepts_l7_only_spec_sections() {
+        // budget/schedule/data and per-tool limit_per_hour are L7-only; they
+        // are accepted (and ignored here) without being descended into.
+        let yaml = r#"
+spec:
+  scope: global
+  budget:
+    daily_limit_usd: 5.0
+    action_on_exceed: deny
+  schedule:
+    active_hours:
+      start: "09:00"
+  data:
+    credential_action: block
+  tools:
+    read_file:
+      allow: true
+      limit_per_hour: 60
+"#;
+        let doc = PolicyDocument::from_yaml(yaml).unwrap();
+        let read = doc.tools.iter().find(|t| t.name == "read_file").unwrap();
+        assert!(read.allow);
     }
 
     #[test]
