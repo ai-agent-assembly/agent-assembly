@@ -1305,6 +1305,20 @@ mod tests {
     }
 
     #[test]
+    fn ordered_numeric_comparison_on_unparseable_field_fails_closed() {
+        // AAASM-3893: an ordered numeric comparison whose operand cannot be
+        // coerced to a number is undefined. Because this evaluator drives
+        // `requires_approval_if` (where `false` = "no approval required"), a
+        // silent `false` here would let a security guard not-match and the
+        // action run unguarded — a fail-open. The undefined comparison must
+        // fail CLOSED: fire the predicate (require approval).
+        assert!(evaluate("command > 1000", &process("/usr/bin/deploy"), None, None));
+        // Equality is unaffected: a non-numeric command genuinely is not the
+        // number 5, so `==` correctly does not fire.
+        assert!(!evaluate("command == 5", &process("/usr/bin/deploy"), None, None));
+    }
+
+    #[test]
     fn field_absent_for_action_variant_returns_false() {
         // `tool` field is "" for ProcessExec → should NOT match "foo"
         assert!(!evaluate(r#"tool == "foo""#, &process("ls"), None, None));
