@@ -170,6 +170,41 @@ impl OpsRegistry {
         }
     }
 
+    /// AAASM-3881: emit an **agent-wide** op-control halt under the reserved
+    /// `agent:{agent_id}` op-id so it is enforced by every request the agent
+    /// makes, regardless of any agent-supplied `trace_id` (AAASM-3873).
+    ///
+    /// Unlike the per-op transitions ([`pause`](Self::pause) etc.) this carries
+    /// no lifecycle state — it is a pure operator-driven broadcast addressed to
+    /// the agent identity. Returns `true` when a publisher is attached and the
+    /// signal was emitted, `false` when no op-control channel is configured (so
+    /// the caller can surface an explicit "channel unavailable" rather than a
+    /// silent no-op).
+    pub fn halt_agent(&self, agent_id: AgentId, signal: OpControlSignal) -> bool {
+        match self.publisher.as_ref() {
+            Some(pub_) => {
+                pub_.publish_agent_halt(agent_id, signal);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// AAASM-3881: emit a **fleet-wide** op-control halt under the reserved
+    /// global op-id `"*"`, delivered to every connected runtime.
+    ///
+    /// Returns `true` when a publisher is attached and the signal was emitted,
+    /// `false` when no op-control channel is configured.
+    pub fn halt_global(&self, signal: OpControlSignal) -> bool {
+        match self.publisher.as_ref() {
+            Some(pub_) => {
+                pub_.publish_global_halt(signal);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Return a snapshot of the named op, or `None` if it is not registered.
     pub fn get(&self, op_id: &str) -> Option<OpRecord> {
         self.ops.get(op_id).map(|r| r.clone())
@@ -567,6 +602,48 @@ mod tests {
                 .is_err(),
             "transitions on agent-less ops must not publish",
         );
+    }
+
+    // ── AAASM-3881: operator agent-wide / global halt emission ─────────────
+
+    #[tokio::test]
+    async fn halt_agent_publishes_under_reserved_agent_op_id() {
+        let publisher = std::sync::Arc::new(OpControlPublisher::new());
+        let registry = OpsRegistry::new().with_publisher(std::sync::Arc::clone(&publisher));
+        let mut rx = publisher.subscribe();
+
+        let emitted = registry.halt_agent(agent("a1"), OpControlSignal::Terminate);
+        assert!(emitted, "publisher attached — emission must report success");
+
+        let envelope = rx.recv().await.unwrap();
+        assert!(!envelope.global);
+        assert_eq!(envelope.agent_id.agent_id, "a1");
+        assert_eq!(envelope.message.op_id, "agent:a1");
+        assert_eq!(envelope.message.signal, OpControlSignal::Terminate as i32);
+    }
+
+    #[tokio::test]
+    async fn halt_global_publishes_under_reserved_global_op_id() {
+        let publisher = std::sync::Arc::new(OpControlPublisher::new());
+        let registry = OpsRegistry::new().with_publisher(std::sync::Arc::clone(&publisher));
+        let mut rx = publisher.subscribe();
+
+        let emitted = registry.halt_global(OpControlSignal::Pause);
+        assert!(emitted);
+
+        let envelope = rx.recv().await.unwrap();
+        assert!(envelope.global);
+        assert_eq!(envelope.message.op_id, "*");
+        assert_eq!(envelope.message.signal, OpControlSignal::Pause as i32);
+    }
+
+    #[test]
+    fn halt_without_publisher_reports_unconfigured() {
+        // No publisher attached → the operator surface can return an explicit
+        // "channel unavailable" instead of a silent no-op.
+        let registry = OpsRegistry::new();
+        assert!(!registry.halt_agent(agent("a1"), OpControlSignal::Terminate));
+        assert!(!registry.halt_global(OpControlSignal::Terminate));
     }
 
     #[test]

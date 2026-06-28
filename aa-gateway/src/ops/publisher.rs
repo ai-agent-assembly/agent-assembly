@@ -42,9 +42,18 @@ const CHANNEL_CAPACITY: usize = 256;
 pub struct OpControlEnvelope {
     /// The agent the message is destined for. Subscribers compare this
     /// against their own `subscribe(agent_id)` filter and drop mismatches.
+    ///
+    /// Ignored when [`global`](Self::global) is set — a global halt reaches
+    /// every subscriber regardless of this field.
     pub agent_id: AgentId,
     /// The wire-format message that will be forwarded to the subscriber.
     pub message: OpControlMessage,
+    /// Fleet-wide halt marker (AAASM-3881). When `true`, every subscriber
+    /// receives the envelope regardless of [`agent_id`](Self::agent_id), so a
+    /// global kill switch reaches all runtimes under the reserved op-id `"*"`.
+    /// Set only by [`OpControlPublisher::publish_global_halt`]; every
+    /// per-agent publish leaves it `false`.
+    pub global: bool,
 }
 
 /// Broadcast publisher for op-control signals.
@@ -89,6 +98,46 @@ impl OpControlPublisher {
                 signal: signal as i32,
                 sequence,
             },
+            global: false,
+        };
+        let _ = self.tx.send(envelope);
+        sequence
+    }
+
+    /// Publish an agent-wide halt under the reserved `agent:{agent_id}` op-id
+    /// (AAASM-3881).
+    ///
+    /// Routed to the subscriber whose composite id matches `agent_id`, exactly
+    /// like [`publish`](Self::publish), but under the server-side reserved key
+    /// the runtime always consults (AAASM-3873). Because the op-id is derived
+    /// from the agent identity the gateway knows — not from the agent-supplied
+    /// `trace_id` — the resulting halt cannot be evaded by an absent or forged
+    /// `trace_id`. The op-id is produced by [`aa_runtime::op_control::agent_halt_op_id`]
+    /// so producer and consumer can never drift.
+    pub fn publish_agent_halt(&self, agent_id: AgentId, signal: OpControlSignal) -> u64 {
+        let op_id = aa_runtime::op_control::agent_halt_op_id(&agent_id.agent_id);
+        self.publish(agent_id, op_id, signal)
+    }
+
+    /// Publish a fleet-wide halt under the reserved global op-id `"*"`
+    /// (AAASM-3881), delivered to **every** connected subscriber.
+    ///
+    /// Unlike the per-agent publishes, the envelope is marked
+    /// [`global`](OpControlEnvelope::global) so `op_control_stream` forwards it
+    /// regardless of the subscriber's `agent_id` filter. Each runtime records it
+    /// under [`aa_runtime::op_control::GLOBAL_HALT_OP_ID`], which AAASM-3873 has
+    /// the runtime consult on every request — a true global kill switch.
+    pub fn publish_global_halt(&self, signal: OpControlSignal) -> u64 {
+        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
+        let envelope = OpControlEnvelope {
+            // Ignored for global delivery; left default for clarity.
+            agent_id: AgentId::default(),
+            message: OpControlMessage {
+                op_id: aa_runtime::op_control::GLOBAL_HALT_OP_ID.to_string(),
+                signal: signal as i32,
+                sequence,
+            },
+            global: true,
         };
         let _ = self.tx.send(envelope);
         sequence
@@ -162,6 +211,38 @@ mod tests {
 
         assert_eq!(a.recv().await.unwrap().message.op_id, "o:0");
         assert_eq!(b.recv().await.unwrap().message.op_id, "o:0");
+    }
+
+    #[tokio::test]
+    async fn publish_agent_halt_uses_reserved_agent_op_id() {
+        // AAASM-3881: an agent-wide halt must land under the same reserved
+        // op-id the runtime consults (AAASM-3873), keyed off the server-side
+        // agent identity rather than any agent-supplied trace_id.
+        let pub_ = OpControlPublisher::new();
+        let mut rx = pub_.subscribe();
+        pub_.publish_agent_halt(agent("a1"), OpControlSignal::Terminate);
+
+        let envelope = rx.recv().await.unwrap();
+        assert!(!envelope.global);
+        assert_eq!(envelope.agent_id.agent_id, "a1");
+        assert_eq!(envelope.message.op_id, aa_runtime::op_control::agent_halt_op_id("a1"));
+        assert_eq!(envelope.message.op_id, "agent:a1");
+        assert_eq!(envelope.message.signal, OpControlSignal::Terminate as i32);
+    }
+
+    #[tokio::test]
+    async fn publish_global_halt_uses_global_op_id_and_is_marked_global() {
+        // AAASM-3881: a fleet-wide halt rides under the reserved "*" op-id and
+        // is flagged global so the stream handler forwards it to everyone.
+        let pub_ = OpControlPublisher::new();
+        let mut rx = pub_.subscribe();
+        pub_.publish_global_halt(OpControlSignal::Terminate);
+
+        let envelope = rx.recv().await.unwrap();
+        assert!(envelope.global);
+        assert_eq!(envelope.message.op_id, aa_runtime::op_control::GLOBAL_HALT_OP_ID);
+        assert_eq!(envelope.message.op_id, "*");
+        assert_eq!(envelope.message.signal, OpControlSignal::Terminate as i32);
     }
 
     #[tokio::test]

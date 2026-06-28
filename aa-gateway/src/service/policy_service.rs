@@ -1555,11 +1555,16 @@ impl PolicyService for PolicyServiceImpl {
             loop {
                 match rx.recv().await {
                     Ok(envelope) => {
-                        // Match on the composite id triple to avoid cross-org
-                        // / cross-team agent_id collisions.
-                        if envelope.agent_id.agent_id != target_agent_id
-                            || envelope.agent_id.team_id != target_team_id
-                            || envelope.agent_id.org_id != target_org_id
+                        // AAASM-3881: a global halt (reserved op-id "*") is
+                        // delivered to every subscriber unconditionally — it is
+                        // the fleet-wide kill switch and is not addressed to a
+                        // single agent. Per-agent envelopes still match on the
+                        // composite id triple to avoid cross-org / cross-team
+                        // agent_id collisions.
+                        if !envelope.global
+                            && (envelope.agent_id.agent_id != target_agent_id
+                                || envelope.agent_id.team_id != target_team_id
+                                || envelope.agent_id.org_id != target_org_id)
                         {
                             continue;
                         }

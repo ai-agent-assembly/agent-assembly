@@ -3,6 +3,14 @@
 //! Backed by [`crate::ops::OpsRegistry`] on [`crate::state::AppState`].
 //! Each operation is registered via `POST /api/v1/ops` and then driven
 //! through its lifecycle with the `pause`, `resume`, and `terminate` actions.
+//!
+//! Beyond the per-op lifecycle, two operator kill-switch endpoints emit
+//! op-control halts under the **reserved** op-ids the runtime always consults
+//! (AAASM-3873): an agent-wide halt under `agent:{agent_id}`
+//! ([`halt_agent_for_op`]) and a fleet-wide halt under `"*"` ([`halt_global`]).
+//! These bind to the server-side agent identity rather than the agent-supplied
+//! `trace_id`, so they cannot be evaded by an absent or forged trace id
+//! (AAASM-3881).
 
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -10,6 +18,8 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+use aa_proto::assembly::policy::v1::OpControlSignal;
 
 use crate::auth::scope::{RequireRead, RequireWrite, Scope};
 use crate::auth::AuthenticatedCaller;
@@ -241,6 +251,163 @@ pub async fn terminate_op(
     let record = state.ops_registry.terminate(&op_id).map_err(ops_error_to_problem)?;
     emit_ops_change(&state, &record);
     Ok(lifecycle_ok(record, "terminate"))
+}
+
+/// Request body for the operator kill-switch endpoints
+/// ([`halt_agent_for_op`], [`halt_global`]).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct OpHaltRequest {
+    /// Signal to emit — one of `"pause"`, `"resume"`, `"terminate"`.
+    pub action: String,
+}
+
+/// Acknowledgement returned by the agent-wide / global halt endpoints.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpHaltAck {
+    /// Halt scope — `"agent"` for an agent-wide halt, `"global"` for fleet-wide.
+    pub scope: String,
+    /// Targeted agent id for an agent-scoped halt; empty for a global halt.
+    pub target: String,
+    /// Action that was emitted — one of `"pause"`, `"resume"`, `"terminate"`.
+    pub action: String,
+    /// Server-side timestamp when the halt was accepted (RFC 3339).
+    pub accepted_at: String,
+}
+
+/// Map an operator action string to its wire [`OpControlSignal`], rejecting
+/// anything outside the documented `pause` / `resume` / `terminate` set.
+fn parse_halt_action(action: &str) -> Result<OpControlSignal, ProblemDetail> {
+    match action {
+        "pause" => Ok(OpControlSignal::Pause),
+        "resume" => Ok(OpControlSignal::Resume),
+        "terminate" => Ok(OpControlSignal::Terminate),
+        other => Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!(
+            "Unknown halt action '{other}'; expected pause, resume, or terminate"
+        ))),
+    }
+}
+
+/// `POST /api/v1/ops/{id}/halt-agent` — emit an **agent-wide** op-control halt
+/// for the agent that owns operation `{id}`.
+///
+/// The halt is published under the reserved `agent:{agent_id}` op-id, which the
+/// runtime consults on **every** request regardless of the agent-supplied
+/// `trace_id` (AAASM-3873). It therefore halts the whole agent — not just this
+/// op — and cannot be evaded by omitting or forging a trace id (AAASM-3881).
+/// The owning agent identity is resolved server-side from the op registry, so
+/// the operator addresses a live op they can already see in the ops view.
+///
+/// * `200 OK` — halt emitted; body is an [`OpHaltAck`].
+/// * `400 Bad Request` — empty op id or unknown action.
+/// * `403 Forbidden` — caller lacks write scope or the op's team.
+/// * `404 Not Found` — no op with this id is registered.
+/// * `409 Conflict` — the op has no resolvable owning agent to halt.
+/// * `503 Service Unavailable` — no op-control channel is configured.
+#[utoipa::path(
+    post,
+    path = "/api/v1/ops/{id}/halt-agent",
+    tag = "ops",
+    params(
+        ("id" = String, Path, description = "Operation id identifying the agent to halt.")
+    ),
+    request_body = OpHaltRequest,
+    responses(
+        (status = 200, description = "Agent-wide halt emitted", body = OpHaltAck),
+        (status = 400, description = "Empty op id or unknown action", body = ProblemDetail),
+        (status = 403, description = "Caller not authorized for this op", body = ProblemDetail),
+        (status = 404, description = "Op not found", body = ProblemDetail),
+        (status = 409, description = "Op has no resolvable owning agent", body = ProblemDetail),
+        (status = 503, description = "Op-control channel not configured", body = ProblemDetail)
+    )
+)]
+pub async fn halt_agent_for_op(
+    RequireWrite(caller): RequireWrite,
+    Extension(state): Extension<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<OpHaltRequest>,
+) -> Result<impl IntoResponse, ProblemDetail> {
+    let op_id = validate_op_id(&id)?;
+    // Reuse the per-op tenant authz: a caller may only halt an agent whose op
+    // they are already authorized to act on.
+    authorize_op_access(&caller, &state, &op_id)?;
+    let signal = parse_halt_action(&req.action)?;
+    // The reserved-key halt binds to the *server-side* agent identity recorded
+    // for this op, never to a request-supplied trace id.
+    let agent_id = state.ops_registry.agent_for(&op_id).ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::CONFLICT)
+            .with_detail("Operation has no resolvable owning agent to halt".to_string())
+    })?;
+    let target = agent_id.agent_id.clone();
+    if !state.ops_registry.halt_agent(agent_id, signal) {
+        return Err(ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE)
+            .with_detail("Op-control channel not configured".to_string()));
+    }
+    tracing::info!(
+        target: "aa_api::ops",
+        op_id = %op_id,
+        agent_id = %target,
+        action = %req.action,
+        "agent-wide op-control halt emitted",
+    );
+    Ok((
+        StatusCode::OK,
+        Json(OpHaltAck {
+            scope: "agent".to_string(),
+            target,
+            action: req.action,
+            accepted_at: chrono::Utc::now().to_rfc3339(),
+        }),
+    ))
+}
+
+/// `POST /api/v1/ops/global/halt` — emit a **fleet-wide** op-control halt
+/// delivered to every connected runtime.
+///
+/// The halt is published under the reserved global op-id `"*"` (AAASM-3873),
+/// a kill switch that no agent can evade. Because it affects every agent in the
+/// fleet it is gated to admin callers (AAASM-3881).
+///
+/// * `200 OK` — global halt emitted; body is an [`OpHaltAck`].
+/// * `400 Bad Request` — unknown action.
+/// * `403 Forbidden` — caller lacks admin scope.
+/// * `503 Service Unavailable` — no op-control channel is configured.
+#[utoipa::path(
+    post,
+    path = "/api/v1/ops/global/halt",
+    tag = "ops",
+    request_body = OpHaltRequest,
+    responses(
+        (status = 200, description = "Global halt emitted", body = OpHaltAck),
+        (status = 400, description = "Unknown action", body = ProblemDetail),
+        (status = 403, description = "Caller lacks admin scope", body = ProblemDetail),
+        (status = 503, description = "Op-control channel not configured", body = ProblemDetail)
+    )
+)]
+pub async fn halt_global(
+    RequireWrite(caller): RequireWrite,
+    Extension(state): Extension<AppState>,
+    Json(req): Json<OpHaltRequest>,
+) -> Result<impl IntoResponse, ProblemDetail> {
+    // A fleet-wide kill switch is an escalated capability — admin only.
+    if !caller.scopes.contains(&Scope::Admin) {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("A global halt requires admin scope".to_string()));
+    }
+    let signal = parse_halt_action(&req.action)?;
+    if !state.ops_registry.halt_global(signal) {
+        return Err(ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE)
+            .with_detail("Op-control channel not configured".to_string()));
+    }
+    tracing::info!(target: "aa_api::ops", action = %req.action, "fleet-wide op-control halt emitted");
+    Ok((
+        StatusCode::OK,
+        Json(OpHaltAck {
+            scope: "global".to_string(),
+            target: String::new(),
+            action: req.action,
+            accepted_at: chrono::Utc::now().to_rfc3339(),
+        }),
+    ))
 }
 
 /// `GET /api/v1/ops` — list all registered in-flight operations.
