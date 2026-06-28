@@ -230,8 +230,23 @@ impl TopologyService for TopologyServiceImpl {
         })?;
         let req = request.into_inner();
 
+        // Syntactic validation first (mirrors the read RPCs: parse before resolve),
+        // so a malformed request from an authenticated caller is reported as
+        // `invalid_argument` regardless of the registry state.
         let source_bytes = parse_agent_id(&req.source_agent_id)?;
         let target_bytes = parse_agent_id(&req.target_agent_id)?;
+
+        let edge_type = EdgeType::try_from(req.edge_type.as_str())
+            .map_err(|_| Status::invalid_argument(format!("unknown edge_type: {:?}", req.edge_type)))?;
+
+        let metadata = if req.metadata_json.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str::<serde_json::Value>(&req.metadata_json)
+                    .map_err(|e| Status::invalid_argument(format!("metadata_json is not valid JSON: {e}")))?,
+            )
+        };
 
         // AAASM-3855 — confine a tenanted caller to its own tenant: both endpoints
         // must resolve to agents in the caller's team/org (the same predicate the
@@ -262,18 +277,6 @@ impl TopologyService for TopologyServiceImpl {
 
         let source = AgentId::from_bytes(source_bytes);
         let target = AgentId::from_bytes(target_bytes);
-
-        let edge_type = EdgeType::try_from(req.edge_type.as_str())
-            .map_err(|_| Status::invalid_argument(format!("unknown edge_type: {:?}", req.edge_type)))?;
-
-        let metadata = if req.metadata_json.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::from_str::<serde_json::Value>(&req.metadata_json)
-                    .map_err(|e| Status::invalid_argument(format!("metadata_json is not valid JSON: {e}")))?,
-            )
-        };
 
         let id = self
             .edge_repo
