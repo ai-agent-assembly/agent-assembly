@@ -715,4 +715,48 @@ mod tests {
         let (_, expires_at_unix_ms) = store.issue(DID, PK).await.unwrap();
         assert!(expires_at_unix_ms > Utc::now().timestamp_millis());
     }
+
+    // ── Cross-replica behaviour (AAASM-3882) ─────────────────────────────────
+    //
+    // Two `InMemoryChallengeStore` clones share one Arc-backed map, modelling
+    // two gateway replicas pointed at a single shared store. This is the exact
+    // RequestChallenge-on-A → Register-on-B handshake that a process-local store
+    // would break behind a multi-replica load balancer.
+
+    #[tokio::test]
+    async fn nonce_issued_on_one_handle_is_consumable_on_another_exactly_once() {
+        let replica_a = InMemoryChallengeStore::default();
+        let replica_b = replica_a.clone();
+
+        // Replica A issues the challenge…
+        let (nonce, _) = replica_a.issue(DID, PK).await.unwrap();
+        // …and replica B (a different handle over the same backend) consumes it.
+        assert!(
+            replica_b.consume(&nonce, DID, PK).await.is_ok(),
+            "a nonce issued on replica A must be consumable on replica B"
+        );
+        // Single-use holds across handles: B already burned it, so A cannot reuse it.
+        let replay = replica_a.consume(&nonce, DID, PK).await.unwrap_err();
+        assert_eq!(replay.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn expiry_is_enforced_across_handles() {
+        let replica_a = InMemoryChallengeStore::default();
+        let replica_b = replica_a.clone();
+
+        let nonce = vec![2u8; CHALLENGE_NONCE_LEN];
+        // Replica A's backend holds a nonce that already expired.
+        replica_a.issued.lock().unwrap().insert(
+            nonce.clone(),
+            IssuedChallenge {
+                agent_id: DID.to_owned(),
+                public_key: PK.to_owned(),
+                expires_at: Instant::now() - Duration::from_secs(1),
+            },
+        );
+        // Replica B sees the same backend and still rejects the expired nonce.
+        let err = replica_b.consume(&nonce, DID, PK).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
 }

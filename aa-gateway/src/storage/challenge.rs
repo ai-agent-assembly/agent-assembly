@@ -42,9 +42,7 @@ use super::cache::RedisConfig;
 #[cfg(feature = "redis-cache")]
 use super::error::{StorageError, StorageResult};
 #[cfg(feature = "redis-cache")]
-use crate::service::lifecycle_service::{
-    challenge_expiry_unix_ms, fresh_nonce, ChallengeStoreLike, CHALLENGE_TTL,
-};
+use crate::service::lifecycle_service::{challenge_expiry_unix_ms, fresh_nonce, ChallengeStoreLike, CHALLENGE_TTL};
 
 /// Lower-case hex encoding of the nonce bytes, namespaced under `aa:challenge:`.
 #[cfg(feature = "redis-cache")]
@@ -129,8 +127,7 @@ impl ChallengeStoreLike for RedisChallengeStore {
         // GETDEL atomically reads and removes the key — single-use across
         // replicas. A driver error fails closed (Unauthenticated) so a Redis
         // outage cannot let an unverified registration through.
-        let stored: redis::RedisResult<Option<String>> =
-            redis::cmd("GETDEL").arg(&key).query_async(&mut conn).await;
+        let stored: redis::RedisResult<Option<String>> = redis::cmd("GETDEL").arg(&key).query_async(&mut conn).await;
         let stored = stored
             .map_err(|err| {
                 tracing::warn!(error = %err, "redis registration challenge consume failed");
