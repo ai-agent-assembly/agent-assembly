@@ -101,19 +101,95 @@ pub fn load() -> Result<CliConfig, CliError> {
 
 /// Save the CLI configuration to `~/.aa/config.yaml`.
 ///
-/// Creates the `~/.aa/` directory if it does not exist.
+/// Creates the `~/.aa/` directory if it does not exist. The file holds the
+/// operator bearer token (`api_key`), so on Unix the directory is locked to
+/// `0700` and the file to `0600` — otherwise any local user on a shared host
+/// could read the token from a world-readable `~/.aa/config.yaml`.
 pub fn save(config: &CliConfig) -> Result<(), CliError> {
     let dir = config_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| CliError::Config {
-            path: dir.clone(),
-            source: e,
-        })?;
-    }
+    ensure_config_dir(&dir)?;
     let path = config_path();
     let yaml = serde_yaml::to_string(config)?;
-    std::fs::write(&path, yaml).map_err(|e| CliError::Config { path, source: e })?;
+    write_config_file(&path, &yaml)?;
     Ok(())
+}
+
+/// Create the config directory if missing, restricting it to `0700` on Unix.
+///
+/// `DirBuilder::mode` only applies when the directory is newly created, so an
+/// existing directory (e.g. one left at `0755` by an older version) is tightened
+/// explicitly.
+#[cfg(unix)]
+fn ensure_config_dir(dir: &std::path::Path) -> Result<(), CliError> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    if dir.exists() {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| CliError::Config {
+            path: dir.to_path_buf(),
+            source: e,
+        })?;
+        return Ok(());
+    }
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| CliError::Config {
+            path: dir.to_path_buf(),
+            source: e,
+        })
+}
+
+/// Create the config directory if missing (non-Unix: no permission control).
+#[cfg(not(unix))]
+fn ensure_config_dir(dir: &std::path::Path) -> Result<(), CliError> {
+    if dir.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir).map_err(|e| CliError::Config {
+        path: dir.to_path_buf(),
+        source: e,
+    })
+}
+
+/// Write the config file, restricting it to `0600` on Unix.
+///
+/// The file is created with `0600` via `OpenOptions::mode` (no world-readable
+/// window), and `set_permissions` then tightens any pre-existing file that an
+/// older, vulnerable version may have left at `0644`.
+#[cfg(unix)]
+fn write_config_file(path: &std::path::Path, yaml: &str) -> Result<(), CliError> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| CliError::Config {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| CliError::Config {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+    file.write_all(yaml.as_bytes()).map_err(|e| CliError::Config {
+        path: path.to_path_buf(),
+        source: e,
+    })
+}
+
+/// Write the config file (non-Unix: no permission control).
+#[cfg(not(unix))]
+fn write_config_file(path: &std::path::Path, yaml: &str) -> Result<(), CliError> {
+    std::fs::write(path, yaml).map_err(|e| CliError::Config {
+        path: path.to_path_buf(),
+        source: e,
+    })
 }
 
 /// Resolved connection parameters after merging CLI flags and config file.
@@ -201,6 +277,64 @@ mod tests {
             contexts,
             dashboard: DashboardConfig::default(),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_restricts_config_file_and_dir_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::test_support::env_guard();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", tmp.path());
+
+        let result = save(&sample_config());
+        let dir = config_dir();
+        let path = config_path();
+        let dir_mode = std::fs::metadata(&dir).map(|m| m.permissions().mode() & 0o777);
+        let file_mode = std::fs::metadata(&path).map(|m| m.permissions().mode() & 0o777);
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        result.unwrap();
+        assert_eq!(dir_mode.unwrap(), 0o700, "config dir must be owner-only (0700)");
+        assert_eq!(file_mode.unwrap(), 0o600, "config file must be owner-only (0600)");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_tightens_preexisting_loose_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::test_support::env_guard();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", tmp.path());
+
+        // Simulate a config left world-readable by an older, vulnerable version.
+        let dir = config_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = config_path();
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let result = save(&sample_config());
+        let dir_mode = std::fs::metadata(&dir).map(|m| m.permissions().mode() & 0o777);
+        let file_mode = std::fs::metadata(&path).map(|m| m.permissions().mode() & 0o777);
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        result.unwrap();
+        assert_eq!(dir_mode.unwrap(), 0o700, "save must tighten an existing dir to 0700");
+        assert_eq!(file_mode.unwrap(), 0o600, "save must tighten an existing file to 0600");
     }
 
     #[test]
