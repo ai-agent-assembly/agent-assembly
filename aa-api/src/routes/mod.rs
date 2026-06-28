@@ -157,6 +157,9 @@ fn protected_router() -> Router {
         .route("/ops/{id}/pause", post(ops::pause_op))
         .route("/ops/{id}/resume", post(ops::resume_op))
         .route("/ops/{id}/terminate", post(ops::terminate_op))
+        // Operator kill-switch under reserved op-ids (AAASM-3881 / AAASM-3873)
+        .route("/ops/{id}/halt-agent", post(ops::halt_agent_for_op))
+        .route("/ops/global/halt", post(ops::halt_global))
         // Audit aggregations
         .route("/audit/violations-by-lineage", get(audit::get_violations_by_lineage))
         // Sandbox / observe-mode aggregate for SandboxSummaryCard — AAASM-1911

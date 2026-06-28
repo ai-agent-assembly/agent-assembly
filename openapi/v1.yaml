@@ -1735,6 +1735,126 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/ops/global/halt:
+    post:
+      tags:
+      - ops
+      summary: |-
+        `POST /api/v1/ops/global/halt` — emit a **fleet-wide** op-control halt
+        delivered to every connected runtime.
+      description: |-
+        The halt is published under the reserved global op-id `"*"` (AAASM-3873),
+        a kill switch that no agent can evade. Because it affects every agent in the
+        fleet it is gated to admin callers (AAASM-3881).
+
+        * `200 OK` — global halt emitted; body is an [`OpHaltAck`].
+        * `400 Bad Request` — unknown action.
+        * `403 Forbidden` — caller lacks admin scope.
+        * `503 Service Unavailable` — no op-control channel is configured.
+      operationId: halt_global
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpHaltRequest'
+        required: true
+      responses:
+        '200':
+          description: Global halt emitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpHaltAck'
+        '400':
+          description: Unknown action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '403':
+          description: Caller lacks admin scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: Op-control channel not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/ops/{id}/halt-agent:
+    post:
+      tags:
+      - ops
+      summary: |-
+        `POST /api/v1/ops/{id}/halt-agent` — emit an **agent-wide** op-control halt
+        for the agent that owns operation `{id}`.
+      description: |-
+        The halt is published under the reserved `agent:{agent_id}` op-id, which the
+        runtime consults on **every** request regardless of the agent-supplied
+        `trace_id` (AAASM-3873). It therefore halts the whole agent — not just this
+        op — and cannot be evaded by omitting or forging a trace id (AAASM-3881).
+        The owning agent identity is resolved server-side from the op registry, so
+        the operator addresses a live op they can already see in the ops view.
+
+        * `200 OK` — halt emitted; body is an [`OpHaltAck`].
+        * `400 Bad Request` — empty op id or unknown action.
+        * `403 Forbidden` — caller lacks write scope or the op's team.
+        * `404 Not Found` — no op with this id is registered.
+        * `409 Conflict` — the op has no resolvable owning agent to halt.
+        * `503 Service Unavailable` — no op-control channel is configured.
+      operationId: halt_agent_for_op
+      parameters:
+      - name: id
+        in: path
+        description: Operation id identifying the agent to halt.
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpHaltRequest'
+        required: true
+      responses:
+        '200':
+          description: Agent-wide halt emitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpHaltAck'
+        '400':
+          description: Empty op id or unknown action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '403':
+          description: Caller not authorized for this op
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '404':
+          description: Op not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '409':
+          description: Op has no resolvable owning agent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: Op-control channel not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/ops/{id}/pause:
     post:
       tags:
@@ -4217,6 +4337,38 @@ components:
         op_id:
           type: string
           description: Operation id from the URL path.
+    OpHaltAck:
+      type: object
+      description: Acknowledgement returned by the agent-wide / global halt endpoints.
+      required:
+      - scope
+      - target
+      - action
+      - accepted_at
+      properties:
+        accepted_at:
+          type: string
+          description: Server-side timestamp when the halt was accepted (RFC 3339).
+        action:
+          type: string
+          description: Action that was emitted — one of `"pause"`, `"resume"`, `"terminate"`.
+        scope:
+          type: string
+          description: Halt scope — `"agent"` for an agent-wide halt, `"global"` for fleet-wide.
+        target:
+          type: string
+          description: Targeted agent id for an agent-scoped halt; empty for a global halt.
+    OpHaltRequest:
+      type: object
+      description: |-
+        Request body for the operator kill-switch endpoints
+        ([`halt_agent_for_op`], [`halt_global`]).
+      required:
+      - action
+      properties:
+        action:
+          type: string
+          description: Signal to emit — one of `"pause"`, `"resume"`, `"terminate"`.
     OpRecord:
       type: object
       description: Snapshot of a registered operation returned by the registry and API.

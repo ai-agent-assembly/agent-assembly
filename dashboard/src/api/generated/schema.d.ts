@@ -970,6 +970,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ops/global/halt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/ops/global/halt` — emit a **fleet-wide** op-control halt
+         *     delivered to every connected runtime.
+         * @description The halt is published under the reserved global op-id `"*"` (AAASM-3873),
+         *     a kill switch that no agent can evade. Because it affects every agent in the
+         *     fleet it is gated to admin callers (AAASM-3881).
+         *
+         *     * `200 OK` — global halt emitted; body is an [`OpHaltAck`].
+         *     * `400 Bad Request` — unknown action.
+         *     * `403 Forbidden` — caller lacks admin scope.
+         *     * `503 Service Unavailable` — no op-control channel is configured.
+         */
+        post: operations["halt_global"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ops/{id}/halt-agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/ops/{id}/halt-agent` — emit an **agent-wide** op-control halt
+         *     for the agent that owns operation `{id}`.
+         * @description The halt is published under the reserved `agent:{agent_id}` op-id, which the
+         *     runtime consults on **every** request regardless of the agent-supplied
+         *     `trace_id` (AAASM-3873). It therefore halts the whole agent — not just this
+         *     op — and cannot be evaded by omitting or forging a trace id (AAASM-3881).
+         *     The owning agent identity is resolved server-side from the op registry, so
+         *     the operator addresses a live op they can already see in the ops view.
+         *
+         *     * `200 OK` — halt emitted; body is an [`OpHaltAck`].
+         *     * `400 Bad Request` — empty op id or unknown action.
+         *     * `403 Forbidden` — caller lacks write scope or the op's team.
+         *     * `404 Not Found` — no op with this id is registered.
+         *     * `409 Conflict` — the op has no resolvable owning agent to halt.
+         *     * `503 Service Unavailable` — no op-control channel is configured.
+         */
+        post: operations["halt_agent_for_op"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ops/{id}/pause": {
         parameters: {
             query?: never;
@@ -2393,6 +2454,25 @@ export interface components {
             action: string;
             /** @description Operation id from the URL path. */
             op_id: string;
+        };
+        /** @description Acknowledgement returned by the agent-wide / global halt endpoints. */
+        OpHaltAck: {
+            /** @description Server-side timestamp when the halt was accepted (RFC 3339). */
+            accepted_at: string;
+            /** @description Action that was emitted — one of `"pause"`, `"resume"`, `"terminate"`. */
+            action: string;
+            /** @description Halt scope — `"agent"` for an agent-wide halt, `"global"` for fleet-wide. */
+            scope: string;
+            /** @description Targeted agent id for an agent-scoped halt; empty for a global halt. */
+            target: string;
+        };
+        /**
+         * @description Request body for the operator kill-switch endpoints
+         *     ([`halt_agent_for_op`], [`halt_global`]).
+         */
+        OpHaltRequest: {
+            /** @description Signal to emit — one of `"pause"`, `"resume"`, `"terminate"`. */
+            action: string;
         };
         /** @description Snapshot of a registered operation returned by the registry and API. */
         OpRecord: {
@@ -5303,6 +5383,129 @@ export interface operations {
             };
             /** @description Empty or missing op_id */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    halt_global: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpHaltRequest"];
+            };
+        };
+        responses: {
+            /** @description Global halt emitted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpHaltAck"];
+                };
+            };
+            /** @description Unknown action */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Caller lacks admin scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op-control channel not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    halt_agent_for_op: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation id identifying the agent to halt. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpHaltRequest"];
+            };
+        };
+        responses: {
+            /** @description Agent-wide halt emitted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpHaltAck"];
+                };
+            };
+            /** @description Empty op id or unknown action */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Caller not authorized for this op */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op has no resolvable owning agent */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op-control channel not configured */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
