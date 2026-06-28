@@ -57,6 +57,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-auth"
+version = "0.0.1-rc.2"
+dependencies = [
+ "argon2",
+ "axum",
+ "dashmap",
+ "http",
+ "jsonwebtoken",
+ "rand 0.10.1",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
 name = "aa-cache"
 version = "0.0.1-rc.2"
 dependencies = [
