@@ -12,6 +12,14 @@ import "common.proto";
 // Consumed by: aa-runtime/src/gateway_client.rs (client side)
 //              aa-gateway/src/registry.rs        (server side)
 service AgentLifecycleService {
+  // RequestChallenge issues a fresh, single-use, server-random nonce that the
+  // agent must sign and return in Register (AAASM-3866). Issuing the challenge
+  // server-side is what makes the possession proof non-replayable and
+  // non-precomputable: the signed payload is no longer a deterministic, public
+  // value (the agent_id did:key) that anyone who knows the id could sign in
+  // advance, but an unpredictable nonce the agent cannot know until it asks.
+  rpc RequestChallenge(ChallengeRequest) returns (ChallengeResponse);
+
   // Register is called once on agent startup to join the governance gateway.
   rpc Register(RegisterRequest) returns (RegisterResponse);
 
@@ -24,6 +32,35 @@ service AgentLifecycleService {
   // ControlStream is a server-streaming RPC: the runtime opens a persistent
   // connection and receives gateway-initiated commands (suspend, resume, kill, etc.).
   rpc ControlStream(ControlStreamRequest) returns (stream ControlCommand);
+}
+
+// ── Challenge ─────────────────────────────────────────────────────────────────
+
+// ChallengeRequest asks the gateway to issue a fresh possession-proof nonce
+// before Register (AAASM-3866).
+message ChallengeRequest {
+  // Composite agent identity the challenge is being requested for. The issued
+  // nonce is bound to this identity so a challenge cannot be redirected to a
+  // different agent at Register time.
+  assembly.common.v1.AgentId agent_id   = 1;
+  // Ed25519 public key (lowercase hex, 64 chars) the agent will register with.
+  // The nonce is bound to this key, so a challenge issued for one key cannot be
+  // replayed to register a different key.
+  string                     public_key = 2;
+  // next: 3
+}
+
+// ChallengeResponse carries the server-issued nonce the agent must sign.
+message ChallengeResponse {
+  // Server-issued, cryptographically-random, single-use nonce. The agent signs
+  // exactly these bytes with its Ed25519 key and returns the signature as
+  // RegisterRequest.possession_proof plus the nonce as
+  // RegisterRequest.registration_nonce.
+  bytes nonce              = 1;
+  // Unix-epoch milliseconds after which the gateway rejects the nonce as
+  // expired. Advisory for the client; the gateway is authoritative.
+  int64 expires_at_unix_ms = 2;
+  // next: 3
 }
 
 // ── Register ─────────────────────────────────────────────────────────────────
@@ -58,15 +95,21 @@ message RegisterRequest {
   // scope. Enables gradual rollout — trusted agents stay in ENFORCE while
   // new / experimental ones run under OBSERVE under the same policy.
   assembly.common.v1.EnforcementMode enforcement_mode = 13;
-  // Proof of possession of the private key matching `public_key` (AAASM-3591):
-  // a raw 64-byte Ed25519 signature over the registering `agent_id.agent_id`
-  // (the did:key) bytes. The gateway verifies this before minting a
-  // credential_token, so reaching the unauthenticated gRPC port is not enough
-  // to mint one — the caller must hold the agent's key. Coordinates with
-  // AAASM-3416 (broad per-endpoint authn); this field is the credential_token
-  // possession gate.
+  // Proof of possession of the private key matching `public_key`
+  // (AAASM-3591, hardened by AAASM-3866): a raw 64-byte Ed25519 signature over
+  // the server-issued `registration_nonce` (NOT over the public `agent_id`,
+  // which would be replayable/precomputable). The gateway verifies this before
+  // minting a credential_token, so reaching the unauthenticated gRPC port is
+  // not enough to mint one — the caller must hold the agent's key AND have just
+  // obtained a fresh nonce. Coordinates with AAASM-3416 (broad per-endpoint
+  // authn); this field is the credential_token possession gate.
   bytes                          possession_proof  = 14;
-  // next: 15
+  // Server-issued nonce from a preceding RequestChallenge call that
+  // `possession_proof` signs (AAASM-3866). The gateway rejects a Register whose
+  // nonce is unknown, expired, already used, or was not issued for this
+  // agent_id + public_key.
+  bytes                          registration_nonce = 15;
+  // next: 16
 }
 
 message RegisterResponse {

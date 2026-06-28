@@ -20,6 +20,11 @@ arc-swap     = "1"
 bs58         = "0.5"
 dashmap      = { workspace = true }
 ed25519-dalek = { version = "2", features = ["std"] }
+# CSPRNG for server-issued, single-use registration-challenge nonces
+# (AAASM-3866). `rand::random` draws from an OS-seeded ChaCha thread CSPRNG, so
+# the nonce is unpredictable and the possession proof cannot be precomputed.
+# Same major version aa-runtime / aa-sdk-client already use for handshake nonces.
+rand         = "0.10"
 hex          = { workspace = true }
 notify       = { version = "8", features = [] }
 chrono       = { workspace = true, features = ["clock", "serde"] }

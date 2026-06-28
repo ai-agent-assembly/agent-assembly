@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 
 use crate::config::AssemblyConfig;
 use crate::error::SdkClientError;
-use crate::gateway::{build_register_request, GatewayRegistrationClient};
+use crate::gateway::{build_challenge_request, build_register_request, GatewayRegistrationClient};
 use crate::ipc::{IpcCommand, IpcHandle};
 #[cfg(feature = "preflight")]
 use crate::preflight::Preflight;
@@ -111,9 +111,14 @@ impl AssemblyClient {
         framework: String,
     ) -> Result<String, SdkClientError> {
         let endpoint = config.resolve_gateway_endpoint();
-        let request = build_register_request(config, name, framework);
-
         let mut client = GatewayRegistrationClient::connect(endpoint).await?;
+
+        // AAASM-3866: obtain a fresh server-issued nonce, then sign it in the
+        // register request. This round-trip is what makes the possession proof
+        // non-replayable — the gateway rejects any proof over a stale, reused, or
+        // attacker-derivable challenge.
+        let challenge = client.request_challenge(build_challenge_request(config)).await?;
+        let request = build_register_request(config, name, framework, &challenge.nonce);
         let response = client.register(request).await?;
 
         {

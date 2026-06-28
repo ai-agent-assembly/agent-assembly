@@ -18,8 +18,8 @@ use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::{
     AgentLifecycleService, AgentLifecycleServiceServer,
 };
 use aa_proto::assembly::agent::v1::{
-    ControlCommand, ControlStreamRequest, DeregisterRequest, DeregisterResponse, HeartbeatRequest, HeartbeatResponse,
-    RegisterRequest, RegisterResponse,
+    ChallengeRequest, ChallengeResponse, ControlCommand, ControlStreamRequest, DeregisterRequest, DeregisterResponse,
+    HeartbeatRequest, HeartbeatResponse, RegisterRequest, RegisterResponse,
 };
 use aa_proto::assembly::common::v1::Decision;
 use aa_proto::assembly::policy::v1::policy_service_server::{PolicyService, PolicyServiceServer};
@@ -42,6 +42,15 @@ struct MockLifecycle;
 
 #[tonic::async_trait]
 impl AgentLifecycleService for MockLifecycle {
+    async fn request_challenge(&self, _: Request<ChallengeRequest>) -> Result<Response<ChallengeResponse>, Status> {
+        // The real gateway issues a random single-use nonce here (AAASM-3866); a
+        // fixed value is enough for this test, which only checks the token flow.
+        Ok(Response::new(ChallengeResponse {
+            nonce: vec![1u8; 32],
+            expires_at_unix_ms: 0,
+        }))
+    }
+
     async fn register(&self, request: Request<RegisterRequest>) -> Result<Response<RegisterResponse>, Status> {
         let req = request.into_inner();
         let agent_id = req

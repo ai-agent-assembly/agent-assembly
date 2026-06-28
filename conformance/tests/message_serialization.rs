@@ -247,6 +247,7 @@ fn register_request_topology_fields_round_trip() {
         max_child_depth: Some(3),
         enforcement_mode: 0,
         possession_proof: vec![1, 2, 3, 4],
+        registration_nonce: vec![5, 6, 7, 8],
     };
     let bytes = original.encode_to_vec();
     let decoded = RegisterRequest::decode(bytes.as_slice()).expect("decode RegisterRequest");

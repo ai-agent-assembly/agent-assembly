@@ -10,10 +10,12 @@ use aa_gateway::registry::AgentRegistry;
 use aa_gateway::service::AgentLifecycleServiceImpl;
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_client::AgentLifecycleServiceClient;
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleServiceServer;
-use aa_proto::assembly::agent::v1::{ControlStreamRequest, DeregisterRequest, HeartbeatRequest, RegisterRequest};
+use aa_proto::assembly::agent::v1::{
+    ChallengeRequest, ControlStreamRequest, DeregisterRequest, HeartbeatRequest, RegisterRequest, RegisterResponse,
+};
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use tokio::net::TcpListener;
-use tonic::transport::Server;
+use tonic::transport::{Channel, Server};
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -28,12 +30,30 @@ fn test_ed25519_public_key_hex() -> String {
     hex::encode(test_signing_key().verifying_key().as_bytes())
 }
 
-/// AAASM-3591: build a valid possession proof — an Ed25519 signature over the
-/// registering did (`agent_id.agent_id`) with the test signing key — so Register
-/// admits the request and mints a credential_token.
-fn test_possession_proof(did: &str) -> Vec<u8> {
+/// AAASM-3866: drive the two-step registration handshake against a live server.
+///
+/// Requests a fresh server nonce for `req`'s `agent_id` + `public_key`, signs it
+/// with the test key, and submits Register with the nonce + proof. Any
+/// `possession_proof` / `registration_nonce` already set on `req` is overwritten
+/// — the server-issued nonce is authoritative. Negative cases where the server
+/// rejects the challenge itself (e.g. malformed key/id) surface that error.
+async fn register_with_challenge(
+    client: &mut AgentLifecycleServiceClient<Channel>,
+    mut req: RegisterRequest,
+) -> Result<tonic::Response<RegisterResponse>, tonic::Status> {
     use ed25519_dalek::Signer;
-    test_signing_key().sign(did.as_bytes()).to_bytes().to_vec()
+    let agent_id = req.agent_id.clone().expect("agent_id must be set for challenge");
+    let public_key = req.public_key.clone();
+    let challenge = client
+        .request_challenge(ChallengeRequest {
+            agent_id: Some(agent_id),
+            public_key,
+        })
+        .await?
+        .into_inner();
+    req.possession_proof = test_signing_key().sign(&challenge.nonce).to_bytes().to_vec();
+    req.registration_nonce = challenge.nonce;
+    client.register(req).await
 }
 
 fn test_agent_id() -> ProtoAgentId {
@@ -112,8 +132,9 @@ async fn full_lifecycle_register_heartbeat_control_stream_deregister() {
     let public_key = test_ed25519_public_key_hex();
 
     // 1. Register
-    let reg_resp = client
-        .register(RegisterRequest {
+    let reg_resp = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(agent_id.clone()),
             name: "lifecycle-test-agent".into(),
             framework: "custom".into(),
@@ -122,12 +143,12 @@ async fn full_lifecycle_register_heartbeat_control_stream_deregister() {
             tool_names: vec!["tool_a".into()],
             public_key: public_key.clone(),
             metadata: Default::default(),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner();
+        },
+    )
+    .await
+    .unwrap()
+    .into_inner();
 
     let token = reg_resp.credential_token;
     assert!(!token.is_empty());
@@ -179,8 +200,9 @@ async fn register_with_invalid_public_key_returns_error() {
         .await
         .unwrap();
 
-    let status = client
-        .register(RegisterRequest {
+    let status = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(test_agent_id()),
             name: "bad-key-agent".into(),
             framework: "custom".into(),
@@ -190,9 +212,10 @@ async fn register_with_invalid_public_key_returns_error() {
             public_key: "not_valid_hex_key".into(),
             metadata: Default::default(),
             ..Default::default()
-        })
-        .await
-        .unwrap_err();
+        },
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
 }
@@ -206,8 +229,9 @@ async fn register_with_non_did_agent_id_returns_invalid_argument() {
         .await
         .unwrap();
 
-    let status = client
-        .register(RegisterRequest {
+    let status = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(ProtoAgentId {
                 org_id: "org-test".into(),
                 team_id: "team-test".into(),
@@ -222,9 +246,10 @@ async fn register_with_non_did_agent_id_returns_invalid_argument() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             ..Default::default()
-        })
-        .await
-        .unwrap_err();
+        },
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
     assert!(
@@ -251,8 +276,9 @@ async fn register_with_sdk_derived_did_key_is_accepted() {
     let did = aa_sdk_client::agent_id_to_did_key(plain_agent_id);
     assert!(did.starts_with("did:key:z"), "derived DID must be a did:key, got {did}");
 
-    let resp = client
-        .register(RegisterRequest {
+    let resp = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(ProtoAgentId {
                 org_id: "org-test".into(),
                 team_id: "team-test".into(),
@@ -265,12 +291,12 @@ async fn register_with_sdk_derived_did_key_is_accepted() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            possession_proof: test_possession_proof(&did),
             ..Default::default()
-        })
-        .await
-        .expect("SDK-derived did:key must be accepted by Register")
-        .into_inner();
+        },
+    )
+    .await
+    .expect("SDK-derived did:key must be accepted by Register")
+    .into_inner();
 
     assert!(!resp.credential_token.is_empty());
 }
@@ -285,8 +311,9 @@ async fn heartbeat_with_wrong_token_returns_unauthenticated() {
     let agent_id = test_agent_id();
 
     // Register first
-    client
-        .register(RegisterRequest {
+    register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(agent_id.clone()),
             name: "auth-test-agent".into(),
             framework: "custom".into(),
@@ -295,11 +322,11 @@ async fn heartbeat_with_wrong_token_returns_unauthenticated() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
 
     // Heartbeat with wrong token
     let status = client
@@ -350,13 +377,12 @@ async fn duplicate_register_returns_already_exists() {
         tool_names: vec![],
         public_key: test_ed25519_public_key_hex(),
         metadata: Default::default(),
-        possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
         ..Default::default()
     };
 
-    client.register(req.clone()).await.unwrap();
+    register_with_challenge(&mut client, req.clone()).await.unwrap();
 
-    let status = client.register(req).await.unwrap_err();
+    let status = register_with_challenge(&mut client, req).await.unwrap_err();
     assert_eq!(status.code(), tonic::Code::AlreadyExists);
 }
 
@@ -374,8 +400,9 @@ async fn heartbeat_returns_should_suspend_true_for_suspended_agent() {
     let agent_id = test_agent_id();
     let public_key = test_ed25519_public_key_hex();
 
-    let reg_resp = client
-        .register(RegisterRequest {
+    let reg_resp = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(agent_id.clone()),
             name: "suspend-test-agent".into(),
             framework: "custom".into(),
@@ -384,12 +411,12 @@ async fn heartbeat_returns_should_suspend_true_for_suspended_agent() {
             tool_names: vec![],
             public_key,
             metadata: Default::default(),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner();
+        },
+    )
+    .await
+    .unwrap()
+    .into_inner();
 
     let token = reg_resp.credential_token;
 
@@ -425,8 +452,9 @@ async fn heartbeat_returns_should_suspend_false_for_active_agent() {
     let agent_id = test_agent_id();
     let public_key = test_ed25519_public_key_hex();
 
-    let reg_resp = client
-        .register(RegisterRequest {
+    let reg_resp = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(agent_id.clone()),
             name: "active-test-agent".into(),
             framework: "custom".into(),
@@ -435,12 +463,12 @@ async fn heartbeat_returns_should_suspend_false_for_active_agent() {
             tool_names: vec![],
             public_key,
             metadata: Default::default(),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner();
+        },
+    )
+    .await
+    .unwrap()
+    .into_inner();
 
     let token = reg_resp.credential_token;
 
@@ -473,8 +501,9 @@ async fn heartbeat_auto_resumes_budget_suspended_agent_when_budget_reset() {
         .unwrap();
 
     let agent_id = test_agent_id();
-    let reg_resp = client
-        .register(RegisterRequest {
+    let reg_resp = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(agent_id.clone()),
             name: "auto-resume-agent".into(),
             framework: "custom".into(),
@@ -483,12 +512,12 @@ async fn heartbeat_auto_resumes_budget_suspended_agent_when_budget_reset() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner();
+        },
+    )
+    .await
+    .unwrap()
+    .into_inner();
     let token = reg_resp.credential_token;
 
     // Suspend the agent as if budget was exceeded
@@ -529,8 +558,9 @@ async fn heartbeat_does_not_resume_manually_suspended_agent() {
         .unwrap();
 
     let agent_id = test_agent_id();
-    let reg_resp = client
-        .register(RegisterRequest {
+    let reg_resp = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(agent_id.clone()),
             name: "manual-suspend-agent".into(),
             framework: "custom".into(),
@@ -539,12 +569,12 @@ async fn heartbeat_does_not_resume_manually_suspended_agent() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner();
+        },
+    )
+    .await
+    .unwrap()
+    .into_inner();
     let token = reg_resp.credential_token;
 
     // Manually suspend the agent
@@ -584,8 +614,9 @@ async fn register_echoes_parent_agent_id_and_team_id() {
         team_id: "team-echo".into(),
         agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into(),
     };
-    client
-        .register(RegisterRequest {
+    register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(parent_id),
             name: "parent-agent".into(),
             framework: "custom".into(),
@@ -594,11 +625,11 @@ async fn register_echoes_parent_agent_id_and_team_id() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T"),
             ..Default::default()
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
 
     let agent_id = ProtoAgentId {
         org_id: "org-echo".into(),
@@ -606,8 +637,9 @@ async fn register_echoes_parent_agent_id_and_team_id() {
         agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T".into(),
     };
 
-    let reg_resp = client
-        .register(RegisterRequest {
+    let reg_resp = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(agent_id),
             name: "echo-agent".into(),
             framework: "custom".into(),
@@ -617,12 +649,12 @@ async fn register_echoes_parent_agent_id_and_team_id() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into()),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T"),
             ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner();
+        },
+    )
+    .await
+    .unwrap()
+    .into_inner();
 
     assert_eq!(
         reg_resp.parent_agent_id,
@@ -647,8 +679,9 @@ async fn register_without_topology_returns_none_echo_fields() {
         agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
     };
 
-    let reg_resp = client
-        .register(RegisterRequest {
+    let reg_resp = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(agent_id),
             name: "no-topo-agent".into(),
             framework: "custom".into(),
@@ -657,12 +690,12 @@ async fn register_without_topology_returns_none_echo_fields() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner();
+        },
+    )
+    .await
+    .unwrap()
+    .into_inner();
 
     assert_eq!(reg_resp.parent_agent_id, None);
     assert_eq!(reg_resp.team_id, None, "empty team_id must normalize to None");
@@ -684,8 +717,9 @@ async fn root_agent_id_for_root_agent_is_set_to_self() {
     };
     let expected_key = aa_gateway::registry::convert::proto_agent_id_to_key(&agent_proto_id);
 
-    let resp = client
-        .register(RegisterRequest {
+    let resp = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(agent_proto_id),
             name: "root-A".into(),
             framework: "custom".into(),
@@ -694,12 +728,12 @@ async fn root_agent_id_for_root_agent_is_set_to_self() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner();
+        },
+    )
+    .await
+    .unwrap()
+    .into_inner();
 
     let echoed = resp.root_agent_id.expect("root agent must receive root_agent_id");
     assert_eq!(
@@ -726,8 +760,9 @@ async fn root_agent_id_chains_3_levels() {
         agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into(),
     };
     let key_a = aa_gateway::registry::convert::proto_agent_id_to_key(&proto_a);
-    client
-        .register(RegisterRequest {
+    register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(proto_a),
             name: "A".into(),
             framework: "custom".into(),
@@ -736,11 +771,11 @@ async fn root_agent_id_chains_3_levels() {
             tool_names: vec![],
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T"),
             ..Default::default()
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
 
     // Register B (parent = A).
     let proto_b = ProtoAgentId {
@@ -748,8 +783,9 @@ async fn root_agent_id_chains_3_levels() {
         team_id: team.into(),
         agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T".into(),
     };
-    client
-        .register(RegisterRequest {
+    register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(proto_b),
             name: "B".into(),
             framework: "custom".into(),
@@ -759,11 +795,11 @@ async fn root_agent_id_chains_3_levels() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into()),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T"),
             ..Default::default()
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
 
     // Register C (parent = B). C's root_agent_id must equal A's key.
     let proto_c = ProtoAgentId {
@@ -771,8 +807,9 @@ async fn root_agent_id_chains_3_levels() {
         team_id: team.into(),
         agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD4T".into(),
     };
-    let resp_c = client
-        .register(RegisterRequest {
+    let resp_c = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(proto_c),
             name: "C".into(),
             framework: "custom".into(),
@@ -782,12 +819,12 @@ async fn root_agent_id_chains_3_levels() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T".into()),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD4T"),
             ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner();
+        },
+    )
+    .await
+    .unwrap()
+    .into_inner();
 
     let c_root = resp_c.root_agent_id.expect("C must receive root_agent_id");
     assert_eq!(
@@ -966,8 +1003,9 @@ async fn root_agent_id_when_parent_unknown_returns_invalid_argument() {
         .await
         .unwrap();
 
-    let err = client
-        .register(RegisterRequest {
+    let err = register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(ProtoAgentId {
                 org_id: "unknown-org".into(),
                 team_id: "unknown-team".into(),
@@ -981,11 +1019,11 @@ async fn root_agent_id_when_parent_unknown_returns_invalid_argument() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             parent_agent_id: Some("does-not-exist".into()),
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
-        })
-        .await
-        .unwrap_err();
+        },
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
     assert!(
@@ -1014,8 +1052,9 @@ async fn register_persists_enforcement_mode_observe_override_on_agent_record() {
         agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
     };
 
-    client
-        .register(RegisterRequest {
+    register_with_challenge(
+        &mut client,
+        RegisterRequest {
             agent_id: Some(proto_id.clone()),
             name: "experimental-agent".into(),
             framework: "custom".into(),
@@ -1025,11 +1064,11 @@ async fn register_persists_enforcement_mode_observe_override_on_agent_record() {
             public_key: test_ed25519_public_key_hex(),
             metadata: Default::default(),
             enforcement_mode: ProtoMode::Observe as i32,
-            possession_proof: test_possession_proof("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T"),
             ..Default::default()
-        })
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
 
     // Reach into the registry and confirm the override landed on the record.
     let stored = registry
@@ -1038,4 +1077,168 @@ async fn register_persists_enforcement_mode_observe_override_on_agent_record() {
         .find(|r| r.name == "experimental-agent")
         .expect("registered agent must be present in registry");
     assert_eq!(stored.enforcement_mode, Some(aa_core::EnforcementMode::Observe));
+}
+
+// ── AAASM-3866: server-nonce possession proof ────────────────────────────────
+//
+// The possession proof must sign a fresh, server-issued, single-use nonce — not
+// the public, deterministic agent_id. These tests drive the raw client so they
+// can submit stale/replayed/unknown/wrong nonces the `register_with_challenge`
+// helper would never produce.
+
+async fn connect(addr: SocketAddr) -> AgentLifecycleServiceClient<Channel> {
+    AgentLifecycleServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap()
+}
+
+/// Sign `payload` with the test key and return the raw 64-byte proof.
+fn sign(payload: &[u8]) -> Vec<u8> {
+    use ed25519_dalek::Signer;
+    test_signing_key().sign(payload).to_bytes().to_vec()
+}
+
+#[tokio::test]
+async fn register_with_fresh_challenge_response_succeeds() {
+    let (addr, _registry) = start_server().await;
+    let mut client = connect(addr).await;
+
+    let resp = register_with_challenge(
+        &mut client,
+        RegisterRequest {
+            agent_id: Some(test_agent_id()),
+            name: "nonce-ok-agent".into(),
+            framework: "custom".into(),
+            version: "1.0.0".into(),
+            public_key: test_ed25519_public_key_hex(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("a fresh valid challenge-response must mint a credential_token")
+    .into_inner();
+
+    assert!(!resp.credential_token.is_empty());
+}
+
+#[tokio::test]
+async fn register_without_nonce_is_rejected() {
+    // No RequestChallenge round-trip. Signing the public agent_id (the old,
+    // attacker-derivable challenge) must NOT be accepted any more.
+    let (addr, _registry) = start_server().await;
+    let mut client = connect(addr).await;
+    let agent_id = test_agent_id();
+
+    let status = client
+        .register(RegisterRequest {
+            agent_id: Some(agent_id.clone()),
+            name: "no-nonce-agent".into(),
+            framework: "custom".into(),
+            version: "1.0.0".into(),
+            public_key: test_ed25519_public_key_hex(),
+            possession_proof: sign(agent_id.agent_id.as_bytes()),
+            registration_nonce: vec![],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+}
+
+#[tokio::test]
+async fn register_with_unknown_nonce_is_rejected() {
+    // A nonce the server never issued — even with a proof that signs it.
+    let (addr, _registry) = start_server().await;
+    let mut client = connect(addr).await;
+    let bogus = vec![9u8; 32];
+
+    let status = client
+        .register(RegisterRequest {
+            agent_id: Some(test_agent_id()),
+            name: "unknown-nonce-agent".into(),
+            framework: "custom".into(),
+            version: "1.0.0".into(),
+            public_key: test_ed25519_public_key_hex(),
+            possession_proof: sign(&bogus),
+            registration_nonce: bogus,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+}
+
+#[tokio::test]
+async fn register_proof_over_a_different_value_than_the_issued_nonce_is_rejected() {
+    // Obtain a real, server-issued nonce but sign something else.
+    let (addr, _registry) = start_server().await;
+    let mut client = connect(addr).await;
+    let agent_id = test_agent_id();
+    let public_key = test_ed25519_public_key_hex();
+
+    let challenge = client
+        .request_challenge(ChallengeRequest {
+            agent_id: Some(agent_id.clone()),
+            public_key: public_key.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let status = client
+        .register(RegisterRequest {
+            agent_id: Some(agent_id),
+            name: "wrong-proof-agent".into(),
+            framework: "custom".into(),
+            version: "1.0.0".into(),
+            public_key,
+            // Proof over a value that is NOT the issued nonce.
+            possession_proof: sign(b"not-the-issued-nonce"),
+            registration_nonce: challenge.nonce,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+}
+
+#[tokio::test]
+async fn register_with_a_replayed_nonce_is_rejected() {
+    // A nonce is single-use: the first register consumes it; a replay (same
+    // nonce + proof) must fail as Unauthenticated, not surface AlreadyExists.
+    let (addr, _registry) = start_server().await;
+    let mut client = connect(addr).await;
+    let agent_id = test_agent_id();
+    let public_key = test_ed25519_public_key_hex();
+
+    let challenge = client
+        .request_challenge(ChallengeRequest {
+            agent_id: Some(agent_id.clone()),
+            public_key: public_key.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let req = RegisterRequest {
+        agent_id: Some(agent_id),
+        name: "replay-agent".into(),
+        framework: "custom".into(),
+        version: "1.0.0".into(),
+        public_key,
+        possession_proof: sign(&challenge.nonce),
+        registration_nonce: challenge.nonce,
+        ..Default::default()
+    };
+
+    client
+        .register(req.clone())
+        .await
+        .expect("first register with a fresh nonce must succeed");
+
+    let status = client.register(req).await.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
 }
