@@ -129,6 +129,16 @@ pub fn handle_keypress(key: KeyEvent, state: &mut InteractiveState) -> KeyAction
     }
 }
 
+/// Sanitize and shorten a server-supplied approval id for compact display.
+///
+/// Strips terminal escapes BEFORE truncation — a CSI such as `\x1b[2K` fits
+/// within 8 bytes, so truncating first would leave a live escape — then takes
+/// at most 8 *characters* (not bytes) so the result always lands on a UTF-8
+/// boundary; a raw byte slice could panic on multi-byte input.
+fn short_id(id: &str) -> String {
+    sanitize_terminal(id).chars().take(8).collect()
+}
+
 /// Render the interactive view to stdout.
 ///
 /// Clears the terminal and draws the approval list with the current selection
@@ -168,14 +178,15 @@ pub fn render_interactive_view(state: &InteractiveState) {
         };
         let countdown = format_countdown(remaining);
 
-        // `agent_id` and `action` are server-supplied; strip terminal escapes
-        // so a malicious agent cannot repaint the line to spoof the operator.
+        // `id`, `agent_id`, and `action` are server-supplied; strip terminal
+        // escapes so a malicious agent cannot repaint the line to spoof the
+        // operator.
+        let id = short_id(&item.id);
         let agent = sanitize_terminal(&item.agent_id);
         let action = sanitize_terminal(&item.action);
 
         println!(
             "  {marker} {id}  {agent:<20} {action:<30} {color}{cd}\x1b[0m",
-            id = &item.id[..8.min(item.id.len())],
             color = color_code,
             cd = countdown,
         );
@@ -202,7 +213,10 @@ pub async fn run_watch_stream(mut ws: WsStream) {
                         sanitize_terminal(&approval.action),
                         sanitize_terminal(&approval.reason)
                     );
-                    println!("        run: aasm approvals approve {} --reason \"...\"", approval.id);
+                    println!(
+                        "        run: aasm approvals approve {} --reason \"...\"",
+                        sanitize_terminal(&approval.id)
+                    );
                     println!();
                 }
             }
