@@ -10,6 +10,7 @@ use super::models::{AuditEntry, AuditResult, PaginatedAuditResponse};
 use crate::commands::logs::format::{is_within_time_range, parse_since, parse_until};
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Arguments for `aasm audit list`.
 #[derive(Debug, Args)]
@@ -158,17 +159,20 @@ pub fn render_table(entries: &[AuditEntry]) {
 
     for entry in entries {
         let result_raw = extract_result(entry).unwrap_or_else(|| "-".to_string());
-        let result_colored = colorize_result(&result_raw);
-        let tool = extract_tool(entry);
-        let policy = extract_policy(entry);
+        // All fields originate from the server audit entry / its payload JSON;
+        // strip terminal escapes (colour is applied after sanitization, and
+        // colorize_result matches the sanitized exact values allow/deny/pending).
+        let result_colored = colorize_result(&sanitize_terminal(&result_raw));
+        let tool = sanitize_terminal(&extract_tool(entry));
+        let policy = sanitize_terminal(&extract_policy(entry));
 
         table.add_row(vec![
-            &entry.timestamp,
-            &entry.agent_id,
-            &entry.event_type,
-            &tool,
-            &result_colored,
-            &policy,
+            sanitize_terminal(&entry.timestamp),
+            sanitize_terminal(&entry.agent_id),
+            sanitize_terminal(&entry.event_type),
+            tool,
+            result_colored,
+            policy,
         ]);
     }
     println!("{table}");
