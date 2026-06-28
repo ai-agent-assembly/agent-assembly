@@ -45,7 +45,7 @@ fn load_spec() -> Value {
     serde_yaml::from_str(&yaml).expect("openapi/v1.yaml must be valid YAML")
 }
 
-// ── TC-1: spec file loads and has 53 paths ───────────────────────────────────
+// ── TC-1: spec file loads and has 55 paths ───────────────────────────────────
 
 #[test]
 fn openapi_spec_loads_without_errors() {
@@ -59,9 +59,11 @@ fn openapi_spec_loads_without_errors() {
 
     let path_count = spec["paths"].as_object().expect("spec must have a paths object").len();
 
+    // AAASM-3881 added the two operator kill-switch endpoints (halt-agent,
+    // global/halt), bringing the path count from 53 to 55.
     assert_eq!(
-        path_count, 53,
-        "openapi/v1.yaml must declare exactly 53 paths, found {path_count}"
+        path_count, 55,
+        "openapi/v1.yaml must declare exactly 55 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -131,6 +133,8 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/iam/api-keys/{id}/rotate",
         "/api/v1/logs",
         "/api/v1/ops",
+        "/api/v1/ops/global/halt",
+        "/api/v1/ops/{id}/halt-agent",
         "/api/v1/ops/{id}/pause",
         "/api/v1/ops/{id}/resume",
         "/api/v1/ops/{id}/terminate",
