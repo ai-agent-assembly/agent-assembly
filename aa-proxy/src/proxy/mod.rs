@@ -1039,6 +1039,38 @@ mod tests {
         ProxyServer::new(config, ca, tx)
     }
 
+    #[test]
+    fn parse_plain_http_host_from_origin_form_target() {
+        // Origin-form `http://host/path` targets resolve the host from the URL.
+        let host = parse_plain_http_host("http://api.openai.com/v1/chat", &[]);
+        assert_eq!(host, "api.openai.com");
+    }
+
+    #[test]
+    fn parse_plain_http_host_falls_back_to_host_header() {
+        // A bare path target resolves the host from the (case-insensitive) Host
+        // header instead.
+        let headers = vec!["HOST: api.example.com\r\n".to_string()];
+        let host = parse_plain_http_host("/v1/chat", &headers);
+        assert_eq!(host, "api.example.com");
+    }
+
+    #[test]
+    fn parse_plain_http_host_returns_owned_string_not_leaked() {
+        // AAASM-3891 regression: the host must be an owned `String` rather than a
+        // `&'static str` produced by `.leak()`. Owned values are reclaimed when
+        // dropped, so repeated plain-HTTP requests no longer leak one host per
+        // request. Two calls returning equal-but-independent owned values (the
+        // second freed on drop) demonstrate no static interning/leak is in play.
+        let headers = vec!["Host: api.example.com\r\n".to_string()];
+        let first = parse_plain_http_host("/x", &headers);
+        let second = parse_plain_http_host("/x", &headers);
+        assert_eq!(first, "api.example.com");
+        assert_eq!(first, second);
+        drop(second); // an owned String drops here; a leaked &'static str could not.
+        assert_eq!(first, "api.example.com");
+    }
+
     #[tokio::test]
     async fn connect_deny_reason_blocks_metadata_ip_literal() {
         // SSRF: the cloud metadata endpoint as an IP literal must be denied
