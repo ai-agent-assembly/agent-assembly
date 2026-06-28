@@ -9,6 +9,7 @@ use super::models::{AlertResponse, AlertSeverity, AlertStatusKind};
 use crate::client;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Arguments for `aasm alerts get`.
 #[derive(Args)]
@@ -22,24 +23,32 @@ pub fn render_detail(alert: &AlertResponse) {
     let mut table = Table::new();
     table.set_header(vec!["Field", "Value"]);
 
-    table.add_row(vec!["ID", &alert.id]);
+    // All free-text fields are server-supplied; strip terminal escapes
+    // (severity/status colours come from the raw, never-printed strings).
+    table.add_row(vec!["ID".to_string(), sanitize_terminal(&alert.id)]);
 
     let agent = alert.agent_id.as_deref().unwrap_or("-");
-    table.add_row(vec!["Agent", agent]);
+    table.add_row(vec!["Agent".to_string(), sanitize_terminal(agent)]);
 
     let sev = AlertSeverity::parse(&alert.severity);
-    table.add_row(vec![Cell::new("Severity"), Cell::new(&alert.severity).fg(sev.color())]);
+    table.add_row(vec![
+        Cell::new("Severity"),
+        Cell::new(sanitize_terminal(&alert.severity)).fg(sev.color()),
+    ]);
 
-    table.add_row(vec!["Type", &alert.category]);
-    table.add_row(vec!["Message", &alert.message]);
+    table.add_row(vec!["Type".to_string(), sanitize_terminal(&alert.category)]);
+    table.add_row(vec!["Message".to_string(), sanitize_terminal(&alert.message)]);
 
     let status = AlertStatusKind::parse(&alert.status);
-    table.add_row(vec![Cell::new("Status"), Cell::new(&alert.status).fg(status.color())]);
+    table.add_row(vec![
+        Cell::new("Status"),
+        Cell::new(sanitize_terminal(&alert.status)).fg(status.color()),
+    ]);
 
-    table.add_row(vec!["Created", &alert.created_at]);
+    table.add_row(vec!["Created".to_string(), sanitize_terminal(&alert.created_at)]);
 
     let updated = alert.updated_at.as_deref().unwrap_or("-");
-    table.add_row(vec!["Updated", updated]);
+    table.add_row(vec!["Updated".to_string(), sanitize_terminal(updated)]);
 
     if let Some(ref ctx) = alert.context {
         let ctx_str = serde_json::to_string_pretty(ctx).unwrap_or_else(|_| ctx.to_string());
