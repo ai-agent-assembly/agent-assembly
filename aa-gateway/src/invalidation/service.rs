@@ -17,6 +17,7 @@ use aa_proto::assembly::gateway::v1::invalidation_service_server::InvalidationSe
 use aa_proto::assembly::gateway::v1::{subscribe_request::Kind, InvalidationEvent, SubscribeRequest};
 
 use super::InvalidationHub;
+use crate::iam::VerifiedCaller;
 
 /// gRPC adapter exposing an [`InvalidationHub`] over the bidi-streaming
 /// `InvalidationService`. Clone-cheap: holds only an `Arc` to the shared hub.
@@ -48,6 +49,15 @@ impl InvalidationService for InvalidationServiceImpl {
         &self,
         request: Request<Streaming<SubscribeRequest>>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
+        // The fail-closed auth interceptor (AAASM-3828) injects the verified
+        // caller; capture its team so the hub scopes tenant-bound events to this
+        // subscriber's tenant (AAASM-3890). A missing caller yields `None`, which
+        // restricts the subscriber to global events only (fail-closed).
+        let tenant = request
+            .extensions()
+            .get::<VerifiedCaller>()
+            .and_then(|caller| caller.team_id.clone());
+
         let mut inbound = request.into_inner();
 
         let Some(first) = inbound.message().await? else {
@@ -66,7 +76,7 @@ impl InvalidationService for InvalidationServiceImpl {
             _ => 0,
         };
 
-        let handle = self.hub.subscribe(assembly_id.clone(), None, last_seq_seen);
+        let handle = self.hub.subscribe(assembly_id.clone(), tenant, last_seq_seen);
 
         // Drain client→server Acks so the hub can trim each subscriber's ring.
         let hub = Arc::clone(&self.hub);
