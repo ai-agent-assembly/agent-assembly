@@ -347,6 +347,55 @@ async fn slack_dispatch_maps_non_2xx_to_http_error() {
 }
 
 #[tokio::test]
+async fn slack_dispatch_never_reflects_response_body() {
+    // AAASM-3827: the Slack `webhook_url` is caller-controlled, so no part of
+    // the upstream response body may leak back to the caller — on success or on
+    // failure — otherwise the test-fire is an SSRF data-exfiltration sink.
+    let big = "x".repeat(3000);
+
+    // 2xx: the success outcome carries no upstream body.
+    let ok_server = MockServer::start();
+    ok_server.mock(|when, then| {
+        when.method(MOCK_POST).path("/slack");
+        then.status(200).body(&big);
+    });
+    let ok_dst = destination(DestinationConfig::Slack {
+        webhook_url: ok_server.url("/slack"),
+        channel_override: None,
+    });
+    let outcome = SlackConnector
+        .dispatch(&ok_dst, &DispatchRequest::default(), &[])
+        .await
+        .expect("2xx is a success");
+    assert!(
+        outcome.connector_response_body.is_empty(),
+        "no part of the upstream Slack body may be reflected on success"
+    );
+
+    // non-2xx: the error envelope carries no upstream body either.
+    let err_server = MockServer::start();
+    err_server.mock(|when, then| {
+        when.method(MOCK_POST).path("/slack");
+        then.status(500).body(&big);
+    });
+    let err_dst = destination(DestinationConfig::Slack {
+        webhook_url: err_server.url("/slack"),
+        channel_override: None,
+    });
+    let err = SlackConnector
+        .dispatch(&err_dst, &DispatchRequest::default(), &[])
+        .await
+        .expect_err("500 must surface as an error");
+    match err {
+        ConnectorError::Http { status, body } => {
+            assert_eq!(status, 500);
+            assert!(body.is_empty(), "upstream Slack error body must not be reflected");
+        }
+        other => panic!("expected Http error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn slack_connector_rejects_non_slack_destination() {
     let dst = destination(DestinationConfig::Webhook {
         url: "https://example.test/hook".to_string(),
