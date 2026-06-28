@@ -489,7 +489,7 @@ impl ProxyServer {
         // Forward the (consumed) request body to upstream.
         let upstream_tls = self.dial_upstream_tls(host, target).await?;
         let outgoing = serialize_http_request(&req, &req.body);
-        let (mut client_read, mut client_write) = tokio::io::split(client_reader.into_inner());
+        let mut client_tls = client_reader.into_inner();
         let (upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
         upstream_write.write_all(&outgoing).await?;
 
@@ -521,39 +521,36 @@ impl ProxyServer {
                         None => resp.body.clone(),
                     };
                     let modified = serialize_http_response(&resp, &body_to_forward);
-                    client_write.write_all(&modified).await?;
+                    client_tls.write_all(&modified).await?;
                 }
                 Ok(None) => {
                     // Upstream closed without writing a response — nothing to forward.
                 }
                 Err(e) => {
                     // Could not parse the response (e.g. chunked, malformed) —
-                    // fall back to transparent copy from where we left off.
+                    // relay the remaining upstream bytes to the client. AAASM-3864
+                    // (a): we relay only upstream→client, never copying further
+                    // client bytes upstream, so no follow-up request can reach
+                    // upstream un-inspected.
                     tracing::warn!(
                         tool_name = %call.tool_name,
                         error = %e,
-                        "MCP response parse failed, falling back to transparent copy",
+                        "MCP response parse failed, relaying remaining upstream bytes",
                     );
                     let mut upstream_read = upstream_reader.into_inner();
-                    let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-                    let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-                    tokio::select! {
-                        r = client_to_upstream => { r?; }
-                        r = upstream_to_client => { r?; }
-                    }
+                    tokio::io::copy(&mut upstream_read, &mut client_tls).await?;
                 }
             }
         } else {
-            // Not MCP (or RPC failed) — transparent bidirectional copy for
-            // any remaining stream activity (mirrors the historical behaviour).
+            // Not MCP (or RPC failed) — relay only the upstream response back to
+            // the client. AAASM-3864 (a): we never copy further client bytes
+            // upstream, so a follow-up request pipelined on the tunnel cannot
+            // reach upstream un-inspected. The serialized request carries
+            // `Connection: close`, bounding this relay.
             let mut upstream_read = upstream_read;
-            let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-            let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-            tokio::select! {
-                r = client_to_upstream => { r?; }
-                r = upstream_to_client => { r?; }
-            }
+            tokio::io::copy(&mut upstream_read, &mut client_tls).await?;
         }
+        let _ = client_tls.shutdown().await;
         Ok(())
     }
 
@@ -734,18 +731,17 @@ impl ProxyServer {
             _ => serialize_http_request_with_auth(&req, &req.body, injected_auth_ref),
         };
 
-        let (mut client_read, mut client_write) = tokio::io::split(client_reader.into_inner());
-        let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
+        let mut upstream_tls = upstream_tls;
+        upstream_tls.write_all(&outgoing_bytes).await?;
 
-        upstream_write.write_all(&outgoing_bytes).await?;
-
-        let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-        let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-
-        tokio::select! {
-            r = client_to_upstream => { r?; }
-            r = upstream_to_client => { r?; }
-        }
+        // AAASM-3864 (a): relay only the upstream response back to the client,
+        // then tear the tunnel down. We never copy further client bytes upstream,
+        // so a second request pipelined on this keep-alive tunnel cannot reach
+        // upstream un-inspected. The serialized request carries `Connection:
+        // close`, so upstream closes after one response (bounding this copy).
+        let mut client_tls = client_reader.into_inner();
+        tokio::io::copy(&mut upstream_tls, &mut client_tls).await?;
+        let _ = client_tls.shutdown().await;
         Ok(())
     }
 
@@ -942,6 +938,23 @@ impl ProxyServer {
                 .leak()
         };
 
+        // AAASM-3864 (b): enforce the same egress denylist + network allowlist
+        // the CONNECT path applies. Without this an `http://` scheme-downgrade
+        // bypasses `denied_hosts`/`network_allowlist` — the SSRF resolved-IP
+        // recheck below only guards address ranges, not policy hosts. Deny here
+        // (before any upstream dial), mirroring the CONNECT path's 403.
+        let deny_host = host.split(':').next().unwrap_or(host);
+        if let Some(reason) = self.connect_deny_reason(deny_host) {
+            tracing::info!(host = %deny_host, "plain-HTTP egress denied: {reason}");
+            self.interceptor.emit_policy_decision(deny_host, true).await;
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+
         // Connect to upstream via plain TCP.
         let upstream_addr = if host.contains(':') {
             host.to_string()
@@ -1095,11 +1108,12 @@ mod tests {
 
     #[tokio::test]
     async fn plain_http_forward_blocks_ssrf_resolved_ip() {
-        // AAASM-3140 regression: a plain-HTTP (non-CONNECT) request whose host
-        // resolves to a denied IP (here, loopback) must be refused by the same
-        // SSRF resolved-IP re-validation that guards the CONNECT/tunnel paths.
-        // Before the fix the plain-HTTP path dialed the upstream directly,
-        // bypassing the denylist.
+        // AAASM-3140 / AAASM-3864 regression: a plain-HTTP (non-CONNECT) request
+        // targeting an internal-address literal must be refused. With the egress
+        // denylist now enforced on the plain-HTTP path the loopback literal is
+        // caught by the SSRF guard inside `connect_deny_reason`, returning an
+        // explicit 403 (fail-closed) before any upstream dial.
+        use tokio::io::AsyncReadExt;
         let server = server_with(vec![], vec![]).await;
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -1113,11 +1127,16 @@ mod tests {
             .await
             .unwrap();
 
-        let result = server.handle_connection(server_stream).await;
-        let err = result.expect_err("plain-HTTP request to a blocked IP must be refused");
+        server
+            .handle_connection(server_stream)
+            .await
+            .expect("denied request returns Ok after writing 403");
+
+        let mut buf = String::new();
+        client.read_to_string(&mut buf).await.unwrap();
         assert!(
-            matches!(&err, ProxyError::Config(msg) if msg.contains("ssrf")),
-            "expected SSRF denial, got: {err:?}"
+            buf.contains("403"),
+            "plain-HTTP request to a blocked IP must be refused with 403, got: {buf:?}"
         );
     }
 }

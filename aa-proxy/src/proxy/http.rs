@@ -7,9 +7,10 @@
 //!
 //! Scope is intentionally small: only requests with a literal
 //! `Content-Length` header are fully supported. Requests using
-//! `Transfer-Encoding: chunked` parse the head but leave the body empty —
-//! that variant is rare for LLM POSTs and can be added when needed without
-//! breaking this API.
+//! `Transfer-Encoding: chunked` cannot be inspected by this parser, so the
+//! request side rejects them (fail-closed, AAASM-3864) rather than forwarding
+//! an un-scanned body. The response side still parses the head and leaves a
+//! chunked body empty (the MCP path falls back to a transparent relay).
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
@@ -43,8 +44,13 @@ impl HttpRequest {
 /// Read and parse an HTTP/1.1 request from `reader`.
 ///
 /// Reads the request line and headers off the stream, then reads exactly
-/// `Content-Length` bytes of body. Requests without `Content-Length` and
-/// without `Transfer-Encoding: chunked` are treated as having an empty body.
+/// `Content-Length` bytes of body. Requests without `Content-Length` are
+/// treated as having an empty body.
+///
+/// A request advertising `Transfer-Encoding: chunked` is **rejected** with a
+/// [`ProxyError::Config`] error (AAASM-3864): this parser cannot decode a
+/// chunked body, so forwarding it would let an un-scanned body slip past the
+/// credential and MCP gates. Failing closed drops the connection instead.
 ///
 /// Returns `Ok(None)` on a clean EOF before any bytes are read — that
 /// indicates the peer closed the connection between requests.
@@ -82,6 +88,19 @@ where
         } else {
             return Err(ProxyError::Config(format!("malformed header line: {trimmed:?}")));
         }
+    }
+
+    // AAASM-3864 (fail-closed): a chunked body cannot be parsed here, so the
+    // credential scanner and `parse_mcp_request` would see an empty body while
+    // the real payload was forwarded un-inspected. Refuse such requests rather
+    // than silently passing an un-scanned body upstream.
+    if headers
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked"))
+    {
+        return Err(ProxyError::Config(
+            "transfer-encoding: chunked request bodies are not inspectable; refusing (fail-closed)".into(),
+        ));
     }
 
     let content_length: usize = headers
@@ -134,6 +153,12 @@ pub fn serialize_http_request(req: &HttpRequest, new_body: &[u8]) -> Vec<u8> {
 ///
 /// When `injected_auth` is `None` the agent's own headers are forwarded
 /// verbatim (the historical, backward-compatible behaviour).
+///
+/// AAASM-3864: any inbound `Connection` header is dropped and a single
+/// `Connection: close` is emitted so the upstream tears the connection down
+/// after one request/response. Combined with the proxy's single-exchange
+/// relay this prevents a second request being pipelined onto the same tunnel
+/// and reaching upstream un-inspected.
 pub fn serialize_http_request_with_auth(req: &HttpRequest, new_body: &[u8], injected_auth: Option<&[u8]>) -> Vec<u8> {
     let mut out = Vec::with_capacity(req.body.len() + new_body.len() + 256);
     out.extend_from_slice(req.method.as_bytes());
@@ -144,7 +169,10 @@ pub fn serialize_http_request_with_auth(req: &HttpRequest, new_body: &[u8], inje
     out.extend_from_slice(b"\r\n");
 
     for (k, v) in &req.headers {
-        if k.eq_ignore_ascii_case("content-length") || k.eq_ignore_ascii_case("transfer-encoding") {
+        if k.eq_ignore_ascii_case("content-length")
+            || k.eq_ignore_ascii_case("transfer-encoding")
+            || k.eq_ignore_ascii_case("connection")
+        {
             continue;
         }
         // When injecting, strip any agent-supplied credential header so it
@@ -162,6 +190,9 @@ pub fn serialize_http_request_with_auth(req: &HttpRequest, new_body: &[u8], inje
         out.extend_from_slice(auth);
         out.extend_from_slice(b"\r\n");
     }
+    // AAASM-3864 (a): force a single request/response per upstream connection so
+    // a follow-up request cannot be pipelined onto the tunnel un-inspected.
+    out.extend_from_slice(b"Connection: close\r\n");
     out.extend_from_slice(b"Content-Length: ");
     out.extend_from_slice(new_body.len().to_string().as_bytes());
     out.extend_from_slice(b"\r\n\r\n");
@@ -362,14 +393,22 @@ mod tests {
         assert!(text.ends_with("\r\n\r\nshort"));
     }
 
-    #[tokio::test]
-    async fn serialize_drops_transfer_encoding_header() {
-        let raw = b"POST / HTTP/1.1\r\n\
-                    Host: x.example.com\r\n\
-                    Transfer-Encoding: chunked\r\n\
-                    \r\n";
-        let mut reader = make_reader(raw);
-        let req = read_http_request(&mut reader).await.unwrap().unwrap();
+    #[test]
+    fn serialize_drops_transfer_encoding_header() {
+        // `read_http_request` now rejects chunked requests (AAASM-3864), so the
+        // serializer's Transfer-Encoding stripping is exercised by constructing
+        // the request directly — it remains defence-in-depth for any caller that
+        // hands the serializer a request carrying a stale framing header.
+        let req = HttpRequest {
+            method: "POST".into(),
+            target: "/".into(),
+            version: "HTTP/1.1".into(),
+            headers: vec![
+                ("Host".into(), "x.example.com".into()),
+                ("Transfer-Encoding".into(), "chunked".into()),
+            ],
+            body: Vec::new(),
+        };
         let wire = serialize_http_request(&req, b"hi");
         let text = std::str::from_utf8(&wire).unwrap();
         assert!(
@@ -377,6 +416,39 @@ mod tests {
             "serialized request must drop Transfer-Encoding when replacing body, got: {text}",
         );
         assert!(text.contains("Content-Length: 2\r\n"));
+    }
+
+    #[test]
+    fn serialize_forces_connection_close_and_strips_inbound_connection() {
+        // AAASM-3864 (a): every forwarded request must carry exactly one
+        // `Connection: close` so upstream tears the tunnel down after one
+        // exchange, and any inbound Connection header the agent supplied (e.g.
+        // keep-alive) must be dropped.
+        let req = HttpRequest {
+            method: "POST".into(),
+            target: "/v1/x".into(),
+            version: "HTTP/1.1".into(),
+            headers: vec![
+                ("Host".into(), "api.openai.com".into()),
+                ("Connection".into(), "keep-alive".into()),
+            ],
+            body: Vec::new(),
+        };
+        let wire = serialize_http_request(&req, b"hi");
+        let text = std::str::from_utf8(&wire).unwrap();
+        assert_eq!(
+            text.to_ascii_lowercase().matches("connection:").count(),
+            1,
+            "exactly one Connection header expected: {text}"
+        );
+        assert!(
+            text.contains("Connection: close\r\n"),
+            "must force Connection: close: {text}"
+        );
+        assert!(
+            !text.to_ascii_lowercase().contains("keep-alive"),
+            "inbound keep-alive Connection header must be dropped: {text}"
+        );
     }
 
     #[tokio::test]
@@ -458,6 +530,24 @@ mod tests {
         assert!(
             matches!(err, ProxyError::Config(_)),
             "expected Config error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_chunked_transfer_encoding_request() {
+        // AAASM-3864: a request advertising a chunked body cannot be inspected
+        // by this Content-Length-only parser, so it must fail closed rather than
+        // yield an empty body that forwards an un-scanned payload upstream.
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\n\
+                    Host: api.openai.com\r\n\
+                    Transfer-Encoding: chunked\r\n\
+                    \r\n\
+                    5\r\nhello\r\n0\r\n\r\n";
+        let mut reader = make_reader(raw);
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("chunked")),
+            "expected fail-closed chunked rejection, got: {err:?}"
         );
     }
 
