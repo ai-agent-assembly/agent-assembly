@@ -182,6 +182,22 @@ mod tests {
     }
 
     #[test]
+    fn ws_event_to_entry_sanitizes_server_fields() {
+        let event = WsEvent {
+            id: 3,
+            event_type: "viol\x1b[31mation".to_string(),
+            agent_id: "a\x1b]52;c;ZXZpbA==\x07b".to_string(),
+            payload: serde_json::Value::String("denied\ninjected".to_string()),
+            timestamp: "2026-04-30T10:00:00Z".to_string(),
+        };
+        let entry = ws_event_to_entry(&event);
+        assert_eq!(entry.event_type, "violation");
+        assert_eq!(entry.agent_id, "ab");
+        assert_eq!(entry.message, "deniedinjected");
+        assert!(!entry.agent_id.contains('\x1b'));
+    }
+
+    #[test]
     fn ws_event_object_payload() {
         let event = WsEvent {
             id: 2,

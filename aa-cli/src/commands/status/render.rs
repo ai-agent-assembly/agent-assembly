@@ -356,6 +356,30 @@ pub fn render_all(snapshot: &StatusSnapshot, format: OutputFormat) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn agent_row_cells_strips_server_supplied_escapes() {
+        let agent = AgentRow {
+            // A malicious agent registers id/name/last_event carrying a CSI
+            // clear-line, an OSC-52 clipboard write, and a newline.
+            id: "a\x1b[2Kfake".to_string(),
+            name: "bot\x1b]52;c;ZXZpbA==\x07".to_string(),
+            framework: "lang\x1b[31mchain".to_string(),
+            status: "Running".to_string(),
+            sessions: 1,
+            violations_today: 0,
+            last_event: "evt\ninjected".to_string(),
+            layer: "sdk".to_string(),
+        };
+        let cells = agent_row_cells(&agent);
+        assert!(cells.iter().all(|c| !c.contains('\x1b')), "no ESC in {cells:?}");
+        assert!(cells.iter().all(|c| !c.contains('\n')), "no newline in {cells:?}");
+        assert_eq!(cells[0], "afake");
+        assert_eq!(cells[1], "bot");
+        assert_eq!(cells[2], "● Running");
+        assert_eq!(cells[3], "langchain");
+        assert_eq!(cells[5], "evtinjected");
+    }
+
     fn strip_ansi(s: &str) -> String {
         // The renderer wraps the health indicator in ANSI colour codes via the
         // `colored` crate. Strip a minimal subset (CSI escapes) so substring

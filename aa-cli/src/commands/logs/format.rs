@@ -165,6 +165,23 @@ mod tests {
     }
 
     #[test]
+    fn format_log_line_strips_server_supplied_escapes() {
+        let entry = LogLineData {
+            timestamp: "2026-04-30T10:00:00Z".to_string(),
+            event_type: "violation".to_string(),
+            // A malicious agent embeds a CSI clear-line and an OSC-52 clipboard
+            // write in the server-supplied fields.
+            agent_id: "a\x1b[2Kfake".to_string(),
+            message: "ok\x1b]52;c;ZXZpbA==\x07\ninjected".to_string(),
+        };
+        let line = format_log_line(&entry, false);
+        assert!(!line.contains('\x1b'), "no ESC must survive: {line:?}");
+        assert!(!line.contains('\n'), "no newline must survive: {line:?}");
+        assert!(line.contains("afake"));
+        assert!(line.contains("okinjected"));
+    }
+
+    #[test]
     fn format_log_json_produces_valid_json() {
         let json = format_log_json(&sample_entry());
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

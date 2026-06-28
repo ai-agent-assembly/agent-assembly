@@ -67,3 +67,35 @@ pub fn sanitize_terminal(input: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_csi_color_sequences() {
+        assert_eq!(sanitize_terminal("\x1b[31mred\x1b[0m"), "red");
+        assert_eq!(sanitize_terminal("a\x1b[1;33mb\x1b[0mc"), "abc");
+    }
+
+    #[test]
+    fn strips_osc_clipboard_write() {
+        // OSC-52 clipboard write, BEL-terminated.
+        assert_eq!(sanitize_terminal("a\x1b]52;c;ZXZpbA==\x07b"), "ab");
+        // OSC title set, ST-terminated (ESC \).
+        assert_eq!(sanitize_terminal("a\x1b]0;pwned\x1b\\b"), "ab");
+    }
+
+    #[test]
+    fn strips_c0_controls_and_del() {
+        // Newlines/carriage returns/tab/backspace/DEL are all removed so a
+        // single-line field cannot inject extra lines.
+        assert_eq!(sanitize_terminal("line1\nline2\r\t\x08\x7fx"), "line1line2x");
+    }
+
+    #[test]
+    fn preserves_plain_and_unicode_text() {
+        assert_eq!(sanitize_terminal("agent-7 working"), "agent-7 working");
+        assert_eq!(sanitize_terminal("héllo-β-世界"), "héllo-β-世界");
+    }
+}
