@@ -4,12 +4,15 @@
 //! node→node message transition. Verifies that a `Messages` edge is stored
 //! correctly in the InMemoryEdgeRepo via the topology gRPC service.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use aa_core::identity::AgentId;
 use aa_core::topology::{EdgeRepo, EdgeType};
 use aa_gateway::edges::InMemoryEdgeRepo;
-use aa_gateway::registry::AgentRegistry;
+use aa_gateway::iam::VerifiedCaller;
+use aa_gateway::registry::store::AgentRecord;
+use aa_gateway::registry::{AgentRegistry, AgentStatus};
 use aa_gateway::service::TopologyServiceImpl;
 use aa_proto::assembly::topology::v1::{topology_service_server::TopologyService, ReportEdgeRequest};
 use tonic::Request;
@@ -21,11 +24,66 @@ fn agent_id(b: u8) -> ([u8; 16], String) {
     (bytes, hex)
 }
 
-fn make_service() -> (TopologyServiceImpl, InMemoryEdgeRepo) {
+/// Minimal active, untenanted agent record (single-tenant deployment).
+fn make_record(id: [u8; 16]) -> AgentRecord {
+    AgentRecord {
+        agent_id: id,
+        name: "edge-agent".into(),
+        framework: "custom".into(),
+        version: "1.0.0".into(),
+        risk_tier: 0,
+        tool_names: vec![],
+        public_key: "pk_test".into(),
+        credential_token: format!("tok_{}", id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        metadata: BTreeMap::new(),
+        registered_at: chrono::Utc::now(),
+        last_heartbeat: chrono::Utc::now(),
+        status: AgentStatus::Active,
+        pid: None,
+        session_count: 0,
+        last_event: None,
+        policy_violations_count: 0,
+        active_sessions: vec![],
+        recent_events: VecDeque::new(),
+        recent_traces: vec![],
+        layer: None,
+        governance_level: aa_core::GovernanceLevel::default(),
+        parent_agent_id: None,
+        team_id: None,
+        depth: 0,
+        delegation_reason: None,
+        spawned_by_tool: None,
+        root_agent_id: Some(id),
+        children: vec![],
+        parent_key: None,
+        enforcement_mode: None,
+        org_id: None,
+    }
+}
+
+/// Build a topology service whose registry already contains `agents`, so the
+/// AAASM-3855 tenant-binding in `report_edge` can resolve both edge endpoints.
+fn make_service(agents: &[[u8; 16]]) -> (TopologyServiceImpl, InMemoryEdgeRepo) {
     let repo = InMemoryEdgeRepo::new();
     let registry = Arc::new(AgentRegistry::new());
+    for id in agents {
+        registry.register(make_record(*id)).unwrap();
+    }
     let svc = TopologyServiceImpl::new(registry, repo.clone());
     (svc, repo)
+}
+
+/// AAASM-3855 — wrap a `ReportEdgeRequest` with an authenticated, untenanted
+/// caller (single-tenant deployment), as the gateway auth interceptor would
+/// inject it into the request extensions.
+fn authed_request(req: ReportEdgeRequest) -> Request<ReportEdgeRequest> {
+    let mut request = Request::new(req);
+    request.extensions_mut().insert(VerifiedCaller {
+        agent_key: [0xff; 16],
+        team_id: None,
+        org_id: None,
+    });
+    request
 }
 
 /// Simulates a LangGraph node→node transition emitting a `messages` edge.
@@ -33,14 +91,13 @@ fn make_service() -> (TopologyServiceImpl, InMemoryEdgeRepo) {
 /// calls `ReportEdge` with `edge_type = "messages"`.
 #[tokio::test]
 async fn langgraph_node_to_node_messages_edge_is_stored() {
-    let (svc, repo) = make_service();
-
-    let (_, source_hex) = agent_id(0x01);
-    let (_, target_hex) = agent_id(0x02);
+    let (source_bytes, source_hex) = agent_id(0x01);
+    let (target_bytes, target_hex) = agent_id(0x02);
+    let (svc, repo) = make_service(&[source_bytes, target_bytes]);
 
     // Simulate the LangGraph adapter calling ReportEdge on node→node transition.
     let resp = svc
-        .report_edge(Request::new(ReportEdgeRequest {
+        .report_edge(authed_request(ReportEdgeRequest {
             source_agent_id: source_hex.clone(),
             target_agent_id: target_hex.clone(),
             edge_type: "messages".to_string(),
@@ -53,7 +110,6 @@ async fn langgraph_node_to_node_messages_edge_is_stored() {
     assert!(edge_id > 0, "auto-assigned id must be positive");
 
     // Verify the edge was persisted in the shared repo.
-    let (source_bytes, _) = agent_id(0x01);
     let source_agent = AgentId::from_bytes(source_bytes);
     let outgoing = repo
         .list_outgoing(source_agent, Some(EdgeType::Messages), 10)
@@ -71,12 +127,11 @@ async fn langgraph_node_to_node_messages_edge_is_stored() {
 /// Simulates the OpenAI Agents adapter emitting a `delegates_to` edge on handoff.
 #[tokio::test]
 async fn openai_agents_handoff_delegates_to_edge_is_stored() {
-    let (svc, repo) = make_service();
+    let (orchestrator_bytes, orchestrator_hex) = agent_id(0xA0);
+    let (worker_bytes, worker_hex) = agent_id(0xB0);
+    let (svc, repo) = make_service(&[orchestrator_bytes, worker_bytes]);
 
-    let (_, orchestrator_hex) = agent_id(0xA0);
-    let (_, worker_hex) = agent_id(0xB0);
-
-    svc.report_edge(Request::new(ReportEdgeRequest {
+    svc.report_edge(authed_request(ReportEdgeRequest {
         source_agent_id: orchestrator_hex.clone(),
         target_agent_id: worker_hex.clone(),
         edge_type: "delegates_to".to_string(),
@@ -85,7 +140,6 @@ async fn openai_agents_handoff_delegates_to_edge_is_stored() {
     .await
     .expect("delegates_to edge should be recorded");
 
-    let (orchestrator_bytes, _) = agent_id(0xA0);
     let orchestrator = AgentId::from_bytes(orchestrator_bytes);
     let outgoing = repo
         .list_outgoing(orchestrator, Some(EdgeType::DelegatesTo), 10)
@@ -99,12 +153,11 @@ async fn openai_agents_handoff_delegates_to_edge_is_stored() {
 /// Simulates the MCP tool-call interceptor emitting a `calls` edge.
 #[tokio::test]
 async fn mcp_tool_call_calls_edge_is_stored() {
-    let (svc, repo) = make_service();
+    let (caller_bytes, caller_hex) = agent_id(0xC0);
+    let (tool_bytes, tool_hex) = agent_id(0xD0);
+    let (svc, repo) = make_service(&[caller_bytes, tool_bytes]);
 
-    let (_, caller_hex) = agent_id(0xC0);
-    let (_, tool_hex) = agent_id(0xD0);
-
-    svc.report_edge(Request::new(ReportEdgeRequest {
+    svc.report_edge(authed_request(ReportEdgeRequest {
         source_agent_id: caller_hex.clone(),
         target_agent_id: tool_hex.clone(),
         edge_type: "calls".to_string(),
@@ -113,7 +166,6 @@ async fn mcp_tool_call_calls_edge_is_stored() {
     .await
     .expect("calls edge should be recorded");
 
-    let (caller_bytes, _) = agent_id(0xC0);
     let caller = AgentId::from_bytes(caller_bytes);
     let outgoing = repo.list_outgoing(caller, Some(EdgeType::Calls), 10).await.unwrap();
 
@@ -126,18 +178,22 @@ async fn mcp_tool_call_calls_edge_is_stored() {
 /// Direct InMemoryEdgeRepo test — all six edge types accepted.
 #[tokio::test]
 async fn all_six_edge_types_round_trip_via_report_edge() {
-    let (svc, repo) = make_service();
-
     let types = ["delegates_to", "calls", "reads", "writes", "approves", "messages"];
 
+    // Pre-register every source/target agent so report_edge can resolve them.
+    let mut agents = Vec::new();
+    for i in 0..types.len() {
+        agents.push(agent_id((0x10 + i) as u8).0);
+        agents.push(agent_id((0x20 + i) as u8).0);
+    }
+    let (svc, repo) = make_service(&agents);
+
     for (i, edge_type) in types.iter().enumerate() {
-        let (src_bytes, _) = agent_id((0x10 + i) as u8);
-        let (tgt_bytes, _) = agent_id((0x20 + i) as u8);
-        let src_hex = src_bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let tgt_hex = tgt_bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let (src_bytes, src_hex) = agent_id((0x10 + i) as u8);
+        let (_, tgt_hex) = agent_id((0x20 + i) as u8);
 
         let resp = svc
-            .report_edge(Request::new(ReportEdgeRequest {
+            .report_edge(authed_request(ReportEdgeRequest {
                 source_agent_id: src_hex,
                 target_agent_id: tgt_hex,
                 edge_type: edge_type.to_string(),

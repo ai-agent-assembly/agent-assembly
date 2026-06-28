@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use aa_gateway::edges::InMemoryEdgeRepo;
+use aa_gateway::iam::{enrich_interceptor, CREDENTIAL_METADATA_KEY};
 use aa_gateway::registry::store::AgentRecord;
 use aa_gateway::registry::{AgentRegistry, AgentStatus};
 use aa_gateway::service::TopologyServiceImpl;
@@ -19,23 +20,51 @@ use tonic::Code;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+// AAASM-3855 — the topology `report_edge` write RPC now binds to the verified
+// caller, so the e2e server fronts the service with the (non-rejecting)
+// `enrich_interceptor` and registers an authenticated caller whose token the
+// report_edge tests present. The read RPCs stay token-optional, so the read
+// tests need no token.
+const CALLER_TOKEN: &str = "tok-edge-caller";
+
 async fn start_server() -> (SocketAddr, Arc<AgentRegistry>) {
     let registry = Arc::new(AgentRegistry::new());
+    // Register the authenticated, untenanted caller used by the report_edge tests.
+    registry
+        .register(make_record_with_token(
+            [0xee; 16],
+            "edge-caller",
+            0,
+            None,
+            None,
+            CALLER_TOKEN,
+        ))
+        .unwrap();
     let edge_repo = InMemoryEdgeRepo::new();
     let service = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
+    let interceptor = enrich_interceptor(Arc::clone(&registry));
     tokio::spawn(async move {
         Server::builder()
-            .add_service(TopologyServiceServer::new(service))
+            .add_service(TopologyServiceServer::with_interceptor(service, interceptor))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
             .unwrap();
     });
 
     (addr, registry)
+}
+
+/// Attach the caller credential token so `enrich_interceptor` injects a
+/// `VerifiedCaller` into the request extensions.
+fn with_token<T>(message: T) -> tonic::Request<T> {
+    let mut req = tonic::Request::new(message);
+    req.metadata_mut()
+        .insert(CREDENTIAL_METADATA_KEY, CALLER_TOKEN.parse().unwrap());
+    req
 }
 
 fn make_record(
@@ -78,6 +107,21 @@ fn make_record(
         enforcement_mode: None,
         org_id: None,
     }
+}
+
+/// Like [`make_record`] but with an explicit credential token, so a specific
+/// agent can be resolved by the auth/enrich interceptor's token reverse-index.
+fn make_record_with_token(
+    id: [u8; 16],
+    name: &str,
+    depth: u32,
+    parent_key: Option<[u8; 16]>,
+    team_id: Option<&str>,
+    token: &str,
+) -> AgentRecord {
+    let mut record = make_record(id, name, depth, parent_key, team_id);
+    record.credential_token = token.into();
+    record
 }
 
 fn hex_id(id: &[u8; 16]) -> String {
@@ -473,31 +517,37 @@ async fn topology_all_rpcs_3level_2team_fixture() {
 
 #[tokio::test]
 async fn report_edge_returns_monotonically_increasing_ids() {
-    let (addr, _registry) = start_server().await;
+    let (addr, registry) = start_server().await;
+    registry
+        .register(make_record([0xc0; 16], "src", 0, None, None))
+        .unwrap();
+    registry
+        .register(make_record([0xc1; 16], "tgt", 0, None, None))
+        .unwrap();
     let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
     let src = hex_id(&[0xc0; 16]);
     let tgt = hex_id(&[0xc1; 16]);
 
     let id1 = client
-        .report_edge(ReportEdgeRequest {
+        .report_edge(with_token(ReportEdgeRequest {
             source_agent_id: src.clone(),
             target_agent_id: tgt.clone(),
             edge_type: "calls".into(),
             metadata_json: String::new(),
-        })
+        }))
         .await
         .unwrap()
         .into_inner()
         .id;
 
     let id2 = client
-        .report_edge(ReportEdgeRequest {
+        .report_edge(with_token(ReportEdgeRequest {
             source_agent_id: src,
             target_agent_id: tgt,
             edge_type: "reads".into(),
             metadata_json: String::new(),
-        })
+        }))
         .await
         .unwrap()
         .into_inner()
@@ -512,12 +562,12 @@ async fn report_edge_invalid_source_hex_returns_invalid_argument() {
     let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
     let err = client
-        .report_edge(ReportEdgeRequest {
+        .report_edge(with_token(ReportEdgeRequest {
             source_agent_id: "not-hex!!".into(),
             target_agent_id: hex_id(&[0xd0; 16]),
             edge_type: "calls".into(),
             metadata_json: String::new(),
-        })
+        }))
         .await
         .unwrap_err();
 
@@ -530,12 +580,12 @@ async fn report_edge_invalid_target_hex_returns_invalid_argument() {
     let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
     let err = client
-        .report_edge(ReportEdgeRequest {
+        .report_edge(with_token(ReportEdgeRequest {
             source_agent_id: hex_id(&[0xd1; 16]),
             target_agent_id: "bad-id".into(),
             edge_type: "calls".into(),
             metadata_json: String::new(),
-        })
+        }))
         .await
         .unwrap_err();
 
@@ -548,12 +598,12 @@ async fn report_edge_unknown_edge_type_returns_invalid_argument() {
     let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
     let err = client
-        .report_edge(ReportEdgeRequest {
+        .report_edge(with_token(ReportEdgeRequest {
             source_agent_id: hex_id(&[0xe0; 16]),
             target_agent_id: hex_id(&[0xe1; 16]),
             edge_type: "not_a_valid_type".into(),
             metadata_json: String::new(),
-        })
+        }))
         .await
         .unwrap_err();
 
@@ -566,12 +616,12 @@ async fn report_edge_invalid_metadata_json_returns_invalid_argument() {
     let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
     let err = client
-        .report_edge(ReportEdgeRequest {
+        .report_edge(with_token(ReportEdgeRequest {
             source_agent_id: hex_id(&[0xf0; 16]),
             target_agent_id: hex_id(&[0xf1; 16]),
             edge_type: "calls".into(),
             metadata_json: "{not valid json".into(),
-        })
+        }))
         .await
         .unwrap_err();
 
@@ -580,16 +630,22 @@ async fn report_edge_invalid_metadata_json_returns_invalid_argument() {
 
 #[tokio::test]
 async fn report_edge_accepts_valid_metadata_json() {
-    let (addr, _registry) = start_server().await;
+    let (addr, registry) = start_server().await;
+    registry
+        .register(make_record([0x01; 16], "src", 0, None, None))
+        .unwrap();
+    registry
+        .register(make_record([0x02; 16], "tgt", 0, None, None))
+        .unwrap();
     let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
     let resp = client
-        .report_edge(ReportEdgeRequest {
+        .report_edge(with_token(ReportEdgeRequest {
             source_agent_id: hex_id(&[0x01; 16]),
             target_agent_id: hex_id(&[0x02; 16]),
             edge_type: "writes".into(),
             metadata_json: r#"{"graph":"orders","key":"user_id"}"#.into(),
-        })
+        }))
         .await
         .unwrap()
         .into_inner();
@@ -599,7 +655,13 @@ async fn report_edge_accepts_valid_metadata_json() {
 
 #[tokio::test]
 async fn report_edge_accepts_all_six_edge_types() {
-    let (addr, _registry) = start_server().await;
+    let (addr, registry) = start_server().await;
+    registry
+        .register(make_record([0x10; 16], "src", 0, None, None))
+        .unwrap();
+    registry
+        .register(make_record([0x11; 16], "tgt", 0, None, None))
+        .unwrap();
     let mut client = TopologyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
     let src = hex_id(&[0x10; 16]);
@@ -607,12 +669,12 @@ async fn report_edge_accepts_all_six_edge_types() {
 
     for edge_type in &["delegates_to", "calls", "reads", "writes", "approves", "messages"] {
         let resp = client
-            .report_edge(ReportEdgeRequest {
+            .report_edge(with_token(ReportEdgeRequest {
                 source_agent_id: src.clone(),
                 target_agent_id: tgt.clone(),
                 edge_type: edge_type.to_string(),
                 metadata_json: String::new(),
-            })
+            }))
             .await
             .unwrap_or_else(|e| panic!("edge_type {edge_type} failed: {e}"))
             .into_inner();
