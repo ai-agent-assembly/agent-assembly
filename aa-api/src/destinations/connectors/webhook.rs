@@ -5,10 +5,12 @@
 //! `X-AAASM-Token` header so the receiving service can authenticate the
 //! webhook before acting on it.
 
+use std::net::SocketAddr;
+
 use chrono::Utc;
 
 use crate::destinations::connectors::{
-    shared_client, ConnectorError, DispatchOutcome, DispatchRequest, NotificationConnector,
+    egress_client, ConnectorError, DispatchOutcome, DispatchRequest, NotificationConnector,
 };
 use crate::destinations::types::{Destination, DestinationConfig};
 
@@ -21,6 +23,7 @@ impl NotificationConnector for WebhookConnector {
         &self,
         destination: &Destination,
         req: &DispatchRequest,
+        pinned: &[SocketAddr],
     ) -> Result<DispatchOutcome, ConnectorError> {
         let (url, secret_header) = match &destination.config {
             DestinationConfig::Webhook { url, secret_header } => (url.clone(), secret_header.clone()),
@@ -31,7 +34,16 @@ impl NotificationConnector for WebhookConnector {
             }
         };
 
-        let mut builder = shared_client().post(&url).json(&serde_json::json!({
+        // AAASM-3826: pin the connection to the SSRF-vetted address so a
+        // DNS-rebind after the egress check cannot redirect this POST to an
+        // internal host. The host is extracted from the already-validated URL.
+        let host = url::Url::parse(&url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .unwrap_or_default();
+        let client = egress_client(&host, pinned);
+
+        let mut builder = client.post(&url).json(&serde_json::json!({
             "severity": req.severity,
             "message": req.message,
             "sent_at": Utc::now().to_rfc3339(),

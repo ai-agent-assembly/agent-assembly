@@ -22,6 +22,9 @@ impl NotificationConnector for PagerDutyConnector {
         &self,
         destination: &Destination,
         req: &DispatchRequest,
+        // PagerDuty POSTs to a hard-coded vendor host, so there is no
+        // caller-controlled SSRF surface to pin (AAASM-3826).
+        _pinned: &[std::net::SocketAddr],
     ) -> Result<DispatchOutcome, ConnectorError> {
         let (routing_key, severity_map) = match &destination.config {
             DestinationConfig::PagerDuty {

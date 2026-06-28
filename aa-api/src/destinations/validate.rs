@@ -4,7 +4,7 @@
 //! connector relies on at dispatch time (URL parse, https-only for Slack,
 //! non-empty PagerDuty routing key, OpsGenie key + team).
 
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
 use crate::destinations::types::{Destination, DestinationConfig};
 
@@ -147,40 +147,56 @@ fn check_egress_addr(ip: IpAddr) -> Result<(), ValidationError> {
     }
 }
 
-/// Guard a webhook URL against SSRF before it is dispatched (AAASM-3789).
+/// Guard a webhook URL against SSRF before it is dispatched (AAASM-3789) and
+/// return the **vetted socket addresses** the dispatch must pin to (AAASM-3826).
 ///
 /// Rejects a URL whose host — or any address it resolves to — falls in a
 /// loopback / private / link-local / ULA / metadata range. Literal-IP hosts are
 /// checked directly; hostnames are resolved and *every* returned address must be
 /// allowed, so a single internal answer rejects the whole host (defeating
-/// DNS-rebinding to an internal target). Honors [`ALLOW_PRIVATE_EGRESS_ENV`].
+/// DNS-rebinding to an internal target).
+///
+/// To close the DNS-rebinding TOCTOU, the connector must connect to exactly the
+/// addresses returned here rather than re-resolving the host at connect time
+/// (where a low-TTL name could have flipped to an internal address after this
+/// check). The returned vector carries every vetted [`SocketAddr`] for the
+/// host; an **empty** vector means "do not pin" — returned only when the
+/// operator has opted out via [`ALLOW_PRIVATE_EGRESS_ENV`].
 ///
 /// Performs a **blocking** DNS lookup for hostname targets, so call it from a
 /// blocking context (e.g. `tokio::task::spawn_blocking`) rather than directly
 /// on an async task.
-pub fn validate_webhook_egress(url: &url::Url) -> Result<(), ValidationError> {
+pub fn validate_webhook_egress(url: &url::Url) -> Result<Vec<SocketAddr>, ValidationError> {
     if private_egress_allowed() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let host = url
         .host()
         .ok_or(ValidationError::InvalidConfig("webhook.url has no host"))?;
+    let port = url.port_or_known_default().unwrap_or(443);
     match host {
-        url::Host::Ipv4(ip) => check_egress_addr(IpAddr::V4(ip)),
-        url::Host::Ipv6(ip) => check_egress_addr(IpAddr::V6(ip)),
+        url::Host::Ipv4(ip) => {
+            let addr = IpAddr::V4(ip);
+            check_egress_addr(addr)?;
+            Ok(vec![SocketAddr::new(addr, port)])
+        }
+        url::Host::Ipv6(ip) => {
+            let addr = IpAddr::V6(ip);
+            check_egress_addr(addr)?;
+            Ok(vec![SocketAddr::new(addr, port)])
+        }
         url::Host::Domain(domain) => {
-            let port = url.port_or_known_default().unwrap_or(443);
-            let mut resolved = (domain, port)
+            let resolved: Vec<SocketAddr> = (domain, port)
                 .to_socket_addrs()
                 .map_err(|_| ValidationError::InvalidConfig("webhook.url host could not be resolved"))?
-                .peekable();
-            if resolved.peek().is_none() {
+                .collect();
+            if resolved.is_empty() {
                 return Err(ValidationError::InvalidConfig("webhook.url host did not resolve"));
             }
-            for sa in resolved {
+            for sa in &resolved {
                 check_egress_addr(sa.ip())?;
             }
-            Ok(())
+            Ok(resolved)
         }
     }
 }
@@ -311,7 +327,7 @@ mod tests {
     // ── Egress guard (AAASM-3789) ────────────────────────────────────────────
 
     fn egress(url: &str) -> Result<(), ValidationError> {
-        validate_webhook_egress(&url::Url::parse(url).expect("test url parses"))
+        validate_webhook_egress(&url::Url::parse(url).expect("test url parses")).map(|_| ())
     }
 
     #[test]
@@ -341,6 +357,31 @@ mod tests {
         // A public literal IP carries no DNS dependency and must be allowed.
         assert!(egress("http://8.8.8.8/hook").is_ok());
         assert!(egress("https://1.1.1.1/hook").is_ok());
+    }
+
+    #[test]
+    fn egress_returns_vetted_addr_for_pinning() {
+        // AAASM-3826: the guard hands back the exact vetted socket address(es)
+        // so the connector can pin its connection to them rather than
+        // re-resolving the host at connect time (the DNS-rebinding window).
+        let addrs = validate_webhook_egress(&url::Url::parse("http://8.8.8.8:80/hook").expect("url parses"))
+            .expect("public literal IP is allowed");
+        assert_eq!(addrs, vec![SocketAddr::from(([8, 8, 8, 8], 80))]);
+
+        // The default https port is filled in for scheme-default URLs.
+        let https = validate_webhook_egress(&url::Url::parse("https://1.1.1.1/hook").expect("url parses"))
+            .expect("public literal IP is allowed");
+        assert_eq!(https, vec![SocketAddr::from(([1, 1, 1, 1], 443))]);
+    }
+
+    #[test]
+    fn egress_opt_out_returns_no_pin() {
+        // With the self-host opt-out set, the guard is disabled and returns an
+        // empty vetted set, signalling the connector not to pin.
+        std::env::set_var(ALLOW_PRIVATE_EGRESS_ENV, "1");
+        let addrs = validate_webhook_egress(&url::Url::parse("http://127.0.0.1/hook").expect("url parses"));
+        std::env::remove_var(ALLOW_PRIVATE_EGRESS_ENV);
+        assert_eq!(addrs, Ok(Vec::new()));
     }
 
     #[test]

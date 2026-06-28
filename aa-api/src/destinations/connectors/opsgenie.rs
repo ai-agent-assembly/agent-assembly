@@ -34,6 +34,9 @@ impl NotificationConnector for OpsGenieConnector {
         &self,
         destination: &Destination,
         req: &DispatchRequest,
+        // OpsGenie POSTs to a hard-coded vendor host, so there is no
+        // caller-controlled SSRF surface to pin (AAASM-3826).
+        _pinned: &[std::net::SocketAddr],
     ) -> Result<DispatchOutcome, ConnectorError> {
         let (api_key, team_id) = match &destination.config {
             DestinationConfig::OpsGenie { api_key, team_id } => (api_key.clone(), team_id.clone()),

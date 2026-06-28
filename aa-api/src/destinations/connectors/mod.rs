@@ -5,6 +5,7 @@
 //! sub-modules; PagerDuty and OpsGenie are gated behind cargo features so
 //! the binary footprint stays small when only webhook / Slack are needed.
 
+use std::net::SocketAddr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -84,11 +85,35 @@ pub enum ConnectorError {
 #[async_trait::async_trait]
 pub trait NotificationConnector: Send + Sync {
     /// Dispatch `req` to `destination` and return the outcome.
+    ///
+    /// `pinned` carries the socket addresses the SSRF egress guard already
+    /// vetted for this destination's caller-controlled URL (AAASM-3826).
+    /// Connectors that egress to a caller-controlled host (webhook, Slack)
+    /// MUST pin their outbound connection to exactly these addresses so a
+    /// DNS-rebind between the guard's check and the actual connect cannot
+    /// redirect traffic to an internal target. An empty slice means "no
+    /// pinning" — used for hard-coded vendor hosts (PagerDuty / OpsGenie) and
+    /// when the operator has opted out of the egress guard.
     async fn dispatch(
         &self,
         destination: &Destination,
         req: &DispatchRequest,
+        pinned: &[SocketAddr],
     ) -> Result<DispatchOutcome, ConnectorError>;
+}
+
+/// Common `reqwest::ClientBuilder` carrying the connectors' shared hardening:
+/// bounded connect/overall timeouts and a no-redirect policy.
+///
+/// AAASM-3789: never follow redirects. A redirect can bounce an
+/// otherwise-allowlisted destination to an internal address (cloud metadata,
+/// loopback, RFC1918), re-opening the SSRF the egress guard closes. A 3xx is
+/// surfaced to the caller as a non-2xx outcome instead of being chased inward.
+fn client_builder() -> reqwest::ClientBuilder {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
 }
 
 /// Shared `reqwest::Client` used by every connector. Constructed once so
@@ -96,19 +121,26 @@ pub trait NotificationConnector: Send + Sync {
 #[allow(dead_code)] // wired up by per-kind connectors in subsequent commits
 pub(crate) fn shared_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        Client::builder()
-            .connect_timeout(Duration::from_secs(8))
-            .timeout(Duration::from_secs(15))
-            // AAASM-3789: never follow redirects. A redirect can bounce an
-            // otherwise-allowlisted destination to an internal address (cloud
-            // metadata, loopback, RFC1918), re-opening the SSRF the egress
-            // guard closes. A 3xx is surfaced to the caller as a non-2xx
-            // outcome instead of being chased inward.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("reqwest client construction failed")
-    })
+    CLIENT.get_or_init(|| client_builder().build().expect("reqwest client construction failed"))
+}
+
+/// Build the client a caller-controlled-host connector (webhook / Slack) uses
+/// to egress, pinning DNS resolution for `host` to the SSRF-vetted `pinned`
+/// addresses (AAASM-3826).
+///
+/// When `pinned` is non-empty the returned client resolves `host` only to those
+/// exact addresses, so the connection lands on the address the egress guard
+/// already vetted — a DNS-rebind to an internal target after the check cannot
+/// take effect. An empty `pinned` (vendor hosts, or the guard opt-out) returns
+/// the shared pooled client unchanged.
+pub(crate) fn egress_client(host: &str, pinned: &[SocketAddr]) -> Client {
+    if pinned.is_empty() {
+        return shared_client().clone();
+    }
+    client_builder()
+        .resolve_to_addrs(host, pinned)
+        .build()
+        .expect("reqwest pinned client construction failed")
 }
 
 /// Cap a response body at 2048 bytes so error envelopes stay bounded.

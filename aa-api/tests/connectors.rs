@@ -61,7 +61,7 @@ async fn webhook_dispatch_posts_payload_and_returns_outcome_on_2xx() {
     });
 
     let outcome = WebhookConnector
-        .dispatch(&dst, &request("HIGH", "disk full"))
+        .dispatch(&dst, &request("HIGH", "disk full"), &[])
         .await
         .expect("2xx is a success");
 
@@ -89,7 +89,7 @@ async fn webhook_dispatch_includes_secret_header_when_configured() {
     });
 
     WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect("authenticated webhook succeeds");
 
@@ -111,7 +111,7 @@ async fn webhook_dispatch_maps_non_2xx_to_http_error() {
     });
 
     let err = WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("500 must surface as an error");
 
@@ -143,7 +143,7 @@ async fn webhook_dispatch_never_reflects_response_body() {
     });
 
     let outcome = WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .unwrap();
 
@@ -162,7 +162,7 @@ async fn webhook_dispatch_transport_error_on_unreachable_host() {
     });
 
     let err = WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("unreachable host must be a transport error");
 
@@ -177,7 +177,7 @@ async fn webhook_connector_rejects_non_webhook_destination() {
     });
 
     let err = WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("wrong destination kind must be rejected");
 
@@ -206,7 +206,7 @@ async fn webhook_dispatch_does_not_follow_redirects() {
     });
 
     let err = WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("a redirect must surface as a non-2xx error, not be followed");
 
@@ -215,6 +215,52 @@ async fn webhook_dispatch_does_not_follow_redirects() {
         other => panic!("expected Http error carrying the 3xx, got {other:?}"),
     }
     mock.assert();
+}
+
+#[tokio::test]
+async fn webhook_dispatch_pins_to_vetted_addr() {
+    // AAASM-3826: the connector must connect to the SSRF-vetted address handed
+    // to it rather than re-resolving the host (the DNS-rebinding window). We
+    // point a host that can never resolve via DNS (`.invalid`, RFC 2606) at the
+    // mock's address through `pinned`; the request can only land if the pin is
+    // honored — exactly the rebinding defense (connect to the vetted address,
+    // not a freshly-resolved one).
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(MOCK_POST).path("/hook");
+        then.status(200);
+    });
+    let addr = *server.address();
+
+    let dst = destination(DestinationConfig::Webhook {
+        url: format!("http://pinned.aaasm.invalid:{}/hook", addr.port()),
+        secret_header: None,
+    });
+
+    WebhookConnector
+        .dispatch(&dst, &DispatchRequest::default(), &[addr])
+        .await
+        .expect("a request pinned to the vetted address reaches it");
+
+    mock.assert();
+}
+
+#[tokio::test]
+async fn webhook_dispatch_without_pin_cannot_resolve_invalid_host() {
+    // Counterpart to the pinning test: the same unresolvable `.invalid` host
+    // with no pin must fail at connect time (DNS resolution), proving the pin —
+    // not some other fallback — is what made the pinned request succeed.
+    let dst = destination(DestinationConfig::Webhook {
+        url: "http://pinned.aaasm.invalid:9/hook".to_string(),
+        secret_header: None,
+    });
+
+    let err = WebhookConnector
+        .dispatch(&dst, &DispatchRequest::default(), &[])
+        .await
+        .expect_err("an unresolvable host with no pin cannot connect");
+
+    assert!(matches!(err, ConnectorError::Transport(_)));
 }
 
 // ── Slack connector ────────────────────────────────────────────────────────
@@ -238,13 +284,17 @@ async fn slack_dispatch_posts_text_payload_and_returns_outcome() {
     });
 
     let outcome = SlackConnector
-        .dispatch(&dst, &request("CRITICAL", "pipeline down"))
+        .dispatch(&dst, &request("CRITICAL", "pipeline down"), &[])
         .await
         .expect("slack 200 is a success");
 
     mock.assert();
     assert_eq!(outcome.connector_response_status, 200);
-    assert_eq!(outcome.connector_response_body, "ok");
+    // AAASM-3827: the upstream Slack body is no longer reflected to the caller.
+    assert!(
+        outcome.connector_response_body.is_empty(),
+        "upstream Slack body must not be reflected"
+    );
 }
 
 #[tokio::test]
@@ -265,7 +315,7 @@ async fn slack_dispatch_includes_channel_override_when_configured() {
     });
 
     SlackConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .unwrap();
 
@@ -286,12 +336,61 @@ async fn slack_dispatch_maps_non_2xx_to_http_error() {
     });
 
     let err = SlackConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("404 must surface as an error");
 
     match err {
         ConnectorError::Http { status, .. } => assert_eq!(status, 404),
+        other => panic!("expected Http error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn slack_dispatch_never_reflects_response_body() {
+    // AAASM-3827: the Slack `webhook_url` is caller-controlled, so no part of
+    // the upstream response body may leak back to the caller — on success or on
+    // failure — otherwise the test-fire is an SSRF data-exfiltration sink.
+    let big = "x".repeat(3000);
+
+    // 2xx: the success outcome carries no upstream body.
+    let ok_server = MockServer::start();
+    ok_server.mock(|when, then| {
+        when.method(MOCK_POST).path("/slack");
+        then.status(200).body(&big);
+    });
+    let ok_dst = destination(DestinationConfig::Slack {
+        webhook_url: ok_server.url("/slack"),
+        channel_override: None,
+    });
+    let outcome = SlackConnector
+        .dispatch(&ok_dst, &DispatchRequest::default(), &[])
+        .await
+        .expect("2xx is a success");
+    assert!(
+        outcome.connector_response_body.is_empty(),
+        "no part of the upstream Slack body may be reflected on success"
+    );
+
+    // non-2xx: the error envelope carries no upstream body either.
+    let err_server = MockServer::start();
+    err_server.mock(|when, then| {
+        when.method(MOCK_POST).path("/slack");
+        then.status(500).body(&big);
+    });
+    let err_dst = destination(DestinationConfig::Slack {
+        webhook_url: err_server.url("/slack"),
+        channel_override: None,
+    });
+    let err = SlackConnector
+        .dispatch(&err_dst, &DispatchRequest::default(), &[])
+        .await
+        .expect_err("500 must surface as an error");
+    match err {
+        ConnectorError::Http { status, body } => {
+            assert_eq!(status, 500);
+            assert!(body.is_empty(), "upstream Slack error body must not be reflected");
+        }
         other => panic!("expected Http error, got {other:?}"),
     }
 }
@@ -304,7 +403,7 @@ async fn slack_connector_rejects_non_slack_destination() {
     });
 
     let err = SlackConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("wrong destination kind must be rejected");
 
@@ -330,7 +429,7 @@ async fn pagerduty_connector_rejects_non_pagerduty_destination() {
     });
 
     let err = PagerDutyConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("wrong destination kind must be rejected");
 
@@ -348,7 +447,7 @@ async fn opsgenie_connector_rejects_non_opsgenie_destination() {
     });
 
     let err = OpsGenieConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("wrong destination kind must be rejected");
 
