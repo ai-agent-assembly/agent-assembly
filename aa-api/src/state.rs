@@ -31,7 +31,7 @@ use crate::auth::rate_limit::RateLimiter;
 use crate::destinations::store::DestinationStore;
 use crate::events::EventBroadcast;
 use crate::models::topology::{AgentLineage, AgentTree, TeamTopology, TopologyOverview, TopologyStats};
-use crate::ops::{OpControlPublisher, OpsRegistry};
+use crate::ops::OpsRegistry;
 use crate::replay::ReplayBuffer;
 use crate::routes::capability::CapabilityStore;
 use crate::trace_store::TraceStore;
@@ -355,15 +355,7 @@ impl AppState {
                 .build(),
             capability_store: crate::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: crate::routes::iam::seeded_iam_store(),
-            // AAASM-3883: attach an op-control publisher so the operator
-            // halt endpoints (`POST /api/v1/ops/{id}/halt-agent`,
-            // `POST /api/v1/ops/global/halt`) and the per-op pause/terminate
-            // transitions publish on the op-control channel instead of
-            // returning 503 "op-control channel not configured". The same
-            // channel shape the gateway `PolicyService.op_control_stream`
-            // subscribes to (AAASM-3881/3873); in a co-located deployment a
-            // recorded halt reaches subscribed runtimes.
-            ops_registry: Arc::new(OpsRegistry::new().with_publisher(Arc::new(OpControlPublisher::new()))),
+            ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(crate::destinations::store::InMemoryDestinationStore::new(Arc::new(
                 crate::destinations::store::NoopRuleReferenceChecker,
             ))),
@@ -503,33 +495,6 @@ mod tests {
         assert!(state.retention_engine.is_none(), "no storage section in this mode");
         assert!(matches!(state.auth_config.mode, AuthMode::Off), "auth is bypassed");
         assert!(state.secrets_store.list().is_empty(), "no secrets pre-registered");
-    }
-
-    /// AAASM-3883: the in-memory AppState now wires an op-control publisher into
-    /// its ops registry, so the operator halt endpoints (`halt-agent`,
-    /// `global/halt`) and the per-op pause/terminate transitions publish on the
-    /// op-control channel instead of returning 503 "op-control channel not
-    /// configured". `halt_agent` / `halt_global` return `true` only when a
-    /// publisher is attached, so this asserts the boot wiring is present.
-    #[test]
-    fn local_in_memory_ops_registry_is_op_control_wired() {
-        use aa_proto::assembly::common::v1::AgentId;
-        use aa_proto::assembly::policy::v1::OpControlSignal;
-
-        let state = AppState::local_in_memory().expect("in-memory state builds");
-        let agent = AgentId {
-            org_id: "org".into(),
-            team_id: "team".into(),
-            agent_id: "agent-1".into(),
-        };
-        assert!(
-            state.ops_registry.halt_agent(agent, OpControlSignal::Terminate),
-            "ops_registry must have an op-control publisher so halt-agent does not 503",
-        );
-        assert!(
-            state.ops_registry.halt_global(OpControlSignal::Terminate),
-            "ops_registry must have an op-control publisher so global-halt does not 503",
-        );
     }
 
     #[tokio::test]

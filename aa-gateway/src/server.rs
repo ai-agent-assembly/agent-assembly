@@ -11,7 +11,6 @@ use crate::audit::AuditWriter;
 use crate::edges::InMemoryEdgeRepo;
 use crate::engine::PolicyEngine;
 use crate::invalidation::{InvalidationHub, InvalidationServiceImpl};
-use crate::ops::OpControlPublisher;
 use crate::registry::AgentRegistry;
 use crate::secrets::InMemorySecretsStore;
 use crate::service::{
@@ -541,15 +540,7 @@ pub async fn serve_tcp(
     )
     .with_initial_seq(initial_seq)
     .with_db_scheduler(db_scheduler.clone())
-    .with_anomaly_detection(anomaly_detector, anomaly_tx)
-    // AAASM-3883: attach the op-control publisher so the gRPC
-    // `op_control_stream` RPC is live in the shipped binary. Without it,
-    // every subscription (the channel runtimes consult for operator
-    // halt/pause/terminate) was rejected with `Unavailable`. This is the
-    // same channel the aa-api `AppState.ops_registry` publishes halts on,
-    // so in a co-located deployment an operator halt reaches subscribed
-    // runtimes; the contract is proven in tests/op_control_stream_test.rs.
-    .with_ops_publisher(Arc::new(OpControlPublisher::new()));
+    .with_anomaly_detection(anomaly_detector, anomaly_tx);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
         .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
@@ -678,15 +669,7 @@ pub async fn serve_uds(
     )
     .with_initial_seq(initial_seq)
     .with_db_scheduler(db_scheduler.clone())
-    .with_anomaly_detection(anomaly_detector, anomaly_tx)
-    // AAASM-3883: attach the op-control publisher so the gRPC
-    // `op_control_stream` RPC is live in the shipped binary. Without it,
-    // every subscription (the channel runtimes consult for operator
-    // halt/pause/terminate) was rejected with `Unavailable`. This is the
-    // same channel the aa-api `AppState.ops_registry` publishes halts on,
-    // so in a co-located deployment an operator halt reaches subscribed
-    // runtimes; the contract is proven in tests/op_control_stream_test.rs.
-    .with_ops_publisher(Arc::new(OpControlPublisher::new()));
+    .with_anomaly_detection(anomaly_detector, anomaly_tx);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
         .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));

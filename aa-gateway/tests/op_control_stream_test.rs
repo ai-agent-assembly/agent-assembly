@@ -281,58 +281,6 @@ async fn global_terminate_delivered_to_all_subscribers() {
     }
 }
 
-// ── AAASM-3883: boot wiring — publisher in PolicyService + registry in AppState ─
-
-/// AAASM-3883 (boot wiring): the gateway serve path (`serve_tcp`/`serve_uds`)
-/// now attaches an `OpControlPublisher` to `PolicyServiceImpl`, so the gRPC
-/// `op_control_stream` is live instead of `Unavailable`; aa-api's
-/// `AppState.ops_registry` records operator halts on that same channel. This
-/// proves the end-to-end contract the boot wiring enables: an operator
-/// agent-level terminate issued the way the HTTP `halt-agent` endpoint issues it
-/// (`OpsRegistry::halt_agent`) reaches a subscribed runtime's stream under the
-/// reserved `agent:{id}` op-id and would halt that runtime.
-#[tokio::test]
-async fn boot_wired_publisher_delivers_operator_terminate_to_runtime_stream() {
-    let publisher = Arc::new(OpControlPublisher::new());
-    // `serve_tcp` wiring: the PolicyService streams from this publisher.
-    let addr = start_server(Some(Arc::clone(&publisher))).await;
-    // `AppState.ops_registry` wiring: the registry the ops API drives shares it.
-    let registry = OpsRegistry::new().with_publisher(Arc::clone(&publisher));
-
-    let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
-    let mut stream = client
-        .op_control_stream(OpControlSubscribeRequest {
-            agent_id: Some(agent("agent-7")),
-        })
-        .await
-        .expect("op_control_stream must be live once boot wires the publisher (not Unavailable)")
-        .into_inner();
-    await_subscribers(&publisher, 1).await;
-
-    // Operator agent-level terminate — exactly the call the HTTP halt-agent
-    // endpoint makes on `AppState.ops_registry`.
-    assert!(registry.halt_agent(agent("agent-7"), OpControlSignal::Terminate));
-
-    let msg = timeout(Duration::from_secs(2), stream.message())
-        .await
-        .expect("recv did not time out")
-        .expect("stream did not error")
-        .expect("stream had a message");
-    assert_eq!(msg.op_id, aa_runtime::op_control::agent_halt_op_id("agent-7"));
-    assert_eq!(msg.op_id, "agent:agent-7");
-    assert_eq!(msg.signal, OpControlSignal::Terminate as i32);
-
-    // The runtime would halt: applying the delivered signal records the
-    // reserved key as Terminated, which the per-request check consults
-    // independently of any trace_id.
-    let store = aa_runtime::op_control::OpControlStore::new();
-    store.apply(&msg.op_id, msg.signal());
-    assert_eq!(
-        store.state(&aa_runtime::op_control::agent_halt_op_id("agent-7")),
-        Some(aa_runtime::op_control::OpState::Terminated),
-    );
-}
-
 #[tokio::test]
 async fn missing_agent_id_returns_invalid_argument() {
     let publisher = Arc::new(OpControlPublisher::new());
