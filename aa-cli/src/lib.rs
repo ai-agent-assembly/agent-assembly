@@ -7,6 +7,7 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub mod output;
+pub mod sanitize;
 
 #[cfg(test)]
 mod test_support;
