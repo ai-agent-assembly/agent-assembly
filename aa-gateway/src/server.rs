@@ -537,9 +537,10 @@ pub async fn serve_tcp(
         .add_service(ApprovalServiceServer::with_interceptor(approval_svc, auth.clone()))
         .add_service(TopologyServiceServer::with_interceptor(topology_svc, auth.clone()))
         .add_service(SecretsServiceServer::with_interceptor(secrets_svc, auth.clone()))
-        .add_service(InvalidationServiceServer::new(InvalidationServiceImpl::new(
-            Arc::clone(&invalidation_hub),
-        )))
+        .add_service(InvalidationServiceServer::with_interceptor(
+            InvalidationServiceImpl::new(Arc::clone(&invalidation_hub)),
+            auth.clone(),
+        ))
         .serve_with_shutdown(addr, async move {
             shutdown_signal().await;
             db_token.cancel();
@@ -634,9 +635,10 @@ pub async fn serve_uds(
         .add_service(ApprovalServiceServer::with_interceptor(approval_svc, auth.clone()))
         .add_service(TopologyServiceServer::with_interceptor(topology_svc, auth.clone()))
         .add_service(SecretsServiceServer::with_interceptor(secrets_svc, auth.clone()))
-        .add_service(InvalidationServiceServer::new(InvalidationServiceImpl::new(
-            Arc::clone(&invalidation_hub),
-        )))
+        .add_service(InvalidationServiceServer::with_interceptor(
+            InvalidationServiceImpl::new(Arc::clone(&invalidation_hub)),
+            auth.clone(),
+        ))
         .serve_with_incoming_shutdown(incoming, async move {
             shutdown_signal().await;
             db_token.cancel();
