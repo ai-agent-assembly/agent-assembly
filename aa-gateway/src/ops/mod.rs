@@ -17,8 +17,13 @@
 //! `OpsError::InvalidTransition`. See
 //! `docs/src/operations/ops-registry-architecture.md` for the full diagram.
 
+pub mod nats;
 pub mod publisher;
 
+pub use nats::{
+    OpControlNatsConfig, OpControlNatsError, OpControlNatsPublisher, OpControlWireEnvelope,
+    SharedOpControlNatsPublisher,
+};
 pub use publisher::{OpControlEnvelope, OpControlPublisher, SharedOpControlPublisher};
 
 use aa_proto::assembly::common::v1::AgentId;
@@ -65,6 +70,25 @@ pub enum OpsError {
     InvalidTransition,
 }
 
+/// Outcome of an operator halt-delivery attempt (AAASM-3883).
+///
+/// Returned by [`OpsRegistry::halt_agent_delivery`] /
+/// [`OpsRegistry::halt_global_delivery`] so the HTTP endpoint can distinguish a
+/// real delivery from an honest failure and never report a silent-drop `200` for
+/// a kill switch.
+#[derive(Debug, PartialEq, Eq)]
+pub enum HaltDelivery {
+    /// The halt was published (cross-process NATS publish + flush succeeded, or
+    /// the in-process broadcast accepted it).
+    Delivered,
+    /// No op-control channel is configured — neither a NATS publisher nor an
+    /// in-process broadcast. The endpoint should respond `503`.
+    NotConfigured,
+    /// A NATS op-control channel is configured but the publish/flush failed —
+    /// an honest error the endpoint should surface as `503`, carrying the cause.
+    ChannelError(String),
+}
+
 /// Thread-safe in-memory store for in-flight operation lifecycle state.
 ///
 /// Backed by [`DashMap`] for concurrent, lock-free read access and
@@ -84,6 +108,13 @@ pub struct OpsRegistry {
     /// Wire via [`OpsRegistry::with_publisher`]. `None` means transitions
     /// only update local state — no SDK push happens.
     publisher: Option<SharedOpControlPublisher>,
+    /// Optional **cross-process** op-control publisher over NATS (AAASM-3883).
+    /// Wire via [`OpsRegistry::with_nats_publisher`]. When set, the operator
+    /// halt-delivery methods publish to the shared NATS subject so a halt issued
+    /// in the aa-api process reaches the gateway process that serves
+    /// `op_control_stream`. `None` keeps the in-process-only behavior. See
+    /// ADR 0011.
+    nats_publisher: Option<SharedOpControlNatsPublisher>,
 }
 
 impl Default for OpsRegistry {
@@ -98,6 +129,7 @@ impl OpsRegistry {
             ops: DashMap::new(),
             agents: DashMap::new(),
             publisher: None,
+            nats_publisher: None,
         }
     }
 
@@ -109,6 +141,19 @@ impl OpsRegistry {
     /// agent_id the publisher has nothing to route to.
     pub fn with_publisher(mut self, publisher: SharedOpControlPublisher) -> Self {
         self.publisher = Some(publisher);
+        self
+    }
+
+    /// Attach a **cross-process** [`OpControlNatsPublisher`] (AAASM-3883).
+    ///
+    /// When set, [`halt_agent_delivery`](Self::halt_agent_delivery) and
+    /// [`halt_global_delivery`](Self::halt_global_delivery) publish the operator
+    /// halt to the shared NATS subject instead of the in-process broadcast, so a
+    /// halt issued in the aa-api process reaches the gateway process that owns
+    /// `op_control_stream`. This is the seam that makes the kill switch work in
+    /// the real two-process deployment (ADR 0011).
+    pub fn with_nats_publisher(mut self, publisher: SharedOpControlNatsPublisher) -> Self {
+        self.nats_publisher = Some(publisher);
         self
     }
 
@@ -202,6 +247,49 @@ impl OpsRegistry {
                 true
             }
             None => false,
+        }
+    }
+
+    /// AAASM-3883: emit an **agent-wide** halt, preferring the cross-process NATS
+    /// publisher when one is attached, falling back to the in-process broadcast.
+    ///
+    /// This is the delivery method the aa-api operator endpoints call. When a
+    /// NATS publisher is configured the halt is published to the shared subject
+    /// (and flushed), so it reaches the gateway process serving
+    /// `op_control_stream`; a publish/flush failure is surfaced as
+    /// [`HaltDelivery::ChannelError`] so the endpoint returns a real error rather
+    /// than a silent-drop `200`. Without a NATS publisher the existing in-process
+    /// path is used (co-located / local mode). With neither channel configured
+    /// the result is [`HaltDelivery::NotConfigured`].
+    pub async fn halt_agent_delivery(&self, agent_id: AgentId, signal: OpControlSignal) -> HaltDelivery {
+        if let Some(nats) = self.nats_publisher.as_ref() {
+            return match nats.publish_agent_halt(agent_id, signal).await {
+                Ok(()) => HaltDelivery::Delivered,
+                Err(err) => HaltDelivery::ChannelError(err.to_string()),
+            };
+        }
+        if self.halt_agent(agent_id, signal) {
+            HaltDelivery::Delivered
+        } else {
+            HaltDelivery::NotConfigured
+        }
+    }
+
+    /// AAASM-3883: emit a **fleet-wide** halt, preferring the cross-process NATS
+    /// publisher when one is attached, falling back to the in-process broadcast.
+    /// See [`halt_agent_delivery`](Self::halt_agent_delivery) for the
+    /// channel-selection and failure semantics.
+    pub async fn halt_global_delivery(&self, signal: OpControlSignal) -> HaltDelivery {
+        if let Some(nats) = self.nats_publisher.as_ref() {
+            return match nats.publish_global_halt(signal).await {
+                Ok(()) => HaltDelivery::Delivered,
+                Err(err) => HaltDelivery::ChannelError(err.to_string()),
+            };
+        }
+        if self.halt_global(signal) {
+            HaltDelivery::Delivered
+        } else {
+            HaltDelivery::NotConfigured
         }
     }
 
@@ -644,6 +732,45 @@ mod tests {
         let registry = OpsRegistry::new();
         assert!(!registry.halt_agent(agent("a1"), OpControlSignal::Terminate));
         assert!(!registry.halt_global(OpControlSignal::Terminate));
+    }
+
+    // ── AAASM-3883: halt delivery (in-process fallback + honest failure) ────
+
+    #[tokio::test]
+    async fn halt_delivery_reports_not_configured_without_any_channel() {
+        // Neither an in-process broadcast nor a NATS publisher → NotConfigured,
+        // which the endpoint maps to an honest 503 rather than a silent 200.
+        let registry = OpsRegistry::new();
+        assert_eq!(
+            registry
+                .halt_agent_delivery(agent("a1"), OpControlSignal::Terminate)
+                .await,
+            HaltDelivery::NotConfigured,
+        );
+        assert_eq!(
+            registry.halt_global_delivery(OpControlSignal::Terminate).await,
+            HaltDelivery::NotConfigured,
+        );
+    }
+
+    #[tokio::test]
+    async fn halt_delivery_uses_in_process_broadcast_when_no_nats() {
+        // With only the in-process publisher (co-located / local mode) the halt
+        // is Delivered and reaches a subscriber under the reserved key.
+        let publisher = std::sync::Arc::new(OpControlPublisher::new());
+        let registry = OpsRegistry::new().with_publisher(std::sync::Arc::clone(&publisher));
+        let mut rx = publisher.subscribe();
+
+        assert_eq!(
+            registry
+                .halt_agent_delivery(agent("a1"), OpControlSignal::Terminate)
+                .await,
+            HaltDelivery::Delivered,
+        );
+
+        let envelope = rx.recv().await.unwrap();
+        assert_eq!(envelope.message.op_id, "agent:a1");
+        assert_eq!(envelope.message.signal, OpControlSignal::Terminate as i32);
     }
 
     #[test]
