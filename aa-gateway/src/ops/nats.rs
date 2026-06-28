@@ -128,6 +128,30 @@ pub fn subject_for(envelope: &OpControlWireEnvelope) -> String {
     format!("{SUBJECT_PREFIX}.{tenant}.{agent}")
 }
 
+/// AAASM-3889 — authorize a received op-control message by binding its payload
+/// target to the subject it was actually delivered on.
+///
+/// The NATS subject namespace is the access-control boundary: a publisher is only
+/// trusted to act on the tenant / agent encoded in the subject it published to.
+/// Without this check the bridge acts on the envelope's `global` / `org_id` /
+/// `team_id` / `agent_id` fields **verbatim**, so any publisher able to reach
+/// *any* op-control subject could embed a different tenant — or `global: true` —
+/// in the JSON body and trigger a cross-tenant or fleet-wide kill, nullifying any
+/// NATS subject ACL. We re-derive the subject the payload *would* have been
+/// published under ([`subject_for`]) and require it to equal the delivery subject;
+/// a `global` envelope is additionally required to arrive on [`GLOBAL_SUBJECT`].
+fn subject_authorizes_envelope(subject: &str, envelope: &OpControlWireEnvelope) -> bool {
+    if envelope.global {
+        // A fleet-wide halt is only honored on the dedicated global subject.
+        return subject == GLOBAL_SUBJECT;
+    }
+    // A per-agent envelope must arrive on exactly the (sanitized) tenant/agent
+    // subject its own fields map to. `subject_for` never returns GLOBAL_SUBJECT
+    // for a non-global envelope, so a non-global payload published on the global
+    // subject is rejected here too.
+    subject_for(envelope) == subject
+}
+
 /// Replace every character outside `[A-Za-z0-9_-]` with `_` so the result is a
 /// single valid NATS subject token (NATS reserves `.`, `*`, `>` and whitespace).
 fn sanitize_token(raw: &str) -> String {
@@ -663,8 +687,21 @@ async fn bridge_once(
         let message = message.map_err(|e| OpControlNatsError::Consumer(e.to_string()))?;
         match serde_json::from_slice::<OpControlWireEnvelope>(&message.payload) {
             Ok(envelope) => {
-                metrics::counter!("aa_op_control_bridge_forwarded_total").increment(1);
-                forward_to_broadcast(publisher, envelope);
+                // AAASM-3889: reject a payload whose target does not match the
+                // subject it was delivered on (a forged tenant / global flag).
+                if subject_authorizes_envelope(message.subject.as_str(), &envelope) {
+                    metrics::counter!("aa_op_control_bridge_forwarded_total").increment(1);
+                    forward_to_broadcast(publisher, envelope);
+                } else {
+                    metrics::counter!("aa_op_control_bridge_rejected_total").increment(1);
+                    tracing::warn!(
+                        subject = %message.subject,
+                        expected_subject = %subject_for(&envelope),
+                        global = envelope.global,
+                        "op-control bridge: dropping envelope whose payload target does not match its \
+                         delivery subject (possible forgery)"
+                    );
+                }
             }
             Err(err) => {
                 tracing::warn!(%err, "op-control bridge: dropping undecodable message");
