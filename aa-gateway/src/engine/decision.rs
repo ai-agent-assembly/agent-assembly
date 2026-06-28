@@ -39,11 +39,16 @@ impl PolicyDecision {
 }
 
 /// Evaluate a single `PolicyDocument` against `(ctx, action)` and return the
-/// decision for stages 1–3 and 5 (schedule, network, tool-allow, approval-condition).
+/// decision for the *cacheable* stages 2–3 and 5 (network, tool-allow,
+/// capability, approval-condition).
 ///
-/// Stages 4 (rate-limit) and 7 (budget) are stateful at engine level and are
-/// evaluated separately after merging. Stage 6 (credential scan) does not
-/// produce a decision — it is handled at the engine level.
+/// Stage 1 (schedule) is deliberately **excluded** here: it is time-dependent
+/// and must be evaluated fresh on every request via [`evaluate_schedule_cascade`]
+/// so that a cached `Allow` computed inside an active-hours window cannot be
+/// served after the window closes (AAASM-3893). Stages 4 (rate-limit) and 7
+/// (budget) are stateful at engine level and are evaluated separately after
+/// merging. Stage 6 (credential scan) does not produce a decision — it is
+/// handled at the engine level.
 ///
 /// Returns `Deny` on the first matching deny rule, `RequireApproval` for approval
 /// conditions, and `Allow` if no rule fires.
@@ -53,9 +58,6 @@ pub(crate) fn evaluate_single_doc(
     action: &aa_core::GovernanceAction,
     policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
 ) -> PolicyDecision {
-    if let Some(d) = stage_schedule(doc) {
-        return d;
-    }
     if let Some(d) = stage_network(doc, action) {
         return d;
     }
@@ -70,6 +72,20 @@ pub(crate) fn evaluate_single_doc(
     }
 
     PolicyDecision::Allow
+}
+
+/// Stage 1 — Schedule, evaluated **fresh** across the whole cascade.
+///
+/// Returns the first schedule-based `Deny` (current time outside a doc's
+/// active-hours window, or an unparseable timezone), or `None` when every doc's
+/// window currently permits the request.
+///
+/// AAASM-3893: this stage is time-dependent and is intentionally kept out of
+/// [`evaluate_single_doc`] (and therefore out of the engine's decision cache).
+/// The caller runs it on every request so a cached verdict computed inside an
+/// active-hours window cannot outlive that window.
+pub(crate) fn evaluate_schedule_cascade(cascade: &[Arc<PolicyDocument>]) -> Option<PolicyDecision> {
+    cascade.iter().find_map(|doc| stage_schedule(doc))
 }
 
 /// Stage 1 — Schedule: deny when the current time is outside the doc's

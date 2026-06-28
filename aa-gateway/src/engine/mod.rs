@@ -1194,7 +1194,22 @@ impl PolicyEngine {
         ctx: &aa_core::AgentContext,
         action: &aa_core::GovernanceAction,
     ) -> EvaluationResult {
-        // Cache lookup: stateless stages only (1–3, 5). Stateful stages (4, 7),
+        // Stage 1 — Schedule: time-dependent, evaluated FRESH on every request
+        // and never cached. The decision cache below stores only the stateless
+        // stages (2–3, 5); a cached `Allow` computed inside an active-hours
+        // window must not be served once the window has closed, so the schedule
+        // stage is run here, outside the cache, like the stateful stages 4 and 7
+        // (AAASM-3893).
+        if let Some(PolicyDecision::Deny { reason, .. }) = decision::evaluate_schedule_cascade(&cascade) {
+            return EvaluationResult {
+                decision: aa_core::PolicyResult::Deny { reason },
+                redacted_payload: None,
+                credential_findings: vec![],
+                deny_action: None,
+            };
+        }
+
+        // Cache lookup: stateless stages only (2–3, 5). Stateful stages (4, 7),
         // the capability guard, and the credential scan always run.
         let epoch = self.policy_epoch.load(Ordering::Relaxed);
         let cache_key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, action);
