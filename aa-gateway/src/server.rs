@@ -863,4 +863,53 @@ mod tests {
             "single-file load must not apply any org-scoped cascade deny"
         );
     }
+
+    /// AAASM-3884: with Redis disabled (the default posture), boot keeps the
+    /// in-memory registration-challenge store — `select_challenge_store`
+    /// returns `None`, so `AgentLifecycleServiceImpl` keeps its default.
+    #[tokio::test]
+    async fn select_challenge_store_keeps_in_memory_default_when_redis_disabled() {
+        let redis = aa_core::config::RedisConfig::default();
+        assert!(!redis.enabled, "default posture must be Redis-disabled");
+        assert!(
+            select_challenge_store(&redis).await.is_none(),
+            "disabled Redis must keep the in-memory challenge store default",
+        );
+    }
+
+    /// AAASM-3884: a Redis connect failure falls back to the in-memory default
+    /// (fail-soft) rather than blocking gateway startup — mirrors
+    /// `PolicyCache::from_config_async`'s fallback-to-disabled behaviour.
+    #[cfg(feature = "redis-cache")]
+    #[tokio::test]
+    async fn select_challenge_store_falls_back_to_default_on_connect_failure() {
+        // 127.0.0.1:1 is reserved and refuses connections, exercising the
+        // runtime connect-failure branch (not the URL-parse branch).
+        let redis = aa_core::config::RedisConfig {
+            enabled: true,
+            url: Some("redis://127.0.0.1:1".into()),
+            ..aa_core::config::RedisConfig::default()
+        };
+        assert!(
+            select_challenge_store(&redis).await.is_none(),
+            "connect failure must fall back to the in-memory default, not panic",
+        );
+    }
+
+    /// AAASM-3884: when the `redis-cache` feature is not compiled in, an enabled
+    /// Redis config still resolves to the in-memory default — the feature gate
+    /// (mirrored from the policy cache) decides availability.
+    #[cfg(not(feature = "redis-cache"))]
+    #[tokio::test]
+    async fn select_challenge_store_in_memory_without_redis_feature() {
+        let redis = aa_core::config::RedisConfig {
+            enabled: true,
+            url: Some("redis://example:6379".into()),
+            ..aa_core::config::RedisConfig::default()
+        };
+        assert!(
+            select_challenge_store(&redis).await.is_none(),
+            "without the redis-cache feature the in-memory default is kept",
+        );
+    }
 }
