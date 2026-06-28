@@ -9,3 +9,6 @@
 
 pub mod config;
 pub mod rate_limit;
+
+mod error;
+pub use error::ProblemDetail;
