@@ -361,3 +361,95 @@ async fn create_with_unknown_severity_returns_invalid_severity() {
     let json = read_json(resp).await;
     assert_eq!(json["error_code"], "invalid_severity");
 }
+
+// ── AAASM-3894 — alert-rule mutations require admin scope ─────────────────────
+//
+// Alert rules carry no team_id/org_id, so before this fix any Write-scope key —
+// in any tenant — could create/update/delete every tenant's alerting. Gate the
+// mutations on admin scope; a non-admin (write-only) caller must be rejected.
+
+use aa_api::auth::config::AuthMode;
+use aa_api::auth::scope::Scope;
+
+fn bearer(method: &str, uri: &str, token: &str, body: Option<serde_json::Value>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"));
+    match body {
+        Some(b) => {
+            builder = builder.header("content-type", "application/json");
+            builder.body(Body::from(b.to_string())).unwrap()
+        }
+        None => builder.body(Body::empty()).unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn create_rule_write_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt("u", &[Scope::Write]);
+    let resp = app
+        .oneshot(bearer("POST", "/api/v1/alerts/rules", &token, Some(valid_rule_body())))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a non-admin write caller must not create an alert rule"
+    );
+}
+
+#[tokio::test]
+async fn update_rule_write_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt("u", &[Scope::Write]);
+    let resp = app
+        .oneshot(bearer(
+            "PUT",
+            "/api/v1/alerts/rules/any-id",
+            &token,
+            Some(valid_rule_body()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a non-admin write caller must not update an alert rule"
+    );
+}
+
+#[tokio::test]
+async fn delete_rule_write_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt("u", &[Scope::Write]);
+    let resp = app
+        .oneshot(bearer("DELETE", "/api/v1/alerts/rules/any-id", &token, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a non-admin write caller must not delete an alert rule"
+    );
+}
+
+#[tokio::test]
+async fn create_rule_admin_token_is_allowed() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt("admin", &[Scope::Admin]);
+    let resp = app
+        .oneshot(bearer("POST", "/api/v1/alerts/rules", &token, Some(valid_rule_body())))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "an admin caller must be able to create an alert rule"
+    );
+}
