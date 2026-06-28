@@ -264,6 +264,58 @@ fn setup_anomaly() -> (
     (detector, event_tx, event_rx)
 }
 
+/// Select the registration-challenge store backend from the gateway's Redis
+/// config (AAASM-3884).
+///
+/// Mirrors [`PolicyCache::from_config_async`](crate::storage::PolicyCache::from_config_async):
+/// when the shared Redis cache backend is enabled **and** the `redis-cache`
+/// feature is compiled in, connect a replica-shared
+/// [`RedisChallengeStore`](crate::storage::RedisChallengeStore) so a
+/// multi-replica gateway can issue a registration nonce on one replica and
+/// consume it on another. Returns `None` when Redis is disabled, the feature is
+/// not built in, or the connection fails — the caller then keeps the in-memory
+/// default. Connection failure is fail-soft (logged, `None`) so a transient
+/// Redis outage never blocks gateway startup, matching the policy cache's
+/// fallback-to-disabled behaviour. The `redis-cache` feature gate and the same
+/// `storage.redis` config are reused — no new config surface is added.
+async fn select_challenge_store(
+    redis: &aa_core::config::RedisConfig,
+) -> Option<Arc<dyn crate::service::lifecycle_service::ChallengeStoreLike>> {
+    if !redis.enabled {
+        return None;
+    }
+    #[cfg(feature = "redis-cache")]
+    {
+        let cfg = crate::storage::RedisConfig {
+            enabled: redis.enabled,
+            url: redis.url.clone(),
+            policy_cache_ttl_secs: redis.policy_cache_ttl_secs,
+            max_connections: redis.max_connections,
+        };
+        match crate::storage::RedisChallengeStore::connect(&cfg).await {
+            Ok(store) => {
+                tracing::info!("redis-backed registration challenge store selected (replica-shared)");
+                Some(Arc::new(store))
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "redis challenge store connect failed — falling back to in-memory challenge store"
+                );
+                None
+            }
+        }
+    }
+    #[cfg(not(feature = "redis-cache"))]
+    {
+        tracing::warn!(
+            "storage.redis.enabled = true but the `redis-cache` feature is not compiled in; \
+             using the in-memory registration challenge store"
+        );
+        None
+    }
+}
+
 /// Spawn the [`EscalationScheduler`] background task and return the `Arc<EscalationScheduler>`.
 ///
 /// The `run()` task is spawned internally. The returned `Arc` can be shared
@@ -501,7 +553,23 @@ pub async fn serve_tcp(
     // breaking bootstrap Register / policy optional-enrichment).
     let auth = crate::iam::auth_interceptor(Arc::clone(&registry));
     let enrich = crate::iam::enrich_interceptor(Arc::clone(&registry));
-    let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
+    // AAASM-3884: activate the AAASM-3882 seam — select the registration-
+    // challenge store from config. When the shared Redis backend is enabled
+    // (and the `redis-cache` feature is built in) a replica-shared
+    // `RedisChallengeStore` is injected so a horizontally-scaled gateway can
+    // issue a nonce on one replica and consume it on another; otherwise the
+    // in-memory default is kept. Mirrors how `PolicyCache` selects Redis.
+    let challenge_store = match aa_core::config::GatewayConfig::load() {
+        Ok(cfg) => select_challenge_store(&cfg.storage.redis).await,
+        Err(e) => {
+            tracing::warn!(error = %e, "gateway config load failed — using in-memory challenge store");
+            None
+        }
+    };
+    let lifecycle_svc = match challenge_store {
+        Some(store) => AgentLifecycleServiceImpl::new(registry).with_challenge_store(store),
+        None => AgentLifecycleServiceImpl::new(registry),
+    };
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
     let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
@@ -611,7 +679,23 @@ pub async fn serve_uds(
     // filesystem permissions; the credential interceptor is enforced regardless.
     let auth = crate::iam::auth_interceptor(Arc::clone(&registry));
     let enrich = crate::iam::enrich_interceptor(Arc::clone(&registry));
-    let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
+    // AAASM-3884: activate the AAASM-3882 seam — select the registration-
+    // challenge store from config. When the shared Redis backend is enabled
+    // (and the `redis-cache` feature is built in) a replica-shared
+    // `RedisChallengeStore` is injected so a horizontally-scaled gateway can
+    // issue a nonce on one replica and consume it on another; otherwise the
+    // in-memory default is kept. Mirrors how `PolicyCache` selects Redis.
+    let challenge_store = match aa_core::config::GatewayConfig::load() {
+        Ok(cfg) => select_challenge_store(&cfg.storage.redis).await,
+        Err(e) => {
+            tracing::warn!(error = %e, "gateway config load failed — using in-memory challenge store");
+            None
+        }
+    };
+    let lifecycle_svc = match challenge_store {
+        Some(store) => AgentLifecycleServiceImpl::new(registry).with_challenge_store(store),
+        None => AgentLifecycleServiceImpl::new(registry),
+    };
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
     let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
@@ -760,6 +844,55 @@ mod tests {
             engine.evaluate(&ctx_in_org(0xac, "acme"), &bash_call()).decision,
             PolicyResult::Allow,
             "single-file load must not apply any org-scoped cascade deny"
+        );
+    }
+
+    /// AAASM-3884: with Redis disabled (the default posture), boot keeps the
+    /// in-memory registration-challenge store — `select_challenge_store`
+    /// returns `None`, so `AgentLifecycleServiceImpl` keeps its default.
+    #[tokio::test]
+    async fn select_challenge_store_keeps_in_memory_default_when_redis_disabled() {
+        let redis = aa_core::config::RedisConfig::default();
+        assert!(!redis.enabled, "default posture must be Redis-disabled");
+        assert!(
+            select_challenge_store(&redis).await.is_none(),
+            "disabled Redis must keep the in-memory challenge store default",
+        );
+    }
+
+    /// AAASM-3884: a Redis connect failure falls back to the in-memory default
+    /// (fail-soft) rather than blocking gateway startup — mirrors
+    /// `PolicyCache::from_config_async`'s fallback-to-disabled behaviour.
+    #[cfg(feature = "redis-cache")]
+    #[tokio::test]
+    async fn select_challenge_store_falls_back_to_default_on_connect_failure() {
+        // 127.0.0.1:1 is reserved and refuses connections, exercising the
+        // runtime connect-failure branch (not the URL-parse branch).
+        let redis = aa_core::config::RedisConfig {
+            enabled: true,
+            url: Some("redis://127.0.0.1:1".into()),
+            ..aa_core::config::RedisConfig::default()
+        };
+        assert!(
+            select_challenge_store(&redis).await.is_none(),
+            "connect failure must fall back to the in-memory default, not panic",
+        );
+    }
+
+    /// AAASM-3884: when the `redis-cache` feature is not compiled in, an enabled
+    /// Redis config still resolves to the in-memory default — the feature gate
+    /// (mirrored from the policy cache) decides availability.
+    #[cfg(not(feature = "redis-cache"))]
+    #[tokio::test]
+    async fn select_challenge_store_in_memory_without_redis_feature() {
+        let redis = aa_core::config::RedisConfig {
+            enabled: true,
+            url: Some("redis://example:6379".into()),
+            ..aa_core::config::RedisConfig::default()
+        };
+        assert!(
+            select_challenge_store(&redis).await.is_none(),
+            "without the redis-cache feature the in-memory default is kept",
         );
     }
 }
