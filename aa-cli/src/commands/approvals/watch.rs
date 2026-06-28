@@ -366,3 +366,26 @@ pub fn run_watch(args: WatchArgs, ctx: &ResolvedContext) -> std::process::ExitCo
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_id_strips_escape_before_truncation() {
+        // A CSI clear-line fits within 8 bytes; truncating first would leave a
+        // live escape, so it must be stripped before the 8-char cut.
+        let out = short_id("\x1b[2K0123456789");
+        assert!(!out.contains('\x1b'), "escape must be stripped: {out:?}");
+        assert_eq!(out, "01234567");
+    }
+
+    #[test]
+    fn short_id_truncation_is_char_safe_on_multibyte_input() {
+        // A raw byte slice `[..8]` would panic mid-character on 3-byte chars;
+        // char truncation must keep 8 whole characters without panicking.
+        let out = short_id("世界世界世界世界世界");
+        assert_eq!(out.chars().count(), 8);
+        assert!(out.chars().all(|c| c == '世' || c == '界'));
+    }
+}
