@@ -31,7 +31,7 @@ use crate::auth::rate_limit::RateLimiter;
 use crate::destinations::store::DestinationStore;
 use crate::events::EventBroadcast;
 use crate::models::topology::{AgentLineage, AgentTree, TeamTopology, TopologyOverview, TopologyStats};
-use crate::ops::OpsRegistry;
+use crate::ops::{OpControlPublisher, OpsRegistry};
 use crate::replay::ReplayBuffer;
 use crate::routes::capability::CapabilityStore;
 use crate::trace_store::TraceStore;
@@ -355,7 +355,15 @@ impl AppState {
                 .build(),
             capability_store: crate::routes::capability::CapabilityStore::new_seeded(),
             iam_api_key_store: crate::routes::iam::seeded_iam_store(),
-            ops_registry: Arc::new(OpsRegistry::new()),
+            // AAASM-3883: attach an op-control publisher so the operator
+            // halt endpoints (`POST /api/v1/ops/{id}/halt-agent`,
+            // `POST /api/v1/ops/global/halt`) and the per-op pause/terminate
+            // transitions publish on the op-control channel instead of
+            // returning 503 "op-control channel not configured". The same
+            // channel shape the gateway `PolicyService.op_control_stream`
+            // subscribes to (AAASM-3881/3873); in a co-located deployment a
+            // recorded halt reaches subscribed runtimes.
+            ops_registry: Arc::new(OpsRegistry::new().with_publisher(Arc::new(OpControlPublisher::new()))),
             destination_store: Arc::new(crate::destinations::store::InMemoryDestinationStore::new(Arc::new(
                 crate::destinations::store::NoopRuleReferenceChecker,
             ))),
