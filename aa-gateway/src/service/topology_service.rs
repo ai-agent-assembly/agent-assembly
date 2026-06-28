@@ -41,15 +41,17 @@ fn format_id(id: &[u8; 16]) -> String {
     hex::encode(id)
 }
 
-/// Tenant-authorization rule for a topology read (AAASM-3846).
+/// Tenant-authorization rule for a topology resource (AAASM-3846 reads,
+/// AAASM-3855 `report_edge` write).
 ///
 /// The `auth_interceptor` authenticates the caller and injects a
-/// [`VerifiedCaller`], but the handlers previously discarded it and returned any
-/// agent to any authenticated caller (a post-authN function-level/tenant authz
-/// gap). This mirrors `approval_service::caller_may_act_on`, extended to also
-/// bind the caller's `org_id`: a tenanted caller (a `Some` team/org) may only
-/// read a resource in the same team and org; when either side is untenanted the
-/// read is allowed (the untenanted/single-tenant deployment fallback).
+/// [`VerifiedCaller`], but the handlers previously discarded it and operated on
+/// any agent for any authenticated caller (a post-authN function-level/tenant
+/// authz gap). This mirrors `approval_service::caller_may_act_on`, extended to
+/// also bind the caller's `org_id`: a tenanted caller (a `Some` team/org) may
+/// only act on a resource in the same team and org; when either side is
+/// untenanted access is allowed (the untenanted/single-tenant deployment
+/// fallback).
 fn caller_may_read(caller: &VerifiedCaller, resource_team: Option<&str>, resource_org: Option<&str>) -> bool {
     let team_ok = match (caller.team_id.as_deref(), resource_team) {
         (Some(caller_team), Some(resource_team)) => caller_team == resource_team,
@@ -217,13 +219,22 @@ impl TopologyService for TopologyServiceImpl {
     }
 
     async fn report_edge(&self, request: Request<ReportEdgeRequest>) -> Result<Response<ReportEdgeResponse>, Status> {
+        // AAASM-3855 — read the verified caller (injected by the fail-closed auth
+        // interceptor) before consuming the request. AAASM-3846 gated the topology
+        // read RPCs but explicitly scoped itself out of this write RPC; left
+        // ungated, any authenticated tenant could forge an edge between arbitrary
+        // (cross-tenant) agents. Absence means the request did not authenticate,
+        // so fail closed rather than write a forgeable edge.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned().ok_or_else(|| {
+            Status::unauthenticated("missing verified caller; reporting a topology edge requires authentication")
+        })?;
         let req = request.into_inner();
 
+        // Syntactic validation first (mirrors the read RPCs: parse before resolve),
+        // so a malformed request from an authenticated caller is reported as
+        // `invalid_argument` regardless of the registry state.
         let source_bytes = parse_agent_id(&req.source_agent_id)?;
         let target_bytes = parse_agent_id(&req.target_agent_id)?;
-
-        let source = AgentId::from_bytes(source_bytes);
-        let target = AgentId::from_bytes(target_bytes);
 
         let edge_type = EdgeType::try_from(req.edge_type.as_str())
             .map_err(|_| Status::invalid_argument(format!("unknown edge_type: {:?}", req.edge_type)))?;
@@ -236,6 +247,36 @@ impl TopologyService for TopologyServiceImpl {
                     .map_err(|e| Status::invalid_argument(format!("metadata_json is not valid JSON: {e}")))?,
             )
         };
+
+        // AAASM-3855 — confine a tenanted caller to its own tenant: both endpoints
+        // must resolve to agents in the caller's team/org (the same predicate the
+        // read RPCs apply), so one tenant cannot inject edges into another tenant's
+        // topology graph. Mirror the read-RPC ordering: resolve then tenant-check.
+        let source_record = self
+            .registry
+            .get(&source_bytes)
+            .ok_or_else(|| Status::not_found(format!("agent not found: {}", req.source_agent_id)))?;
+        if !caller_may_read(
+            &caller,
+            source_record.team_id.as_deref(),
+            source_record.org_id.as_deref(),
+        ) {
+            return Err(Status::permission_denied("source agent belongs to a different tenant"));
+        }
+        let target_record = self
+            .registry
+            .get(&target_bytes)
+            .ok_or_else(|| Status::not_found(format!("agent not found: {}", req.target_agent_id)))?;
+        if !caller_may_read(
+            &caller,
+            target_record.team_id.as_deref(),
+            target_record.org_id.as_deref(),
+        ) {
+            return Err(Status::permission_denied("target agent belongs to a different tenant"));
+        }
+
+        let source = AgentId::from_bytes(source_bytes);
+        let target = AgentId::from_bytes(target_bytes);
 
         let id = self
             .edge_repo
@@ -390,5 +431,65 @@ mod tests {
 
         let resp = svc.get_agent_tree(req).await.unwrap().into_inner();
         assert_eq!(resp.root.unwrap().agent.unwrap().id, format_id(&root));
+    }
+
+    // ── report_edge tenant authz (AAASM-3855) ──────────────────────────────
+
+    fn report_edge_req(source: &[u8; 16], target: &[u8; 16]) -> Request<ReportEdgeRequest> {
+        Request::new(ReportEdgeRequest {
+            source_agent_id: format_id(source),
+            target_agent_id: format_id(target),
+            edge_type: "delegates_to".into(),
+            metadata_json: String::new(),
+        })
+    }
+
+    #[tokio::test]
+    async fn report_edge_cross_tenant_is_permission_denied() {
+        // A tenant-A caller cannot forge an edge between tenant-B agents.
+        let source: [u8; 16] = [0xe0; 16];
+        let target: [u8; 16] = [0xe1; 16];
+        let svc = service_with(vec![
+            make_record(source, "src", None, Some("team-b"), Some("org-b")),
+            make_record(target, "dst", None, Some("team-b"), Some("org-b")),
+        ]);
+
+        let mut req = report_edge_req(&source, &target);
+        req.extensions_mut().insert(caller(Some("team-a"), Some("org-a")));
+
+        let err = svc.report_edge(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn report_edge_same_tenant_is_allowed() {
+        let source: [u8; 16] = [0xe2; 16];
+        let target: [u8; 16] = [0xe3; 16];
+        let svc = service_with(vec![
+            make_record(source, "src", None, Some("team-a"), Some("org-a")),
+            make_record(target, "dst", None, Some("team-a"), Some("org-a")),
+        ]);
+
+        let mut req = report_edge_req(&source, &target);
+        req.extensions_mut().insert(caller(Some("team-a"), Some("org-a")));
+
+        let resp = svc.report_edge(req).await.unwrap().into_inner();
+        assert!(resp.id > 0);
+    }
+
+    #[tokio::test]
+    async fn report_edge_missing_caller_is_unauthenticated() {
+        // No VerifiedCaller in extensions ⇒ unauthenticated peer ⇒ fail closed.
+        let source: [u8; 16] = [0xe4; 16];
+        let target: [u8; 16] = [0xe5; 16];
+        let svc = service_with(vec![
+            make_record(source, "src", None, Some("team-a"), Some("org-a")),
+            make_record(target, "dst", None, Some("team-a"), Some("org-a")),
+        ]);
+
+        let req = report_edge_req(&source, &target);
+
+        let err = svc.report_edge(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 }
