@@ -4,7 +4,10 @@
 //! filter map (`EXEC_PID_FILTER`):
 //!
 //! - `handle_sched_process_exec` — fires on every `execve`/`execveat` and
-//!   emits an [`ExecEvent`] with pid, ppid, uid, filename, and argv.
+//!   emits an [`ExecEvent`] with pid, ppid, uid, filename, and a best-effort
+//!   `args` field. NOTE (AAASM-3872): this tracepoint does not expose argv, so
+//!   `args` currently holds the truncated 16-byte `comm`, not the real argv —
+//!   see the in-body comment for the `sys_enter_execve` follow-up.
 //! - `handle_sched_process_exit` — fires on process exit and emits a
 //!   [`ProcessExitEvent`] so userspace can clean up the lineage map.
 //!
@@ -133,8 +136,17 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
             &mut (*event_ptr).filename,
         );
 
-        // Zero the args buffer — argv extraction from tracepoints is
-        // limited; we capture what the comm provides.
+        // Zero the args buffer.
+        //
+        // KNOWN LIMITATION (AAASM-3872, exec comm-not-argv): the
+        // `sched_process_exec` tracepoint carries only the executable path +
+        // pids — it does NOT expose argv — so we fall back to the 16-byte
+        // `comm`. This means `/bin/sh -c 'curl … | sh'` logs only `sh`; the
+        // arguments that carry the actual command are invisible here. Genuine
+        // argv capture requires a `syscalls:sys_enter_execve` tracepoint that
+        // reads the `const char *const *argv` pointer array (bounded), then
+        // flattens it via `aa_ebpf_common::exec::flatten_argv_bounded`. Tracked
+        // as a follow-up under AAASM-3872.
         (*event_ptr).args = [0u8; MAX_ARGS_LEN];
 
         // Copy comm bytes (up to 16) into the args buffer byte by byte.

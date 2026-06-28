@@ -13,6 +13,23 @@
 //! [`TlsCaptureEvent`] is 4112 bytes — well above the BPF 512-byte stack
 //! limit.  We use [`RingBuf::reserve`] to allocate the event directly in ring
 //! buffer memory and fill it in place before submitting.
+//!
+//! ## Known coverage limitation — OpenSSL-only (AAASM-3872)
+//!
+//! These uprobes hook **only** OpenSSL/libssl `SSL_read`/`SSL_write`. Runtimes
+//! that ship their own TLS stack are therefore invisible to this layer:
+//!
+//! - **Go** (`crypto/tls`, pure Go) — no `SSL_*` symbols at all.
+//! - **Rust** (`rustls`) — pure Rust, no OpenSSL.
+//! - **Node.js** — statically-linked BoringSSL with non-`SSL_*` symbol names.
+//! - **GnuTLS / NSS / BoringSSL / LibreSSL / s2n** — different export surfaces.
+//!
+//! Plaintext egress from those stacks bypasses these uprobes; the proxy
+//! (`aa-proxy`) MitM layer and the syscall/socket layer remain the catch-all.
+//! Broadening TLS-library coverage (GnuTLS `gnutls_record_send/recv`, NSS
+//! `PR_Write/PR_Read`, BoringSSL, Go runtime offsets) is tracked as a
+//! follow-up under AAASM-3872 — it requires per-library symbol/offset
+//! resolution wired in the userspace `UprobeManager`, not just new probe fns.
 
 #![no_std]
 #![no_main]
