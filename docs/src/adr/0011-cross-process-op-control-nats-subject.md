@@ -250,3 +250,80 @@ halted when the signal was dropped onto a bus with no consumer.
 - JetStream unavailable / stream not ready / **publish not ACKed** → real `503`
   (`HaltDelivery::ChannelError`), never a false `200`.
 - No op-control channel configured at all → `503` (`HaltDelivery::NotConfigured`).
+
+---
+
+## Update — AAASM-3886: Fail Loud on a Stream-Config Mismatch
+
+**Ticket**: [AAASM-3886](https://lightning-dust-mite.atlassian.net/browse/AAASM-3886)
+(found in the AAASM-3885 review). Hardens the gateway bridge against an operator
+misconfiguration; the transport guarantees above are unchanged.
+
+### Problem
+
+JetStream stream config is **partly immutable** (storage type, retention policy;
+subjects are mutable). If an operator **pre-provisions** the `AA_OPCONTROL` stream
+with an incompatible immutable config, `create_or_update_stream`
+(`ensure_op_control_stream`) can never reconcile it. Before this change the bridge
+reconnect loop treated that failure exactly like a transient NATS outage — a quiet
+`warn!` + backoff — so it looped on stream/consumer setup **without ever
+consuming**, while op-control publishes kept ACKing (`200`) against the existing
+stream. Net result: an operator halt is persisted and returns `200`, yet **no
+runtime is ever told to halt** — a silent non-delivery of the kill switch.
+
+### Decision
+
+The bridge now **classifies** its setup failures
+(`OpControlNatsError::is_stream_setup_failure`): a `Stream` / `Consumer` failure
+**after a successful connect** is a non-transient *fail-loud* condition (the
+canonical trigger is the incompatible pre-provisioned stream; JetStream-disabled
+and otherwise-unconsumable streams land here too), whereas a `Connect` failure
+stays the ordinary transient reconnect path.
+
+On the fail-loud condition the bridge:
+
+- emits a prominent, actionable **`tracing::error!`** — it states that *op-control
+  delivery is DOWN* (halts may be ACKed yet never reach a runtime) and names the
+  likely cause (incompatible immutable stream config / JetStream disabled) and the
+  remedy (reconcile the stream);
+- records **`BridgeHealthState::StreamUnavailable`** on the new cloneable
+  `OpControlBridgeHealth` handle and drives the `aa_op_control_bridge_up` gauge to
+  `0`, so the condition is observable (and assertable in tests / wireable to a
+  future readiness probe) rather than buried in a retry loop.
+
+It still retries with backoff so that repairing the stream recovers delivery
+automatically — but every failed attempt now *screams* instead of whispering.
+
+### Why publish is not made honest-fail in this state
+
+The dangerous case is structurally a **cross-process** one. The publisher lives in
+the **aa-api** process and, by this ADR's design, does **not** own or validate the
+stream — that is the gateway's job. When an incompatible stream exists whose
+subjects still cover `assembly.opcontrol.>`, the publisher's `publish + ACK`
+**succeeds** against that present-but-unconsumable stream; the publisher has no way
+to know the gateway cannot consume it. (The pre-existing honest-`503` paths still
+fire when the stream is *absent* or the publish is genuinely un-ACKed — see the
+AAASM-3885 fail-mode above.) Making publish honest-fail here would require the
+publisher to validate the gateway's consume-side stream config, which crosses the
+process boundary this ADR deliberately keeps clean. The accepted contract is
+therefore: **the gateway fails loud / reports unhealthy**; the publisher's `200`
+in this specific misconfiguration is a known residual, surfaced by the gateway's
+loud error and `StreamUnavailable` health rather than by the publish call.
+
+### Benign per-reconnect full-window replay (note)
+
+`DeliverPolicy::All` on an **ephemeral** consumer means the replay catch-up
+described in the AAASM-3885 consume section happens on **every NATS reconnect**,
+not only on a process restart: each time `bridge_once` re-creates its consumer it
+replays everything still within the stream's retention window (≤ 10 min). This is
+**safe and intended**, not a bug:
+
+- `Terminate` is sticky/idempotent in the runtime `OpControlStore`, so re-reading
+  an already-applied halt is a no-op;
+- `Pause` / `Resume` converge by FIFO order — the stream preserves publish order,
+  so replaying the retained window re-applies the last intended state;
+- the bounded `max_age` keeps the replayed window small and prevents an
+  indefinitely-replayed *stale* kill switch.
+
+So a flapping NATS connection costs at most a brief, idempotent re-application of
+the last few minutes of halts — never a missed or contradictory one.
