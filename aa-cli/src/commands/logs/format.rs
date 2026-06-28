@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use console::Style;
 use serde::{Deserialize, Serialize};
 
+use crate::sanitize::sanitize_terminal;
+
 /// Normalised log entry shared by both fetch (REST) and follow (WS) modes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogLineData {
@@ -24,17 +26,20 @@ pub struct LogLineData {
 /// When `use_color` is true the type tag is styled according to
 /// [`style_for_type`].
 pub fn format_log_line(entry: &LogLineData, use_color: bool) -> String {
-    let tag = format!("[{}]", entry.event_type.to_uppercase());
+    // All four fields are server-supplied; strip terminal escapes so a
+    // malicious agent cannot inject ANSI/OSC sequences into the operator's
+    // terminal. The original `event_type` still drives the colour lookup.
+    let timestamp = sanitize_terminal(&entry.timestamp);
+    let agent_id = sanitize_terminal(&entry.agent_id);
+    let message = sanitize_terminal(&entry.message);
+    let tag = format!("[{}]", sanitize_terminal(&entry.event_type).to_uppercase());
     let styled_tag = if use_color {
         let style = style_for_type(&entry.event_type);
         style.apply_to(&tag).to_string()
     } else {
         tag
     };
-    format!(
-        "{} {:12} {}  {}",
-        entry.timestamp, styled_tag, entry.agent_id, entry.message
-    )
+    format!("{} {:12} {}  {}", timestamp, styled_tag, agent_id, message)
 }
 
 /// Format a log entry as a single newline-delimited JSON object.
