@@ -352,6 +352,30 @@ mod tests {
         assert!(!outcome.is_clean());
     }
 
+    /// AAASM-3870: the runtime shares the credential scanner, so a hex-encoded
+    /// secret (which evaded the old entropy gate) must now be redacted on the
+    /// authoritative enforcement path too.
+    #[test]
+    fn tool_call_hex_secret_is_redacted_via_runtime() {
+        // 64-char lowercase hex — a hex-encoded 256-bit key.
+        const HEX_SECRET: &str = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: format!(r#"{{"api_token": "{HEX_SECRET}"}}"#).into_bytes(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let Some(Detail::ToolCall(tc)) = event.inner.detail else {
+            unreachable!("detail was a ToolCall");
+        };
+        let scanned = String::from_utf8(tc.args_json).expect("redacted text is utf-8");
+        assert!(!scanned.contains(HEX_SECRET), "raw hex secret must not survive");
+        assert!(scanned.contains("[REDACTED:"), "redaction marker present");
+        assert!(!outcome.is_clean());
+    }
+
     #[test]
     fn tool_call_error_message_secret_is_redacted() {
         let scanner = RuntimeScanner::new();

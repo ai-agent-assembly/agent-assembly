@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-3870: long base64 token — a contiguous base64 run longer than 64 chars (above the entropy gate) is flagged as GenericHighEntropy, closing the >64-char length evasion the old 20-64 cap skipped",
+  "input_text": "auth=aGVsbG9Xb3JsZFRoaXNJc0FWZXJ5TG9uZ0Jhc2U2NFNlY3JldFRva2VuQmV5b25kU2l4dHlGb3VyQ2hhcnM5OQ",
+  "expected_findings": [
+    { "kind": "GenericHighEntropy", "offset": 5 }
+  ],
+  "expected_redacted": "auth=[REDACTED:GenericHighEntropy]"
+}

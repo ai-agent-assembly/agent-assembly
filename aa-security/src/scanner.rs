@@ -121,7 +121,9 @@ pub enum CredentialKind {
     /// US Social Security Number in `DDD-DD-DDDD` format.
     SsnPattern,
     // Generic
-    /// High-entropy token (Shannon entropy > 4.5 bits/char, length 20–64 bytes).
+    /// High-entropy or long encoded token: a whitespace token of length 20–64
+    /// with Shannon entropy > 4.5 bits/char, a contiguous hex run ≥ 64 chars, or
+    /// a contiguous base64 run > 64 chars above the entropy gate.
     GenericHighEntropy,
     // Policy-defined
     /// A pattern defined in the policy document's `data.sensitive_patterns` field.
@@ -366,7 +368,9 @@ impl CredentialScanner {
     ///    auth tokens, cloud credentials, database URLs, and PEM private key headers.
     /// 2. Credit card and SSN digit-sequence scan.
     /// 3. Email address scan.
-    /// 4. High-entropy token scan (Shannon entropy > 4.5 bits/char, length 20–64).
+    /// 4. Generic high-entropy / long-encoded-blob scan: a 20–64 whitespace token
+    ///    above the entropy gate, a contiguous hex run ≥ 64 chars, or a base64
+    ///    run > 64 chars above the gate (see [`scan_high_entropy`]).
     pub fn scan(&self, text: &str) -> ScanResult {
         if self.disabled {
             return ScanResult { findings: Vec::new() };
@@ -389,7 +393,7 @@ impl CredentialScanner {
         // Phase 3: Email addresses
         scan_emails(text, &mut findings);
 
-        // Phase 4: High-entropy tokens (Shannon entropy > 4.5 bits/char, length 20–64)
+        // Phase 4: High-entropy / long-hex tokens (encoding & length evasions, AAASM-3870)
         scan_high_entropy(text, &mut findings);
 
         findings.sort_by_key(|f| f.offset);
@@ -557,23 +561,69 @@ fn shannon_entropy(s: &str) -> f64 {
         .sum()
 }
 
-/// Scans `text` for high-entropy whitespace-delimited tokens (> 4.5 bits/char,
-/// length 20–64 bytes) and reports them as [`CredentialKind::GenericHighEntropy`].
+/// Shannon-entropy gate, in bits per character.
+///
+/// Base64/base85 encodings of random bytes sit around 5-6 bits/char, while
+/// English prose and `snake_case` / `kebab-case` identifiers stay below this.
+/// Note hex tops out at `log2(16) = 4.0` bits/char, so hex-encoded secrets never
+/// trip this gate — they are caught by the dedicated hex rule (see
+/// [`HEX_RUN_MIN_LEN`]).
+const ENTROPY_BITS_GATE: f64 = 4.5;
+
+/// Minimum length of a contiguous hex run (`[0-9a-fA-F]`) flagged as a secret.
+///
+/// Set to 64 — the length of a hex-encoded 256-bit key (and of a SHA-256
+/// digest). The threshold is deliberately high to avoid redacting the shorter
+/// hex blobs that pervade normal payloads: 32-char MD5/UUID hex and 40-char git
+/// SHA-1 hashes stay below it and are **not** flagged. The accepted tradeoff is
+/// that hex blobs of 64+ chars — including SHA-256 digests — are redacted; this
+/// is harmless (redacting a public hash leaks nothing) and is the price of
+/// closing the hex-encoded-secret evasion, since a hex secret is byte-for-byte
+/// indistinguishable from a hash of the same length.
+const HEX_RUN_MIN_LEN: usize = 64;
+
+/// Minimum length of a contiguous base64/base64url run flagged as a secret.
+///
+/// The whitespace-token pass below already covers high-entropy tokens of length
+/// 20–64; this strictly-greater bound (> 64) is the additive AAASM-3870 rule that
+/// catches the long encoded blobs the 64-byte cap skipped, without re-flagging
+/// anything the token pass already handles. Combined with the entropy gate it
+/// stays clear of long-but-structured strings (e.g. connection strings) whose
+/// per-run entropy is below the gate.
+const BASE64_RUN_MIN_LEN: usize = 64;
+
+/// Returns `true` if `b` is in the base64 / base64url alphabet
+/// (alphanumerics plus `+ / - _`). `=` padding and all delimiters are excluded.
+fn is_base64_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_')
+}
+
+/// Scans `text` for generic secret-like tokens, reporting them as
+/// [`CredentialKind::GenericHighEntropy`]. Three additive passes run; each only
+/// *adds* findings, so the literal/URL/PEM detectors are never displaced and the
+/// conformance behaviour of the original whitespace pass is preserved exactly:
+///
+/// 1. **Whitespace-token entropy** (unchanged spec behaviour) — a whitespace
+///    token of length 20–64 with Shannon entropy > [`ENTROPY_BITS_GATE`].
+/// 2. **Long hex run** (AAASM-3870) — a contiguous hex run ≥ [`HEX_RUN_MIN_LEN`],
+///    closing the hex-encoding evasion (hex entropy is capped at 4.0 bits/char,
+///    below the gate, so pass 1 never catches it at any length).
+/// 3. **Long base64 run** (AAASM-3870) — a contiguous base64/base64url run
+///    longer than [`BASE64_RUN_MIN_LEN`] whose entropy exceeds the gate, closing
+///    the > 64-char length evasion that the pass-1 upper bound skipped.
 fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
+    // Pass 1: whitespace-delimited high-entropy tokens, length 20–64.
     let mut offset = 0usize;
     for token in text.split_whitespace() {
         let token_offset = text[offset..].find(token).map(|i| offset + i).unwrap_or(offset);
         let whitespace_end = token_offset + token.len();
         let len = token.len();
-        if (20..=64).contains(&len) && shannon_entropy(token) > 4.5 {
+        if (20..=64).contains(&len) && shannon_entropy(token) > ENTROPY_BITS_GATE {
             // The whitespace token can still carry trailing delimiters when a
             // secret is embedded in structured text (e.g. `...key"}]}` in compact
             // JSON). Clamp the finding's `end` at the first token-terminating
             // character so the span covers only the credential — matching how the
-            // AC literal scan derives its `end`. Detection (offset, count, kind)
-            // is unchanged; only the span boundary is tightened so that once
-            // `redact` coalesces this with an overlapping specific finding, the
-            // merged span no longer swallows valid trailing bytes.
+            // AC literal scan derives its `end`.
             let end = token_end(text, token_offset);
             findings.push(CredentialFinding::new(
                 CredentialKind::GenericHighEntropy,
@@ -582,6 +632,50 @@ fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
             ));
         }
         offset = whitespace_end;
+    }
+
+    // Passes 2 & 3: contiguous encoded-blob runs that the token pass misses.
+    scan_long_hex_runs(text, findings);
+    scan_long_base64_runs(text, findings);
+}
+
+/// Pass 2 — flag every contiguous hex run of length ≥ [`HEX_RUN_MIN_LEN`].
+fn scan_long_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_hexdigit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+            i += 1;
+        }
+        if i - start >= HEX_RUN_MIN_LEN {
+            findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
+        }
+    }
+}
+
+/// Pass 3 — flag every contiguous base64/base64url run longer than
+/// [`BASE64_RUN_MIN_LEN`] whose Shannon entropy exceeds [`ENTROPY_BITS_GATE`].
+fn scan_long_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_base64_char(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_base64_char(bytes[i]) {
+            i += 1;
+        }
+        let run = &text[start..i];
+        if run.len() > BASE64_RUN_MIN_LEN && shannon_entropy(run) > ENTROPY_BITS_GATE {
+            findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
+        }
     }
 }
 
@@ -896,6 +990,117 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.kind == CredentialKind::GenericHighEntropy));
+    }
+
+    // --- AAASM-3870: encoding / length evasions ---
+
+    /// A 64-char lowercase-hex secret (hex-encoded 256-bit key) has entropy
+    /// capped at 4.0 bits/char, so it slipped past the old 4.5-bit gate. The
+    /// dedicated long-hex rule must now flag it.
+    #[test]
+    fn detects_64_char_lowercase_hex_secret() {
+        let scanner = CredentialScanner::new();
+        // 64 lowercase hex chars.
+        let secret = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        assert_eq!(secret.len(), 64, "fixture must be exactly 64 hex chars");
+        let result = scanner.scan(&format!("token={secret}"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "64-char hex secret must be flagged: {:?}",
+            result.findings
+        );
+        assert!(!scanner.scan(secret).is_clean());
+    }
+
+    /// A single base64 token longer than 64 chars was skipped entirely by the
+    /// old length-bounded rule. Removing the upper bound must now flag it.
+    #[test]
+    fn detects_base64_token_beyond_64_chars() {
+        let scanner = CredentialScanner::new();
+        // 88-char base64 of random-looking bytes (entropy well above the gate).
+        let secret = "aGVsbG9Xb3JsZFRoaXNJc0FWZXJ5TG9uZ0Jhc2U2NFNlY3JldFRva2VuQmV5b25kU2l4dHlGb3VyQ2hhcnM5OQ";
+        assert!(secret.len() > 64, "fixture must exceed the old 64-char cap");
+        let result = scanner.scan(&format!("authorization: {secret}"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            ">64-char base64 token must be flagged: {:?}",
+            result.findings
+        );
+    }
+
+    /// Branded literal prefixes must remain detected after the rewrite — the
+    /// long-token rules must not displace the high-signal AC matchers.
+    #[test]
+    fn branded_prefixes_still_flagged_after_rewrite() {
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("k=AKIAIOSFODNN7EXAMPLE p=ghp_0123456789abcdefghijklmnopqrstuvwxyz");
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::AwsAccessKey));
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::GitHubPat));
+    }
+
+    /// Common shorter hex blobs (32-char MD5/UUID, 40-char git SHA-1) and a
+    /// plain English sentence must NOT be flagged — the 64-char hex bar and the
+    /// 20-char/4.5-bit entropy gate keep these benign payloads clean.
+    #[test]
+    fn does_not_flag_benign_hex_ids_or_prose() {
+        let scanner = CredentialScanner::new();
+        let benign = [
+            // 40-char git SHA-1.
+            "commit 0123456789abcdef0123456789abcdef01234567 fixed it",
+            // 32-char MD5 / dashless UUID.
+            "etag d41d8cd98f00b204e9800998ecf8427e cached",
+            // 36-char UUID with dashes.
+            "id 550e8400-e29b-41d4-a716-446655440000 ok",
+            // Plain prose and a short id.
+            "The quarterly report is ready for review by the team.",
+            "user id 42 logged in",
+        ];
+        for text in &benign {
+            let result = scanner.scan(text);
+            assert!(
+                !result
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+                "benign text wrongly flagged: {:?} -> {:?}",
+                text,
+                result.findings
+            );
+        }
+    }
+
+    /// End-to-end: a 64-char hex secret embedded in JSON is fully redacted with
+    /// no raw fragment surviving.
+    #[test]
+    fn redact_removes_long_hex_secret() {
+        let scanner = CredentialScanner::new();
+        let secret = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let text = format!(r#"{{"api_token":"{secret}"}}"#);
+        let result = scanner.scan(&text);
+        let redacted = result.redact(&text);
+        assert!(!redacted.contains(secret), "raw hex secret survived: {redacted}");
+        assert!(redacted.contains("[REDACTED:GenericHighEntropy]"));
+    }
+
+    /// The additive passes must not disturb the original whitespace-token
+    /// behaviour: a database URL still yields its specific URL finding plus the
+    /// whole-blob GenericHighEntropy at offset 0 (3 findings), exactly as the
+    /// conformance spec encodes it.
+    #[test]
+    fn additive_passes_preserve_url_and_whole_blob_entropy_findings() {
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("MONGO_URI=mongodb://admin:pass@cluster0.mongodb.net/mydb");
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::MongodbUrl));
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GenericHighEntropy && f.offset == 0));
     }
 
     // --- luhn_valid helper ---
