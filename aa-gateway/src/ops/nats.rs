@@ -783,6 +783,64 @@ mod tests {
         assert_eq!(subject_for(&g), GLOBAL_SUBJECT);
     }
 
+    // ── AAASM-3889: subject↔payload binding (anti-forgery on consume) ───────
+
+    #[test]
+    fn subject_authorizes_a_payload_published_under_its_own_subject() {
+        // A legitimately-published per-agent envelope arrives on exactly the
+        // subject `subject_for` produces — so it is authorized.
+        let e = env(
+            false,
+            "acme",
+            "payments",
+            "bot-7",
+            "agent:bot-7",
+            OpControlSignal::Terminate,
+        );
+        assert!(subject_authorizes_envelope(&subject_for(&e), &e));
+
+        // A legitimate global halt on the global subject is authorized.
+        let g = env(true, "", "", "", GLOBAL_HALT_OP_ID, OpControlSignal::Terminate);
+        assert!(subject_authorizes_envelope(GLOBAL_SUBJECT, &g));
+    }
+
+    #[test]
+    fn subject_rejects_a_forged_cross_tenant_payload() {
+        // Payload targets `victim-org/victim` but was delivered on the
+        // attacker's own subject — reject (cross-tenant forgery).
+        let forged = env(
+            false,
+            "victim-org",
+            "victim-team",
+            "victim",
+            "agent:victim",
+            OpControlSignal::Terminate,
+        );
+        assert!(!subject_authorizes_envelope(
+            "assembly.opcontrol.attacker.attacker",
+            &forged
+        ));
+    }
+
+    #[test]
+    fn subject_rejects_a_forged_global_payload_not_on_the_global_subject() {
+        // Payload claims `global: true` (fleet-wide kill) but was delivered on a
+        // tenant subject the attacker could publish to — reject.
+        let forged_global = env(true, "", "", "", GLOBAL_HALT_OP_ID, OpControlSignal::Terminate);
+        assert!(!subject_authorizes_envelope(
+            "assembly.opcontrol.attacker.bot",
+            &forged_global
+        ));
+    }
+
+    #[test]
+    fn subject_rejects_a_non_global_payload_on_the_global_subject() {
+        // The inverse: a per-agent payload smuggled onto the global subject must
+        // not be honored (it would otherwise broadcast to every subscriber).
+        let per_agent = env(false, "acme", "", "bot-7", "agent:bot-7", OpControlSignal::Terminate);
+        assert!(!subject_authorizes_envelope(GLOBAL_SUBJECT, &per_agent));
+    }
+
     #[test]
     fn wire_envelope_round_trips_through_json() {
         let original = env(
