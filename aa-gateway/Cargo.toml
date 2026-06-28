@@ -58,12 +58,19 @@ axum-server  = { version = "0.8", features = ["tls-rustls"] }
 tower-http   = { workspace = true, features = ["fs"] }
 x509-parser  = "0.18"
 redis        = { workspace = true, features = ["tokio-comp", "connection-manager"], optional = true }
+# AAASM-3883: cross-process op-control delivery over a NATS subject (ADR 0011).
+# async-nats is a regular (non-optional) dependency here because it is already a
+# non-optional transitive dependency via aa-runtime's audit publisher — so it is
+# in the crates.io publish set regardless. The op-control bridge/publisher is
+# therefore always compiled and activated at runtime by AA_OPCONTROL_NATS_URL,
+# matching the always-on runtime audit publisher rather than the feature-gated
+# audit consumer.
+async-nats   = { workspace = true }
 # strip-for-publish:begin audit-consumer
 # AAASM-2388: gateway-side NATS JetStream audit consumer. Held back from the
 # crates.io publish set — aa-storage-postgres is `publish = false`, so cargo
 # would reject the published gateway for depending on it. This whole block is
 # removed by .ci/strip-for-publish.sh before `cargo workspaces publish`.
-async-nats   = { workspace = true, optional = true }
 aa-storage-postgres = { path = "../aa-storage-postgres", optional = true }
 # strip-for-publish:end audit-consumer
 
@@ -97,7 +104,7 @@ redis-cache = ["dep:redis"]
 # strip-for-publish:begin audit-consumer
 # AAASM-2388: gateway-internal NATS->Postgres audit consumer worker. Default
 # OFF; enabled in dev/CI via `--all-features`. Stripped before crates.io publish.
-audit-consumer = ["dep:async-nats", "dep:aa-storage-postgres"]
+audit-consumer = ["dep:aa-storage-postgres"]
 # strip-for-publish:end audit-consumer
 
 [[bin]]
