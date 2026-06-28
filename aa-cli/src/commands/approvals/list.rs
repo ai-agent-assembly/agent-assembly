@@ -8,6 +8,7 @@ use comfy_table::{Cell, Color, Table};
 
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 use super::client;
 
@@ -51,6 +52,23 @@ pub struct ListArgs {
     pub agent: Option<String>,
 }
 
+/// Build the sanitized text columns for one approval row (everything except
+/// the colour-coded TIMEOUT_IN cell).
+///
+/// `id`, `agent_id`, `action`, `reason`, and `created_at` are all
+/// agent/server-controlled and reach the operator's terminal verbatim, so each
+/// is run through [`sanitize_terminal`] to strip ANSI/OSC escapes and C0
+/// control bytes (comfy_table does not strip them).
+fn approval_row_text_cells(item: &ApprovalResponse) -> Vec<String> {
+    vec![
+        sanitize_terminal(&item.id),
+        sanitize_terminal(&item.agent_id),
+        sanitize_terminal(&item.action),
+        sanitize_terminal(&item.reason),
+        sanitize_terminal(&item.created_at),
+    ]
+}
+
 /// Render a list of approval responses as a colored table to stdout.
 ///
 /// Columns: ID, AGENT, ACTION, CONDITION, SUBMITTED_AT, TIMEOUT_IN.
@@ -72,14 +90,9 @@ pub fn render_approvals_table(items: &[ApprovalResponse], now_epoch: i64) {
             TimeoutColor::Green => Color::Green,
         };
 
-        table.add_row(vec![
-            Cell::new(&item.id),
-            Cell::new(&item.agent_id),
-            Cell::new(&item.action),
-            Cell::new(&item.reason),
-            Cell::new(&item.created_at),
-            Cell::new(format_countdown(remaining)).fg(color),
-        ]);
+        let mut cells: Vec<Cell> = approval_row_text_cells(item).into_iter().map(Cell::new).collect();
+        cells.push(Cell::new(format_countdown(remaining)).fg(color));
+        table.add_row(cells);
     }
 
     println!("{table}");
