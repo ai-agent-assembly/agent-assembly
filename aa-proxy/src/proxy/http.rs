@@ -583,6 +583,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_request_content_length_over_cap_without_allocating() {
+        // AAASM-3891: a Content-Length far above MAX_BODY_LEN (here ~2 GB, the
+        // exploit value) must be rejected at the header stage — before any
+        // `vec![0u8; content_length]` allocation — so a single hostile request
+        // cannot OOM the proxy. The reader holds only the header bytes, proving
+        // the rejection happens before the (absent) 2 GB body is touched.
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\n\
+                    Host: api.openai.com\r\n\
+                    Content-Length: 2000000000\r\n\
+                    \r\n";
+        let mut reader = make_reader(raw);
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("exceeds maximum")),
+            "expected over-cap rejection, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepts_request_content_length_at_cap_boundary() {
+        // A Content-Length exactly at the cap is allowed (the boundary is
+        // inclusive); only values strictly greater are rejected. The body bytes
+        // are absent here, so the parse fails on EOF *after* passing the cap
+        // check — proving the cap itself did not reject the boundary value.
+        let raw = format!("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {MAX_BODY_LEN}\r\n\r\n");
+        let mut reader = make_reader(raw.as_bytes());
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            !matches!(&err, ProxyError::Config(msg) if msg.contains("exceeds maximum")),
+            "cap boundary must not be rejected by the cap check, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_response_content_length_over_cap_without_allocating() {
+        // AAASM-3891: the response side applies the same reject-before-alloc cap
+        // so a hostile upstream response cannot OOM the proxy.
+        let raw = b"HTTP/1.1 200 OK\r\n\
+                    Content-Length: 2000000000\r\n\
+                    \r\n";
+        let mut reader = make_reader(raw);
+        let err = read_http_response(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("exceeds maximum")),
+            "expected over-cap rejection, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn unexpected_eof_reading_request_headers_is_error() {
         // Stream ends after the request line, before the header-terminating
         // blank line — this is a truncated request, not a clean inter-request
