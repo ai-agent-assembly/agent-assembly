@@ -24,7 +24,7 @@ use utoipa::ToSchema;
 
 use crate::alerts::rules::store::AlertRuleStoreError;
 use crate::alerts::rules::types::{AlertRule, AlertRuleValidationError, RuleMetric, RuleOperator, RuleSeverity};
-use crate::auth::scope::{RequireRead, RequireWrite};
+use crate::auth::scope::{RequireAdmin, RequireRead};
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -202,7 +202,11 @@ pub async fn list_rules(
     tag = "alert-rules"
 )]
 pub async fn create_rule(
-    _auth: RequireWrite,
+    // AAASM-3894: alert rules carry no team_id/org_id, so a Write-scope key in
+    // any tenant could otherwise mutate every tenant's alerting. Alerting is
+    // admin-managed infrastructure, so gate all mutations on admin scope.
+    // (Deeper per-object tenant tagging is tracked as a follow-up.)
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Json(body): Json<AlertRuleRequest>,
 ) -> Result<(StatusCode, Json<AlertRuleResponse>), ProblemDetail> {
@@ -264,7 +268,8 @@ pub async fn get_rule(
     tag = "alert-rules"
 )]
 pub async fn update_rule(
-    _auth: RequireWrite,
+    // AAASM-3894: admin-gated — see `create_rule`.
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     Json(body): Json<AlertRuleRequest>,
@@ -295,7 +300,8 @@ pub async fn update_rule(
     tag = "alert-rules"
 )]
 pub async fn delete_rule(
-    _auth: RequireWrite,
+    // AAASM-3894: admin-gated — see `create_rule`.
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ProblemDetail> {
