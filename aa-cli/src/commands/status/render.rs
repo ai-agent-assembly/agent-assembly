@@ -7,6 +7,7 @@ use super::models::{
     AdminStorageHealthBlock, AgentRow, ApprovalsSummary, BudgetRow, DeploymentOverview, RuntimeHealth, StatusSnapshot,
 };
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Build the multi-line deployment-overview header block as a `String`.
 ///
@@ -167,6 +168,31 @@ fn format_duration(secs: u64) -> String {
     }
 }
 
+/// Build the sanitized display cells for one agent row.
+///
+/// `id`, `name`, `status`, `framework`, `last_event`, and `layer` are
+/// agent-controlled and reach the operator's terminal verbatim. A malicious
+/// agent could register a name/id containing ANSI/OSC escapes to repaint
+/// `aasm status` output, so every agent-supplied string is sanitized here.
+fn agent_row_cells(agent: &AgentRow) -> Vec<String> {
+    let status_icon = match agent.status.as_str() {
+        "Running" => "●",
+        "Idle" => "○",
+        "Suspended" => "⚠",
+        _ => "?",
+    };
+    vec![
+        sanitize_terminal(&agent.id),
+        sanitize_terminal(&agent.name),
+        format!("{status_icon} {}", sanitize_terminal(&agent.status)),
+        sanitize_terminal(&agent.framework),
+        agent.sessions.to_string(),
+        sanitize_terminal(&agent.last_event),
+        agent.violations_today.to_string(),
+        sanitize_terminal(&agent.layer),
+    ]
+}
+
 /// Render the Active Agents section as a table to stdout.
 pub fn render_agents_table(agents: &[AgentRow]) {
     println!("ACTIVE AGENTS");
@@ -190,22 +216,7 @@ pub fn render_agents_table(agents: &[AgentRow]) {
         "LAYER",
     ]);
     for agent in agents {
-        let status_icon = match agent.status.as_str() {
-            "Running" => "●",
-            "Idle" => "○",
-            "Suspended" => "⚠",
-            _ => "?",
-        };
-        table.add_row(vec![
-            &agent.id,
-            &agent.name,
-            &format!("{status_icon} {}", agent.status),
-            &agent.framework,
-            &agent.sessions.to_string(),
-            &agent.last_event,
-            &agent.violations_today.to_string(),
-            &agent.layer,
-        ]);
+        table.add_row(agent_row_cells(agent));
     }
     println!("{table}");
     println!();
@@ -301,7 +312,11 @@ pub fn render_budget_table(budget: &BudgetRow) {
         });
 
         for entry in &sorted {
-            table.add_row(vec![&entry.agent_id, &format!("${}", entry.daily_spend_usd)]);
+            // agent_id is agent-controlled; strip terminal escapes before display.
+            table.add_row(vec![
+                sanitize_terminal(&entry.agent_id),
+                format!("${}", entry.daily_spend_usd),
+            ]);
         }
         println!("{table}");
     }
