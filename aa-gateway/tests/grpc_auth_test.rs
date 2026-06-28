@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use aa_gateway::iam::{auth_interceptor, CREDENTIAL_METADATA_KEY};
+use aa_gateway::invalidation::{InvalidationHub, InvalidationServiceImpl};
 use aa_gateway::secrets::{InMemorySecretsStore, Secret, SecretsStore, TenantScopedStore};
 use aa_gateway::service::{ApprovalServiceImpl, SecretsServiceImpl, TopologyServiceImpl};
 use aa_gateway::{AgentRecord, AgentRegistry, AgentStatus};
@@ -20,6 +21,9 @@ use aa_gateway::{AgentRecord, AgentRegistry, AgentStatus};
 use aa_proto::assembly::approval::v1::approval_service_client::ApprovalServiceClient;
 use aa_proto::assembly::approval::v1::approval_service_server::ApprovalServiceServer;
 use aa_proto::assembly::approval::v1::{ApprovalDecisionType, DecideRequest, ListPendingRequest};
+use aa_proto::assembly::gateway::v1::invalidation_service_client::InvalidationServiceClient;
+use aa_proto::assembly::gateway::v1::invalidation_service_server::InvalidationServiceServer;
+use aa_proto::assembly::gateway::v1::{subscribe_request::Kind, SubscribeInitial, SubscribeRequest};
 use aa_proto::assembly::secrets::v1::secrets_service_client::SecretsServiceClient;
 use aa_proto::assembly::secrets::v1::secrets_service_server::SecretsServiceServer;
 use aa_proto::assembly::secrets::v1::DispatchToolRequest;
@@ -303,5 +307,52 @@ async fn topology_get_team_members_without_token_is_rejected() {
         })
         .await
         .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
+}
+
+/// Start a gRPC server wiring the `InvalidationService` behind the production
+/// fail-closed auth interceptor (AAASM-3828), matching `server::serve_tcp`.
+async fn start_invalidation_server(registry: Arc<AgentRegistry>) -> SocketAddr {
+    let invalidation_svc = InvalidationServiceImpl::new(InvalidationHub::new());
+    let auth = auth_interceptor(Arc::clone(&registry));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        Server::builder()
+            .add_service(InvalidationServiceServer::with_interceptor(
+                invalidation_svc,
+                auth.clone(),
+            ))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    addr
+}
+
+#[tokio::test]
+async fn invalidation_subscribe_without_token_is_rejected() {
+    let registry = Arc::new(AgentRegistry::new());
+    let addr = start_invalidation_server(registry).await;
+
+    let mut client = InvalidationServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+    let initial = SubscribeRequest {
+        assembly_id: "assembly-1".to_string(),
+        kind: Some(Kind::Initial(SubscribeInitial { last_seq_seen: 0 })),
+    };
+    // The fail-closed interceptor rejects the unauthenticated stream. Depending
+    // on flush timing the rejection surfaces either when opening the stream or
+    // on the first inbound read; both must be `Unauthenticated`.
+    let err = match client.subscribe(tokio_stream::once(initial)).await {
+        Err(status) => status,
+        Ok(response) => response.into_inner().message().await.unwrap_err(),
+    };
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
 }
