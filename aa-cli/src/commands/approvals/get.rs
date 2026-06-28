@@ -67,3 +67,28 @@ pub fn run_get(args: GetArgs, ctx: &ResolvedContext, global_output: OutputFormat
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_approval_detail_strips_server_supplied_escapes() {
+        let approval = ApprovalResponse {
+            id: "id\x1b[2Kfake".to_string(),
+            agent_id: "bot\x1b]52;c;ZXZpbA==\x07".to_string(),
+            action: "delete\x1b[31m_all".to_string(),
+            reason: "ok\ninjected".to_string(),
+            status: "pending\x1b[0m".to_string(),
+            created_at: "2026-04-30T10:00:00Z".to_string(),
+        };
+        let detail = format_approval_detail(&approval);
+        assert!(!detail.contains('\x1b'), "no ESC must survive: {detail:?}");
+        assert!(detail.contains("ID:         idfake"));
+        assert!(detail.contains("Agent:      bot"));
+        assert!(detail.contains("Action:     delete_all"));
+        assert!(detail.contains("Condition:  okinjected"));
+        assert!(detail.contains("Status:     pending"));
+        assert!(detail.contains("Created at: 2026-04-30T10:00:00Z"));
+    }
+}

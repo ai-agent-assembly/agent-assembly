@@ -128,3 +128,30 @@ pub fn run_list(args: ListArgs, ctx: &ResolvedContext, global_output: OutputForm
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_row_text_cells_strips_server_supplied_escapes() {
+        let item = ApprovalResponse {
+            // A malicious agent embeds a CSI clear-line, an OSC-52 clipboard
+            // write, and a newline in the fields shown by `approvals list`.
+            id: "id\x1b[2Kfake".to_string(),
+            agent_id: "bot\x1b]52;c;ZXZpbA==\x07".to_string(),
+            action: "delete\x1b[31m_all".to_string(),
+            reason: "ok\ninjected".to_string(),
+            status: "pending".to_string(),
+            created_at: "2026-04-30T10:00:00Z".to_string(),
+        };
+        let cells = approval_row_text_cells(&item);
+        assert!(cells.iter().all(|c| !c.contains('\x1b')), "no ESC in {cells:?}");
+        assert!(cells.iter().all(|c| !c.contains('\n')), "no newline in {cells:?}");
+        assert_eq!(cells[0], "idfake");
+        assert_eq!(cells[1], "bot");
+        assert_eq!(cells[2], "delete_all");
+        assert_eq!(cells[3], "okinjected");
+        assert_eq!(cells[4], "2026-04-30T10:00:00Z");
+    }
+}
