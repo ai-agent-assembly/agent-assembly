@@ -41,6 +41,27 @@ const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 /// Upper bound on the reconnect delay (1s → 2 → 4 → … → 32s cap).
 const MAX_BACKOFF: Duration = Duration::from_secs(32);
 
+/// Reserved `op_id` addressing **every** op for the subscribed agent — a global
+/// kill switch.
+///
+/// A signal the gateway publishes under this id halts the agent regardless of
+/// which op (if any) a request claims, so it cannot be evaded by an absent or
+/// altered agent-supplied `trace_id` (AAASM-3873). It never collides with a
+/// per-op id, which always has the colon-bearing `"{trace_id}:{span_id}"` form.
+pub const GLOBAL_HALT_OP_ID: &str = "*";
+
+/// Reserved `op_id` addressing the whole agent identified by `agent_id`.
+///
+/// Op-control matching binds to this **server-side** identity — the agent id the
+/// runtime itself knows — rather than the attacker-controlled `trace_id` /
+/// `span_id` on a `CheckActionRequest`. An agent-level terminate/pause published
+/// under this id applies to every request from the agent, including ones that
+/// omit or forge a `trace_id` (AAASM-3873). The `agent:` prefix keeps it disjoint
+/// from per-op ids of the form `"{trace_id}:{span_id}"`.
+pub fn agent_halt_op_id(agent_id: &str) -> String {
+    format!("agent:{agent_id}")
+}
+
 /// The runtime-observed lifecycle state of a single op.
 ///
 /// Derived from the most recent [`OpControlSignal`] the gateway pushed for the
@@ -247,6 +268,20 @@ mod tests {
         let store = OpControlStore::new();
         assert_eq!(store.apply("t:s", OpControlSignal::Unspecified), None);
         assert_eq!(store.state("t:s"), None);
+    }
+
+    #[test]
+    fn server_side_halt_keys_are_disjoint_from_per_op_ids() {
+        // Per-op ids always carry a colon ("{trace_id}:{span_id}"); the
+        // server-side halt keys must not collide with that namespace.
+        assert!(!GLOBAL_HALT_OP_ID.contains(':'));
+        assert_eq!(agent_halt_op_id("svc-agent"), "agent:svc-agent");
+
+        // An agent-level halt is addressable independently of any op halt.
+        let store = OpControlStore::new();
+        store.apply(&agent_halt_op_id("svc-agent"), OpControlSignal::Terminate);
+        assert_eq!(store.state(&agent_halt_op_id("svc-agent")), Some(OpState::Terminated));
+        assert_eq!(store.state("trace:span"), None);
     }
 
     #[test]

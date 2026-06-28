@@ -159,6 +159,7 @@ pub async fn run(
                             &response_router,
                             &gateway_client,
                             &op_control,
+                            &config.agent_id,
                             config.gateway_fail_closed,
                             &broadcast_tx,
                             &seq,
@@ -404,21 +405,39 @@ async fn handle_policy_query(
     response_router: &ResponseRouter,
     gateway_client: &Option<Arc<Mutex<GatewayClient>>>,
     op_control: &crate::op_control::OpControlStore,
+    agent_id: &str,
     fail_closed: bool,
     broadcast_tx: &broadcast::Sender<PipelineEvent>,
     sequence_counter: &AtomicU64,
 ) {
-    // ── Op-control kill switch (AAASM-3491) ─────────────────────────────
+    // ── Op-control kill switch (AAASM-3491; hardened AAASM-3873) ─────────
     // Consult the operator-driven op lifecycle BEFORE any policy evaluation:
     // a terminated op must fast-fail and a paused op must block, regardless of
-    // what the policy would otherwise decide. The op_id mirrors the gateway's
-    // form ("{trace_id}:{span_id}"); an empty trace_id means the request is not
-    // part of a tracked op, so there is nothing to halt.
+    // what the policy would otherwise decide.
+    //
+    // AAASM-3873: the kill switch must not be evadable via an agent-supplied
+    // trace_id. The op-specific id ("{trace_id}:{span_id}") is built from
+    // attacker-controlled request fields, so a non-cooperative SDK could omit or
+    // alter trace_id to dodge a terminate/pause. We therefore always consult
+    // halts bound to a *server-side* identity — a global kill switch and an
+    // agent-scoped halt keyed by the agent identity the runtime itself knows
+    // (`agent_id`) — on every request. The op-specific id is an additional,
+    // finer-grained match used only when a trace_id is actually supplied; it can
+    // never reduce coverage. An empty/absent or forged trace_id therefore no
+    // longer bypasses an active agent-level or global halt. (Defeating a halt
+    // scoped to a *specific* op by claiming a different op remains inherent to
+    // the advisory SDK fast-path — an unlabelled request cannot be attributed to
+    // that op — but the operator's agent-wide and global kill switches are now
+    // unbypassable.)
+    let mut halt_op_ids = vec![
+        crate::op_control::GLOBAL_HALT_OP_ID.to_string(),
+        crate::op_control::agent_halt_op_id(agent_id),
+    ];
     if !req.trace_id.is_empty() {
-        let op_id = format!("{}:{}", req.trace_id, req.span_id);
-        if op_control_halts(connection_id, &op_id, op_control, response_router).await {
-            return;
-        }
+        halt_op_ids.push(format!("{}:{}", req.trace_id, req.span_id));
+    }
+    if op_control_halts(connection_id, &halt_op_ids, op_control, response_router).await {
+        return;
     }
 
     // ── Gateway forwarding path ─────────────────────────────────────────
@@ -513,21 +532,26 @@ async fn handle_policy_query(
     .await;
 }
 
-/// Enforce the op-control kill switch for `op_id` before the action proceeds.
+/// Enforce the op-control kill switch across all `op_ids` bound to this request
+/// before the action proceeds.
+///
+/// `op_ids` carries the server-side halt keys (global + agent-scoped) plus the
+/// optional op-specific key (AAASM-3873). A halt on **any** of them applies —
+/// terminate takes priority over pause.
 ///
 /// Returns `true` when the action was **halted** and a response already sent —
-/// the caller must stop processing. Returns `false` when the op is runnable
+/// the caller must stop processing. Returns `false` when every key is runnable
 /// (no signal, or a pause that was subsequently resumed).
 ///
 /// - **Terminated:** fast-fail the in-flight action with a `Deny`
 ///   (`OpTerminatedError`); the kill switch reached the agent.
-/// - **Paused:** cooperatively block until the gateway pushes a resume (op
+/// - **Paused:** cooperatively block until the gateway pushes a resume (the op
 ///   leaves the store) or a terminate. This parks the per-tool check on the
 ///   store's change notification rather than busy-polling, so a paused agent
 ///   makes no further progress until the operator resumes it.
 async fn op_control_halts(
     connection_id: u64,
-    op_id: &str,
+    op_ids: &[String],
     op_control: &crate::op_control::OpControlStore,
     response_router: &ResponseRouter,
 ) -> bool {
@@ -536,23 +560,40 @@ async fn op_control_halts(
         // Register interest before reading state so a resume/terminate that
         // lands during this iteration cannot be missed (see `changed`).
         let changed = op_control.changed();
-        match op_control.state(op_id) {
-            Some(OpState::Terminated) => {
-                ::metrics::counter!("aa_op_control_terminations_total").increment(1);
-                tracing::warn!(connection_id, op_id, "op terminated by operator — fast-failing action");
-                send_ipc_response(
-                    connection_id,
-                    IpcResponse::PolicyResponse(CheckActionResponse {
-                        decision: Decision::Deny as i32,
-                        reason: "OpTerminatedError: operator terminated this op via the live kill switch".to_string(),
-                        ..Default::default()
-                    }),
-                    response_router,
-                )
-                .await;
-                return true;
+
+        // Scan every bound key. A terminate on any key wins outright; otherwise
+        // remember the first paused key so the action blocks until it changes.
+        let mut terminated_op: Option<&str> = None;
+        let mut paused_op: Option<&str> = None;
+        for op_id in op_ids {
+            match op_control.state(op_id) {
+                Some(OpState::Terminated) => {
+                    terminated_op = Some(op_id);
+                    break;
+                }
+                Some(OpState::Paused) if paused_op.is_none() => paused_op = Some(op_id),
+                _ => {}
             }
-            Some(OpState::Paused) => {
+        }
+
+        if let Some(op_id) = terminated_op {
+            ::metrics::counter!("aa_op_control_terminations_total").increment(1);
+            tracing::warn!(connection_id, op_id, "op terminated by operator — fast-failing action");
+            send_ipc_response(
+                connection_id,
+                IpcResponse::PolicyResponse(CheckActionResponse {
+                    decision: Decision::Deny as i32,
+                    reason: "OpTerminatedError: operator terminated this op via the live kill switch".to_string(),
+                    ..Default::default()
+                }),
+                response_router,
+            )
+            .await;
+            return true;
+        }
+
+        match paused_op {
+            Some(op_id) => {
                 ::metrics::counter!("aa_op_control_pauses_total").increment(1);
                 tracing::info!(
                     connection_id,
@@ -1940,6 +1981,252 @@ mod tests {
 
         if let IpcResponse::PolicyResponse(r) = resp {
             assert_eq!(r.decision, Decision::Allow as i32, "resumed op must proceed");
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3873: an agent-level terminate must halt the agent even when the
+    /// request carries **no** trace_id. The kill switch is bound to the
+    /// server-side agent identity the runtime knows (`test-agent`), not the
+    /// agent-supplied trace_id — so an SDK that omits trace_id (the old bypass)
+    /// cannot dodge it.
+    #[tokio::test]
+    async fn op_control_agent_terminate_halts_with_empty_trace_id() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000); // agent_id = "test-agent"
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        // Operator terminates the whole agent (server-side identity), not a
+        // specific op.
+        op_control.apply(
+            &crate::op_control::agent_halt_op_id("test-agent"),
+            OpControlSignal::Terminate,
+        );
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
+        ));
+
+        // policy_query_frame leaves trace_id empty — the pre-fix path skipped
+        // op-control entirely here, letting the action through.
+        tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_millis(200), resp_rx.recv())
+            .await
+            .expect("response timed out")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(
+                r.decision,
+                Decision::Deny as i32,
+                "agent-level terminate must deny even with empty trace_id"
+            );
+            assert!(r.reason.contains("OpTerminatedError"));
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3873: forging trace_id to an unknown value must not dodge an
+    /// agent-level terminate either — the agent-scoped halt still applies.
+    #[tokio::test]
+    async fn op_control_agent_terminate_halts_with_altered_trace_id() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        op_control.apply(
+            &crate::op_control::agent_halt_op_id("test-agent"),
+            OpControlSignal::Terminate,
+        );
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
+        ));
+
+        // Attacker presents a forged trace_id that matches no op halt.
+        tx.send((
+            0,
+            policy_query_frame_for_op(ActionType::ToolCall, "forged-trace", "forged-span"),
+        ))
+        .await
+        .unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_millis(200), resp_rx.recv())
+            .await
+            .expect("response timed out")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(
+                r.decision,
+                Decision::Deny as i32,
+                "agent-level terminate must deny despite a forged trace_id"
+            );
+            assert!(r.reason.contains("OpTerminatedError"));
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3873: an agent-level pause blocks a check that carries no trace_id;
+    /// resuming the agent releases it. Mirrors the per-op pause/resume test but
+    /// over the trace_id-independent agent-scoped key.
+    #[tokio::test]
+    async fn op_control_agent_pause_blocks_then_resume_with_empty_trace_id() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        let agent_key = crate::op_control::agent_halt_op_id("test-agent");
+        op_control.apply(&agent_key, OpControlSignal::Pause);
+        let store_for_resume = op_control.clone();
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
+        ));
+
+        // Empty trace_id — still blocked by the agent-scoped pause.
+        tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), resp_rx.recv())
+                .await
+                .is_err(),
+            "agent-level pause must block the check until resume"
+        );
+
+        store_for_resume.apply(&agent_key, OpControlSignal::Resume);
+
+        let resp = tokio::time::timeout(Duration::from_millis(500), resp_rx.recv())
+            .await
+            .expect("resume did not release the blocked check")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(r.decision, Decision::Allow as i32, "resumed agent must proceed");
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+    }
+
+    /// AAASM-3873: scoping is precise — a terminate on a *different* op must not
+    /// over-block an unrelated request. A request with no trace_id is allowed
+    /// while another op sits Terminated in the store, proving per-op halts are
+    /// not treated as agent-wide (no false positives from the new agent/global
+    /// consultation).
+    #[tokio::test]
+    async fn op_control_other_op_terminate_does_not_block_normal_request() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let config = test_config(100, 10_000);
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+        let op_control = crate::op_control::OpControlStore::new();
+
+        // A specific (unrelated) op is terminated.
+        op_control.apply("other-trace:other-span", OpControlSignal::Terminate);
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            None,
+            op_control,
+            Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
+        ));
+
+        // A normal request with its own trace_id (and the empty-trace case is
+        // covered above) must still be allowed — the other op's halt is not
+        // agent-wide.
+        tx.send((
+            0,
+            policy_query_frame_for_op(ActionType::ToolCall, "my-trace", "my-span"),
+        ))
+        .await
+        .unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_millis(200), resp_rx.recv())
+            .await
+            .expect("response timed out")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(
+                r.decision,
+                Decision::Allow as i32,
+                "an unrelated op terminate must not block a normal request"
+            );
         } else {
             panic!("expected PolicyResponse, got {resp:?}");
         }
