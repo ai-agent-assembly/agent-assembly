@@ -31,15 +31,29 @@ use crate::registry::{AgentRegistry, AgentStatus, LineageError, OrphanMode, Regi
 const DEFAULT_HEARTBEAT_INTERVAL_SEC: i64 = 30;
 
 /// Length in bytes of a server-issued registration-challenge nonce (AAASM-3866).
-const CHALLENGE_NONCE_LEN: usize = 32;
+pub(crate) const CHALLENGE_NONCE_LEN: usize = 32;
 
 /// How long a registration-challenge nonce stays valid after it is issued
 /// (AAASM-3866). Short enough to bound replay/precompute windows, long enough to
 /// cover a client's RequestChallenge → Register round-trip.
-const CHALLENGE_TTL: Duration = Duration::from_secs(30);
+pub(crate) const CHALLENGE_TTL: Duration = Duration::from_secs(30);
 
-/// A single outstanding registration challenge, keyed in [`ChallengeStore`] by
-/// its random nonce bytes.
+/// Draw a fresh, unpredictable challenge nonce from the OS-seeded thread CSPRNG.
+///
+/// Shared by every [`ChallengeStoreLike`] implementation so the nonce is
+/// generated identically regardless of where it is stored.
+pub(crate) fn fresh_nonce() -> Vec<u8> {
+    rand::random::<[u8; CHALLENGE_NONCE_LEN]>().to_vec()
+}
+
+/// Absolute expiry of a freshly-issued nonce, as Unix-epoch milliseconds — the
+/// value returned to the client in `ChallengeResponse.expires_at_unix_ms`.
+pub(crate) fn challenge_expiry_unix_ms() -> i64 {
+    Utc::now().timestamp_millis() + CHALLENGE_TTL.as_millis() as i64
+}
+
+/// A single outstanding registration challenge, keyed in
+/// [`InMemoryChallengeStore`] by its random nonce bytes.
 struct IssuedChallenge {
     /// did:key the nonce was issued for — re-checked at Register so a nonce
     /// cannot be redirected to a different identity.
@@ -51,25 +65,67 @@ struct IssuedChallenge {
     expires_at: Instant,
 }
 
-/// In-memory store of outstanding registration-challenge nonces (AAASM-3866).
+/// Replica-shared store of outstanding registration-challenge nonces
+/// (AAASM-3866, made replica-shared by AAASM-3882).
 ///
 /// The store is the single-use + time-bound + identity-binding gate that makes
 /// the registration possession proof non-replayable: a nonce is unpredictable
 /// (CSPRNG), removed the first time it is consumed, rejected once expired, and
 /// only accepted for the exact agent_id + public_key it was issued for.
-#[derive(Default)]
-struct ChallengeStore {
-    issued: StdMutex<HashMap<Vec<u8>, IssuedChallenge>>,
-}
-
-impl ChallengeStore {
+///
+/// AAASM-3866 shipped only the [`InMemoryChallengeStore`] implementation, which
+/// keeps nonces in process-local memory and so assumes a **single gateway
+/// replica**: behind a multi-replica load balancer, `RequestChallenge` and
+/// `Register` can land on different replicas, so a nonce issued by replica A is
+/// unknown to replica B and `Register` fails closed (`Unauthenticated`). This
+/// trait abstracts the store so a horizontally-scaled, production gateway can
+/// inject a shared backend — the Redis-backed `RedisChallengeStore` in
+/// [`crate::storage::challenge`] — via [`AgentLifecycleServiceImpl::with_challenge_store`],
+/// while dev/single-replica keeps the zero-dependency in-memory default.
+///
+/// Every implementation MUST preserve all three guarantees **across replicas**:
+///
+/// * **single-use** — [`consume`] removes the nonce atomically, before the
+///   binding/expiry checks, so any attempt (even a replay or a redirect to a
+///   different identity) permanently burns it;
+/// * **time-bound** — a nonce is rejected once [`CHALLENGE_TTL`] has elapsed;
+/// * **identity-binding** — a nonce is only accepted for the exact `agent_id` +
+///   `public_key` it was issued for.
+///
+/// [`consume`]: ChallengeStoreLike::consume
+#[async_trait::async_trait]
+pub trait ChallengeStoreLike: Send + Sync {
     /// Issue a fresh random nonce bound to `agent_id` + `public_key`, returning
     /// the nonce bytes and its absolute expiry as Unix-epoch milliseconds.
-    ///
+    /// Errors (e.g. a shared backend being unreachable) fail closed so no
+    /// challenge is handed out that cannot later be consumed.
+    async fn issue(&self, agent_id: &str, public_key: &str) -> Result<(Vec<u8>, i64), Status>;
+
+    /// Consume the nonce: verify it was issued (single-use — removed on
+    /// consume), not expired, and bound to this `agent_id` + `public_key`.
+    /// Returns `Status::unauthenticated` otherwise so Register fails closed.
+    async fn consume(&self, nonce: &[u8], agent_id: &str, public_key: &str) -> Result<(), Status>;
+}
+
+/// In-memory, process-local [`ChallengeStoreLike`] (AAASM-3866).
+///
+/// The default store: correct for single-replica / dev deployments and for
+/// tests. The backing map lives behind an [`Arc`] so cheap clones share one
+/// backend — modelling, within a single process, the "one shared store fronted
+/// by N replicas" topology a production [`ChallengeStoreLike`] must support. For
+/// an actually cross-process shared store, inject the Redis-backed
+/// implementation instead.
+#[derive(Clone, Default)]
+pub struct InMemoryChallengeStore {
+    issued: Arc<StdMutex<HashMap<Vec<u8>, IssuedChallenge>>>,
+}
+
+#[async_trait::async_trait]
+impl ChallengeStoreLike for InMemoryChallengeStore {
     /// Opportunistically purges already-expired entries so the map cannot grow
     /// unbounded under a flood of challenge requests that never register.
-    fn issue(&self, agent_id: &str, public_key: &str) -> (Vec<u8>, i64) {
-        let nonce = rand::random::<[u8; CHALLENGE_NONCE_LEN]>().to_vec();
+    async fn issue(&self, agent_id: &str, public_key: &str) -> Result<(Vec<u8>, i64), Status> {
+        let nonce = fresh_nonce();
         let now = Instant::now();
         let expires_at = now + CHALLENGE_TTL;
         {
@@ -84,18 +140,13 @@ impl ChallengeStore {
                 },
             );
         }
-        let expires_at_unix_ms = Utc::now().timestamp_millis() + CHALLENGE_TTL.as_millis() as i64;
-        (nonce, expires_at_unix_ms)
+        Ok((nonce, challenge_expiry_unix_ms()))
     }
 
-    /// Consume the nonce: verify it was issued (single-use — removed on lookup),
-    /// not expired, and bound to this `agent_id` + `public_key`. Returns
-    /// `Status::unauthenticated` otherwise so Register fails closed.
-    ///
     /// The nonce is removed before the binding/expiry checks so any consumption
     /// attempt — including a replay or a redirect to a different identity —
     /// permanently burns it.
-    fn consume(&self, nonce: &[u8], agent_id: &str, public_key: &str) -> Result<(), Status> {
+    async fn consume(&self, nonce: &[u8], agent_id: &str, public_key: &str) -> Result<(), Status> {
         if nonce.is_empty() {
             return Err(Status::unauthenticated(
                 "missing registration_nonce — call RequestChallenge before Register (AAASM-3866)",
@@ -126,7 +177,7 @@ impl ChallengeStore {
 ///
 /// `proof` must be a raw 64-byte Ed25519 signature over `challenge` that
 /// verifies under `verifying_key`. `challenge` is the server-issued, single-use
-/// [`ChallengeStore`] nonce (no longer the public, deterministic `agent_id`),
+/// [`ChallengeStoreLike`] nonce (no longer the public, deterministic `agent_id`),
 /// so the proof cannot be precomputed or replayed. Returns
 /// `Status::unauthenticated` when the proof is missing, malformed, or does not
 /// verify — so no `credential_token` is minted for a caller that merely presents
@@ -161,8 +212,11 @@ pub struct AgentLifecycleServiceImpl {
     audit_tx: Option<mpsc::Sender<AuditEntry>>,
     audit_seq: Arc<AtomicU64>,
     audit_last_hash: Arc<Mutex<[u8; 32]>>,
-    /// Outstanding registration-challenge nonces (AAASM-3866).
-    challenges: Arc<ChallengeStore>,
+    /// Replica-shared store of outstanding registration-challenge nonces
+    /// (AAASM-3866; made replica-shared by AAASM-3882). Defaults to the
+    /// process-local [`InMemoryChallengeStore`]; a horizontally-scaled gateway
+    /// injects a shared backend via [`Self::with_challenge_store`].
+    challenges: Arc<dyn ChallengeStoreLike>,
 }
 
 impl AgentLifecycleServiceImpl {
@@ -174,7 +228,7 @@ impl AgentLifecycleServiceImpl {
             audit_tx: None,
             audit_seq: Arc::new(AtomicU64::new(0)),
             audit_last_hash: Arc::new(Mutex::new([0u8; 32])),
-            challenges: Arc::new(ChallengeStore::default()),
+            challenges: Arc::new(InMemoryChallengeStore::default()),
         }
     }
 
@@ -189,7 +243,7 @@ impl AgentLifecycleServiceImpl {
             audit_tx: None,
             audit_seq: Arc::new(AtomicU64::new(0)),
             audit_last_hash: Arc::new(Mutex::new([0u8; 32])),
-            challenges: Arc::new(ChallengeStore::default()),
+            challenges: Arc::new(InMemoryChallengeStore::default()),
         }
     }
 
@@ -197,6 +251,20 @@ impl AgentLifecycleServiceImpl {
     /// `AgentForceDeregistered` audit entries during heartbeat processing.
     pub fn with_audit_tx(mut self, audit_tx: mpsc::Sender<AuditEntry>) -> Self {
         self.audit_tx = Some(audit_tx);
+        self
+    }
+
+    /// Replace the default in-memory registration-challenge store with a shared
+    /// one (AAASM-3882).
+    ///
+    /// A multi-replica gateway behind a load balancer MUST inject a replica-
+    /// shared store (e.g. the Redis-backed `RedisChallengeStore` in
+    /// [`crate::storage::challenge`]) here so a nonce issued by `RequestChallenge`
+    /// on one replica can be consumed by `Register` on another. Without this the
+    /// default [`InMemoryChallengeStore`] is process-local and cross-replica
+    /// registration fails closed.
+    pub fn with_challenge_store(mut self, challenges: Arc<dyn ChallengeStoreLike>) -> Self {
+        self.challenges = challenges;
         self
     }
 }
@@ -237,7 +305,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         ed25519_dalek::VerifyingKey::from_bytes(&pk_array)
             .map_err(|_| Status::invalid_argument("invalid Ed25519 public key"))?;
 
-        let (nonce, expires_at_unix_ms) = self.challenges.issue(&proto_id.agent_id, &req.public_key);
+        let (nonce, expires_at_unix_ms) = self.challenges.issue(&proto_id.agent_id, &req.public_key).await?;
 
         tracing::debug!(agent_id = ?proto_id.agent_id, "registration challenge issued");
 
@@ -286,7 +354,8 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         // minimal credential_token possession gate; a future authn interceptor
         // layers on top of (does not replace) it.
         self.challenges
-            .consume(&req.registration_nonce, &proto_id.agent_id, &req.public_key)?;
+            .consume(&req.registration_nonce, &proto_id.agent_id, &req.public_key)
+            .await?;
         verify_possession_proof(&verifying_key, &req.registration_nonce, &req.possession_proof)?;
 
         let agent_key = proto_agent_id_to_key(proto_id);
@@ -572,60 +641,60 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 
-    // ── ChallengeStore (AAASM-3866) ──────────────────────────────────────────
+    // ── InMemoryChallengeStore (AAASM-3866) ──────────────────────────────────
 
     const DID: &str = "did:key:z6MkExampleAgent";
     const PK: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    #[test]
-    fn issued_nonce_is_random_and_consumable_once() {
-        let store = ChallengeStore::default();
-        let (n1, _) = store.issue(DID, PK);
-        let (n2, _) = store.issue(DID, PK);
+    #[tokio::test]
+    async fn issued_nonce_is_random_and_consumable_once() {
+        let store = InMemoryChallengeStore::default();
+        let (n1, _) = store.issue(DID, PK).await.unwrap();
+        let (n2, _) = store.issue(DID, PK).await.unwrap();
         assert_eq!(n1.len(), CHALLENGE_NONCE_LEN);
         assert_ne!(n1, n2, "two issued nonces must differ (CSPRNG)");
 
         // First consume succeeds; the same nonce is now burned (single-use).
-        assert!(store.consume(&n1, DID, PK).is_ok());
-        let replay = store.consume(&n1, DID, PK).unwrap_err();
+        assert!(store.consume(&n1, DID, PK).await.is_ok());
+        let replay = store.consume(&n1, DID, PK).await.unwrap_err();
         assert_eq!(replay.code(), tonic::Code::Unauthenticated);
     }
 
-    #[test]
-    fn empty_nonce_is_rejected() {
-        let store = ChallengeStore::default();
-        let err = store.consume(&[], DID, PK).unwrap_err();
+    #[tokio::test]
+    async fn empty_nonce_is_rejected() {
+        let store = InMemoryChallengeStore::default();
+        let err = store.consume(&[], DID, PK).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 
-    #[test]
-    fn unknown_nonce_is_rejected() {
-        let store = ChallengeStore::default();
-        let err = store.consume(&[9u8; CHALLENGE_NONCE_LEN], DID, PK).unwrap_err();
+    #[tokio::test]
+    async fn unknown_nonce_is_rejected() {
+        let store = InMemoryChallengeStore::default();
+        let err = store.consume(&[9u8; CHALLENGE_NONCE_LEN], DID, PK).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 
-    #[test]
-    fn nonce_bound_to_a_different_identity_is_rejected() {
-        let store = ChallengeStore::default();
-        let (nonce, _) = store.issue(DID, PK);
+    #[tokio::test]
+    async fn nonce_bound_to_a_different_identity_is_rejected() {
+        let store = InMemoryChallengeStore::default();
+        let (nonce, _) = store.issue(DID, PK).await.unwrap();
         // Wrong agent_id.
-        let err = store.consume(&nonce, "did:key:z6MkOther", PK).unwrap_err();
+        let err = store.consume(&nonce, "did:key:z6MkOther", PK).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 
-    #[test]
-    fn nonce_bound_to_a_different_public_key_is_rejected() {
-        let store = ChallengeStore::default();
-        let (nonce, _) = store.issue(DID, PK);
+    #[tokio::test]
+    async fn nonce_bound_to_a_different_public_key_is_rejected() {
+        let store = InMemoryChallengeStore::default();
+        let (nonce, _) = store.issue(DID, PK).await.unwrap();
         let other_pk = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let err = store.consume(&nonce, DID, other_pk).unwrap_err();
+        let err = store.consume(&nonce, DID, other_pk).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 
-    #[test]
-    fn expired_nonce_is_rejected() {
-        let store = ChallengeStore::default();
+    #[tokio::test]
+    async fn expired_nonce_is_rejected() {
+        let store = InMemoryChallengeStore::default();
         let nonce = vec![1u8; CHALLENGE_NONCE_LEN];
         // Insert a nonce that already expired one second ago.
         store.issued.lock().unwrap().insert(
@@ -636,14 +705,14 @@ mod tests {
                 expires_at: Instant::now() - Duration::from_secs(1),
             },
         );
-        let err = store.consume(&nonce, DID, PK).unwrap_err();
+        let err = store.consume(&nonce, DID, PK).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 
-    #[test]
-    fn expires_at_unix_ms_is_in_the_future() {
-        let store = ChallengeStore::default();
-        let (_, expires_at_unix_ms) = store.issue(DID, PK);
+    #[tokio::test]
+    async fn expires_at_unix_ms_is_in_the_future() {
+        let store = InMemoryChallengeStore::default();
+        let (_, expires_at_unix_ms) = store.issue(DID, PK).await.unwrap();
         assert!(expires_at_unix_ms > Utc::now().timestamp_millis());
     }
 }
