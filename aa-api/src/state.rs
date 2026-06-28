@@ -505,6 +505,33 @@ mod tests {
         assert!(state.secrets_store.list().is_empty(), "no secrets pre-registered");
     }
 
+    /// AAASM-3883: the in-memory AppState now wires an op-control publisher into
+    /// its ops registry, so the operator halt endpoints (`halt-agent`,
+    /// `global/halt`) and the per-op pause/terminate transitions publish on the
+    /// op-control channel instead of returning 503 "op-control channel not
+    /// configured". `halt_agent` / `halt_global` return `true` only when a
+    /// publisher is attached, so this asserts the boot wiring is present.
+    #[test]
+    fn local_in_memory_ops_registry_is_op_control_wired() {
+        use aa_proto::assembly::common::v1::AgentId;
+        use aa_proto::assembly::policy::v1::OpControlSignal;
+
+        let state = AppState::local_in_memory().expect("in-memory state builds");
+        let agent = AgentId {
+            org_id: "org".into(),
+            team_id: "team".into(),
+            agent_id: "agent-1".into(),
+        };
+        assert!(
+            state.ops_registry.halt_agent(agent, OpControlSignal::Terminate),
+            "ops_registry must have an op-control publisher so halt-agent does not 503",
+        );
+        assert!(
+            state.ops_registry.halt_global(OpControlSignal::Terminate),
+            "ops_registry must have an op-control publisher so global-halt does not 503",
+        );
+    }
+
     #[tokio::test]
     async fn local_hardened_off_keeps_auth_bypassed_but_wires_audit() {
         let state = AppState::local_hardened(LocalAuth::Off)
