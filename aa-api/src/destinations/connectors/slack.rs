@@ -5,10 +5,12 @@
 //! as the generic webhook connector so connection pooling and rustls
 //! configuration are shared.
 
+use std::net::SocketAddr;
+
 use chrono::Utc;
 
 use crate::destinations::connectors::{
-    shared_client, truncate_body, ConnectorError, DispatchOutcome, DispatchRequest, NotificationConnector,
+    egress_client, truncate_body, ConnectorError, DispatchOutcome, DispatchRequest, NotificationConnector,
 };
 use crate::destinations::types::{Destination, DestinationConfig};
 
@@ -21,6 +23,7 @@ impl NotificationConnector for SlackConnector {
         &self,
         destination: &Destination,
         req: &DispatchRequest,
+        pinned: &[SocketAddr],
     ) -> Result<DispatchOutcome, ConnectorError> {
         let (webhook_url, channel_override) = match &destination.config {
             DestinationConfig::Slack {
@@ -41,7 +44,16 @@ impl NotificationConnector for SlackConnector {
             body["channel"] = serde_json::Value::String(channel);
         }
 
-        let resp = shared_client()
+        // AAASM-3826: the Slack `webhook_url` is caller-controlled and egresses
+        // on test-fire, so pin the connection to the SSRF-vetted address — a
+        // DNS-rebind after the egress check cannot redirect this POST inward.
+        let host = url::Url::parse(&webhook_url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .unwrap_or_default();
+        let client = egress_client(&host, pinned);
+
+        let resp = client
             .post(&webhook_url)
             .json(&body)
             .send()

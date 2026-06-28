@@ -300,6 +300,7 @@ impl NotificationConnector for UnsupportedConnector {
         &self,
         _destination: &Destination,
         _req: &DispatchRequest,
+        _pinned: &[std::net::SocketAddr],
     ) -> Result<crate::destinations::connectors::DispatchOutcome, ConnectorError> {
         Err(ConnectorError::Transport(format!(
             "connector kind '{}' not enabled in this build",
@@ -549,7 +550,10 @@ pub async fn test_destination(
         })?),
         DestinationConfig::PagerDuty { .. } | DestinationConfig::OpsGenie { .. } => None,
     };
-    if let Some(parsed) = egress_url {
+    // Vetted addresses the dispatch must pin to (AAASM-3826). Empty for vendor
+    // hosts (PagerDuty / OpsGenie) and when the operator has opted out of the
+    // egress guard — both mean "resolve normally, do not pin".
+    let pinned: Vec<std::net::SocketAddr> = if let Some(parsed) = egress_url {
         let egress = tokio::task::spawn_blocking(move || validate_webhook_egress(&parsed))
             .await
             .map_err(|_| {
@@ -557,8 +561,10 @@ pub async fn test_destination(
                     ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail("egress_check_failed"),
                 )
             })?;
-        egress.map_err(|e| TestDestinationFailure::Rejected(validation_error_to_problem(e)))?;
-    }
+        egress.map_err(|e| TestDestinationFailure::Rejected(validation_error_to_problem(e)))?
+    } else {
+        Vec::new()
+    };
 
     let req_in = body.map(|Json(b)| b).unwrap_or_default();
     let dispatch = DispatchRequest {
@@ -567,7 +573,7 @@ pub async fn test_destination(
     };
 
     let connector = connector_for(destination.config.kind());
-    match connector.dispatch(&destination, &dispatch).await {
+    match connector.dispatch(&destination, &dispatch, &pinned).await {
         Ok(outcome) => Ok((
             StatusCode::OK,
             Json(TestDestinationResponse {
@@ -630,7 +636,7 @@ mod tests {
             severity: "LOW".to_string(),
             message: "m".to_string(),
         };
-        assert!(conn.dispatch(&dest, &req).await.is_err());
+        assert!(conn.dispatch(&dest, &req, &[]).await.is_err());
     }
 
     #[tokio::test]

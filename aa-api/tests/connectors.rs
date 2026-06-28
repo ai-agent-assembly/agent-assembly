@@ -61,7 +61,7 @@ async fn webhook_dispatch_posts_payload_and_returns_outcome_on_2xx() {
     });
 
     let outcome = WebhookConnector
-        .dispatch(&dst, &request("HIGH", "disk full"))
+        .dispatch(&dst, &request("HIGH", "disk full"), &[])
         .await
         .expect("2xx is a success");
 
@@ -89,7 +89,7 @@ async fn webhook_dispatch_includes_secret_header_when_configured() {
     });
 
     WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect("authenticated webhook succeeds");
 
@@ -111,7 +111,7 @@ async fn webhook_dispatch_maps_non_2xx_to_http_error() {
     });
 
     let err = WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("500 must surface as an error");
 
@@ -143,7 +143,7 @@ async fn webhook_dispatch_never_reflects_response_body() {
     });
 
     let outcome = WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .unwrap();
 
@@ -162,7 +162,7 @@ async fn webhook_dispatch_transport_error_on_unreachable_host() {
     });
 
     let err = WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("unreachable host must be a transport error");
 
@@ -177,7 +177,7 @@ async fn webhook_connector_rejects_non_webhook_destination() {
     });
 
     let err = WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("wrong destination kind must be rejected");
 
@@ -206,7 +206,7 @@ async fn webhook_dispatch_does_not_follow_redirects() {
     });
 
     let err = WebhookConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("a redirect must surface as a non-2xx error, not be followed");
 
@@ -238,7 +238,7 @@ async fn slack_dispatch_posts_text_payload_and_returns_outcome() {
     });
 
     let outcome = SlackConnector
-        .dispatch(&dst, &request("CRITICAL", "pipeline down"))
+        .dispatch(&dst, &request("CRITICAL", "pipeline down"), &[])
         .await
         .expect("slack 200 is a success");
 
@@ -265,7 +265,7 @@ async fn slack_dispatch_includes_channel_override_when_configured() {
     });
 
     SlackConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .unwrap();
 
@@ -286,7 +286,7 @@ async fn slack_dispatch_maps_non_2xx_to_http_error() {
     });
 
     let err = SlackConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("404 must surface as an error");
 
@@ -304,7 +304,7 @@ async fn slack_connector_rejects_non_slack_destination() {
     });
 
     let err = SlackConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("wrong destination kind must be rejected");
 
@@ -330,7 +330,7 @@ async fn pagerduty_connector_rejects_non_pagerduty_destination() {
     });
 
     let err = PagerDutyConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("wrong destination kind must be rejected");
 
@@ -348,7 +348,7 @@ async fn opsgenie_connector_rejects_non_opsgenie_destination() {
     });
 
     let err = OpsGenieConnector
-        .dispatch(&dst, &DispatchRequest::default())
+        .dispatch(&dst, &DispatchRequest::default(), &[])
         .await
         .expect_err("wrong destination kind must be rejected");
 
