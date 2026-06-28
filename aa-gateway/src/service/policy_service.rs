@@ -1486,6 +1486,22 @@ impl PolicyService for PolicyServiceImpl {
         let mut responses = Vec::with_capacity(batch.requests.len());
 
         for req in &batch.requests {
+            // AAASM-3888: validate the supplied `credential_token` against the
+            // registered token for the claimed `agent_id` BEFORE any evaluation
+            // or side-effect (audit / spend / suspend), exactly as `check_action`
+            // does. PolicyService runs under the non-rejecting `enrich`
+            // interceptor, so the request-body `{org,team,agent}` triple and
+            // `credential_token` are attacker-controlled; without this check a
+            // peer at :50051 could forge a victim identity per batch entry and
+            // drive forged audit, budget-exhaustion spend, or agent suspension
+            // against the victim. On rejection, push the Deny and skip all
+            // side-effects for this request — `evaluate_one`'s tenancy-anchoring
+            // invariant (which assumes validation already ran) is thereby upheld.
+            if let Some(rejection) = self.validate_credential_token(req).await {
+                responses.push(rejection);
+                continue;
+            }
+
             let (eval, latency_us, policy_rule) = self.evaluate_one(req)?;
             self.maybe_emit_secret_alert(req, &eval);
 
