@@ -731,13 +731,23 @@ fn eval_string_equality(lhs: &str, op: &OpKind, literal: &LiteralVal) -> bool {
     }
 }
 
-/// Ordered numeric operators on a generic string field. Both sides must resolve
-/// to a number (`lhs` parsed from the string, `rhs` via [`numeric_literal`]);
-/// otherwise the comparison is a null-safe no-match (`false`).
+/// Ordered numeric operators (`> >= < <=`) on a generic string field. Both
+/// sides must resolve to a number (`lhs` parsed from the string, `rhs` via
+/// [`numeric_literal`]).
+///
+/// AAASM-3893: when either operand cannot be coerced to a number the magnitude
+/// comparison is undefined. This evaluator drives `requires_approval_if`, where
+/// a returned `false` means "no approval required" — so silently returning
+/// `false` on a coercion failure let a security guard not-match and the action
+/// proceed unguarded, a fail-open. Fail CLOSED instead: an unresolvable ordered
+/// comparison fires the predicate (requires approval), consistent with the
+/// module-level fail-safe-true posture for ambiguous evaluation. (Equality is
+/// unaffected — a non-numeric string is genuinely not equal to a number, so
+/// `eval_string_equality` correctly returns `false`.)
 fn eval_string_numeric(lhs: &str, op: &OpKind, literal: &LiteralVal) -> bool {
     match (lhs.parse::<f64>().ok(), numeric_literal(literal)) {
         (Some(l), Some(r)) => compare_ord(l, r, op),
-        _ => false,
+        _ => true,
     }
 }
 
