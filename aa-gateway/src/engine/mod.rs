@@ -242,6 +242,30 @@ pub enum PolicyLoadError {
     History(crate::policy::history::PolicyHistoryError),
 }
 
+/// Parse the optional `budget.timezone`, **failing closed** on a misconfigured
+/// value (AAASM-3875).
+///
+/// The budget timezone governs the daily/monthly reset boundaries, not an
+/// allow/deny decision directly — but silently falling back to UTC on an
+/// unparseable value (the former `parse().ok().unwrap_or(UTC)` behavior)
+/// shifted those boundaries without warning, masking the operator's
+/// misconfiguration. Mirroring the schedule fix (AAASM-3847,
+/// `eval_schedule_stage`), a present-but-unparseable timezone is now a hard
+/// configuration error that aborts the policy load rather than degrading
+/// silently to UTC. `None` (no timezone configured) keeps the documented UTC
+/// default, since absence is a deliberate choice, not a misconfiguration.
+fn parse_budget_tz(timezone: Option<&str>) -> Result<chrono_tz::Tz, PolicyLoadError> {
+    match timezone {
+        None => Ok(chrono_tz::UTC),
+        Some(s) => s.parse::<chrono_tz::Tz>().map_err(|_| {
+            PolicyLoadError::Validation(vec![crate::policy::ValidationError::new(
+                "budget.timezone",
+                format!("invalid budget timezone: {s}"),
+            )])
+        }),
+    }
+}
+
 /// Stage 6 outcome for [`PolicyEngine::apply_credential_scan`]: either a
 /// hard-block deny (the `credential_action: block` short-circuit) or the
 /// redacted payload + findings to carry into the remaining stages.
@@ -308,13 +332,7 @@ impl PolicyEngine {
                     .collect()
             })
             .unwrap_or_default();
-        let budget_tz = output
-            .document
-            .budget
-            .as_ref()
-            .and_then(|bp| bp.timezone.as_deref())
-            .and_then(|s| s.parse::<chrono_tz::Tz>().ok())
-            .unwrap_or(chrono_tz::UTC);
+        let budget_tz = parse_budget_tz(output.document.budget.as_ref().and_then(|bp| bp.timezone.as_deref()))?;
         let daily_limit = output
             .document
             .budget
@@ -541,12 +559,7 @@ impl PolicyEngine {
                             .collect()
                     })
                     .unwrap_or_default();
-                budget_tz = doc
-                    .budget
-                    .as_ref()
-                    .and_then(|bp| bp.timezone.as_deref())
-                    .and_then(|s| s.parse::<chrono_tz::Tz>().ok())
-                    .unwrap_or(chrono_tz::UTC);
+                budget_tz = parse_budget_tz(doc.budget.as_ref().and_then(|bp| bp.timezone.as_deref()))?;
                 daily_limit = doc
                     .budget
                     .as_ref()
@@ -2430,6 +2443,57 @@ mod tests {
         let (alert_tx, _) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(64);
         let result = PolicyEngine::load_from_file(tmp.path(), alert_tx);
         assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+    }
+
+    // ── budget timezone fail-closed (AAASM-3875) ──────────────────────────────
+
+    #[test]
+    fn parse_budget_tz_none_defaults_to_utc() {
+        // No timezone configured is a deliberate default, not a misconfig —
+        // keep the documented UTC fallback.
+        assert_eq!(parse_budget_tz(None).unwrap(), chrono_tz::UTC);
+    }
+
+    #[test]
+    fn parse_budget_tz_valid_string_parses() {
+        assert_eq!(parse_budget_tz(Some("Asia/Tokyo")).unwrap(), chrono_tz::Asia::Tokyo);
+    }
+
+    #[test]
+    fn parse_budget_tz_invalid_fails_closed() {
+        // AAASM-3875: an unparseable budget timezone must NOT silently fall back
+        // to UTC (which would shift the daily/monthly reset boundaries). It is a
+        // hard configuration error, mirroring the schedule fix (AAASM-3847).
+        match parse_budget_tz(Some("Not/AZone")) {
+            Err(PolicyLoadError::Validation(errs)) => {
+                assert!(
+                    errs.iter().any(|e| e.field == "budget.timezone"),
+                    "expected a budget.timezone validation error, got: {errs:?}"
+                );
+            }
+            other => panic!("expected fail-closed Validation error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_from_file_invalid_budget_tz_fails_closed() {
+        // AAASM-3875: loading a policy whose budget timezone does not parse must
+        // abort the load rather than degrade silently to UTC.
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            "version: \"1\"\nbudget:\n  daily_limit_usd: 10.0\n  timezone: \"Not/AZone\"\n"
+        )
+        .unwrap();
+        tmp.flush().unwrap();
+        let (alert_tx, _) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(64);
+        let result = PolicyEngine::load_from_file(tmp.path(), alert_tx);
+        assert!(
+            matches!(result, Err(PolicyLoadError::Validation(_))),
+            "expected fail-closed Validation error, got: {:?}",
+            result.err()
+        );
     }
 
     // ── PolicyEvaluator trait impl ────────────────────────────────────────────
