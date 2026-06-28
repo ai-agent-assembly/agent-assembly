@@ -16,6 +16,19 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use crate::error::ProxyError;
 
+/// Maximum accepted HTTP body size, in bytes (64 MiB).
+///
+/// `Content-Length` is attacker-controlled: a compromised agent can send
+/// `Content-Length: 2000000000`, and `vec![0u8; content_length]` would attempt
+/// to allocate ~2 GB per connection *before* a single body byte is read — a
+/// trivial OOM against the always-on egress proxy, and absurd values abort the
+/// task outright (AAASM-3891). The parser rejects any body larger than this
+/// bound *before* allocating, mirroring the IPC codec's `MAX_FRAME_LEN`
+/// reject-before-alloc guard (AAASM-3132). 64 MiB comfortably exceeds any
+/// legitimate LLM request — including multimodal payloads with base64 image
+/// data — while keeping one hostile request from exhausting memory.
+pub const MAX_BODY_LEN: usize = 64 * 1024 * 1024;
+
 /// A parsed HTTP request from the proxy's MitM tunnel.
 #[derive(Debug, Clone)]
 pub struct HttpRequest {
@@ -108,6 +121,15 @@ where
         .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
         .and_then(|(_, v)| v.parse().ok())
         .unwrap_or(0);
+
+    // AAASM-3891 (fail-closed): reject an over-cap Content-Length *before*
+    // allocating. The header is attacker-controlled, so allocating a buffer
+    // sized to it lets a single request OOM the proxy.
+    if content_length > MAX_BODY_LEN {
+        return Err(ProxyError::Config(format!(
+            "request Content-Length {content_length} exceeds maximum {MAX_BODY_LEN}; refusing (fail-closed)"
+        )));
+    }
 
     let mut body = vec![0u8; content_length];
     if content_length > 0 {
@@ -267,6 +289,15 @@ where
         .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
         .and_then(|(_, v)| v.parse().ok())
         .unwrap_or(0);
+
+    // AAASM-3891 (fail-closed): reject an over-cap Content-Length *before*
+    // allocating, so a hostile upstream response cannot OOM the proxy the same
+    // way a hostile request could.
+    if content_length > MAX_BODY_LEN {
+        return Err(ProxyError::Config(format!(
+            "response Content-Length {content_length} exceeds maximum {MAX_BODY_LEN}; refusing (fail-closed)"
+        )));
+    }
 
     let mut body = vec![0u8; content_length];
     if content_length > 0 {
