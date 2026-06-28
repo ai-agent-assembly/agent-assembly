@@ -429,4 +429,64 @@ mod tests {
         let resp = svc.get_agent_tree(req).await.unwrap().into_inner();
         assert_eq!(resp.root.unwrap().agent.unwrap().id, format_id(&root));
     }
+
+    // ── report_edge tenant authz (AAASM-3855) ──────────────────────────────
+
+    fn report_edge_req(source: &[u8; 16], target: &[u8; 16]) -> Request<ReportEdgeRequest> {
+        Request::new(ReportEdgeRequest {
+            source_agent_id: format_id(source),
+            target_agent_id: format_id(target),
+            edge_type: "delegates_to".into(),
+            metadata_json: String::new(),
+        })
+    }
+
+    #[tokio::test]
+    async fn report_edge_cross_tenant_is_permission_denied() {
+        // A tenant-A caller cannot forge an edge between tenant-B agents.
+        let source: [u8; 16] = [0xe0; 16];
+        let target: [u8; 16] = [0xe1; 16];
+        let svc = service_with(vec![
+            make_record(source, "src", None, Some("team-b"), Some("org-b")),
+            make_record(target, "dst", None, Some("team-b"), Some("org-b")),
+        ]);
+
+        let mut req = report_edge_req(&source, &target);
+        req.extensions_mut().insert(caller(Some("team-a"), Some("org-a")));
+
+        let err = svc.report_edge(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn report_edge_same_tenant_is_allowed() {
+        let source: [u8; 16] = [0xe2; 16];
+        let target: [u8; 16] = [0xe3; 16];
+        let svc = service_with(vec![
+            make_record(source, "src", None, Some("team-a"), Some("org-a")),
+            make_record(target, "dst", None, Some("team-a"), Some("org-a")),
+        ]);
+
+        let mut req = report_edge_req(&source, &target);
+        req.extensions_mut().insert(caller(Some("team-a"), Some("org-a")));
+
+        let resp = svc.report_edge(req).await.unwrap().into_inner();
+        assert!(resp.id > 0);
+    }
+
+    #[tokio::test]
+    async fn report_edge_missing_caller_is_unauthenticated() {
+        // No VerifiedCaller in extensions ⇒ unauthenticated peer ⇒ fail closed.
+        let source: [u8; 16] = [0xe4; 16];
+        let target: [u8; 16] = [0xe5; 16];
+        let svc = service_with(vec![
+            make_record(source, "src", None, Some("team-a"), Some("org-a")),
+            make_record(target, "dst", None, Some("team-a"), Some("org-a")),
+        ]);
+
+        let req = report_edge_req(&source, &target);
+
+        let err = svc.report_edge(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
 }
