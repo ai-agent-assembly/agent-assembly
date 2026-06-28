@@ -290,7 +290,11 @@ async fn slack_dispatch_posts_text_payload_and_returns_outcome() {
 
     mock.assert();
     assert_eq!(outcome.connector_response_status, 200);
-    assert_eq!(outcome.connector_response_body, "ok");
+    // AAASM-3827: the upstream Slack body is no longer reflected to the caller.
+    assert!(
+        outcome.connector_response_body.is_empty(),
+        "upstream Slack body must not be reflected"
+    );
 }
 
 #[tokio::test]

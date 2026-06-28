@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use chrono::Utc;
 
 use crate::destinations::connectors::{
-    egress_client, truncate_body, ConnectorError, DispatchOutcome, DispatchRequest, NotificationConnector,
+    egress_client, ConnectorError, DispatchOutcome, DispatchRequest, NotificationConnector,
 };
 use crate::destinations::types::{Destination, DestinationConfig};
 
@@ -60,19 +60,23 @@ impl NotificationConnector for SlackConnector {
             .await
             .map_err(|e| ConnectorError::Transport(e.to_string()))?;
         let status = resp.status().as_u16();
-        let resp_body = resp.text().await.unwrap_or_default();
-        let resp_body = truncate_body(resp_body);
+        // AAASM-3827: do NOT capture or reflect the upstream response body. The
+        // Slack `webhook_url` is caller-controlled, so reflecting the origin's
+        // body back to the caller is an SSRF data-exfiltration sink (mirrors the
+        // webhook connector). Drain and discard the body; only the observed
+        // status conveys the /test success/failure signal.
+        drop(resp.bytes().await);
 
         if (200..300).contains(&status) {
             Ok(DispatchOutcome {
                 delivered_at: Utc::now().to_rfc3339(),
                 connector_response_status: status,
-                connector_response_body: resp_body,
+                connector_response_body: String::new(),
             })
         } else {
             Err(ConnectorError::Http {
                 status,
-                body: resp_body,
+                body: String::new(),
             })
         }
     }
