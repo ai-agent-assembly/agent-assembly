@@ -360,6 +360,31 @@ mod tests {
     }
 
     #[test]
+    fn egress_returns_vetted_addr_for_pinning() {
+        // AAASM-3826: the guard hands back the exact vetted socket address(es)
+        // so the connector can pin its connection to them rather than
+        // re-resolving the host at connect time (the DNS-rebinding window).
+        let addrs = validate_webhook_egress(&url::Url::parse("http://8.8.8.8:80/hook").expect("url parses"))
+            .expect("public literal IP is allowed");
+        assert_eq!(addrs, vec![SocketAddr::from(([8, 8, 8, 8], 80))]);
+
+        // The default https port is filled in for scheme-default URLs.
+        let https = validate_webhook_egress(&url::Url::parse("https://1.1.1.1/hook").expect("url parses"))
+            .expect("public literal IP is allowed");
+        assert_eq!(https, vec![SocketAddr::from(([1, 1, 1, 1], 443))]);
+    }
+
+    #[test]
+    fn egress_opt_out_returns_no_pin() {
+        // With the self-host opt-out set, the guard is disabled and returns an
+        // empty vetted set, signalling the connector not to pin.
+        std::env::set_var(ALLOW_PRIVATE_EGRESS_ENV, "1");
+        let addrs = validate_webhook_egress(&url::Url::parse("http://127.0.0.1/hook").expect("url parses"));
+        std::env::remove_var(ALLOW_PRIVATE_EGRESS_ENV);
+        assert_eq!(addrs, Ok(Vec::new()));
+    }
+
+    #[test]
     fn egress_env_escape_allows_private() {
         // The documented self-host opt-out disables the guard.
         std::env::set_var(ALLOW_PRIVATE_EGRESS_ENV, "1");

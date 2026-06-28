@@ -217,6 +217,52 @@ async fn webhook_dispatch_does_not_follow_redirects() {
     mock.assert();
 }
 
+#[tokio::test]
+async fn webhook_dispatch_pins_to_vetted_addr() {
+    // AAASM-3826: the connector must connect to the SSRF-vetted address handed
+    // to it rather than re-resolving the host (the DNS-rebinding window). We
+    // point a host that can never resolve via DNS (`.invalid`, RFC 2606) at the
+    // mock's address through `pinned`; the request can only land if the pin is
+    // honored — exactly the rebinding defense (connect to the vetted address,
+    // not a freshly-resolved one).
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(MOCK_POST).path("/hook");
+        then.status(200);
+    });
+    let addr = *server.address();
+
+    let dst = destination(DestinationConfig::Webhook {
+        url: format!("http://pinned.aaasm.invalid:{}/hook", addr.port()),
+        secret_header: None,
+    });
+
+    WebhookConnector
+        .dispatch(&dst, &DispatchRequest::default(), &[addr])
+        .await
+        .expect("a request pinned to the vetted address reaches it");
+
+    mock.assert();
+}
+
+#[tokio::test]
+async fn webhook_dispatch_without_pin_cannot_resolve_invalid_host() {
+    // Counterpart to the pinning test: the same unresolvable `.invalid` host
+    // with no pin must fail at connect time (DNS resolution), proving the pin —
+    // not some other fallback — is what made the pinned request succeed.
+    let dst = destination(DestinationConfig::Webhook {
+        url: "http://pinned.aaasm.invalid:9/hook".to_string(),
+        secret_header: None,
+    });
+
+    let err = WebhookConnector
+        .dispatch(&dst, &DispatchRequest::default(), &[])
+        .await
+        .expect_err("an unresolvable host with no pin cannot connect");
+
+    assert!(matches!(err, ConnectorError::Transport(_)));
+}
+
 // ── Slack connector ────────────────────────────────────────────────────────
 
 #[tokio::test]
