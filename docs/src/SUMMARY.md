@@ -142,4 +142,4 @@
   - [0008 - SaaS Host Routing, Auth & Cookie Boundaries](adr/0008-saas-host-routing-auth-cookie-boundaries.md)
   - [0009 - Versioned Base-Image Tags & SDK Pinning](adr/0009-versioned-base-image-tags-and-sdk-pinning.md)
   - [0010 - Gateway Distribution for Self-Host & Examples](adr/0010-gateway-distribution-self-host-examples.md)
-  - [0011 - Cross-Process Op-Control via NATS Subject](adr/0011-cross-process-op-control-nats-subject.md)
+  - [0011 - Cross-Process Op-Control via NATS Subject (durable JetStream)](adr/0011-cross-process-op-control-nats-subject.md)
