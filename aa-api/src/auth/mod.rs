@@ -5,12 +5,15 @@
 //! and enforces per-key rate limits. [`RequireScope`] checks scope levels.
 
 pub mod api_key;
-pub mod config;
 pub mod gate;
 pub mod jwt;
 pub mod policy_auth;
-pub mod rate_limit;
 pub mod scope;
+
+// AAASM-3899: `config` and `rate_limit` now live in the `aa-auth` leaf crate.
+// Re-exported here so every existing `crate::auth::{config, rate_limit}` path
+// keeps resolving unchanged.
+pub use aa_auth::{config, rate_limit};
 
 use std::sync::Arc;
 
