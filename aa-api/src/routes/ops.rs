@@ -21,7 +21,7 @@ use utoipa::ToSchema;
 
 use aa_proto::assembly::policy::v1::OpControlSignal;
 
-use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use crate::auth::scope::{RequireAdmin, RequireRead, RequireWrite, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::events::OpsChangeBroadcast;
@@ -394,15 +394,13 @@ pub async fn halt_agent_for_op(
     )
 )]
 pub async fn halt_global(
-    RequireWrite(caller): RequireWrite,
+    // A fleet-wide kill switch is an escalated capability — admin only. The
+    // `RequireAdmin` extractor rejects non-admin callers with 403 before the
+    // handler body runs, mirroring the admin routes (e.g. `update_retention_policy`).
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Json(req): Json<OpHaltRequest>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
-    // A fleet-wide kill switch is an escalated capability — admin only.
-    if !caller.scopes.contains(&Scope::Admin) {
-        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
-            .with_detail("A global halt requires admin scope".to_string()));
-    }
     let signal = parse_halt_action(&req.action)?;
     // AAASM-3883: cross-process NATS delivery when configured (see halt_agent_for_op).
     match state.ops_registry.halt_global_delivery(signal).await {
