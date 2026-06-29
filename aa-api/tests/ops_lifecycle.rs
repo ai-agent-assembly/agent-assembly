@@ -234,7 +234,7 @@ async fn halt_global_without_publisher_returns_503() {
 #[tokio::test]
 async fn halt_global_requires_admin_scope() {
     // A write-but-not-admin caller may drive per-op lifecycle, but the
-    // fleet-wide kill switch is gated to admins.
+    // fleet-wide kill switch is gated to admins by the `RequireAdmin` extractor.
     let (plaintext, entry) = common::generate_test_api_key("writer", vec![Scope::Read, Scope::Write]);
     let app = common::test_app_with_auth(&[entry], 1000);
     let response = app
@@ -250,4 +250,27 @@ async fn halt_global_requires_admin_scope() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn halt_global_admin_passes_scope_gate() {
+    // An admin-scoped caller clears the `RequireAdmin` gate and proceeds into
+    // the handler body. The test app attaches no op-control publisher, so the
+    // request gets past the 403 gate and surfaces 503 (channel not configured)
+    // rather than being rejected at the scope check.
+    let (plaintext, entry) = common::generate_test_api_key("admin", vec![Scope::Admin]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/ops/global/halt")
+                .header("authorization", format!("Bearer {plaintext}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"action":"terminate"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
