@@ -1,16 +1,36 @@
 //! Load-time eBPF bytecode integrity verification (AAASM-3602).
 //!
-//! Each embedded probe object carries a sha256 digest baked in at build time
-//! (`build.rs` emits `cargo:rustc-env=AA_*_BPF_SHA256=…`, sourced from the
-//! signed `EBPF_SHA256SUMS` produced by CI in AAASM-3601). Before any bytes are
-//! handed to `aya::Ebpf::load`, [`verify_bytecode`] recomputes the digest over
-//! the embedded bytes and refuses to proceed on a mismatch.
+//! Each embedded probe object carries a sha256 digest baked in at build time:
+//! `build.rs` recomputes the digest over the compiled probe object it is about
+//! to embed and emits it as `cargo:rustc-env=AA_*_BPF_SHA256=…`. Before any
+//! bytes are handed to `aya::Ebpf::load`, [`verify_bytecode`] recomputes the
+//! digest over the embedded bytes and refuses to proceed on a mismatch.
 //!
-//! This is the last line of defense against the swapped-`.o` supply-chain
-//! attack: even if a tampered object is somehow embedded, the binary will not
-//! load a probe whose digest does not match what CI signed. The check is
-//! **fail-closed** — a mismatch (or an empty / unverifiable stub) returns
-//! [`EbpfError::IntegrityMismatch`], never a silent degrade-to-allow.
+//! ## What this check does — and does NOT — guarantee
+//!
+//! The baked-in expected digest is derived from the **same** object that is
+//! embedded, so the comparison is self-referential. It is therefore **not** a
+//! supply-chain guarantee and **not** "the last line of defense against the
+//! swapped-`.o` attack": an attacker who tampers with the probe source or the
+//! compiled `.o` before the build moves both the embedded bytes and the baked
+//! digest together, and the check still passes.
+//!
+//! What it *does* catch is post-build, in-binary corruption of the embedded
+//! bytecode region that leaves the baked digest string intact — e.g. bit-rot or
+//! a partial in-place patch of the bytecode that does not also rewrite the
+//! constant. It also rejects the empty / unverifiable stub emitted when the BPF
+//! toolchain is absent. The check is **fail-closed**: a mismatch (or an empty
+//! stub) returns [`EbpfError::IntegrityMismatch`], never a silent
+//! degrade-to-allow.
+//!
+//! The cosign-signed `EBPF_SHA256SUMS` manifest produced at release time
+//! (AAASM-3601) is an independent *download-time* verification artifact; it is
+//! generated from these same objects and is not consumed by this build, so it
+//! does not anchor the digest baked here.
+//
+// TODO(AAASM-3601): source the expected digest from an independently-signed
+// SHA256SUMS (verified separately from the embedded artifact) so this becomes a
+// real supply-chain guarantee rather than in-binary corruption detection.
 
 use sha2::{Digest, Sha256};
 
@@ -28,9 +48,12 @@ pub const AA_SYSCALL_GUARD_BPF_SHA256: &str = env!("AA_SYSCALL_GUARD_BPF_SHA256"
 /// Verify `bytes` hashes to `expected_hex`, returning
 /// [`EbpfError::IntegrityMismatch`] on any divergence.
 ///
-/// `object` names the probe for diagnostics. An empty `expected_hex` (the
-/// placeholder emitted on non-Linux or when no digest was produced) is treated
-/// as **unverifiable** and rejected — we never load bytecode we cannot pin.
+/// This detects post-build, in-binary corruption of the embedded bytecode (and
+/// the empty / unverifiable stub); it is **not** a supply-chain guarantee — see
+/// the module-level docs. `object` names the probe for diagnostics. An empty
+/// `expected_hex` (the placeholder emitted on non-Linux or when no digest was
+/// produced) is treated as **unverifiable** and rejected — we never load
+/// bytecode we cannot pin.
 pub fn verify_bytecode(object: &str, bytes: &[u8], expected_hex: &str) -> Result<(), EbpfError> {
     let actual = hex::encode(Sha256::digest(bytes));
 
@@ -55,6 +78,11 @@ pub fn verify_bytecode(object: &str, bytes: &[u8], expected_hex: &str) -> Result
 
 #[cfg(test)]
 mod tests {
+    // These tests cover what `verify_bytecode` actually provides: detecting a
+    // digest mismatch (post-build in-binary corruption) and rejecting the empty
+    // / unverifiable stub. They do NOT — and cannot — assert a supply-chain
+    // guarantee, since the baked digest is derived from the embedded object
+    // itself (see module docs / TODO(AAASM-3601)).
     use super::*;
 
     #[test]
@@ -65,9 +93,11 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_digest_is_rejected() {
-        let bytes = b"tampered bytecode";
-        // digest of *different* bytes
+    fn corrupted_bytecode_is_rejected() {
+        // Embedded bytes differ from what the baked digest was computed over
+        // (the in-binary-corruption case this check guards against).
+        let bytes = b"corrupted bytecode";
+        // digest of the *original*, uncorrupted bytes
         let wrong = hex::encode(Sha256::digest(b"original bytecode"));
         let err = verify_bytecode("aa-test", bytes, &wrong).unwrap_err();
         match err {

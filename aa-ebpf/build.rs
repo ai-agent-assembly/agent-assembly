@@ -112,12 +112,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // AAASM-3602: emit the sha256 of each embedded probe object as a
-        // compile-time env var so the load-time integrity check can pin the
-        // bytecode against the digest CI signed (EBPF_SHA256SUMS, AAASM-3601).
-        // The digest is sourced from the *actual compiled object*, never
-        // hand-written. A stub (empty file) hashes to the well-known empty
-        // digest, which the runtime treats as "unverifiable stub" and refuses
-        // to load — fail-closed, never degrade-to-allow.
+        // compile-time env var so the load-time integrity check can detect
+        // post-build, in-binary corruption of the embedded bytecode. The digest
+        // is sourced from the *same* compiled object that is embedded, so it is
+        // NOT an independent supply-chain anchor (see aa-ebpf/src/integrity.rs):
+        // tampering before the build moves both the bytes and this digest
+        // together. The cosign-signed EBPF_SHA256SUMS (AAASM-3601) is a separate
+        // download-time artifact and is not consumed here.
+        // TODO(AAASM-3601): bake the digest from an independently-signed
+        // SHA256SUMS to make the load-time check a real supply-chain guarantee.
+        // A stub (empty file) hashes to the well-known empty digest, which the
+        // runtime treats as "unverifiable stub" and refuses to load —
+        // fail-closed, never degrade-to-allow.
         emit_object_digest(&release_dir, "aa-file-io", "AA_FILE_IO_BPF_SHA256")?;
         emit_object_digest(&release_dir, "aa-exec-probes", "AA_EXEC_BPF_SHA256")?;
         emit_object_digest(&release_dir, "aa-tls-probes", "AA_TLS_BPF_SHA256")?;
