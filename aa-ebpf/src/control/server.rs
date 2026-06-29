@@ -110,7 +110,22 @@ pub fn bind_hardened(path: &Path) -> Result<UnixListener, EbpfError> {
     if path.exists() {
         let _ = std::fs::remove_file(path);
     }
-    let listener = UnixListener::bind(path)?;
+
+    // AAASM-3918: tighten the umask so the socket inode is created 0600 from the
+    // very first instant — closing the TOCTOU window where, under a permissive
+    // daemon umask (e.g. systemd `UMask=0000`), the highest-privilege control
+    // socket would be group/other-writable in world-traversable /run between
+    // bind and the explicit chmod below. Restore the prior umask immediately
+    // after bind, regardless of outcome, so we never leak it into the rest of
+    // the process. Mirrors `aa-runtime/src/ipc/server.rs` (AAASM-3581).
+    let listener = {
+        let prev_umask = unsafe { libc::umask(0o077) };
+        let result = UnixListener::bind(path);
+        unsafe { libc::umask(prev_umask) };
+        result?
+    };
+
+    // Belt-and-suspenders: assert the final owner-only mode explicitly.
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(listener)
 }
