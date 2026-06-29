@@ -59,11 +59,13 @@ pub enum EbpfError {
         detail: String,
     },
 
-    /// The embedded BPF bytecode did not match the digest CI signed
-    /// (AAASM-3602). This is a hard, fail-closed error: a probe whose bytecode
-    /// has been tampered with — or is an empty stub — is refused, never loaded
-    /// blindly. Closes the "loads and emits plausible telemetry but is
-    /// deliberately blind" supply-chain scenario.
+    /// The embedded BPF bytecode did not match the digest baked in at build
+    /// time (AAASM-3602). This is a hard, fail-closed error: a probe whose
+    /// embedded bytecode has been corrupted in-binary — or is an empty stub —
+    /// is refused, never loaded blindly. Note this detects post-build
+    /// corruption only; the baked digest is derived from the same embedded
+    /// object, so it is not a supply-chain guarantee against a tampered build
+    /// (see the `integrity` module docs / TODO(AAASM-3601)).
     #[error("eBPF bytecode integrity check failed for `{object}`: expected sha256 {expected}, got {actual}")]
     IntegrityMismatch {
         /// The probe object whose digest mismatched.
