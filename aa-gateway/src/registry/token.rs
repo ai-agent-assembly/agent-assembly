@@ -103,7 +103,10 @@ mod tests {
         let mut wrong = token.clone();
         let last = wrong.pop().unwrap();
         wrong.push(if last == 'a' { 'b' } else { 'a' });
-        assert!(matches!(validate_token(&reg, &id, &wrong), Err(TokenError::InvalidToken)));
+        assert!(matches!(
+            validate_token(&reg, &id, &wrong),
+            Err(TokenError::InvalidToken)
+        ));
     }
 
     #[test]
@@ -115,7 +118,10 @@ mod tests {
         let token = generate_credential_token();
         reg.register(record_with_token(id, &token)).unwrap();
         let prefix = &token[..token.len() - 1];
-        assert!(matches!(validate_token(&reg, &id, prefix), Err(TokenError::InvalidToken)));
+        assert!(matches!(
+            validate_token(&reg, &id, prefix),
+            Err(TokenError::InvalidToken)
+        ));
     }
 
     #[test]

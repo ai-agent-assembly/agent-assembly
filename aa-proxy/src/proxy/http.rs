@@ -91,8 +91,7 @@ where
         }
     }
     let n = line.len();
-    let text =
-        String::from_utf8(line).map_err(|_| ProxyError::Config("invalid UTF-8 in HTTP header line".into()))?;
+    let text = String::from_utf8(line).map_err(|_| ProxyError::Config("invalid UTF-8 in HTTP header line".into()))?;
     out.push_str(&text);
     Ok(n)
 }

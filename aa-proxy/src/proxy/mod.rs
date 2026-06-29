@@ -29,9 +29,8 @@ use crate::intercept::mcp::parse_mcp_request;
 use crate::intercept::{InterceptVerdict, Interceptor, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
 use crate::proxy::http::{
-    read_http_request, read_http_response, read_line_capped, serialize_http_request,
-    serialize_http_request_with_auth, serialize_http_response, HttpRequest, MAX_HEADER_BYTES, MAX_HEADER_COUNT,
-    MAX_HEADER_LINE_LEN,
+    read_http_request, read_http_response, read_line_capped, serialize_http_request, serialize_http_request_with_auth,
+    serialize_http_response, HttpRequest, MAX_HEADER_BYTES, MAX_HEADER_COUNT, MAX_HEADER_LINE_LEN,
 };
 use crate::tls::{CaStore, CertCache};
 
