@@ -1194,7 +1194,22 @@ impl PolicyEngine {
         ctx: &aa_core::AgentContext,
         action: &aa_core::GovernanceAction,
     ) -> EvaluationResult {
-        // Cache lookup: stateless stages only (1–3, 5). Stateful stages (4, 7),
+        // Stage 1 — Schedule: time-dependent, evaluated FRESH on every request
+        // and never cached. The decision cache below stores only the stateless
+        // stages (2–3, 5); a cached `Allow` computed inside an active-hours
+        // window must not be served once the window has closed, so the schedule
+        // stage is run here, outside the cache, like the stateful stages 4 and 7
+        // (AAASM-3893).
+        if let Some(PolicyDecision::Deny { reason, .. }) = decision::evaluate_schedule_cascade(&cascade) {
+            return EvaluationResult {
+                decision: aa_core::PolicyResult::Deny { reason },
+                redacted_payload: None,
+                credential_findings: vec![],
+                deny_action: None,
+            };
+        }
+
+        // Cache lookup: stateless stages only (2–3, 5). Stateful stages (4, 7),
         // the capability guard, and the credential scan always run.
         let epoch = self.policy_epoch.load(Ordering::Relaxed);
         let cache_key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, action);
@@ -2120,6 +2135,45 @@ mod tests {
         assert_eq!(
             engine.evaluate_with_cascade(cascade, &ctx, &dangerous).decision,
             PolicyResult::RequiresApproval { timeout_secs: 300 },
+        );
+    }
+
+    #[test]
+    fn cascade_schedule_denies_despite_stale_cached_allow() {
+        // AAASM-3893 regression: the schedule stage is time-dependent and must
+        // be evaluated FRESH on every cascade request. A decision cached while
+        // the active-hours window was open must NOT be served once the window
+        // has closed. We pre-seed the cache with the stale Allow a prior
+        // in-window evaluation would have stored, then evaluate against a
+        // now-closed window: the request must be DENIED, not served the cached
+        // Allow.
+        let mut doc = empty_doc();
+        doc.schedule = Some(SchedulePolicy {
+            active_hours: Some(ActiveHours {
+                start: "00:00".to_string(),
+                // An empty window (start == end == "00:00"): `current >= end`
+                // is always true, so this window is closed at every wall-clock
+                // time — the test is deterministic regardless of when it runs.
+                end: "00:00".to_string(),
+                timezone: "UTC".to_string(),
+            }),
+        });
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let action = tool_call("any", "");
+
+        // Pre-seed the cache with the stale Allow a prior in-window eval stored.
+        let epoch = engine.policy_epoch.load(Ordering::Relaxed);
+        let key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, &action);
+        engine.decision_cache.insert(key, PolicyDecision::Allow);
+
+        let cascade = vec![Arc::new(doc)];
+        assert_eq!(
+            engine.evaluate_with_cascade(cascade, &ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "outside active hours".into()
+            },
+            "a cached Allow must not survive the active-hours window closing",
         );
     }
 
