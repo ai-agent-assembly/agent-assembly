@@ -24,6 +24,17 @@
 //! ```
 //! use aa_storage::{AgentId, AuditSink, PolicyDocument, PolicyStore};
 //! ```
+//!
+//! # Tenant isolation guardrail (AAASM-3919)
+//!
+//! The store traits re-exported here take **no tenant argument** — in the
+//! Postgres driver every trait method funnels to the reserved `SYSTEM_ORG`. The
+//! tenant-safe, RLS-enforcing path is the concrete `*_for_tenant` inherent
+//! methods on the `Pg*` types (`insert_audit_log_for_tenant`,
+//! `get_policy_for_tenant`, `get_secret_for_tenant`, …). Any multi-tenant
+//! Postgres deployment MUST use those concrete tenant methods (or thread
+//! `org_id` through the traits) before relying on the `0006`/`0007` RLS
+//! migrations; the trait path alone co-mingles all tenants under `SYSTEM_ORG`.
 
 #![warn(missing_docs)]
 
