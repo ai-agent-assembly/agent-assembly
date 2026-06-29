@@ -155,7 +155,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - name: Upload dashboard dist artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -483,7 +483,7 @@ jobs:
           verbose: true
           fail_ci_if_error: false
       - name: Upload Rust coverage (LCOV) for SonarCloud
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rust-coverage-lcov
           path: lcov.info
@@ -1087,7 +1087,7 @@ jobs:
       - name: Build production bundle
         run: pnpm build
       - name: Upload dist artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dashboard-dist
           path: dashboard/dist/
@@ -1118,7 +1118,7 @@ jobs:
       - name: Run tests with coverage
         run: pnpm test:coverage
       - name: Upload TypeScript coverage (LCOV) for SonarCloud
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dashboard-coverage-lcov
           path: dashboard/coverage/lcov.info
