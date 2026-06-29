@@ -19,6 +19,7 @@ serde_json = { workspace = true }
 uuid       = { workspace = true, features = ["v4", "serde"] }
 chrono     = { workspace = true, features = ["clock", "serde"] }
 thiserror  = { workspace = true }
+tracing    = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
