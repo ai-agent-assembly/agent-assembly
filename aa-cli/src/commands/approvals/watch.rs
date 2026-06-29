@@ -14,6 +14,7 @@ use super::models::{compute_timeout_color, format_countdown, TimeoutColor};
 
 use crate::config::ResolvedContext;
 use crate::error::CliError;
+use crate::sanitize::sanitize_terminal;
 
 use super::client;
 use super::models::ApprovalResponse;
@@ -128,6 +129,16 @@ pub fn handle_keypress(key: KeyEvent, state: &mut InteractiveState) -> KeyAction
     }
 }
 
+/// Sanitize and shorten a server-supplied approval id for compact display.
+///
+/// Strips terminal escapes BEFORE truncation — a CSI such as `\x1b[2K` fits
+/// within 8 bytes, so truncating first would leave a live escape — then takes
+/// at most 8 *characters* (not bytes) so the result always lands on a UTF-8
+/// boundary; a raw byte slice could panic on multi-byte input.
+fn short_id(id: &str) -> String {
+    sanitize_terminal(id).chars().take(8).collect()
+}
+
 /// Render the interactive view to stdout.
 ///
 /// Clears the terminal and draws the approval list with the current selection
@@ -167,11 +178,15 @@ pub fn render_interactive_view(state: &InteractiveState) {
         };
         let countdown = format_countdown(remaining);
 
+        // `id`, `agent_id`, and `action` are server-supplied; strip terminal
+        // escapes so a malicious agent cannot repaint the line to spoof the
+        // operator.
+        let id = short_id(&item.id);
+        let agent = sanitize_terminal(&item.agent_id);
+        let action = sanitize_terminal(&item.action);
+
         println!(
             "  {marker} {id}  {agent:<20} {action:<30} {color}{cd}\x1b[0m",
-            id = &item.id[..8.min(item.id.len())],
-            agent = item.agent_id,
-            action = item.action,
             color = color_code,
             cd = countdown,
         );
@@ -189,11 +204,19 @@ pub async fn run_watch_stream(mut ws: WsStream) {
         match msg {
             Ok(Message::Text(text)) => {
                 if let Ok(approval) = serde_json::from_str::<ApprovalResponse>(&text) {
+                    // All four fields are server-supplied; strip terminal
+                    // escapes to prevent approve/reject decision spoofing.
                     println!(
                         "  \x1b[1;33mNEW\x1b[0m  {} | agent={} | action={} | condition={}",
-                        approval.id, approval.agent_id, approval.action, approval.reason
+                        sanitize_terminal(&approval.id),
+                        sanitize_terminal(&approval.agent_id),
+                        sanitize_terminal(&approval.action),
+                        sanitize_terminal(&approval.reason)
                     );
-                    println!("        run: aasm approvals approve {} --reason \"...\"", approval.id);
+                    println!(
+                        "        run: aasm approvals approve {} --reason \"...\"",
+                        sanitize_terminal(&approval.id)
+                    );
                     println!();
                 }
             }
@@ -341,5 +364,28 @@ pub fn run_watch(args: WatchArgs, ctx: &ResolvedContext) -> std::process::ExitCo
             eprintln!("error: {e}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_id_strips_escape_before_truncation() {
+        // A CSI clear-line fits within 8 bytes; truncating first would leave a
+        // live escape, so it must be stripped before the 8-char cut.
+        let out = short_id("\x1b[2K0123456789");
+        assert!(!out.contains('\x1b'), "escape must be stripped: {out:?}");
+        assert_eq!(out, "01234567");
+    }
+
+    #[test]
+    fn short_id_truncation_is_char_safe_on_multibyte_input() {
+        // A raw byte slice `[..8]` would panic mid-character on 3-byte chars;
+        // char truncation must keep 8 whole characters without panicking.
+        let out = short_id("世界世界世界世界世界");
+        assert_eq!(out.chars().count(), 8);
+        assert!(out.chars().all(|c| c == '世' || c == '界'));
     }
 }

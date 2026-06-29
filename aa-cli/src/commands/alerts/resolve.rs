@@ -9,6 +9,7 @@ use super::models::{AlertResponse, ResolveAlertRequest};
 use crate::client;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Arguments for `aasm alerts resolve`.
 #[derive(Args)]
@@ -56,7 +57,7 @@ pub fn run(args: ResolveArgs, ctx: &ResolvedContext, output: OutputFormat) -> Ex
     )) {
         Ok(alert) => {
             match output {
-                OutputFormat::Table => println!("Alert {} resolved.", alert.id),
+                OutputFormat::Table => println!("Alert {} resolved.", sanitize_terminal(&alert.id)),
                 OutputFormat::Json => match serde_json::to_string_pretty(&alert) {
                     Ok(json) => println!("{json}"),
                     Err(e) => eprintln!("error serializing JSON: {e}"),

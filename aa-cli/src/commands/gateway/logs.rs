@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use clap::{Args, ValueEnum};
 
+use crate::sanitize::sanitize_terminal;
+
 const FOLLOW_POLL: Duration = Duration::from_millis(100);
 
 /// Log level filter for `--level`.
@@ -109,7 +111,8 @@ fn tail_logs(file: std::fs::File, n: u64, level_filter: Option<&str>) -> ExitCod
     }
 
     for line in &window {
-        println!("{line}");
+        // Log lines embed agent-supplied data; strip terminal escapes.
+        println!("{}", sanitize_terminal(line));
     }
     ExitCode::SUCCESS
 }
@@ -138,7 +141,7 @@ fn follow_logs(mut file: std::fs::File, level_filter: Option<&str>) -> ExitCode 
                             Ok(_) => {
                                 let line = buf.trim_end_matches('\n').trim_end_matches('\r');
                                 if matches_level(line, level_filter) {
-                                    println!("{line}");
+                                    println!("{}", sanitize_terminal(line));
                                     // Flush immediately: stdout is block-buffered
                                     // when redirected to a file (non-TTY), so without
                                     // an explicit flush each line would sit in the

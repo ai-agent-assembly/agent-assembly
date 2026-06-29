@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Subset of the configured REST API `/api/v1/health` response used for
 /// version extraction.
@@ -96,7 +97,13 @@ fn render_table(rows: &[VersionRow]) {
     let mut table = Table::new();
     table.set_header(vec!["COMPONENT", "VERSION", "STATUS"]);
     for r in rows {
-        table.add_row(vec![&r.component, &r.version, &r.status]);
+        // version/status for the gateway/api rows come from the server health
+        // response; strip terminal escapes (component is a static label).
+        table.add_row(vec![
+            r.component.clone(),
+            sanitize_terminal(&r.version),
+            sanitize_terminal(&r.status),
+        ]);
     }
     println!("{table}");
 }

@@ -3,6 +3,7 @@
 use colored::Colorize;
 
 use super::models::{SessionTrace, TraceEvent, TraceEventKind};
+use crate::sanitize::sanitize_terminal;
 
 /// Format a duration in milliseconds into a human-readable string.
 ///
@@ -26,15 +27,16 @@ fn event_icon(kind: &TraceEventKind) -> &'static str {
 ///
 /// Policy denials are highlighted in red with the violation reason appended.
 pub fn render_event_line(event: &TraceEvent) -> String {
+    // label and violation_reason are server-supplied; strip terminal escapes.
     let line = format!(
         "{} {}  {}",
         event_icon(&event.kind),
-        event.label,
+        sanitize_terminal(&event.label),
         format_duration(event.duration_ms),
     );
 
     if event.kind == TraceEventKind::PolicyDeny {
-        let reason = event.violation_reason.as_deref().unwrap_or("no reason provided");
+        let reason = sanitize_terminal(event.violation_reason.as_deref().unwrap_or("no reason provided"));
         format!("{}", format!("{line}  ({reason})").red())
     } else {
         line
@@ -68,7 +70,7 @@ fn render_tree_recursive(events: &[TraceEvent], prefix: &str, output: &mut Strin
 
 /// Render a full session trace as an indented tree with box-drawing characters.
 pub fn render_tree(trace: &SessionTrace) -> String {
-    let mut output = format!("Trace: {}\n", trace.session_id);
+    let mut output = format!("Trace: {}\n", sanitize_terminal(&trace.session_id));
     render_tree_recursive(&trace.events, "", &mut output);
     output
 }
@@ -177,6 +179,32 @@ mod tests {
         };
         let line = render_event_line(&event);
         assert!(line.contains("no reason provided"));
+    }
+
+    #[test]
+    fn render_event_line_strips_server_supplied_escapes() {
+        let event = TraceEvent {
+            kind: TraceEventKind::ToolCall,
+            // A malicious agent embeds a CSI clear-line in the operation label.
+            label: "query\x1b[2K_db".to_string(),
+            duration_ms: 5,
+            children: vec![],
+            violation_reason: None,
+        };
+        let line = render_event_line(&event);
+        assert!(!line.contains('\x1b'), "no ESC must survive: {line:?}");
+        assert!(line.contains("query_db"));
+    }
+
+    #[test]
+    fn render_tree_strips_escapes_from_session_id() {
+        let trace = SessionTrace {
+            session_id: "sess\x1b]52;c;ZXZpbA==\x07-1".to_string(),
+            events: vec![],
+        };
+        let output = render_tree(&trace);
+        assert!(!output.contains('\x1b'), "no ESC must survive: {output:?}");
+        assert!(output.contains("Trace: sess-1"));
     }
 
     #[test]

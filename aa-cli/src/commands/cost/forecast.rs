@@ -8,6 +8,7 @@ use super::client;
 use super::models::CostForecastDisplay;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Arguments for `aasm cost forecast`.
 #[derive(Args)]
@@ -116,15 +117,22 @@ fn render_yaml(forecast: &CostForecastDisplay) {
 fn render_table(forecast: &CostForecastDisplay) {
     println!("COST FORECAST");
     println!("─────────────");
-    println!("  Date:              {}", forecast.date);
+    // Server-supplied money/date strings; strip terminal escapes.
+    println!("  Date:              {}", sanitize_terminal(&forecast.date));
     println!(
         "  Day of month:      {}/{}",
         forecast.day_of_month, forecast.days_in_month
     );
-    println!("  Current daily:     ${}", forecast.current_daily_spend);
-    println!("  Projected monthly: ${}", forecast.projected_monthly_spend);
+    println!(
+        "  Current daily:     ${}",
+        sanitize_terminal(&forecast.current_daily_spend)
+    );
+    println!(
+        "  Projected monthly: ${}",
+        sanitize_terminal(&forecast.projected_monthly_spend)
+    );
     if let Some(ref limit) = forecast.monthly_limit_usd {
-        println!("  Monthly limit:     ${limit}");
+        println!("  Monthly limit:     ${}", sanitize_terminal(limit));
     }
     if let Some(ref pct) = forecast.projected_utilization_pct {
         println!("  Projected util:    {pct}");

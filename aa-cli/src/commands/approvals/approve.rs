@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use clap::Args;
 
 use crate::config::ResolvedContext;
+use crate::sanitize::sanitize_terminal;
 
 use super::client;
 
@@ -28,7 +29,12 @@ pub fn run_approve(args: ApproveArgs, ctx: &ResolvedContext) -> ExitCode {
 
     match result {
         Ok(resp) => {
-            println!("Approved: {} (status: {})", resp.id, resp.status);
+            // resp.id/status are server-supplied; strip terminal escapes.
+            println!(
+                "Approved: {} (status: {})",
+                sanitize_terminal(&resp.id),
+                sanitize_terminal(&resp.status)
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {

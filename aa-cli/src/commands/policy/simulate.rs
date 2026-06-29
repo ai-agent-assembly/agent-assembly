@@ -9,6 +9,8 @@ use clap::Args;
 use aa_gateway::simulation::{HistoricalReplay, SimulationEngine, SimulationReport};
 use aa_gateway::PolicyEngine;
 
+use crate::sanitize::sanitize_terminal;
+
 /// Arguments for `aasm policy simulate`.
 #[derive(Args)]
 pub struct SimulateArgs {
@@ -119,10 +121,12 @@ fn print_report(report: &SimulationReport) {
         println!("{:<8} {:<20} {:<12} REASON", "EVENT#", "ACTION", "DECISION");
         println!("{}", "-".repeat(70));
         for outcome in &report.flagged_outcomes {
-            println!(
-                "{:<8} {:<20} {:<12} {}",
-                outcome.event_index, outcome.action, outcome.decision, outcome.reason
-            );
+            // action/reason derive from replayed agent events and decision is
+            // the engine verdict; strip terminal escapes from all three.
+            let action = sanitize_terminal(&outcome.action);
+            let decision = sanitize_terminal(&outcome.decision);
+            let reason = sanitize_terminal(&outcome.reason);
+            println!("{:<8} {action:<20} {decision:<12} {reason}", outcome.event_index);
         }
     }
 }

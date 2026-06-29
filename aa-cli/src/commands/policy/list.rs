@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::client;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Arguments for `aasm policy list`.
 #[derive(Args)]
@@ -69,10 +70,11 @@ fn render_table(policies: &[PolicyResponse]) {
     table.set_header(vec!["NAME", "STATUS", "UPDATED_AT", "RULES"]);
 
     for p in policies {
+        // name/version are server-supplied; strip terminal escapes.
         table.add_row(vec![
-            Cell::new(&p.name),
+            Cell::new(sanitize_terminal(&p.name)),
             Cell::new(status_label(p.active)).fg(status_color(p.active)),
-            Cell::new(&p.version),
+            Cell::new(sanitize_terminal(&p.version)),
             Cell::new(p.rule_count),
         ]);
     }

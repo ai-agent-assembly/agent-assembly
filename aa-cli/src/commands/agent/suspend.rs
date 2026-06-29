@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::client;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Arguments for `aasm agent suspend`.
 #[derive(Args)]
@@ -85,9 +86,10 @@ fn render(resp: &SuspendResponse, output: OutputFormat) {
 }
 
 fn render_table(resp: &SuspendResponse) {
-    println!("Agent {} suspended.", resp.agent_id);
-    println!("  Previous status: {}", resp.previous_status);
-    println!("  New status:      {}", resp.new_status);
+    // resp fields are echoed from the server response; strip terminal escapes.
+    println!("Agent {} suspended.", sanitize_terminal(&resp.agent_id));
+    println!("  Previous status: {}", sanitize_terminal(&resp.previous_status));
+    println!("  New status:      {}", sanitize_terminal(&resp.new_status));
 }
 
 fn render_json(resp: &SuspendResponse) {

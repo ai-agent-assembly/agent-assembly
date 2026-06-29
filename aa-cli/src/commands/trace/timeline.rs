@@ -2,6 +2,7 @@
 
 use super::models::{SessionTrace, TraceEvent, TraceEventKind};
 use super::tree::format_duration;
+use crate::sanitize::sanitize_terminal;
 
 /// Find the maximum duration among a flat list of events.
 pub fn compute_max_duration(events: &[TraceEvent]) -> u64 {
@@ -29,7 +30,8 @@ fn timeline_label(event: &TraceEvent) -> String {
         TraceEventKind::PolicyAllow => "ALLOW",
         TraceEventKind::PolicyDeny => "DENY",
     };
-    format!("{kind_tag:<6} {:<20}", event.label)
+    // event.label is server-supplied; strip terminal escapes.
+    format!("{kind_tag:<6} {:<20}", sanitize_terminal(&event.label))
 }
 
 /// Render one row of the timeline: label | bar | duration.
@@ -53,7 +55,7 @@ fn flatten_events(events: &[TraceEvent]) -> Vec<&TraceEvent> {
 ///
 /// `max_width` controls the total line width (default 80).
 pub fn render_timeline(trace: &SessionTrace, max_width: usize) -> String {
-    let mut output = format!("Timeline: {}\n", trace.session_id);
+    let mut output = format!("Timeline: {}\n", sanitize_terminal(&trace.session_id));
 
     let flat = flatten_events(&trace.events);
     if flat.is_empty() {

@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use clap::Args;
 
+use crate::sanitize::sanitize_terminal;
+
 /// Arguments for `aasm proxy logs`.
 #[derive(Debug, Args)]
 pub struct LogsArgs {
@@ -132,7 +134,8 @@ pub fn dispatch(args: LogsArgs) -> ExitCode {
     let tail = last_n_lines(&log_path, args.lines);
     for line in &tail {
         if should_print(line) {
-            println!("{line}");
+            // Log lines embed agent-supplied data; strip terminal escapes.
+            println!("{}", sanitize_terminal(line));
         }
     }
 
@@ -181,7 +184,7 @@ fn follow_log(log_path: &std::path::Path, should_print: &impl Fn(&str) -> bool) 
         while reader.read_line(&mut line).unwrap_or(0) > 0 {
             let trimmed = line.trim_end_matches('\n');
             if should_print(trimmed) {
-                println!("{trimmed}");
+                println!("{}", sanitize_terminal(trimmed));
             }
             line.clear();
         }
