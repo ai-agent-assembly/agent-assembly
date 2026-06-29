@@ -2,7 +2,9 @@
 //!
 //! Deserialized from the `[storage.redis]` TOML subsection.
 
-use serde::{Deserialize, Serialize};
+use std::fmt;
+
+use serde::Deserialize;
 
 /// Settings for the `[storage.redis]` subsection of `agent-assembly.toml`.
 ///
@@ -14,7 +16,12 @@ use serde::{Deserialize, Serialize};
 /// ```
 ///
 /// All fields fall back to [`Default`] when omitted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Serialize` is intentionally **not** derived: the `url` carries
+/// `redis://user:pass@host` credentials, and a derived `Serialize` would
+/// round-trip the password in clear. `Debug` is implemented by hand below to
+/// redact it for the same reason.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct RedisStorageConfig {
     /// Redis connection URL. A `redis://` scheme connects in the clear; a
@@ -35,6 +42,42 @@ impl Default for RedisStorageConfig {
             pool_size: 10,
             tls: false,
         }
+    }
+}
+
+/// Custom `Debug` that redacts the password component of the connection URL.
+///
+/// The DSN may carry `redis://user:pass@host` credentials; the derived `Debug`
+/// would print the password verbatim, so any future log of this config would
+/// leak it. This impl renders the URL with the password replaced by `***`,
+/// leaving every other field untouched. Diagnostic output only — the
+/// unredacted [`url`](Self::url) is still what the pool connects with.
+impl fmt::Debug for RedisStorageConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedisStorageConfig")
+            .field("url", &redact_dsn_password(&self.url))
+            .field("pool_size", &self.pool_size)
+            .field("tls", &self.tls)
+            .finish()
+    }
+}
+
+/// Replace the password component of a `scheme://user:pass@host/...` DSN with
+/// `***`, leaving the scheme, username, host, and path intact.
+///
+/// URLs without userinfo, or with userinfo but no password, are returned
+/// unchanged. Used only for redacted diagnostic rendering — never on the value
+/// handed to the connection layer.
+fn redact_dsn_password(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let Some((userinfo, host_part)) = rest.split_once('@') else {
+        return url.to_owned();
+    };
+    match userinfo.split_once(':') {
+        Some((user, _password)) => format!("{scheme}://{user}:***@{host_part}"),
+        None => url.to_owned(),
     }
 }
 
