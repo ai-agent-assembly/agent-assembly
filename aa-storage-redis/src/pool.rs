@@ -64,3 +64,29 @@ fn is_loopback_host(host: &str) -> bool {
     }
     host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_plaintext_does_not_warn() {
+        assert!(!should_warn_plaintext("redis://127.0.0.1:6379", false));
+        assert!(!should_warn_plaintext("redis://localhost:6379", false));
+        assert!(!should_warn_plaintext("redis://user:pw@[::1]:6379", false));
+    }
+
+    #[test]
+    fn non_loopback_plaintext_warns() {
+        assert!(should_warn_plaintext("redis://cache.internal:6379", false));
+        assert!(should_warn_plaintext("redis://user:pw@10.0.0.5:6379", false));
+    }
+
+    #[test]
+    fn tls_in_effect_does_not_warn() {
+        // tls flag set
+        assert!(!should_warn_plaintext("redis://cache.internal:6379", true));
+        // rediss:// scheme already encrypts
+        assert!(!should_warn_plaintext("rediss://cache.internal:6379", false));
+    }
+}
