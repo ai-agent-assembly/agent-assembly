@@ -17,6 +17,7 @@ use sqlx::sqlite::SqlitePool;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+use crate::auth::AuthExtensions;
 use crate::dashboard_server::{dashboard_router, find_dashboard_dist};
 use crate::routes::admin_status::{admin_status, AdminStatusState};
 use crate::routes::api_health::{api_health, ApiHealthState};
@@ -297,7 +298,11 @@ pub(crate) fn router_with_resolved_dist(
             ),
         }
     }
-    app
+    // AAASM-3909: layer the four `aa-auth` extensions so the `RequireAdmin`
+    // guard on `/api/v1/admin/status` can resolve. BYPASS-DEFAULT — with no
+    // auth env set this builds an `AuthMode::Off` config so a bare local-mode
+    // gateway keeps answering `aasm status` with no credential (AAASM-1591).
+    AuthExtensions::from_env().apply(app)
 }
 
 /// Create the parent directory tree for `path` if it does not yet exist.

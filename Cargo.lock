@@ -285,6 +285,7 @@ version = "0.0.1-rc.2"
 name = "aa-gateway"
 version = "0.0.1-rc.2"
 dependencies = [
+ "aa-auth",
  "aa-core",
  "aa-proto",
  "aa-runtime",

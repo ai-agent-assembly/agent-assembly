@@ -16,6 +16,7 @@ pub mod audit;
 pub mod audit_consumer;
 // strip-for-publish:end audit-consumer
 pub mod audit_reader;
+pub mod auth;
 pub mod budget;
 pub mod dashboard_server;
 pub mod edges;
