@@ -21,9 +21,18 @@ pub enum PathVerdict {
 /// Userspace writes these entries to configure which file paths the kprobes
 /// should flag. The map is updatable at runtime without reloading the eBPF
 /// programs.
+///
+/// **Match contract (AAASM-3921a/b).** In-kernel matching is **exact,
+/// NUL-padded full-path equality** only — it is NOT prefix matching despite the
+/// historical "prefix" wording. A directory rule like `/etc/` therefore never
+/// fires in-kernel; express directory/prefix and non-canonical rules through
+/// the userspace [`SensitivePathDetector`](crate::alert::SensitivePathDetector),
+/// which canonicalizes and does boundary-aware prefix matching. The file layer
+/// is OBSERVE-ONLY, so this split degrades alert coverage, not enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathPattern {
-    /// The path prefix or exact path to match (e.g., `/etc/shadow`).
+    /// The **exact** path to match (e.g., `/etc/shadow`). Matched byte-for-byte
+    /// in-kernel; use the userspace detector for prefix/canonical rules.
     pub pattern: String,
     /// Whether matching this pattern should allow or deny the operation.
     pub verdict: PathVerdict,
