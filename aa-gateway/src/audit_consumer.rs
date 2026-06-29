@@ -204,6 +204,14 @@ pub async fn spawn(
         .await
         .map_err(AuditConsumerError::Postgres)?;
     pool.migrate().await.map_err(AuditConsumerError::Migrate)?;
+    // AAASM-3919 guardrail — TENANT ISOLATION: `PgAuditSink::insert_audit_logs`
+    // (called from `persist_audit_records`) routes through the org-less trait
+    // path, which hardcodes the reserved `SYSTEM_ORG`. Every tenant's audit rows
+    // therefore land under one org_id, defeating the 0006/0007 RLS migrations.
+    // Do NOT enable the `audit-consumer` feature for a multi-tenant SaaS
+    // deployment until the tenant is threaded from the per-message
+    // `assembly.audit.<tenant>.<agent>` NATS subject into
+    // `insert_audit_log_for_tenant`. Single-tenant/self-hosted use is unaffected.
     let sink = PgAuditSink::new(pool.clone());
     let lifecycle = PgLifecycleStore::new(pool);
 

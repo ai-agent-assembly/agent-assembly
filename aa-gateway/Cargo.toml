@@ -108,6 +108,14 @@ redis-cache = ["dep:redis"]
 # strip-for-publish:begin audit-consumer
 # AAASM-2388: gateway-internal NATS->Postgres audit consumer worker. Default
 # OFF; enabled in dev/CI via `--all-features`. Stripped before crates.io publish.
+#
+# AAASM-3919 guardrail: do NOT enable this feature for a multi-tenant SaaS
+# Postgres deployment. The consumer persists every tenant's audit rows through
+# `PgAuditSink::insert_audit_logs`, which hardcodes the reserved `SYSTEM_ORG`
+# (see `audit_consumer.rs`) — all tenants' rows co-mingle under one org_id and
+# the 0006/0007 RLS migrations cannot isolate them. The tenant must first be
+# threaded from the `assembly.audit.<tenant>.<agent>` NATS subject into
+# `insert_audit_log_for_tenant`. Single-tenant/self-hosted use is unaffected.
 audit-consumer = ["dep:aa-storage-postgres"]
 # strip-for-publish:end audit-consumer
 
