@@ -17,7 +17,10 @@
 ///   shorter two-byte escapes (`ESC` + one byte); and
 /// - every remaining C0 control character (`0x00`–`0x1f`) and DEL (`0x7f`),
 ///   which includes newlines and carriage returns that could otherwise inject
-///   extra lines into a single-line field.
+///   extra lines into a single-line field; and
+/// - the C1 control range (`0x80`–`0x9f`), which includes `U+009B` — the 8-bit
+///   CSI introducer that some terminals interpret as an escape sequence start
+///   even without a leading `ESC`, reopening the spoofing vector above.
 ///
 /// Printable text (including multi-byte Unicode) is preserved unchanged.
 pub fn sanitize_terminal(input: &str) -> String {
@@ -60,8 +63,9 @@ pub fn sanitize_terminal(input: &str) -> String {
                 }
                 None => {}
             },
-            // Drop all other C0 control characters and DEL.
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {}
+            // Drop all other C0 control characters, DEL, and C1 controls
+            // (`0x80`–`0x9f`, e.g. `U+009B` 8-bit CSI).
+            c if (c as u32) < 0x20 || c as u32 == 0x7f || (0x80..=0x9f).contains(&(c as u32)) => {}
             c => out.push(c),
         }
     }
