@@ -270,6 +270,113 @@ mod tests {
         assert!(entry.message.contains("100"));
     }
 
+    use crate::commands::status::models::AgentCostEntry;
+
+    /// An ESC-introduced CSI colour sequence plus an OSC-52 clipboard write and a
+    /// newline — exactly the escapes an agent would embed to spoof an
+    /// approve/reject decision or hijack the operator's clipboard.
+    const ATTACK: &str = "\x1b[31mEVIL\x1b]52;c;ZXZpbA==\x07\ndrop";
+    const ATTACK_CLEAN: &str = "EVILdrop";
+
+    #[test]
+    fn sanitize_approval_strips_escapes_from_every_field() {
+        let ap = ApprovalResponse {
+            id: format!("id{ATTACK}"),
+            agent_id: format!("agent{ATTACK}"),
+            action: format!("action{ATTACK}"),
+            reason: format!("reason{ATTACK}"),
+            status: "pending".to_string(),
+            created_at: format!("ts{ATTACK}"),
+            team_id: format!("team{ATTACK}"),
+            routing_status: format!("route{ATTACK}"),
+        };
+        let clean = sanitize_approval(ap);
+        for field in [
+            &clean.id,
+            &clean.agent_id,
+            &clean.action,
+            &clean.reason,
+            &clean.created_at,
+            &clean.team_id,
+            &clean.routing_status,
+        ] {
+            assert!(!field.contains('\x1b'), "ESC must be stripped: {field:?}");
+            assert!(!field.contains('\n'), "newline must be stripped: {field:?}");
+        }
+        assert_eq!(clean.action, format!("action{ATTACK_CLEAN}"));
+        assert_eq!(clean.reason, format!("reason{ATTACK_CLEAN}"));
+    }
+
+    #[test]
+    fn sanitize_agent_row_strips_escapes_from_every_field() {
+        let row = AgentRow {
+            id: format!("id{ATTACK}"),
+            name: format!("name{ATTACK}"),
+            framework: format!("fw{ATTACK}"),
+            status: format!("status{ATTACK}"),
+            sessions: 3,
+            violations_today: 1,
+            last_event: format!("evt{ATTACK}"),
+            layer: format!("layer{ATTACK}"),
+        };
+        let clean = sanitize_agent_row(row);
+        for field in [
+            &clean.id,
+            &clean.name,
+            &clean.framework,
+            &clean.status,
+            &clean.last_event,
+            &clean.layer,
+        ] {
+            assert!(!field.contains('\x1b'), "ESC must be stripped: {field:?}");
+            assert!(!field.contains('\n'), "newline must be stripped: {field:?}");
+        }
+        assert_eq!(clean.name, format!("name{ATTACK_CLEAN}"));
+        // Numeric fields are untouched.
+        assert_eq!(clean.sessions, 3);
+        assert_eq!(clean.violations_today, 1);
+    }
+
+    #[test]
+    fn sanitize_budget_strips_escapes_including_per_agent() {
+        let budget = BudgetRow {
+            daily_spend_usd: format!("1{ATTACK}"),
+            monthly_spend_usd: Some(format!("2{ATTACK}")),
+            daily_limit_usd: Some(format!("3{ATTACK}")),
+            monthly_limit_usd: None,
+            date: format!("d{ATTACK}"),
+            per_agent: vec![AgentCostEntry {
+                agent_id: format!("a{ATTACK}"),
+                daily_spend_usd: format!("4{ATTACK}"),
+            }],
+        };
+        let clean = sanitize_budget(budget);
+        assert!(!clean.daily_spend_usd.contains('\x1b'));
+        assert!(!clean.monthly_spend_usd.as_deref().unwrap().contains('\x1b'));
+        assert!(!clean.date.contains('\n'));
+        let entry = &clean.per_agent[0];
+        assert!(!entry.agent_id.contains('\x1b'), "per-agent id must be stripped");
+        assert!(!entry.daily_spend_usd.contains('\x1b'));
+        assert_eq!(entry.agent_id, format!("a{ATTACK_CLEAN}"));
+    }
+
+    #[test]
+    fn sanitize_runtime_strips_escapes_from_status() {
+        let runtime = RuntimeHealth {
+            reachable: true,
+            status: format!("ok{ATTACK}"),
+            uptime_secs: 10,
+            active_connections: 2,
+            pipeline_lag_ms: 1,
+        };
+        let clean = sanitize_runtime(runtime);
+        assert!(!clean.status.contains('\x1b'));
+        assert!(!clean.status.contains('\n'));
+        assert_eq!(clean.status, format!("ok{ATTACK_CLEAN}"));
+        // Numeric fields untouched.
+        assert_eq!(clean.uptime_secs, 10);
+    }
+
     // Port 1 is reserved and never listened on, so both background tasks hit
     // their connection-failure paths fast and deterministically. The REST
     // poller still emits a (degraded) StatusUpdate even when the gateway is
