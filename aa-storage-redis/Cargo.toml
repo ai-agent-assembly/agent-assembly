@@ -26,6 +26,8 @@ serde_json = { workspace = true }
 # `toml` (same pin as `aa-storage`) backs the driver-factory signatures,
 # which take the `[storage.redis]` subsection as a `toml::Value`.
 toml = { workspace = true }
+# Boot-time plaintext-transport warning.
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
