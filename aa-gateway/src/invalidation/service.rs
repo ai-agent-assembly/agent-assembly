@@ -79,12 +79,11 @@ impl InvalidationService for InvalidationServiceImpl {
         // Fail-closed (AAASM-3914): the hub refuses to bind this stream to an
         // `assembly_id` already registered under a different tenant, so a caller
         // cannot hijack another tenant's events or trim its replay ring.
-        let handle = self
-            .hub
-            .subscribe(assembly_id.clone(), tenant, last_seq_seen)
-            .map_err(|super::SubscribeError::TenantMismatch| {
+        let handle = self.hub.subscribe(assembly_id.clone(), tenant, last_seq_seen).map_err(
+            |super::SubscribeError::TenantMismatch| {
                 Status::permission_denied("assembly_id is registered to a different tenant")
-            })?;
+            },
+        )?;
 
         // Drain client→server Acks so the hub can trim each subscriber's ring.
         let hub = Arc::clone(&self.hub);
