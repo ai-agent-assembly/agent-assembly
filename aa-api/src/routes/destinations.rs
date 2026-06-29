@@ -12,7 +12,7 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::auth::scope::{RequireRead, RequireWrite};
+use crate::auth::scope::{RequireAdmin, RequireRead};
 use crate::destinations::connectors::slack::SlackConnector;
 use crate::destinations::connectors::webhook::WebhookConnector;
 use crate::destinations::connectors::{ConnectorError, DispatchRequest, NotificationConnector};
@@ -377,7 +377,12 @@ pub async fn list_destinations(
     tag = "alert-destinations"
 )]
 pub async fn create_destination(
-    _auth: RequireWrite,
+    // AAASM-3894: destinations carry no team_id/org_id, so a Write-scope key in
+    // any tenant could otherwise create/modify/delete/test-fire every tenant's
+    // notification targets. Destinations are admin-managed infrastructure, so
+    // gate all mutations (incl. the egressing test-fire) on admin scope.
+    // (Deeper per-object tenant tagging is tracked as a follow-up.)
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<DestinationResponse>), ProblemDetail> {
@@ -434,7 +439,8 @@ pub async fn get_destination(
     tag = "alert-destinations"
 )]
 pub async fn update_destination(
-    _auth: RequireWrite,
+    // AAASM-3894: admin-gated — see `create_destination`.
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     body: Bytes,
@@ -488,7 +494,8 @@ pub async fn update_destination(
     tag = "alert-destinations"
 )]
 pub async fn delete_destination(
-    _auth: RequireWrite,
+    // AAASM-3894: admin-gated — see `create_destination`.
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ProblemDetail> {
@@ -518,7 +525,8 @@ pub async fn delete_destination(
     tag = "alert-destinations"
 )]
 pub async fn test_destination(
-    _auth: RequireWrite,
+    // AAASM-3894: admin-gated — see `create_destination`.
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     body: Option<Json<TestDestinationRequest>>,
@@ -601,8 +609,8 @@ mod tests {
     use crate::auth::scope::Scope;
     use crate::auth::{AuthenticatedCaller, Tenant};
 
-    fn writer() -> RequireWrite {
-        RequireWrite(AuthenticatedCaller {
+    fn admin() -> RequireAdmin {
+        RequireAdmin(AuthenticatedCaller {
             key_id: "k".to_string(),
             scopes: vec![Scope::Admin],
             tenant: Tenant::default(),
@@ -651,7 +659,7 @@ mod tests {
             true,
         );
         // SSRF egress guard (AAASM-3789): a loopback target is refused before dispatch.
-        let failure = test_destination(writer(), Extension(state), Path(dest.id), None)
+        let failure = test_destination(admin(), Extension(state), Path(dest.id), None)
             .await
             .expect_err("loopback target rejected");
         assert_eq!(failure.into_response().status(), StatusCode::BAD_REQUEST);
@@ -675,7 +683,7 @@ mod tests {
                 },
                 true,
             );
-            let failure = test_destination(writer(), Extension(state), Path(dest.id), None)
+            let failure = test_destination(admin(), Extension(state), Path(dest.id), None)
                 .await
                 .expect_err("internal slack target rejected before dispatch");
             assert_eq!(
@@ -705,7 +713,7 @@ mod tests {
         }))
         .unwrap();
         let _ = update_destination(
-            writer(),
+            admin(),
             Extension(state.clone()),
             Path(dest.id.clone()),
             Bytes::from(body),
@@ -727,7 +735,7 @@ mod tests {
         let state = AppState::local_in_memory().expect("state builds");
         let body = serde_json::to_vec(&serde_json::json!({ "name": "x" })).unwrap();
         let err = update_destination(
-            writer(),
+            admin(),
             Extension(state),
             Path("dst_missing".to_string()),
             Bytes::from(body),

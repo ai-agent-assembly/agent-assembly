@@ -524,8 +524,9 @@ async fn webhook_secret_header_is_not_returned_in_cleartext() {
     let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
     let app = aa_api::build_app(state);
 
-    // A write caller creates a webhook destination with a secret.
-    let write_token = common::generate_test_jwt("w", &[Scope::Write]);
+    // An admin caller creates a webhook destination with a secret.
+    // AAASM-3894: destination mutations now require admin scope.
+    let write_token = common::generate_test_jwt("w", &[Scope::Admin]);
     let payload = json!({
         "name": "hook",
         "kind": "webhook",
@@ -836,4 +837,111 @@ async fn update_destination_with_malformed_json_returns_400() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ── AAASM-3894 — destination mutations require admin scope ────────────────────
+//
+// Destinations carry no team_id/org_id, so before this fix any Write-scope key —
+// in any tenant — could create/update/delete/test-fire every tenant's
+// notification targets. Gate the mutations on admin scope; a non-admin
+// (write-only) caller must be rejected, while an admin caller is allowed.
+
+#[tokio::test]
+async fn create_destination_write_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt("u", &[Scope::Write]);
+    let resp = app
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations",
+            &token,
+            webhook_payload("hook", "https://example.com/hook"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a non-admin write caller must not create a destination"
+    );
+}
+
+#[tokio::test]
+async fn update_destination_write_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt("u", &[Scope::Write]);
+    let resp = app
+        .oneshot(bearer_json(
+            "PUT",
+            "/api/v1/alerts/destinations/dst_x",
+            &token,
+            json!({ "enabled": false }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a non-admin write caller must not update a destination"
+    );
+}
+
+#[tokio::test]
+async fn delete_destination_write_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt("u", &[Scope::Write]);
+    let resp = app
+        .oneshot(bearer_empty("DELETE", "/api/v1/alerts/destinations/dst_x", &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a non-admin write caller must not delete a destination"
+    );
+}
+
+#[tokio::test]
+async fn test_destination_write_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt("u", &[Scope::Write]);
+    let resp = app
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations/dst_x/test",
+            &token,
+            json!({ "severity": "LOW" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a non-admin write caller must not test-fire a destination"
+    );
+}
+
+#[tokio::test]
+async fn create_destination_admin_token_is_allowed() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt("admin", &[Scope::Admin]);
+    let resp = app
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations",
+            &token,
+            webhook_payload("hook", "https://example.com/hook"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "an admin caller must be able to create a destination"
+    );
 }

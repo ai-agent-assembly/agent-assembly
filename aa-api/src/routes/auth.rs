@@ -71,10 +71,21 @@ pub async fn issue_token(
         None => caller.scopes.clone(),
     };
 
-    let token = jwt_signer.sign(&caller.key_id, &token_scopes).map_err(|e| {
-        ProblemDetail::from_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
-            .with_detail(format!("Failed to sign token: {e}"))
-    })?;
+    // AAASM-3894: carry the caller's tenant into the issued JWT. `sign` drops
+    // team_id/org_id, so a tenant-confined key's token would lose its tenant
+    // scope and fall back to admin-only cross-tenant gating on the per-tenant
+    // data endpoints. Propagate the tenant so the issued token stays confined.
+    let token = jwt_signer
+        .sign_with_tenant(
+            &caller.key_id,
+            &token_scopes,
+            caller.tenant.team_id.clone(),
+            caller.tenant.org_id.clone(),
+        )
+        .map_err(|e| {
+            ProblemDetail::from_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                .with_detail(format!("Failed to sign token: {e}"))
+        })?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
