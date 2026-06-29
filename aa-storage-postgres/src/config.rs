@@ -4,6 +4,8 @@
 //! file. Only the knobs an OSS operator needs to point the driver at their own
 //! Postgres are exposed here; TimescaleDB and retention tuning live elsewhere.
 
+use std::fmt;
+
 use serde::Deserialize;
 
 /// Default maximum pooled-connection count when unspecified.
@@ -22,7 +24,7 @@ const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 0;
 /// max_connections = 20
 /// statement_timeout_ms = 5000
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct PostgresPoolConfig {
     /// PostgreSQL connection URL (`postgres://user:pass@host:port/db`).
@@ -32,6 +34,42 @@ pub struct PostgresPoolConfig {
     /// Per-statement timeout in milliseconds, applied via `SET statement_timeout`
     /// on each connection. `0` leaves the server default in place.
     pub statement_timeout_ms: u64,
+}
+
+/// Custom `Debug` that redacts the password component of the connection URL.
+///
+/// The DSN carries `postgres://user:pass@host/db` credentials; the derived
+/// `Debug` would print the password verbatim, so any future log of this config
+/// would leak it. This impl renders the URL with the password replaced by `***`
+/// while leaving every other field untouched. It changes only diagnostic output
+/// — the unredacted [`url`](Self::url) is still what the pool connects with.
+impl fmt::Debug for PostgresPoolConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PostgresPoolConfig")
+            .field("url", &redact_dsn_password(&self.url))
+            .field("max_connections", &self.max_connections)
+            .field("statement_timeout_ms", &self.statement_timeout_ms)
+            .finish()
+    }
+}
+
+/// Replace the password component of a `scheme://user:pass@host/...` DSN with
+/// `***`, leaving the scheme, username, host, and path intact.
+///
+/// URLs without userinfo, or with userinfo but no password, are returned
+/// unchanged. Used only for redacted diagnostic rendering — never on the value
+/// handed to the connection layer.
+fn redact_dsn_password(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let Some((userinfo, host_part)) = rest.split_once('@') else {
+        return url.to_owned();
+    };
+    match userinfo.split_once(':') {
+        Some((user, _password)) => format!("{scheme}://{user}:***@{host_part}"),
+        None => url.to_owned(),
+    }
 }
 
 impl Default for PostgresPoolConfig {
