@@ -426,4 +426,65 @@ mod tests {
             "team-b replay ring must not contain team-a's event"
         );
     }
+
+    /// AAASM-3914 regression: a Subscribe whose `assembly_id` already belongs to
+    /// another tenant is refused, so the caller can neither attach to the
+    /// victim's broadcast channel nor trim its replay ring.
+    #[tokio::test]
+    async fn subscribe_rejects_cross_tenant_assembly_id_reuse() {
+        let hub = InvalidationHub::new();
+        let mut victim = hub
+            .subscribe("asm-shared", Some("team-a".to_string()), 0)
+            .expect("victim subscribe succeeds");
+
+        // Attacker in team-b knows team-a's assembly_id; binding is refused.
+        let attacker = hub.subscribe("asm-shared", Some("team-b".to_string()), 0);
+        assert!(matches!(attacker, Err(SubscribeError::TenantMismatch)));
+
+        // An untenanted caller likewise may not claim a tenanted slot.
+        let untenanted = hub.subscribe("asm-shared", None, 0);
+        assert!(matches!(untenanted, Err(SubscribeError::TenantMismatch)));
+
+        // The victim's own event still flows to the victim only; the rejected
+        // attacker never received a handle, so nothing leaked.
+        hub.broadcast_approval_resolved("req-a", Decision::Approved, Some("team-a"));
+        let event = tokio::time::timeout(Duration::from_millis(100), victim.receiver.recv())
+            .await
+            .expect("victim event delivered within 100 ms")
+            .expect("channel open");
+        assert_eq!(event.seq, 1);
+
+        // The attacker's rejection left no extra subscriber registered.
+        assert_eq!(hub.subscriber_count(), 1);
+    }
+
+    /// AAASM-3914 regression: the legitimate reconnect path — same tenant, same
+    /// assembly_id — is still permitted, resumes from `last_seq_seen`, and keeps
+    /// receiving its tenant's live events.
+    #[tokio::test]
+    async fn subscribe_allows_same_tenant_reconnect() {
+        let hub = InvalidationHub::new();
+        let first = hub
+            .subscribe("asm-a", Some("team-a".to_string()), 0)
+            .expect("first subscribe succeeds");
+        drop(first);
+
+        hub.broadcast_approval_resolved("req-1", Decision::Approved, Some("team-a"));
+        hub.broadcast_approval_resolved("req-2", Decision::Approved, Some("team-a"));
+
+        // Reconnect by the same tenant resumes after seq 1: only seq 2 replays.
+        let mut reconnect = hub
+            .subscribe("asm-a", Some("team-a".to_string()), 1)
+            .expect("same-tenant reconnect succeeds");
+        assert_eq!(reconnect.replay.len(), 1);
+        assert_eq!(reconnect.replay[0].seq, 2);
+
+        // It still receives this tenant's subsequent live events.
+        hub.broadcast_approval_resolved("req-3", Decision::Approved, Some("team-a"));
+        let event = tokio::time::timeout(Duration::from_millis(100), reconnect.receiver.recv())
+            .await
+            .expect("live event delivered within 100 ms")
+            .expect("channel open");
+        assert_eq!(event.seq, 3);
+    }
 }
