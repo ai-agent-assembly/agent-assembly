@@ -2710,7 +2710,7 @@ mod tests {
 
         // A subscriber connected before the mutation should be notified.
         let hub = InvalidationHub::new();
-        let mut handle = hub.subscribe("asm-itest", 0);
+        let mut handle = hub.subscribe("asm-itest", None, 0);
         let engine = make_engine(empty_doc()).with_invalidation_hub(Arc::clone(&hub));
 
         let start = std::time::Instant::now();

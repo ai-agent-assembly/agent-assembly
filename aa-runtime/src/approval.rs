@@ -258,8 +258,11 @@ impl std::error::Error for ApprovalError {}
 /// decides which decisions to forward — timeouts are reported here too but the
 /// gateway only broadcasts genuine human verdicts (spec line 7699 / AAASM-2378).
 pub trait ApprovalResolvedNotifier: Send + Sync {
-    /// Called after `request_id` is resolved with `decision`.
-    fn notify_resolved(&self, request_id: &str, decision: &ApprovalDecision);
+    /// Called after `request_id` is resolved with `decision`. `tenant` is the
+    /// resolved request's owning team (if any), so a tenant-aware implementor
+    /// can scope the notification to that tenant and never leak one tenant's
+    /// resolution to another (AAASM-3890).
+    fn notify_resolved(&self, request_id: &str, decision: &ApprovalDecision, tenant: Option<&str>);
 }
 
 // ---------------------------------------------------------------------------
@@ -712,7 +715,7 @@ impl ApprovalQueue {
             // gateway hub forwards only genuine human verdicts as
             // `ApprovalResolved`; timeouts are ignored there. AAASM-2378.
             if let Some(notifier) = self.resolved_notifier.get() {
-                notifier.notify_resolved(&req.request_id.to_string(), &decision);
+                notifier.notify_resolved(&req.request_id.to_string(), &decision, req.team_id.as_deref());
             }
 
             // Ignore send errors: the receiver may have been dropped (caller
