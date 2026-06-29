@@ -32,6 +32,12 @@ impl RedisSessionStore {
     }
 }
 
+// TODO(AAASM-3919): namespace this key by the verified tenant/org id
+// (e.g. `aa:session:<org_id>:<session_id>`) once org context is threaded into
+// the SessionStore path. The shared L2 cache currently has no tenant boundary;
+// session ids are globally unique so there is no collision today, but also no
+// isolation. Deferred here because SessionStore::save/load/delete carry only a
+// session id — adding a prefix without the org id would break lookups.
 fn session_key(id: &SessionId) -> String {
     format!("aa:session:{}", hex16(id.as_bytes()))
 }
