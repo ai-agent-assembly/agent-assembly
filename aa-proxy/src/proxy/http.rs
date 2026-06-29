@@ -846,4 +846,65 @@ mod tests {
             "no trailing reason space: {text:?}"
         );
     }
+
+    // ── header-cap (OOM) guards (AAASM-3922) ────────────────────────────────
+
+    #[tokio::test]
+    async fn rejects_oversized_request_header_line_before_oom() {
+        // AAASM-3922: a single header line larger than MAX_HEADER_LINE_LEN must
+        // be rejected *as it is read* — before the old unbounded read_line could
+        // buffer a multi-GB line and OOM the proxy. The over-cap line here is
+        // ~8 KiB+1; the reader holds only the head, proving the cap fires at the
+        // header stage rather than after a giant allocation.
+        let big_value = "a".repeat(MAX_HEADER_LINE_LEN + 1);
+        let raw = format!("GET / HTTP/1.1\r\nX-Big: {big_value}\r\n\r\n");
+        let mut reader = make_reader(raw.as_bytes());
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("exceeds maximum")),
+            "expected over-cap header rejection, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_request_with_too_many_headers() {
+        // AAASM-3922: more than MAX_HEADER_COUNT header lines is refused,
+        // bounding the head against a flood of individually-small lines.
+        let mut raw = String::from("GET / HTTP/1.1\r\n");
+        for i in 0..=MAX_HEADER_COUNT {
+            raw.push_str(&format!("X-H{i}: v\r\n"));
+        }
+        raw.push_str("\r\n");
+        let mut reader = make_reader(raw.as_bytes());
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("header lines")),
+            "expected too-many-headers rejection, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn header_within_caps_still_parses() {
+        // Regression: a normal-sized header well under every cap must still
+        // parse — the OOM guard must not reject legitimate traffic.
+        let raw = b"POST / HTTP/1.1\r\nHost: api.openai.com\r\nContent-Length: 2\r\n\r\nhi";
+        let mut reader = make_reader(raw);
+        let req = read_http_request(&mut reader).await.unwrap().expect("request present");
+        assert_eq!(req.header("host"), Some("api.openai.com"));
+        assert_eq!(&req.body, b"hi");
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_response_header_line_before_oom() {
+        // AAASM-3922: the response side applies the same per-line cap so a
+        // hostile upstream cannot OOM the proxy with an unbounded header read.
+        let big_value = "a".repeat(MAX_HEADER_LINE_LEN + 1);
+        let raw = format!("HTTP/1.1 200 OK\r\nX-Big: {big_value}\r\n\r\n");
+        let mut reader = make_reader(raw.as_bytes());
+        let err = read_http_response(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("exceeds maximum")),
+            "expected over-cap header rejection, got: {err:?}"
+        );
+    }
 }
