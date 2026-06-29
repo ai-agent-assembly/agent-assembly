@@ -15,6 +15,7 @@ use axum_server::Handle;
 
 use super::error::GatewayError;
 use super::tls::{self, TlsValidation};
+use crate::auth::AuthExtensions;
 use crate::routes::admin_status::{admin_status, AdminStatusState};
 use crate::routes::healthz::{healthz, HealthzState};
 use crate::storage::{open_postgres_backend, PostgresConfig, StorageBackend};
@@ -42,7 +43,11 @@ pub fn router(storage: Option<Arc<dyn StorageBackend>>, database_url: Option<Str
             .route("/api/v1/admin/status", get(admin_status))
             .layer(Extension(admin_state));
     }
-    app
+    // AAASM-3908: layer the four `aa-auth` extensions so the `RequireAdmin`
+    // guard on `/api/v1/admin/status` can resolve. BYPASS-DEFAULT — with no
+    // auth env set this builds an `AuthMode::Off` config so a bare gateway keeps
+    // answering `aasm status` with no credential (AAASM-1591).
+    AuthExtensions::from_env().apply(app)
 }
 
 /// Print the operator-facing startup banner via `tracing::info!`.
