@@ -74,8 +74,14 @@ pub struct SensitivePathDetector {
 
 impl SensitivePathDetector {
     /// Create a detector with the given path prefixes.
+    ///
+    /// Prefixes are stored in lexically-canonical form (see
+    /// [`canonicalize_lexical`]) so they match canonicalized event paths
+    /// regardless of how the rule was written.
     pub fn new(prefixes: Vec<String>) -> Self {
-        Self { prefixes }
+        Self {
+            prefixes: prefixes.into_iter().map(|p| canonicalize_lexical(&p)).collect(),
+        }
     }
 
     /// Create a detector with default sensitive paths.
@@ -90,13 +96,19 @@ impl SensitivePathDetector {
     }
 
     /// Check whether the given event targets a sensitive path.
+    ///
+    /// The event path is lexically canonicalized before matching so trivial
+    /// non-canonical evasions (`/etc//shadow`, `/etc/../etc/shadow`, …) are
+    /// still caught (AAASM-3921a).
     pub fn is_sensitive(&self, event: &FileIoEvent) -> bool {
-        self.prefixes.iter().any(|p| event.path.starts_with(p))
+        let canonical = canonicalize_lexical(&event.path);
+        self.prefixes.iter().any(|p| canonical.starts_with(p))
     }
 
-    /// Add a path prefix to the detector.
+    /// Add a path prefix to the detector. The prefix is stored in
+    /// lexically-canonical form (see [`canonicalize_lexical`]).
     pub fn add_prefix(&mut self, prefix: String) {
-        self.prefixes.push(prefix);
+        self.prefixes.push(canonicalize_lexical(&prefix));
     }
 
     /// Return the current list of sensitive path prefixes.
@@ -145,6 +157,33 @@ mod tests {
         detector.add_prefix("/opt/secrets/".into());
         assert!(detector.is_sensitive(&make_event("/opt/secrets/key.pem")));
         assert!(!detector.is_sensitive(&make_event("/opt/app/config")));
+    }
+
+    #[test]
+    fn detects_noncanonical_sensitive_path() {
+        let detector = SensitivePathDetector::with_defaults();
+        // Evasions that the in-kernel exact-match blocklist would miss but the
+        // canonicalizing userspace detector catches (AAASM-3921a).
+        assert!(detector.is_sensitive(&make_event("/etc//shadow")));
+        assert!(detector.is_sensitive(&make_event("/etc/./shadow")));
+        assert!(detector.is_sensitive(&make_event("/etc/../etc/shadow")));
+        assert!(detector.is_sensitive(&make_event("/root/.ssh/../.ssh/id_rsa")));
+    }
+
+    #[test]
+    fn directory_prefix_boundary_is_respected() {
+        let detector = SensitivePathDetector::with_defaults();
+        // `/home/` must match files under it but not a sibling like `/homestead`.
+        assert!(detector.is_sensitive(&make_event("/home//user/.bashrc")));
+        assert!(!detector.is_sensitive(&make_event("/homestead/config")));
+    }
+
+    #[test]
+    fn collapse_slashes_in_added_prefix() {
+        let mut detector = SensitivePathDetector::new(vec![]);
+        detector.add_prefix("/opt//secrets/".into());
+        assert_eq!(detector.prefixes(), ["/opt/secrets/"]);
+        assert!(detector.is_sensitive(&make_event("/opt/secrets/key.pem")));
     }
 
     #[test]
