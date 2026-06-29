@@ -17,7 +17,10 @@ pub enum Scope {
     Read,
     /// Read and write access (create, update, delete).
     Write,
-    /// Full administrative access including agent kill.
+    /// Global / cross-tenant administrative access — e.g. fleet-wide halt,
+    /// retention policy, and IAM key management. Per-tenant destructive actions
+    /// (agent suspend/resume/delete, op lifecycle) are gated by Write plus
+    /// tenant ownership, not flat Admin.
     Admin,
 }
 
