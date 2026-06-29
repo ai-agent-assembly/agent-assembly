@@ -65,7 +65,7 @@ pub fn compute_exit_code(snapshot: &StatusSnapshot) -> ExitCode {
 pub fn dispatch(args: StatusArgs, ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
-        let api_client = client::StatusClient::new(&ctx.api_url);
+        let api_client = client::StatusClient::new(&ctx.api_url).with_api_key(ctx.api_key.clone());
 
         if args.watch {
             watch::run_watch_loop(&api_client, output).await;
