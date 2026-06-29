@@ -55,7 +55,13 @@ use crate::maps::PathPattern;
 /// with the file I/O kprobe subsystem. It is only functional on Linux; on
 /// other platforms it returns [`EbpfError::ProgramLoad`] immediately.
 pub struct FileIoLoader {
-    /// Target PID to monitor (and its descendants).
+    /// Target PID to monitor.
+    ///
+    /// NOTE (AAASM-3916): unlike the exec and syscall-guard loaders, the
+    /// file-I/O probe has **no** `sched_process_fork` propagation, so only this
+    /// exact tgid is monitored — descendants are NOT followed. Descendant
+    /// file-I/O telemetry is a follow-up (a fork tracepoint mirroring
+    /// `PID_FILTER` membership like the syscall guard does).
     #[allow(dead_code)]
     target_pid: u32,
     /// Loaded BPF object handle (Linux only).
@@ -64,7 +70,8 @@ pub struct FileIoLoader {
 }
 
 impl FileIoLoader {
-    /// Create a new loader targeting the given PID and its descendants.
+    /// Create a new loader targeting the given PID (this exact tgid only; see
+    /// the `target_pid` field note on the lack of descendant propagation).
     pub fn new(target_pid: u32) -> Self {
         Self {
             target_pid,
