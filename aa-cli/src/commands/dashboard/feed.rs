@@ -12,6 +12,62 @@ use crate::commands::status::fetch;
 use crate::commands::status::models::{AgentRow, ApprovalResponse, ApprovalsSummary, BudgetRow, RuntimeHealth};
 use crate::sanitize::sanitize_terminal;
 
+/// Sanitize every server/agent-controlled string field of an [`AgentRow`] so
+/// terminal escape sequences can never reach the dashboard's rendered output.
+/// Numeric fields (`sessions`, `violations_today`) are left untouched.
+fn sanitize_agent_row(mut row: AgentRow) -> AgentRow {
+    row.id = sanitize_terminal(&row.id);
+    row.name = sanitize_terminal(&row.name);
+    row.framework = sanitize_terminal(&row.framework);
+    row.status = sanitize_terminal(&row.status);
+    row.last_event = sanitize_terminal(&row.last_event);
+    row.layer = sanitize_terminal(&row.layer);
+    row
+}
+
+/// Sanitize every server/agent-controlled string field of an [`ApprovalResponse`].
+/// Covers both the approve/reject confirmation dialog and the approvals panel.
+fn sanitize_approval(mut ap: ApprovalResponse) -> ApprovalResponse {
+    ap.id = sanitize_terminal(&ap.id);
+    ap.agent_id = sanitize_terminal(&ap.agent_id);
+    ap.action = sanitize_terminal(&ap.action);
+    ap.reason = sanitize_terminal(&ap.reason);
+    ap.status = sanitize_terminal(&ap.status);
+    ap.created_at = sanitize_terminal(&ap.created_at);
+    ap.team_id = sanitize_terminal(&ap.team_id);
+    ap.routing_status = sanitize_terminal(&ap.routing_status);
+    ap
+}
+
+/// Sanitize every server-supplied string field of a [`BudgetRow`], including the
+/// per-agent cost breakdown. Numeric ratios are computed downstream by parsing
+/// these strings, so stripped escapes leave well-formed amounts intact.
+fn sanitize_budget(mut budget: BudgetRow) -> BudgetRow {
+    budget.daily_spend_usd = sanitize_terminal(&budget.daily_spend_usd);
+    budget.monthly_spend_usd = budget.monthly_spend_usd.as_deref().map(sanitize_terminal);
+    budget.daily_limit_usd = budget.daily_limit_usd.as_deref().map(sanitize_terminal);
+    budget.monthly_limit_usd = budget.monthly_limit_usd.as_deref().map(sanitize_terminal);
+    budget.date = sanitize_terminal(&budget.date);
+    for entry in &mut budget.per_agent {
+        entry.agent_id = sanitize_terminal(&entry.agent_id);
+        entry.daily_spend_usd = sanitize_terminal(&entry.daily_spend_usd);
+    }
+    budget
+}
+
+/// Sanitize the server-supplied `status` string of [`RuntimeHealth`], which is
+/// rendered raw in the agents-panel health header. Numeric fields are untouched.
+fn sanitize_runtime(mut runtime: RuntimeHealth) -> RuntimeHealth {
+    runtime.status = sanitize_terminal(&runtime.status);
+    runtime
+}
+
+/// Sanitize the string field of an [`ApprovalsSummary`]. The count is numeric.
+fn sanitize_approvals_summary(mut summary: ApprovalsSummary) -> ApprovalsSummary {
+    summary.oldest_pending_age = summary.oldest_pending_age.as_deref().map(sanitize_terminal);
+    summary
+}
+
 use super::state::EventEntry;
 
 /// Messages sent from background data tasks to the main event loop.
@@ -56,20 +112,23 @@ pub fn spawn_rest_poller(api_url: &str, tx: mpsc::UnboundedSender<FeedMessage>) 
             let snapshot = fetch::fetch_all(&client).await;
 
             // Fetch the raw approvals list so we have individual pending items.
+            // Sanitize every server/agent-controlled field at ingestion (mirroring
+            // the WebSocket path) so escape sequences can never reach a render.
             let pending_approvals = client
                 .list_approvals()
                 .await
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|a| a.status == "pending")
+                .map(sanitize_approval)
                 .collect();
 
             let msg = FeedMessage::StatusUpdate {
-                runtime: snapshot.runtime,
-                agents: snapshot.agents,
-                approvals_summary: snapshot.approvals,
+                runtime: sanitize_runtime(snapshot.runtime),
+                agents: snapshot.agents.into_iter().map(sanitize_agent_row).collect(),
+                approvals_summary: sanitize_approvals_summary(snapshot.approvals),
                 pending_approvals,
-                budget: snapshot.budget,
+                budget: sanitize_budget(snapshot.budget),
             };
 
             if tx.send(msg).is_err() {
