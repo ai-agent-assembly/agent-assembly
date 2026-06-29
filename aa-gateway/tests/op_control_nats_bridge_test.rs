@@ -19,7 +19,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use aa_gateway::ops::nats::spawn_bridge;
+use aa_gateway::ops::nats::{spawn_bridge, OpControlWireEnvelope};
 use aa_gateway::ops::{
     HaltDelivery, OpControlNatsConfig, OpControlNatsPublisher, OpControlPublisher, OpsRegistry,
     SharedOpControlPublisher,
@@ -297,6 +297,106 @@ async fn halt_published_with_no_consumer_is_delivered_to_a_later_subscriber() {
         store.state(&aa_runtime::op_control::agent_halt_op_id("agent-9")),
         Some(aa_runtime::op_control::OpState::Terminated),
     );
+}
+
+/// AAASM-3889 regression — the bridge drops an envelope whose payload target does
+/// not match the subject it was delivered on, so a publisher able to reach *some*
+/// op-control subject cannot forge a different tenant — or a fleet-wide `global`
+/// kill — in the JSON body. Two forged messages are published directly to the
+/// durable stream under attacker-chosen subjects (a cross-tenant per-agent payload
+/// and a `global: true` payload off the global subject), followed by one
+/// legitimately-published halt. Only the legitimate halt must reach the
+/// subscriber.
+#[tokio::test]
+async fn bridge_drops_envelopes_whose_payload_does_not_match_their_subject() {
+    let host_port = free_port();
+    let url = format!("nats://127.0.0.1:{host_port}");
+    let _nats = start_nats(host_port).await;
+    ensure_stream(&url).await;
+
+    // Forge directly onto the durable stream, under attacker-chosen subjects, so
+    // the messages exist before any gateway consumer attaches (DeliverPolicy::All
+    // replays them in publish order).
+    let raw = async_nats::connect(&url).await.expect("connect to NATS");
+    let js = async_nats::jetstream::new(raw);
+
+    // (a) Cross-tenant per-agent forgery: payload targets victim-7 but is
+    // published under an attacker subject.
+    let forged_per_agent = OpControlWireEnvelope {
+        org_id: "org".into(),
+        team_id: "team".into(),
+        agent_id: "victim-7".into(),
+        op_id: aa_runtime::op_control::agent_halt_op_id("victim-7"),
+        signal: OpControlSignal::Terminate as i32,
+        global: false,
+    };
+    js.publish(
+        "assembly.opcontrol.attacker.attacker".to_string(),
+        serde_json::to_vec(&forged_per_agent).unwrap().into(),
+    )
+    .await
+    .expect("publish forged per-agent")
+    .await
+    .expect("ack forged per-agent");
+
+    // (b) Forged fleet-wide kill: payload claims global:true but is published on a
+    // tenant subject the attacker can reach (not the global subject).
+    let forged_global = OpControlWireEnvelope {
+        org_id: String::new(),
+        team_id: String::new(),
+        agent_id: String::new(),
+        op_id: aa_runtime::op_control::GLOBAL_HALT_OP_ID.to_string(),
+        signal: OpControlSignal::Terminate as i32,
+        global: true,
+    };
+    js.publish(
+        "assembly.opcontrol.attacker.bot".to_string(),
+        serde_json::to_vec(&forged_global).unwrap().into(),
+    )
+    .await
+    .expect("publish forged global")
+    .await
+    .expect("ack forged global");
+
+    // (c) A legitimately-published halt for victim-7, distinguishable by its Pause
+    // signal (the forged ones used Terminate).
+    let api_publisher = OpControlNatsPublisher::connect(&OpControlNatsConfig::new(url.clone()))
+        .await
+        .expect("aa-api side connects to NATS");
+    api_publisher
+        .publish_agent_halt(agent("victim-7"), OpControlSignal::Pause)
+        .await
+        .expect("legit halt is durably published");
+
+    // Bring up the gateway: in-process broadcast + gRPC server + victim subscriber,
+    // then the bridge that replays all three persisted messages.
+    let publisher = Arc::new(OpControlPublisher::new());
+    let addr = start_server(Arc::clone(&publisher)).await;
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let mut stream = client
+        .op_control_stream(OpControlSubscribeRequest {
+            agent_id: Some(agent("victim-7")),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    await_grpc_subscriber(&publisher).await;
+    let _bridge = spawn_bridge(OpControlNatsConfig::new(url.clone()), Arc::clone(&publisher));
+
+    // The first (and only) message reaching the subscriber must be the legitimate
+    // Pause halt — both forged messages were dropped at the subject-binding gate.
+    // Had they been honored, a Terminate would have arrived first.
+    let msg = timeout(Duration::from_secs(15), stream.message())
+        .await
+        .expect("the legitimate halt must be delivered")
+        .expect("stream ok")
+        .expect("stream yields the legitimate halt");
+    assert_eq!(
+        msg.signal,
+        OpControlSignal::Pause as i32,
+        "only the legitimately-published (Pause) halt may reach the subscriber; a forged Terminate must be dropped",
+    );
+    assert_eq!(msg.op_id, aa_runtime::op_control::agent_halt_op_id("victim-7"));
 }
 
 /// Honest-failure: with JetStream up but **no op-control stream created**, a

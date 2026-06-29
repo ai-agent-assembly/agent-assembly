@@ -31,6 +31,7 @@ use crate::approval::routing_config::RoutingConfigStore;
 use crate::engine::{
     resolve_enforcement_mode, transform_for_observe_mode, DenyAction, EvaluationResult, PolicyEngine, ShadowEvent,
 };
+use crate::iam::VerifiedCaller;
 use crate::ops::{OpsRegistry, SharedOpControlPublisher};
 use crate::registry::convert::proto_agent_id_to_key;
 use crate::registry::{AgentRegistry, SuspendReason};
@@ -1486,6 +1487,22 @@ impl PolicyService for PolicyServiceImpl {
         let mut responses = Vec::with_capacity(batch.requests.len());
 
         for req in &batch.requests {
+            // AAASM-3888: validate the supplied `credential_token` against the
+            // registered token for the claimed `agent_id` BEFORE any evaluation
+            // or side-effect (audit / spend / suspend), exactly as `check_action`
+            // does. PolicyService runs under the non-rejecting `enrich`
+            // interceptor, so the request-body `{org,team,agent}` triple and
+            // `credential_token` are attacker-controlled; without this check a
+            // peer at :50051 could forge a victim identity per batch entry and
+            // drive forged audit, budget-exhaustion spend, or agent suspension
+            // against the victim. On rejection, push the Deny and skip all
+            // side-effects for this request — `evaluate_one`'s tenancy-anchoring
+            // invariant (which assumes validation already ran) is thereby upheld.
+            if let Some(rejection) = self.validate_credential_token(req).await {
+                responses.push(rejection);
+                continue;
+            }
+
             let (eval, latency_us, policy_rule) = self.evaluate_one(req)?;
             self.maybe_emit_secret_alert(req, &eval);
 
@@ -1534,14 +1551,44 @@ impl PolicyService for PolicyServiceImpl {
     /// Returns `Status::unavailable` when no publisher is attached to the
     /// service (tests / partial wiring), and `Status::invalid_argument`
     /// when the request omits `agent_id`.
+    ///
+    /// AAASM-3889: the subscription is authorized before any signal is served.
+    /// When an [`AgentRegistry`] is attached (a tenanted deployment), the caller
+    /// MUST present a credential token that the `enrich` interceptor resolved to
+    /// a [`VerifiedCaller`] (absent → `Status::unauthenticated`), and the
+    /// requested `{org,team,agent}` triple MUST resolve to the caller's own
+    /// registered identity (mismatch → `Status::permission_denied`). Without this
+    /// a credential-less peer could subscribe with an arbitrary triple and read
+    /// another tenant's pause/resume/terminate signals + op_ids. The check is
+    /// skipped only when no registry is attached (test fixtures / untenanted
+    /// deployments), mirroring [`validate_credential_token`].
     async fn op_control_stream(
         &self,
         request: Request<OpControlSubscribeRequest>,
     ) -> Result<Response<Self::OpControlStreamStream>, Status> {
+        // Read the interceptor-injected caller BEFORE `into_inner` drops the
+        // request extensions.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned();
         let req = request.into_inner();
         let Some(agent_id) = req.agent_id else {
             return Err(Status::invalid_argument("agent_id is required"));
         };
+
+        // AAASM-3889: bind the subscription to the authenticated caller's own
+        // identity when the registry layer is active.
+        if self.registry.is_some() {
+            let Some(caller) = caller else {
+                return Err(Status::unauthenticated(
+                    "op_control_stream requires a valid credential token",
+                ));
+            };
+            if proto_agent_id_to_key(&agent_id) != caller.agent_key {
+                return Err(Status::permission_denied(
+                    "op_control_stream subscription must match the caller's own agent identity",
+                ));
+            }
+        }
+
         let Some(publisher) = self.ops_publisher.clone() else {
             return Err(Status::unavailable("op control channel not configured"));
         };
