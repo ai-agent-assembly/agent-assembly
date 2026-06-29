@@ -747,7 +747,7 @@ jobs:
         # Cache the compiled bpf-linker binary so subsequent CI runs skip the
         # slow bundled-LLVM compile (~5-10 min). Key includes the version so a
         # version bump automatically invalidates the cache.
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-bpf-linker
         with:
           path: ~/.cargo/bin/bpf-linker
@@ -851,7 +851,7 @@ jobs:
           components: rust-src,clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Cache bpf-linker binary
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-bpf-linker
         with:
           path: ~/.cargo/bin/bpf-linker
@@ -1175,7 +1175,7 @@ jobs:
           name: dashboard-dist
           path: dashboard/dist/
       - name: Cache Cargo registry
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
@@ -1303,7 +1303,7 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Resolved sonar.projectVersion=${version}"
       - name: Cache SonarCloud analysis state
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar-${{ hashFiles('sonar-project.properties') }}
