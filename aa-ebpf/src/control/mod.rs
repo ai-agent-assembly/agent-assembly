@@ -22,5 +22,11 @@ pub use protocol::{ControlRequest, ControlResponse, PathRuleWire, ProbeSet, DEFA
 #[cfg(unix)]
 pub mod client;
 
+// AAASM-3918: peer-credential policy for the privileged control socket. Lives
+// in its own `#[cfg(unix)]` module so the pure UID check is unit-testable on
+// non-Linux dev hosts even though `server` (which enforces it) is Linux only.
+#[cfg(unix)]
+pub mod peercred;
+
 #[cfg(target_os = "linux")]
 pub mod server;
