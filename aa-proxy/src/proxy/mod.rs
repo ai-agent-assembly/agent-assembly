@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, ServerConfig, SignatureScheme};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex, OnceCell};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -29,8 +29,9 @@ use crate::intercept::mcp::parse_mcp_request;
 use crate::intercept::{InterceptVerdict, Interceptor, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
 use crate::proxy::http::{
-    read_http_request, read_http_response, serialize_http_request, serialize_http_request_with_auth,
-    serialize_http_response, HttpRequest,
+    read_http_request, read_http_response, read_line_capped, serialize_http_request,
+    serialize_http_request_with_auth, serialize_http_response, HttpRequest, MAX_HEADER_BYTES, MAX_HEADER_COUNT,
+    MAX_HEADER_LINE_LEN,
 };
 use crate::tls::{CaStore, CertCache};
 
@@ -753,8 +754,10 @@ impl ProxyServer {
         let mut reader = BufReader::new(stream);
 
         // Read the first request line, e.g. "CONNECT api.openai.com:443 HTTP/1.1\r\n"
+        // AAASM-3922: bound the line so an unbounded read cannot OOM the proxy
+        // before CONNECT/plain-HTTP routing even begins.
         let mut request_line = String::new();
-        reader.read_line(&mut request_line).await?;
+        read_line_capped(&mut reader, &mut request_line, MAX_HEADER_LINE_LEN, MAX_HEADER_BYTES).await?;
         let request_line = request_line.trim_end();
 
         let parts: Vec<&str> = request_line.split_whitespace().collect();
@@ -781,12 +784,23 @@ impl ProxyServer {
         target: &str,
     ) -> Result<(), ProxyError> {
         // Consume remaining headers (we only need the request line for CONNECT).
+        // AAASM-3922: cap the drained head (per-line + total budget + count) so an
+        // unbounded header read cannot OOM the proxy.
+        let mut head_budget = MAX_HEADER_BYTES;
+        let mut header_count = 0usize;
         let mut header_line = String::new();
         loop {
             header_line.clear();
-            reader.read_line(&mut header_line).await?;
+            let n = read_line_capped(&mut reader, &mut header_line, MAX_HEADER_LINE_LEN, head_budget).await?;
+            head_budget -= n;
             if header_line.trim().is_empty() {
                 break;
+            }
+            header_count += 1;
+            if header_count > MAX_HEADER_COUNT {
+                return Err(ProxyError::Config(format!(
+                    "CONNECT request exceeds maximum {MAX_HEADER_COUNT} header lines; refusing (fail-closed)"
+                )));
             }
         }
 
@@ -911,13 +925,22 @@ impl ProxyServer {
         tracing::debug!(method = method, target = target, "plain HTTP request");
 
         // Consume remaining request headers.
+        // AAASM-3922: cap the head (per-line + total budget + count) so an
+        // unbounded header read cannot OOM the proxy.
         let mut headers = Vec::new();
+        let mut head_budget = MAX_HEADER_BYTES;
         let mut header_line = String::new();
         loop {
             header_line.clear();
-            reader.read_line(&mut header_line).await?;
+            let n = read_line_capped(&mut reader, &mut header_line, MAX_HEADER_LINE_LEN, head_budget).await?;
+            head_budget -= n;
             if header_line.trim().is_empty() {
                 break;
+            }
+            if headers.len() >= MAX_HEADER_COUNT {
+                return Err(ProxyError::Config(format!(
+                    "plain-HTTP request exceeds maximum {MAX_HEADER_COUNT} header lines; refusing (fail-closed)"
+                )));
             }
             headers.push(header_line.clone());
         }
