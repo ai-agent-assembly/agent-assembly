@@ -545,11 +545,16 @@ impl SyscallGuardLoader {
         }
     }
 
-    /// Attach the `aa_syscall_guard` program at `raw_syscalls/sys_enter`.
+    /// Attach the enforcement tracepoint (`aa_syscall_guard` at
+    /// `raw_syscalls/sys_enter`) and the descendant-confinement tracepoint
+    /// (`aa_syscall_guard_fork` at `sched/sched_process_fork`, AAASM-3916).
+    ///
+    /// The fork tracepoint must be attached so that children of a confined
+    /// process inherit `PID_FILTER` membership and cannot run unconfined.
     ///
     /// # Errors
     ///
-    /// Returns [`EbpfError::ProbeAttach`] on non-Linux or if the tracepoint
+    /// Returns [`EbpfError::ProbeAttach`] on non-Linux or if either tracepoint
     /// fails to attach.
     pub fn attach(&mut self) -> Result<(), EbpfError> {
         #[cfg(not(target_os = "linux"))]
@@ -566,18 +571,27 @@ impl SyscallGuardLoader {
                 .as_mut()
                 .ok_or_else(|| EbpfError::ProbeAttach("BPF not loaded — call load() first".into()))?;
 
-            let program: &mut TracePoint = bpf
-                .program_mut("aa_syscall_guard")
-                .ok_or_else(|| EbpfError::ProbeAttach("aa_syscall_guard program not found".into()))?
-                .try_into()
-                .map_err(|e: aya::programs::ProgramError| EbpfError::ProbeAttach(e.to_string()))?;
+            // (program name, tracepoint category, tracepoint name)
+            let tracepoints: &[(&str, &str, &str)] = &[
+                ("aa_syscall_guard", "raw_syscalls", "sys_enter"),
+                ("aa_syscall_guard_fork", "sched", "sched_process_fork"),
+            ];
 
-            program.load().map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
-            program
-                .attach("raw_syscalls", "sys_enter")
-                .map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
+            for (prog_name, category, tp_name) in tracepoints {
+                let program: &mut TracePoint = bpf
+                    .program_mut(prog_name)
+                    .ok_or_else(|| EbpfError::ProbeAttach(format!("{prog_name} program not found")))?
+                    .try_into()
+                    .map_err(|e: aya::programs::ProgramError| EbpfError::ProbeAttach(e.to_string()))?;
 
-            tracing::info!("syscall-guard tracepoint attached at raw_syscalls/sys_enter");
+                program.load().map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
+                program
+                    .attach(category, tp_name)
+                    .map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
+
+                tracing::info!(program = prog_name, tracepoint = %format!("{category}/{tp_name}"), "syscall-guard tracepoint attached");
+            }
+
             Ok(())
         }
     }
