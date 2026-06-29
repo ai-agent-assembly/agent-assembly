@@ -113,15 +113,28 @@ impl AuthExtensions {
 
 /// Whether the operator has explicitly opted the gateway into enforcing auth.
 ///
-/// True when `AA_GATEWAY_AUTH` is `on` (case-insensitive), or when
-/// `AA_JWT_SECRET` is set (a JWT secret is meaningless unless auth is
-/// enforced). Otherwise the gateway runs in bypass mode so a bare
-/// `aasm status` keeps working with no credential.
+/// True when `AA_GATEWAY_AUTH` is a truthy value (case-insensitive: `on`,
+/// `true`, `1`, `yes`, `enabled`), or when `AA_JWT_SECRET` is set (a JWT
+/// secret is meaningless unless auth is enforced). Otherwise the gateway runs
+/// in bypass mode so a bare `aasm status` keeps working with no credential.
+///
+/// Note: `AA_GATEWAY_AUTH` is the *gateway* opt-in knob, distinct from
+/// `aa-api`'s separate `AA_AUTH` toggle — they govern independent processes
+/// and are read independently.
 fn auth_opted_in() -> bool {
-    let flag_on = std::env::var("AA_GATEWAY_AUTH")
-        .map(|v| v.eq_ignore_ascii_case("on"))
-        .unwrap_or(false);
+    let flag_on = std::env::var("AA_GATEWAY_AUTH").map(|v| is_truthy(&v)).unwrap_or(false);
     flag_on || std::env::var("AA_JWT_SECRET").is_ok()
+}
+
+/// Whether an env-var string is a common truthy value (case-insensitive):
+/// `on`, `true`, `1`, `yes`, or `enabled`.
+fn is_truthy(value: &str) -> bool {
+    let v = value.trim();
+    v.eq_ignore_ascii_case("on")
+        || v.eq_ignore_ascii_case("true")
+        || v.eq_ignore_ascii_case("1")
+        || v.eq_ignore_ascii_case("yes")
+        || v.eq_ignore_ascii_case("enabled")
 }
 
 #[cfg(test)]
@@ -182,5 +195,19 @@ mod tests {
         let ext = AuthExtensions::from_env();
         clear_auth_env();
         assert_eq!(ext.config.mode, AuthMode::On, "AA_GATEWAY_AUTH=on must enable auth");
+    }
+
+    /// `AA_GATEWAY_AUTH` accepts common truthy spellings (case-insensitive);
+    /// anything else is treated as not-opted-in.
+    #[test]
+    fn is_truthy_accepts_common_values_and_rejects_others() {
+        for v in [
+            "on", "ON", "On", "true", "TRUE", "1", "yes", "YES", "enabled", "Enabled", " on ",
+        ] {
+            assert!(is_truthy(v), "{v:?} should be truthy");
+        }
+        for v in ["off", "false", "0", "no", "disabled", "", "onn", "enable"] {
+            assert!(!is_truthy(v), "{v:?} should not be truthy");
+        }
     }
 }
