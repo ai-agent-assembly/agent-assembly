@@ -133,8 +133,39 @@ pub fn bind_hardened(path: &Path) -> Result<UnixListener, EbpfError> {
 /// Run the control server loop: accept connections and dispatch requests until
 /// the listener is closed. Each connection is handled on its own task.
 pub async fn serve(listener: UnixListener, manager: Arc<Mutex<ProbeManager>>) -> Result<(), EbpfError> {
+    // AAASM-3918: the UID every accepted peer must match — the daemon's own.
+    let daemon_uid = super::peercred::current_daemon_uid();
     loop {
         let (stream, _addr) = listener.accept().await?;
+
+        // AAASM-3918: reject any peer whose process UID does not match the
+        // daemon's own UID before doing any work for it. Defence-in-depth over
+        // the 0600 socket perms — `dispatch` performs no caller authentication,
+        // so without this the socket mode is the entire trust boundary. Closes
+        // the "other local process issues Detach / replaces deny rules" vector.
+        match stream.peer_cred() {
+            Ok(cred) => {
+                let peer_uid = cred.uid();
+                if !super::peercred::peer_uid_is_allowed(peer_uid, daemon_uid) {
+                    tracing::warn!(
+                        peer_uid,
+                        daemon_uid,
+                        "rejecting control connection — peer UID does not match daemon UID"
+                    );
+                    drop(stream);
+                    continue;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "rejecting control connection — could not read peer credentials"
+                );
+                drop(stream);
+                continue;
+            }
+        }
+
         let manager = Arc::clone(&manager);
         tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, manager).await {
@@ -232,6 +263,32 @@ mod tests {
         let _listener = bind_hardened(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "control socket must be owner-only");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// AAASM-3918: a same-UID peer (the test process connects to a socket it
+    /// owns) must pass the peer-credential gate in `serve` and reach `dispatch`.
+    /// The cross-UID reject path cannot be exercised in a unit test (it needs a
+    /// second user), but is covered by the pure `peercred` unit tests.
+    #[tokio::test]
+    async fn serve_admits_same_uid_peer() {
+        use super::super::client::LoaderControlClient;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("aa-ebpf-loaderd-peercred-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let listener = bind_hardened(&path).unwrap();
+        let manager = Arc::new(Mutex::new(ProbeManager::new()));
+        let server = tokio::spawn(serve(listener, manager));
+
+        let mut client = LoaderControlClient::connect(&path).await.unwrap();
+        client
+            .ping()
+            .await
+            .expect("same-UID peer must be admitted and answered");
+
+        server.abort();
         let _ = std::fs::remove_file(&path);
     }
 }
