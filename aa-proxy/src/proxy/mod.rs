@@ -923,27 +923,19 @@ impl ProxyServer {
         }
 
         // Parse host from the target URL or Host header.
-        let host = if let Some(url_host) = target.strip_prefix("http://") {
-            url_host.split('/').next().unwrap_or(url_host)
-        } else {
-            headers
-                .iter()
-                .find_map(|h| {
-                    let lower = h.to_ascii_lowercase();
-                    lower
-                        .starts_with("host:")
-                        .then(|| h["host:".len()..].trim().to_string())
-                })
-                .unwrap_or_default()
-                .leak()
-        };
+        //
+        // AAASM-3891: this is owned (`String`) rather than `&'static str` via
+        // `.leak()`. The previous `.leak()` permanently leaked one host string
+        // per plain-HTTP request, so a steered agent issuing repeated origin-form
+        // `http://` requests caused unbounded memory growth.
+        let host: String = parse_plain_http_host(target, &headers);
 
         // AAASM-3864 (b): enforce the same egress denylist + network allowlist
         // the CONNECT path applies. Without this an `http://` scheme-downgrade
         // bypasses `denied_hosts`/`network_allowlist` — the SSRF resolved-IP
         // recheck below only guards address ranges, not policy hosts. Deny here
         // (before any upstream dial), mirroring the CONNECT path's 403.
-        let deny_host = host.split(':').next().unwrap_or(host);
+        let deny_host = host.split(':').next().unwrap_or(&host);
         if let Some(reason) = self.connect_deny_reason(deny_host) {
             tracing::info!(host = %deny_host, "plain-HTTP egress denied: {reason}");
             self.interceptor.emit_policy_decision(deny_host, true).await;
@@ -996,6 +988,30 @@ impl ProxyServer {
     }
 }
 
+/// Parse the upstream host for a plain (non-CONNECT) HTTP request from the
+/// origin-form target (`http://host/...`) or, failing that, the `Host:` header.
+///
+/// AAASM-3891: returns an **owned** `String`. The previous inline implementation
+/// produced a `&'static str` via `.leak()` so both branches shared a type, which
+/// permanently leaked one host string per request and let repeated plain-HTTP
+/// requests grow proxy memory without bound. Returning an owned value keeps the
+/// host on the stack frame and frees it when the request completes.
+fn parse_plain_http_host(target: &str, headers: &[String]) -> String {
+    if let Some(url_host) = target.strip_prefix("http://") {
+        url_host.split('/').next().unwrap_or(url_host).to_string()
+    } else {
+        headers
+            .iter()
+            .find_map(|h| {
+                let lower = h.to_ascii_lowercase();
+                lower
+                    .starts_with("host:")
+                    .then(|| h["host:".len()..].trim().to_string())
+            })
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1021,6 +1037,38 @@ mod tests {
         config.bind_addr = ([127, 0, 0, 1], 0).into();
         let (tx, _rx) = broadcast::channel(8);
         ProxyServer::new(config, ca, tx)
+    }
+
+    #[test]
+    fn parse_plain_http_host_from_origin_form_target() {
+        // Origin-form `http://host/path` targets resolve the host from the URL.
+        let host = parse_plain_http_host("http://api.openai.com/v1/chat", &[]);
+        assert_eq!(host, "api.openai.com");
+    }
+
+    #[test]
+    fn parse_plain_http_host_falls_back_to_host_header() {
+        // A bare path target resolves the host from the (case-insensitive) Host
+        // header instead.
+        let headers = vec!["HOST: api.example.com\r\n".to_string()];
+        let host = parse_plain_http_host("/v1/chat", &headers);
+        assert_eq!(host, "api.example.com");
+    }
+
+    #[test]
+    fn parse_plain_http_host_returns_owned_string_not_leaked() {
+        // AAASM-3891 regression: the host must be an owned `String` rather than a
+        // `&'static str` produced by `.leak()`. Owned values are reclaimed when
+        // dropped, so repeated plain-HTTP requests no longer leak one host per
+        // request. Two calls returning equal-but-independent owned values (the
+        // second freed on drop) demonstrate no static interning/leak is in play.
+        let headers = vec!["Host: api.example.com\r\n".to_string()];
+        let first = parse_plain_http_host("/x", &headers);
+        let second = parse_plain_http_host("/x", &headers);
+        assert_eq!(first, "api.example.com");
+        assert_eq!(first, second);
+        drop(second); // an owned String drops here; a leaked &'static str could not.
+        assert_eq!(first, "api.example.com");
     }
 
     #[tokio::test]
