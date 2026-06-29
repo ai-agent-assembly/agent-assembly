@@ -40,7 +40,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.0",
+    "@playwright/test": "^1.61.1",
     "@storybook/react": "^10.4.0",
     "@storybook/react-vite": "^10.4.6",
     "@testing-library/jest-dom": "^6.9.1",
