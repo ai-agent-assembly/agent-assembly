@@ -330,6 +330,7 @@ dependencies = [
  "similar 3.1.1",
  "sqlx",
  "strsim",
+ "subtle",
  "tempfile",
  "testcontainers-modules",
  "thiserror 2.0.18",
