@@ -46,6 +46,17 @@ struct Subscriber {
     tenant: Option<String>,
 }
 
+/// Why [`InvalidationHub::subscribe`] refused to register a subscription.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscribeError {
+    /// The `assembly_id` is already registered under a different tenant than the
+    /// authenticated caller. Reusing the slot would attach this caller's
+    /// receiver to the existing tenant's broadcast channel (leaking its events)
+    /// and let this caller's acks trim that tenant's replay ring. Fail-closed:
+    /// the subscription is refused (AAASM-3914).
+    TenantMismatch,
+}
+
 /// The result of [`InvalidationHub::subscribe`]: events the Assembly missed
 /// (to flush first) plus the live receiver for everything thereafter.
 pub struct SubscriptionHandle {
@@ -94,17 +105,33 @@ impl InvalidationHub {
     /// `tenant` is the verified caller's team, captured so [`Self::fan_out`] can
     /// scope tenant-bound events to their owning tenant. On reconnect the
     /// originally-registered tenant is retained.
+    ///
+    /// Returns [`SubscribeError::TenantMismatch`] when `assembly_id` is already
+    /// registered under a tenant other than `tenant` (AAASM-3914). The match is
+    /// exact: an untenanted slot (`None`) may not be claimed by a tenant, nor a
+    /// tenanted slot by an untenanted caller — any mismatch is fail-closed, so a
+    /// caller can never attach to another tenant's channel or trim its ring. A
+    /// reconnect by the same tenant (the common `None == None` cold-start case
+    /// included) is permitted and resumes from `last_seq_seen`.
     pub fn subscribe(
         &self,
         assembly_id: impl Into<AssemblyId>,
         tenant: Option<String>,
         last_seq_seen: u64,
-    ) -> SubscriptionHandle {
+    ) -> Result<SubscriptionHandle, SubscribeError> {
         let assembly_id = assembly_id.into();
         let mut subscribers = self
             .subscribers
             .write()
             .expect("invalidation subscribers lock poisoned");
+        // Fail-closed: an existing subscriber bound to a different tenant must
+        // not be re-bound to this caller, or its events would leak to — and its
+        // replay ring be trimmed by — the wrong tenant (AAASM-3914).
+        if let Some(existing) = subscribers.get(&assembly_id) {
+            if existing.tenant != tenant {
+                return Err(SubscribeError::TenantMismatch);
+            }
+        }
         let subscriber = subscribers
             .entry(assembly_id)
             .or_insert_with(|| {
@@ -133,7 +160,7 @@ impl InvalidationHub {
         }
         metrics::gauge!("aa_invalidation_subscribers").set(subscriber_count as f64);
 
-        SubscriptionHandle { replay, receiver }
+        Ok(SubscriptionHandle { replay, receiver })
     }
 
     /// Fan a `PolicyInvalidated` event out to every connected Assembly.
@@ -268,7 +295,7 @@ mod tests {
     #[tokio::test]
     async fn broadcast_reaches_live_subscriber_within_100ms() {
         let hub = InvalidationHub::new();
-        let mut handle = hub.subscribe("asm-1", None, 0);
+        let mut handle = hub.subscribe("asm-1", None, 0).expect("subscribe succeeds");
         assert!(handle.replay.is_empty());
 
         let start = std::time::Instant::now();
@@ -287,20 +314,20 @@ mod tests {
     async fn reconnect_replays_only_events_after_last_seq() {
         let hub = InvalidationHub::new();
         // First connection registers the subscriber, then disconnects.
-        let handle = hub.subscribe("asm-1", None, 0);
+        let handle = hub.subscribe("asm-1", None, 0).expect("subscribe succeeds");
         drop(handle);
 
         hub.broadcast_policy_invalidated("agent-a", 1);
         hub.broadcast_policy_invalidated("agent-b", 2);
 
         // Cold reconnect replays the full backlog.
-        let full = hub.subscribe("asm-1", None, 0);
+        let full = hub.subscribe("asm-1", None, 0).expect("subscribe succeeds");
         assert_eq!(full.replay.len(), 2);
         assert_eq!(full.replay[0].seq, 1);
         assert_eq!(full.replay[1].seq, 2);
 
         // Reconnect having already applied seq 1 replays only seq 2.
-        let partial = hub.subscribe("asm-1", None, 1);
+        let partial = hub.subscribe("asm-1", None, 1).expect("subscribe succeeds");
         assert_eq!(partial.replay.len(), 1);
         assert_eq!(partial.replay[0].seq, 2);
         assert_eq!(policy_agent(&partial.replay[0]), "agent-b");
@@ -309,14 +336,14 @@ mod tests {
     #[tokio::test]
     async fn ack_trims_replay_ring() {
         let hub = InvalidationHub::new();
-        let _handle = hub.subscribe("asm-1", None, 0);
+        let _handle = hub.subscribe("asm-1", None, 0).expect("subscribe succeeds");
         hub.broadcast_policy_invalidated("agent-a", 1);
         hub.broadcast_policy_invalidated("agent-b", 2);
 
         hub.ack("asm-1", 1);
 
         // After acking seq 1, a cold reconnect only replays seq 2.
-        let reconnect = hub.subscribe("asm-1", None, 0);
+        let reconnect = hub.subscribe("asm-1", None, 0).expect("subscribe succeeds");
         assert_eq!(reconnect.replay.len(), 1);
         assert_eq!(reconnect.replay[0].seq, 2);
     }
@@ -324,15 +351,15 @@ mod tests {
     #[test]
     fn each_subscriber_gets_independent_sequence() {
         let hub = InvalidationHub::new();
-        let _a = hub.subscribe("asm-1", None, 0);
-        let _b = hub.subscribe("asm-2", None, 0);
+        let _a = hub.subscribe("asm-1", None, 0).expect("subscribe succeeds");
+        let _b = hub.subscribe("asm-2", None, 0).expect("subscribe succeeds");
         assert_eq!(hub.subscriber_count(), 2);
 
         hub.broadcast_policy_invalidated("agent-a", 1);
 
         // Each subscriber independently records the event at its own seq 1.
-        let reconnect_a = hub.subscribe("asm-1", None, 0);
-        let reconnect_b = hub.subscribe("asm-2", None, 0);
+        let reconnect_a = hub.subscribe("asm-1", None, 0).expect("subscribe succeeds");
+        let reconnect_b = hub.subscribe("asm-2", None, 0).expect("subscribe succeeds");
         assert_eq!(reconnect_a.replay.len(), 1);
         assert_eq!(reconnect_b.replay.len(), 1);
         assert_eq!(reconnect_a.replay[0].seq, 1);
@@ -342,7 +369,7 @@ mod tests {
     #[tokio::test]
     async fn broadcast_approval_resolved_reaches_subscriber() {
         let hub = InvalidationHub::new();
-        let mut handle = hub.subscribe("asm-1", None, 0);
+        let mut handle = hub.subscribe("asm-1", None, 0).expect("subscribe succeeds");
 
         hub.broadcast_approval_resolved("req-42", Decision::Approved, None);
 
@@ -366,8 +393,12 @@ mod tests {
     #[tokio::test]
     async fn approval_fan_out_is_scoped_to_owning_tenant() {
         let hub = InvalidationHub::new();
-        let mut team_a = hub.subscribe("asm-a", Some("team-a".to_string()), 0);
-        let mut team_b = hub.subscribe("asm-b", Some("team-b".to_string()), 0);
+        let mut team_a = hub
+            .subscribe("asm-a", Some("team-a".to_string()), 0)
+            .expect("subscribe succeeds");
+        let mut team_b = hub
+            .subscribe("asm-b", Some("team-b".to_string()), 0)
+            .expect("subscribe succeeds");
 
         // Resolve an approval owned by team-a.
         hub.broadcast_approval_resolved("req-a", Decision::Approved, Some("team-a"));
@@ -387,7 +418,9 @@ mod tests {
         assert!(leaked.is_err(), "team-b must not receive team-a's approval event");
 
         // Nor may it surface via replay: team-b's ring never recorded the event.
-        let reconnect_b = hub.subscribe("asm-b", Some("team-b".to_string()), 0);
+        let reconnect_b = hub
+            .subscribe("asm-b", Some("team-b".to_string()), 0)
+            .expect("subscribe succeeds");
         assert!(
             reconnect_b.replay.is_empty(),
             "team-b replay ring must not contain team-a's event"
