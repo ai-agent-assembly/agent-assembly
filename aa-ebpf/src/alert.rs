@@ -6,6 +6,63 @@
 
 use crate::events::FileIoEvent;
 
+/// Lexically canonicalize a filesystem path for **alert matching** (AAASM-3921a).
+///
+/// Collapses repeated `/`, drops `.` segments, and resolves `..` segments
+/// against earlier components without touching the filesystem. This defeats the
+/// trivial non-canonical evasions the in-kernel exact-match blocklist cannot
+/// see (`/etc//shadow`, `/etc/./shadow`, `/etc/../etc/shadow`, trailing-dot
+/// forms).
+///
+/// This is a **lexical** normalization only: it does NOT resolve symlinks or
+/// the process's mount namespace / CWD, so a symlink pointing at a sensitive
+/// file still evades detection. True path resolution requires an in-kernel
+/// `d_path` / dentry walk, which is deferred (it cannot be written or validated
+/// without a Linux kernel target) — see the AAASM-3921a notes in
+/// `aa-ebpf-probes/src/maps.rs`.
+///
+/// A leading `/` (absolute) and a single trailing `/` (a directory-prefix
+/// boundary, e.g. `/root/.ssh/`) are preserved so boundary-aware prefix rules
+/// keep their semantics (`/home/` must not match `/homestead`).
+#[must_use]
+pub fn canonicalize_lexical(path: &str) -> String {
+    let is_absolute = path.starts_with('/');
+    let had_trailing_slash = path.len() > 1 && path.ends_with('/');
+
+    let mut stack: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => continue,
+            ".." => match stack.last() {
+                // Pop a real parent component.
+                Some(&last) if last != ".." => {
+                    stack.pop();
+                }
+                // At root (absolute) a `..` is ignored; for a relative path we
+                // must preserve leading `..` segments.
+                _ => {
+                    if !is_absolute {
+                        stack.push("..");
+                    }
+                }
+            },
+            other => stack.push(other),
+        }
+    }
+
+    let mut out = String::with_capacity(path.len());
+    if is_absolute {
+        out.push('/');
+    }
+    out.push_str(&stack.join("/"));
+    // Restore a directory-boundary trailing slash, but never for the bare root
+    // (already `/`).
+    if had_trailing_slash && !stack.is_empty() {
+        out.push('/');
+    }
+    out
+}
+
 /// Detects whether a file I/O event targets a sensitive path.
 ///
 /// Maintains a list of path prefixes. Any event whose path starts with
@@ -88,5 +145,43 @@ mod tests {
         detector.add_prefix("/opt/secrets/".into());
         assert!(detector.is_sensitive(&make_event("/opt/secrets/key.pem")));
         assert!(!detector.is_sensitive(&make_event("/opt/app/config")));
+    }
+
+    #[test]
+    fn canonicalize_collapses_repeated_slashes() {
+        assert_eq!(canonicalize_lexical("/etc//shadow"), "/etc/shadow");
+        assert_eq!(canonicalize_lexical("/etc///foo//bar"), "/etc/foo/bar");
+    }
+
+    #[test]
+    fn canonicalize_drops_dot_segments() {
+        assert_eq!(canonicalize_lexical("/etc/./shadow"), "/etc/shadow");
+        assert_eq!(canonicalize_lexical("/./etc/shadow"), "/etc/shadow");
+    }
+
+    #[test]
+    fn canonicalize_resolves_dotdot_segments() {
+        assert_eq!(canonicalize_lexical("/etc/../etc/shadow"), "/etc/shadow");
+        assert_eq!(canonicalize_lexical("/a/b/../c"), "/a/c");
+    }
+
+    #[test]
+    fn canonicalize_dotdot_cannot_escape_root() {
+        assert_eq!(canonicalize_lexical("/etc/../../shadow"), "/shadow");
+        assert_eq!(canonicalize_lexical("/../../x"), "/x");
+    }
+
+    #[test]
+    fn canonicalize_preserves_root_and_directory_trailing_slash() {
+        assert_eq!(canonicalize_lexical("/"), "/");
+        assert_eq!(canonicalize_lexical("/root/.ssh/"), "/root/.ssh/");
+        assert_eq!(canonicalize_lexical("/home//"), "/home/");
+    }
+
+    #[test]
+    fn canonicalize_keeps_relative_leading_dotdot() {
+        assert_eq!(canonicalize_lexical("../etc/shadow"), "../etc/shadow");
+        assert_eq!(canonicalize_lexical("a/./b/../c"), "a/c");
+        assert_eq!(canonicalize_lexical(""), "");
     }
 }
