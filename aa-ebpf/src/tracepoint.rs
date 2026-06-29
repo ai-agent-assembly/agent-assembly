@@ -1,7 +1,9 @@
 //! Tracepoint management for process exec monitoring (AAASM-39).
 //!
-//! Attaches the `sched/sched_process_exec` and `sched/sched_process_exit`
-//! tracepoints from the `aa-exec-probes` BPF binary.
+//! Attaches the `sched/sched_process_fork`, `sched/sched_process_exec`, and
+//! `sched/sched_process_exit` tracepoints from the `aa-exec-probes` BPF binary.
+//! The fork tracepoint supplies the real parent pid and descendant coverage
+//! (AAASM-3921c).
 
 #[cfg(target_os = "linux")]
 use aya::Ebpf;
@@ -24,12 +26,12 @@ pub struct TracepointManager {
 }
 
 impl TracepointManager {
-    /// Attach both `sched/sched_process_exec` and `sched/sched_process_exit`
-    /// tracepoint programs.
+    /// Attach the `sched/sched_process_fork`, `sched/sched_process_exec`, and
+    /// `sched/sched_process_exit` tracepoint programs.
     ///
-    /// These tracepoints fire for every `execve`/`execveat` and process exit
-    /// on the system. The BPF-side PID filter (`EXEC_PID_FILTER`) limits
-    /// which events are emitted to the ring buffer.
+    /// These tracepoints fire for every `fork`/`clone`, `execve`/`execveat`,
+    /// and process exit on the system. The BPF-side PID filter
+    /// (`EXEC_PID_FILTER`) limits which events are emitted to the ring buffer.
     ///
     /// # Errors
     ///
@@ -44,6 +46,9 @@ impl TracepointManager {
         use aya::programs::TracePoint;
 
         let tracepoints: &[(&str, &str, &str)] = &[
+            // Attach fork first so the child→parent map is populated before any
+            // exec it enables can be observed (AAASM-3921c).
+            ("handle_sched_process_fork", "sched", "sched_process_fork"),
             ("handle_sched_process_exec", "sched", "sched_process_exec"),
             ("handle_sched_process_exit", "sched", "sched_process_exit"),
         ];
