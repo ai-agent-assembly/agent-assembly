@@ -131,6 +131,25 @@ tls = true
     }
 
     #[test]
+    fn debug_redacts_dsn_password() {
+        let cfg = RedisStorageConfig {
+            url: "redis://cacheuser:supersecret@cache.internal:6379".to_owned(),
+            ..Default::default()
+        };
+
+        let rendered = format!("{cfg:?}");
+
+        assert!(!rendered.contains("supersecret"), "password leaked in Debug: {rendered}");
+        assert!(rendered.contains("cacheuser:***@cache.internal:6379"), "redacted URL missing: {rendered}");
+    }
+
+    #[test]
+    fn debug_leaves_passwordless_dsn_untouched() {
+        let cfg = RedisStorageConfig::default();
+        assert!(format!("{cfg:?}").contains("redis://127.0.0.1:6379"));
+    }
+
+    #[test]
     fn tls_toggle_upgrades_scheme() {
         let cfg = RedisStorageConfig {
             tls: true,
