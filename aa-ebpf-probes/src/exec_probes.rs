@@ -1,8 +1,13 @@
 //! BPF tracepoint programs for process exec monitoring (AAASM-39).
 //!
-//! Two tracepoints share a single ring buffer (`EVENTS`) and a PID
+//! Three tracepoints share a single ring buffer (`EVENTS`) and a PID
 //! filter map (`EXEC_PID_FILTER`):
 //!
+//! - `handle_sched_process_fork` — fires on every `fork`/`clone`. When the
+//!   parent is monitored it records the child→parent tgid mapping in
+//!   `PARENT_TGID` and propagates `EXEC_PID_FILTER` membership to the child
+//!   (AAASM-3916/3921). This is what supplies the **real** parent pid to the
+//!   exec event below.
 //! - `handle_sched_process_exec` — fires on every `execve`/`execveat` and
 //!   emits an [`ExecEvent`] with pid, ppid, uid, filename, and a best-effort
 //!   `args` field. NOTE (AAASM-3872): this tracepoint does not expose argv, so
@@ -10,6 +15,17 @@
 //!   see the in-body comment for the `sys_enter_execve` follow-up.
 //! - `handle_sched_process_exit` — fires on process exit and emits a
 //!   [`ProcessExitEvent`] so userspace can clean up the lineage map.
+//!
+//! ## Parent pid resolution (AAASM-3921c)
+//!
+//! The `sched_process_exec` tracepoint's `pid` field is the *new* process's own
+//! pid, not its parent. Reading it into `ppid` produced `ppid == pid`, which
+//! made the userspace `ProcessLineageTracker::is_descendant_of` walk terminate
+//! immediately (it treats `ppid == pid` as a self-cycle) and always return
+//! false. The real parent is captured at `sched_process_fork` time (the
+//! tracepoint carries `parent_pid`/`child_pid`) and stashed in `PARENT_TGID`;
+//! the exec handler now reads `ppid` from there, falling back to `0` (unknown
+//! root) when the fork was not observed — never the bogus self-parent.
 //!
 //! ## Stack-limit workaround
 //!
@@ -47,6 +63,22 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(262_144, 0);
 /// the wildcard before relying on events.
 #[map]
 static EXEC_PID_FILTER: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
+
+/// Child tgid → parent tgid, populated by the `sched_process_fork` tracepoint
+/// (AAASM-3921c). The exec handler reads the real parent pid from here because
+/// the `sched_process_exec` tracepoint only exposes the new process's own pid.
+#[map]
+static PARENT_TGID: HashMap<u32, u32> = HashMap::with_max_entries(1024, 0);
+
+/// `sched:sched_process_fork` layout — byte offset of the `child_pid` field:
+///
+/// ```text
+/// field:char  parent_comm[16]; offset:8;  size:16;
+/// field:pid_t parent_pid;      offset:24; size:4;
+/// field:char  child_comm[16];  offset:28; size:16;
+/// field:pid_t child_pid;       offset:44; size:4;
+/// ```
+const SCHED_FORK_CHILD_PID_OFFSET: usize = 44;
 
 // ---------------------------------------------------------------------------
 // PID filter helper
@@ -107,9 +139,13 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
     //   field:pid_t pid;                       offset:12; size:4;
     //   field:pid_t old_pid;                   offset:16; size:4;
     //
-    // We read the parent PID from the tracepoint pid field at offset 12;
-    // __data_loc is a u32 (low 16 bits = offset, high 16 bits = length).
-    let tp_pid: i32 = unsafe { ctx.read_at(12) }.map_err(|_| -1i64)?;
+    // NOTE (AAASM-3921c): the `pid` field at offset 12 is the *new* process's
+    // own pid, NOT its parent — reading it into `ppid` produced `ppid == pid`
+    // and broke lineage walks. The real parent tgid is recorded at fork time in
+    // `PARENT_TGID`; resolve it here, falling back to 0 (unknown root) rather
+    // than the bogus self-parent when the fork was not observed.
+    //   __data_loc is a u32 (low 16 bits = offset, high 16 bits = length).
+    let ppid = unsafe { PARENT_TGID.get(&tgid) }.copied().unwrap_or(0);
     let data_loc: u32 = unsafe { ctx.read_at(8) }.map_err(|_| -1i64)?;
     // ctx.command() returns [u8; 16] — already raw bytes, not a string.
     let comm = ctx.command().map_err(|_| -1i64)?;
@@ -123,7 +159,7 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
         (*event_ptr).pid = tgid;
         (*event_ptr).uid = uid;
         (*event_ptr)._pad = 0;
-        (*event_ptr).ppid = tp_pid as u32;
+        (*event_ptr).ppid = ppid;
 
         let filename_offset = (data_loc & 0xFFFF) as usize;
 
@@ -197,6 +233,46 @@ fn try_sched_process_exit(_ctx: &TracePointContext) -> Result<u32, i64> {
     }
 
     entry.submit(0);
+
+    // Bound the fork-propagated maps and avoid pid-reuse staleness: drop this
+    // tgid's parent record and its propagated filter membership on exit
+    // (AAASM-3921c). The original target PID re-added by userspace is unaffected
+    // on the next load; the wildcard key (0) is never an exiting tgid.
+    let _ = PARENT_TGID.remove(&tgid);
+    let _ = EXEC_PID_FILTER.remove(&tgid);
+    Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// sched_process_fork tracepoint (AAASM-3921c / AAASM-3916)
+// ---------------------------------------------------------------------------
+
+/// Tracepoint on `sched/sched_process_fork`: records the child→parent tgid
+/// mapping so the exec handler can report the real parent pid, and propagates
+/// `EXEC_PID_FILTER` membership to children of monitored processes so the
+/// lineage tree covers the whole family.
+#[tracepoint]
+pub fn handle_sched_process_fork(ctx: TracePointContext) -> u32 {
+    try_sched_process_fork(&ctx).unwrap_or_default()
+}
+
+fn try_sched_process_fork(ctx: &TracePointContext) -> Result<u32, i64> {
+    // The fork tracepoint fires in the parent's context, so the current tgid is
+    // the parent's. Only track children of monitored processes.
+    let parent_tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    if !pid_allowed(parent_tgid) {
+        return Ok(0);
+    }
+
+    // For a real new process `child_pid == child_tgid` (the key used by the
+    // exec handler and the filter); for a thread the tgid is already the
+    // monitored parent's, so the extra key is inert.
+    let child_pid: u32 = unsafe { ctx.read_at(SCHED_FORK_CHILD_PID_OFFSET) }.map_err(|_| -1i64)?;
+
+    // Record the real parent for the exec handler, and confine the child to the
+    // exec filter so its own exec is observed (descendant coverage).
+    let _ = PARENT_TGID.insert(&child_pid, &parent_tgid, 0);
+    let _ = EXEC_PID_FILTER.insert(&child_pid, &1u8, 0);
     Ok(0)
 }
 
