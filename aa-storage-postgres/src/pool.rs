@@ -161,7 +161,9 @@ fn is_loopback_host(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
-    host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -183,13 +185,21 @@ mod tests {
 
     #[test]
     fn enforced_sslmode_does_not_warn() {
-        assert!(!should_warn_plaintext("postgres://aasm:pw@db.internal/aasm?sslmode=require"));
-        assert!(!should_warn_plaintext("postgres://aasm:pw@db.internal/aasm?sslmode=verify-full"));
+        assert!(!should_warn_plaintext(
+            "postgres://aasm:pw@db.internal/aasm?sslmode=require"
+        ));
+        assert!(!should_warn_plaintext(
+            "postgres://aasm:pw@db.internal/aasm?sslmode=verify-full"
+        ));
     }
 
     #[test]
     fn weak_sslmode_still_warns() {
-        assert!(should_warn_plaintext("postgres://aasm:pw@db.internal/aasm?sslmode=disable"));
-        assert!(should_warn_plaintext("postgres://aasm:pw@db.internal/aasm?sslmode=prefer"));
+        assert!(should_warn_plaintext(
+            "postgres://aasm:pw@db.internal/aasm?sslmode=disable"
+        ));
+        assert!(should_warn_plaintext(
+            "postgres://aasm:pw@db.internal/aasm?sslmode=prefer"
+        ));
     }
 }

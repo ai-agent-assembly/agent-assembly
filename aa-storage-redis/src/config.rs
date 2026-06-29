@@ -139,8 +139,14 @@ tls = true
 
         let rendered = format!("{cfg:?}");
 
-        assert!(!rendered.contains("supersecret"), "password leaked in Debug: {rendered}");
-        assert!(rendered.contains("cacheuser:***@cache.internal:6379"), "redacted URL missing: {rendered}");
+        assert!(
+            !rendered.contains("supersecret"),
+            "password leaked in Debug: {rendered}"
+        );
+        assert!(
+            rendered.contains("cacheuser:***@cache.internal:6379"),
+            "redacted URL missing: {rendered}"
+        );
     }
 
     #[test]

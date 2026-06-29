@@ -122,8 +122,14 @@ mod tests {
 
         let rendered = format!("{config:?}");
 
-        assert!(!rendered.contains("supersecret"), "password leaked in Debug: {rendered}");
-        assert!(rendered.contains("aasm:***@db.internal:5432/aasm"), "redacted URL missing: {rendered}");
+        assert!(
+            !rendered.contains("supersecret"),
+            "password leaked in Debug: {rendered}"
+        );
+        assert!(
+            rendered.contains("aasm:***@db.internal:5432/aasm"),
+            "redacted URL missing: {rendered}"
+        );
     }
 
     #[test]
