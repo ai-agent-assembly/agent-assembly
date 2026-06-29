@@ -98,8 +98,19 @@ mod tests {
     }
 
     #[test]
+    fn strips_c1_controls() {
+        // U+009B is the 8-bit CSI introducer; some terminals act on it as if it
+        // were `ESC [`, so it must be dropped even though it carries no ESC.
+        assert_eq!(sanitize_terminal("a\u{9b}31mred"), "a31mred");
+        // Full C1 range boundaries (0x80 and 0x9f) are removed too.
+        assert_eq!(sanitize_terminal("x\u{80}y\u{9f}z"), "xyz");
+    }
+
+    #[test]
     fn preserves_plain_and_unicode_text() {
         assert_eq!(sanitize_terminal("agent-7 working"), "agent-7 working");
-        assert_eq!(sanitize_terminal("héllo-β-世界"), "héllo-β-世界");
+        // Accented Latin, Greek, CJK, and an emoji are all printable and kept —
+        // C1 stripping must not touch code points at or above U+00A0.
+        assert_eq!(sanitize_terminal("héllo-β-世界-🚀"), "héllo-β-世界-🚀");
     }
 }
