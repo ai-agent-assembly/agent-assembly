@@ -1,16 +1,34 @@
 //! IPC session handshake verification (AAASM-3585).
 //!
 //! On every accepted UDS connection the runtime issues a fresh random nonce and
-//! requires the SDK to reply with an Ed25519 signature over it, proving the peer
-//! holds the agent's private key. Reaching the socket is not enough — a local
-//! attacker who connects still cannot answer "allow" for everything or flood
-//! forged audit events, because it cannot produce a valid signature.
+//! requires the SDK to reply with an Ed25519 signature over `nonce ||
+//! sdk_version`. This binds the session to a consistent, replay-resistant SDK
+//! identity and authenticates the *claimed SDK version* (AAASM-3666) so a
+//! downgraded build cannot silently present a current version string.
 //!
-//! The expected verifying key is derived **deterministically from the runtime's
-//! configured agent id**, mirroring `aa-sdk-client`'s `AgentKeypair::derive`
-//! (seed = `SHA-256(agent_id)` → `SigningKey` → `VerifyingKey`). The SDK and the
-//! runtime are configured with the same `AA_AGENT_ID`, so both sides arrive at
-//! the same keypair without sharing key material.
+//! ## Trust boundary (AAASM-3922)
+//!
+//! This handshake is **not** an authentication secret and must not be relied on
+//! as one. The expected verifying key is derived deterministically from the
+//! configured **agent id** (seed = `SHA-256(agent_id)` → `SigningKey` →
+//! `VerifyingKey`), and the agent id is the UDS socket filename — a public,
+//! non-secret identifier. Any local process that can reach the socket can
+//! recompute the same keypair and produce a valid signature, so the signature
+//! proves *integrity and version-binding*, not possession of a secret.
+//!
+//! The real trust boundary for the IPC channel is enforced elsewhere:
+//!   * the socket is created with `0600` permissions, and
+//!   * the runtime checks the connecting peer's credentials (peercred UID)
+//!     against the expected owner.
+//!
+//! Those two controls — not this signature — are what stop an unrelated local
+//! user from connecting and answering "allow" for everything or flooding forged
+//! audit events. The handshake adds defence-in-depth (a consistent identity and
+//! an authenticated version) *within* that boundary.
+//!
+//! The SDK (`aa-sdk-client`'s `AgentKeypair::derive`) and the runtime are both
+//! configured with the same `AA_AGENT_ID`, so both sides arrive at the same
+//! keypair without exchanging key material.
 
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -21,12 +39,18 @@ use aa_security::sdk_identity::VerifiedSdkIdentity;
 /// Number of random bytes in a per-session challenge nonce.
 pub const NONCE_LEN: usize = 32;
 
-/// Derive the Ed25519 verifying key the runtime expects an SDK to prove
-/// possession of, from the configured agent id.
+/// Derive the Ed25519 verifying key the runtime expects an SDK handshake to be
+/// signed with, from the configured agent id.
 ///
 /// Mirrors `aa-sdk-client::keypair::AgentKeypair::derive`: the seed is
 /// `SHA-256(agent_id)`, which is always a valid 32-byte Ed25519 secret scalar
 /// seed, so derivation never fails.
+///
+/// Note (AAASM-3922): the agent id is the public UDS socket filename, so this
+/// "key" is not a secret — any local peer that can reach the socket can derive
+/// it too. The signature it verifies provides integrity + version-binding, not
+/// authentication; the socket's `0600` perms + peercred UID check are the true
+/// trust boundary (see the module docs).
 pub fn expected_verifying_key(agent_id: &str) -> VerifyingKey {
     let seed: [u8; 32] = Sha256::digest(agent_id.as_bytes()).into();
     SigningKey::from_bytes(&seed).verifying_key()
@@ -61,7 +85,7 @@ fn signed_payload(nonce: &[u8], sdk_version: &str) -> Vec<u8> {
 }
 
 /// Verify a `HandshakeProof` against the challenge `nonce` and the expected
-/// verifying key for this agent, returning the **authenticated** SDK identity.
+/// verifying key for this agent, returning the verified SDK identity.
 ///
 /// Returns `Some(VerifiedSdkIdentity)` only when the signature is a valid
 /// Ed25519 signature over `nonce || proof.sdk_version` AND the proof's
@@ -69,6 +93,12 @@ fn signed_payload(nonce: &[u8], sdk_version: &str) -> Vec<u8> {
 /// self-controlled key it does hold). Any malformed field (wrong-length
 /// signature, non-hex / mismatched public key, bad signature) returns `None`
 /// (fail closed).
+///
+/// Note (AAASM-3922): because the expected key is derived from the non-secret
+/// agent id, a local peer that already passes the socket's `0600` perms +
+/// peercred UID check could itself produce a valid proof. This verification
+/// therefore provides integrity and version-binding *within* that trust
+/// boundary — it is not, on its own, proof that the peer holds a secret.
 ///
 /// Because the version is part of the verified payload, the returned identity's
 /// version is trustworthy: an empty version yields
