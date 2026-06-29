@@ -114,6 +114,29 @@ mod tests {
     }
 
     #[test]
+    fn debug_redacts_dsn_password() {
+        let config = PostgresPoolConfig {
+            url: "postgres://aasm:supersecret@db.internal:5432/aasm".to_owned(),
+            ..Default::default()
+        };
+
+        let rendered = format!("{config:?}");
+
+        assert!(!rendered.contains("supersecret"), "password leaked in Debug: {rendered}");
+        assert!(rendered.contains("aasm:***@db.internal:5432/aasm"), "redacted URL missing: {rendered}");
+    }
+
+    #[test]
+    fn debug_leaves_passwordless_dsn_untouched() {
+        let config = PostgresPoolConfig {
+            url: "postgres://localhost/aasm".to_owned(),
+            ..Default::default()
+        };
+
+        assert!(format!("{config:?}").contains("postgres://localhost/aasm"));
+    }
+
+    #[test]
     fn applies_defaults_for_omitted_knobs() {
         let doc = r#"
             [storage.postgres]
