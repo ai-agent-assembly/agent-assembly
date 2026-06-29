@@ -29,6 +29,73 @@ use crate::error::ProxyError;
 /// data — while keeping one hostile request from exhausting memory.
 pub const MAX_BODY_LEN: usize = 64 * 1024 * 1024;
 
+/// Maximum accepted size of a single HTTP line — the request/status line or one
+/// header line, in bytes (8 KiB).
+///
+/// AAASM-3922 (fail-closed): the head was previously read with
+/// [`AsyncBufReadExt::read_line`], which grows its target `String` without
+/// bound. Only request/response *bodies* were capped (`MAX_BODY_LEN`), so a
+/// steered agent could send one multi-GB header line and OOM the always-on
+/// proxy *before* a single body byte was read — the same reject-before-alloc gap
+/// the body cap already closes, but on the header path. This bounds each line as
+/// it is read.
+pub const MAX_HEADER_LINE_LEN: usize = 8 * 1024;
+
+/// Maximum accepted total size of an HTTP head — the request/status line plus
+/// every header line combined, in bytes (64 KiB) (AAASM-3922). Bounds the head
+/// even against many individually-small lines.
+pub const MAX_HEADER_BYTES: usize = 64 * 1024;
+
+/// Maximum accepted number of header lines in one HTTP head (AAASM-3922).
+pub const MAX_HEADER_COUNT: usize = 200;
+
+/// Read a single `\n`-terminated line from `reader`, appending it to `out`,
+/// while enforcing both a per-line cap (`max_line`) and the caller's remaining
+/// total-head byte budget (`remaining`). Returns the number of bytes consumed
+/// (0 on a clean EOF before any byte is read).
+///
+/// AAASM-3922 (fail-closed): unlike [`AsyncBufReadExt::read_line`], this bounds
+/// the line *as it is read* — it pulls bytes through `fill_buf`/`consume` so an
+/// oversized line is never materialised in memory — and fails closed with
+/// [`ProxyError::Config`] the instant the line would exceed the cap, mirroring
+/// the body cap's reject-before-alloc guard.
+pub(crate) async fn read_line_capped<R>(
+    reader: &mut BufReader<R>,
+    out: &mut String,
+    max_line: usize,
+    remaining: usize,
+) -> Result<usize, ProxyError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let cap = max_line.min(remaining);
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            break; // EOF
+        }
+        let (chunk_len, done) = match available.iter().position(|&b| b == b'\n') {
+            Some(pos) => (pos + 1, true),
+            None => (available.len(), false),
+        };
+        if line.len() + chunk_len > cap {
+            return Err(ProxyError::Config(format!(
+                "HTTP header line exceeds maximum {cap} bytes; refusing (fail-closed)"
+            )));
+        }
+        line.extend_from_slice(&available[..chunk_len]);
+        reader.consume(chunk_len);
+        if done {
+            break;
+        }
+    }
+    let n = line.len();
+    let text = String::from_utf8(line).map_err(|_| ProxyError::Config("invalid UTF-8 in HTTP header line".into()))?;
+    out.push_str(&text);
+    Ok(n)
+}
+
 /// A parsed HTTP request from the proxy's MitM tunnel.
 #[derive(Debug, Clone)]
 pub struct HttpRequest {
@@ -71,11 +138,16 @@ pub async fn read_http_request<R>(reader: &mut BufReader<R>) -> Result<Option<Ht
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    // AAASM-3922: cap the head (request line + headers) so an unbounded header
+    // read cannot OOM the proxy. `head_budget` tracks the remaining total-head
+    // allowance; each line is additionally bounded by `MAX_HEADER_LINE_LEN`.
+    let mut head_budget = MAX_HEADER_BYTES;
     let mut request_line = String::new();
-    let n = reader.read_line(&mut request_line).await?;
+    let n = read_line_capped(reader, &mut request_line, MAX_HEADER_LINE_LEN, head_budget).await?;
     if n == 0 {
         return Ok(None);
     }
+    head_budget -= n;
     let trimmed = request_line.trim_end_matches(['\r', '\n']);
     let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
     if parts.len() != 3 {
@@ -88,13 +160,19 @@ where
     let mut headers: Vec<(String, String)> = Vec::new();
     loop {
         let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
+        let n = read_line_capped(reader, &mut line, MAX_HEADER_LINE_LEN, head_budget).await?;
         if n == 0 {
             return Err(ProxyError::Config("unexpected EOF reading headers".into()));
         }
+        head_budget -= n;
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             break;
+        }
+        if headers.len() >= MAX_HEADER_COUNT {
+            return Err(ProxyError::Config(format!(
+                "HTTP request exceeds maximum {MAX_HEADER_COUNT} header lines; refusing (fail-closed)"
+            )));
         }
         if let Some((k, v)) = trimmed.split_once(':') {
             headers.push((k.trim().to_string(), v.trim().to_string()));
@@ -250,11 +328,15 @@ pub async fn read_http_response<R>(reader: &mut BufReader<R>) -> Result<Option<H
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    // AAASM-3922: bound the response head the same way as the request head so a
+    // hostile upstream cannot OOM the proxy with an unbounded header read.
+    let mut head_budget = MAX_HEADER_BYTES;
     let mut status_line = String::new();
-    let n = reader.read_line(&mut status_line).await?;
+    let n = read_line_capped(reader, &mut status_line, MAX_HEADER_LINE_LEN, head_budget).await?;
     if n == 0 {
         return Ok(None);
     }
+    head_budget -= n;
     let trimmed = status_line.trim_end_matches(['\r', '\n']);
     let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
     if parts.len() < 2 {
@@ -267,13 +349,19 @@ where
     let mut headers: Vec<(String, String)> = Vec::new();
     loop {
         let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
+        let n = read_line_capped(reader, &mut line, MAX_HEADER_LINE_LEN, head_budget).await?;
         if n == 0 {
             return Err(ProxyError::Config("unexpected EOF reading response headers".into()));
         }
+        head_budget -= n;
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             break;
+        }
+        if headers.len() >= MAX_HEADER_COUNT {
+            return Err(ProxyError::Config(format!(
+                "HTTP response exceeds maximum {MAX_HEADER_COUNT} header lines; refusing (fail-closed)"
+            )));
         }
         if let Some((k, v)) = trimmed.split_once(':') {
             headers.push((k.trim().to_string(), v.trim().to_string()));
@@ -755,6 +843,67 @@ mod tests {
         assert!(
             text.starts_with("HTTP/1.1 204\r\n"),
             "no trailing reason space: {text:?}"
+        );
+    }
+
+    // ── header-cap (OOM) guards (AAASM-3922) ────────────────────────────────
+
+    #[tokio::test]
+    async fn rejects_oversized_request_header_line_before_oom() {
+        // AAASM-3922: a single header line larger than MAX_HEADER_LINE_LEN must
+        // be rejected *as it is read* — before the old unbounded read_line could
+        // buffer a multi-GB line and OOM the proxy. The over-cap line here is
+        // ~8 KiB+1; the reader holds only the head, proving the cap fires at the
+        // header stage rather than after a giant allocation.
+        let big_value = "a".repeat(MAX_HEADER_LINE_LEN + 1);
+        let raw = format!("GET / HTTP/1.1\r\nX-Big: {big_value}\r\n\r\n");
+        let mut reader = make_reader(raw.as_bytes());
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("exceeds maximum")),
+            "expected over-cap header rejection, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_request_with_too_many_headers() {
+        // AAASM-3922: more than MAX_HEADER_COUNT header lines is refused,
+        // bounding the head against a flood of individually-small lines.
+        let mut raw = String::from("GET / HTTP/1.1\r\n");
+        for i in 0..=MAX_HEADER_COUNT {
+            raw.push_str(&format!("X-H{i}: v\r\n"));
+        }
+        raw.push_str("\r\n");
+        let mut reader = make_reader(raw.as_bytes());
+        let err = read_http_request(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("header lines")),
+            "expected too-many-headers rejection, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn header_within_caps_still_parses() {
+        // Regression: a normal-sized header well under every cap must still
+        // parse — the OOM guard must not reject legitimate traffic.
+        let raw = b"POST / HTTP/1.1\r\nHost: api.openai.com\r\nContent-Length: 2\r\n\r\nhi";
+        let mut reader = make_reader(raw);
+        let req = read_http_request(&mut reader).await.unwrap().expect("request present");
+        assert_eq!(req.header("host"), Some("api.openai.com"));
+        assert_eq!(&req.body, b"hi");
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_response_header_line_before_oom() {
+        // AAASM-3922: the response side applies the same per-line cap so a
+        // hostile upstream cannot OOM the proxy with an unbounded header read.
+        let big_value = "a".repeat(MAX_HEADER_LINE_LEN + 1);
+        let raw = format!("HTTP/1.1 200 OK\r\nX-Big: {big_value}\r\n\r\n");
+        let mut reader = make_reader(raw.as_bytes());
+        let err = read_http_response(&mut reader).await.unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(msg) if msg.contains("exceeds maximum")),
+            "expected over-cap header rejection, got: {err:?}"
         );
     }
 }

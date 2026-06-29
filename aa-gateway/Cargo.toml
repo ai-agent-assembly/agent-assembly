@@ -40,6 +40,10 @@ dirs         = { workspace = true }
 async-stream = "0.3"
 async-trait  = { workspace = true }
 sha2         = { workspace = true }
+# AAASM-3922: constant-time byte comparison for credential-token validation
+# (defence-in-depth against a timing side-channel). Tiny, BSD-licensed, already
+# present in the dependency graph via the ed25519/curve crates.
+subtle       = "2"
 similar      = "3"
 tokio-stream = { workspace = true }
 tonic        = { workspace = true }

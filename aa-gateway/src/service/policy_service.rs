@@ -1029,7 +1029,11 @@ impl PolicyServiceImpl {
             // triple. Standard validation: empty / mismatched token rejects.
             if req.credential_token.is_empty() {
                 "missing credential token"
-            } else if req.credential_token != record.credential_token {
+            } else if !bool::from(subtle::ConstantTimeEq::ct_eq(
+                req.credential_token.as_bytes(),
+                record.credential_token.as_bytes(),
+            )) {
+                // AAASM-3922: constant-time compare (defence-in-depth timing side-channel).
                 "credential token mismatch"
             } else {
                 return None;
