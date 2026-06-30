@@ -3,4 +3,4 @@ channel = "nightly"
 # rust-src is required by -Zbuild-std=core so cargo can compile core from source
 # for the bpfel-unknown-none target. Do NOT add bpfel-unknown-none to targets —
 # there is no precompiled rust-std for this target; it is built from source.
-components = ["rust-src"]
+components = ["rust-src", "clippy"]
