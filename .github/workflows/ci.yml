@@ -733,7 +733,7 @@ jobs:
         # Required by aa-proto (transitive dep of aa-runtime) for the
         # multi-layer integration test step.
         run: sudo apt-get install -y protobuf-compiler
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly branch @ 2026-06-27
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly branch @ 2026-06-27
         with:
           # Do NOT add bpfel-unknown-none to targets: there is no precompiled rust-std
           # for this target. BPF programs are built from source via -Zbuild-std=core
@@ -843,7 +843,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y curl
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly branch @ 2026-06-27
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly branch @ 2026-06-27
         with:
           # Same justification as the `ebpf-build` job: bpfel-unknown-none has
           # no precompiled rust-std, so the BPF probes build via
