@@ -2,6 +2,14 @@
 
 Thank you for your interest in contributing! This guide explains how to set up your environment and submit changes.
 
+By participating in this project you agree to abide by our
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+For the fastest path from a fresh clone to a verified local environment, follow
+the [Quickstart in the README](README.md#quickstart) (`make dev-setup` +
+`make dev-verify`). The sections below cover the manual setup and the
+day-to-day contribution workflow in more detail.
+
 ## Prerequisites
 
 - **Rust stable** (≥ 1.75) — install via [rustup](https://rustup.rs/)
@@ -49,23 +57,49 @@ on; the faster linker is opt-in.
 
 ## Branch Naming
 
+Branch names have four parts:
+
 ```
-<version>/<ticket-number>/<short-summary>
+<release-or-phase>/<ticket-number>/<type>/<short-summary>
 ```
 
-Example: `v0.0.1/AAASM-42/add_agent_registry`
+- `<release-or-phase>` — milestone or sprint identifier (e.g. `v0.0.1`, `phase1`)
+- `<ticket-number>` — the Jira ticket reference (e.g. `AAASM-42`)
+- `<type>` — one of `feat`, `fix`, `refactor`, `test`, `docs`, `config`, `deps`, `remove`, `lint`
+- `<short-summary>` — 2–4 words from the ticket title in `snake_case`
+
+Example: `v0.0.1/AAASM-42/feat/add_agent_registry`
 
 ## Commit Style
 
-Use [Gitmoji](https://gitmoji.dev/) prefixed messages:
+Commit messages follow [Gitmoji](https://gitmoji.dev/)-prefixed
+[Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
 <emoji> (<scope>): <imperative summary>
 ```
 
-**One commit per logical unit** — one new file, one property change, one function. Keep commits small and bisectable.
+- `<emoji>` — a [Gitmoji](https://gitmoji.dev/) marking the change category
+  (see the table below)
+- `<scope>` — the affected crate or area (e.g. `aa-core`, `ci`, `docs`)
+- `<imperative summary>` — imperative mood, under 72 characters
+
+| Emoji | Category | Conventional type |
+|---|---|---|
+| ✨ | New feature | `feat` |
+| 🐛 | Bug fix | `fix` |
+| ♻️ | Refactor (no behaviour change) | `refactor` |
+| ✅ | Tests | `test` |
+| 📝 | Documentation | `docs` |
+| 🔧 | Configuration / CI | `config` / `ci` |
+| ⬆️ | Dependency upgrade | `deps` |
+| 🗑️ | Deletion / removal | `remove` |
+| 🚨 | Lint / type-error fix | `style` |
+
+**One commit per logical unit** — one new file, one property change, one function. Keep commits small and bisectable so a reviewer can follow each step.
 
 Examples:
+
 - `✨ (aa-core): Add AgentId newtype wrapper`
 - `🐛 (aa-gateway): Fix policy evaluation order for overlapping rules`
 - `🔧 (ci): Add matrix build for MSRV check`
@@ -94,11 +128,27 @@ To add a new crate to the workspace:
 
 ## Pull Requests
 
-- Open a PR against `master`.
+- Open a PR against `master` — never against another feature branch (stacked
+  branches are fine for local development, but every PR targets `master`).
 - Title format: `[<ticket>] <emoji> (<scope>): <summary>`
-- Fill in the PR template — all checklist items must be addressed.
+- Fill in the [PR template](.github/PULL_REQUEST_TEMPLATE.md) — all checklist items must be addressed.
+- Keep PRs focused: one concern per PR, ideally under 500 lines of diff.
 - CI must be green before review is requested.
 - At least **1 approval** from the Pioneer team is required to merge.
+
+## Code Review
+
+What to expect during review, as both an author and a reviewer:
+
+- **Reviewers** look for correctness, test coverage, adherence to the
+  architecture, and the commit conventions above — not style nits that the
+  automated hooks already enforce.
+- **Authors** should respond to every comment (resolve it or explain why not),
+  re-request review after pushing changes, and avoid force-pushing while a
+  review is in progress so reviewers can see incremental diffs.
+- A PR merges only once all blocking comments are resolved, CI is green, and a
+  Pioneer-team approval is present. The merge strategy is squash for feature
+  PRs and rebase for dependency bumps.
 
 ## Developer Certificate of Origin (DCO)
 
@@ -170,8 +220,13 @@ Mermaid diagrams use the `mdbook-mermaid` preprocessor, which is wired in `docs/
 
 ## Reporting Issues
 
-Use the GitHub issue templates:
-- **Bug report** — reproducible steps, expected vs actual behaviour, environment.
-- **Feature request** — motivation, proposed solution, alternatives considered.
+File issues through the GitHub issue templates so they capture the detail
+maintainers need to act:
 
-For security issues, see [SECURITY.md](SECURITY.md).
+- [**Bug report**](.github/ISSUE_TEMPLATE/bug_report.md) — reproducible steps, expected vs actual behaviour, environment.
+- [**Feature request**](.github/ISSUE_TEMPLATE/feature_request.md) — motivation, proposed solution, alternatives considered.
+
+Search [existing issues](https://github.com/ai-agent-assembly/agent-assembly/issues) before opening a new one to avoid duplicates.
+
+**Do not** open a public issue for a security vulnerability — see
+[SECURITY.md](SECURITY.md) for the private disclosure process.
