@@ -18,6 +18,7 @@ pub mod config;
 pub mod context;
 pub mod cost;
 pub mod dashboard;
+pub mod docs;
 pub mod gateway;
 pub mod gw_probe;
 pub mod logs;
@@ -60,6 +61,8 @@ pub enum Commands {
     Config(config::ConfigArgs),
     /// Generate shell completion scripts.
     Completion(completion::CompletionArgs),
+    /// Generate documentation from the live CLI definition.
+    Docs(docs::DocsArgs),
     /// Show fleet health, agents, approvals, and budget at a glance.
     Status(status::StatusArgs),
     /// Show CLI and gateway version information.
@@ -106,6 +109,7 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Context(args) => context::dispatch(args),
         Commands::Config(args) => config::dispatch(args),
         Commands::Completion(args) => completion::run(args),
+        Commands::Docs(args) => docs::dispatch(args),
         Commands::Status(args) => status::dispatch(args, ctx, output),
         Commands::Version => version::run(ctx, output),
         Commands::Trace(args) => trace::dispatch(args, ctx, output),
