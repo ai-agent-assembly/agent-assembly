@@ -1303,4 +1303,71 @@ mod tests {
             "plain-HTTP request to a blocked IP must be refused with 403, got: {buf:?}"
         );
     }
+
+    #[tokio::test]
+    async fn plain_http_to_llm_host_is_refused() {
+        // AAASM-3984: a cleartext `http://` request to a known LLM provider must
+        // be refused (403) before any upstream dial. The plain-HTTP path does no
+        // credential scanning, so allowing a downgrade to reach an LLM host would
+        // let a steered agent exfiltrate the secret in this body with zero DLP.
+        // The empty allowlist permits the public host past the egress gate, so
+        // the 403 here proves the LLM-downgrade refusal (not the egress check).
+        use tokio::io::AsyncReadExt;
+        let server = server_with(vec![], vec![]).await;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (server_stream, _) = listener.accept().await.unwrap();
+
+        let body = "{\"api_key\":\"sk-secretvalue1234567890\"}";
+        let req = format!(
+            "POST http://api.openai.com/v1/chat HTTP/1.1\r\nHost: api.openai.com\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        client.write_all(req.as_bytes()).await.unwrap();
+
+        server
+            .handle_connection(server_stream)
+            .await
+            .expect("refused request returns Ok after writing 403");
+
+        let mut buf = String::new();
+        client.read_to_string(&mut buf).await.unwrap();
+        assert!(
+            buf.contains("403"),
+            "cleartext plain-HTTP request to an LLM host must be refused with 403, got: {buf:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_http_to_llm_host_trailing_dot_is_refused() {
+        // AAASM-3983 + AAASM-3984: the trailing-dot / mixed-case downgrade
+        // variant must also be refused — detect_api canonicalizes the host.
+        use tokio::io::AsyncReadExt;
+        let server = server_with(vec![], vec![]).await;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (server_stream, _) = listener.accept().await.unwrap();
+
+        client
+            .write_all(b"POST http://API.OpenAI.CoM./v1/chat HTTP/1.1\r\nHost: API.OpenAI.CoM.\r\n\r\n")
+            .await
+            .unwrap();
+
+        server
+            .handle_connection(server_stream)
+            .await
+            .expect("refused request returns Ok after writing 403");
+
+        let mut buf = String::new();
+        client.read_to_string(&mut buf).await.unwrap();
+        assert!(
+            buf.contains("403"),
+            "trailing-dot cleartext request to an LLM host must be refused with 403, got: {buf:?}"
+        );
+    }
 }
