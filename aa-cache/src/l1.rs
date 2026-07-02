@@ -1,5 +1,6 @@
 //! [`L1Cache`] — a `DashMap`-backed, TTL'd, cache-aside wrapper over a store.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,6 +23,11 @@ pub struct L1Cache<S: CacheSource> {
     inner: S,
     entries: Arc<DashMap<S::Key, CachedValue<S::Value>>>,
     inflight: Arc<DashMap<S::Key, Arc<Notify>>>,
+    /// Monotonic invalidation counter, bumped by every [`invalidate`](Self::invalidate).
+    /// A leader snapshots it before loading and refuses to cache its result if the
+    /// counter moved during the load window, so a push-invalidation that races an
+    /// in-flight load is never silently lost (see AAASM-3985).
+    epoch: AtomicU64,
     ttl: Duration,
 }
 
@@ -32,6 +38,7 @@ impl<S: CacheSource> L1Cache<S> {
             inner,
             entries: Arc::new(DashMap::new()),
             inflight: Arc::new(DashMap::new()),
+            epoch: AtomicU64::new(0),
             ttl,
         }
     }
@@ -65,6 +72,13 @@ impl<S: CacheSource> L1Cache<S> {
     /// Gateway reports that an agent's policy changed: the next `get` reloads
     /// from the source of truth rather than serving a stale entry.
     pub fn invalidate(&self, key: &S::Key) -> bool {
+        // Bump the epoch *before* removing. A concurrent leader load that
+        // snapshotted the old epoch will fail its post-load check and discard
+        // its now-stale value; and because the leader commits its insert under
+        // the same shard lock that `remove` takes, the bump-then-remove here is
+        // ordered against the check-then-insert there — the eviction can't be
+        // lost to a racing insert (AAASM-3985).
+        self.epoch.fetch_add(1, Ordering::AcqRel);
         self.entries.remove(key).is_some()
     }
 
@@ -106,9 +120,28 @@ impl<S: CacheSource> L1Cache<S> {
             match follower {
                 // Leader: load once, populate, then wake every waiter.
                 None => {
+                    // Snapshot the invalidation epoch before the load so a push
+                    // `invalidate` that lands mid-load is detected below.
+                    let epoch_before = self.epoch.load(Ordering::Acquire);
                     let result = self.inner.load(&key).await;
                     if let Ok(ref value) = result {
-                        self.entries.insert(key.clone(), CachedValue::new(value.clone()));
+                        // Commit under the key's shard lock, and only if no
+                        // invalidation raced the load. Holding the entry guard
+                        // serializes this check-and-insert against `invalidate`'s
+                        // `remove`, so a concurrent eviction is never lost: either
+                        // we observe the bumped epoch and skip the insert, or the
+                        // remove runs after us and drops the entry we just wrote.
+                        let entry = self.entries.entry(key.clone());
+                        if self.epoch.load(Ordering::Acquire) == epoch_before {
+                            match entry {
+                                Entry::Occupied(mut occupied) => {
+                                    occupied.insert(CachedValue::new(value.clone()));
+                                }
+                                Entry::Vacant(vacant) => {
+                                    vacant.insert(CachedValue::new(value.clone()));
+                                }
+                            }
+                        }
                     }
                     if let Some((_, notify)) = self.inflight.remove(&key) {
                         notify.notify_waiters();
