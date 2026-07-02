@@ -19,9 +19,9 @@
 //! audit-event emission land in AAASM-2019.
 
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use wasmtime::{Caller, Config, Engine, Linker, Module, ResourceLimiter, Store, Trap};
+use wasmtime::{Caller, Config, Engine, Linker, Module, ResourceLimiter, Store, Trap, UpdateDeadline};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtx};
 
@@ -29,7 +29,7 @@ use crate::error::SandboxError;
 use crate::host_fn::HostFnCounter;
 use crate::policy::{PreopenAccess, SandboxConfig};
 
-/// Sentinel error type the [`MemoryLimit`] [`ResourceLimiter`] returns
+/// Sentinel error type the [`StoreLimits`] [`ResourceLimiter`] returns
 /// when a `memory.grow` would exceed the configured byte cap. The
 /// runtime's call-result branch downcasts to this type to surface
 /// [`SandboxError::MemoryExhausted`].
@@ -60,18 +60,39 @@ impl std::fmt::Display for HostFnRateLimitMarker {
 
 impl std::error::Error for HostFnRateLimitMarker {}
 
-/// Per-store linear-memory cap enforced via [`Store::limiter`].
+/// Maximum number of elements any single guest table may grow to.
+///
+/// `table.grow` is one non-fuel-metered instruction that forces the host to
+/// eagerly allocate `delta` fresh table slots, so an uncapped grow is an
+/// OOM-DoS primitive the linear-memory cap ([`StoreLimits::max_bytes`]) does
+/// not cover. This constant bounds the worst-case eager table allocation to a
+/// value far above any legitimate tool's dynamic table growth. (AAASM-3990.)
+///
+/// It is a compile-time constant rather than a [`crate::policy::SandboxLimits`]
+/// field only because promoting it to the public config would break
+/// out-of-crate callers that build `SandboxLimits` with every field enumerated;
+/// a config field can follow once those call sites adopt `..Default::default()`.
+const MAX_TABLE_ELEMENTS: usize = 10_000;
+
+/// Per-store resource caps enforced via [`Store::limiter`].
 ///
 /// `memory_growing` denies any grow that would push the guest above
 /// `max_bytes` by returning [`MemoryExhaustedMarker`] inside the
 /// `wasmtime::Error` channel — the wasmtime runtime then surfaces that
 /// error from the call's `start.call(...)` return value, which the
 /// runtime maps to [`SandboxError::MemoryExhausted`].
-struct MemoryLimit {
+///
+/// `table_growing` caps table-element growth at `max_table_elements`. Unlike
+/// the memory path it rejects *gracefully* (`Ok(false)`) rather than trapping:
+/// that yields the standard WASM `table.grow` failure sentinel (`-1`) to the
+/// guest while still preventing the eager host allocation an uncapped grow
+/// would force. (AAASM-3990.)
+struct StoreLimits {
     max_bytes: usize,
+    max_table_elements: usize,
 }
 
-impl ResourceLimiter for MemoryLimit {
+impl ResourceLimiter for StoreLimits {
     fn memory_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
         if desired > self.max_bytes {
             Err(wasmtime::Error::new(MemoryExhaustedMarker))
@@ -80,19 +101,35 @@ impl ResourceLimiter for MemoryLimit {
         }
     }
 
-    fn table_growing(&mut self, _current: usize, _desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
-        Ok(true)
+    fn table_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        // Reject growth past the element cap gracefully: `Ok(false)` makes
+        // `table.grow` return -1 to the guest (well-defined WASM semantics)
+        // without the host eagerly allocating the requested slots — closing
+        // the uncapped-`table.grow` OOM-DoS gap. (AAASM-3990.)
+        Ok(desired <= self.max_table_elements)
     }
 }
 
-/// Per-store state combining the WASI context with the memory limiter.
+/// Whether a store's own wall-clock budget has elapsed.
+///
+/// The epoch-deadline callback in [`SandboxRuntime::run_tool`] calls this on
+/// each epoch tick to decide whether to interrupt *this* store. Because
+/// `Engine::increment_epoch` is process-global and shared by every store on the
+/// engine, one invocation's watchdog can tick a co-scheduled invocation's
+/// deadline; gating the trap on the store's own `start`/`wall_clock` makes the
+/// wall-clock kill per-store rather than engine-wide. (AAASM-3990.)
+fn wall_clock_expired(start: Instant, wall_clock: Duration) -> bool {
+    start.elapsed() >= wall_clock
+}
+
+/// Per-store state combining the WASI context with the resource limiter.
 ///
 /// Wraps the [`WasiP1Ctx`] previously held directly by the store; the
 /// linker's WASI projection closure now returns `&mut state.wasi`, and
 /// `Store::limiter` projects to `&mut state.limiter`.
 struct StoreState {
     wasi: WasiP1Ctx,
-    limiter: MemoryLimit,
+    limiter: StoreLimits,
     /// Per-invocation host-function call budget (AAASM-3617). Seeded from
     /// [`SandboxConfig::host_fn_rate_limit`] for each `run_tool` call so the
     /// budget is never shared across invocations or tenants. Every counted
@@ -120,7 +157,9 @@ pub struct SandboxOutput {
 ///
 /// One runtime instance can service many `run_tool` invocations; each
 /// invocation gets a fresh [`Store`] + [`WasiCtx`] so per-call state never
-/// leaks between tools.
+/// leaks between tools. The wall-clock deadline is enforced per-store
+/// (AAASM-3990), so concurrent `run_tool` calls on a shared runtime cannot
+/// cross-trigger each other's timeouts.
 pub struct SandboxRuntime {
     engine: Engine,
     linker: Linker<StoreState>,
@@ -216,8 +255,9 @@ impl SandboxRuntime {
                 .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         }
         let wasi = builder.build_p1();
-        let limiter = MemoryLimit {
+        let limiter = StoreLimits {
             max_bytes: (self.config.limits.memory_pages as usize) * 65_536,
+            max_table_elements: MAX_TABLE_ELEMENTS,
         };
         // Fresh per-invocation host-fn budget so it is never shared across
         // calls or tenants (AAASM-3617).
@@ -235,27 +275,39 @@ impl SandboxRuntime {
             .set_fuel(self.config.limits.fuel)
             .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         store.set_epoch_deadline(1);
-        store.epoch_deadline_trap();
+        // Per-store wall-clock enforcement (AAASM-3990). `Engine::increment_epoch`
+        // is a process-global tick shared by every store on this engine, so an
+        // unconditional `epoch_deadline_trap()` would let one invocation's
+        // watchdog kill a *co-scheduled* invocation on a shared `SandboxRuntime`.
+        // Instead, gate the trap on this store's own elapsed wall clock: a
+        // spurious tick from a sibling's watchdog re-arms the deadline
+        // (`Continue`) rather than trapping, and only this store's own watchdog
+        // tick — fired once `wall_clock` has elapsed — actually interrupts it.
+        let deadline_start = Instant::now();
+        let wall_clock = Duration::from_millis(self.config.limits.wall_clock_ms);
+        store.epoch_deadline_callback(move |_store| {
+            if wall_clock_expired(deadline_start, wall_clock) {
+                Ok(UpdateDeadline::Interrupt)
+            } else {
+                Ok(UpdateDeadline::Continue(1))
+            }
+        });
 
         // Wall-clock watchdog — spawn a thread that fires
-        // `Engine::increment_epoch` after `wall_clock_ms` unless the call
-        // completes first. `Engine::increment_epoch` ticks the global
-        // counter; since this store armed `set_epoch_deadline(1)` against
-        // the engine's current epoch + 1, that single tick trips the
-        // deadline and traps the guest with `Trap::Interrupt`.
+        // `Engine::increment_epoch` after `wall_clock` unless the call completes
+        // first. The tick advances the engine's global epoch to this store's
+        // armed deadline; the callback above then confirms this store's own
+        // budget is spent and returns `UpdateDeadline::Interrupt`, trapping the
+        // guest with `Trap::Interrupt` (mapped to `WallClockTimeout`).
         //
-        // The watchdog blocks on an mpsc channel with `recv_timeout` so
-        // the main thread can wake it early — keeps fast-completing
-        // calls from paying the full `wall_clock_ms` latency.
+        // The watchdog blocks on an mpsc channel with `recv_timeout` so the main
+        // thread can wake it early — keeps fast-completing calls from paying the
+        // full `wall_clock` latency.
         let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
         let watchdog = {
             let engine = self.engine.clone();
-            let wall_clock_ms = self.config.limits.wall_clock_ms;
             std::thread::spawn(move || {
-                if matches!(
-                    cancel_rx.recv_timeout(Duration::from_millis(wall_clock_ms)),
-                    Err(mpsc::RecvTimeoutError::Timeout)
-                ) {
+                if matches!(cancel_rx.recv_timeout(wall_clock), Err(mpsc::RecvTimeoutError::Timeout)) {
                     engine.increment_epoch();
                 }
             })
@@ -480,7 +532,7 @@ mod tests {
     /// `_start` declares a 1-page initial memory and immediately tries
     /// to grow it by 100 pages (= 6.4 MiB), well past the default
     /// `SandboxLimits::memory_pages = 16` (1 MiB) cap. The
-    /// `MemoryLimit` `ResourceLimiter` returns `Err(MemoryExhaustedMarker)`
+    /// `StoreLimits` `ResourceLimiter` returns `Err(MemoryExhaustedMarker)`
     /// for the grow, which wasmtime surfaces as a trap.
     const MEMORY_BOMB_WAT: &str = r#"
         (module
@@ -502,6 +554,71 @@ mod tests {
         assert!(
             matches!(result, Err(SandboxError::MemoryExhausted)),
             "expected SandboxError::MemoryExhausted, got {:?}",
+            result,
+        );
+    }
+
+    /// Table-bomb fixture (AAASM-3990): declares a 1-element funcref table and
+    /// asks `table.grow` to add 20 000 elements — well past the
+    /// `MAX_TABLE_ELEMENTS` (10 000) cap. A rejected grow returns `-1` (the
+    /// standard WASM sentinel), which the guest surfaces via `proc_exit(42)`.
+    const TABLE_BOMB_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "proc_exit"
+            (func $proc_exit (param i32)))
+          (memory (export "memory") 1)
+          (table 1 funcref)
+          (func (export "_start")
+            (if (i32.eq (table.grow (ref.null func) (i32.const 20000)) (i32.const -1))
+              (then (call $proc_exit (i32.const 42)))
+              (else (call $proc_exit (i32.const 0)))))
+        )
+    "#;
+
+    /// Same table, grown by only 100 elements — comfortably under the cap — so
+    /// `table.grow` succeeds (returns the prior size, not `-1`) and the guest
+    /// exits cleanly. Guards against the cap over-rejecting legitimate growth.
+    const TABLE_GROW_OK_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "proc_exit"
+            (func $proc_exit (param i32)))
+          (memory (export "memory") 1)
+          (table 1 funcref)
+          (func (export "_start")
+            (if (i32.eq (table.grow (ref.null func) (i32.const 100)) (i32.const -1))
+              (then (call $proc_exit (i32.const 42)))
+              (else (call $proc_exit (i32.const 0)))))
+        )
+    "#;
+
+    #[test]
+    fn run_tool_rejects_table_grow_beyond_cap() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with default caps must construct");
+        let wasm = wat::parse_str(TABLE_BOMB_WAT).expect("table-bomb WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        // The limiter rejects the grow, the guest observes -1 and proc_exits 42,
+        // which the runtime maps to FilesystemBlocked { errno: 42 }.
+        assert!(
+            matches!(result, Err(SandboxError::FilesystemBlocked { errno: 42 })),
+            "expected rejected table.grow (guest proc_exit 42), got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn run_tool_allows_table_grow_within_cap() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with default caps must construct");
+        let wasm = wat::parse_str(TABLE_GROW_OK_WAT).expect("table-grow WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Ok(SandboxOutput { exit_code: 0 })),
+            "expected within-cap table.grow to succeed, got {:?}",
             result,
         );
     }
@@ -565,6 +682,47 @@ mod tests {
         assert!(
             matches!(result, Ok(SandboxOutput { exit_code: 0 })),
             "expected clean exit within budget, got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn wall_clock_gate_ignores_ticks_before_deadline() {
+        // A far-future budget: an epoch tick right now (as a sibling store's
+        // watchdog would cause on a shared engine) must NOT interrupt this
+        // store — the per-store gate keeps it running. (AAASM-3990.)
+        assert!(!wall_clock_expired(Instant::now(), Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn wall_clock_gate_interrupts_once_budget_elapsed() {
+        // A zero budget is already past deadline for any elapsed time, so the
+        // gate interrupts — the store's own watchdog-tick path. (AAASM-3990.)
+        assert!(wall_clock_expired(Instant::now(), Duration::ZERO));
+    }
+
+    /// End-to-end wall-clock guard: an infinite loop with a huge fuel budget so
+    /// the fuel limiter never fires — only the wall-clock watchdog + per-store
+    /// epoch callback can stop it. Guards the epoch-deadline path introduced in
+    /// AAASM-3990 (the callback replaced the unconditional `epoch_deadline_trap`).
+    #[test]
+    fn run_tool_kills_wall_clock_hog_with_wall_clock_timeout() {
+        let config = SandboxConfig {
+            limits: crate::policy::SandboxLimits {
+                fuel: u64::MAX,
+                wall_clock_ms: 50,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let runtime = SandboxRuntime::new(config).expect("SandboxRuntime with huge fuel must construct");
+        let wasm = wat::parse_str(RUNAWAY_LOOP_WAT).expect("runaway-loop WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::WallClockTimeout)),
+            "expected SandboxError::WallClockTimeout, got {:?}",
             result,
         );
     }
