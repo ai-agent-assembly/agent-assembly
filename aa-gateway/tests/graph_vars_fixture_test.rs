@@ -57,14 +57,15 @@ fn agent_depth_allow_fixture_loads_without_errors() {
 }
 
 #[test]
-fn agent_depth_allow_produces_allow_without_context() {
-    // Without a PolicyContext the graph-aware clause evaluates to false (null-safe),
-    // so no RequireApproval fires → Allow.
+fn agent_depth_allow_requires_approval_without_context() {
+    // AAASM-3995(b): without a PolicyContext the graph-aware approval clause is
+    // unresolvable, so it now FAILS CLOSED — RequireApproval fires rather than
+    // letting the action run unguarded.
     let doc = load_fixture("agent_depth_allow.yaml");
     let ctx = make_ctx();
     let action = tool_action("deploy");
     let result = merge_decisions(&[doc], &ctx, &action, None);
-    assert_eq!(result, PolicyDecision::Allow);
+    assert!(matches!(result, PolicyDecision::RequireApproval { .. }));
 }
 
 #[test]
@@ -84,12 +85,13 @@ fn team_active_agents_allow_fixture_loads_without_errors() {
 }
 
 #[test]
-fn team_active_agents_allow_produces_allow_without_context() {
+fn team_active_agents_allow_requires_approval_without_context() {
+    // AAASM-3995(b): unresolved team.active_agents in an approval clause fails closed.
     let doc = load_fixture("team_active_agents_allow.yaml");
     let ctx = make_ctx();
     let action = tool_action("spawn");
     let result = merge_decisions(&[doc], &ctx, &action, None);
-    assert_eq!(result, PolicyDecision::Allow);
+    assert!(matches!(result, PolicyDecision::RequireApproval { .. }));
 }
 
 // ── team.budget_remaining fixtures ───────────────────────────────────────────
@@ -100,12 +102,14 @@ fn team_budget_remaining_deny_fixture_loads_without_errors() {
 }
 
 #[test]
-fn team_budget_remaining_deny_produces_allow_without_context() {
+fn team_budget_remaining_deny_requires_approval_without_context() {
+    // AAASM-3995(b): a sole-clause requires_approval_if on team.budget_remaining
+    // must not become an implicit Allow when context is unresolved — fail closed.
     let doc = load_fixture("team_budget_remaining_deny.yaml");
     let ctx = make_ctx();
     let action = tool_action("expensive_op");
     let result = merge_decisions(&[doc], &ctx, &action, None);
-    assert_eq!(result, PolicyDecision::Allow);
+    assert!(matches!(result, PolicyDecision::RequireApproval { .. }));
 }
 
 // ── child.tool fixtures ───────────────────────────────────────────────────────
@@ -165,7 +169,7 @@ fn snapshot_unconditional_deny_unaffected_by_null_ctx() {
 }
 
 #[test]
-fn snapshot_null_ctx_team_active_agents_allow_fixture_yields_allow() {
+fn snapshot_null_ctx_team_active_agents_fixture_requires_approval() {
     let doc = load_fixture("team_active_agents_allow.yaml");
     let ctx = make_ctx();
     let action = tool_action("spawn");
@@ -174,7 +178,7 @@ fn snapshot_null_ctx_team_active_agents_allow_fixture_yields_allow() {
 }
 
 #[test]
-fn snapshot_null_ctx_team_budget_remaining_deny_fixture_yields_allow() {
+fn snapshot_null_ctx_team_budget_remaining_fixture_requires_approval() {
     let doc = load_fixture("team_budget_remaining_deny.yaml");
     let ctx = make_ctx();
     let action = tool_action("expensive_op");
@@ -192,7 +196,7 @@ fn snapshot_null_ctx_child_tool_deny_fixture_yields_allow() {
 }
 
 #[test]
-fn snapshot_null_ctx_agent_depth_allow_fixture_yields_allow() {
+fn snapshot_null_ctx_agent_depth_fixture_requires_approval() {
     let doc = load_fixture("agent_depth_allow.yaml");
     let ctx = make_ctx();
     let action = tool_action("deploy");

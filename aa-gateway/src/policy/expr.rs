@@ -497,7 +497,14 @@ fn eval_numeric_ctx_field(
     };
     Some(match numeric_ctx_value {
         Some(lhs) => compare_numeric(lhs, op, literal),
-        None => false,
+        // AAASM-3995(b): this evaluator drives `requires_approval_if`, where a
+        // `false` result means "no approval required". When a context field
+        // (agent.depth / team.*) cannot be resolved, silently returning `false`
+        // lets a sole-clause approval guard never fire — the action runs
+        // unguarded (fail-open). An unresolvable guard condition must fail
+        // CLOSED: fire the predicate (require approval), mirroring the
+        // fail-closed handling of unparseable ordered comparisons (AAASM-3893).
+        None => true,
     })
 }
 
@@ -1452,16 +1459,27 @@ mod tests {
     }
 
     #[test]
-    fn null_safety_team_active_returns_false_when_no_team() {
-        // team_active = None means the agent has no team; condition must not fire.
+    fn unresolved_team_active_fires_approval_fail_closed() {
+        // AAASM-3995(b): team_active = None (unresolvable in this approval
+        // context) must FAIL CLOSED — the guard fires (require approval) rather
+        // than silently letting the action run unguarded.
         let ctx = crate::policy::context::FakePolicyContext::default();
-        assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
+        assert!(evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
     }
 
     #[test]
-    fn null_safety_returns_false_when_no_context() {
-        // No context at all: graph-aware field must not fire (fail-closed → no-match).
-        assert!(!evaluate("agent.depth > 0", &tool("any"), None, None));
+    fn unresolved_context_fires_approval_fail_closed() {
+        // AAASM-3995(b): no context at all → the context-dependent guard cannot
+        // be evaluated, so it fails closed (require approval).
+        assert!(evaluate("agent.depth > 0", &tool("any"), None, None));
+    }
+
+    #[test]
+    fn sole_clause_context_approval_fails_closed_when_unresolved() {
+        // A `requires_approval_if` whose only clause references live context must
+        // not become an implicit Allow when that context is unresolved.
+        assert!(evaluate("team.budget_remaining < 100", &tool("any"), None, None));
+        assert!(evaluate("agent.children_count > 3", &tool("any"), None, None));
     }
 
     // ── risk tier tests ──────────────────────────────────────────────────
@@ -1632,8 +1650,9 @@ mod tests {
     }
 
     #[test]
-    fn null_safety_agent_age_returns_false_without_context() {
-        assert!(!evaluate("agent.age > 24h", &tool("any"), None, None));
+    fn agent_age_fails_closed_without_context() {
+        // AAASM-3995(b): unresolved agent.age in an approval clause fails closed.
+        assert!(evaluate("agent.age > 24h", &tool("any"), None, None));
     }
 
     // ── inter-team message condition tests ───────────────────────────────────
@@ -1889,8 +1908,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_children_count_null_safe_without_context() {
-        assert!(!evaluate("agent.children_count > 0", &tool("any"), None, None));
+    fn agent_children_count_fails_closed_without_context() {
+        // AAASM-3995(b): unresolved agent.children_count in an approval clause fails closed.
+        assert!(evaluate("agent.children_count > 0", &tool("any"), None, None));
     }
 
     // ── agent.is_root, agent.is_leaf tests ───────────────────────────────────
