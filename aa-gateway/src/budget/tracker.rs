@@ -737,9 +737,14 @@ impl BudgetTracker {
         metrics::histogram!("budget_parent_lock_wait_seconds").record(lock_wait_start.elapsed().as_secs_f64());
 
         // Phase 1: preflight the agent's own monthly-then-daily limit, then
-        // every ancestor's daily limit. `spent + amount > limit` rejects the
-        // reservation that would push the total past the limit, so the
-        // committed total never exceeds it. Monthly precedes daily by
+        // every ancestor's daily limit. The agent check uses `spent >= limit`
+        // — identical to the Stage-7 read-check (`check_daily` / `check_monthly`)
+        // — so the *decision output* is unchanged: a call is allowed while the
+        // agent is still under its limit and denied once it reaches it. Doing
+        // this check and the commit together under the lock is what removes the
+        // concurrency-proportional overspend (AAASM-3986): concurrent
+        // reservations serialise, so only calls made while under-limit commit,
+        // exactly as they would sequentially. Monthly precedes daily by
         // convention, matching the Stage-7 read-check.
         let now = chrono::Utc::now();
         let (agent_daily, agent_monthly) = self
@@ -752,14 +757,14 @@ impl BudgetTracker {
             })
             .unwrap_or((Decimal::ZERO, Decimal::ZERO));
         if let Some(limit) = self.resolve_limit(&agent_id, BudgetKind::Monthly) {
-            if agent_monthly + amount > limit {
+            if agent_monthly >= limit {
                 return Err(BudgetError::SelfBudgetExhausted {
                     kind: BudgetKind::Monthly,
                 });
             }
         }
         if let Some(limit) = self.resolve_limit(&agent_id, BudgetKind::Daily) {
-            if agent_daily + amount > limit {
+            if agent_daily >= limit {
                 return Err(BudgetError::SelfBudgetExhausted { kind: BudgetKind::Daily });
             }
         }

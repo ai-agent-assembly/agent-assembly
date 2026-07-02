@@ -2377,13 +2377,15 @@ mod tests {
         let engine = make_engine(doc);
         let ctx = make_ctx();
 
-        assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 3.0), None);
-        assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 3.0), None);
-        // Third would push 6 + 5 = 11 > 10 → denied, nothing committed.
-        assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 5.0), Some("daily budget exceeded"));
+        // Calls are allowed while the agent is under its limit, then denied once
+        // it reaches it — the same decision semantics as the Stage-7 read-check.
+        assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 5.0), None); // spent 0 → 5
+        assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 5.0), None); // spent 5 → 10
+        // Now spent == limit, so the next reservation is rejected atomically.
+        assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 1.0), Some("daily budget exceeded"));
 
         let state = engine.budget.agent_state(&ctx.agent_id).expect("agent has spend");
-        assert_eq!(state.spent_usd, rust_decimal::Decimal::try_from(6.0).unwrap());
+        assert_eq!(state.spent_usd, rust_decimal::Decimal::try_from(10.0).unwrap());
     }
 
     #[test]
