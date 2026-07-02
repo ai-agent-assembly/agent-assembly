@@ -63,6 +63,8 @@ mod tests {
             agent_id: "agent-a".to_string(),
             payload: serde_json::json!({}),
             timestamp: chrono::Utc::now(),
+            team_id: None,
+            org_id: None,
         }
     }
 
