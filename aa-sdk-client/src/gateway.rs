@@ -27,12 +27,23 @@ pub struct GatewayRegistrationClient {
     client: AgentLifecycleServiceClient<Channel>,
 }
 
+/// Maximum accepted gRPC decode size for gateway responses, in bytes (4 MiB).
+///
+/// tonic's implicit default is already 4 MiB, but the gateway endpoint is
+/// attacker-influenceable and a future codegen/tonic bump could change that
+/// implicit default; pin it explicitly so a hostile or misconfigured gateway
+/// cannot force an unbounded response buffer (AAASM-3996). A `RegisterResponse`
+/// / `ChallengeResponse` is a few hundred bytes, so 4 MiB is comfortably
+/// generous.
+const MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
 impl GatewayRegistrationClient {
     /// Connect to the gateway gRPC endpoint (e.g. `"http://127.0.0.1:50051"`).
     pub async fn connect(endpoint: String) -> Result<Self, SdkClientError> {
         let client = AgentLifecycleServiceClient::connect(endpoint)
             .await
-            .map_err(|_| SdkClientError::GatewayUnreachable)?;
+            .map_err(|_| SdkClientError::GatewayUnreachable)?
+            .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE);
         Ok(Self { client })
     }
 
