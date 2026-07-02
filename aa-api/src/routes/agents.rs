@@ -57,14 +57,17 @@ fn authorize_agent_access(
 }
 
 /// Parse a hex-encoded agent ID string into a 16-byte array.
+///
+/// Decodes via [`hex::decode`] rather than slicing the input by byte index: the
+/// previous `&id[i..i + 2]` implementation panicked on an odd-length id (index
+/// past the end) or a multibyte path segment (a non-char-boundary slice),
+/// turning a malformed `{id}` path parameter into a request-thread panic
+/// (AAASM-4018). `hex::decode` rejects odd-length and non-hex input with a
+/// clean `Err`, so every malformed id now surfaces as a `400` instead.
 fn parse_agent_id(id: &str) -> Result<[u8; 16], ProblemDetail> {
-    let bytes: Vec<u8> = (0..id.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&id[i..i + 2], 16))
-        .collect::<Result<Vec<u8>, _>>()
-        .map_err(|_| {
-            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid agent ID format: {id}"))
-        })?;
+    let bytes = hex::decode(id).map_err(|_| {
+        ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid agent ID format: {id}"))
+    })?;
 
     let arr: [u8; 16] = bytes.try_into().map_err(|_| {
         ProblemDetail::from_status(StatusCode::BAD_REQUEST)
@@ -871,5 +874,37 @@ mod tests {
         assert_eq!(json["agent_id"], "aabbccdd00112233");
         assert_eq!(json["previous_status"], "Suspended(Manual)");
         assert_eq!(json["new_status"], "Active");
+    }
+
+    #[test]
+    fn parse_agent_id_accepts_valid_32_hex() {
+        let id = "aabbccdd00112233445566778899aabb";
+        assert_eq!(
+            parse_agent_id(id).unwrap(),
+            [0xaa, 0xbb, 0xcc, 0xdd, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,]
+        );
+    }
+
+    #[test]
+    fn parse_agent_id_odd_length_is_bad_request_not_panic() {
+        // AAASM-4018: an odd-length id previously sliced past the end and
+        // panicked. It must now surface as a clean 400.
+        let err = parse_agent_id("abc").unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST.as_u16());
+    }
+
+    #[test]
+    fn parse_agent_id_multibyte_is_bad_request_not_panic() {
+        // AAASM-4018: a multibyte path segment previously sliced on a non-char
+        // boundary and panicked. It must now surface as a clean 400.
+        let err = parse_agent_id("éééééééééééééééé").unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST.as_u16());
+    }
+
+    #[test]
+    fn parse_agent_id_wrong_length_is_bad_request() {
+        // Valid hex but not 16 bytes → 400 rather than a truncated id.
+        let err = parse_agent_id("aabb").unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST.as_u16());
     }
 }
