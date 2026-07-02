@@ -4,6 +4,7 @@ pub mod alerts_handler;
 pub mod alerts_params;
 pub mod handler;
 pub mod params;
+pub mod tenant;
 
 pub use alerts_handler::ws_alerts_handler;
 pub use alerts_params::{AlertEventKind, AlertsFilter, AlertsWsQueryParams, FilterError, WireSeverity};

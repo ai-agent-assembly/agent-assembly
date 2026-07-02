@@ -9,6 +9,7 @@ use crate::models::{EventType, GovernanceEvent};
 // shipped in PR-B (AAASM-1651).
 use crate::state::AppState;
 use crate::ws::params::WsQueryParams;
+use crate::ws::tenant::{agent_id_to_bytes, caller_can_view, resolve_event_tenant};
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Query, WebSocketUpgrade};
@@ -58,16 +59,19 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
     tag = "events"
 )]
 pub async fn ws_events_handler(
-    _caller: AuthenticatedCaller,
+    caller: AuthenticatedCaller,
     ws: WebSocketUpgrade,
     Query(params): Query<WsQueryParams>,
     Extension(state): Extension<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, params, state))
+    // AAASM-3980: the authenticated caller's tenant travels into the dispatch
+    // loop so every live and replayed event is gated against it — the shared
+    // broadcast channels are cross-tenant and must not leak to a scoped caller.
+    ws.on_upgrade(move |socket| handle_socket(socket, params, state, caller))
 }
 
 /// Drive a single WebSocket connection: replay, then stream live events.
-async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState) {
+async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState, caller: AuthenticatedCaller) {
     let (sender, receiver) = socket.split();
     let sender = std::sync::Arc::new(tokio::sync::Mutex::new(sender));
 
@@ -77,9 +81,16 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
     // Replay buffered events if `since` was provided. A send failure during
     // replay means the client is gone — abandon the connection.
     if let Some(since_id) = params.since {
-        if replay_buffered_events(&state, &sender, since_id, &allowed_types, agent_filter.as_deref())
-            .await
-            .is_err()
+        if replay_buffered_events(
+            &state,
+            &caller,
+            &sender,
+            since_id,
+            &allowed_types,
+            agent_filter.as_deref(),
+        )
+        .await
+        .is_err()
         {
             return;
         }
@@ -107,6 +118,7 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
     // or the client goes away; the keep-alive/reader tasks run alongside.
     dispatch_live_events(DispatchCtx {
         state: &state,
+        caller: &caller,
         sender: &live_sender,
         next_id: &next_id,
         allowed_types: &allowed_types,
@@ -166,6 +178,8 @@ async fn reader_loop(
 /// state and the five live receivers so the dispatch loop has a flat signature.
 struct DispatchCtx<'a> {
     state: &'a AppState,
+    /// The connecting caller — its tenant gates every forwarded event (AAASM-3980).
+    caller: &'a AuthenticatedCaller,
     sender: &'a SharedSender,
     next_id: &'a std::sync::atomic::AtomicU64,
     allowed_types: &'a [EventType],
@@ -183,6 +197,7 @@ struct DispatchCtx<'a> {
 async fn dispatch_live_events(ctx: DispatchCtx<'_>) {
     loop {
         let Some(event) = next_governance_event(
+            ctx.state.agent_registry.as_ref(),
             ctx.next_id,
             ctx.pipeline_rx,
             ctx.approval_rx,
@@ -195,8 +210,16 @@ async fn dispatch_live_events(ctx: DispatchCtx<'_>) {
             break;
         };
 
-        // Store in replay buffer before filtering.
+        // Store in replay buffer before filtering. The buffered copy keeps its
+        // resolved tenant so a later reconnect from a *different* caller is
+        // re-gated against that caller's tenant on replay.
         ctx.state.replay_buffer.push(event.clone());
+
+        // AAASM-3980: tenant gate first (fail-closed) — never forward an event
+        // the caller isn't entitled to — then the client's type/agent filters.
+        if !caller_can_view(ctx.caller, event.team_id.as_deref(), event.org_id.as_deref()) {
+            continue;
+        }
 
         if !matches_filter(&event, ctx.allowed_types, ctx.agent_filter) {
             continue;
@@ -213,6 +236,7 @@ async fn dispatch_live_events(ctx: DispatchCtx<'_>) {
 /// (the `else` arm), which signals the dispatch loop to terminate.
 #[allow(clippy::too_many_arguments)]
 async fn next_governance_event(
+    registry: &aa_gateway::registry::AgentRegistry,
     next_id: &std::sync::atomic::AtomicU64,
     pipeline_rx: &mut tokio::sync::broadcast::Receiver<aa_runtime::pipeline::event::PipelineEvent>,
     approval_rx: &mut tokio::sync::broadcast::Receiver<aa_runtime::approval::ApprovalRequest>,
@@ -222,19 +246,34 @@ async fn next_governance_event(
 ) -> Option<GovernanceEvent> {
     tokio::select! {
         Ok(pipeline_ev) = pipeline_rx.recv() => {
+            let agent_id = extract_pipeline_agent_id(&pipeline_ev);
+            let (team_id, org_id) = resolve_event_tenant(
+                registry,
+                pipeline_explicit_team(&pipeline_ev),
+                agent_id_to_bytes(&agent_id),
+            );
             Some(build_governance_event(
                 next_id,
                 EventType::Violation,
-                extract_pipeline_agent_id(&pipeline_ev),
+                agent_id,
                 EventPayload::Violation(build_violation_payload(&pipeline_ev)),
+                team_id,
+                org_id,
             ))
         }
         Ok(approval_ev) = approval_rx.recv() => {
+            let (team_id, org_id) = resolve_event_tenant(
+                registry,
+                approval_ev.team_id.clone(),
+                agent_id_to_bytes(&approval_ev.agent_id),
+            );
             Some(build_governance_event(
                 next_id,
                 EventType::Approval,
                 approval_ev.agent_id.clone(),
                 EventPayload::Approval(build_approval_payload(&approval_ev)),
+                team_id,
+                org_id,
             ))
         }
         Ok(expired_ev) = approval_expiry_rx.recv() => {
@@ -242,44 +281,85 @@ async fn next_governance_event(
             // elapsed without a human decision. Propagate as an
             // `approval` event with `status: "expired"` so the
             // dashboard can move the row to the Expired section.
+            let (team_id, org_id) = resolve_event_tenant(
+                registry,
+                expired_ev.team_id.clone(),
+                agent_id_to_bytes(&expired_ev.agent_id),
+            );
             Some(build_governance_event(
                 next_id,
                 EventType::Approval,
                 expired_ev.agent_id.clone(),
                 EventPayload::Approval(build_expired_approval_payload(&expired_ev)),
+                team_id,
+                org_id,
             ))
         }
         Ok(budget_ev) = budget_rx.recv() => {
+            let (team_id, org_id) = resolve_event_tenant(
+                registry,
+                budget_ev.team_id.clone(),
+                Some(*budget_ev.agent_id.as_bytes()),
+            );
             Some(build_governance_event(
                 next_id,
                 EventType::Budget,
                 format!("{:02x?}", budget_ev.agent_id.as_bytes()),
                 EventPayload::Budget(build_budget_alert_payload(&budget_ev)),
+                team_id,
+                org_id,
             ))
         }
         Ok(ops_ev) = ops_change_rx.recv() => {
             // AAASM-1657 PR-H: forward operator-driven ops registry
             // transitions to the dashboard so it can clear optimistic
             // overrides and update the row in place by op_id.
+            // The ops-change envelope carries no tenant tag, so resolve it
+            // from the agent-registry lineage keyed by the agent id.
+            let (team_id, org_id) = resolve_event_tenant(
+                registry,
+                None,
+                agent_id_to_bytes(&ops_ev.agent_id),
+            );
             Some(build_governance_event(
                 next_id,
                 EventType::OpsChange,
                 ops_ev.agent_id,
                 EventPayload::OpsChange(ops_ev.payload),
+                team_id,
+                org_id,
             ))
         }
         else => None,
     }
 }
 
+/// The explicit owning team carried by a pipeline event, if any. Audit events
+/// carry it on `inner.team_id` (empty string when unset → `None`); layer
+/// degradation is a deployment-wide system notice with no owning team.
+fn pipeline_explicit_team(ev: &aa_runtime::pipeline::event::PipelineEvent) -> Option<String> {
+    use aa_runtime::pipeline::event::PipelineEvent;
+    match ev {
+        PipelineEvent::Audit(enriched) if !enriched.inner.team_id.is_empty() => Some(enriched.inner.team_id.clone()),
+        _ => None,
+    }
+}
+
 /// Assemble a [`GovernanceEvent`] with the next monotonic id and current
 /// timestamp. A failed payload serialization falls back to `Value::Null`
 /// (`unwrap_or_default`), preserving the prior per-arm behaviour.
+///
+/// `team_id` / `org_id` are the event's resolved owning tenant (AAASM-3980),
+/// carried server-side only so the dispatch loop can gate live and replayed
+/// events; they are never serialized onto the wire.
+#[allow(clippy::too_many_arguments)]
 fn build_governance_event(
     next_id: &std::sync::atomic::AtomicU64,
     event_type: EventType,
     agent_id: String,
     payload: EventPayload,
+    team_id: Option<String>,
+    org_id: Option<String>,
 ) -> GovernanceEvent {
     GovernanceEvent {
         id: next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -287,10 +367,8 @@ fn build_governance_event(
         agent_id,
         payload: serde_json::to_value(payload).unwrap_or_default(),
         timestamp: chrono::Utc::now(),
-        // Populated by the caller via the tenant-resolution path (AAASM-3980);
-        // `None` here keeps this constructor tenant-agnostic.
-        team_id: None,
-        org_id: None,
+        team_id,
+        org_id,
     }
 }
 
@@ -524,12 +602,18 @@ fn detail_op_fields(
 /// caller can abandon the connection; `Ok(())` when all matching events are sent.
 async fn replay_buffered_events(
     state: &AppState,
+    caller: &AuthenticatedCaller,
     sender: &std::sync::Arc<tokio::sync::Mutex<SplitSink<WebSocket, Message>>>,
     since_id: u64,
     allowed_types: &[EventType],
     agent_filter: Option<&str>,
 ) -> Result<(), ()> {
     for event in state.replay_buffer.events_since(since_id) {
+        // AAASM-3980: apply the same fail-closed tenant gate as the live path —
+        // a reconnecting caller must not replay another tenant's buffered events.
+        if !caller_can_view(caller, event.team_id.as_deref(), event.org_id.as_deref()) {
+            continue;
+        }
         if !matches_filter(&event, allowed_types, agent_filter) {
             continue;
         }
