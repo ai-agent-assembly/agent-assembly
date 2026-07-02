@@ -36,16 +36,58 @@ AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh 
 > The raw `raw.githubusercontent.com/.../install-cli.sh` URL also works if you
 > prefer to fetch the script directly from GitHub.
 
+The default install is **CLI-only** — it installs the `aasm` command and never
+starts a background service.
+
+### Install additional components
+
+`aasm` is the CLI. The runtime, proxy, and eBPF layers are separate components.
+Select them by passing options **to the script** via `sh -s --` (not to `curl`):
+
+```sh
+# CLI + local runtime
+curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --components cli,runtime
+
+# Full local profile (cli + runtime + proxy)
+curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --profile full
+```
+
+Installing `runtime` does **not** start it — start it yourself afterwards.
+
+### Review-first install
+
+Prefer to read the script before running it:
+
+```sh
+curl -fsSL https://agent-assembly.com/install.sh -o install.sh
+less install.sh
+sh install.sh --components cli,runtime
+```
+
 ### Homebrew (macOS / Linux)
 
 ```sh
-brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+brew install ai-agent-assembly/tap/aasm
+```
+
+Or tap once, then install by short name (add components as separate formulae):
+
+```sh
+brew tap ai-agent-assembly/tap
+brew install aasm            # CLI only
+brew install aasm-runtime    # runtime (start with: brew services start aasm-runtime)
 ```
 
 Installs the latest tagged `aasm` release from the
-[Homebrew tap](https://github.com/ai-agent-assembly/homebrew-agent-assembly).
-During the `v0.0.1` alpha series the published releases are pre-releases — see
-[Project Status](#project-status).
+[Homebrew tap](https://github.com/ai-agent-assembly/homebrew-tap). See the tap
+README for the full component matrix (`aasm-runtime`, `aasm-proxy`, `aasm-ebpf`,
+`aasm-bundle`). During the `v0.0.1` series the published releases are
+pre-releases — see [Project Status](#project-status).
+
+> [!NOTE]
+> **Deprecated command:** `brew install ai-agent-assembly/agent-assembly/aasm`
+> (repo `homebrew-agent-assembly`) still works via a GitHub redirect but is
+> deprecated — use `ai-agent-assembly/tap/aasm`.
 
 ## Overview
 
@@ -76,7 +118,7 @@ can move from this repo to the SDKs, the install tap, or the canonical docs.
 | [python-sdk](https://github.com/ai-agent-assembly/python-sdk) | Python SDK (PyO3 native + pure-Python client) | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/python-sdk?include_prereleases&sort=semver&label=release&logo=python&logoColor=white)](https://github.com/ai-agent-assembly/python-sdk/releases) |
 | [node-sdk](https://github.com/ai-agent-assembly/node-sdk) | TypeScript / Node.js SDK (napi-rs native + JS client) | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/node-sdk?include_prereleases&sort=semver&label=release&logo=nodedotjs&logoColor=white)](https://github.com/ai-agent-assembly/node-sdk/releases) |
 | [go-sdk](https://github.com/ai-agent-assembly/go-sdk) | Go SDK | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/go-sdk?include_prereleases&sort=semver&label=release&logo=go&logoColor=white)](https://github.com/ai-agent-assembly/go-sdk/releases) |
-| [homebrew-agent-assembly](https://github.com/ai-agent-assembly/homebrew-agent-assembly) | Homebrew tap for the `aasm` CLI | [![Homebrew tap](https://img.shields.io/badge/homebrew-tap-FBB040?logo=homebrew&logoColor=white)](https://github.com/ai-agent-assembly/homebrew-agent-assembly) |
+| [homebrew-tap](https://github.com/ai-agent-assembly/homebrew-tap) | Homebrew tap for the `aasm` CLI | [![Homebrew tap](https://img.shields.io/badge/homebrew-tap-FBB040?logo=homebrew&logoColor=white)](https://github.com/ai-agent-assembly/homebrew-tap) |
 | [agent-assembly-docs](https://ai-agent-assembly.github.io/agent-assembly-docs/) | Canonical documentation site | [![docs](https://img.shields.io/badge/docs-live-2088FF)](https://docs.agent-assembly.com/) |
 | agent-assembly-cloud | Hosted SaaS control plane | ![coming soon](https://img.shields.io/badge/SaaS-coming_soon-8957E5) |
 | agent-assembly-enterprise | Enterprise extensions (delivered via SaaS) | ![coming soon](https://img.shields.io/badge/enterprise-coming_soon-8957E5) |
