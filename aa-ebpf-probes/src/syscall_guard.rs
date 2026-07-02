@@ -32,7 +32,10 @@
 //! post-escape guarantee. The [`aa_syscall_guard_fork`] tracepoint closes this
 //! by copying `PID_FILTER` membership from a monitored parent to each newly
 //! forked child at `sched/sched_process_fork`, so the child is confined from
-//! its first syscall.
+//! its first syscall. The paired [`aa_syscall_guard_exit`] tracepoint releases
+//! each tgid's `PID_FILTER` entry at `sched/sched_process_exit` so the map
+//! (cap 1024) cannot exhaust — which would make later descendants fail open —
+//! and so a reused pid cannot inherit stale confinement (AAASM-3921c).
 //!
 //! Note the `SYSCALL_ALLOWLIST` is a single global map keyed by syscall number
 //! (not per-PID), so it already applies to every monitored tgid — there is no
@@ -194,6 +197,32 @@ fn try_fork_propagate(ctx: &TracePointContext) -> Result<(), i64> {
 
     // Confine the child by mirroring the parent's PID_FILTER membership.
     let _ = PID_FILTER.insert(&child_pid, &PID_MONITORED, 0);
+    Ok(())
+}
+
+/// Descendant-confinement cleanup tracepoint (AAASM-3921c): at
+/// `sched_process_exit`, remove the exiting tgid from `PID_FILTER`.
+///
+/// Without this the fork-propagated `PID_FILTER` entries (cap 1024) are never
+/// released, so the map exhausts under a forking workload — after which
+/// [`try_fork_propagate`]'s `insert` fails and further descendants run
+/// **unconfined** (fail-open), defeating the post-escape guarantee. Worse, a
+/// stale entry whose tgid is later reused by an unrelated process would cause
+/// the enforcement tracepoint to `SIGKILL` that innocent process. Releasing the
+/// entry on exit bounds the map and closes the pid-reuse hole; this mirrors the
+/// exec probe's own exit-side cleanup.
+///
+/// Returns `0` always; the removal is best-effort and a miss (the tgid was
+/// never confined) is a harmless no-op.
+#[tracepoint]
+pub fn aa_syscall_guard_exit(ctx: TracePointContext) -> u32 {
+    let _ = try_exit_cleanup(&ctx);
+    0
+}
+
+fn try_exit_cleanup(_ctx: &TracePointContext) -> Result<(), i64> {
+    let tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    let _ = PID_FILTER.remove(&tgid);
     Ok(())
 }
 
