@@ -1198,6 +1198,21 @@ impl PolicyEngine {
         None
     }
 
+    /// AAASM-3995(c) — whether any `requires_approval_if` in the cascade
+    /// references live runtime context (registry graph / budget state). Such
+    /// verdicts must not be served from the decision cache, whose key omits the
+    /// live context, or a context-dependent approval could be frozen for the
+    /// cache TTL.
+    fn cascade_has_live_context_approval(cascade: &[Arc<PolicyDocument>]) -> bool {
+        cascade.iter().any(|doc| {
+            doc.tools.values().any(|tp| {
+                tp.requires_approval_if
+                    .as_deref()
+                    .is_some_and(crate::policy::expr::references_live_context)
+            })
+        })
+    }
+
     /// Cascade evaluation path: runs `merge_decisions` across all scoped policies,
     /// then applies rate-limit (stage 4), budget (stage 7), and credential scan
     /// (stage 6) at the engine level.
@@ -1238,7 +1253,16 @@ impl PolicyEngine {
         });
         let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> = pctx.as_ref().map(|c| c as _);
 
-        let verdict = if let Some(cached) = self.decision_cache.get(&cache_key) {
+        // AAASM-3995(c): a `requires_approval_if` that references live runtime
+        // context (team.active_agents / team.budget_remaining / …) produces a
+        // verdict that changes as that context changes. The decision cache keys
+        // only on (agent, epoch, action), so caching such a verdict would freeze
+        // a context-dependent approval decision for the cache TTL. Evaluate those
+        // fresh — like the schedule stage above — instead of serving stale.
+        let context_dependent = Self::cascade_has_live_context_approval(&cascade);
+        let verdict = if context_dependent {
+            merge_decisions(&cascade, ctx, action, pctx_dyn)
+        } else if let Some(cached) = self.decision_cache.get(&cache_key) {
             cached
         } else {
             // Stages 1–3 and 5: stateless per-doc rules merged across cascade.
@@ -3852,5 +3876,64 @@ mod tests {
             },
             "unregistered agent falls back to ctx-supplied org lineage"
         );
+    }
+
+    #[test]
+    fn cascade_context_dependent_approval_is_not_frozen_by_decision_cache() {
+        // AAASM-3995(c): a `requires_approval_if` referencing live context
+        // (team.active_agents) must be re-evaluated as that context changes —
+        // not served stale from the decision cache, which keys only on
+        // (agent, epoch, action).
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: t-approval\n  version: \"0.1.0\"\n\
+             spec:\n  tools:\n    spawn:\n      allow: true\n      requires_approval_if: \"team.active_agents > 1\"\n",
+        )
+        .unwrap();
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let registry = Arc::new(crate::registry::AgentRegistry::new());
+        registry
+            .register(registry_record([0x01; 16], "t", Some("o")))
+            .expect("register first member");
+        let engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget)
+            .expect("cascade loads")
+            .with_registry(Arc::clone(&registry));
+
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([0x01; 16]);
+        ctx.team_id = Some("t".to_string());
+        let action = tool_call("spawn", "");
+
+        // One team member: `1 > 1` is false → Allow (evaluated fresh).
+        assert_eq!(
+            engine.evaluate(&ctx, &action).decision,
+            PolicyResult::Allow,
+            "one team member is under the approval threshold"
+        );
+
+        // A second team member joins; live context now crosses the threshold.
+        registry
+            .register(registry_record([0x02; 16], "t", Some("o")))
+            .expect("register second member");
+
+        // Two members: `2 > 1` is true → RequiresApproval. A cache that froze the
+        // earlier Allow (same agent/epoch/action) would wrongly still allow.
+        assert!(
+            matches!(
+                engine.evaluate(&ctx, &action).decision,
+                PolicyResult::RequiresApproval { .. }
+            ),
+            "context-dependent approval must reflect the updated team size, not a stale cached Allow"
+        );
+
+        drop(tmp);
     }
 }

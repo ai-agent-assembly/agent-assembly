@@ -10,7 +10,7 @@ use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
 
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
-use crate::auth::scope::RequireRead;
+use crate::auth::scope::{RequireRead, Scope};
 use crate::error::ProblemDetail;
 use crate::pagination::{PaginatedResponse, PaginationParams};
 use crate::state::AppState;
@@ -50,18 +50,29 @@ pub struct PolicyListFilter {
     path = "/api/v1/policies",
     params(PaginationParams, PolicyListFilter),
     responses(
-        (status = 200, description = "Paginated list of policy versions", body = Vec<PolicyResponse>)
+        (status = 200, description = "Paginated list of policy versions", body = Vec<PolicyResponse>),
+        (status = 403, description = "Caller lacks admin scope")
     ),
     tag = "policies"
 )]
 pub async fn list_policies(
     // AAASM-3865: governance policy YAML is sensitive; require read scope so an
     // unauthenticated caller cannot dump the full policy set.
-    RequireRead(_caller): RequireRead,
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<PaginationParams>,
     axum::extract::Query(filter): axum::extract::Query<PolicyListFilter>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
+    // AAASM-3995(a): a policy version is a whole governance document spanning
+    // every tenant's cascade (global + org + team + agent rules), so it is not
+    // attributable to a single team/org that could be filtered per caller.
+    // Enumerating the full policy set therefore requires cross-tenant Admin
+    // scope; a plain Read caller must not be able to dump every tenant's rules.
+    if !caller.scopes.contains(&Scope::Admin) {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("listing policy versions requires admin scope".to_string()));
+    }
+
     let all = state
         .policy_history
         .list(usize::MAX)
@@ -216,15 +227,23 @@ impl IntoResponse for PolicyCreateError {
     path = "/api/v1/policies/active",
     responses(
         (status = 200, description = "Currently active policy", body = PolicyResponse),
+        (status = 403, description = "Caller lacks admin scope"),
         (status = 404, description = "No active policy loaded")
     ),
     tag = "policies"
 )]
 pub async fn get_active_policy(
     // AAASM-3865: the active policy YAML is sensitive; require read scope.
-    RequireRead(_caller): RequireRead,
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
 ) -> Result<(StatusCode, Json<PolicyResponse>), ProblemDetail> {
+    // AAASM-3995(a): the active policy is the full cross-tenant governance
+    // document; gate its raw YAML behind Admin scope, like the version list.
+    if !caller.scopes.contains(&Scope::Admin) {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("reading the active policy requires admin scope".to_string()));
+    }
+
     let info = state.policy_engine.active_policy_info();
 
     // No named policy is loaded — honour the 404 documented in the OpenAPI spec.

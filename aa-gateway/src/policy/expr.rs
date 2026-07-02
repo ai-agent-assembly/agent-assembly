@@ -497,7 +497,14 @@ fn eval_numeric_ctx_field(
     };
     Some(match numeric_ctx_value {
         Some(lhs) => compare_numeric(lhs, op, literal),
-        None => false,
+        // AAASM-3995(b): this evaluator drives `requires_approval_if`, where a
+        // `false` result means "no approval required". When a context field
+        // (agent.depth / team.*) cannot be resolved, silently returning `false`
+        // lets a sole-clause approval guard never fire — the action runs
+        // unguarded (fail-open). An unresolvable guard condition must fail
+        // CLOSED: fire the predicate (require approval), mirroring the
+        // fail-closed handling of unparseable ordered comparisons (AAASM-3893).
+        None => true,
     })
 }
 
@@ -1199,6 +1206,49 @@ pub(crate) fn evaluate(
     eval_tokens(&tokens, action, agent_level, policy_ctx)
 }
 
+/// AAASM-3995(c) — whether `expr` references any field whose value is resolved
+/// from live, mutable runtime state (the agent registry graph or the budget
+/// tracker) rather than from the request's action.
+///
+/// The decision cache keys only on `(agent_id, policy_epoch, action)`, so a
+/// verdict that depends on live context (e.g. `team.active_agents`,
+/// `team.budget_remaining`) would be frozen for the cache TTL. Callers use this
+/// to evaluate such verdicts fresh instead of serving a stale cached one.
+///
+/// Action-derived fields (`tool`, `path`, `url`, `method`, `command`,
+/// `governance_level`, `args.*`, `tool_result*`, `source.*`, `target.*`) are
+/// already captured by the cache key and are NOT treated as live context.
+pub(crate) fn references_live_context(expr: &str) -> bool {
+    let Some(tokens) = tokenize(expr) else {
+        return false;
+    };
+    tokens
+        .iter()
+        .any(|t| matches!(t, Token::Field(f) if is_live_context_field(f)))
+}
+
+/// Classify a [`FieldRef`] as backed by live runtime state (registry / budget)
+/// for [`references_live_context`].
+fn is_live_context_field(field: &FieldRef) -> bool {
+    matches!(
+        field,
+        FieldRef::AgentDepth
+            | FieldRef::TeamActiveAgents
+            | FieldRef::TeamParallelAgents
+            | FieldRef::TeamBudgetRemaining
+            | FieldRef::AgentAge
+            | FieldRef::AgentChildrenCount
+            | FieldRef::ChildTool
+            | FieldRef::ChildRiskTier
+            | FieldRef::AgentRiskTier
+            | FieldRef::ParentRiskTier
+            | FieldRef::AgentParentId
+            | FieldRef::AgentTeamId
+            | FieldRef::AgentIsRoot
+            | FieldRef::AgentIsLeaf
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1452,16 +1502,40 @@ mod tests {
     }
 
     #[test]
-    fn null_safety_team_active_returns_false_when_no_team() {
-        // team_active = None means the agent has no team; condition must not fire.
+    fn unresolved_team_active_fires_approval_fail_closed() {
+        // AAASM-3995(b): team_active = None (unresolvable in this approval
+        // context) must FAIL CLOSED — the guard fires (require approval) rather
+        // than silently letting the action run unguarded.
         let ctx = crate::policy::context::FakePolicyContext::default();
-        assert!(!evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
+        assert!(evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
     }
 
     #[test]
-    fn null_safety_returns_false_when_no_context() {
-        // No context at all: graph-aware field must not fire (fail-closed → no-match).
-        assert!(!evaluate("agent.depth > 0", &tool("any"), None, None));
+    fn unresolved_context_fires_approval_fail_closed() {
+        // AAASM-3995(b): no context at all → the context-dependent guard cannot
+        // be evaluated, so it fails closed (require approval).
+        assert!(evaluate("agent.depth > 0", &tool("any"), None, None));
+    }
+
+    #[test]
+    fn sole_clause_context_approval_fails_closed_when_unresolved() {
+        // A `requires_approval_if` whose only clause references live context must
+        // not become an implicit Allow when that context is unresolved.
+        assert!(evaluate("team.budget_remaining < 100", &tool("any"), None, None));
+        assert!(evaluate("agent.children_count > 3", &tool("any"), None, None));
+    }
+
+    #[test]
+    fn references_live_context_flags_registry_and_budget_fields() {
+        // AAASM-3995(c): registry / budget-backed fields are live context.
+        assert!(references_live_context("team.active_agents > 1"));
+        assert!(references_live_context("team.budget_remaining < 100"));
+        assert!(references_live_context("agent.depth > 2 OR tool == \"x\""));
+        assert!(references_live_context("agent.children_count > 0"));
+        // Action-derived fields are captured by the cache key — not live context.
+        assert!(!references_live_context("tool == \"bash\""));
+        assert!(!references_live_context("path starts_with \"/etc\""));
+        assert!(!references_live_context("governance_level >= trusted"));
     }
 
     // ── risk tier tests ──────────────────────────────────────────────────
@@ -1632,8 +1706,9 @@ mod tests {
     }
 
     #[test]
-    fn null_safety_agent_age_returns_false_without_context() {
-        assert!(!evaluate("agent.age > 24h", &tool("any"), None, None));
+    fn agent_age_fails_closed_without_context() {
+        // AAASM-3995(b): unresolved agent.age in an approval clause fails closed.
+        assert!(evaluate("agent.age > 24h", &tool("any"), None, None));
     }
 
     // ── inter-team message condition tests ───────────────────────────────────
@@ -1889,8 +1964,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_children_count_null_safe_without_context() {
-        assert!(!evaluate("agent.children_count > 0", &tool("any"), None, None));
+    fn agent_children_count_fails_closed_without_context() {
+        // AAASM-3995(b): unresolved agent.children_count in an approval clause fails closed.
+        assert!(evaluate("agent.children_count > 0", &tool("any"), None, None));
     }
 
     // ── agent.is_root, agent.is_leaf tests ───────────────────────────────────

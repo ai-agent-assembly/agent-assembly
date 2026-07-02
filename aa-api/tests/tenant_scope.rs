@@ -1103,9 +1103,11 @@ async fn get_active_policy_requires_authentication() {
     );
 }
 
-/// Positive control: an authenticated read caller may list policies.
+/// AAASM-3995(a): a policy version is a cross-tenant governance document, so a
+/// plain Read caller may no longer enumerate the full policy set — that now
+/// requires Admin scope.
 #[tokio::test]
-async fn list_policies_authenticated_read_caller_is_ok() {
+async fn list_policies_read_only_caller_is_403() {
     let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
     let app = aa_api::build_app(state);
 
@@ -1113,8 +1115,23 @@ async fn list_policies_authenticated_read_caller_is_ok() {
     let response = app.oneshot(bearer("/api/v1/policies", &token)).await.unwrap();
     assert_eq!(
         response.status(),
+        StatusCode::FORBIDDEN,
+        "a plain read caller must not enumerate cross-tenant policy versions"
+    );
+}
+
+/// Positive control: an Admin caller may list policies.
+#[tokio::test]
+async fn list_policies_admin_caller_is_ok() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[Scope::Read, Scope::Write, Scope::Admin]);
+    let response = app.oneshot(bearer("/api/v1/policies", &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
         StatusCode::OK,
-        "an authenticated read caller may list policies"
+        "an admin caller may list policy versions"
     );
 }
 
