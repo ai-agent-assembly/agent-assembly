@@ -74,6 +74,22 @@ impl std::error::Error for HostFnRateLimitMarker {}
 /// a config field can follow once those call sites adopt `..Default::default()`.
 const MAX_TABLE_ELEMENTS: usize = 10_000;
 
+/// Maximum number of linear memories, tables, and instances a single store may
+/// create (AAASM-4015).
+///
+/// Wasmtime's [`ResourceLimiter`] count defaults are ~10 000 each. A hostile
+/// module can exploit those generous ceilings to *multiply* the intended
+/// per-store resource budget: many memories each get a fresh
+/// [`StoreLimits::max_bytes`] allowance, and many tables each get a fresh
+/// [`MAX_TABLE_ELEMENTS`] allowance, turning the per-item caps into an OOM-DoS.
+/// A sandboxed tool needs exactly one memory, one table, and one instance, so
+/// each count is pinned to 1 — modules declaring more are rejected at
+/// instantiation. Multi-memory is additionally gated off at validation in
+/// [`SandboxRuntime::new`] as defense in depth.
+const MAX_MEMORIES: usize = 1;
+const MAX_TABLES: usize = 1;
+const MAX_INSTANCES: usize = 1;
+
 /// Per-store resource caps enforced via [`Store::limiter`].
 ///
 /// `memory_growing` denies any grow that would push the guest above
@@ -107,6 +123,24 @@ impl ResourceLimiter for StoreLimits {
         // without the host eagerly allocating the requested slots — closing
         // the uncapped-`table.grow` OOM-DoS gap. (AAASM-3990.)
         Ok(desired <= self.max_table_elements)
+    }
+
+    // Pin the per-store memory/table/instance *counts* (AAASM-4015). Left at
+    // wasmtime's ~10 000 defaults, a hostile module could declare many memories
+    // or tables, each carrying its own `max_bytes` / `max_table_elements`
+    // allowance and thereby multiplying past the intended per-store ceiling. A
+    // sandboxed tool needs exactly one of each; exceeding these fails
+    // instantiation.
+    fn memories(&self) -> usize {
+        MAX_MEMORIES
+    }
+
+    fn tables(&self) -> usize {
+        MAX_TABLES
+    }
+
+    fn instances(&self) -> usize {
+        MAX_INSTANCES
     }
 }
 
@@ -177,6 +211,14 @@ impl SandboxRuntime {
         let mut engine_config = Config::new();
         engine_config.consume_fuel(true);
         engine_config.epoch_interruption(true);
+        // Disable the multi-memory proposal (AAASM-4015). A sandboxed tool needs
+        // exactly one linear memory; leaving multi-memory on (wasmtime's default)
+        // lets a hostile module declare many memories, each of which is a
+        // separate `StoreLimits::max_bytes` allowance — multiplying the intended
+        // per-store memory ceiling into an OOM-DoS. Gating it at validation
+        // rejects such modules before instantiation. `reference_types` stays on:
+        // funcref tables and `table.grow` (capped separately below) depend on it.
+        engine_config.wasm_multi_memory(false);
         let engine = Engine::new(&engine_config).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         let mut linker: Linker<StoreState> = Linker::new(&engine);
         p1::add_to_linker_sync(&mut linker, |s: &mut StoreState| &mut s.wasi)
@@ -723,6 +765,85 @@ mod tests {
         assert!(
             matches!(result, Err(SandboxError::WallClockTimeout)),
             "expected SandboxError::WallClockTimeout, got {:?}",
+            result,
+        );
+    }
+
+    /// Multi-memory module (AAASM-4015): declares two linear memories. With the
+    /// multi-memory proposal disabled in the engine `Config`, wasmtime rejects
+    /// it at validation, so it never reaches instantiation — the count-multiply
+    /// OOM-DoS is closed before the module can allocate anything.
+    const MULTI_MEMORY_WAT: &str = r#"
+        (module
+          (memory 1)
+          (memory 1)
+          (func (export "_start")))
+    "#;
+
+    #[test]
+    fn run_tool_rejects_multi_memory_module() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with default caps must construct");
+        let wasm = wat::parse_str(MULTI_MEMORY_WAT).expect("multi-memory WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        // Multi-memory is gated off, so the module fails to validate.
+        assert!(
+            matches!(result, Err(SandboxError::InvalidWasm(_))),
+            "multi-memory module must be rejected at validation, got {:?}",
+            result,
+        );
+    }
+
+    /// Multi-table module (AAASM-4015): declares two funcref tables. Multiple
+    /// tables rely on the reference-types proposal (kept enabled), so this
+    /// validates but must be rejected at instantiation by the `tables()` count
+    /// cap (`MAX_TABLES == 1`).
+    const MULTI_TABLE_WAT: &str = r#"
+        (module
+          (table 1 funcref)
+          (table 1 funcref)
+          (func (export "_start")))
+    "#;
+
+    #[test]
+    fn run_tool_rejects_multi_table_module() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with default caps must construct");
+        let wasm = wat::parse_str(MULTI_TABLE_WAT).expect("multi-table WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        // The table-count cap rejects the second table at instantiation.
+        assert!(
+            matches!(result, Err(SandboxError::Wasmtime(_))),
+            "multi-table module must be rejected at instantiation, got {:?}",
+            result,
+        );
+    }
+
+    /// A module with exactly one memory and one table — the legitimate shape —
+    /// must still instantiate and run cleanly under the count caps. Guards the
+    /// caps against over-rejecting normal modules.
+    const SINGLE_MEMORY_TABLE_WAT: &str = r#"
+        (module
+          (memory 1)
+          (table 1 funcref)
+          (func (export "_start")))
+    "#;
+
+    #[test]
+    fn run_tool_allows_single_memory_and_table() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with default caps must construct");
+        let wasm = wat::parse_str(SINGLE_MEMORY_TABLE_WAT).expect("single-memory/table WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Ok(SandboxOutput { exit_code: 0 })),
+            "single memory + single table module must run cleanly, got {:?}",
             result,
         );
     }
