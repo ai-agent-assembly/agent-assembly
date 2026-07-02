@@ -244,7 +244,31 @@ fn spawn_ebpf_file_io(
         return;
     }
 
-    let mut rx = match loader.start_event_reader() {
+    // AAASM-4012: seed the in-kernel PATH_BLOCKLIST from the detector's
+    // exact-file rules so the kretprobe sets the sensitive-path flag (bit 0)
+    // in-kernel, and drive event reading through the userspace detector so
+    // `is_sensitive` is also set for the prefix/canonical rules the kernel's
+    // exact-match map cannot express (see `aa_ebpf::maps::PathPattern`). Without
+    // this the events carried no sensitivity signal at all.
+    let detector = aa_ebpf::SensitivePathDetector::with_defaults();
+    let blocklist: Vec<aa_ebpf::PathPattern> = detector
+        .prefixes()
+        .iter()
+        .filter(|p| !p.ends_with('/'))
+        .map(|p| aa_ebpf::PathPattern {
+            pattern: p.clone(),
+            verdict: aa_ebpf::PathVerdict::Deny,
+        })
+        .collect();
+    if let Err(e) = loader.update_path_filter(&blocklist) {
+        let reason = format!("file I/O path blocklist update failed: {e}");
+        tracing::warn!(%reason, "degrading ebpf/file_io sub-layer");
+        emit_ebpf_degradation(broadcast_tx, "ebpf/file_io", reason);
+        degraded_layers.push("ebpf/file_io".to_string());
+        return;
+    }
+
+    let mut rx = match loader.start_event_reader_with_alerts(detector) {
         Ok(r) => r,
         Err(e) => {
             let reason = format!("file I/O event reader failed: {e}");
