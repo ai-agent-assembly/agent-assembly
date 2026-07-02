@@ -40,12 +40,31 @@ pub const TAG_VIOLATION_ALERT: u8 = 4;
 /// runtime → SDK per-session nonce challenge (AAASM-3587).
 pub const TAG_HANDSHAKE_CHALLENGE: u8 = 5;
 
+/// Maximum accepted length-delimited payload size, in bytes (8 MiB).
+///
+/// The wire length prefix is attacker-controlled: anything that can connect to
+/// the runtime socket (including a `/tmp` socket-squatter when the real runtime
+/// is down) can send a varint claiming a multi-gigabyte payload, and
+/// `vec![0u8; len]` would attempt to allocate it *before* a single payload byte
+/// is read — a trivial local DoS that OOM-aborts the agent (AAASM-3989). We
+/// reject any frame larger than this bound before allocating. 8 MiB matches
+/// `aa-runtime`'s `MAX_FRAME_LEN`, comfortably exceeding any legitimate
+/// `CheckActionResponse` / `PolicyViolation` while keeping a single hostile
+/// frame from exhausting memory.
+pub const MAX_FRAME_LEN: usize = 8 * 1024 * 1024;
+
 /// Errors that can occur during codec operations.
 #[derive(Debug)]
 pub enum CodecError {
     Io(std::io::Error),
     UnknownTag(u8),
     DecodeError(prost::DecodeError),
+    /// The wire length prefix exceeded [`MAX_FRAME_LEN`]. Rejected before any
+    /// allocation so a hostile peer cannot force a large buffer alloc.
+    FrameTooLarge {
+        len: usize,
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for CodecError {
@@ -54,6 +73,9 @@ impl std::fmt::Display for CodecError {
             CodecError::Io(e) => write!(f, "IO error: {e}"),
             CodecError::UnknownTag(t) => write!(f, "unknown response tag: {t}"),
             CodecError::DecodeError(e) => write!(f, "prost decode error: {e}"),
+            CodecError::FrameTooLarge { len, max } => {
+                write!(f, "frame length {len} exceeds maximum {max}")
+            }
         }
     }
 }
@@ -190,6 +212,16 @@ where
     R: AsyncReadExt + Unpin,
 {
     let len = read_varint(reader).await? as usize;
+    // AAASM-3989: bound the claimed length BEFORE allocating. The prefix comes
+    // off the wire from an untrusted peer (e.g. a socket-squatter on the runtime
+    // path), so allocating `len` bytes first would let a single hostile frame
+    // exhaust memory and abort the host agent.
+    if len > MAX_FRAME_LEN {
+        return Err(CodecError::FrameTooLarge {
+            len,
+            max: MAX_FRAME_LEN,
+        });
+    }
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).await?;
     Ok(buf)
@@ -293,5 +325,43 @@ mod tests {
         let mut cursor = Cursor::new(wire);
         let result = read_response(&mut cursor).await;
         assert!(matches!(result, Err(CodecError::UnknownTag(99))));
+    }
+
+    /// AAASM-3989: a frame whose length prefix exceeds `MAX_FRAME_LEN` must be
+    /// rejected *before* the body is allocated. We build the wire by hand with a
+    /// tag and an oversized varint length but no body — if the codec allocated
+    /// first it would attempt a `usize::MAX`-scale `vec![0u8; len]`; instead it
+    /// returns `FrameTooLarge` after reading only the varint.
+    #[tokio::test]
+    async fn oversized_frame_length_rejected_before_alloc() {
+        // Encode a policy-response frame claiming u64::MAX bytes of payload.
+        let mut wire = vec![TAG_POLICY_RESPONSE];
+        write_varint(&mut wire, u64::MAX).await.unwrap();
+        // Deliberately provide no payload bytes: the guard must fire first.
+        let mut cursor = Cursor::new(wire);
+        let result = read_response(&mut cursor).await;
+        match result {
+            Err(CodecError::FrameTooLarge { len, max }) => {
+                assert_eq!(max, MAX_FRAME_LEN);
+                assert!(len > MAX_FRAME_LEN, "claimed len {len} must exceed the cap");
+            }
+            other => panic!("expected FrameTooLarge, got {other:?}"),
+        }
+    }
+
+    /// A frame at exactly `MAX_FRAME_LEN` is not rejected by the bound (the guard
+    /// is `len > MAX_FRAME_LEN`); it proceeds to read the body. Here the body is
+    /// absent, so it fails with an IO error, proving the length check itself did
+    /// not reject it.
+    #[tokio::test]
+    async fn frame_at_max_len_passes_the_bound() {
+        let mut wire = vec![TAG_POLICY_RESPONSE];
+        write_varint(&mut wire, MAX_FRAME_LEN as u64).await.unwrap();
+        let mut cursor = Cursor::new(wire);
+        let result = read_response(&mut cursor).await;
+        assert!(
+            matches!(result, Err(CodecError::Io(_))),
+            "MAX_FRAME_LEN must pass the bound and fail only reading the absent body"
+        );
     }
 }
