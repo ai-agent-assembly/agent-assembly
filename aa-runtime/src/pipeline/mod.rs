@@ -645,6 +645,24 @@ enum GatewayOutcome {
 /// error, so the caller's fail-closed path applies. Dropping the timed-out
 /// future also releases the client lock, so a subsequent stuck query cannot
 /// wedge for longer than one deadline.
+/// Collapse a gateway decision code that the SDK path does not understand to a
+/// fail-closed `Deny` (AAASM-4020).
+///
+/// The SDK/runtime enforcement path only acts on `Allow`, `Deny`, and
+/// `Pending`. Any other code — `Unspecified`, a `Redact` verdict the runtime
+/// cannot apply on this path, or an out-of-range value from a newer gateway —
+/// is rewritten to `Deny` so an unknown verdict never relays through as an
+/// implicit allow. Mirrors `aa-proxy::mcp_enforce::decision_from_response`.
+fn normalize_gateway_decision(resp: &mut CheckActionResponse) {
+    let recognized = matches!(
+        Decision::try_from(resp.decision),
+        Ok(Decision::Allow | Decision::Deny | Decision::Pending)
+    );
+    if !recognized {
+        resp.decision = Decision::Deny as i32;
+    }
+}
+
 async fn try_gateway_forward(
     connection_id: u64,
     req: &aa_proto::assembly::policy::v1::CheckActionRequest,
@@ -660,7 +678,13 @@ async fn try_gateway_forward(
     let mut guard = client.lock().await;
     let call = tokio::time::timeout(gateway_timeout, guard.check_action(req.clone())).await;
     match call {
-        Ok(Ok(resp)) => {
+        Ok(Ok(mut resp)) => {
+            // AAASM-4020: normalize the decision before relaying it to the SDK.
+            // Only Allow/Deny/Pending are valid verdicts on this path; an
+            // Unspecified, out-of-range, or otherwise unrecognized code
+            // collapses to a fail-closed Deny rather than being forwarded
+            // verbatim (mirrors aa-proxy::mcp_enforce::decision_from_response).
+            normalize_gateway_decision(&mut resp);
             tracing::debug!(connection_id, decision = resp.decision, "gateway responded");
             // On Deny: surface a structured PolicyViolation event into
             // the broadcast pipeline so the Live Ops dashboard sees the
@@ -844,6 +868,32 @@ mod tests {
     use crate::policy::PolicyRules;
     use aa_proto::assembly::audit::v1::{audit_event::Detail, AuditEvent, PolicyViolation};
     use aa_proto::assembly::policy::v1::OpControlSignal;
+
+    #[test]
+    fn normalize_gateway_decision_collapses_unknown_to_deny() {
+        // AAASM-4020: only Allow/Deny/Pending survive; everything else (an
+        // Unspecified, a Redact verdict, or an out-of-range code) becomes Deny.
+        for kept in [Decision::Allow, Decision::Deny, Decision::Pending] {
+            let mut resp = CheckActionResponse {
+                decision: kept as i32,
+                ..Default::default()
+            };
+            normalize_gateway_decision(&mut resp);
+            assert_eq!(resp.decision, kept as i32);
+        }
+        for code in [Decision::Unspecified as i32, Decision::Redact as i32, 9999] {
+            let mut resp = CheckActionResponse {
+                decision: code,
+                ..Default::default()
+            };
+            normalize_gateway_decision(&mut resp);
+            assert_eq!(
+                resp.decision,
+                Decision::Deny as i32,
+                "code {code} should collapse to Deny"
+            );
+        }
+    }
 
     /// Unwrap a `PipelineEvent::Audit` variant, panicking if it is a different variant.
     fn unwrap_audit(event: PipelineEvent) -> EnrichedEvent {
