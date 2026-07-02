@@ -394,7 +394,9 @@ pub async fn create_destination(
     }
     validate_config(&req.config).map_err(validation_error_to_problem)?;
 
-    let d = state.destination_store.create(req.name, req.config, req.enabled);
+    let d = state
+        .destination_store
+        .create(req.name, req.config, req.enabled, None, None);
     Ok((StatusCode::CREATED, Json(d.into())))
 }
 
@@ -639,6 +641,8 @@ mod tests {
             enabled: true,
             created_at: String::new(),
             updated_at: String::new(),
+            team_id: None,
+            org_id: None,
         };
         let req = DispatchRequest {
             severity: "LOW".to_string(),
@@ -657,6 +661,8 @@ mod tests {
                 secret_header: None,
             },
             true,
+            None,
+            None,
         );
         // SSRF egress guard (AAASM-3789): a loopback target is refused before dispatch.
         let failure = test_destination(admin(), Extension(state), Path(dest.id), None)
@@ -682,6 +688,8 @@ mod tests {
                     channel_override: None,
                 },
                 true,
+                None,
+                None,
             );
             let failure = test_destination(admin(), Extension(state), Path(dest.id), None)
                 .await
@@ -704,6 +712,8 @@ mod tests {
                 secret_header: Some("real-secret".to_string()),
             },
             true,
+            None,
+            None,
         );
         // A GET → edit → PUT round-trip ships back the masked sentinel; it must not
         // clobber the real stored secret.
@@ -775,6 +785,8 @@ mod tests {
                 enabled: true,
                 created_at: String::new(),
                 updated_at: String::new(),
+                team_id: None,
+                org_id: None,
             };
             match DestinationResponse::from(dest).config {
                 DestinationConfig::Webhook { secret_header, .. } => {
