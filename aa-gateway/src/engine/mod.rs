@@ -826,7 +826,20 @@ impl PolicyEngine {
         // is unregistered (untenanted / pre-registry deployments, and the
         // convert.rs path where the agent isn't keyed in the registry).
         let lineage = self.authoritative_lineage(ctx);
-        let cascade = self.collect_cascade_with_lineage(&ctx.agent_id, &lineage);
+        let mut cascade = self.collect_cascade_with_lineage(&ctx.agent_id, &lineage);
+
+        // AAASM-3981: append the `tool:`-scoped tier at the most-restrictive end
+        // (after Agent). The tool identity comes from the action being evaluated
+        // (`ToolCall` / `ToolResult`); actions with no resolvable tool skip the
+        // tier rather than fabricate one. Without this, `scope: tool:X` documents
+        // load and validate but are never consulted — a fail-open by omission
+        // that leaves a tool-scoped deny silently dead.
+        if let Some(tool_name) = action_tool_name(action) {
+            self.push_scope_policies(
+                &crate::policy::scope::PolicyScope::Tool(tool_name.to_owned()),
+                &mut cascade,
+            );
+        }
 
         // Backward-compat: no scoped policies loaded → use primary policy only.
         if cascade.is_empty() {
@@ -1639,6 +1652,22 @@ impl PolicyEngine {
                 cascade.push(Arc::clone(doc));
             }
         }
+    }
+}
+
+/// Resolve the tool identity an action targets, for selecting the `tool:`-scoped
+/// cascade tier (AAASM-3981). Only tool-invocation actions carry a tool name:
+/// `ToolCall` and `ToolResult`. Every other variant (file, network, process,
+/// message) has no tool identity, so returns `None` and the caller skips the
+/// Tool tier rather than fabricating one.
+fn action_tool_name(action: &aa_core::GovernanceAction) -> Option<&str> {
+    match action {
+        aa_core::GovernanceAction::ToolCall { name, .. } => Some(name.as_str()),
+        aa_core::GovernanceAction::ToolResult { tool_name, .. } => Some(tool_name.as_str()),
+        aa_core::GovernanceAction::FileAccess { .. }
+        | aa_core::GovernanceAction::NetworkRequest { .. }
+        | aa_core::GovernanceAction::ProcessExec { .. }
+        | aa_core::GovernanceAction::SendMessage { .. } => None,
     }
 }
 
