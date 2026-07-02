@@ -373,10 +373,19 @@ impl SandboxRuntime {
             })
         };
 
-        let instance = self
-            .linker
-            .instantiate(&mut store, &module)
-            .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        let instance = self.linker.instantiate(&mut store, &module).map_err(|e| {
+            // An oversized *initial* linear memory trips `StoreLimits::memory_growing`
+            // during instantiation (the initial allocation is a grow from 0), which
+            // rides out through this `instantiate` error rather than the post-`call`
+            // branch below. Without this downcast such an OOM would be misclassified
+            // as a generic `Wasmtime` (→ SandboxTerminated) instead of
+            // `MemoryExhausted` (→ SandboxOomKilled). (Folded from AAASM-4020.)
+            if e.downcast_ref::<MemoryExhaustedMarker>().is_some() {
+                SandboxError::MemoryExhausted
+            } else {
+                SandboxError::Wasmtime(e.to_string())
+            }
+        })?;
         let start = instance
             .get_typed_func::<(), ()>(&mut store, "_start")
             .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
@@ -896,6 +905,35 @@ mod tests {
         assert!(
             matches!(result, Err(SandboxError::Wasmtime(_))),
             "FIFO preopen target must be rejected, got {:?}",
+            result,
+        );
+    }
+
+    /// Instantiate-time OOM telemetry (folded from AAASM-4020): a module whose
+    /// *initial* linear memory already exceeds the store byte cap trips
+    /// `memory_growing` during `instantiate` (before any guest code runs). That
+    /// path must map to `MemoryExhausted` (→ SandboxOomKilled), not the generic
+    /// `Wasmtime` (→ SandboxTerminated) misclassification.
+    const OVERSIZED_INITIAL_MEMORY_WAT: &str = r#"
+        (module
+          (memory 100)
+          (func (export "_start")))
+    "#;
+
+    #[test]
+    fn run_tool_maps_instantiate_time_oom_to_memory_exhausted() {
+        // Default cap is 16 pages; a 100-page initial memory overshoots it during
+        // the instantiation-time initial allocation.
+        let runtime = SandboxRuntime::new(SandboxConfig::default())
+            .expect("SandboxRuntime with default memory cap must construct");
+        let wasm =
+            wat::parse_str(OVERSIZED_INITIAL_MEMORY_WAT).expect("oversized-initial-memory WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::MemoryExhausted)),
+            "oversized initial memory must map to MemoryExhausted at instantiate time, got {:?}",
             result,
         );
     }
