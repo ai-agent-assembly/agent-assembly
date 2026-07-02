@@ -679,37 +679,71 @@ fn scan_long_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
     }
 }
 
-/// Scans `text` for email addresses by locating `@` signs and expanding outward.
+/// RFC 5321 caps the local-part of an address at 64 octets. A run longer than
+/// this cannot be a legitimate email, so it is skipped — this also bounds the
+/// per-`@` work on delimiter-free input (AAASM-3988).
+const MAX_EMAIL_LOCAL_LEN: usize = 64;
+
+/// RFC 5321 caps the domain of an address at 255 octets. Capping the forward
+/// domain scan at this length keeps [`scan_emails`] linear on pathological
+/// input (e.g. `a@a@a@…`) without affecting any real address (AAASM-3988).
+const MAX_EMAIL_DOMAIN_LEN: usize = 255;
+
+/// Like [`token_end`] but scans at most `max_len` bytes forward, returning a
+/// valid char boundary. Bounding the scan prevents a single `@` from costing
+/// O(n) on delimiter-free input, keeping [`scan_emails`] linear overall.
+fn bounded_token_end(text: &str, from: usize, max_len: usize) -> usize {
+    let mut end = from;
+    for (i, c) in text[from..].char_indices() {
+        if i >= max_len {
+            return from + i;
+        }
+        if c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';' | ')' | ']' | '}') {
+            return from + i;
+        }
+        end = from + i + c.len_utf8();
+    }
+    end
+}
+
+/// Scans `text` for email addresses in a single forward pass.
+///
+/// The local-part start is tracked as the byte offset just past the most recent
+/// token-delimiting character, so it is known in O(1) per `@` rather than an
+/// O(n) backward rescan. Combined with the local/domain length caps this keeps
+/// the scan linear even on adversarial input such as ~1 MB of consecutive `@`
+/// with no delimiters (AAASM-3988 — quadratic-time DoS).
 fn scan_emails(text: &str, findings: &mut Vec<CredentialFinding>) {
-    let mut search = text;
-    let mut base = 0usize;
+    // Byte offset just past the most recent delimiter — i.e. the local-part
+    // start for the next `@` encountered. Equivalent to the old backward
+    // `rfind`, computed incrementally.
+    let mut local_start = 0usize;
 
-    while let Some(at) = search.find('@') {
-        let abs_at = base + at;
+    for (idx, c) in text.char_indices() {
+        if c == '@' {
+            // Skip an empty or over-long local-part. The length cap also gates
+            // the domain scan below so delimiter-free runs stay linear.
+            if idx == local_start || idx - local_start > MAX_EMAIL_LOCAL_LEN {
+                continue;
+            }
 
-        let local_start = text[..abs_at]
-            .rfind(|c: char| c.is_whitespace() || matches!(c, '<' | ',' | ';' | '"' | '\''))
-            .map(|i| i + 1)
-            .unwrap_or(0);
+            let domain_start = idx + 1;
+            let domain_end = bounded_token_end(text, domain_start, MAX_EMAIL_DOMAIN_LEN);
+            let domain = &text[domain_start..domain_end];
 
-        let domain_end = token_end(text, abs_at + 1);
-        let local = &text[local_start..abs_at];
-        let domain = &text[abs_at + 1..domain_end];
-
-        if !local.is_empty() && domain.contains('.') && domain.len() >= 3 {
-            findings.push(CredentialFinding::new(
-                CredentialKind::EmailAddress,
-                local_start,
-                domain_end,
-            ));
+            if domain.contains('.') && domain.len() >= 3 {
+                findings.push(CredentialFinding::new(
+                    CredentialKind::EmailAddress,
+                    local_start,
+                    domain_end,
+                ));
+            }
+            continue;
         }
 
-        let next = abs_at + 1;
-        if next >= text.len() {
-            break;
+        if c.is_whitespace() || matches!(c, '<' | ',' | ';' | '"' | '\'') {
+            local_start = idx + c.len_utf8();
         }
-        search = &text[next..];
-        base = next;
     }
 }
 
