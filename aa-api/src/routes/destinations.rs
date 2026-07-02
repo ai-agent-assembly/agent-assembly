@@ -12,7 +12,8 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::auth::scope::{RequireAdmin, RequireRead};
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::destinations::connectors::slack::SlackConnector;
 use crate::destinations::connectors::webhook::WebhookConnector;
 use crate::destinations::connectors::{ConnectorError, DispatchRequest, NotificationConnector};
@@ -260,6 +261,40 @@ fn in_use_problem() -> ProblemDetail {
     ProblemDetail::from_status(StatusCode::CONFLICT).with_detail("destination_in_use")
 }
 
+/// Enforce tenant ownership of a destination for a caller that already cleared
+/// the scope gate (AAASM-3911).
+///
+/// Mirrors `alert_rules::authorize_rule_owner`: an admin may act on any
+/// destination; a tenant-scoped caller may act only on destinations its own
+/// tenant owns; a caller with neither admin scope nor any tenant scope is
+/// denied up front (fail-closed). Untagged destinations (created by an admin /
+/// bypass caller) are admin-only. A destination is matched on its finer-grained
+/// tag first: a `team_id` requires team access, otherwise an `org_id` requires
+/// org access, otherwise (untagged) admin is required.
+fn authorize_destination_owner(caller: &AuthenticatedCaller, dest: &Destination) -> Result<(), ProblemDetail> {
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() && caller.tenant.org_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a tenant scope"));
+    }
+    let authorized = match (dest.team_id.as_deref(), dest.org_id.as_deref()) {
+        (Some(team), _) => caller.can_access_team(team),
+        (None, Some(org)) => caller.can_access_org(org),
+        (None, None) => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or membership in the destination's tenant"));
+    }
+    Ok(())
+}
+
+/// Whether `caller` may see `dest` — the boolean form of
+/// [`authorize_destination_owner`], used to filter the list response.
+fn destination_visible_to(caller: &AuthenticatedCaller, dest: &Destination) -> bool {
+    authorize_destination_owner(caller, dest).is_ok()
+}
+
 /// Pick the connector implementation matching a destination kind.
 fn connector_for(kind: DestinationKind) -> Box<dyn NotificationConnector> {
     match kind {
@@ -348,14 +383,19 @@ impl IntoResponse for TestDestinationFailure {
     tag = "alert-destinations"
 )]
 pub async fn list_destinations(
-    _auth: RequireRead,
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Query(filter): Query<DestinationListFilter>,
 ) -> Json<Vec<DestinationResponse>> {
+    // AAASM-3911: confine the listing to destinations the caller's tenant owns.
+    // An admin sees every destination; a tenant-scoped caller sees only its own
+    // tenant's; a caller with no tenant scope (and no admin) sees none. Untagged
+    // destinations are admin-only.
     let items = state
         .destination_store
         .list(filter.kind)
         .into_iter()
+        .filter(|d| destination_visible_to(&caller, d))
         .map(DestinationResponse::from)
         .collect();
     Json(items)
@@ -377,12 +417,11 @@ pub async fn list_destinations(
     tag = "alert-destinations"
 )]
 pub async fn create_destination(
-    // AAASM-3894: destinations carry no team_id/org_id, so a Write-scope key in
-    // any tenant could otherwise create/modify/delete/test-fire every tenant's
-    // notification targets. Destinations are admin-managed infrastructure, so
-    // gate all mutations (incl. the egressing test-fire) on admin scope.
-    // (Deeper per-object tenant tagging is tracked as a follow-up.)
-    _auth: RequireAdmin,
+    // AAASM-3911: reverts the AAASM-3894 admin-gate stopgap back to Write scope.
+    // Safe now because the destination is stamped with (and later confined to)
+    // the creating caller's tenant, so a Write key can only manage its own
+    // tenant's notification targets (incl. the egressing test-fire).
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<DestinationResponse>), ProblemDetail> {
@@ -394,9 +433,16 @@ pub async fn create_destination(
     }
     validate_config(&req.config).map_err(validation_error_to_problem)?;
 
-    let d = state
-        .destination_store
-        .create(req.name, req.config, req.enabled, None, None);
+    // AAASM-3911: stamp the owning tenant from the authenticated caller. An
+    // admin / bypass caller has no tenant → the destination is untagged
+    // (admin-only). The tenant is never taken from the request body.
+    let d = state.destination_store.create(
+        req.name,
+        req.config,
+        req.enabled,
+        caller.tenant.team_id.clone(),
+        caller.tenant.org_id.clone(),
+    );
     Ok((StatusCode::CREATED, Json(d.into())))
 }
 
@@ -415,11 +461,13 @@ pub async fn create_destination(
     tag = "alert-destinations"
 )]
 pub async fn get_destination(
-    _auth: RequireRead,
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<DestinationResponse>, ProblemDetail> {
     let d = state.destination_store.get(&id).ok_or_else(not_found_problem)?;
+    // AAASM-3911: tenant ownership before exposing the destination.
+    authorize_destination_owner(&caller, &d)?;
     Ok(Json(d.into()))
 }
 
@@ -441,12 +489,16 @@ pub async fn get_destination(
     tag = "alert-destinations"
 )]
 pub async fn update_destination(
-    // AAASM-3894: admin-gated — see `create_destination`.
-    _auth: RequireAdmin,
+    // AAASM-3911: Write scope — see `create_destination`.
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Json<DestinationResponse>, ProblemDetail> {
+    // AAASM-3911: tenant ownership on the existing destination before mutating.
+    let existing = state.destination_store.get(&id).ok_or_else(not_found_problem)?;
+    authorize_destination_owner(&caller, &existing)?;
+
     let mut req = parse_update_body(&body)?;
     if let Some(name) = &req.name {
         if name.trim().is_empty() {
@@ -461,8 +513,7 @@ pub async fn update_destination(
     // would otherwise fail URL validation, and a masked value of any kind must
     // never overwrite the real stored secret on a GET → edit → PUT round-trip.
     if let Some(cfg) = &mut req.config {
-        let stored = state.destination_store.get(&id).map(|d| d.config);
-        restore_masked_secrets(cfg, stored);
+        restore_masked_secrets(cfg, Some(existing.config.clone()));
     }
 
     if let Some(cfg) = &req.config {
@@ -496,11 +547,15 @@ pub async fn update_destination(
     tag = "alert-destinations"
 )]
 pub async fn delete_destination(
-    // AAASM-3894: admin-gated — see `create_destination`.
-    _auth: RequireAdmin,
+    // AAASM-3911: Write scope — see `create_destination`.
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ProblemDetail> {
+    // AAASM-3911: tenant ownership on the existing destination before deleting.
+    let existing = state.destination_store.get(&id).ok_or_else(not_found_problem)?;
+    authorize_destination_owner(&caller, &existing)?;
+
     state.destination_store.delete(&id).map_err(|e| match e {
         StoreError::NotFound => not_found_problem(),
         StoreError::InUse => in_use_problem(),
@@ -527,8 +582,9 @@ pub async fn delete_destination(
     tag = "alert-destinations"
 )]
 pub async fn test_destination(
-    // AAASM-3894: admin-gated — see `create_destination`.
-    _auth: RequireAdmin,
+    // AAASM-3911: Write scope — see `create_destination`. The test-fire egresses,
+    // so tenant ownership is enforced below before any network dispatch.
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     body: Option<Json<TestDestinationRequest>>,
@@ -537,6 +593,10 @@ pub async fn test_destination(
         .destination_store
         .get(&id)
         .ok_or_else(|| TestDestinationFailure::NotFound(not_found_problem()))?;
+
+    // AAASM-3911: tenant ownership before firing (a 403 is surfaced as a
+    // rejection, mapped to its ProblemDetail status).
+    authorize_destination_owner(&caller, &destination).map_err(TestDestinationFailure::Rejected)?;
 
     // AAASM-3789 / AAASM-3868: SSRF egress guard. Before dispatching a test-fire,
     // reject targets that resolve to an internal address (loopback / RFC1918 /
@@ -611,8 +671,12 @@ mod tests {
     use crate::auth::scope::Scope;
     use crate::auth::{AuthenticatedCaller, Tenant};
 
-    fn admin() -> RequireAdmin {
-        RequireAdmin(AuthenticatedCaller {
+    // AAASM-3911: the mutation handlers now gate on Write scope + tenant
+    // ownership (reverting the AAASM-3894 admin-gate). This admin caller (Admin
+    // satisfies Write) with no tenant scope owns untagged destinations, so the
+    // existing SSRF / masking tests still exercise the handlers unchanged.
+    fn admin() -> RequireWrite {
+        RequireWrite(AuthenticatedCaller {
             key_id: "k".to_string(),
             scopes: vec![Scope::Admin],
             tenant: Tenant::default(),
