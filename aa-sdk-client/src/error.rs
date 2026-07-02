@@ -17,7 +17,10 @@ pub enum SdkClientError {
     ChannelClosed,
     /// A synchronous policy query did not complete: the runtime did not answer
     /// within the timeout, or the IPC connection closed before a response
-    /// arrived. Callers should treat this as *fail-open* (the SDK is advisory).
+    /// arrived. This is a non-OK sentinel, not an implicit allow: callers resolve
+    /// it through [`resolve_decision`](crate::decision::resolve_decision), which
+    /// fails *closed* under enforce and preserves fail-open only when fail-closed
+    /// is disabled (AAASM-3958).
     QueryFailed,
     /// The gateway gRPC endpoint could not be reached for registration.
     GatewayUnreachable,

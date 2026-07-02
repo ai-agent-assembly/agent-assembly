@@ -28,6 +28,7 @@
 pub mod client;
 pub mod codec;
 pub mod config;
+pub mod decision;
 pub mod error;
 pub mod gateway;
 pub mod identity;
@@ -38,6 +39,7 @@ pub mod preflight;
 
 pub use client::AssemblyClient;
 pub use config::AssemblyConfig;
+pub use decision::resolve_decision;
 pub use error::SdkClientError;
 pub use identity::agent_id_to_did_key;
 pub use keypair::AgentKeypair;

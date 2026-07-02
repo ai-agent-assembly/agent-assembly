@@ -20,7 +20,9 @@ use crate::ipc::{IpcCommand, IpcHandle};
 use crate::preflight::Preflight;
 
 /// How long [`AssemblyClient::query_policy`] blocks for a runtime decision
-/// before failing open with [`SdkClientError::QueryFailed`].
+/// before returning the non-OK [`SdkClientError::QueryFailed`] sentinel (which
+/// [`resolve_decision`](crate::decision::resolve_decision) fails closed under
+/// enforce, AAASM-3958).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Handle to an active Agent Assembly session.
@@ -230,9 +232,12 @@ impl AssemblyClient {
     ///
     /// Sends a `CheckActionRequest` to `aa-runtime` over the IPC connection and
     /// blocks (up to [`QUERY_TIMEOUT`]) for the `CheckActionResponse`. Returns
-    /// [`SdkClientError::QueryFailed`] when the runtime does not answer in time
-    /// or the connection closes — callers must treat that as *fail-open* (the
-    /// SDK is advisory; the runtime/proxy/eBPF layers are authoritative).
+    /// the non-OK sentinel [`SdkClientError::QueryFailed`] when the runtime does
+    /// not answer in time or the connection closes; it never fabricates a
+    /// decision. Callers must map the outcome to a final decision through
+    /// [`resolve_decision`](crate::decision::resolve_decision), which fails
+    /// *closed* under enforce (AAASM-3958) and preserves the advisory fail-open
+    /// only when fail-closed is disabled — never treat a raw `Err` as Allow.
     ///
     /// FFI shims that hold a language-runtime lock (e.g. Python's GIL) should
     /// release it around this call, since it blocks the calling thread.
