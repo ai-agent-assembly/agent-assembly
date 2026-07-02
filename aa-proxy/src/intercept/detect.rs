@@ -19,9 +19,14 @@ pub enum LlmApiPattern {
 /// Classify `host` (the CONNECT tunnel target hostname) as an [`LlmApiPattern`].
 ///
 /// Comparison is case-insensitive. A host like `api.openai.com:443` is
-/// normalised by stripping the port before matching.
+/// normalised by stripping the port before matching. A single trailing dot is
+/// also stripped (AAASM-3983): `api.openai.com.` is a valid, equivalent FQDN
+/// for `api.openai.com`, so without this it would classify as `Unknown` and —
+/// under `llm_only` — take the transparent raw-tunnel path, reaching the
+/// provider with no scan/redact/audit.
 pub fn detect_api(host: &str) -> LlmApiPattern {
     let hostname = host.split(':').next().unwrap_or(host);
+    let hostname = hostname.strip_suffix('.').unwrap_or(hostname);
     match hostname.to_ascii_lowercase().as_str() {
         "api.openai.com" => LlmApiPattern::OpenAi,
         "api.anthropic.com" => LlmApiPattern::Anthropic,
