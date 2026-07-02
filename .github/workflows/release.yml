@@ -412,6 +412,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: publish
     if: github.event_name == 'push'
+    # AAASM-4016: gate this publish behind a protected GitHub Environment so a
+    # required-reviewer approval is needed before CRATES_IO_TOKEN is exposed and
+    # the workspace is pushed to crates.io. The environment (required reviewers +
+    # ref restriction to v* tags) must be created in repo Settings by an admin.
+    environment: release-crates
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -524,6 +529,10 @@ jobs:
     if: github.event_name == 'push'
     permissions:
       contents: read
+    # AAASM-4016: gate behind a protected GitHub Environment so a required
+    # reviewer approves before HOMEBREW_TAP_TOKEN is exposed and a formula PR is
+    # opened on the tap repo. Create the environment in repo Settings (admin).
+    environment: release-homebrew
 
     steps:
       - name: Download release artifacts
@@ -619,6 +628,10 @@ jobs:
     if: github.event_name == 'push'
     permissions:
       contents: read
+    # AAASM-4016: gate behind a protected GitHub Environment so a required
+    # reviewer approves before NODE_SDK_BOT_TOKEN is exposed and a pin-bump PR is
+    # opened on node-sdk. Create the environment in repo Settings (admin).
+    environment: release-node-sdk
 
     steps:
       - name: Checkout node-sdk
@@ -722,6 +735,10 @@ jobs:
     if: github.event_name == 'push'
     permissions:
       contents: read
+    # AAASM-4016: gate behind a protected GitHub Environment so a required
+    # reviewer approves before PYTHON_SDK_BOT_TOKEN is exposed and a pin-bump PR
+    # is opened on python-sdk. Create the environment in repo Settings (admin).
+    environment: release-python-sdk
 
     steps:
       - name: Checkout python-sdk
@@ -819,6 +836,10 @@ jobs:
     if: github.event_name == 'push'
     permissions:
       contents: read
+    # AAASM-4016: gate behind a protected GitHub Environment so a required
+    # reviewer approves before GO_SDK_BOT_TOKEN is exposed and a pin-bump PR is
+    # opened on go-sdk. Create the environment in repo Settings (admin).
+    environment: release-go-sdk
 
     steps:
       - name: Checkout go-sdk
@@ -928,6 +949,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # AAASM-4016: gate behind a protected GitHub Environment so a required
+    # reviewer approves before CROSS_REPO_DISPATCH_PAT is exposed and
+    # repository_dispatch events are fired at the downstream SDK repos. Create
+    # the environment in repo Settings (admin).
+    environment: release-notify
     steps:
       - name: Dispatch to node-sdk
         uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
