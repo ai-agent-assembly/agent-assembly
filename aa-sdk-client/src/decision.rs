@@ -83,3 +83,112 @@ pub fn resolve_decision(result: &Result<CheckActionResponse, SdkClientError>, fa
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A runtime response carrying `decision`.
+    fn answered(decision: Decision) -> Result<CheckActionResponse, SdkClientError> {
+        Ok(CheckActionResponse {
+            decision: decision as i32,
+            ..Default::default()
+        })
+    }
+
+    /// A response with a raw (possibly out-of-range) decision code.
+    fn answered_raw(decision: i32) -> Result<CheckActionResponse, SdkClientError> {
+        Ok(CheckActionResponse {
+            decision,
+            ..Default::default()
+        })
+    }
+
+    // --- runtime unreachable: the core AAASM-3920 regression ---
+    // Mirrors go-sdk `query_policy_fails_closed_with_no_server`: with no
+    // reachable runtime the query yields a non-OK sentinel, and under
+    // fail-closed the SDK must deny rather than synthesize Allow.
+
+    #[test]
+    fn query_failed_denies_when_fail_closed() {
+        assert_eq!(
+            resolve_decision(&Err(SdkClientError::QueryFailed), true),
+            Decision::Deny
+        );
+    }
+
+    #[test]
+    fn channel_closed_denies_when_fail_closed() {
+        assert_eq!(
+            resolve_decision(&Err(SdkClientError::ChannelClosed), true),
+            Decision::Deny
+        );
+    }
+
+    #[test]
+    fn shutdown_denies_when_fail_closed() {
+        assert_eq!(resolve_decision(&Err(SdkClientError::Shutdown), true), Decision::Deny);
+    }
+
+    #[test]
+    fn unreachable_allows_when_fail_open() {
+        // Fail-open is preserved only when fail-closed is explicitly disabled.
+        assert_eq!(
+            resolve_decision(&Err(SdkClientError::QueryFailed), false),
+            Decision::Allow
+        );
+        assert_eq!(
+            resolve_decision(&Err(SdkClientError::ChannelClosed), false),
+            Decision::Allow
+        );
+        assert_eq!(resolve_decision(&Err(SdkClientError::Shutdown), false), Decision::Allow);
+    }
+
+    // --- PENDING -> deny under enforce (go WaitForApproval equivalent) ---
+
+    #[test]
+    fn pending_denies_when_fail_closed() {
+        assert_eq!(resolve_decision(&answered(Decision::Pending), true), Decision::Deny);
+    }
+
+    #[test]
+    fn pending_preserved_when_fail_open() {
+        assert_eq!(resolve_decision(&answered(Decision::Pending), false), Decision::Pending);
+    }
+
+    // --- reachable-runtime path is behavior-preserving in both modes ---
+
+    #[test]
+    fn deny_preserved_in_both_modes() {
+        assert_eq!(resolve_decision(&answered(Decision::Deny), true), Decision::Deny);
+        assert_eq!(resolve_decision(&answered(Decision::Deny), false), Decision::Deny);
+    }
+
+    #[test]
+    fn allow_preserved_in_both_modes() {
+        assert_eq!(resolve_decision(&answered(Decision::Allow), true), Decision::Allow);
+        assert_eq!(resolve_decision(&answered(Decision::Allow), false), Decision::Allow);
+    }
+
+    #[test]
+    fn redact_preserved_in_both_modes() {
+        assert_eq!(resolve_decision(&answered(Decision::Redact), true), Decision::Redact);
+        assert_eq!(resolve_decision(&answered(Decision::Redact), false), Decision::Redact);
+    }
+
+    // --- an uninterpretable decision never silently blocks ---
+
+    #[test]
+    fn unspecified_allows_even_when_fail_closed() {
+        assert_eq!(
+            resolve_decision(&answered(Decision::Unspecified), true),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn unknown_code_allows_even_when_fail_closed() {
+        // A garbled/out-of-range code is not a deny signal.
+        assert_eq!(resolve_decision(&answered_raw(9999), true), Decision::Allow);
+    }
+}
