@@ -5684,6 +5684,13 @@ export interface operations {
                     "application/json": components["schemas"]["PolicyResponse"][];
                 };
             };
+            /** @description Caller lacks admin scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     create_policy: {
@@ -5741,6 +5748,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["PolicyResponse"];
                 };
+            };
+            /** @description Caller lacks admin scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description No active policy loaded */
             404: {
