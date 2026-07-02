@@ -532,6 +532,71 @@ mod tests {
         );
     }
 
+    /// Table-bomb fixture (AAASM-3990): declares a 1-element funcref table and
+    /// asks `table.grow` to add 20 000 elements — well past the
+    /// `MAX_TABLE_ELEMENTS` (10 000) cap. A rejected grow returns `-1` (the
+    /// standard WASM sentinel), which the guest surfaces via `proc_exit(42)`.
+    const TABLE_BOMB_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "proc_exit"
+            (func $proc_exit (param i32)))
+          (memory (export "memory") 1)
+          (table 1 funcref)
+          (func (export "_start")
+            (if (i32.eq (table.grow (ref.null func) (i32.const 20000)) (i32.const -1))
+              (then (call $proc_exit (i32.const 42)))
+              (else (call $proc_exit (i32.const 0)))))
+        )
+    "#;
+
+    /// Same table, grown by only 100 elements — comfortably under the cap — so
+    /// `table.grow` succeeds (returns the prior size, not `-1`) and the guest
+    /// exits cleanly. Guards against the cap over-rejecting legitimate growth.
+    const TABLE_GROW_OK_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "proc_exit"
+            (func $proc_exit (param i32)))
+          (memory (export "memory") 1)
+          (table 1 funcref)
+          (func (export "_start")
+            (if (i32.eq (table.grow (ref.null func) (i32.const 100)) (i32.const -1))
+              (then (call $proc_exit (i32.const 42)))
+              (else (call $proc_exit (i32.const 0)))))
+        )
+    "#;
+
+    #[test]
+    fn run_tool_rejects_table_grow_beyond_cap() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with default caps must construct");
+        let wasm = wat::parse_str(TABLE_BOMB_WAT).expect("table-bomb WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        // The limiter rejects the grow, the guest observes -1 and proc_exits 42,
+        // which the runtime maps to FilesystemBlocked { errno: 42 }.
+        assert!(
+            matches!(result, Err(SandboxError::FilesystemBlocked { errno: 42 })),
+            "expected rejected table.grow (guest proc_exit 42), got {:?}",
+            result,
+        );
+    }
+
+    #[test]
+    fn run_tool_allows_table_grow_within_cap() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with default caps must construct");
+        let wasm = wat::parse_str(TABLE_GROW_OK_WAT).expect("table-grow WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Ok(SandboxOutput { exit_code: 0 })),
+            "expected within-cap table.grow to succeed, got {:?}",
+            result,
+        );
+    }
+
     /// WAT fixture that imports the counted `aa_sandbox/aa_host_noop` host
     /// function and calls it `$n` times. With a host-fn budget of `N`, calling
     /// it `N + 1` times trips the rate limit on the last call.
