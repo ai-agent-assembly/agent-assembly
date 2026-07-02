@@ -685,4 +685,45 @@ mod tests {
             result,
         );
     }
+
+    #[test]
+    fn wall_clock_gate_ignores_ticks_before_deadline() {
+        // A far-future budget: an epoch tick right now (as a sibling store's
+        // watchdog would cause on a shared engine) must NOT interrupt this
+        // store — the per-store gate keeps it running. (AAASM-3990.)
+        assert!(!wall_clock_expired(Instant::now(), Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn wall_clock_gate_interrupts_once_budget_elapsed() {
+        // A zero budget is already past deadline for any elapsed time, so the
+        // gate interrupts — the store's own watchdog-tick path. (AAASM-3990.)
+        assert!(wall_clock_expired(Instant::now(), Duration::ZERO));
+    }
+
+    /// End-to-end wall-clock guard: an infinite loop with a huge fuel budget so
+    /// the fuel limiter never fires — only the wall-clock watchdog + per-store
+    /// epoch callback can stop it. Guards the epoch-deadline path introduced in
+    /// AAASM-3990 (the callback replaced the unconditional `epoch_deadline_trap`).
+    #[test]
+    fn run_tool_kills_wall_clock_hog_with_wall_clock_timeout() {
+        let config = SandboxConfig {
+            limits: crate::policy::SandboxLimits {
+                fuel: u64::MAX,
+                wall_clock_ms: 50,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let runtime = SandboxRuntime::new(config).expect("SandboxRuntime with huge fuel must construct");
+        let wasm = wat::parse_str(RUNAWAY_LOOP_WAT).expect("runaway-loop WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::WallClockTimeout)),
+            "expected SandboxError::WallClockTimeout, got {:?}",
+            result,
+        );
+    }
 }
