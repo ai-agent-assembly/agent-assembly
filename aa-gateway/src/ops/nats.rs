@@ -1057,4 +1057,72 @@ mod tests {
             "an unspecified signal must not be forwarded",
         );
     }
+
+    // ── AAASM-3991: fail-loud boot posture for an unauth/plaintext bus ───────
+
+    /// Config directly, bypassing env, so the security-posture decision can be
+    /// asserted without touching process env vars or capturing tracing output.
+    fn cfg(creds: Option<&str>, nkey: Option<&str>, tls: bool) -> OpControlNatsConfig {
+        OpControlNatsConfig {
+            url: "nats://127.0.0.1:4222".to_string(),
+            creds_path: creds.map(Into::into),
+            nkey: nkey.map(Into::into),
+            tls,
+        }
+    }
+
+    #[test]
+    fn url_without_creds_or_tls_warns_and_fails_closed_when_required() {
+        // The bug: a URL set without creds AND TLS is an unauthenticated,
+        // plaintext fleet kill-switch bus. Non-strict → activate but warn.
+        let bare = cfg(None, None, false);
+        assert!(!bare.is_authenticated_and_encrypted());
+        assert_eq!(bare.security_posture(false), OpControlSecurityPosture::InsecureWarn);
+        // Strict (AA_OPCONTROL_NATS_REQUIRE_AUTH) → fail closed (from_env returns None).
+        assert_eq!(
+            bare.security_posture(true),
+            OpControlSecurityPosture::InsecureFailClosed
+        );
+    }
+
+    #[test]
+    fn creds_without_tls_is_still_insecure() {
+        // Authenticated but plaintext is not safe — still warns (fails closed when strict).
+        let creds_only = cfg(Some("/etc/aa/op.creds"), None, false);
+        assert!(!creds_only.is_authenticated_and_encrypted());
+        assert_eq!(
+            creds_only.security_posture(false),
+            OpControlSecurityPosture::InsecureWarn
+        );
+        assert_eq!(
+            creds_only.security_posture(true),
+            OpControlSecurityPosture::InsecureFailClosed
+        );
+    }
+
+    #[test]
+    fn tls_without_auth_is_still_insecure() {
+        // Encrypted but unauthenticated is not safe — any TLS client can publish.
+        let tls_only = cfg(None, None, true);
+        assert!(!tls_only.is_authenticated_and_encrypted());
+        assert_eq!(tls_only.security_posture(false), OpControlSecurityPosture::InsecureWarn);
+    }
+
+    #[test]
+    fn creds_plus_tls_is_secure_and_silent() {
+        // Fully configured (JWT creds file + TLS) is the only silent path.
+        let secure = cfg(Some("/etc/aa/op.creds"), None, true);
+        assert!(secure.is_authenticated_and_encrypted());
+        assert_eq!(secure.security_posture(false), OpControlSecurityPosture::Secure);
+        // Strict mode does not change a secure config.
+        assert_eq!(secure.security_posture(true), OpControlSecurityPosture::Secure);
+    }
+
+    #[test]
+    fn nkey_plus_tls_is_secure_and_silent() {
+        // nkey auth is an equally valid authenticator to a creds file.
+        let secure = cfg(None, Some("SUACSSED..."), true);
+        assert!(secure.is_authenticated_and_encrypted());
+        assert_eq!(secure.security_posture(false), OpControlSecurityPosture::Secure);
+    }
 }
