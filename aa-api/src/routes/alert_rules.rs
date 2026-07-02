@@ -90,6 +90,10 @@ impl AlertRuleRequest {
             enabled: self.enabled,
             created_at: String::new(),
             updated_at: String::new(),
+            // AAASM-3911: tenant is stamped from the authenticated caller in
+            // `create_rule`, not taken from the request body.
+            team_id: None,
+            org_id: None,
         })
     }
 }

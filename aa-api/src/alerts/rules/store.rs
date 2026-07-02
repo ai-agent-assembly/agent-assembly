@@ -194,6 +194,8 @@ mod tests {
             enabled: true,
             created_at: String::new(),
             updated_at: String::new(),
+            team_id: None,
+            org_id: None,
         }
     }
 

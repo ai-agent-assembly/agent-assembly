@@ -261,6 +261,8 @@ async fn delete_rule_preserves_snapshot_on_already_recorded_alerts() {
         enabled: true,
         created_at: "2026-05-13T09:00:00Z".to_string(),
         updated_at: "2026-05-13T09:00:00Z".to_string(),
+        team_id: None,
+        org_id: None,
     };
     let alert_id = alert_store.record_rule_alert(&RuleAlertSeed {
         agent_id: None,

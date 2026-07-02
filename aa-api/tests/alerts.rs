@@ -399,6 +399,8 @@ fn sample_alert_rule() -> AlertRule {
         enabled: true,
         created_at: "2026-05-13T09:00:00Z".to_string(),
         updated_at: "2026-05-13T09:00:00Z".to_string(),
+        team_id: None,
+        org_id: None,
     }
 }
 
