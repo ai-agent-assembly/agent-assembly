@@ -285,6 +285,24 @@ impl SandboxRuntime {
 
         let mut builder = WasiCtx::builder();
         for preopen in &self.config.preopened_dirs {
+            // Reject non-regular-file preopen targets (AAASM-4015). The
+            // wall-clock watchdog interrupts the guest by advancing the engine
+            // epoch, but it cannot preempt a guest blocked *inside* a WASI host
+            // call — e.g. a `fd_read` on a FIFO/device/socket that never yields.
+            // Validating that every preopen target is a directory or regular
+            // file (following symlinks) forbids those blocking targets up front,
+            // which is a lower-risk fix than abandoning an in-flight host call on
+            // a worker thread. `metadata` follows symlinks, so a symlink to a
+            // device resolves to the device and is rejected.
+            let metadata = std::fs::metadata(&preopen.host_path)
+                .map_err(|e| SandboxError::Wasmtime(format!("preopen {:?}: {e}", preopen.host_path)))?;
+            let file_type = metadata.file_type();
+            if !(file_type.is_dir() || file_type.is_file()) {
+                return Err(SandboxError::Wasmtime(format!(
+                    "preopen target {:?} is not a regular file or directory (FIFOs, devices, and sockets are forbidden)",
+                    preopen.host_path
+                )));
+            }
             // Least-privilege grant: read-only unless the policy explicitly
             // opted this mount into read-write. Avoids the DirPerms::all() /
             // FilePerms::all() over-grant. (AAASM-3618.)
@@ -844,6 +862,40 @@ mod tests {
         assert!(
             matches!(result, Ok(SandboxOutput { exit_code: 0 })),
             "single memory + single table module must run cleanly, got {:?}",
+            result,
+        );
+    }
+
+    /// Preopen validation (AAASM-4015): a preopen whose host target is a FIFO
+    /// (not a directory or regular file) must be rejected up front, before the
+    /// guest can block inside a WASI host call reading it.
+    #[cfg(unix)]
+    #[test]
+    fn run_tool_rejects_non_regular_file_preopen() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let fifo = dir.path().join("pipe");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo must be spawnable");
+        assert!(status.success(), "mkfifo must create the FIFO");
+
+        let config = SandboxConfig {
+            preopened_dirs: vec![crate::policy::PreopenedDir {
+                host_path: fifo,
+                guest_path: ".".to_string(),
+                access: PreopenAccess::ReadOnly,
+            }],
+            ..Default::default()
+        };
+        let runtime = SandboxRuntime::new(config).expect("runtime must construct");
+        let wasm = wat::parse_str(SINGLE_MEMORY_TABLE_WAT).expect("WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::Wasmtime(_))),
+            "FIFO preopen target must be rejected, got {:?}",
             result,
         );
     }
