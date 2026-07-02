@@ -326,4 +326,42 @@ mod tests {
         let result = read_response(&mut cursor).await;
         assert!(matches!(result, Err(CodecError::UnknownTag(99))));
     }
+
+    /// AAASM-3989: a frame whose length prefix exceeds `MAX_FRAME_LEN` must be
+    /// rejected *before* the body is allocated. We build the wire by hand with a
+    /// tag and an oversized varint length but no body — if the codec allocated
+    /// first it would attempt a `usize::MAX`-scale `vec![0u8; len]`; instead it
+    /// returns `FrameTooLarge` after reading only the varint.
+    #[tokio::test]
+    async fn oversized_frame_length_rejected_before_alloc() {
+        // Encode a policy-response frame claiming u64::MAX bytes of payload.
+        let mut wire = vec![TAG_POLICY_RESPONSE];
+        write_varint(&mut wire, u64::MAX).await.unwrap();
+        // Deliberately provide no payload bytes: the guard must fire first.
+        let mut cursor = Cursor::new(wire);
+        let result = read_response(&mut cursor).await;
+        match result {
+            Err(CodecError::FrameTooLarge { len, max }) => {
+                assert_eq!(max, MAX_FRAME_LEN);
+                assert!(len > MAX_FRAME_LEN, "claimed len {len} must exceed the cap");
+            }
+            other => panic!("expected FrameTooLarge, got {other:?}"),
+        }
+    }
+
+    /// A frame at exactly `MAX_FRAME_LEN` is not rejected by the bound (the guard
+    /// is `len > MAX_FRAME_LEN`); it proceeds to read the body. Here the body is
+    /// absent, so it fails with an IO error, proving the length check itself did
+    /// not reject it.
+    #[tokio::test]
+    async fn frame_at_max_len_passes_the_bound() {
+        let mut wire = vec![TAG_POLICY_RESPONSE];
+        write_varint(&mut wire, MAX_FRAME_LEN as u64).await.unwrap();
+        let mut cursor = Cursor::new(wire);
+        let result = read_response(&mut cursor).await;
+        assert!(
+            matches!(result, Err(CodecError::Io(_))),
+            "MAX_FRAME_LEN must pass the bound and fail only reading the absent body"
+        );
+    }
 }
