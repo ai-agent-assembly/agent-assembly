@@ -1206,6 +1206,47 @@ pub(crate) fn evaluate(
     eval_tokens(&tokens, action, agent_level, policy_ctx)
 }
 
+/// AAASM-3995(c) — whether `expr` references any field whose value is resolved
+/// from live, mutable runtime state (the agent registry graph or the budget
+/// tracker) rather than from the request's action.
+///
+/// The decision cache keys only on `(agent_id, policy_epoch, action)`, so a
+/// verdict that depends on live context (e.g. `team.active_agents`,
+/// `team.budget_remaining`) would be frozen for the cache TTL. Callers use this
+/// to evaluate such verdicts fresh instead of serving a stale cached one.
+///
+/// Action-derived fields (`tool`, `path`, `url`, `method`, `command`,
+/// `governance_level`, `args.*`, `tool_result*`, `source.*`, `target.*`) are
+/// already captured by the cache key and are NOT treated as live context.
+pub(crate) fn references_live_context(expr: &str) -> bool {
+    let Some(tokens) = tokenize(expr) else {
+        return false;
+    };
+    tokens.iter().any(|t| matches!(t, Token::Field(f) if is_live_context_field(f)))
+}
+
+/// Classify a [`FieldRef`] as backed by live runtime state (registry / budget)
+/// for [`references_live_context`].
+fn is_live_context_field(field: &FieldRef) -> bool {
+    matches!(
+        field,
+        FieldRef::AgentDepth
+            | FieldRef::TeamActiveAgents
+            | FieldRef::TeamParallelAgents
+            | FieldRef::TeamBudgetRemaining
+            | FieldRef::AgentAge
+            | FieldRef::AgentChildrenCount
+            | FieldRef::ChildTool
+            | FieldRef::ChildRiskTier
+            | FieldRef::AgentRiskTier
+            | FieldRef::ParentRiskTier
+            | FieldRef::AgentParentId
+            | FieldRef::AgentTeamId
+            | FieldRef::AgentIsRoot
+            | FieldRef::AgentIsLeaf
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1480,6 +1521,19 @@ mod tests {
         // not become an implicit Allow when that context is unresolved.
         assert!(evaluate("team.budget_remaining < 100", &tool("any"), None, None));
         assert!(evaluate("agent.children_count > 3", &tool("any"), None, None));
+    }
+
+    #[test]
+    fn references_live_context_flags_registry_and_budget_fields() {
+        // AAASM-3995(c): registry / budget-backed fields are live context.
+        assert!(references_live_context("team.active_agents > 1"));
+        assert!(references_live_context("team.budget_remaining < 100"));
+        assert!(references_live_context("agent.depth > 2 OR tool == \"x\""));
+        assert!(references_live_context("agent.children_count > 0"));
+        // Action-derived fields are captured by the cache key — not live context.
+        assert!(!references_live_context("tool == \"bash\""));
+        assert!(!references_live_context("path starts_with \"/etc\""));
+        assert!(!references_live_context("governance_level >= trusted"));
     }
 
     // ── risk tier tests ──────────────────────────────────────────────────
