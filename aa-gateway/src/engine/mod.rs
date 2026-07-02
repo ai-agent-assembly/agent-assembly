@@ -1383,6 +1383,51 @@ impl PolicyEngine {
         }
     }
 
+    /// AAASM-3986 — atomically reserve LLM-call spend against the agent's (and
+    /// its ancestors') budget under the tracker's per-ancestor lock, so the
+    /// budget check and the spend commit cannot interleave across concurrent
+    /// requests.
+    ///
+    /// Replaces the previous "read spend at Stage 7, then `record_spend` after
+    /// the response was built" split, which let N concurrent checks for one
+    /// tenant all observe under-limit before any recorded (bounded overspend ∝
+    /// in-flight concurrency).
+    ///
+    /// Returns `Some(reason)` when the projected spend would exceed a configured
+    /// daily / monthly limit — the caller must DENY the call and record nothing
+    /// (the reservation committed nothing). Returns `None` when the spend was
+    /// committed within budget. Tenancy is resolved from the agent's *registered*
+    /// owner (AAASM-3138) so spend is never billed to a client-forged tenant.
+    pub fn check_and_accrue_llm_spend(&self, ctx: &aa_core::AgentContext, amount_usd: f64) -> Option<&'static str> {
+        let amount = match rust_decimal::Decimal::try_from(amount_usd) {
+            Ok(a) if a > rust_decimal::Decimal::ZERO => a,
+            _ => return None,
+        };
+        let (team_id, org_id) = self.authoritative_tenancy(ctx);
+        let ancestors = self
+            .registry
+            .as_ref()
+            .map(|r| r.ancestors_of(ctx.agent_id.as_bytes()))
+            .unwrap_or_default();
+        match self
+            .budget
+            .reserve_spend(ctx.agent_id, &ancestors, team_id.as_deref(), org_id.as_deref(), amount)
+        {
+            Ok(()) => None,
+            Err(err) => {
+                use crate::budget::types::{BudgetError, BudgetKind};
+                let kind = match err {
+                    BudgetError::SelfBudgetExhausted { kind } => kind,
+                    BudgetError::AncestorBudgetExhausted { kind, .. } => kind,
+                };
+                Some(match kind {
+                    BudgetKind::Monthly => "monthly budget exceeded",
+                    _ => "daily budget exceeded",
+                })
+            }
+        }
+    }
+
     /// Price a completed LLM call in USD using the budget pricing table.
     ///
     /// AAASM-3353 — the live `CheckAction` proto carries only the model name
@@ -2314,6 +2359,85 @@ mod tests {
             PolicyResult::Deny {
                 reason: "daily budget exceeded".into()
             }
+        );
+    }
+
+    #[test]
+    fn check_and_accrue_llm_spend_commits_within_budget() {
+        let mut doc = empty_doc();
+        doc.budget = Some(BudgetPolicy {
+            daily_limit_usd: Some(10.0),
+            monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
+            timezone: None,
+            action_on_exceed: ActionOnExceed::default(),
+            window: None,
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+
+        assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 3.0), None);
+        assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 3.0), None);
+        // Third would push 6 + 5 = 11 > 10 → denied, nothing committed.
+        assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 5.0), Some("daily budget exceeded"));
+
+        let state = engine.budget.agent_state(&ctx.agent_id).expect("agent has spend");
+        assert_eq!(state.spent_usd, rust_decimal::Decimal::try_from(6.0).unwrap());
+    }
+
+    #[test]
+    fn check_and_accrue_llm_spend_no_overspend_under_parallel_checks() {
+        // AAASM-3986: the atomic check+commit must never let concurrent
+        // reservations for one tenant overspend the daily limit. With a $10
+        // limit and $1 per call, at most 10 of N parallel reservations may
+        // commit and the recorded total must be exactly $10 — never more.
+        use std::sync::Arc;
+
+        let mut doc = empty_doc();
+        doc.budget = Some(BudgetPolicy {
+            daily_limit_usd: Some(10.0),
+            monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
+            timezone: None,
+            action_on_exceed: ActionOnExceed::default(),
+            window: None,
+        });
+        let engine = Arc::new(make_engine(doc));
+
+        let threads = 64;
+        let allowed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let barrier = Arc::new(std::sync::Barrier::new(threads));
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let engine = Arc::clone(&engine);
+                let allowed = Arc::clone(&allowed);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let ctx = make_ctx();
+                    barrier.wait();
+                    if engine.check_and_accrue_llm_spend(&ctx, 1.0).is_none() {
+                        allowed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let ctx = make_ctx();
+        let spent = engine.budget.agent_state(&ctx.agent_id).expect("agent has spend").spent_usd;
+        assert_eq!(
+            allowed.load(std::sync::atomic::Ordering::Relaxed),
+            10,
+            "exactly 10 of the parallel $1 reservations may commit against a $10 limit"
+        );
+        assert_eq!(
+            spent,
+            rust_decimal::Decimal::try_from(10.0).unwrap(),
+            "recorded spend must never exceed the $10 daily limit"
         );
     }
 
