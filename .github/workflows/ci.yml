@@ -478,7 +478,7 @@ jobs:
           name: Rust unit tests
           slug: ai-agent-assembly/agent-assembly
           token: ${{ secrets.CODECOV_TOKEN }}
-          flags: unit
+          flags: rust
           verbose: true
           fail_ci_if_error: false
       - name: Upload Rust coverage (LCOV) for SonarCloud
