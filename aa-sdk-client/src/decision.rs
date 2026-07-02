@@ -17,13 +17,17 @@
 //! # Contract
 //!
 //! Under **fail-closed** (enforce) the SDK pre-exec gate must never downgrade to
-//! allow-on-failure: a stalled or killed sidecar (unreachable runtime) and a
-//! held-for-approval (`PENDING`) action both resolve to [`Decision::Deny`]. Only
-//! when fail-closed is explicitly disabled (observe mode) is the historical
-//! fail-open preserved. A runtime `DENY`/`REDACT` is honoured verbatim in both
-//! modes, and an `UNSPECIFIED`/unknown code is never treated as a block (it
-//! folds to [`Decision::Allow`]) so the SDK cannot silently wedge on a decision
-//! it cannot interpret.
+//! allow-on-failure: a stalled or killed sidecar (unreachable runtime), a
+//! held-for-approval (`PENDING`) action, and an `UNSPECIFIED`/unknown code all
+//! resolve to [`Decision::Deny`]. Only when fail-closed is explicitly disabled
+//! (observe mode) is the historical fail-open preserved. A runtime `DENY`/
+//! `REDACT` is honoured verbatim in both modes.
+//!
+//! Denying the uninterpretable case under enforce closes a forward-compatibility
+//! downgrade (AAASM-3996): a future, more-restrictive `Decision` variant that an
+//! older SDK sees as an unknown code must not silently fold to `Allow` while the
+//! operator believes enforce is active. In observe mode the code still folds to
+//! `Allow` so the SDK cannot wedge on a decision it cannot interpret.
 //!
 //! The SDK remains advisory: `aa-runtime` / proxy / eBPF are the authoritative
 //! enforcement points. This is a defense-in-depth posture, not the primary gate.
@@ -50,7 +54,7 @@ use crate::error::SdkClientError;
 /// | `Ok(PENDING)` | `Deny` | `Pending` |
 /// | `Ok(REDACT)` | `Redact` | `Redact` |
 /// | `Ok(ALLOW)` | `Allow` | `Allow` |
-/// | `Ok(UNSPECIFIED)` / unknown code | `Allow` | `Allow` |
+/// | `Ok(UNSPECIFIED)` / unknown code | `Deny` | `Allow` |
 pub fn resolve_decision(result: &Result<CheckActionResponse, SdkClientError>, fail_closed: bool) -> Decision {
     match result {
         Ok(resp) => match Decision::try_from(resp.decision) {
@@ -66,9 +70,17 @@ pub fn resolve_decision(result: &Result<CheckActionResponse, SdkClientError>, fa
             }
             Ok(Decision::Redact) => Decision::Redact,
             Ok(Decision::Allow) => Decision::Allow,
-            // Unspecified or an unknown/garbled code is not a deny signal; never
-            // silently block on a decision the SDK cannot interpret.
-            Ok(Decision::Unspecified) | Err(_) => Decision::Allow,
+            // Unspecified or an unknown/garbled code is uninterpretable. Under
+            // enforce we deny it so a future restrictive Decision variant an old
+            // SDK cannot decode is not silently downgraded to Allow (AAASM-3996);
+            // in observe mode we preserve the historical fail-open.
+            Ok(Decision::Unspecified) | Err(_) => {
+                if fail_closed {
+                    Decision::Deny
+                } else {
+                    Decision::Allow
+                }
+            }
         },
         // Runtime unreachable / slow / closed session: fail closed under enforce
         // so a stalled or killed sidecar cannot turn deny-on-failure into
@@ -176,19 +188,32 @@ mod tests {
         assert_eq!(resolve_decision(&answered(Decision::Redact), false), Decision::Redact);
     }
 
-    // --- an uninterpretable decision never silently blocks ---
+    // --- an uninterpretable decision denies under enforce (AAASM-3996) ---
 
     #[test]
-    fn unspecified_allows_even_when_fail_closed() {
+    fn unspecified_denies_when_fail_closed() {
+        // Under enforce, a decision the SDK cannot interpret must not proceed:
+        // this closes the fwd-compat downgrade of a future restrictive variant.
+        assert_eq!(resolve_decision(&answered(Decision::Unspecified), true), Decision::Deny);
+    }
+
+    #[test]
+    fn unspecified_allows_when_fail_open() {
         assert_eq!(
-            resolve_decision(&answered(Decision::Unspecified), true),
+            resolve_decision(&answered(Decision::Unspecified), false),
             Decision::Allow
         );
     }
 
     #[test]
-    fn unknown_code_allows_even_when_fail_closed() {
-        // A garbled/out-of-range code is not a deny signal.
-        assert_eq!(resolve_decision(&answered_raw(9999), true), Decision::Allow);
+    fn unknown_code_denies_when_fail_closed() {
+        // A garbled/out-of-range code (e.g. a variant added after this SDK was
+        // built) denies under enforce rather than downgrading to Allow.
+        assert_eq!(resolve_decision(&answered_raw(9999), true), Decision::Deny);
+    }
+
+    #[test]
+    fn unknown_code_allows_when_fail_open() {
+        assert_eq!(resolve_decision(&answered_raw(9999), false), Decision::Allow);
     }
 }
