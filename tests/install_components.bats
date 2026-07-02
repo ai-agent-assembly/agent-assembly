@@ -73,9 +73,9 @@ INSTALL_CLI="$BATS_TEST_DIRNAME/../scripts/install-cli.sh"
 @test "component_binary: maps components to their binary names" {
   AASM_LIB=1 . "$INSTALL_CLI"
   [ "$(component_binary cli)" = "aasm" ]
-  [ "$(component_binary runtime)" = "aasm-runtime" ]
-  [ "$(component_binary proxy)" = "aasm-proxy" ]
-  [ "$(component_binary ebpf)" = "aasm-ebpf" ]
+  [ "$(component_binary runtime)" = "aa-runtime" ]
+  [ "$(component_binary proxy)" = "aa-proxy" ]
+  [ "$(component_binary ebpf)" = "aa-ebpf" ]
 }
 
 @test "component_artifact: cli keeps the legacy target-triple name" {
