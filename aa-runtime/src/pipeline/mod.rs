@@ -44,6 +44,11 @@ pub struct PipelineConfig {
     /// instead of falling back to permissive local evaluation (AAASM-3110).
     /// Copied from [`RuntimeConfig::gateway_fail_closed`]; defaults to `true`.
     pub gateway_fail_closed: bool,
+    /// Per-RPC deadline for each gateway policy query. Bounds how long a hung
+    /// gateway can block the runtime's policy checks before the query is treated
+    /// as a failure and routed into the fail-closed path (AAASM-3987). Derived
+    /// from [`RuntimeConfig::gateway_timeout_ms`].
+    pub gateway_timeout: Duration,
     /// Minimum supported SDK version. When set, an observed SDK version below it
     /// is classified as a downgrade (AAASM-3640). `None` imposes no floor.
     pub min_sdk_version: Option<String>,
@@ -60,6 +65,7 @@ impl PipelineConfig {
             agent_id: c.agent_id.clone(),
             enforcement: enforcement::EnforcementConfig::from_runtime_config(c),
             gateway_fail_closed: c.gateway_fail_closed,
+            gateway_timeout: Duration::from_millis(c.gateway_timeout_ms),
             // No operator-configurable SDK version floor yet; downgrade
             // detection activates once a minimum is wired into RuntimeConfig.
             min_sdk_version: None,
@@ -161,6 +167,7 @@ pub async fn run(
                             &op_control,
                             &config.agent_id,
                             config.gateway_fail_closed,
+                            config.gateway_timeout,
                             &broadcast_tx,
                             &seq,
                         )
@@ -407,6 +414,7 @@ async fn handle_policy_query(
     op_control: &crate::op_control::OpControlStore,
     agent_id: &str,
     fail_closed: bool,
+    gateway_timeout: Duration,
     broadcast_tx: &broadcast::Sender<PipelineEvent>,
     sequence_counter: &AtomicU64,
 ) {
@@ -445,6 +453,7 @@ async fn handle_policy_query(
         connection_id,
         &req,
         gateway_client,
+        gateway_timeout,
         response_router,
         broadcast_tx,
         sequence_counter,
@@ -627,10 +636,20 @@ enum GatewayOutcome {
 
 /// Forward the request to the governance gateway over gRPC when a client is
 /// configured. See [`GatewayOutcome`] for how the caller interprets the result.
+///
+/// The RPC is bounded by `gateway_timeout` (AAASM-3987): a gateway that accepts
+/// the connection but then stops responding would otherwise hold the shared
+/// client lock — and the single pipeline loop — forever, stalling *every*
+/// agent's policy checks (a runtime-wide head-of-line DoS). On elapse the query
+/// is treated as a failure ([`GatewayOutcome::Failed`]), the same as a transport
+/// error, so the caller's fail-closed path applies. Dropping the timed-out
+/// future also releases the client lock, so a subsequent stuck query cannot
+/// wedge for longer than one deadline.
 async fn try_gateway_forward(
     connection_id: u64,
     req: &aa_proto::assembly::policy::v1::CheckActionRequest,
     gateway_client: &Option<Arc<Mutex<GatewayClient>>>,
+    gateway_timeout: Duration,
     response_router: &ResponseRouter,
     broadcast_tx: &broadcast::Sender<PipelineEvent>,
     sequence_counter: &AtomicU64,
@@ -639,8 +658,9 @@ async fn try_gateway_forward(
         return GatewayOutcome::NoClient;
     };
     let mut guard = client.lock().await;
-    match guard.check_action(req.clone()).await {
-        Ok(resp) => {
+    let call = tokio::time::timeout(gateway_timeout, guard.check_action(req.clone())).await;
+    match call {
+        Ok(Ok(resp)) => {
             tracing::debug!(connection_id, decision = resp.decision, "gateway responded");
             // On Deny: surface a structured PolicyViolation event into
             // the broadcast pipeline so the Live Ops dashboard sees the
@@ -652,11 +672,23 @@ async fn try_gateway_forward(
             send_ipc_response(connection_id, IpcResponse::PolicyResponse(resp), response_router).await;
             GatewayOutcome::Handled
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::warn!(
                 connection_id,
                 error = %e,
                 "gateway call failed"
+            );
+            GatewayOutcome::Failed
+        }
+        Err(_elapsed) => {
+            // The gateway accepted but did not answer within the deadline —
+            // treat identically to a transport failure so the fail-closed path
+            // denies (in enforce posture) instead of hanging (AAASM-3987).
+            ::metrics::counter!("aa_gateway_policy_query_timeouts_total").increment(1);
+            tracing::warn!(
+                connection_id,
+                timeout_ms = gateway_timeout.as_millis() as u64,
+                "gateway policy query timed out — treating as failure"
             );
             GatewayOutcome::Failed
         }
@@ -1085,6 +1117,10 @@ mod tests {
             runtime_config.pipeline_broadcast_capacity
         );
         assert_eq!(pipeline_config.agent_id, runtime_config.agent_id);
+        assert_eq!(
+            pipeline_config.gateway_timeout,
+            Duration::from_millis(runtime_config.gateway_timeout_ms)
+        );
     }
 
     #[test]
@@ -1097,6 +1133,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            gateway_timeout: Duration::from_secs(5),
             min_sdk_version: None,
         };
 
@@ -1118,6 +1155,9 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            // Generous default for tests that don't exercise the deadline; the
+            // hanging-gateway regression test overrides this with a short value.
+            gateway_timeout: Duration::from_secs(5),
             min_sdk_version: None,
         }
     }
