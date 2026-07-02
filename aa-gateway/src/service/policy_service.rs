@@ -1018,6 +1018,18 @@ impl PolicyServiceImpl {
     ///
     /// Emitting the audit event is fire-and-forget — a full `Deny`
     /// response is always constructed and returned to the caller.
+    /// AAASM-3992 — whether the request carries client-supplied tenancy
+    /// (`org_id` / `team_id`) on its `AgentIdentity`. Under the non-rejecting
+    /// `enrich` interceptor these fields are attacker-controlled, so a request
+    /// that claims a tenant it cannot authenticate must not be trusted for
+    /// budget attribution or audit chaining.
+    fn request_claims_tenancy(req: &CheckActionRequest) -> bool {
+        req.agent_id
+            .as_ref()
+            .map(|a| !a.org_id.is_empty() || !a.team_id.is_empty())
+            .unwrap_or(false)
+    }
+
     async fn validate_credential_token(&self, req: &CheckActionRequest) -> Option<CheckActionResponse> {
         let registry = self.registry.as_ref()?;
         let proto_agent = req.agent_id.as_ref()?;
@@ -1047,6 +1059,31 @@ impl PolicyServiceImpl {
             // validation so existing tests that bypass the registry layer
             // continue working.)
             if req.credential_token.is_empty() {
+                // AAASM-3992 (completes AAASM-3416): empty credential token + a
+                // claimed {org,team,agent} triple that is NOT registered.
+                // PolicyService runs under the non-rejecting `enrich`
+                // interceptor, so this triple — and any org_id / team_id on it
+                // — is attacker-controlled. When the request carries
+                // client-supplied tenancy, no AUTHORITATIVE owner resolves, yet
+                // downstream `authoritative_tenancy` / `authoritative_lineage`
+                // would fall back to trusting it — letting an unauthenticated
+                // peer at :50051 accrue LLM spend against (or exhaust) a
+                // victim org's budget and forge audit entries under a victim
+                // tenant. Fail closed: DENY here, before any budget mutation or
+                // audit write, and without recording an audit entry under the
+                // attacker-chosen tenancy. A request with NO tenancy claim is
+                // the lightweight untenanted-fixture / unregistered-deployment
+                // path — skip validation so it keeps working unchanged.
+                if Self::request_claims_tenancy(req) {
+                    return Some(CheckActionResponse {
+                        decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
+                        reason: "unauthenticated tenancy claim".into(),
+                        policy_rule: "a2a_identity_verification".into(),
+                        approval_id: String::new(),
+                        redact: None,
+                        decision_latency_us: 0,
+                    });
+                }
                 return None;
             }
             if registry.find_by_credential_token(&req.credential_token).is_some() {
