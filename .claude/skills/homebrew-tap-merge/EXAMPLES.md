@@ -15,8 +15,8 @@ AAASM-2871 stale-master rebase path. The lean plan lives in
 
 ## Worked example — alpha-9 (2026-06-14)
 
-PR [#16](https://github.com/ai-agent-assembly/homebrew-agent-assembly/pull/16)
-on `ai-agent-assembly/homebrew-agent-assembly`, titled `🤖 (formula): aasm
+PR [#16](https://github.com/ai-agent-assembly/homebrew-tap/pull/16)
+on `ai-agent-assembly/homebrew-tap`, titled `🤖 (formula): aasm
 0.0.1-alpha.9`, opened by the release-bot at 2026-06-13 18:09 UTC after the
 upstream `v0.0.1-alpha.9` tag push triggered `release.yml`'s
 `update-homebrew-tap` job.
@@ -28,7 +28,7 @@ pre-`HOMEBREW_NO_REQUIRE_TAP_TRUST=1` master tip).
 ### Step 1 — Scope check
 
 ```bash
-gh pr view 16 --repo ai-agent-assembly/homebrew-agent-assembly \
+gh pr view 16 --repo ai-agent-assembly/homebrew-tap \
   --json files,additions,deletions
 # → single file Formula/aasm.rb, ~5 additions, ~5 deletions  ✓
 ```
@@ -53,12 +53,12 @@ The four sha256 values pinned in the PR diff (also present in upstream
 ### Step 3 — Detect stale-master + server-side rebase
 
 ```bash
-gh pr view 16 --repo ai-agent-assembly/homebrew-agent-assembly \
+gh pr view 16 --repo ai-agent-assembly/homebrew-tap \
   --json mergeStateStatus
 # → "BEHIND"
 
 gh api -X PUT \
-  /repos/ai-agent-assembly/homebrew-agent-assembly/pulls/16/update-branch \
+  /repos/ai-agent-assembly/homebrew-tap/pulls/16/update-branch \
   -f update_method=rebase
 ```
 
@@ -72,7 +72,7 @@ the AAASM-2871 sandbox quirk.
 # brew install + test (macOS) goes green; the success log contains:
 #   Pouring … Cellar/aasm/0.0.1-alpha.9: 3 files, 21.5MB, built in 1 second
 
-gh pr merge 16 --repo ai-agent-assembly/homebrew-agent-assembly --squash
+gh pr merge 16 --repo ai-agent-assembly/homebrew-tap --squash
 ```
 
 Verifies the AAASM-2871 workaround is active in workflow env, then squashes
