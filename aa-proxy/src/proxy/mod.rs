@@ -1167,6 +1167,38 @@ mod tests {
         assert_eq!(server.connect_deny_reason("1.1.1.1"), None);
     }
 
+    #[test]
+    fn canonical_host_strips_port_trailing_dot_and_case() {
+        // AAASM-3983: port, single trailing dot, and case are all normalised.
+        assert_eq!(canonical_host("EVIL.COM"), "evil.com");
+        assert_eq!(canonical_host("evil.com."), "evil.com");
+        assert_eq!(canonical_host("Evil.Com.:443"), "evil.com");
+        assert_eq!(canonical_host("evil.com"), "evil.com");
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_denylist_defeats_case_and_trailing_dot_evasion() {
+        // AAASM-3983: a lowercase `evil.com` denylist entry must catch the
+        // uppercase and trailing-dot variants, which previously slipped past
+        // the byte-exact comparison.
+        let server = server_with(vec!["evil.com".to_string()], vec![]).await;
+        assert_eq!(server.connect_deny_reason("evil.com"), Some("host policy"));
+        assert_eq!(server.connect_deny_reason("EVIL.COM"), Some("host policy"));
+        assert_eq!(server.connect_deny_reason("evil.com."), Some("host policy"));
+        assert_eq!(server.connect_deny_reason("Evil.Com.:443"), Some("host policy"));
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_allowlist_rejects_trailing_dot_non_member() {
+        // With api.openai.com allowlisted, a trailing-dot form of a *different*
+        // host must still be rejected (it is not a member), and the trailing-dot
+        // form of the allowlisted host must be permitted.
+        let server = server_with(vec![], vec!["api.openai.com".to_string()]).await;
+        assert_eq!(server.connect_deny_reason("evil.com."), Some("network allowlist"));
+        assert_eq!(server.connect_deny_reason("api.openai.com."), None);
+        assert_eq!(server.connect_deny_reason("API.OPENAI.COM"), None);
+    }
+
     fn req_with(headers: Vec<(&str, &str)>, target: &str) -> HttpRequest {
         HttpRequest {
             method: "POST".into(),
