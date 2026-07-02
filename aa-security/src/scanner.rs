@@ -396,6 +396,10 @@ impl CredentialScanner {
         // Phase 4: High-entropy / long-hex tokens (encoding & length evasions, AAASM-3870)
         scan_high_entropy(text, &mut findings);
 
+        // Phase 5: Azure `AccountKey=` values wherever they appear in a
+        //          connection string (AAASM-3997).
+        scan_azure_account_key(text, &mut findings);
+
         findings.sort_by_key(|f| f.offset);
         ScanResult { findings }
     }
@@ -452,6 +456,38 @@ fn coalesce_findings(findings: &[CredentialFinding]) -> Vec<MergedSpan> {
         }
     }
     merged
+}
+
+/// Redact the secret value of every Azure `AccountKey=<value>` in `text`,
+/// regardless of its position in a connection string (AAASM-3997).
+///
+/// The `DefaultEndpointsProtocol=` prefix detector coalesces its span only up to
+/// the first `;` (see [`token_end`]), so in a canonical
+/// `DefaultEndpointsProtocol=...;AccountName=...;AccountKey=<secret>` string the
+/// `AccountKey` — which sits after two `;` separators — was left in the clear.
+/// This pass targets the key's value directly: it spans from the `AccountKey=`
+/// marker to the next `;`, token terminator, or end of input, so the secret is
+/// redacted wherever it falls in the string.
+fn scan_azure_account_key(text: &str, findings: &mut Vec<CredentialFinding>) {
+    const MARKER: &str = "AccountKey=";
+    let mut search_from = 0;
+    while let Some(rel) = text[search_from..].find(MARKER) {
+        let offset = search_from + rel;
+        let value_start = offset + MARKER.len();
+        // The value ends at the next connection-string delimiter (`;`), a
+        // whitespace/quote/bracket token terminator, or the end of the input.
+        let end = text[value_start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, ';' | '"' | '\'' | ',' | ')' | ']' | '}'))
+            .map(|i| value_start + i)
+            .unwrap_or(text.len());
+        findings.push(CredentialFinding::new(
+            CredentialKind::AzureConnectionString,
+            offset,
+            end,
+        ));
+        // Advance past this marker (at least) so overlapping/repeated keys still progress.
+        search_from = end.max(value_start);
+    }
 }
 
 /// Returns the byte index of the first token-terminating character at or after
@@ -899,6 +935,30 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.kind == CredentialKind::AzureConnectionString));
+    }
+
+    #[test]
+    fn redacts_azure_account_key_value_after_semicolons() {
+        // AAASM-3997: the `DefaultEndpointsProtocol=` prefix detector stops at the
+        // first `;`, so the AccountKey — which appears two segments later — used to
+        // survive redaction in the clear. The dedicated AccountKey pass must redact
+        // the secret wherever it falls in the connection string.
+        let scanner = CredentialScanner::new();
+        let secret = "abc123DEF456ghi789JKL012mno345PQR678stu901VWX234yz==";
+        let input = format!(
+            "DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey={secret};EndpointSuffix=core.windows.net"
+        );
+        let redacted = scanner.scan(&input).redact(&input);
+        assert!(
+            !redacted.contains(secret),
+            "Azure AccountKey secret leaked past redaction: {redacted}"
+        );
+        assert!(
+            redacted.contains("[REDACTED:AzureConnectionString]"),
+            "expected an AzureConnectionString redaction label: {redacted}"
+        );
+        // The trailing segment after the key is preserved (only the value is redacted).
+        assert!(redacted.contains("EndpointSuffix=core.windows.net"));
     }
 
     // --- Database URL patterns ---
