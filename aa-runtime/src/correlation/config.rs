@@ -83,6 +83,7 @@ mod tests {
             audit_buffer_path: std::path::PathBuf::from("/tmp/aa-audit-buffer-test.db"),
             enforcement_max_field_bytes: crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES,
             gateway_fail_closed: true,
+            gateway_timeout_ms: crate::config::DEFAULT_GATEWAY_TIMEOUT_MS,
         };
 
         let config = CorrelationConfig::from_runtime_config(&rc);

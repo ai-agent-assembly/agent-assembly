@@ -1132,6 +1132,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: crate::pipeline::enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            gateway_timeout: std::time::Duration::from_secs(5),
             min_sdk_version: None,
         };
         let pipeline_metrics = Arc::new(PipelineMetrics::default());
@@ -1230,6 +1231,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: crate::pipeline::enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            gateway_timeout: std::time::Duration::from_secs(5),
             min_sdk_version: None,
         };
         let pipeline_metrics = Arc::new(PipelineMetrics::default());
@@ -1335,6 +1337,7 @@ mod tests {
             agent_id: "test-agent".to_string(),
             enforcement: crate::pipeline::enforcement::EnforcementConfig::default(),
             gateway_fail_closed: true,
+            gateway_timeout: std::time::Duration::from_secs(5),
             min_sdk_version: None,
         };
         let pipeline_metrics = Arc::new(PipelineMetrics::default());

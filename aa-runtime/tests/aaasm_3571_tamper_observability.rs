@@ -44,6 +44,7 @@ fn verify_config() -> PipelineConfig {
         agent_id: "verify-agent".to_string(),
         enforcement: aa_runtime::pipeline::enforcement::EnforcementConfig::default(),
         gateway_fail_closed: true,
+        gateway_timeout: Duration::from_secs(5),
         min_sdk_version: None,
     }
 }
