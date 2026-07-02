@@ -75,14 +75,26 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Build aasm + aa-gateway release binaries
+      - name: Build release binaries (cli/gateway/runtime, +proxy on Linux)
         # aasm is the operator CLI; aa-gateway is the core daemon that
-        # `aasm gateway start` spawns. Both must ship in the release tarball
+        # `aasm gateway start` spawns. Both must ship in the CLI tarball
         # (AAASM-2975) so a release / Homebrew install can launch a core —
         # without aa-gateway, `aasm gateway start` fails with
         # "aa-gateway binary not found". aa-gateway is a normal host binary
         # (no eBPF / cross-target quirks), so it builds for every matrix target.
-        run: cargo build --release --target ${{ matrix.target }} -p aa-cli -p aa-gateway
+        #
+        # AAASM-3951: also build the componentized daemons — aa-runtime (the
+        # local sidecar) on every target, and aa-proxy on Linux only (the proxy
+        # component artifact is Linux-only per ADR-014). They are packaged into
+        # their own component tarballs below.
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          PKGS=(-p aa-cli -p aa-gateway -p aa-runtime)
+          if [ "$RUNNER_OS" = "Linux" ]; then PKGS+=(-p aa-proxy); fi
+          cargo build --release --target "$TARGET" "${PKGS[@]}"
 
       - name: Install Rosetta 2 (x86_64-apple-darwin smoke test)
         if: matrix.target == 'x86_64-apple-darwin'
@@ -179,20 +191,54 @@ jobs:
             ebpf-objects/aa-tls-probes
           retention-days: 1
 
-      - name: Archive binaries
+      - name: Archive binaries (legacy + component-aware — ADR-014)
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          # Package both binaries side-by-side so they unpack into the same
-          # directory; `aasm gateway start` resolves aa-gateway next to the
-          # running aasm executable (AAASM-2975).
-          tar -czf "aasm-${{ matrix.target }}.tar.gz" \
-            -C "target/${{ matrix.target }}/release" aasm aa-gateway
+          set -euo pipefail
+          REL="target/${TARGET}/release"
+
+          # os/arch token for component-aware artifact names (ADR-014).
+          case "$TARGET" in
+            x86_64-unknown-linux-gnu)  OSARCH="linux-amd64" ;;
+            aarch64-unknown-linux-gnu) OSARCH="linux-arm64" ;;
+            aarch64-apple-darwin)      OSARCH="darwin-arm64" ;;
+            x86_64-apple-darwin)       OSARCH="darwin-amd64" ;;
+            *) echo "::error::unmapped target $TARGET"; exit 1 ;;
+          esac
+
+          # Version token: the tag on release pushes; a dev placeholder otherwise
+          # (component artifacts are only published on tag pushes).
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then VER="${GITHUB_REF_NAME}"; else VER="0.0.0-dev"; fi
+
+          # Legacy CLI tarball — backward-compat: the existing install-cli.sh `cli`
+          # path and the aasm.rb formula resolve this target-triple name. aasm +
+          # aa-gateway unpack side-by-side so `aasm gateway start` finds the core
+          # (AAASM-2975).
+          tar -czf "aasm-${TARGET}.tar.gz" -C "$REL" aasm aa-gateway
+
+          # Component-aware artifacts (AAASM-3951). The ARTIFACT is component-named
+          # but each binary keeps its REAL name — the aasm CLI execs aa-gateway /
+          # aa-proxy by those names, so renaming would break `aasm start` /
+          # `aasm proxy start` (AAASM-3952/3953 install these real-named binaries).
+          tar -czf "aasm-cli-${VER}-${OSARCH}.tar.gz"     -C "$REL" aasm aa-gateway
+          if [ -f "$REL/aa-runtime" ]; then
+            tar -czf "aasm-runtime-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-runtime
+          fi
+          # proxy is a Linux-only component (ADR-014); only built/packaged there.
+          if [ -f "$REL/aa-proxy" ]; then
+            tar -czf "aasm-proxy-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-proxy
+          fi
+          ls -lh aasm-*.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: aasm-${{ matrix.target }}
-          path: aasm-${{ matrix.target }}.tar.gz
+          # Legacy + component tarballs for this target (unique os/arch per matrix
+          # leg, so merge-multiple in the publish job flattens without collision).
+          path: aasm-*.tar.gz
           retention-days: 1
 
   publish:
@@ -241,6 +287,31 @@ jobs:
           cd artifacts
           sha256sum aasm-*.tar.gz > SHA256SUMS
           cat SHA256SUMS
+
+      - name: Generate component manifest (ADR-014 — AAASM-3951)
+        if: github.event_name == 'push'
+        working-directory: artifacts
+        env:
+          VER: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Machine-readable index of published component artifacts so installers
+          # can resolve {component, os_arch} -> file for a given version without
+          # guessing. The component-aware tarballs are aasm-<comp>-<VER>-<os>-<arch>.
+          {
+            printf '{\n  "version": "%s",\n  "components": [\n' "$VER"
+            first=1
+            for f in aasm-cli-*.tar.gz aasm-runtime-*.tar.gz aasm-proxy-*.tar.gz; do
+              [ -e "$f" ] || continue
+              comp=$(printf '%s' "$f" | sed -E 's/^aasm-([a-z]+)-.*/\1/')
+              osarch=$(printf '%s' "$f" | sed -E 's/.*-([a-z0-9]+-[a-z0-9]+)\.tar\.gz$/\1/')
+              [ "$first" -eq 1 ] || printf ',\n'
+              first=0
+              printf '    {"component": "%s", "os_arch": "%s", "file": "%s"}' "$comp" "$osarch" "$f"
+            done
+            printf '\n  ]\n}\n'
+          } > components.json
+          cat components.json
 
       - name: Generate EBPF_SHA256SUMS (AAASM-3601)
         run: |
@@ -297,6 +368,7 @@ jobs:
         with:
           files: |
             artifacts/aasm-*.tar.gz
+            artifacts/components.json
             artifacts/SHA256SUMS
             artifacts/SHA256SUMS.cosign.bundle
             artifacts/SHA256SUMS.sig
