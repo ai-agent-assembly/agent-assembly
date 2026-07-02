@@ -1,7 +1,9 @@
 //! [`InvalidationHub`] — the gateway-side fan-out for L1 push-invalidation.
 //!
-//! One [`Subscriber`] is tracked per connected Assembly (keyed by `assembly_id`).
-//! Each subscriber owns a monotonic sequence counter and a bounded replay ring
+//! One [`Subscriber`] is tracked per connected Assembly, keyed by
+//! `(tenant, assembly_id)` so two different tenants that happen to choose the
+//! same `assembly_id` get independent slots (AAASM-3997). Each subscriber owns a
+//! monotonic sequence counter and a bounded replay ring
 //! so a reconnecting Assembly can request everything it missed via
 //! `SubscribeInitial.last_seq_seen`. A policy mutation calls
 //! [`InvalidationHub::broadcast_policy_invalidated`], which fans the event out to
@@ -19,6 +21,11 @@ use aa_runtime::approval::{ApprovalDecision, ApprovalResolvedNotifier};
 
 /// Stable identifier of a subscribing Assembly instance.
 pub type AssemblyId = String;
+
+/// Key under which a [`Subscriber`] is tracked: the owning tenant paired with the
+/// Assembly id. Including the tenant makes the namespace per-tenant, so one
+/// tenant cannot squat another tenant's `assembly_id` (AAASM-3997).
+type SubscriberKey = (Option<String>, AssemblyId);
 
 /// Number of recent events retained per subscriber for replay-on-reconnect.
 const REPLAY_RING_CAPACITY: usize = 1024;
@@ -47,13 +54,16 @@ struct Subscriber {
 }
 
 /// Why [`InvalidationHub::subscribe`] refused to register a subscription.
+///
+/// Retained for API stability. As of AAASM-3997 the subscriber map is keyed by
+/// `(tenant, assembly_id)`, so a cross-tenant `assembly_id` clash no longer
+/// collides onto one slot — the two callers get independent subscribers — and
+/// this error is never returned in practice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubscribeError {
     /// The `assembly_id` is already registered under a different tenant than the
-    /// authenticated caller. Reusing the slot would attach this caller's
-    /// receiver to the existing tenant's broadcast channel (leaking its events)
-    /// and let this caller's acks trim that tenant's replay ring. Fail-closed:
-    /// the subscription is refused (AAASM-3914).
+    /// authenticated caller. Superseded by per-tenant keying (AAASM-3997); kept
+    /// so the `subscribe` signature and its callers stay source-compatible.
     TenantMismatch,
 }
 
@@ -71,7 +81,7 @@ pub struct SubscriptionHandle {
 /// Assembly and buffers them for replay across reconnects.
 #[derive(Default)]
 pub struct InvalidationHub {
-    subscribers: RwLock<HashMap<AssemblyId, Arc<Subscriber>>>,
+    subscribers: RwLock<HashMap<SubscriberKey, Arc<Subscriber>>>,
 }
 
 /// Decide whether a subscriber is entitled to an event, given the subscriber's
@@ -106,13 +116,16 @@ impl InvalidationHub {
     /// scope tenant-bound events to their owning tenant. On reconnect the
     /// originally-registered tenant is retained.
     ///
-    /// Returns [`SubscribeError::TenantMismatch`] when `assembly_id` is already
-    /// registered under a tenant other than `tenant` (AAASM-3914). The match is
-    /// exact: an untenanted slot (`None`) may not be claimed by a tenant, nor a
-    /// tenanted slot by an untenanted caller — any mismatch is fail-closed, so a
-    /// caller can never attach to another tenant's channel or trim its ring. A
-    /// reconnect by the same tenant (the common `None == None` cold-start case
-    /// included) is permitted and resumes from `last_seq_seen`.
+    /// Subscribers are keyed by `(tenant, assembly_id)` (AAASM-3997), so two
+    /// different tenants that pick the same `assembly_id` get independent slots:
+    /// neither can attach to the other's channel or trim its ring, and — unlike
+    /// the earlier reject-on-clash approach (AAASM-3914) — a tenant can no longer
+    /// deny another tenant service by squatting its `assembly_id`. A reconnect by
+    /// the same tenant with the same id reuses the existing slot and resumes from
+    /// `last_seq_seen`.
+    ///
+    /// The `Result` return is retained for API compatibility;
+    /// [`SubscribeError::TenantMismatch`] is no longer produced.
     pub fn subscribe(
         &self,
         assembly_id: impl Into<AssemblyId>,
@@ -120,20 +133,13 @@ impl InvalidationHub {
         last_seq_seen: u64,
     ) -> Result<SubscriptionHandle, SubscribeError> {
         let assembly_id = assembly_id.into();
+        let key: SubscriberKey = (tenant.clone(), assembly_id);
         let mut subscribers = self
             .subscribers
             .write()
             .expect("invalidation subscribers lock poisoned");
-        // Fail-closed: an existing subscriber bound to a different tenant must
-        // not be re-bound to this caller, or its events would leak to — and its
-        // replay ring be trimmed by — the wrong tenant (AAASM-3914).
-        if let Some(existing) = subscribers.get(&assembly_id) {
-            if existing.tenant != tenant {
-                return Err(SubscribeError::TenantMismatch);
-            }
-        }
         let subscriber = subscribers
-            .entry(assembly_id)
+            .entry(key)
             .or_insert_with(|| {
                 let (tx, _rx) = broadcast::channel(SUBSCRIBER_CHANNEL_CAPACITY);
                 Arc::new(Subscriber {
@@ -244,10 +250,15 @@ impl InvalidationHub {
 
     /// Trim a subscriber's replay ring up to and including `seq`, in response to
     /// a `SubscribeAck`. Advances the low-water mark so acknowledged events are
-    /// not replayed again. Unknown `assembly_id`s are ignored.
-    pub fn ack(&self, assembly_id: &str, seq: u64) {
+    /// not replayed again. Unknown `(tenant, assembly_id)` keys are ignored.
+    ///
+    /// `tenant` must match the tenant the subscription was registered under
+    /// (AAASM-3997): a caller can only trim its own `(tenant, assembly_id)` ring,
+    /// never another tenant's slot sharing the same `assembly_id`.
+    pub fn ack(&self, tenant: Option<&str>, assembly_id: &str, seq: u64) {
         let subscribers = self.subscribers.read().expect("invalidation subscribers lock poisoned");
-        if let Some(subscriber) = subscribers.get(assembly_id) {
+        let key: SubscriberKey = (tenant.map(str::to_string), assembly_id.to_string());
+        if let Some(subscriber) = subscribers.get(&key) {
             let mut ring = subscriber.ring.lock().expect("replay ring lock poisoned");
             while ring.front().is_some_and(|event| event.seq <= seq) {
                 ring.pop_front();
@@ -340,7 +351,7 @@ mod tests {
         hub.broadcast_policy_invalidated("agent-a", 1);
         hub.broadcast_policy_invalidated("agent-b", 2);
 
-        hub.ack("asm-1", 1);
+        hub.ack(None, "asm-1", 1);
 
         // After acking seq 1, a cold reconnect only replays seq 2.
         let reconnect = hub.subscribe("asm-1", None, 0).expect("subscribe succeeds");
@@ -427,26 +438,27 @@ mod tests {
         );
     }
 
-    /// AAASM-3914 regression: a Subscribe whose `assembly_id` already belongs to
-    /// another tenant is refused, so the caller can neither attach to the
-    /// victim's broadcast channel nor trim its replay ring.
+    /// AAASM-3997 regression: two tenants sharing the same `assembly_id` get
+    /// independent slots. The attacker who subscribes first cannot deny the
+    /// victim service (availability), and neither can read the other's events
+    /// (confidentiality). Supersedes the earlier reject-on-clash behaviour.
     #[tokio::test]
-    async fn subscribe_rejects_cross_tenant_assembly_id_reuse() {
+    async fn subscribe_isolates_cross_tenant_same_assembly_id() {
         let hub = InvalidationHub::new();
+
+        // Attacker in team-b squats the shared assembly_id first.
+        let mut attacker = hub
+            .subscribe("asm-shared", Some("team-b".to_string()), 0)
+            .expect("attacker subscribe succeeds");
+
+        // The victim in team-a with the SAME assembly_id is NOT denied service:
+        // it gets its own independent subscriber slot (availability preserved).
         let mut victim = hub
             .subscribe("asm-shared", Some("team-a".to_string()), 0)
-            .expect("victim subscribe succeeds");
+            .expect("victim subscribe is not blocked by the squatter");
+        assert_eq!(hub.subscriber_count(), 2, "each tenant holds its own slot");
 
-        // Attacker in team-b knows team-a's assembly_id; binding is refused.
-        let attacker = hub.subscribe("asm-shared", Some("team-b".to_string()), 0);
-        assert!(matches!(attacker, Err(SubscribeError::TenantMismatch)));
-
-        // An untenanted caller likewise may not claim a tenanted slot.
-        let untenanted = hub.subscribe("asm-shared", None, 0);
-        assert!(matches!(untenanted, Err(SubscribeError::TenantMismatch)));
-
-        // The victim's own event still flows to the victim only; the rejected
-        // attacker never received a handle, so nothing leaked.
+        // team-a's event reaches only the victim, never the attacker's channel.
         hub.broadcast_approval_resolved("req-a", Decision::Approved, Some("team-a"));
         let event = tokio::time::timeout(Duration::from_millis(100), victim.receiver.recv())
             .await
@@ -454,8 +466,19 @@ mod tests {
             .expect("channel open");
         assert_eq!(event.seq, 1);
 
-        // The attacker's rejection left no extra subscriber registered.
-        assert_eq!(hub.subscriber_count(), 1);
+        // The attacker (team-b) must NOT receive team-a's event.
+        let leaked = tokio::time::timeout(Duration::from_millis(50), attacker.receiver.recv()).await;
+        assert!(leaked.is_err(), "attacker must not receive the victim's event");
+
+        // The victim's ack trims only the victim's ring, not the attacker's.
+        hub.ack(Some("team-a"), "asm-shared", 1);
+        let attacker_reconnect = hub
+            .subscribe("asm-shared", Some("team-b".to_string()), 0)
+            .expect("attacker reconnect succeeds");
+        assert!(
+            attacker_reconnect.replay.is_empty(),
+            "attacker's ring is independent and was never populated with team-a's event"
+        );
     }
 
     /// AAASM-3914 regression: the legitimate reconnect path — same tenant, same

@@ -76,9 +76,11 @@ impl InvalidationService for InvalidationServiceImpl {
             _ => 0,
         };
 
-        // Fail-closed (AAASM-3914): the hub refuses to bind this stream to an
-        // `assembly_id` already registered under a different tenant, so a caller
-        // cannot hijack another tenant's events or trim its replay ring.
+        // AAASM-3997: the hub keys subscribers by `(tenant, assembly_id)`, so a
+        // cross-tenant `assembly_id` clash yields an independent slot rather than
+        // hijacking (or being denied service by) another tenant's subscription.
+        // The `tenant` is also needed to trim the correct ring on Ack below.
+        let tenant_for_ack = tenant.clone();
         let handle = self.hub.subscribe(assembly_id.clone(), tenant, last_seq_seen).map_err(
             |super::SubscribeError::TenantMismatch| {
                 Status::permission_denied("assembly_id is registered to a different tenant")
@@ -90,7 +92,7 @@ impl InvalidationService for InvalidationServiceImpl {
         tokio::spawn(async move {
             while let Ok(Some(message)) = inbound.message().await {
                 if let Some(Kind::Ack(ack)) = message.kind {
-                    hub.ack(&assembly_id, ack.seq);
+                    hub.ack(tenant_for_ack.as_deref(), &assembly_id, ack.seq);
                 }
             }
         });
