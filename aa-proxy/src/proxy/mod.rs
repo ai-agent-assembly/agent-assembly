@@ -89,6 +89,29 @@ fn build_jsonrpc_error_response(code: i32, message: &str) -> String {
     format!(r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":{code},"message":{msg_json}}}}}"#)
 }
 
+/// Fail-closed client response for an MCP upstream response the proxy could not
+/// parse (chunked / malformed) and therefore could not scan for secrets
+/// (AAASM-3997).
+///
+/// The pre-3997 behaviour relayed the un-parsed upstream bytes verbatim, which
+/// leaked an *unredacted* upstream body straight to the agent — defeating
+/// response-side credential redaction on any response the parser chokes on.
+/// Rather than forward bytes we never inspected, return a JSON-RPC error
+/// envelope so the agent gets a clean, secret-free failure. The returned bytes
+/// never contain any upstream content.
+fn mcp_unparseable_response_bytes() -> Vec<u8> {
+    let body = build_jsonrpc_error_response(
+        -32000,
+        "MCP response could not be inspected for secrets and was withheld (fail-closed)",
+    );
+    format!(
+        "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body,
+    )
+    .into_bytes()
+}
+
 /// The running proxy server.
 ///
 /// Create via [`ProxyServer::new`], then drive the accept loop with
@@ -527,18 +550,28 @@ impl ProxyServer {
                     // Upstream closed without writing a response — nothing to forward.
                 }
                 Err(e) => {
-                    // Could not parse the response (e.g. chunked, malformed) —
-                    // relay the remaining upstream bytes to the client. AAASM-3864
-                    // (a): we relay only upstream→client, never copying further
-                    // client bytes upstream, so no follow-up request can reach
-                    // upstream un-inspected.
+                    // AAASM-3997: an MCP response we cannot parse cannot be
+                    // scanned or redacted. Relaying the un-parsed upstream bytes
+                    // (the pre-3997 behaviour) would leak an *unredacted* body —
+                    // potentially carrying credentials the response-side scanner
+                    // would have stripped — straight to the agent. Fail closed:
+                    // withhold the upstream body and return a JSON-RPC error
+                    // envelope instead. (We still never copy client→upstream, so
+                    // AAASM-3864's no-uninspected-request property holds.)
                     tracing::warn!(
                         tool_name = %call.tool_name,
                         error = %e,
-                        "MCP response parse failed, relaying remaining upstream bytes",
+                        "MCP response parse failed; withholding unredacted upstream body (fail-closed)",
                     );
-                    let mut upstream_read = upstream_reader.into_inner();
-                    tokio::io::copy(&mut upstream_read, &mut client_tls).await?;
+                    self.interceptor
+                        .emit_mcp_decision(
+                            &call.tool_name,
+                            &args_bytes,
+                            true,
+                            "response unparseable, withheld (fail-closed)",
+                        )
+                        .await;
+                    client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
                 }
             }
         } else {
@@ -1099,6 +1132,30 @@ fn parse_plain_http_host(target: &str, headers: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unparseable_mcp_response_is_fail_closed_and_carries_no_upstream_bytes() {
+        // AAASM-3997: the fail-closed response for an unparseable MCP upstream
+        // response must be a clean JSON-RPC error envelope, never a passthrough
+        // of upstream bytes (which could carry credentials the scanner never saw).
+        let bytes = mcp_unparseable_response_bytes();
+        let text = String::from_utf8(bytes).expect("valid UTF-8 HTTP response");
+
+        // A well-formed HTTP error response, not a relayed 200 upstream body.
+        assert!(text.starts_with("HTTP/1.1 502"), "expected a 502 status line: {text}");
+        assert!(
+            text.contains("\"jsonrpc\":\"2.0\""),
+            "expected a JSON-RPC error body: {text}"
+        );
+        assert!(text.contains("fail-closed"), "expected the fail-closed reason: {text}");
+
+        // The envelope is synthesized from constants only: a would-be leaked
+        // upstream secret can never appear in it.
+        assert!(
+            !text.contains("sk-LEAKED-UPSTREAM-SECRET"),
+            "fail-closed response must not echo upstream content"
+        );
+    }
 
     async fn server_with(denied_hosts: Vec<String>, allowlist: Vec<String>) -> Arc<ProxyServer> {
         let dir = tempfile::tempdir().unwrap();

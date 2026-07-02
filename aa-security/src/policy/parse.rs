@@ -83,6 +83,15 @@ impl PolicyDocument {
         // successfully (AAASM-3874).
         let value: serde_yaml::Value =
             serde_yaml::from_str(yaml_str).map_err(|e| PolicyParseError::Yaml(e.to_string()))?;
+        // AAASM-3997: an empty / null / `{}` document deserializes to an
+        // all-`None` (fully-permissive) policy. Reject it here — the gateway load
+        // path has no live caller that guards against this, so parsing must be
+        // the fail-closed floor: a policy must positively declare its posture.
+        match &value {
+            serde_yaml::Value::Null => return Err(PolicyParseError::EmptyDocument),
+            serde_yaml::Value::Mapping(map) if map.is_empty() => return Err(PolicyParseError::EmptyDocument),
+            _ => {}
+        }
         validate_schema(&value)?;
         let env: raw::Envelope = serde_yaml::from_value(value).map_err(|e| PolicyParseError::Yaml(e.to_string()))?;
 
@@ -339,6 +348,19 @@ spec:
     fn rejects_malformed_yaml() {
         let err = PolicyDocument::from_yaml("spec: [unclosed").unwrap_err();
         assert!(matches!(err, PolicyParseError::Yaml(_)));
+    }
+
+    #[test]
+    fn rejects_empty_or_null_document() {
+        // AAASM-3997: a blank document parsed to a fully-permissive policy. It
+        // must now fail closed instead of defaulting open.
+        for blank in ["", "   \n  ", "null", "~", "{}"] {
+            let err = PolicyDocument::from_yaml(blank).unwrap_err();
+            assert!(
+                matches!(err, PolicyParseError::EmptyDocument),
+                "blank input {blank:?} should be rejected as empty, got {err:?}"
+            );
+        }
     }
 
     #[test]

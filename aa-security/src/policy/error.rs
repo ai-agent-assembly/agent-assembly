@@ -34,6 +34,13 @@ pub enum PolicyParseError {
         /// The unrecognised key.
         key: String,
     },
+    /// The document was empty or null.
+    ///
+    /// An empty / null / `{}` policy deserializes to an all-`None` document,
+    /// which is fully permissive (no capability denials, no allowlist, no tool
+    /// gating). A policy must positively declare its posture, so a blank
+    /// document is rejected rather than silently defaulting open (AAASM-3997).
+    EmptyDocument,
 }
 
 impl fmt::Display for PolicyParseError {
@@ -48,6 +55,12 @@ impl fmt::Display for PolicyParseError {
             }
             Self::UnknownKey { path, key } => {
                 write!(f, "unknown policy key {key:?} under {path}")
+            }
+            Self::EmptyDocument => {
+                write!(
+                    f,
+                    "empty or null policy document is not permitted (would be fully permissive)"
+                )
             }
         }
     }

@@ -152,18 +152,32 @@ fn subject_authorizes_envelope(subject: &str, envelope: &OpControlWireEnvelope) 
     subject_for(envelope) == subject
 }
 
-/// Replace every character outside `[A-Za-z0-9_-]` with `_` so the result is a
-/// single valid NATS subject token (NATS reserves `.`, `*`, `>` and whitespace).
+/// Encode `raw` into a single valid NATS subject token
+/// (NATS reserves `.`, `*`, `>` and whitespace) **injectively** (AAASM-3997).
+///
+/// The previous implementation replaced every character outside `[A-Za-z0-9_-]`
+/// with `_`, which is lossy: `acme.corp`, `acme corp` and the literal
+/// `acme_corp` all collapsed to `acme_corp` and therefore to the *same* subject.
+/// For the op-control kill switch that is a cross-tenant hazard — a halt for one
+/// tenant would be delivered on a subject a colliding tenant name also maps to.
+///
+/// This encoding is collision-free: ASCII alphanumerics and `-` pass through
+/// unchanged, and every other byte (including `_` itself) is escaped as
+/// `_HH` (uppercase hex of the byte). Because a literal `_` is always escaped,
+/// `_` in the output unambiguously starts a 2-hex escape, so distinct inputs
+/// always produce distinct tokens. The output alphabet is `[A-Za-z0-9_-]`, a
+/// valid single NATS subject token.
 fn sanitize_token(raw: &str) -> String {
-    raw.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' {
+            out.push(b as char);
+        } else {
+            out.push('_');
+            out.push_str(&format!("{b:02X}"));
+        }
+    }
+    out
 }
 
 /// Errors raised by the op-control NATS publisher and bridge.
@@ -849,6 +863,8 @@ mod tests {
 
     #[test]
     fn subject_sanitizes_unsafe_tokens_and_falls_back_for_empty_agent() {
+        // Unsafe bytes are hex-escaped (`_HH`) rather than flattened to `_`, so
+        // the encoding is injective. ' ' -> _20, '.' -> _2E.
         let dotted = env(
             false,
             "acme corp.eu",
@@ -857,10 +873,48 @@ mod tests {
             "agent:bot.7",
             OpControlSignal::Terminate,
         );
-        assert_eq!(subject_for(&dotted), "assembly.opcontrol.acme_corp_eu.bot_7");
+        assert_eq!(subject_for(&dotted), "assembly.opcontrol.acme_20corp_2Eeu.bot_2E7");
 
         let no_agent = env(false, "acme", "", "", "*", OpControlSignal::Terminate);
         assert_eq!(subject_for(&no_agent), "assembly.opcontrol.acme.unknown");
+    }
+
+    #[test]
+    fn distinct_tenant_ids_never_collide_onto_one_subject() {
+        // AAASM-3997: the old lossy `_`-substitution mapped all of these tenant
+        // ids to the same subject, so a halt for one could be delivered on a
+        // subject a colliding tenant also mapped to. The injective encoding must
+        // give each a distinct subject.
+        let make = |org: &str| subject_for(&env(false, org, "", "bot-7", "agent:bot-7", OpControlSignal::Terminate));
+        let dotted = make("acme.corp");
+        let spaced = make("acme corp");
+        let underscored = make("acme_corp");
+        let plain = make("acmecorp");
+
+        // All four are pairwise distinct.
+        let all = [&dotted, &spaced, &underscored, &plain];
+        for i in 0..all.len() {
+            for j in (i + 1)..all.len() {
+                assert_ne!(all[i], all[j], "tenant subjects collided: {} == {}", all[i], all[j]);
+            }
+        }
+
+        // And each remains a single, safe NATS subject token (no `.`/`*`/`>`/space
+        // inside the tenant position).
+        for s in all {
+            let tenant = s
+                .strip_prefix("assembly.opcontrol.")
+                .unwrap()
+                .split('.')
+                .next()
+                .unwrap();
+            assert!(
+                tenant
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+                "tenant token is not subject-safe: {tenant}"
+            );
+        }
     }
 
     #[test]
