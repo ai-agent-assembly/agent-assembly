@@ -556,10 +556,13 @@ jobs:
           # github.ref_name is the tag (e.g. v0.0.1); strip the leading "v".
           echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout homebrew-agent-assembly tap
+      - name: Checkout homebrew-tap tap
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: ai-agent-assembly/homebrew-agent-assembly
+          # Renamed from homebrew-agent-assembly → homebrew-tap (AAASM-3950) so
+          # Homebrew resolves the tap as ai-agent-assembly/tap. The old name still
+          # redirects, but target the canonical repo directly.
+          repository: ai-agent-assembly/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
