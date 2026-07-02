@@ -52,6 +52,16 @@ pub enum BudgetError {
         /// Which window (daily/monthly/global) was exhausted.
         kind: BudgetKind,
     },
+    /// AAASM-3986 — the agent's *own* budget would be exceeded by the reserved
+    /// spend; nothing was committed. Distinct from
+    /// [`Self::AncestorBudgetExhausted`] so the caller can report the correct
+    /// deny reason (per-agent daily / monthly limit) for the atomic
+    /// [`super::tracker::BudgetTracker::reserve_spend`] path.
+    #[error("agent budget exhausted ({kind:?})")]
+    SelfBudgetExhausted {
+        /// Which window (daily/monthly) was exhausted.
+        kind: BudgetKind,
+    },
 }
 
 /// Result returned by [`super::tracker::BudgetTracker::record_usage`].

@@ -693,6 +693,108 @@ impl BudgetTracker {
         Ok(())
     }
 
+    /// AAASM-3986 — atomically check the agent's (and its ancestors') budget and,
+    /// when there is headroom for `amount`, commit that spend across the agent,
+    /// its ancestors, and the team / org / global tiers — all under the same
+    /// per-ancestor lock set used by [`check_and_decrement`].
+    ///
+    /// This closes the check→record TOCTOU in the live LLM-call path. The
+    /// previous flow read accumulated spend (Stage 7) and only recorded it
+    /// *after* the response was built, so N concurrent checks for one tenant
+    /// could all observe under-limit before any recorded — a bounded overspend
+    /// proportional to in-flight concurrency. Here the check and the commit are
+    /// inseparable: a reservation is rejected (`Err`, nothing committed) the
+    /// instant `spent + amount` would cross a configured daily or monthly limit,
+    /// so the recorded total never exceeds the limit regardless of concurrency.
+    ///
+    /// Limits are resolved via [`Self::resolve_limit`] (per-agent override then
+    /// the tracker-wide limit lifted from the policy budget), matching
+    /// `check_and_decrement`. `team_id` / `org_id` must be the *authoritative*
+    /// tenancy the engine resolves from the registered owner (AAASM-3138), never
+    /// the client-supplied values, so spend is never billed to a forged tenant.
+    pub fn reserve_spend(
+        &self,
+        agent_id: AgentId,
+        ancestors: &[[u8; 16]],
+        team_id: Option<&str>,
+        org_id: Option<&str>,
+        amount: Decimal,
+    ) -> Result<(), crate::budget::types::BudgetError> {
+        use crate::budget::types::{BudgetError, BudgetKind};
+
+        // Acquire the per-ancestor locks root-down, then the agent's own lock,
+        // so concurrent reservations that share any node serialise in a single
+        // deterministic order (no A-then-B vs B-then-A deadlock). The agent's
+        // own lock makes concurrent same-agent reservations serialise even when
+        // the ancestor chain is empty.
+        let mut lock_ids: Vec<AgentId> = ancestors.iter().rev().map(|&b| AgentId::from_bytes(b)).collect();
+        if !lock_ids.contains(&agent_id) {
+            lock_ids.push(agent_id);
+        }
+        let lock_arcs: Vec<_> = lock_ids.iter().map(|id| self.get_or_create_parent_lock(*id)).collect();
+        let lock_wait_start = std::time::Instant::now();
+        let _guards: Vec<_> = lock_arcs.iter().map(|arc| arc.lock()).collect();
+        metrics::histogram!("budget_parent_lock_wait_seconds").record(lock_wait_start.elapsed().as_secs_f64());
+
+        // Phase 1: preflight the agent's own monthly-then-daily limit, then
+        // every ancestor's daily limit. The agent check uses `spent >= limit`
+        // — identical to the Stage-7 read-check (`check_daily` / `check_monthly`)
+        // — so the *decision output* is unchanged: a call is allowed while the
+        // agent is still under its limit and denied once it reaches it. Doing
+        // this check and the commit together under the lock is what removes the
+        // concurrency-proportional overspend (AAASM-3986): concurrent
+        // reservations serialise, so only calls made while under-limit commit,
+        // exactly as they would sequentially. Monthly precedes daily by
+        // convention, matching the Stage-7 read-check.
+        let now = chrono::Utc::now();
+        let (agent_daily, agent_monthly) = self
+            .per_agent
+            .get(&agent_id)
+            .map(|s| {
+                let mut copy = s.clone();
+                copy.maybe_reset_window(now, self.window, self.timezone);
+                (copy.spent_usd, copy.monthly_spent_usd.unwrap_or(Decimal::ZERO))
+            })
+            .unwrap_or((Decimal::ZERO, Decimal::ZERO));
+        if let Some(limit) = self.resolve_limit(&agent_id, BudgetKind::Monthly) {
+            if agent_monthly >= limit {
+                return Err(BudgetError::SelfBudgetExhausted {
+                    kind: BudgetKind::Monthly,
+                });
+            }
+        }
+        if let Some(limit) = self.resolve_limit(&agent_id, BudgetKind::Daily) {
+            if agent_daily >= limit {
+                return Err(BudgetError::SelfBudgetExhausted {
+                    kind: BudgetKind::Daily,
+                });
+            }
+        }
+        self.preflight_ancestors(ancestors, amount)?;
+
+        // Phase 2: commit. `record_cost` folds the spend into the agent, team,
+        // org, and global tiers (plus history + threshold alerts); the ancestor
+        // chain is accumulated here because `record_cost` does not walk it.
+        self.record_cost(agent_id, team_id, org_id, amount);
+        let today = today_in_tz(self.timezone);
+        let has_monthly = self.monthly_limit_usd.is_some()
+            || self.team_monthly_limit_usd.is_some()
+            || self.org_monthly_limit_usd.is_some();
+        for &ancestor_bytes in ancestors {
+            accumulate_spend(
+                &self.per_agent,
+                AgentId::from_bytes(ancestor_bytes),
+                amount,
+                has_monthly,
+                now,
+                today,
+                self.window,
+                self.timezone,
+            );
+        }
+        Ok(())
+    }
+
     /// Accumulate today's spend for `agent_id` and every descendant in `descendants`.
     ///
     /// `descendants` should be the slice returned by `AgentRegistry::descendants_of(agent_id)`.
