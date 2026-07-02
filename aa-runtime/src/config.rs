@@ -4,6 +4,13 @@ use std::path::PathBuf;
 
 use crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES;
 
+/// Default per-RPC deadline for a gateway policy query, in milliseconds.
+///
+/// A few seconds is generous for a healthy in-cluster gateway hop yet short
+/// enough that a hung gateway cannot stall the runtime's policy checks for long
+/// (AAASM-3987).
+pub const DEFAULT_GATEWAY_TIMEOUT_MS: u64 = 5_000;
+
 /// Configuration for the `aa-runtime` sidecar process.
 ///
 /// All fields are populated by [`RuntimeConfig::from_env`].
@@ -142,6 +149,19 @@ pub struct RuntimeConfig {
     /// allow on no match. Accepts `false`/`0`/`no`/`off` (case-insensitive) to
     /// disable; any other value (or unset) keeps fail-closed.
     pub gateway_fail_closed: bool,
+
+    /// Per-RPC deadline, in milliseconds, applied to each gateway policy query
+    /// (`check_action`).
+    ///
+    /// Read from `AA_GATEWAY_TIMEOUT_MS`; defaults to [`DEFAULT_GATEWAY_TIMEOUT_MS`].
+    /// A gateway that accepts a connection but then stops responding would
+    /// otherwise block the policy check forever, stalling every agent's checks
+    /// behind the shared client — a runtime-wide head-of-line DoS (AAASM-3987).
+    /// The deadline bounds that: on elapse the query is treated as a failure and
+    /// routed into the same fail-closed path as a transport error. Zero falls
+    /// back to the default so the deadline can never be disabled (that would
+    /// reintroduce the hang).
+    pub gateway_timeout_ms: u64,
 }
 
 impl RuntimeConfig {
@@ -172,6 +192,7 @@ impl RuntimeConfig {
     /// | `AA_AUDIT_BUFFER_PATH` | `PathBuf` | `<temp>/aa-audit-buffer-<agent_id>.db` |
     /// | `AA_ENFORCEMENT_MAX_FIELD_BYTES` | `usize` | `65536` (64 KiB) |
     /// | `AA_GATEWAY_FAIL_CLOSED` | `bool` | `true` (deny on gateway unreachable) |
+    /// | `AA_GATEWAY_TIMEOUT_MS` | `u64` | `5000` (per-RPC gateway deadline) |
     /// | `AA_AGENT_TEAM_ID` | `String` | `""` (op-control subscription identity) |
     /// | `AA_AGENT_ORG_ID` | `String` | `""` (op-control subscription identity) |
     pub fn from_env() -> Result<Self, String> {
@@ -276,6 +297,14 @@ impl RuntimeConfig {
             .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
             .unwrap_or(true);
 
+        // Zero (or unparseable) falls back to the default: the deadline must not
+        // be disable-able, or the head-of-line DoS it guards against returns.
+        let gateway_timeout_ms = std::env::var("AA_GATEWAY_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_GATEWAY_TIMEOUT_MS);
+
         Ok(Self {
             agent_id,
             agent_team_id,
@@ -296,6 +325,7 @@ impl RuntimeConfig {
             audit_buffer_path,
             enforcement_max_field_bytes,
             gateway_fail_closed,
+            gateway_timeout_ms,
         })
     }
 }
@@ -844,5 +874,33 @@ mod tests {
 
         std::env::remove_var("AA_AGENT_ID");
         std::env::remove_var("AA_GATEWAY_FAIL_CLOSED");
+    }
+
+    #[test]
+    fn gateway_timeout_defaults_and_rejects_zero() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_AGENT_ID", "agent-to");
+
+        // Unset → the default deadline.
+        std::env::remove_var("AA_GATEWAY_TIMEOUT_MS");
+        assert_eq!(
+            RuntimeConfig::from_env().unwrap().gateway_timeout_ms,
+            DEFAULT_GATEWAY_TIMEOUT_MS
+        );
+
+        // A positive value is honoured verbatim.
+        std::env::set_var("AA_GATEWAY_TIMEOUT_MS", "1500");
+        assert_eq!(RuntimeConfig::from_env().unwrap().gateway_timeout_ms, 1_500);
+
+        // Zero must NOT disable the deadline — fall back to the default so the
+        // head-of-line DoS guard (AAASM-3987) cannot be turned off.
+        std::env::set_var("AA_GATEWAY_TIMEOUT_MS", "0");
+        assert_eq!(
+            RuntimeConfig::from_env().unwrap().gateway_timeout_ms,
+            DEFAULT_GATEWAY_TIMEOUT_MS
+        );
+
+        std::env::remove_var("AA_AGENT_ID");
+        std::env::remove_var("AA_GATEWAY_TIMEOUT_MS");
     }
 }

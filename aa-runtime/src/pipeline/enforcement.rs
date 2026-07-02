@@ -588,6 +588,7 @@ mod tests {
             audit_buffer_path: std::path::PathBuf::from("/tmp/aa-audit-buffer-test.db"),
             enforcement_max_field_bytes: 4096,
             gateway_fail_closed: true,
+            gateway_timeout_ms: crate::config::DEFAULT_GATEWAY_TIMEOUT_MS,
         };
 
         let config = EnforcementConfig::from_runtime_config(&rc);
