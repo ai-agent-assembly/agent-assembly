@@ -989,6 +989,31 @@ impl ProxyServer {
             return Ok(());
         }
 
+        // AAASM-3984: refuse plaintext (`http://`) egress to a known LLM
+        // provider. The credential-scanning DLP (scan → block/redact) only runs
+        // on the HTTPS MitM path (`handle_llm_mitm`); the plain-HTTP path below
+        // is a raw bidirectional copy with no `intercept_request` scan. LLM
+        // provider APIs are HTTPS-only, so a cleartext request to an LLM host is
+        // always a protocol-downgrade bypass — a steered agent could exfiltrate
+        // secrets in cleartext with zero inspection. Refuse it here (fail-closed,
+        // 403) rather than raw-copying it upstream un-inspected. `detect_api`
+        // canonicalizes case/port/trailing-dot, so downgrade variants like
+        // `http://API.OpenAI.CoM.` are caught too. Legitimate LLM traffic is
+        // HTTPS and continues to be inspected by `handle_llm_mitm`.
+        if detect_api(deny_host) != LlmApiPattern::Unknown {
+            tracing::info!(
+                host = %deny_host,
+                "plain-HTTP egress to LLM host refused: cleartext downgrade bypasses DLP",
+            );
+            self.interceptor.emit_policy_decision(deny_host, true).await;
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+
         // Connect to upstream via plain TCP.
         let upstream_addr = if host.contains(':') {
             host.to_string()
