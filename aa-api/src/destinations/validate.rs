@@ -317,6 +317,8 @@ mod tests {
             enabled: true,
             created_at: "now".into(),
             updated_at: "now".into(),
+            team_id: None,
+            org_id: None,
         };
         assert_eq!(
             validate_destination(&dst),
@@ -407,6 +409,8 @@ mod tests_extra {
             enabled: true,
             created_at: "2026-06-25T00:00:00Z".to_string(),
             updated_at: "2026-06-25T00:00:00Z".to_string(),
+            team_id: None,
+            org_id: None,
         }
     }
 

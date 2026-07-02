@@ -109,6 +109,19 @@ pub struct AlertRule {
     pub created_at: String,
     /// RFC 3339 timestamp of the last mutation.
     pub updated_at: String,
+    /// AAASM-3911: owning team, stamped from the creating caller's tenant.
+    ///
+    /// Internal-only: `#[serde(skip)]` keeps it off the wire and out of the
+    /// OpenAPI schema, so the public alert-rule DTO is unchanged. It confines
+    /// list/get/update/delete to the rule's tenant (an admin sees every
+    /// tenant). `None` for rules created by an admin / bypass caller with no
+    /// tenant scope — such rules are untagged and admin-only.
+    #[serde(skip)]
+    pub team_id: Option<String>,
+    /// AAASM-3911: owning org, stamped from the creating caller's tenant.
+    /// Internal-only — see [`Self::team_id`].
+    #[serde(skip)]
+    pub org_id: Option<String>,
 }
 
 /// Validation failure surfaced from [`AlertRule::validate`].
@@ -323,6 +336,8 @@ mod tests {
             enabled: true,
             created_at: "2026-05-13T09:00:00Z".to_string(),
             updated_at: "2026-05-13T09:00:00Z".to_string(),
+            team_id: None,
+            org_id: None,
         }
     }
 
