@@ -69,7 +69,7 @@ OPTIONS:
 
 COMPONENTS:
   cli       the `aasm` command (default)
-  runtime   the local runtime daemon (aasm-runtime)
+  runtime   the local runtime daemon (aa-runtime)
   proxy     the proxy enforcement layer
   ebpf      the eBPF component (supported Linux platforms only)
 
@@ -161,9 +161,9 @@ component_binary() {
   # The binary name a component ships inside its tarball.
   case "$1" in
     cli)     echo "aasm" ;;
-    runtime) echo "aasm-runtime" ;;
-    proxy)   echo "aasm-proxy" ;;
-    ebpf)    echo "aasm-ebpf" ;;
+    runtime) echo "aa-runtime" ;;
+    proxy)   echo "aa-proxy" ;;
+    ebpf)    echo "aa-ebpf" ;;
     *)       err "unknown component: $1 (valid: ${VALID_COMPONENTS})" ;;
   esac
 }
