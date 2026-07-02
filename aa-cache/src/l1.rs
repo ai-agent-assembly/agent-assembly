@@ -234,6 +234,45 @@ mod tests {
         assert_eq!(cache.inner().call_count(), 2);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalidate_during_load_is_not_lost() {
+        use std::sync::Arc;
+
+        let id = agent(5);
+        // A 50ms inner delay holds the leader inside `load` long enough for the
+        // racing `invalidate` below to land in the middle of the load window.
+        let store = MemoryPolicyStore::with_policy(id, sample_policy(1)).with_delay(Duration::from_millis(50));
+        let cache = Arc::new(L1Cache::new(store, Duration::from_secs(60)));
+
+        // Leader begins a miss and is now sleeping inside `load`.
+        let leader = {
+            let cache = Arc::clone(&cache);
+            tokio::spawn(async move { cache.get(id).await })
+        };
+
+        // Let the leader enter `load`, then invalidate while it is in flight.
+        // `entries` is still empty, so the old code's `remove` was a silent
+        // no-op and the leader would go on to cache the value it is loading.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!cache.invalidate(&id));
+
+        // The leader still returns the value it loaded, but must NOT have cached
+        // it: the invalidation raced its load and takes precedence.
+        leader.await.expect("task joined").expect("policy present");
+        assert_eq!(
+            cache.len(),
+            0,
+            "stale value must not be cached after a racing invalidate"
+        );
+        assert_eq!(cache.inner().call_count(), 1);
+
+        // Because nothing was cached, the next get is a fresh miss that reloads
+        // from the source of truth rather than serving the stale entry.
+        cache.get(id).await.expect("policy present");
+        assert_eq!(cache.inner().call_count(), 2);
+        assert_eq!(cache.len(), 1);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_misses_collapse_to_one_load() {
         use std::sync::Arc;
