@@ -338,6 +338,83 @@ impl PolicyServiceImpl {
     /// Callers are responsible for converting the [`EvaluationResult`] into a
     /// proto response — this allows `RequiresApproval` to be intercepted before
     /// the conversion.
+    /// Resolve the authoritative tenancy (`org_id` / `team_id` / governance
+    /// level) for `ctx`, in place, before it flows into policy evaluation,
+    /// budget attribution, or audit lineage.
+    ///
+    /// AAASM-3751 / AAASM-3138 / AAASM-3729 — the presented credential token is
+    /// the only trust anchor for tenancy. `PolicyService` runs under the
+    /// non-rejecting `enrich` interceptor, so the request-body
+    /// `{org,team,agent}` triple is client-supplied and forgeable. There are
+    /// two cases:
+    ///
+    /// * A token that resolves to a registered owner → deposit THAT owner's
+    ///   registered `governance_level` / `org_id` / `team_id`, overwriting any
+    ///   client-supplied lineage, so a credentialed agent is always evaluated
+    ///   against — and billed to — its registered owner (not a forged triple).
+    ///
+    /// * AAASM-3992 — no authoritative owner resolves (a tokenless request, or
+    ///   a token that owns no registered agent). The client-supplied
+    ///   `org_id` / `team_id` are attacker-controlled, so they MUST NOT be
+    ///   trusted. Rather than DENY the request (which breaks the normal OSS /
+    ///   self-host runtime→gateway flow, where unregistered agents forward
+    ///   checks without a per-agent token but with tenancy from their config),
+    ///   NEUTRALIZE the tenancy: strip `org_id` / `team_id` so the downstream
+    ///   engine `authoritative_tenancy` / `authoritative_lineage` resolve to an
+    ///   anonymous/empty tenant instead of echoing the client claim. Budget is
+    ///   then charged to — and cascade selected for — an anonymous tenant,
+    ///   NEVER the client-claimed victim; the audit path is already neutral for
+    ///   unregistered agents (`record_audit` keys `registry.lineage` on the
+    ///   claimed composite key, which misses → empty `Lineage`). Policy
+    ///   evaluation still proceeds, so global / default / tool-scoped rules
+    ///   (including per-tool deny) are still enforced — exactly as a request
+    ///   that carries no tenancy claim at all already behaves.
+    ///
+    /// `ctx.agent_id` is left untouched so `PolicyScope::Agent` matching and the
+    /// eval cache key stay correct.
+    fn apply_authoritative_tenancy(&self, req: &CheckActionRequest, ctx: &mut AgentContext) {
+        let Some(registry) = &self.registry else {
+            // No registry attached (lightweight test fixtures that bypass the
+            // registry layer) — leave the client-supplied ctx untouched.
+            return;
+        };
+
+        if !req.credential_token.is_empty() {
+            if let Some(record) = registry
+                .find_by_credential_token(&req.credential_token)
+                .and_then(|owner_key| registry.get(&owner_key))
+            {
+                ctx.governance_level = record.governance_level;
+                match record.org_id {
+                    Some(org) => {
+                        ctx.metadata.insert("org_id".into(), org);
+                    }
+                    None => {
+                        ctx.metadata.remove("org_id");
+                    }
+                }
+                match record.team_id {
+                    Some(team) => {
+                        ctx.team_id = Some(team.clone());
+                        ctx.metadata.insert("team_id".into(), team);
+                    }
+                    None => {
+                        ctx.team_id = None;
+                        ctx.metadata.remove("team_id");
+                    }
+                }
+                return;
+            }
+        }
+
+        // AAASM-3992 — no authoritative owner resolved: neutralize the
+        // unauthenticated, client-supplied tenancy so it cannot target a victim
+        // tenant's budget or audit lineage.
+        ctx.team_id = None;
+        ctx.metadata.remove("org_id");
+        ctx.metadata.remove("team_id");
+    }
+
     #[allow(clippy::result_large_err)] // tonic::Status is the standard gRPC error type
     fn evaluate_one(&self, req: &CheckActionRequest) -> Result<(EvaluationResult, i64, String), Status> {
         let (mut ctx, action) = convert::request_to_core(req).map_err(|e| {
@@ -345,59 +422,7 @@ impl PolicyServiceImpl {
             Status::invalid_argument(e.to_string())
         })?;
 
-        // AAASM-3751: anchor `ctx.governance_level` AND the policy-cascade /
-        // budget lineage to the agent that OWNS the presented credential token,
-        // never to the client-supplied (forgeable) `agent_id` triple.
-        //
-        // Looking the record up by the *claimed* composite key
-        // (`proto_agent_id_to_key`) is useless against forgery: a forged
-        // `org_id` changes the key and simply misses the registry, while a
-        // key-HIT means the claimed org already equals the registered org
-        // (tautological). Either way the engine's `authoritative_lineage` /
-        // `authoritative_tenancy` fall back to the client-supplied `ctx`
-        // values. `validate_credential_token` (run before evaluation) already
-        // rejects a forged triple presented with a valid token as
-        // impersonation, so the reported cross-tenant downgrade is not
-        // exploitable by a credentialed caller. This deposit is therefore
-        // DEFENSE-IN-DEPTH: resolve the owner from the credential token and
-        // deposit ITS registered `governance_level` / `org_id` / `team_id`,
-        // overwriting any client-supplied lineage, so a credentialed agent is
-        // always evaluated against its registered owner's cascade (AAASM-3729)
-        // and budget tenancy (AAASM-3138).
-        //
-        // `ctx.agent_id` is left untouched so `PolicyScope::Agent` matching and
-        // the eval cache key stay correct. A tokenless request, or one whose
-        // token owns no registered agent, keeps the existing client-supplied
-        // fallback (untenanted / unregistered deployments — the parked
-        // AAASM-3416 residual); it is NOT denied here.
-        if let Some(registry) = &self.registry {
-            if !req.credential_token.is_empty() {
-                if let Some(record) = registry
-                    .find_by_credential_token(&req.credential_token)
-                    .and_then(|owner_key| registry.get(&owner_key))
-                {
-                    ctx.governance_level = record.governance_level;
-                    match record.org_id {
-                        Some(org) => {
-                            ctx.metadata.insert("org_id".into(), org);
-                        }
-                        None => {
-                            ctx.metadata.remove("org_id");
-                        }
-                    }
-                    match record.team_id {
-                        Some(team) => {
-                            ctx.team_id = Some(team.clone());
-                            ctx.metadata.insert("team_id".into(), team);
-                        }
-                        None => {
-                            ctx.team_id = None;
-                            ctx.metadata.remove("team_id");
-                        }
-                    }
-                }
-            }
-        }
+        self.apply_authoritative_tenancy(req, &mut ctx);
 
         let start = Instant::now();
         let eval = self.engine.evaluate(&ctx, &action);
@@ -1018,18 +1043,6 @@ impl PolicyServiceImpl {
     ///
     /// Emitting the audit event is fire-and-forget — a full `Deny`
     /// response is always constructed and returned to the caller.
-    /// AAASM-3992 — whether the request carries client-supplied tenancy
-    /// (`org_id` / `team_id`) on its `AgentIdentity`. Under the non-rejecting
-    /// `enrich` interceptor these fields are attacker-controlled, so a request
-    /// that claims a tenant it cannot authenticate must not be trusted for
-    /// budget attribution or audit chaining.
-    fn request_claims_tenancy(req: &CheckActionRequest) -> bool {
-        req.agent_id
-            .as_ref()
-            .map(|a| !a.org_id.is_empty() || !a.team_id.is_empty())
-            .unwrap_or(false)
-    }
-
     async fn validate_credential_token(&self, req: &CheckActionRequest) -> Option<CheckActionResponse> {
         let registry = self.registry.as_ref()?;
         let proto_agent = req.agent_id.as_ref()?;
@@ -1059,31 +1072,20 @@ impl PolicyServiceImpl {
             // validation so existing tests that bypass the registry layer
             // continue working.)
             if req.credential_token.is_empty() {
-                // AAASM-3992 (completes AAASM-3416): empty credential token + a
-                // claimed {org,team,agent} triple that is NOT registered.
-                // PolicyService runs under the non-rejecting `enrich`
-                // interceptor, so this triple — and any org_id / team_id on it
-                // — is attacker-controlled. When the request carries
-                // client-supplied tenancy, no AUTHORITATIVE owner resolves, yet
-                // downstream `authoritative_tenancy` / `authoritative_lineage`
-                // would fall back to trusting it — letting an unauthenticated
-                // peer at :50051 accrue LLM spend against (or exhaust) a
-                // victim org's budget and forge audit entries under a victim
-                // tenant. Fail closed: DENY here, before any budget mutation or
-                // audit write, and without recording an audit entry under the
-                // attacker-chosen tenancy. A request with NO tenancy claim is
-                // the lightweight untenanted-fixture / unregistered-deployment
-                // path — skip validation so it keeps working unchanged.
-                if Self::request_claims_tenancy(req) {
-                    return Some(CheckActionResponse {
-                        decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
-                        reason: "unauthenticated tenancy claim".into(),
-                        policy_rule: "a2a_identity_verification".into(),
-                        approval_id: String::new(),
-                        redact: None,
-                        decision_latency_us: 0,
-                    });
-                }
+                // AAASM-3992: empty credential token + a claimed {org,team,agent}
+                // triple that is NOT registered. This is the lightweight
+                // untenanted-fixture / unregistered (OSS self-host) deployment
+                // path — the runtime forwards checks WITHOUT a per-agent
+                // credential token. We do NOT deny it: policy evaluation still
+                // proceeds (global / default / tool-scoped rules apply).
+                //
+                // The threat here is only that the request's client-supplied
+                // `org_id` / `team_id` are attacker-controlled under the
+                // non-rejecting `enrich` interceptor, so they must not be
+                // TRUSTED for budget attribution or audit lineage. That is
+                // handled by `apply_authoritative_tenancy`, which neutralizes
+                // the unauthenticated tenancy to an anonymous tenant rather than
+                // rejecting the request.
                 return None;
             }
             if registry.find_by_credential_token(&req.credential_token).is_some() {
@@ -1258,10 +1260,17 @@ impl PolicyServiceImpl {
 
         // Rebuild the AgentContext for tenancy resolution. `check_and_accrue_llm_spend`
         // keys budget on the agent's *registered* owner (AAASM-3138) and only
-        // uses ctx tenancy as a fallback, so the governance_level override
-        // applied in `evaluate_one` is irrelevant here.
+        // uses ctx tenancy as a fallback. AAASM-3992 — apply the same
+        // authoritative tenancy resolution used for evaluation so an
+        // unauthenticated, client-supplied `org_id` / `team_id` is neutralized
+        // here too: spend accrues to the registered owner (valid token) or to an
+        // anonymous tenant (tokenless / unregistered), NEVER a client-claimed
+        // victim.
         let ctx = match convert::request_to_core(req) {
-            Ok((ctx, _action)) => ctx,
+            Ok((mut ctx, _action)) => {
+                self.apply_authoritative_tenancy(req, &mut ctx);
+                ctx
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to rebuild ctx for LLM spend accrual");
                 return response;
