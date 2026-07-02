@@ -146,13 +146,27 @@ impl PolicyDocument {
             None => None,
         };
 
-        Ok(PolicyDocument {
+        let doc = PolicyDocument {
             name,
             network,
             capabilities,
             tools,
             syscall_allowlist,
-        })
+        };
+
+        // AAASM-4020: a document that parses but declares no enforcement
+        // dimension (e.g. metadata-only) is fully permissive, just like the
+        // empty/null case rejected above. Require at least one enforcement
+        // section so a policy cannot become open by omission.
+        if doc.network.is_none()
+            && doc.capabilities.is_none()
+            && doc.tools.is_empty()
+            && doc.syscall_allowlist.is_none()
+        {
+            return Err(PolicyParseError::NoEnforcementSection);
+        }
+
+        Ok(doc)
     }
 }
 
@@ -361,6 +375,39 @@ spec:
                 "blank input {blank:?} should be rejected as empty, got {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_metadata_only_document() {
+        // AAASM-4020: a document with only envelope metadata declares no
+        // enforcement dimension and would be fully permissive — reject it.
+        let yaml = r#"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: does-nothing
+"#;
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(err, PolicyParseError::NoEnforcementSection),
+            "metadata-only doc should be rejected, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_l7_only_document_with_no_cross_layer_section() {
+        // A doc carrying only L7-only sections (budget/schedule/data) declares
+        // nothing this crate can enforce → fully permissive here → rejected.
+        let yaml = r#"
+spec:
+  budget:
+    daily_limit_usd: 5.0
+"#;
+        let err = PolicyDocument::from_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(err, PolicyParseError::NoEnforcementSection),
+            "L7-only doc should be rejected, got {err:?}"
+        );
     }
 
     #[test]

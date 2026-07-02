@@ -41,6 +41,14 @@ pub enum PolicyParseError {
     /// gating). A policy must positively declare its posture, so a blank
     /// document is rejected rather than silently defaulting open (AAASM-3997).
     EmptyDocument,
+    /// The document parsed but declared no enforcement dimension.
+    ///
+    /// A metadata-only document (e.g. just `apiVersion`/`kind`/`metadata`, with
+    /// no `network`, `capabilities`, `tools`, or `syscalls`) deserializes to a
+    /// fully-permissive policy exactly like an empty one. It is rejected so a
+    /// policy cannot become open by omission rather than by declaration
+    /// (AAASM-4020, extending the AAASM-3997 empty/null floor).
+    NoEnforcementSection,
 }
 
 impl fmt::Display for PolicyParseError {
@@ -60,6 +68,13 @@ impl fmt::Display for PolicyParseError {
                 write!(
                     f,
                     "empty or null policy document is not permitted (would be fully permissive)"
+                )
+            }
+            Self::NoEnforcementSection => {
+                write!(
+                    f,
+                    "policy declares no enforcement section (network/capabilities/tools/syscalls); \
+                     it would be fully permissive"
                 )
             }
         }
