@@ -280,10 +280,12 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
 // sched_process_exit tracepoint
 // ---------------------------------------------------------------------------
 
-/// Tracepoint on `sched/sched_process_exit`: fires when a process exits.
+/// Tracepoint on `sched/sched_process_exit`: fires on every *thread* exit.
 ///
-/// Emits a [`ProcessExitEvent`] so the userspace `ProcessLineageTracker`
-/// can remove the PID from the lineage map.
+/// Only whole-process exits (the thread-group leader, `pid == tgid`) trigger
+/// cleanup + a [`ProcessExitEvent`] so the userspace `ProcessLineageTracker`
+/// removes the PID from the lineage map. Non-leader thread exits are ignored so
+/// a live multithreaded process is not torn down mid-flight (AAASM-3921c).
 #[tracepoint]
 pub fn handle_sched_process_exit(ctx: TracePointContext) -> u32 {
     try_sched_process_exit(&ctx).unwrap_or_default()
@@ -292,17 +294,30 @@ pub fn handle_sched_process_exit(ctx: TracePointContext) -> u32 {
 fn try_sched_process_exit(_ctx: &TracePointContext) -> Result<u32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
+    let pid = pid_tgid as u32;
+
+    // `sched_process_exit` fires PER-THREAD. Only act on whole-process exit —
+    // the thread-group leader, where `pid == tgid`. A non-leader thread of a
+    // multithreaded monitored process (Go/Node/Python agents are all
+    // multithreaded) exiting must NOT tear down the still-live process's
+    // tgid-keyed map entries: removing `EXEC_PID_FILTER[tgid]` would stop the
+    // process's own future execs and fork-propagation from being observed, and
+    // emitting a process-exit event would make the lineage tracker drop a live
+    // process (AAASM-3921c). Bare thread exits are ignored entirely.
+    if pid != tgid {
+        return Ok(0);
+    }
 
     // Capture monitoring status BEFORE cleanup (cleanup may remove this tgid's
     // own filter entry, which `pid_allowed` would otherwise consult).
     let allowed = pid_allowed(tgid);
 
-    // Unconditionally release this tgid's parent-cache and propagated-filter
-    // entries (AAASM-3921c). The fork handler records `PARENT_TGID` for *every*
-    // fork (so the exec handler can always resolve the real ppid), so the
-    // exit-side cleanup must also be unconditional — otherwise the map would
-    // grow without bound and reused pids could inherit a stale parent / filter
-    // membership. The wildcard key (0) is never an exiting tgid.
+    // Release this tgid's parent-cache and propagated-filter entries on whole-
+    // process exit (AAASM-3921c). The fork handler records `PARENT_TGID` for
+    // *every* fork (so the exec handler can always resolve the real ppid), so
+    // the leader-exit cleanup runs unconditionally for the leader — otherwise
+    // the map would grow without bound and reused pids could inherit a stale
+    // parent / filter membership. The wildcard key (0) is never an exiting tgid.
     let _ = PARENT_TGID.remove(&tgid);
     let _ = EXEC_PID_FILTER.remove(&tgid);
 
