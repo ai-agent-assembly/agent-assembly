@@ -11,6 +11,7 @@ pub mod config;
 pub mod correlation;
 #[cfg(target_os = "linux")]
 pub mod ebpf_bridge;
+pub mod ebpf_control;
 pub mod gateway_client;
 pub mod health;
 pub mod invalidation_client;

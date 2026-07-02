@@ -91,7 +91,7 @@ fn spawn_proxy(
 /// from `active_layers` minus the full EBPF flag — the caller decides whether
 /// the top-level EBPF layer should be removed based on how many sub-layers
 /// have degraded.
-fn emit_ebpf_degradation(
+pub(crate) fn emit_ebpf_degradation(
     broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
     sub_layer: &str,
     reason: String,
@@ -706,11 +706,28 @@ pub async fn run(config: RuntimeConfig) {
     // eBPF bridge so all events share a single ordering.
     let seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    // Spawn eBPF sub-layer tasks if the EBPF layer is active.
+    // Bring up the eBPF layer if it is active.
+    //
+    // AAASM-4011: the unprivileged runtime dropped CAP_BPF (privilege.rs), so it
+    // can no longer load probes in-process — that path could only EPERM-degrade,
+    // masking a dormant Layer 3 as a soft degradation, and it never loaded the
+    // SIGKILL-capable syscall guard at all. The default path now drives the
+    // privileged aa-ebpf-loaderd daemon over its control socket. The legacy
+    // in-process spawns are retained ONLY for the privileged in-process
+    // dev/integration scenario, behind the off-by-default AA_EBPF_INPROCESS_LOAD
+    // opt-in, so they can never silently mask a failure in production.
     if active_layers.contains(crate::layer::LayerSet::EBPF) {
-        spawn_ebpf_tls(&tracker, &broadcast_tx, &mut degraded_layers);
-        spawn_ebpf_file_io(&tracker, &broadcast_tx, &seq, &config.agent_id, &mut degraded_layers);
-        spawn_ebpf_exec_tracepoints(&tracker, &broadcast_tx, &token, &mut degraded_layers);
+        if crate::ebpf_control::use_inprocess_load() {
+            tracing::warn!(
+                "AA_EBPF_INPROCESS_LOAD set — using legacy in-process eBPF load path \
+                 (requires CAP_BPF; NOT the production posture)"
+            );
+            spawn_ebpf_tls(&tracker, &broadcast_tx, &mut degraded_layers);
+            spawn_ebpf_file_io(&tracker, &broadcast_tx, &seq, &config.agent_id, &mut degraded_layers);
+            spawn_ebpf_exec_tracepoints(&tracker, &broadcast_tx, &token, &mut degraded_layers);
+        } else {
+            crate::ebpf_control::drive_ebpf_layer(&broadcast_tx, &mut degraded_layers).await;
+        }
     }
 
     // AAASM-3430: build the gateway client when an endpoint is configured so
