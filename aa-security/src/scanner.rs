@@ -1004,6 +1004,60 @@ mod tests {
         assert!(result.findings.iter().any(|f| f.kind == CredentialKind::EmailAddress));
     }
 
+    #[test]
+    fn detects_email_after_delimiter() {
+        // The forward-pass local-part tracking must start after the delimiter,
+        // matching the previous backward-rfind behaviour.
+        let input = "mail to: <alice@example.org>";
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan(input);
+        // The local-part must begin at 'alice' (just past '<'), not at '<'.
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::EmailAddress
+                    && input[f.offset..f.end].starts_with("alice@example.org"))
+        );
+    }
+
+    #[test]
+    fn email_scan_is_linear_on_pathological_at_run() {
+        // Regression for AAASM-3988: ~1 MB of consecutive '@' with no
+        // delimiters previously drove scan_emails to O(n²) (~1e12 ops),
+        // hanging the enforcement/redaction path. It must now complete
+        // near-instantly and flag nothing.
+        let scanner = CredentialScanner::new();
+        let payload = "@".repeat(1_000_000);
+
+        let start = std::time::Instant::now();
+        let result = scanner.scan(&payload);
+        let elapsed = start.elapsed();
+
+        assert!(
+            !result.findings.iter().any(|f| f.kind == CredentialKind::EmailAddress),
+            "delimiter-free '@' run must not be flagged as an email",
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "email scan took {elapsed:?}; expected well under a second",
+        );
+    }
+
+    #[test]
+    fn email_scan_is_linear_on_alternating_at_run() {
+        // A delimiter-free `a@a@a@…` run keeps the domain token scan bounded.
+        let scanner = CredentialScanner::new();
+        let payload = "a@".repeat(500_000);
+
+        let start = std::time::Instant::now();
+        let _ = scanner.scan(&payload);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "alternating '@' run must scan in linear time",
+        );
+    }
+
     // --- High-entropy ---
 
     #[test]
