@@ -19,9 +19,9 @@
 //! audit-event emission land in AAASM-2019.
 
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use wasmtime::{Caller, Config, Engine, Linker, Module, ResourceLimiter, Store, Trap};
+use wasmtime::{Caller, Config, Engine, Linker, Module, ResourceLimiter, Store, Trap, UpdateDeadline};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtx};
 
@@ -110,6 +110,18 @@ impl ResourceLimiter for StoreLimits {
     }
 }
 
+/// Whether a store's own wall-clock budget has elapsed.
+///
+/// The epoch-deadline callback in [`SandboxRuntime::run_tool`] calls this on
+/// each epoch tick to decide whether to interrupt *this* store. Because
+/// `Engine::increment_epoch` is process-global and shared by every store on the
+/// engine, one invocation's watchdog can tick a co-scheduled invocation's
+/// deadline; gating the trap on the store's own `start`/`wall_clock` makes the
+/// wall-clock kill per-store rather than engine-wide. (AAASM-3990.)
+fn wall_clock_expired(start: Instant, wall_clock: Duration) -> bool {
+    start.elapsed() >= wall_clock
+}
+
 /// Per-store state combining the WASI context with the resource limiter.
 ///
 /// Wraps the [`WasiP1Ctx`] previously held directly by the store; the
@@ -145,7 +157,9 @@ pub struct SandboxOutput {
 ///
 /// One runtime instance can service many `run_tool` invocations; each
 /// invocation gets a fresh [`Store`] + [`WasiCtx`] so per-call state never
-/// leaks between tools.
+/// leaks between tools. The wall-clock deadline is enforced per-store
+/// (AAASM-3990), so concurrent `run_tool` calls on a shared runtime cannot
+/// cross-trigger each other's timeouts.
 pub struct SandboxRuntime {
     engine: Engine,
     linker: Linker<StoreState>,
@@ -261,27 +275,39 @@ impl SandboxRuntime {
             .set_fuel(self.config.limits.fuel)
             .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         store.set_epoch_deadline(1);
-        store.epoch_deadline_trap();
+        // Per-store wall-clock enforcement (AAASM-3990). `Engine::increment_epoch`
+        // is a process-global tick shared by every store on this engine, so an
+        // unconditional `epoch_deadline_trap()` would let one invocation's
+        // watchdog kill a *co-scheduled* invocation on a shared `SandboxRuntime`.
+        // Instead, gate the trap on this store's own elapsed wall clock: a
+        // spurious tick from a sibling's watchdog re-arms the deadline
+        // (`Continue`) rather than trapping, and only this store's own watchdog
+        // tick — fired once `wall_clock` has elapsed — actually interrupts it.
+        let deadline_start = Instant::now();
+        let wall_clock = Duration::from_millis(self.config.limits.wall_clock_ms);
+        store.epoch_deadline_callback(move |_store| {
+            if wall_clock_expired(deadline_start, wall_clock) {
+                Ok(UpdateDeadline::Interrupt)
+            } else {
+                Ok(UpdateDeadline::Continue(1))
+            }
+        });
 
         // Wall-clock watchdog — spawn a thread that fires
-        // `Engine::increment_epoch` after `wall_clock_ms` unless the call
-        // completes first. `Engine::increment_epoch` ticks the global
-        // counter; since this store armed `set_epoch_deadline(1)` against
-        // the engine's current epoch + 1, that single tick trips the
-        // deadline and traps the guest with `Trap::Interrupt`.
+        // `Engine::increment_epoch` after `wall_clock` unless the call completes
+        // first. The tick advances the engine's global epoch to this store's
+        // armed deadline; the callback above then confirms this store's own
+        // budget is spent and returns `UpdateDeadline::Interrupt`, trapping the
+        // guest with `Trap::Interrupt` (mapped to `WallClockTimeout`).
         //
-        // The watchdog blocks on an mpsc channel with `recv_timeout` so
-        // the main thread can wake it early — keeps fast-completing
-        // calls from paying the full `wall_clock_ms` latency.
+        // The watchdog blocks on an mpsc channel with `recv_timeout` so the main
+        // thread can wake it early — keeps fast-completing calls from paying the
+        // full `wall_clock` latency.
         let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
         let watchdog = {
             let engine = self.engine.clone();
-            let wall_clock_ms = self.config.limits.wall_clock_ms;
             std::thread::spawn(move || {
-                if matches!(
-                    cancel_rx.recv_timeout(Duration::from_millis(wall_clock_ms)),
-                    Err(mpsc::RecvTimeoutError::Timeout)
-                ) {
+                if matches!(cancel_rx.recv_timeout(wall_clock), Err(mpsc::RecvTimeoutError::Timeout)) {
                     engine.increment_epoch();
                 }
             })
