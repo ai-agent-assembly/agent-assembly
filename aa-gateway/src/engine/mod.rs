@@ -2381,8 +2381,11 @@ mod tests {
         // it reaches it — the same decision semantics as the Stage-7 read-check.
         assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 5.0), None); // spent 0 → 5
         assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 5.0), None); // spent 5 → 10
-        // Now spent == limit, so the next reservation is rejected atomically.
-        assert_eq!(engine.check_and_accrue_llm_spend(&ctx, 1.0), Some("daily budget exceeded"));
+                                                                        // Now spent == limit, so the next reservation is rejected atomically.
+        assert_eq!(
+            engine.check_and_accrue_llm_spend(&ctx, 1.0),
+            Some("daily budget exceeded")
+        );
 
         let state = engine.budget.agent_state(&ctx.agent_id).expect("agent has spend");
         assert_eq!(state.spent_usd, rust_decimal::Decimal::try_from(10.0).unwrap());
@@ -2430,7 +2433,11 @@ mod tests {
         }
 
         let ctx = make_ctx();
-        let spent = engine.budget.agent_state(&ctx.agent_id).expect("agent has spend").spent_usd;
+        let spent = engine
+            .budget
+            .agent_state(&ctx.agent_id)
+            .expect("agent has spend")
+            .spent_usd;
         assert_eq!(
             allowed.load(std::sync::atomic::Ordering::Relaxed),
             10,

@@ -765,7 +765,9 @@ impl BudgetTracker {
         }
         if let Some(limit) = self.resolve_limit(&agent_id, BudgetKind::Daily) {
             if agent_daily >= limit {
-                return Err(BudgetError::SelfBudgetExhausted { kind: BudgetKind::Daily });
+                return Err(BudgetError::SelfBudgetExhausted {
+                    kind: BudgetKind::Daily,
+                });
             }
         }
         self.preflight_ancestors(ancestors, amount)?;

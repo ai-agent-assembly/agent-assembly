@@ -1200,11 +1200,7 @@ impl PolicyServiceImpl {
     /// * the action is not an `LLM_CALL`;
     /// * the decision was already a hard `Deny` (a denied call did not run);
     /// * the model name is unrecognised (cost resolves to `0.0`).
-    fn maybe_accrue_llm_spend(
-        &self,
-        req: &CheckActionRequest,
-        response: CheckActionResponse,
-    ) -> CheckActionResponse {
+    fn maybe_accrue_llm_spend(&self, req: &CheckActionRequest, response: CheckActionResponse) -> CheckActionResponse {
         use aa_proto::assembly::policy::v1::action_context::Action;
 
         // A hard Deny means the call was blocked — do not reserve spend.
