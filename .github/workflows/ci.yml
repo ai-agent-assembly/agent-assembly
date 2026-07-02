@@ -470,12 +470,11 @@ jobs:
             --no-tests=pass \
             -E 'not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
           cargo llvm-cov nextest --no-report -p aa-devtool-claude-code --no-tests=pass
-          cargo llvm-cov --no-run --codecov --output-path codecov.xml
           cargo llvm-cov --no-run --lcov --output-path lcov.info
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
-          files: ./codecov.xml
+          files: ./lcov.info
           name: Rust unit tests
           slug: ai-agent-assembly/agent-assembly
           token: ${{ secrets.CODECOV_TOKEN }}
