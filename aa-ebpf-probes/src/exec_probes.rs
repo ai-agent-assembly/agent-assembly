@@ -219,7 +219,21 @@ fn try_sched_process_exit(_ctx: &TracePointContext) -> Result<u32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
 
-    if !pid_allowed(tgid) {
+    // Capture monitoring status BEFORE cleanup (cleanup may remove this tgid's
+    // own filter entry, which `pid_allowed` would otherwise consult).
+    let allowed = pid_allowed(tgid);
+
+    // Unconditionally release this tgid's parent-cache and propagated-filter
+    // entries (AAASM-3921c). The fork handler records `PARENT_TGID` for *every*
+    // fork (so the exec handler can always resolve the real ppid), so the
+    // exit-side cleanup must also be unconditional — otherwise the map would
+    // grow without bound and reused pids could inherit a stale parent / filter
+    // membership. The wildcard key (0) is never an exiting tgid.
+    let _ = PARENT_TGID.remove(&tgid);
+    let _ = EXEC_PID_FILTER.remove(&tgid);
+
+    // Only emit the exit event for monitored processes (lineage cleanup).
+    if !allowed {
         return Ok(0);
     }
 
@@ -233,13 +247,6 @@ fn try_sched_process_exit(_ctx: &TracePointContext) -> Result<u32, i64> {
     }
 
     entry.submit(0);
-
-    // Bound the fork-propagated maps and avoid pid-reuse staleness: drop this
-    // tgid's parent record and its propagated filter membership on exit
-    // (AAASM-3921c). The original target PID re-added by userspace is unaffected
-    // on the next load; the wildcard key (0) is never an exiting tgid.
-    let _ = PARENT_TGID.remove(&tgid);
-    let _ = EXEC_PID_FILTER.remove(&tgid);
     Ok(0)
 }
 
