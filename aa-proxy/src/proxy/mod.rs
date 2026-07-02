@@ -570,7 +570,20 @@ impl ProxyServer {
                 return Some("ssrf: blocked address range");
             }
         }
-        if self.config.denied_hosts.iter().any(|denied| denied == host) {
+        // AAASM-3983: canonicalise the host ONCE (lowercase + strip a single
+        // trailing dot) before the denied_hosts and allowlist comparisons. The
+        // byte-exact `denied == host` check let `EVIL.COM` or `evil.com.` evade
+        // a lowercase `evil.com` denylist entry, and the allowlist matcher —
+        // though it lowercases — never stripped a trailing dot, so `evil.com.`
+        // slipped past it too. Compare canonical-to-canonical on both sides.
+        let host = canonical_host(host);
+        let host = host.as_str();
+        if self
+            .config
+            .denied_hosts
+            .iter()
+            .any(|denied| canonical_host(denied) == host)
+        {
             return Some("host policy");
         }
         if !aa_core::policy::is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist) {
@@ -803,8 +816,15 @@ impl ProxyServer {
             }
         }
 
-        // Extract hostname (strip port) for deny check and certificate generation.
-        let host = target.split(':').next().unwrap_or(target);
+        // Extract hostname (strip port) and canonicalise it (AAASM-3983:
+        // lowercase + strip a single trailing dot) so the deny check, cert
+        // generation, LLM-pattern detection, SNI, and upstream dial all consume
+        // one canonical form. Without this an `api.openai.com.` CONNECT would be
+        // classified Unknown and raw-tunnelled under llm_only, and case/dot
+        // variants would evade the denylist. `target` (with port) is retained
+        // for the DNS/connect calls, which tolerate the trailing dot.
+        let host = canonical_host(target);
+        let host = host.as_str();
 
         // Egress policy: deny-list, then AAASM-1943 network allowlist.
         // Both return 403 + emit a deny decision and end the connection.
@@ -1008,6 +1028,23 @@ impl ProxyServer {
 
         Ok(())
     }
+}
+
+/// Canonicalise a host for policy comparison and LLM-pattern detection
+/// (AAASM-3983).
+///
+/// DNS names are case-insensitive (RFC 4343) and a single trailing dot denotes
+/// the (equivalent) fully-qualified form — `API.OPENAI.COM` and
+/// `api.openai.com.` both address the same host as `api.openai.com`. Comparing
+/// hosts byte-exact (as the `denied_hosts` check did) or lowercasing without
+/// stripping the trailing dot (as the allowlist matcher did) let a caller evade
+/// a `denied_hosts` entry or the LLM-only MitM path by varying only case or a
+/// trailing dot. Canonicalising once — strip the port, strip a single trailing
+/// dot, lowercase — closes that bypass. The result carries no port.
+fn canonical_host(host: &str) -> String {
+    let no_port = host.split(':').next().unwrap_or(host);
+    let no_dot = no_port.strip_suffix('.').unwrap_or(no_port);
+    no_dot.to_ascii_lowercase()
 }
 
 /// Parse the upstream host for a plain (non-CONNECT) HTTP request from the
