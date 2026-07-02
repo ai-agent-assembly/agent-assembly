@@ -89,6 +89,38 @@ pre-releases — see [Project Status](#project-status).
 > (repo `homebrew-agent-assembly`) still works via a GitHub redirect but is
 > deprecated — use `ai-agent-assembly/tap/aasm`.
 
+## Uninstall
+
+For **curl** installs, the default uninstall removes the tools and **keeps your
+local data** (config, policies, state, logs):
+
+```sh
+aasm uninstall                          # remove tools; preserve data
+aasm uninstall --components cli,runtime # remove only these components
+```
+
+To also remove Agent Assembly-owned local data, opt in explicitly (prompts for
+confirmation; preview with `--dry-run`):
+
+```sh
+aasm uninstall --all --purge            # remove tools + config + state
+aasm uninstall --all --purge --dry-run  # show what would be removed
+```
+
+If `aasm` is missing or broken, the installer provides the same uninstall engine
+as a fallback:
+
+```sh
+curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --uninstall
+```
+
+**Homebrew** installs are detected and left untouched by the above — remove them
+with Homebrew instead:
+
+```sh
+brew uninstall aasm            # plus aasm-runtime / aasm-proxy if installed
+```
+
 ## Overview
 
 `agent-assembly` brings governance to AI agents at scale. It intercepts what an

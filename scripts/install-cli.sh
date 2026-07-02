@@ -79,6 +79,20 @@ PROFILES:
   full      cli,runtime,proxy   (ebpf only where explicitly supported)
 
 Note: installing `runtime` does NOT start it. Start it yourself afterwards.
+
+UNINSTALL:
+  --uninstall                Remove installed Agent Assembly tools (preserves
+                             your config/state/data by default).
+  --uninstall --components <a,b>   Uninstall only the listed components.
+  --uninstall --all --purge  Remove tools AND Agent Assembly-owned local data
+                             (config + state). Prompts for confirmation.
+  --uninstall --purge --dry-run    Show what a full cleanup would remove; change
+                             nothing.
+  -y, --yes                  Skip the purge confirmation prompt (non-interactive).
+
+  Homebrew-managed installs are detected and left untouched — use
+  `brew uninstall aasm` instead. Fallback (no `aasm` on PATH):
+    curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --uninstall
 EOF
 }
 
@@ -318,9 +332,165 @@ install_component() {
   esac
 }
 
+# ── install manifest + uninstall (AAASM-3957) ─────────────────────────────────
+
+# AA-owned local data locations (only touched by an explicit --purge).
+aa_config_dir()    { echo "${AASM_CONFIG_DIR:-$HOME/.aa}"; }
+aa_state_dir()     { echo "${AASM_STATE_DIR:-$HOME/.aasm}"; }
+manifest_path()    { echo "$(aa_state_dir)/install-manifest"; }
+uninstaller_path() { echo "$(aa_state_dir)/aasm-uninstall"; }
+
+# Canonical installer URL, used to persist an offline uninstaller when the script
+# was piped (curl | sh) and thus has no readable $0 to copy.
+INSTALLER_URL="${AASM_INSTALLER_URL:-https://agent-assembly.com/install.sh}"
+
+now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown"; }
+
+write_manifest() {
+  # Record what was installed so uninstall never guesses. KEY=VALUE lines with
+  # repeatable keys (component=/binary=). Merges with any existing manifest so a
+  # later component install augments the record rather than replacing it.
+  # Args: <install-dir> <version> <space-separated components>
+  _dir="$1" _ver="$2" _comps="$3"
+  _mf="$(manifest_path)"
+  mkdir -p "$(dirname "$_mf")"
+
+  _old_comps="" _created=""
+  if [ -f "$_mf" ]; then
+    _old_comps="$(grep '^component=' "$_mf" 2>/dev/null | cut -d= -f2- | tr '\n' ' ')"
+    _created="$(grep '^created=' "$_mf" 2>/dev/null | head -1 | cut -d= -f2-)"
+  fi
+  [ -n "$_created" ] || _created="$(now_utc)"
+  _all_comps="$(dedupe_words "$_old_comps $_comps")"
+  case "$_dir" in "$HOME"/*) _mode="user" ;; *) _mode="system" ;; esac
+
+  {
+    echo "# agent-assembly install manifest v1 — managed by install.sh (AAASM-3957); do not hand-edit"
+    echo "installer_source=curl"
+    echo "version=${_ver}"
+    echo "install_mode=${_mode}"
+    echo "install_root=${_dir}"
+    echo "created=${_created}"
+    echo "updated=$(now_utc)"
+    for _c in $_all_comps; do
+      echo "component=${_c}"
+      echo "binary=$(component_binary "$_c")"
+    done
+    echo "config_location=$(aa_config_dir)"
+    echo "state_location=$(aa_state_dir)"
+  } > "$_mf"
+  chmod 600 "$_mf" 2>/dev/null || true
+}
+
+persist_uninstaller() {
+  # Persist a runnable copy of this installer so `aasm uninstall` and offline
+  # cleanup work without re-fetching. Copies $0 when it is a real file (review-
+  # first `sh install.sh`), else downloads the canonical installer (piped run).
+  # Best-effort: a failure here must never fail the install.
+  _u="$(uninstaller_path)"
+  mkdir -p "$(dirname "$_u")"
+  if [ -f "$0" ] && [ -r "$0" ]; then
+    cp "$0" "$_u" 2>/dev/null || { warn "could not persist uninstaller to $_u"; return 0; }
+  else
+    curl -fsSL "$INSTALLER_URL" -o "$_u" 2>/dev/null \
+      || { warn "could not persist offline uninstaller; use: curl -fsSL $INSTALLER_URL | sh -s -- --uninstall"; return 0; }
+  fi
+  chmod 755 "$_u" 2>/dev/null || true
+}
+
+detect_homebrew_managed() {
+  # Return 0 if <path> lives under a Homebrew prefix — then we must NOT rm it;
+  # the user should `brew uninstall` instead.
+  case "$1" in
+    */Cellar/*|*/homebrew/*|*/Homebrew/*) return 0 ;;
+  esac
+  if command -v brew >/dev/null 2>&1; then
+    _bp="$(brew --prefix 2>/dev/null)"
+    [ -n "$_bp" ] && case "$1" in "${_bp}"/*) return 0 ;; esac
+  fi
+  return 1
+}
+
+remove_path() {
+  # Remove <path> honoring DRY_RUN; warn (never fail) when already gone. Only
+  # ever called with a manifest-recorded / AA-owned path — never a computed glob.
+  _p="$1"
+  if [ ! -e "$_p" ] && [ ! -L "$_p" ]; then warn "already absent: $_p"; return 0; fi
+  if [ "${DRY_RUN:-0}" = "1" ]; then say "  would remove: $_p"; return 0; fi
+  rm -rf "$_p" && say "  removed: $_p"
+}
+
+do_uninstall() {
+  # Manifest-driven uninstall. Removes tool binaries by default; with PURGE also
+  # removes AA-owned config/state. Homebrew-managed installs are redirected.
+  # Globals: COMPONENTS (scope; empty = all recorded), PURGE, DRY_RUN, ASSUME_YES.
+  _mf="$(manifest_path)"
+  if [ ! -f "$_mf" ]; then
+    warn "no install manifest at $_mf — nothing recorded to uninstall."
+    warn "If you installed via Homebrew, run: brew uninstall aasm"
+    return 0
+  fi
+
+  _root="$(grep '^install_root=' "$_mf" | head -1 | cut -d= -f2-)"
+  _all_comps="$(grep '^component=' "$_mf" | cut -d= -f2- | tr '\n' ' ')"
+  _scope="$(dedupe_words "${COMPONENTS:-$_all_comps}")"
+
+  # Homebrew guard: never delete brew-managed files.
+  if detect_homebrew_managed "${_root}/aasm"; then
+    warn "aasm appears Homebrew-managed (${_root}). Not removing any files."
+    warn "Use: brew uninstall aasm   (plus aasm-runtime / aasm-proxy as needed)"
+    return 0
+  fi
+
+  say "Uninstalling [${_scope}] from ${_root}$( [ "${DRY_RUN:-0}" = 1 ] && printf ' (dry-run)' )..."
+  for _c in $_scope; do
+    remove_path "${_root}/$(component_binary "$_c")"
+    # aa-gateway ships inside the cli component tarball; remove it with cli.
+    [ "$_c" = "cli" ] && remove_path "${_root}/aa-gateway"
+  done
+
+  if [ "${PURGE:-0}" = "1" ]; then
+    _cfg="$(grep '^config_location=' "$_mf" | head -1 | cut -d= -f2-)"
+    _st="$(grep '^state_location=' "$_mf"  | head -1 | cut -d= -f2-)"
+    warn "PURGE also removes Agent Assembly local data:"
+    say  "  config: ${_cfg}"
+    say  "  state:  ${_st}  (includes the manifest + persisted uninstaller)"
+    if [ "${DRY_RUN:-0}" != "1" ] && [ "${ASSUME_YES:-0}" != "1" ]; then
+      printf 'Proceed with full cleanup? [y/N] '
+      read -r _ans </dev/tty 2>/dev/null || _ans=""
+      case "$_ans" in y|Y|yes|YES) ;; *) err "aborted; no data removed." ;; esac
+    fi
+    remove_path "$_cfg"
+    remove_path "$_st"
+  else
+    say "Preserved local data (config/state). Full cleanup: --uninstall --purge"
+  fi
+
+  # Scoped, non-purge uninstall: rewrite the manifest with the remaining
+  # components, or drop it entirely when nothing is left.
+  if [ "${DRY_RUN:-0}" != "1" ] && [ "${PURGE:-0}" != "1" ] && [ -n "$COMPONENTS" ]; then
+    _remaining=""
+    for _c in $_all_comps; do
+      case " $_scope " in *" $_c "*) ;; *) _remaining="$_remaining $_c" ;; esac
+    done
+    _remaining="$(dedupe_words "$_remaining")"
+    if [ -n "$_remaining" ]; then
+      # Rewrite fresh (not merge): write_manifest unions with the existing file,
+      # which would re-add the just-removed component — so drop it first.
+      _ver="$(grep '^version=' "$_mf" | head -1 | cut -d= -f2-)"
+      rm -f "$_mf"
+      write_manifest "$_root" "$_ver" "$_remaining"
+    else
+      remove_path "$_mf"; remove_path "$(uninstaller_path)"
+    fi
+  fi
+  say "Uninstall complete."
+}
+
 # ── argument parsing ──────────────────────────────────────────────────────────
 
 COMPONENTS=""   # space-separated selection; empty means the default (cli)
+UNINSTALL=0 PURGE=0 DRY_RUN=0 ASSUME_YES=0
 
 add_components() {
   # Append the components in $1 (comma- or space-separated) to COMPONENTS,
@@ -353,12 +523,18 @@ parse_args() {
       --version=*)     VERSION="${1#*=}"; shift ;;
       --install-dir)   [ $# -ge 2 ] || err "--install-dir needs a value"; AASM_INSTALL_DIR="$2"; shift 2 ;;
       --install-dir=*) AASM_INSTALL_DIR="${1#*=}"; shift ;;
+      --uninstall)     UNINSTALL=1; shift ;;
+      --purge)         PURGE=1; shift ;;
+      --all)           shift ;;   # uninstall all components (the default scope) — accepted for explicitness
+      --dry-run)       DRY_RUN=1; shift ;;
+      -y|--yes)        ASSUME_YES=1; shift ;;
       -h|--help)       usage; exit 0 ;;
       *)               err "unknown option: $1 (try --help)" ;;
     esac
   done
-  # Default to CLI-only when nothing is selected; then dedupe.
-  [ -n "$COMPONENTS" ] || COMPONENTS="cli"
+  # Install: default to CLI-only when nothing is selected. Uninstall: an empty
+  # selection means "all recorded components", so don't inject the cli default.
+  if [ "$UNINSTALL" != "1" ] && [ -z "$COMPONENTS" ]; then COMPONENTS="cli"; fi
   COMPONENTS="$(dedupe_words "$COMPONENTS")"
 }
 
@@ -366,6 +542,15 @@ parse_args() {
 
 main() {
   parse_args "$@"
+
+  # Uninstall mode (AAASM-3957) needs no downloads — dispatch before requiring
+  # curl/tar. The served installer thus doubles as the fallback uninstaller:
+  #   curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --uninstall
+  if [ "$UNINSTALL" = "1" ]; then
+    do_uninstall
+    return
+  fi
+
   need curl
   need tar
 
@@ -405,6 +590,11 @@ main() {
   for comp in $COMPONENTS; do
     install_component "$comp" "$VERSION" "$TMP" "${TMP}/SHA256SUMS" "$INSTALL_DIR"
   done
+
+  # Record the install so `aasm uninstall` never guesses which files are ours,
+  # and persist an offline uninstaller (AAASM-3957). Both are best-effort.
+  write_manifest "$INSTALL_DIR" "$VERSION" "$COMPONENTS"
+  persist_uninstaller
 
   # PATH hint (shown once).
   case ":${PATH}:" in

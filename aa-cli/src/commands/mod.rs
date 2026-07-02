@@ -37,6 +37,7 @@ pub mod tools;
 // strip-for-publish:end devtool
 pub mod topology;
 pub mod trace;
+pub mod uninstall;
 pub mod version;
 
 /// Top-level subcommands for the `aasm` CLI.
@@ -92,6 +93,9 @@ pub enum Commands {
     Start(start::StartArgs),
     /// Stop the locally-managed Agent Assembly gateway process.
     Stop(stop::StopArgs),
+    /// Uninstall Agent Assembly tools installed via the curl installer (safe by
+    /// default; `--purge` also removes local data; Homebrew installs redirected).
+    Uninstall(uninstall::UninstallArgs),
 }
 
 /// Dispatch the parsed CLI command to the appropriate handler.
@@ -124,5 +128,6 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Proxy(args) => proxy::dispatch(args),
         Commands::Start(args) => start::run(args),
         Commands::Stop(args) => stop::run(args),
+        Commands::Uninstall(args) => uninstall::dispatch(args),
     }
 }
