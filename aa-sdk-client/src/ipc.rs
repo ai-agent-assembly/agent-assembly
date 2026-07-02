@@ -58,6 +58,15 @@ impl std::fmt::Debug for IpcCommand {
 /// The command loop pushes one when it writes a `PolicyQuery`; the reader pops
 /// the oldest when a `PolicyResponse` arrives. The wire carries no correlation
 /// id, so responses match queries by order over the single connection.
+///
+// TODO(AAASM-3996): make query↔response correlation id-based rather than
+// positional. Today a single dropped/reordered `PolicyResponse` would misalign
+// every subsequent query with the wrong waiter. A proper fix adds a request-id
+// to the frame or the `CheckActionRequest`/`Response` protos and keys `pending`
+// by id — but that is a wire-protocol change that also touches `aa-runtime`'s
+// codec and `aa-proto`, which is out of scope for this hardening batch. Deferred
+// to its own ticket; the current single-connection FIFO invariant holds because
+// the runtime answers queries strictly in receive order over one stream.
 type PendingQueries = Arc<Mutex<VecDeque<blocking_mpsc::Sender<CheckActionResponse>>>>;
 
 /// Handle to the background IPC thread.
