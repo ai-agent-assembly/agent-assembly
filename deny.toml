@@ -12,8 +12,12 @@
 # below make the remaining knobs explicit and non-silent.
 [advisories]
 # Scope selectors: "all", "workspace", "transitive", "none".
-# "workspace" = flag unmaintained advisories for crates we directly depend on.
-unmaintained = "workspace"
+# AAASM-4022: "all" = flag unmaintained advisories across the ENTIRE dependency
+# graph (direct + transitive), not just workspace-direct crates. An unmaintained
+# transitive dep is the more likely supply-chain risk (no upstream to patch a
+# future advisory), so it must surface in the gate rather than hide behind a
+# direct dep.
+unmaintained = "all"
 # Yanked crates are denied (was "warn"): a yanked version is a supply-chain
 # signal — it must fail the gate, not merely warn.
 yanked = "deny"
