@@ -22,10 +22,19 @@
 //! pid, not its parent. Reading it into `ppid` produced `ppid == pid`, which
 //! made the userspace `ProcessLineageTracker::is_descendant_of` walk terminate
 //! immediately (it treats `ppid == pid` as a self-cycle) and always return
-//! false. The real parent is captured at `sched_process_fork` time (the
-//! tracepoint carries `parent_pid`/`child_pid`) and stashed in `PARENT_TGID`;
-//! the exec handler now reads `ppid` from there, falling back to `0` (unknown
-//! root) when the fork was not observed — never the bogus self-parent.
+//! false.
+//!
+//! The exec handler now resolves the real parent with a CO-RE read of
+//! `current->real_parent->tgid` at exec time (see [`real_parent_tgid`]), using
+//! `task_struct` field byte-offsets that the userspace loader resolves from the
+//! running kernel's BTF and publishes in [`TASK_OFFSETS`]. This is independent
+//! of the fork tracepoint: the earlier map-based path (reading `PARENT_TGID`,
+//! populated at `sched_process_fork`) proved unreliable under load — the map
+//! could fill or the specific child entry be missing — leaving `ppid == 0`.
+//! `PARENT_TGID` is kept only as a fallback for kernels without BTF; the final
+//! fallback is `0` (unknown root), never the bogus self-parent. The fork
+//! tracepoint is retained purely for AAASM-3916 descendant confinement (the
+//! `EXEC_PID_FILTER` propagation), decoupled from exec-ppid resolution.
 //!
 //! ## Stack-limit workaround
 //!
@@ -38,9 +47,12 @@
 
 use aa_ebpf_common::exec::{ExecEvent, ProcessExitEvent, MAX_ARGS_LEN, MAX_FILENAME_LEN};
 use aya_ebpf::{
-    helpers::{bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel_str_bytes},
+    helpers::{
+        bpf_get_current_pid_tgid, bpf_get_current_task, bpf_get_current_uid_gid, bpf_ktime_get_ns,
+        bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes,
+    },
     macros::{map, tracepoint},
-    maps::{HashMap, RingBuf},
+    maps::{Array, HashMap, RingBuf},
     programs::TracePointContext,
     EbpfContext,
 };
@@ -69,6 +81,26 @@ static EXEC_PID_FILTER: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
 /// the `sched_process_exec` tracepoint only exposes the new process's own pid.
 #[map]
 static PARENT_TGID: HashMap<u32, u32> = HashMap::with_max_entries(1024, 0);
+
+/// `task_struct` field byte-offsets, resolved from the running kernel's BTF by
+/// the userspace loader (AAASM-3921c CO-RE). The `sched_process_exec`
+/// tracepoint only carries the new process's own pid, and the fork-populated
+/// `PARENT_TGID` map is unreliable under load (it fills / races), so the exec
+/// handler reads the real parent directly from `current->real_parent->tgid` at
+/// exec time using these offsets.
+///
+/// - index [`TASK_OFFSET_REAL_PARENT`] — byte offset of `task_struct.real_parent`
+/// - index [`TASK_OFFSET_TGID`] — byte offset of `task_struct.tgid`
+///
+/// A value of `0` means "unresolved" (BTF unavailable); the handler then falls
+/// back to the fork-populated `PARENT_TGID` map, and finally to `0`.
+#[map]
+static TASK_OFFSETS: Array<u32> = Array::with_max_entries(2, 0);
+
+/// `TASK_OFFSETS` index of the `task_struct.real_parent` byte offset.
+const TASK_OFFSET_REAL_PARENT: u32 = 0;
+/// `TASK_OFFSETS` index of the `task_struct.tgid` byte offset.
+const TASK_OFFSET_TGID: u32 = 1;
 
 /// `sched:sched_process_fork` layout — byte offset of the `child_pid` field:
 ///
@@ -101,6 +133,41 @@ fn pid_allowed(tgid: u32) -> bool {
             return true;
         }
         EXEC_PID_FILTER.get(&tgid).is_some()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Real-parent resolution (AAASM-3921c CO-RE)
+// ---------------------------------------------------------------------------
+
+/// Resolve the real parent tgid of the current task at exec time by walking
+/// `current->real_parent->tgid` with BTF-resolved byte offsets.
+///
+/// Returns `None` when the offsets are unresolved (BTF unavailable — both
+/// offsets left `0` by the loader) or when either kernel read fails, so the
+/// caller can fall back to the fork-populated `PARENT_TGID` map. This does not
+/// depend on the fork tracepoint having observed the fork, which is why it is
+/// robust where the map-based path was not.
+#[inline(always)]
+fn real_parent_tgid() -> Option<u32> {
+    let real_parent_off = *TASK_OFFSETS.get(TASK_OFFSET_REAL_PARENT)? as usize;
+    let tgid_off = *TASK_OFFSETS.get(TASK_OFFSET_TGID)? as usize;
+    if real_parent_off == 0 || tgid_off == 0 {
+        return None;
+    }
+
+    unsafe {
+        let task = bpf_get_current_task() as *const u8;
+        if task.is_null() {
+            return None;
+        }
+        // task->real_parent is a `struct task_struct *`.
+        let parent = bpf_probe_read_kernel(task.add(real_parent_off) as *const *const u8).ok()?;
+        if parent.is_null() {
+            return None;
+        }
+        // real_parent->tgid is a `pid_t` (i32); read as u32.
+        bpf_probe_read_kernel(parent.add(tgid_off) as *const u32).ok()
     }
 }
 
@@ -145,7 +212,14 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
     // `PARENT_TGID`; resolve it here, falling back to 0 (unknown root) rather
     // than the bogus self-parent when the fork was not observed.
     //   __data_loc is a u32 (low 16 bits = offset, high 16 bits = length).
-    let ppid = unsafe { PARENT_TGID.get(&tgid) }.copied().unwrap_or(0);
+    //
+    // Prefer the CO-RE `current->real_parent->tgid` read (AAASM-3921c): it is
+    // resolved directly from the current task at exec time and does not depend
+    // on the fork tracepoint having observed (and still holding) the child's
+    // entry, which the map-based path could not guarantee under load. Fall back
+    // to the fork-populated `PARENT_TGID` map when BTF offsets are unavailable,
+    // and finally to 0 (unknown root) — never the bogus self-parent.
+    let ppid = real_parent_tgid().unwrap_or_else(|| unsafe { PARENT_TGID.get(&tgid) }.copied().unwrap_or(0));
     let data_loc: u32 = unsafe { ctx.read_at(8) }.map_err(|_| -1i64)?;
     // ctx.command() returns [u8; 16] — already raw bytes, not a string.
     let comm = ctx.command().map_err(|_| -1i64)?;
