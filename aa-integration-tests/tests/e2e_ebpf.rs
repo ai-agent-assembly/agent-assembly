@@ -48,6 +48,46 @@
 //! is what the gateway path will read once wired. When the HTTP path is
 //! complete, the gateway-side assertion can be added in a follow-up
 //! without changing the probe-fired half of the check.
+//!
+//! ## GAP — runtime → loaderd orchestration is NOT exercised here (AAASM-4011)
+//!
+//! Every test below loads and attaches probes **directly in-process** via
+//! `EbpfLoader` / `UprobeManager` / `TracepointManager` under `sudo`. That
+//! validates the probes themselves, but it deliberately bypasses the
+//! production control path AAASM-4011 wired up: the **unprivileged** runtime
+//! driving the **privileged** `aa-ebpf-loaderd` daemon over its control socket
+//! (`aa_runtime::ebpf_control::drive_ebpf_layer` →
+//! `aa_ebpf::control::client::LoaderControlClient` →
+//! `aa_ebpf::control::server`). None of that orchestration is covered by any
+//! test yet, so a Linux e2e must be added that verifies, end to end:
+//!
+//! 1. **Unprivileged runtime, privileged daemon.** Start `aa-ebpf-loaderd`
+//!    with `CAP_BPF`/`CAP_PERFMON` and the runtime with **none** (the
+//!    `enforce_least_privilege` posture). With `AA_EBPF_INPROCESS_LOAD` unset,
+//!    `drive_ebpf_layer` must connect to the socket and `LoadProbeSet` the TLS,
+//!    file-I/O, and exec sets — no `ebpf/*` sub-layer degrades.
+//! 2. **Path map push.** With `AA_EBPF_POLICY_PATH` pointing at a policy that
+//!    denies a sensitive path, `UpdatePathMap` reaches the daemon and the
+//!    file-I/O probe flags an access to that path (`flags` bit 0 set).
+//! 3. **Syscall guard (enforce).** With `AA_EBPF_CONFINE_PID=<sandbox pid>` and
+//!    a policy that lowers to a non-empty syscall allowlist, the guard loads and
+//!    `UpdateSyscallAllowlist` lands; a confined process issuing a
+//!    non-allowlisted syscall is SIGKILLed, while the runtime's own syscalls are
+//!    never confined (guard scoped to the sandbox PID, not the runtime).
+//! 4. **Load→allowlist ordering hazard.** The current protocol couples
+//!    load+attach+PID-filter insertion in one `LoadProbeSet`, so there is a
+//!    window where the confined PID runs with an empty allowlist (default-deny).
+//!    The e2e must confirm the confined process is not spuriously killed before
+//!    `UpdateSyscallAllowlist` is applied — and, if it can be, that confirms the
+//!    protocol needs a `load-without-filter → set allowlist → add PID` sequence
+//!    (a follow-up on `aa_ebpf::control`).
+//! 5. **Observe-only telemetry gap.** `LoadProbeSet`'s doc promises the daemon
+//!    "begins streaming events back", but `aa_ebpf::control::server::dispatch`
+//!    does not yet stream — it only loads/attaches. So TLS/file-I/O/exec events
+//!    captured by the daemon-owned readers do **not** reach the runtime pipeline
+//!    over the control channel. Enforcement (syscall-guard SIGKILL, in-kernel
+//!    path-blocklist flagging) is autonomous and unaffected, but observe-only
+//!    audit telemetry via the daemon path is still unwired (follow-up).
 
 // NOTE: The whole file is cfg-gated. There is intentionally nothing else at
 // the top level — without the feature/OS combo, the test binary is empty.
