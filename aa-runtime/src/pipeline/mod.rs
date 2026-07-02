@@ -2328,6 +2328,121 @@ mod tests {
         token.cancel();
     }
 
+    /// AAASM-3987: a gateway that *accepts* the connection but never answers
+    /// `check_action` (a wedged/hung gateway) must not block the policy check
+    /// forever. The per-RPC deadline turns the hang into a failure, so in the
+    /// fail-closed (enforce) posture the check is DENIED — and, critically, it
+    /// resolves within roughly the deadline rather than never. Without the
+    /// deadline this test would hang: the shared client lock and single pipeline
+    /// loop would be pinned on the stuck RPC, stalling every agent (head-of-line
+    /// DoS).
+    #[tokio::test]
+    async fn gateway_hang_fail_closed_denies_within_deadline() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+        use aa_proto::assembly::policy::v1::policy_service_server::{PolicyService, PolicyServiceServer};
+        use aa_proto::assembly::policy::v1::{
+            BatchCheckRequest, BatchCheckResponse, CheckActionRequest as ProtoReq, CheckActionResponse as ProtoResp,
+            OpControlMessage, OpControlSubscribeRequest,
+        };
+        use tonic::{Request, Response, Status};
+
+        // Stub gateway: accepts the RPC but parks the handler far beyond the
+        // test's lifetime — models a gateway that stopped responding.
+        struct HangingGateway;
+
+        #[tonic::async_trait]
+        impl PolicyService for HangingGateway {
+            async fn check_action(&self, _request: Request<ProtoReq>) -> Result<Response<ProtoResp>, Status> {
+                tokio::time::sleep(Duration::from_secs(3_600)).await;
+                Ok(Response::new(ProtoResp::default()))
+            }
+
+            async fn batch_check(
+                &self,
+                _request: Request<BatchCheckRequest>,
+            ) -> Result<Response<BatchCheckResponse>, Status> {
+                Err(Status::unimplemented("not exercised by this test"))
+            }
+
+            type OpControlStreamStream =
+                std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<OpControlMessage, Status>> + Send + 'static>>;
+
+            async fn op_control_stream(
+                &self,
+                _request: Request<OpControlSubscribeRequest>,
+            ) -> Result<Response<Self::OpControlStreamStream>, Status> {
+                Err(Status::unimplemented("not exercised by this test"))
+            }
+        }
+
+        // Bind first (socket is listening), then serve on a background task.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_token = CancellationToken::new();
+        let server_shutdown = server_token.clone();
+        tokio::spawn(async move {
+            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            let _ = tonic::transport::Server::builder()
+                .add_service(PolicyServiceServer::new(HangingGateway))
+                .serve_with_incoming_shutdown(incoming, server_shutdown.cancelled())
+                .await;
+        });
+        // Give the serve loop a moment to start handling the h2 handshake.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let client = crate::gateway_client::GatewayClient::connect(&format!("http://{addr}"))
+            .await
+            .expect("client should connect to the listening (but hanging) stub");
+        let gateway = Arc::new(Mutex::new(client));
+
+        // Short deadline so the test resolves quickly; fail-closed posture.
+        let mut config = test_config(100, 10_000);
+        config.gateway_timeout = Duration::from_millis(300);
+
+        let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(64);
+        let (broadcast_tx, _rx) = broadcast::channel::<PipelineEvent>(64);
+        let metrics = Arc::new(PipelineMetrics::default());
+        let token = CancellationToken::new();
+        let (router, mut resp_rx) = make_router_with_receiver();
+        let approval_queue = crate::approval::ApprovalQueue::new();
+
+        tokio::spawn(run(
+            rx,
+            broadcast_tx,
+            config,
+            metrics,
+            token.clone(),
+            Arc::new(PolicyRules::default()),
+            router,
+            approval_queue,
+            Some(gateway),
+            crate::op_control::OpControlStore::new(),
+            Arc::new(AtomicU64::new(0)),
+            crate::ipc::new_verified_identity_store(),
+        ));
+
+        tx.send((0, policy_query_frame(ActionType::ToolCall))).await.unwrap();
+
+        // The 300ms deadline must yield a Deny well inside 2s — proving the check
+        // does not wait on the hung gateway forever.
+        let resp = tokio::time::timeout(Duration::from_secs(2), resp_rx.recv())
+            .await
+            .expect("hung gateway must not block the policy check past the deadline")
+            .expect("channel closed");
+
+        if let IpcResponse::PolicyResponse(r) = resp {
+            assert_eq!(
+                r.decision,
+                Decision::Deny as i32,
+                "hung gateway in fail-closed posture must deny via the RPC deadline"
+            );
+        } else {
+            panic!("expected PolicyResponse, got {resp:?}");
+        }
+        token.cancel();
+        server_token.cancel();
+    }
+
     /// AAASM-3110: in the observe/disabled posture (`gateway_fail_closed = false`)
     /// a gateway-unreachable check falls back to permissive local evaluation,
     /// which allows when no local rule matches.
