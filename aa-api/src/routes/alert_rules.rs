@@ -24,7 +24,8 @@ use utoipa::ToSchema;
 
 use crate::alerts::rules::store::AlertRuleStoreError;
 use crate::alerts::rules::types::{AlertRule, AlertRuleValidationError, RuleMetric, RuleOperator, RuleSeverity};
-use crate::auth::scope::{RequireAdmin, RequireRead};
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -159,6 +160,42 @@ fn parse_severity(s: &str) -> Result<RuleSeverity, ProblemDetail> {
     }
 }
 
+/// Enforce tenant ownership of an alert rule for a caller that already cleared
+/// the scope gate (AAASM-3911).
+///
+/// Mirrors `alerts::authorize_alert_owner` / `agents::authorize_agent_access`:
+/// an admin may act on any rule; a tenant-scoped caller may act only on rules
+/// its own tenant owns; a caller with neither admin scope nor any tenant scope
+/// is denied up front (fail-closed) so it cannot enumerate rules. Rules with no
+/// tenant tag (created by an admin / bypass caller) are admin-only.
+///
+/// A rule is matched on its finer-grained tag first: a `team_id` requires team
+/// access, otherwise an `org_id` requires org access, otherwise (untagged) admin
+/// is required.
+fn authorize_rule_owner(caller: &AuthenticatedCaller, rule: &AlertRule) -> Result<(), ProblemDetail> {
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() && caller.tenant.org_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a tenant scope".to_string()));
+    }
+    let authorized = match (rule.team_id.as_deref(), rule.org_id.as_deref()) {
+        (Some(team), _) => caller.can_access_team(team),
+        (None, Some(org)) => caller.can_access_org(org),
+        (None, None) => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or membership in the rule's tenant".to_string()));
+    }
+    Ok(())
+}
+
+/// Whether `caller` may see `rule` — the boolean form of
+/// [`authorize_rule_owner`], used to filter the list response.
+fn rule_visible_to(caller: &AuthenticatedCaller, rule: &AlertRule) -> bool {
+    authorize_rule_owner(caller, rule).is_ok()
+}
+
 /// List alert rules.
 ///
 /// Returns every persisted [`AlertRule`] as a bare JSON array ordered
@@ -176,11 +213,16 @@ fn parse_severity(s: &str) -> Result<RuleSeverity, ProblemDetail> {
     tag = "alert-rules"
 )]
 pub async fn list_rules(
-    _auth: RequireRead,
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Query(params): Query<ListRulesParams>,
 ) -> impl IntoResponse {
     let mut rules = state.alert_rule_store.list(params.enabled);
+    // AAASM-3911: confine the listing to rules the caller's tenant owns. An
+    // admin sees every rule; a tenant-scoped caller sees only its own tenant's
+    // rules; a caller with no tenant scope (and no admin) sees none. Untagged
+    // rules are admin-only.
+    rules.retain(|r| rule_visible_to(&caller, r));
     // Deterministic order so the dashboard table doesn't reshuffle
     // between fetches.
     rules.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
@@ -206,17 +248,22 @@ pub async fn list_rules(
     tag = "alert-rules"
 )]
 pub async fn create_rule(
-    // AAASM-3894: alert rules carry no team_id/org_id, so a Write-scope key in
-    // any tenant could otherwise mutate every tenant's alerting. Alerting is
-    // admin-managed infrastructure, so gate all mutations on admin scope.
-    // (Deeper per-object tenant tagging is tracked as a follow-up.)
-    _auth: RequireAdmin,
+    // AAASM-3911: reverts the AAASM-3894 admin-gate stopgap back to Write scope.
+    // This is now safe because the rule is stamped with (and later confined to)
+    // the creating caller's tenant, so a Write key can only manage its own
+    // tenant's alerting.
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Json(body): Json<AlertRuleRequest>,
 ) -> Result<(StatusCode, Json<AlertRuleResponse>), ProblemDetail> {
-    let rule = body.into_alert_rule()?;
+    let mut rule = body.into_alert_rule()?;
     rule.validate(state.destination_registry.as_ref())
         .map_err(validation_error_to_problem)?;
+    // AAASM-3911: stamp the owning tenant from the authenticated caller. An
+    // admin / bypass caller has no tenant → the rule is untagged (admin-only).
+    // The tenant is never taken from the request body.
+    rule.team_id = caller.tenant.team_id.clone();
+    rule.org_id = caller.tenant.org_id.clone();
     let created = state.alert_rule_store.create(rule).map_err(store_error_to_problem)?;
     Ok((StatusCode::CREATED, Json(created)))
 }
@@ -245,11 +292,13 @@ fn not_found(id: &str) -> ProblemDetail {
     tag = "alert-rules"
 )]
 pub async fn get_rule(
-    _auth: RequireRead,
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<AlertRuleResponse>), ProblemDetail> {
     let rule = state.alert_rule_store.get(&id).ok_or_else(|| not_found(&id))?;
+    // AAASM-3911: tenant ownership before exposing the rule.
+    authorize_rule_owner(&caller, &rule)?;
     Ok((StatusCode::OK, Json(rule)))
 }
 
@@ -272,15 +321,24 @@ pub async fn get_rule(
     tag = "alert-rules"
 )]
 pub async fn update_rule(
-    // AAASM-3894: admin-gated — see `create_rule`.
-    _auth: RequireAdmin,
+    // AAASM-3911: Write scope — see `create_rule`.
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     Json(body): Json<AlertRuleRequest>,
 ) -> Result<(StatusCode, Json<AlertRuleResponse>), ProblemDetail> {
-    let rule = body.into_alert_rule()?;
+    // AAASM-3911: tenant ownership on the existing rule before mutating it.
+    let existing = state.alert_rule_store.get(&id).ok_or_else(|| not_found(&id))?;
+    authorize_rule_owner(&caller, &existing)?;
+
+    let mut rule = body.into_alert_rule()?;
     rule.validate(state.destination_registry.as_ref())
         .map_err(validation_error_to_problem)?;
+    // Preserve the rule's original owning tenant — an update must not re-tenant
+    // it (the request body carries no tenant and the caller must not be able to
+    // move a rule between tenants).
+    rule.team_id = existing.team_id.clone();
+    rule.org_id = existing.org_id.clone();
     let updated = state
         .alert_rule_store
         .update(&id, rule)
@@ -304,11 +362,15 @@ pub async fn update_rule(
     tag = "alert-rules"
 )]
 pub async fn delete_rule(
-    // AAASM-3894: admin-gated — see `create_rule`.
-    _auth: RequireAdmin,
+    // AAASM-3911: Write scope — see `create_rule`.
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ProblemDetail> {
+    // AAASM-3911: tenant ownership on the existing rule before deleting it.
+    let existing = state.alert_rule_store.get(&id).ok_or_else(|| not_found(&id))?;
+    authorize_rule_owner(&caller, &existing)?;
+
     if state.alert_rule_store.delete(&id) {
         Ok(StatusCode::NO_CONTENT)
     } else {
