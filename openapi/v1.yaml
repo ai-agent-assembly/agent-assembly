@@ -2027,6 +2027,8 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/PolicyResponse'
+        '403':
+          description: Caller lacks admin scope
     post:
       tags:
       - policies
@@ -2067,6 +2069,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PolicyResponse'
+        '403':
+          description: Caller lacks admin scope
         '404':
           description: No active policy loaded
   /api/v1/tools:
