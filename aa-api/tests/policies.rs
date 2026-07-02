@@ -105,8 +105,7 @@ async fn list_policies_forbidden_for_read_only_caller() {
 
 #[tokio::test]
 async fn list_policies_allowed_for_admin_caller() {
-    let (token, entry) =
-        common::generate_test_api_key("admin-key", vec![Scope::Read, Scope::Write, Scope::Admin]);
+    let (token, entry) = common::generate_test_api_key("admin-key", vec![Scope::Read, Scope::Write, Scope::Admin]);
     let app = common::test_app_with_auth(&[entry], 1000);
 
     let response = app

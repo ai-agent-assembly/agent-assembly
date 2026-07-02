@@ -1222,7 +1222,9 @@ pub(crate) fn references_live_context(expr: &str) -> bool {
     let Some(tokens) = tokenize(expr) else {
         return false;
     };
-    tokens.iter().any(|t| matches!(t, Token::Field(f) if is_live_context_field(f)))
+    tokens
+        .iter()
+        .any(|t| matches!(t, Token::Field(f) if is_live_context_field(f)))
 }
 
 /// Classify a [`FieldRef`] as backed by live runtime state (registry / budget)
