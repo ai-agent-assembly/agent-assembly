@@ -139,14 +139,14 @@ impl FileIoLoader {
                 .as_mut()
                 .ok_or_else(|| EbpfError::ProbeAttach("BPF not loaded — call load() first".into()))?;
 
-            let probes: &[(&str, &str)] = &[
-                ("aa_sys_openat", "__x64_sys_openat"),
-                ("aa_sys_openat_ret", "__x64_sys_openat"),
-                ("aa_sys_read", "__x64_sys_read"),
-                ("aa_sys_write", "__x64_sys_write"),
-                ("aa_sys_unlink", "__x64_sys_unlinkat"),
-                ("aa_sys_rename", "__x64_sys_renameat2"),
-            ];
+            // Attach the single authoritative probe set shared with
+            // [`crate::kprobe::KprobeManager`] (AAASM-4012). This list pairs an
+            // entry kprobe with a return kretprobe (`*_ret`) for every observed
+            // syscall — read/write/unlink/rename all emit their events from the
+            // kretprobe, so attaching only the entry probes (the prior bug) left
+            // openat as the sole syscall producing events. It also includes the
+            // legacy `unlink(2)` / `rename(2)` glibc entry points (AAASM-1574).
+            let probes = crate::kprobe::KprobeManager::KPROBE_TARGETS;
 
             for (prog_name, fn_name) in probes {
                 let program: &mut KProbe = bpf
