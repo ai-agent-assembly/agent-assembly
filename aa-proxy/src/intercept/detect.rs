@@ -74,4 +74,20 @@ mod tests {
     fn subdomain_does_not_match() {
         assert_eq!(detect_api("cdn.api.openai.com"), LlmApiPattern::Unknown);
     }
+
+    #[test]
+    fn trailing_dot_fqdn_is_normalized() {
+        // AAASM-3983: a trailing-dot FQDN is equivalent to the dotless host and
+        // must classify identically — otherwise it slips through as Unknown and
+        // takes the transparent raw-tunnel path under llm_only.
+        assert_eq!(detect_api("api.openai.com."), LlmApiPattern::OpenAi);
+        assert_eq!(detect_api("api.anthropic.com."), LlmApiPattern::Anthropic);
+        assert_eq!(detect_api("api.cohere.com."), LlmApiPattern::Cohere);
+    }
+
+    #[test]
+    fn trailing_dot_with_port_and_mixed_case_is_normalized() {
+        // Port strip + trailing-dot strip + case-fold all compose.
+        assert_eq!(detect_api("API.OpenAI.CoM.:443"), LlmApiPattern::OpenAi);
+    }
 }
