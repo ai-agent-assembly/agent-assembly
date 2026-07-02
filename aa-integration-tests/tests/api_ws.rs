@@ -96,6 +96,8 @@ fn make_governance_event(id: u64) -> GovernanceEvent {
         agent_id: "test-agent".to_string(),
         payload: serde_json::json!({}),
         timestamp: Utc::now(),
+        team_id: None,
+        org_id: None,
     }
 }
 

@@ -114,6 +114,8 @@ async fn ws_replay_sends_buffered_events() {
             agent_id: "agent-1".to_string(),
             payload: serde_json::json!({"seq": i}),
             timestamp: Utc::now(),
+            team_id: None,
+            org_id: None,
         });
     }
     // Set next_event_id past the buffered events.

@@ -287,6 +287,10 @@ fn build_governance_event(
         agent_id,
         payload: serde_json::to_value(payload).unwrap_or_default(),
         timestamp: chrono::Utc::now(),
+        // Populated by the caller via the tenant-resolution path (AAASM-3980);
+        // `None` here keeps this constructor tenant-agnostic.
+        team_id: None,
+        org_id: None,
     }
 }
 
