@@ -282,10 +282,13 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
 
 /// Tracepoint on `sched/sched_process_exit`: fires on every *thread* exit.
 ///
-/// Only whole-process exits (the thread-group leader, `pid == tgid`) trigger
-/// cleanup + a [`ProcessExitEvent`] so the userspace `ProcessLineageTracker`
-/// removes the PID from the lineage map. Non-leader thread exits are ignored so
-/// a live multithreaded process is not torn down mid-flight (AAASM-3921c).
+/// Map cleanup removes the EXITING THREAD'S OWN tid key from `PARENT_TGID` and
+/// `EXEC_PID_FILTER` on every thread exit (AAASM-3982) — reaping the inert tid
+/// keys the fork handler inserts for CLONE_THREAD children, which the old
+/// leader-only cleanup leaked. A [`ProcessExitEvent`] is still emitted only on
+/// whole-process exit (the thread-group leader, `pid == tgid`) so the userspace
+/// `ProcessLineageTracker` does not drop a live multithreaded process mid-flight
+/// (AAASM-3921c).
 #[tracepoint]
 pub fn handle_sched_process_exit(ctx: TracePointContext) -> u32 {
     try_sched_process_exit(&ctx).unwrap_or_default()
@@ -296,30 +299,33 @@ fn try_sched_process_exit(_ctx: &TracePointContext) -> Result<u32, i64> {
     let tgid = (pid_tgid >> 32) as u32;
     let pid = pid_tgid as u32;
 
-    // `sched_process_exit` fires PER-THREAD. Only act on whole-process exit —
-    // the thread-group leader, where `pid == tgid`. A non-leader thread of a
-    // multithreaded monitored process (Go/Node/Python agents are all
-    // multithreaded) exiting must NOT tear down the still-live process's
-    // tgid-keyed map entries: removing `EXEC_PID_FILTER[tgid]` would stop the
-    // process's own future execs and fork-propagation from being observed, and
-    // emitting a process-exit event would make the lineage tracker drop a live
-    // process (AAASM-3921c). Bare thread exits are ignored entirely.
+    // Capture monitoring status BEFORE cleanup (the reap below removes this
+    // thread's own key, which on a leader exit is the tgid key `pid_allowed`
+    // consults). The wildcard key (0) is never an exiting tid.
+    let allowed = pid_allowed(tgid);
+
+    // `sched_process_exit` fires PER-THREAD. Reap the EXITING THREAD'S OWN tid
+    // key from both maps unconditionally (AAASM-3982). The fork handler inserts
+    // each new fork/thread's `child_pid` into `PARENT_TGID` and
+    // `EXEC_PID_FILTER`; for a CLONE_THREAD child that key is a tid whose tgid
+    // is already the monitored parent's, so it is inert but was NEVER reclaimed
+    // under the old leader-only (pid == tgid) cleanup — `EXEC_PID_FILTER`
+    // (cap 256) / `PARENT_TGID` (cap 1024) leaked toward exhaustion, after which
+    // fork propagation fails open and reused pids inherit stale entries.
+    // Removing by the exiting thread's own tid frees leaked tid keys on thread
+    // exit while leaving a still-live multithreaded process's tgid entry intact
+    // (a non-leader exit removes only its own inert key); the tgid entry is
+    // released when the leader exits (`pid == tgid`).
+    let _ = PARENT_TGID.remove(&pid);
+    let _ = EXEC_PID_FILTER.remove(&pid);
+
+    // Only whole-process exit (thread-group leader, `pid == tgid`) emits a
+    // `ProcessExitEvent`. A non-leader thread of a multithreaded monitored
+    // process (Go/Node/Python agents are all multithreaded) exiting must NOT
+    // make the lineage tracker drop the still-live process (AAASM-3921c).
     if pid != tgid {
         return Ok(0);
     }
-
-    // Capture monitoring status BEFORE cleanup (cleanup may remove this tgid's
-    // own filter entry, which `pid_allowed` would otherwise consult).
-    let allowed = pid_allowed(tgid);
-
-    // Release this tgid's parent-cache and propagated-filter entries on whole-
-    // process exit (AAASM-3921c). The fork handler records `PARENT_TGID` for
-    // *every* fork (so the exec handler can always resolve the real ppid), so
-    // the leader-exit cleanup runs unconditionally for the leader — otherwise
-    // the map would grow without bound and reused pids could inherit a stale
-    // parent / filter membership. The wildcard key (0) is never an exiting tgid.
-    let _ = PARENT_TGID.remove(&tgid);
-    let _ = EXEC_PID_FILTER.remove(&tgid);
 
     // Only emit the exit event for monitored processes (lineage cleanup).
     if !allowed {
@@ -362,7 +368,8 @@ fn try_sched_process_fork(ctx: &TracePointContext) -> Result<u32, i64> {
 
     // For a real new process `child_pid == child_tgid` (the key used by the
     // exec handler and the filter); for a thread the tgid is already the
-    // monitored parent's, so the extra key is inert.
+    // monitored parent's, so the extra tid key is inert — and is reaped by
+    // [`try_sched_process_exit`] when that thread exits (AAASM-3982).
     let child_pid: u32 = unsafe { ctx.read_at(SCHED_FORK_CHILD_PID_OFFSET) }.map_err(|_| -1i64)?;
 
     // Record the real parent for the exec handler, and confine the child to the
