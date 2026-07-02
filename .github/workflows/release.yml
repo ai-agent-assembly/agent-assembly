@@ -126,7 +126,10 @@ jobs:
         # the dist binary is Developer-ID-signed with a hardened runtime and
         # notarized so macOS Gatekeeper accepts it. (Bare CLI Mach-O binaries can't
         # be stapled; Gatekeeper verifies the notarization online on first run.)
-        if: ${{ runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true' }}
+        # AAASM-4022: also gate on a tag push so PR dry-runs never touch the
+        # Apple signing keychain / notary credentials even if MACOS_SIGNING_ENABLED
+        # is set — codesigning + notarization only run when publishing a release.
+        if: ${{ github.event_name == 'push' && runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true' }}
         env:
           APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
