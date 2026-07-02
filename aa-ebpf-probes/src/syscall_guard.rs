@@ -32,13 +32,16 @@
 //! post-escape guarantee. The [`aa_syscall_guard_fork`] tracepoint closes this
 //! by copying `PID_FILTER` membership from a monitored parent to each newly
 //! forked child at `sched/sched_process_fork`, so the child is confined from
-//! its first syscall. The paired [`aa_syscall_guard_exit`] tracepoint releases
-//! a tgid's `PID_FILTER` entry at `sched/sched_process_exit` — but only on
-//! whole-process (thread-group-leader) exit, since that tracepoint fires
-//! per-thread and tearing the entry down on a non-leader thread exit would
-//! unconfine a still-live multithreaded process. Leader-gated cleanup keeps the
-//! map (cap 1024) from exhausting — which would make later descendants fail
-//! open — and stops a reused pid inheriting stale confinement (AAASM-3921c).
+//! its first syscall. The paired [`aa_syscall_guard_exit`] tracepoint reaps a
+//! key from `PID_FILTER` at `sched/sched_process_exit` — that tracepoint fires
+//! per-thread, so it removes the *exiting thread's own tid* on every thread
+//! exit (AAASM-3982). On leader exit (`pid == tgid`) this releases the live
+//! process's tgid entry; on a non-leader thread exit it reaps that thread's
+//! inert tid key (inserted by fork propagation) while leaving the still-live
+//! process's tgid entry intact. Reaping every thread's own key keeps the map
+//! (cap 1024) from leaking toward exhaustion — which would make later
+//! descendants fail open — and stops a reused pid inheriting stale confinement
+//! (AAASM-3921c / AAASM-3982).
 //!
 //! Note the `SYSCALL_ALLOWLIST` is a single global map keyed by syscall number
 //! (not per-PID), so it already applies to every monitored tgid — there is no
@@ -65,8 +68,10 @@
 //!   `child_pid == child_tgid`, so the child tgid is confined. For a new
 //!   *thread* (`CLONE_THREAD`) `child_pid` is a new tid while the thread's tgid
 //!   equals the already-confined parent tgid — so threads are covered by the
-//!   parent's existing membership; the extra tid key is inert (lookups are by
-//!   tgid). A child that forks *before* the guard observes the parent (TOCTOU
+//!   parent's existing membership; the extra tid key is functionally inert
+//!   (lookups are by tgid) and is reaped when that thread exits (AAASM-3982), so
+//!   it no longer leaks the map. A child that forks *before* the guard observes
+//!   the parent (TOCTOU
 //!   at attach time) is not covered — attach the guard before launching the
 //!   confined process.
 
@@ -195,7 +200,8 @@ fn try_fork_propagate(ctx: &TracePointContext) -> Result<(), i64> {
 
     // Read the child's pid. For a real new process `child_pid == child_tgid`,
     // which is the key the enforcement tracepoint looks up; for a thread the
-    // tgid is already the (confined) parent's, so the extra key is inert.
+    // tgid is already the (confined) parent's, so the extra tid key is inert —
+    // and is reaped by [`try_exit_cleanup`] when that thread exits (AAASM-3982).
     let child_pid = unsafe { ctx.read_at::<u32>(SCHED_FORK_CHILD_PID_OFFSET) }?;
 
     // Confine the child by mirroring the parent's PID_FILTER membership.
@@ -203,30 +209,30 @@ fn try_fork_propagate(ctx: &TracePointContext) -> Result<(), i64> {
     Ok(())
 }
 
-/// Descendant-confinement cleanup tracepoint (AAASM-3921c): at
-/// `sched_process_exit`, remove the exiting tgid from `PID_FILTER` — but ONLY on
-/// whole-process exit (the thread-group leader, `pid == tgid`).
+/// Descendant-confinement cleanup tracepoint (AAASM-3921c / AAASM-3982): at
+/// `sched_process_exit`, remove the EXITING THREAD'S OWN tid key from
+/// `PID_FILTER` on **every** thread exit.
 ///
 /// `sched_process_exit` fires per-thread. A monitored process is confined by
-/// tgid, so removing `PID_FILTER[tgid]` when a non-leader thread of a
-/// multithreaded confined process (Go/Node/Python agents are all multithreaded)
-/// exits would unconfine the still-live process — it would run its remaining
-/// syscalls **unconfined** and its forks would no longer be propagated (the
-/// fork handler's parent check would see the tgid absent). The `pid == tgid`
-/// guard keeps confinement live for the whole process lifetime and cleans up
-/// only when the process itself exits.
+/// tgid, and the fork handler also inserts each new thread's tid as a
+/// (functionally inert) extra key. Removing by the exiting thread's own tid is
+/// what makes this safe for multithreaded confined processes (Go/Node/Python
+/// agents are all multithreaded): a non-leader thread exit reaps only its own
+/// inert tid key, leaving the live process's tgid entry — and thus its
+/// confinement and fork propagation — fully intact; the tgid entry is released
+/// only when the leader itself exits (`pid == tgid`).
 ///
-/// Without any cleanup the fork-propagated `PID_FILTER` entries (cap 1024) are
-/// never released, so the map exhausts under a forking workload — after which
-/// [`try_fork_propagate`]'s `insert` fails and further descendants run
-/// **unconfined** (fail-open), defeating the post-escape guarantee. Worse, a
-/// stale entry whose tgid is later reused by an unrelated process would cause
-/// the enforcement tracepoint to `SIGKILL` that innocent process. Releasing the
-/// entry on leader exit bounds the map and closes the pid-reuse hole; this
-/// mirrors the exec probe's own leader-gated exit-side cleanup.
+/// This unconditional per-thread reap fixes AAASM-3982: the previous
+/// leader-only (`pid == tgid`) gate removed by tgid, so non-leader tid keys were
+/// **never** reclaimed. Under a multithreaded/forking workload PID_FILTER (cap
+/// 1024) leaked toward exhaustion — after which [`try_fork_propagate`]'s
+/// `insert` fails and further descendants run **unconfined** (fail-open,
+/// reopening AAASM-3916), plus a leaked tid later reused as a live tgid would
+/// make the enforcement tracepoint `SIGKILL` an innocent process. Reaping each
+/// thread's own key on exit bounds the map and closes the pid-reuse hole.
 ///
-/// Returns `0` always; the removal is best-effort and a miss (the tgid was
-/// never confined) is a harmless no-op.
+/// Returns `0` always; the removal is best-effort and a miss (the tid was never
+/// a key) is a harmless no-op.
 #[tracepoint]
 pub fn aa_syscall_guard_exit(ctx: TracePointContext) -> u32 {
     let _ = try_exit_cleanup(&ctx);
@@ -234,15 +240,22 @@ pub fn aa_syscall_guard_exit(ctx: TracePointContext) -> u32 {
 }
 
 fn try_exit_cleanup(_ctx: &TracePointContext) -> Result<(), i64> {
-    // sched_process_exit is per-thread; only clean up on whole-process exit so a
-    // non-leader thread exit does not unconfine a live multithreaded process.
-    let pid_tgid = bpf_get_current_pid_tgid();
-    let tgid = (pid_tgid >> 32) as u32;
-    let pid = pid_tgid as u32;
-    if pid != tgid {
-        return Ok(());
-    }
-    let _ = PID_FILTER.remove(&tgid);
+    // sched_process_exit fires PER-THREAD. Remove the EXITING THREAD'S OWN tid
+    // key unconditionally (AAASM-3982):
+    //
+    // - On whole-process (thread-group-leader) exit `pid == tgid`, so this frees
+    //   the live process's confinement entry — exactly the old leader-gated
+    //   behavior.
+    // - On a non-leader thread exit `pid` is the thread's tid, which the fork
+    //   handler inserted as a (functionally inert) extra key; removing it here
+    //   reaps that key so PID_FILTER (cap 1024) cannot leak toward exhaustion.
+    //
+    // Removing only the exiting thread's own key never touches a still-live
+    // multithreaded process's tgid entry, so confinement stays intact until the
+    // leader itself exits. Do NOT gate this on `pid == tgid`: that gate was the
+    // AAASM-3982 leak — non-leader tid keys were never reclaimed.
+    let pid = bpf_get_current_pid_tgid() as u32;
+    let _ = PID_FILTER.remove(&pid);
     Ok(())
 }
 
