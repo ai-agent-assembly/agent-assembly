@@ -29,7 +29,7 @@ use crate::error::SandboxError;
 use crate::host_fn::HostFnCounter;
 use crate::policy::{PreopenAccess, SandboxConfig};
 
-/// Sentinel error type the [`MemoryLimit`] [`ResourceLimiter`] returns
+/// Sentinel error type the [`StoreLimits`] [`ResourceLimiter`] returns
 /// when a `memory.grow` would exceed the configured byte cap. The
 /// runtime's call-result branch downcasts to this type to surface
 /// [`SandboxError::MemoryExhausted`].
@@ -60,18 +60,39 @@ impl std::fmt::Display for HostFnRateLimitMarker {
 
 impl std::error::Error for HostFnRateLimitMarker {}
 
-/// Per-store linear-memory cap enforced via [`Store::limiter`].
+/// Maximum number of elements any single guest table may grow to.
+///
+/// `table.grow` is one non-fuel-metered instruction that forces the host to
+/// eagerly allocate `delta` fresh table slots, so an uncapped grow is an
+/// OOM-DoS primitive the linear-memory cap ([`StoreLimits::max_bytes`]) does
+/// not cover. This constant bounds the worst-case eager table allocation to a
+/// value far above any legitimate tool's dynamic table growth. (AAASM-3990.)
+///
+/// It is a compile-time constant rather than a [`crate::policy::SandboxLimits`]
+/// field only because promoting it to the public config would break
+/// out-of-crate callers that build `SandboxLimits` with every field enumerated;
+/// a config field can follow once those call sites adopt `..Default::default()`.
+const MAX_TABLE_ELEMENTS: usize = 10_000;
+
+/// Per-store resource caps enforced via [`Store::limiter`].
 ///
 /// `memory_growing` denies any grow that would push the guest above
 /// `max_bytes` by returning [`MemoryExhaustedMarker`] inside the
 /// `wasmtime::Error` channel — the wasmtime runtime then surfaces that
 /// error from the call's `start.call(...)` return value, which the
 /// runtime maps to [`SandboxError::MemoryExhausted`].
-struct MemoryLimit {
+///
+/// `table_growing` caps table-element growth at `max_table_elements`. Unlike
+/// the memory path it rejects *gracefully* (`Ok(false)`) rather than trapping:
+/// that yields the standard WASM `table.grow` failure sentinel (`-1`) to the
+/// guest while still preventing the eager host allocation an uncapped grow
+/// would force. (AAASM-3990.)
+struct StoreLimits {
     max_bytes: usize,
+    max_table_elements: usize,
 }
 
-impl ResourceLimiter for MemoryLimit {
+impl ResourceLimiter for StoreLimits {
     fn memory_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
         if desired > self.max_bytes {
             Err(wasmtime::Error::new(MemoryExhaustedMarker))
@@ -80,19 +101,23 @@ impl ResourceLimiter for MemoryLimit {
         }
     }
 
-    fn table_growing(&mut self, _current: usize, _desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
-        Ok(true)
+    fn table_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        // Reject growth past the element cap gracefully: `Ok(false)` makes
+        // `table.grow` return -1 to the guest (well-defined WASM semantics)
+        // without the host eagerly allocating the requested slots — closing
+        // the uncapped-`table.grow` OOM-DoS gap. (AAASM-3990.)
+        Ok(desired <= self.max_table_elements)
     }
 }
 
-/// Per-store state combining the WASI context with the memory limiter.
+/// Per-store state combining the WASI context with the resource limiter.
 ///
 /// Wraps the [`WasiP1Ctx`] previously held directly by the store; the
 /// linker's WASI projection closure now returns `&mut state.wasi`, and
 /// `Store::limiter` projects to `&mut state.limiter`.
 struct StoreState {
     wasi: WasiP1Ctx,
-    limiter: MemoryLimit,
+    limiter: StoreLimits,
     /// Per-invocation host-function call budget (AAASM-3617). Seeded from
     /// [`SandboxConfig::host_fn_rate_limit`] for each `run_tool` call so the
     /// budget is never shared across invocations or tenants. Every counted
@@ -216,8 +241,9 @@ impl SandboxRuntime {
                 .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         }
         let wasi = builder.build_p1();
-        let limiter = MemoryLimit {
+        let limiter = StoreLimits {
             max_bytes: (self.config.limits.memory_pages as usize) * 65_536,
+            max_table_elements: MAX_TABLE_ELEMENTS,
         };
         // Fresh per-invocation host-fn budget so it is never shared across
         // calls or tenants (AAASM-3617).
@@ -480,7 +506,7 @@ mod tests {
     /// `_start` declares a 1-page initial memory and immediately tries
     /// to grow it by 100 pages (= 6.4 MiB), well past the default
     /// `SandboxLimits::memory_pages = 16` (1 MiB) cap. The
-    /// `MemoryLimit` `ResourceLimiter` returns `Err(MemoryExhaustedMarker)`
+    /// `StoreLimits` `ResourceLimiter` returns `Err(MemoryExhaustedMarker)`
     /// for the grow, which wasmtime surfaces as a trap.
     const MEMORY_BOMB_WAT: &str = r#"
         (module
