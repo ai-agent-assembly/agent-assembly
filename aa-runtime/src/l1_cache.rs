@@ -10,29 +10,68 @@ use dashmap::DashMap;
 
 use crate::invalidation_client::InvalidationSink;
 
+/// Default upper bound on the number of cached entries (AAASM-4020).
+///
+/// The cache is keyed by attacker-influenceable `agent_id`, so it must be
+/// bounded before any insert path is wired — an unbounded [`DashMap`] would grow
+/// with every distinct id and become a memory-exhaustion vector.
+pub const DEFAULT_CAPACITY: usize = 10_000;
+
 /// A `DashMap`-backed L1 cache of per-agent values (e.g. policy decisions),
 /// invalidated on demand by the push-invalidation subscriber.
+///
+/// The map is bounded to [`DEFAULT_CAPACITY`] (override via
+/// [`PolicyL1Cache::with_capacity`]). When full, inserting a *new* key evicts an
+/// arbitrary existing entry: a policy-cache eviction is safe because a miss just
+/// triggers a re-fetch, so approximate (non-LRU) eviction trades exactness for a
+/// hard memory ceiling.
 pub struct PolicyL1Cache<V> {
     entries: DashMap<String, V>,
+    capacity: usize,
 }
 
 impl<V> Default for PolicyL1Cache<V> {
     fn default() -> Self {
         Self {
             entries: DashMap::new(),
+            capacity: DEFAULT_CAPACITY,
         }
     }
 }
 
 impl<V> PolicyL1Cache<V> {
-    /// Create an empty cache.
+    /// Create an empty cache bounded to [`DEFAULT_CAPACITY`].
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Create an empty cache bounded to `capacity` entries.
+    ///
+    /// A `capacity` of `0` is treated as `1` so the cache can always hold the
+    /// entry just inserted.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: DashMap::new(),
+            capacity: capacity.max(1),
+        }
+    }
+
     /// Insert or replace the cached value for `agent_id`.
+    ///
+    /// Enforces the capacity bound (AAASM-4020): when the cache is full and the
+    /// key is new, one arbitrary entry is evicted first so the map never exceeds
+    /// its configured ceiling.
     pub fn insert(&self, agent_id: impl Into<String>, value: V) {
-        self.entries.insert(agent_id.into(), value);
+        let key = agent_id.into();
+        if self.entries.len() >= self.capacity && !self.entries.contains_key(&key) {
+            // Clone the victim key so the read guard is dropped before `remove`
+            // takes a write lock (a held ref + same-shard write would deadlock).
+            let victim = self.entries.iter().next().map(|e| e.key().clone());
+            if let Some(victim) = victim {
+                self.entries.remove(&victim);
+            }
+        }
+        self.entries.insert(key, value);
     }
 
     /// Drop the cached value for `agent_id`, if present.
@@ -114,6 +153,29 @@ mod tests {
 
         assert!(!cache.contains("agent-a"));
         assert!(cache.contains("agent-b"));
+    }
+
+    #[test]
+    fn insert_enforces_capacity_bound() {
+        // AAASM-4020: the map must never exceed its configured ceiling, however
+        // many distinct keys are inserted.
+        let cache: PolicyL1Cache<u32> = PolicyL1Cache::with_capacity(4);
+        for i in 0..100u32 {
+            cache.insert(format!("agent-{i}"), i);
+        }
+        assert!(cache.len() <= 4, "len {} exceeded capacity", cache.len());
+    }
+
+    #[test]
+    fn insert_existing_key_does_not_evict() {
+        // Replacing an existing key must not trip the eviction path.
+        let cache: PolicyL1Cache<u32> = PolicyL1Cache::with_capacity(2);
+        cache.insert("a", 1);
+        cache.insert("b", 2);
+        cache.insert("a", 9);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get("a"), Some(9));
+        assert_eq!(cache.get("b"), Some(2));
     }
 
     #[test]
