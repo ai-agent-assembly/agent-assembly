@@ -224,6 +224,28 @@ impl OpControlNatsError {
 /// `AA_OPCONTROL_NATS_TLS=1` so the bus is mutually-authenticated and encrypted.
 /// Payload-level forgery is additionally rejected at consume time
 /// ([`subject_authorizes_envelope`]).
+/// Boot-time security decision for an [`OpControlNatsConfig`] (AAASM-3991).
+///
+/// The op-control bus is a fleet kill switch, so activating it without both
+/// authentication (a JWT credentials file or an nkey seed) and TLS must never be
+/// silent. [`OpControlNatsConfig::security_posture`] maps a config to one of these
+/// outcomes; [`OpControlNatsConfig::from_env`] then either activates silently,
+/// activates with a loud warning, or refuses to activate (strict mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpControlSecurityPosture {
+    /// Authenticated **and** TLS-encrypted — safe to activate silently.
+    Secure,
+    /// Missing authentication and/or TLS — activate but warn loudly at boot.
+    InsecureWarn,
+    /// Missing authentication and/or TLS while strict mode
+    /// (`AA_OPCONTROL_NATS_REQUIRE_AUTH`) is on — refuse to activate (fail closed).
+    InsecureFailClosed,
+}
+
+/// Env var that makes an unauthenticated/plaintext op-control bus fail closed
+/// (refuse to activate) instead of merely warning. `1`/`true`/`yes`/`on`.
+pub const REQUIRE_AUTH_ENV: &str = "AA_OPCONTROL_NATS_REQUIRE_AUTH";
+
 #[derive(Debug, Clone)]
 pub struct OpControlNatsConfig {
     /// NATS server URL (e.g. `nats://127.0.0.1:4222` or `tls://host:4222`).
@@ -261,6 +283,15 @@ impl OpControlNatsConfig {
     /// `AA_OPCONTROL_NATS_NKEY` (nkey seed), and `AA_OPCONTROL_NATS_TLS`
     /// (`1`/`true` to require TLS). A production op-control bus should set the
     /// credentials and TLS knobs; leaving them unset keeps the loopback dev path.
+    ///
+    /// AAASM-3991: activating this fleet kill-switch bus without both
+    /// authentication and TLS must never be silent. When the URL is set but the
+    /// bus is not authenticated **and** TLS-encrypted, this either warns loudly
+    /// ([`OpControlSecurityPosture::InsecureWarn`], mirroring the `AA_AUTH=off`
+    /// boot warning) or — when [`REQUIRE_AUTH_ENV`] is set — fails closed by
+    /// refusing to activate the bus at all ([`OpControlSecurityPosture::InsecureFailClosed`],
+    /// returning `None`). A fully-configured (creds/nkey + TLS) bus activates
+    /// silently. The check lives here so it fires exactly once per process at boot.
     pub fn from_env() -> Option<Self> {
         let url = std::env::var("AA_OPCONTROL_NATS_URL").ok().filter(|u| !u.is_empty())?;
         let creds_path = std::env::var("AA_OPCONTROL_NATS_CREDS").ok().filter(|c| !c.is_empty());
@@ -269,12 +300,67 @@ impl OpControlNatsConfig {
             .ok()
             .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
-        Some(Self {
+        let require_auth = std::env::var(REQUIRE_AUTH_ENV)
+            .ok()
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        let config = Self {
             url,
             creds_path,
             nkey,
             tls,
-        })
+        };
+        match config.security_posture(require_auth) {
+            OpControlSecurityPosture::Secure => Some(config),
+            OpControlSecurityPosture::InsecureWarn => {
+                tracing::warn!(
+                    url = %config.url,
+                    "op-control NATS bus is UNAUTHENTICATED and/or PLAINTEXT — this is a fleet \
+                     kill switch: anyone able to reach the bus can Terminate/Pause runtimes \
+                     fleet-wide. Set AA_OPCONTROL_NATS_CREDS (or AA_OPCONTROL_NATS_NKEY) AND \
+                     AA_OPCONTROL_NATS_TLS in production, or set AA_OPCONTROL_NATS_REQUIRE_AUTH=1 \
+                     to refuse an insecure bus (AAASM-3889/AAASM-3991)."
+                );
+                Some(config)
+            }
+            OpControlSecurityPosture::InsecureFailClosed => {
+                tracing::error!(
+                    url = %config.url,
+                    "refusing to activate op-control NATS bus: AA_OPCONTROL_NATS_REQUIRE_AUTH is \
+                     set but the bus is not authenticated AND TLS-encrypted. Set \
+                     AA_OPCONTROL_NATS_CREDS (or AA_OPCONTROL_NATS_NKEY) AND AA_OPCONTROL_NATS_TLS, \
+                     or unset AA_OPCONTROL_NATS_REQUIRE_AUTH to run insecure (dev only). The \
+                     cross-process op-control kill switch is DISABLED until this is resolved \
+                     (AAASM-3991)."
+                );
+                None
+            }
+        }
+    }
+
+    /// `true` when the bus is both authenticated (a JWT credentials file or an
+    /// nkey seed) **and** TLS-encrypted — the only configuration safe to activate
+    /// without a boot warning (AAASM-3991).
+    pub fn is_authenticated_and_encrypted(&self) -> bool {
+        (self.creds_path.is_some() || self.nkey.is_some()) && self.tls
+    }
+
+    /// Classify this config's boot-time security posture (AAASM-3991).
+    ///
+    /// A [`Secure`](OpControlSecurityPosture::Secure) bus (auth + TLS) activates
+    /// silently. Otherwise the bus is unauthenticated and/or plaintext: with
+    /// `require_auth` set it fails closed
+    /// ([`InsecureFailClosed`](OpControlSecurityPosture::InsecureFailClosed)),
+    /// otherwise it activates with a loud warning
+    /// ([`InsecureWarn`](OpControlSecurityPosture::InsecureWarn)).
+    pub fn security_posture(&self, require_auth: bool) -> OpControlSecurityPosture {
+        if self.is_authenticated_and_encrypted() {
+            OpControlSecurityPosture::Secure
+        } else if require_auth {
+            OpControlSecurityPosture::InsecureFailClosed
+        } else {
+            OpControlSecurityPosture::InsecureWarn
+        }
     }
 
     /// Build the [`async_nats::ConnectOptions`] described by this config, applying
@@ -970,5 +1056,73 @@ mod tests {
                 .is_err(),
             "an unspecified signal must not be forwarded",
         );
+    }
+
+    // ── AAASM-3991: fail-loud boot posture for an unauth/plaintext bus ───────
+
+    /// Config directly, bypassing env, so the security-posture decision can be
+    /// asserted without touching process env vars or capturing tracing output.
+    fn cfg(creds: Option<&str>, nkey: Option<&str>, tls: bool) -> OpControlNatsConfig {
+        OpControlNatsConfig {
+            url: "nats://127.0.0.1:4222".to_string(),
+            creds_path: creds.map(Into::into),
+            nkey: nkey.map(Into::into),
+            tls,
+        }
+    }
+
+    #[test]
+    fn url_without_creds_or_tls_warns_and_fails_closed_when_required() {
+        // The bug: a URL set without creds AND TLS is an unauthenticated,
+        // plaintext fleet kill-switch bus. Non-strict → activate but warn.
+        let bare = cfg(None, None, false);
+        assert!(!bare.is_authenticated_and_encrypted());
+        assert_eq!(bare.security_posture(false), OpControlSecurityPosture::InsecureWarn);
+        // Strict (AA_OPCONTROL_NATS_REQUIRE_AUTH) → fail closed (from_env returns None).
+        assert_eq!(
+            bare.security_posture(true),
+            OpControlSecurityPosture::InsecureFailClosed
+        );
+    }
+
+    #[test]
+    fn creds_without_tls_is_still_insecure() {
+        // Authenticated but plaintext is not safe — still warns (fails closed when strict).
+        let creds_only = cfg(Some("/etc/aa/op.creds"), None, false);
+        assert!(!creds_only.is_authenticated_and_encrypted());
+        assert_eq!(
+            creds_only.security_posture(false),
+            OpControlSecurityPosture::InsecureWarn
+        );
+        assert_eq!(
+            creds_only.security_posture(true),
+            OpControlSecurityPosture::InsecureFailClosed
+        );
+    }
+
+    #[test]
+    fn tls_without_auth_is_still_insecure() {
+        // Encrypted but unauthenticated is not safe — any TLS client can publish.
+        let tls_only = cfg(None, None, true);
+        assert!(!tls_only.is_authenticated_and_encrypted());
+        assert_eq!(tls_only.security_posture(false), OpControlSecurityPosture::InsecureWarn);
+    }
+
+    #[test]
+    fn creds_plus_tls_is_secure_and_silent() {
+        // Fully configured (JWT creds file + TLS) is the only silent path.
+        let secure = cfg(Some("/etc/aa/op.creds"), None, true);
+        assert!(secure.is_authenticated_and_encrypted());
+        assert_eq!(secure.security_posture(false), OpControlSecurityPosture::Secure);
+        // Strict mode does not change a secure config.
+        assert_eq!(secure.security_posture(true), OpControlSecurityPosture::Secure);
+    }
+
+    #[test]
+    fn nkey_plus_tls_is_secure_and_silent() {
+        // nkey auth is an equally valid authenticator to a creds file.
+        let secure = cfg(None, Some("SUACSSED..."), true);
+        assert!(secure.is_authenticated_and_encrypted());
+        assert_eq!(secure.security_posture(false), OpControlSecurityPosture::Secure);
     }
 }
