@@ -570,7 +570,20 @@ impl ProxyServer {
                 return Some("ssrf: blocked address range");
             }
         }
-        if self.config.denied_hosts.iter().any(|denied| denied == host) {
+        // AAASM-3983: canonicalise the host ONCE (lowercase + strip a single
+        // trailing dot) before the denied_hosts and allowlist comparisons. The
+        // byte-exact `denied == host` check let `EVIL.COM` or `evil.com.` evade
+        // a lowercase `evil.com` denylist entry, and the allowlist matcher —
+        // though it lowercases — never stripped a trailing dot, so `evil.com.`
+        // slipped past it too. Compare canonical-to-canonical on both sides.
+        let host = canonical_host(host);
+        let host = host.as_str();
+        if self
+            .config
+            .denied_hosts
+            .iter()
+            .any(|denied| canonical_host(denied) == host)
+        {
             return Some("host policy");
         }
         if !aa_core::policy::is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist) {
@@ -803,8 +816,15 @@ impl ProxyServer {
             }
         }
 
-        // Extract hostname (strip port) for deny check and certificate generation.
-        let host = target.split(':').next().unwrap_or(target);
+        // Extract hostname (strip port) and canonicalise it (AAASM-3983:
+        // lowercase + strip a single trailing dot) so the deny check, cert
+        // generation, LLM-pattern detection, SNI, and upstream dial all consume
+        // one canonical form. Without this an `api.openai.com.` CONNECT would be
+        // classified Unknown and raw-tunnelled under llm_only, and case/dot
+        // variants would evade the denylist. `target` (with port) is retained
+        // for the DNS/connect calls, which tolerate the trailing dot.
+        let host = canonical_host(target);
+        let host = host.as_str();
 
         // Egress policy: deny-list, then AAASM-1943 network allowlist.
         // Both return 403 + emit a deny decision and end the connection.
@@ -969,6 +989,31 @@ impl ProxyServer {
             return Ok(());
         }
 
+        // AAASM-3984: refuse plaintext (`http://`) egress to a known LLM
+        // provider. The credential-scanning DLP (scan → block/redact) only runs
+        // on the HTTPS MitM path (`handle_llm_mitm`); the plain-HTTP path below
+        // is a raw bidirectional copy with no `intercept_request` scan. LLM
+        // provider APIs are HTTPS-only, so a cleartext request to an LLM host is
+        // always a protocol-downgrade bypass — a steered agent could exfiltrate
+        // secrets in cleartext with zero inspection. Refuse it here (fail-closed,
+        // 403) rather than raw-copying it upstream un-inspected. `detect_api`
+        // canonicalizes case/port/trailing-dot, so downgrade variants like
+        // `http://API.OpenAI.CoM.` are caught too. Legitimate LLM traffic is
+        // HTTPS and continues to be inspected by `handle_llm_mitm`.
+        if detect_api(deny_host) != LlmApiPattern::Unknown {
+            tracing::info!(
+                host = %deny_host,
+                "plain-HTTP egress to LLM host refused: cleartext downgrade bypasses DLP",
+            );
+            self.interceptor.emit_policy_decision(deny_host, true).await;
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+
         // Connect to upstream via plain TCP.
         let upstream_addr = if host.contains(':') {
             host.to_string()
@@ -1008,6 +1053,23 @@ impl ProxyServer {
 
         Ok(())
     }
+}
+
+/// Canonicalise a host for policy comparison and LLM-pattern detection
+/// (AAASM-3983).
+///
+/// DNS names are case-insensitive (RFC 4343) and a single trailing dot denotes
+/// the (equivalent) fully-qualified form — `API.OPENAI.COM` and
+/// `api.openai.com.` both address the same host as `api.openai.com`. Comparing
+/// hosts byte-exact (as the `denied_hosts` check did) or lowercasing without
+/// stripping the trailing dot (as the allowlist matcher did) let a caller evade
+/// a `denied_hosts` entry or the LLM-only MitM path by varying only case or a
+/// trailing dot. Canonicalising once — strip the port, strip a single trailing
+/// dot, lowercase — closes that bypass. The result carries no port.
+fn canonical_host(host: &str) -> String {
+    let no_port = host.split(':').next().unwrap_or(host);
+    let no_dot = no_port.strip_suffix('.').unwrap_or(no_port);
+    no_dot.to_ascii_lowercase()
 }
 
 /// Parse the upstream host for a plain (non-CONNECT) HTTP request from the
@@ -1130,6 +1192,38 @@ mod tests {
         assert_eq!(server.connect_deny_reason("1.1.1.1"), None);
     }
 
+    #[test]
+    fn canonical_host_strips_port_trailing_dot_and_case() {
+        // AAASM-3983: port, single trailing dot, and case are all normalised.
+        assert_eq!(canonical_host("EVIL.COM"), "evil.com");
+        assert_eq!(canonical_host("evil.com."), "evil.com");
+        assert_eq!(canonical_host("Evil.Com.:443"), "evil.com");
+        assert_eq!(canonical_host("evil.com"), "evil.com");
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_denylist_defeats_case_and_trailing_dot_evasion() {
+        // AAASM-3983: a lowercase `evil.com` denylist entry must catch the
+        // uppercase and trailing-dot variants, which previously slipped past
+        // the byte-exact comparison.
+        let server = server_with(vec!["evil.com".to_string()], vec![]).await;
+        assert_eq!(server.connect_deny_reason("evil.com"), Some("host policy"));
+        assert_eq!(server.connect_deny_reason("EVIL.COM"), Some("host policy"));
+        assert_eq!(server.connect_deny_reason("evil.com."), Some("host policy"));
+        assert_eq!(server.connect_deny_reason("Evil.Com.:443"), Some("host policy"));
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_allowlist_rejects_trailing_dot_non_member() {
+        // With api.openai.com allowlisted, a trailing-dot form of a *different*
+        // host must still be rejected (it is not a member), and the trailing-dot
+        // form of the allowlisted host must be permitted.
+        let server = server_with(vec![], vec!["api.openai.com".to_string()]).await;
+        assert_eq!(server.connect_deny_reason("evil.com."), Some("network allowlist"));
+        assert_eq!(server.connect_deny_reason("api.openai.com."), None);
+        assert_eq!(server.connect_deny_reason("API.OPENAI.COM"), None);
+    }
+
     fn req_with(headers: Vec<(&str, &str)>, target: &str) -> HttpRequest {
         HttpRequest {
             method: "POST".into(),
@@ -1207,6 +1301,73 @@ mod tests {
         assert!(
             buf.contains("403"),
             "plain-HTTP request to a blocked IP must be refused with 403, got: {buf:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_http_to_llm_host_is_refused() {
+        // AAASM-3984: a cleartext `http://` request to a known LLM provider must
+        // be refused (403) before any upstream dial. The plain-HTTP path does no
+        // credential scanning, so allowing a downgrade to reach an LLM host would
+        // let a steered agent exfiltrate the secret in this body with zero DLP.
+        // The empty allowlist permits the public host past the egress gate, so
+        // the 403 here proves the LLM-downgrade refusal (not the egress check).
+        use tokio::io::AsyncReadExt;
+        let server = server_with(vec![], vec![]).await;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (server_stream, _) = listener.accept().await.unwrap();
+
+        let body = "{\"api_key\":\"sk-secretvalue1234567890\"}";
+        let req = format!(
+            "POST http://api.openai.com/v1/chat HTTP/1.1\r\nHost: api.openai.com\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        client.write_all(req.as_bytes()).await.unwrap();
+
+        server
+            .handle_connection(server_stream)
+            .await
+            .expect("refused request returns Ok after writing 403");
+
+        let mut buf = String::new();
+        client.read_to_string(&mut buf).await.unwrap();
+        assert!(
+            buf.contains("403"),
+            "cleartext plain-HTTP request to an LLM host must be refused with 403, got: {buf:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_http_to_llm_host_trailing_dot_is_refused() {
+        // AAASM-3983 + AAASM-3984: the trailing-dot / mixed-case downgrade
+        // variant must also be refused — detect_api canonicalizes the host.
+        use tokio::io::AsyncReadExt;
+        let server = server_with(vec![], vec![]).await;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (server_stream, _) = listener.accept().await.unwrap();
+
+        client
+            .write_all(b"POST http://API.OpenAI.CoM./v1/chat HTTP/1.1\r\nHost: API.OpenAI.CoM.\r\n\r\n")
+            .await
+            .unwrap();
+
+        server
+            .handle_connection(server_stream)
+            .await
+            .expect("refused request returns Ok after writing 403");
+
+        let mut buf = String::new();
+        client.read_to_string(&mut buf).await.unwrap();
+        assert!(
+            buf.contains("403"),
+            "trailing-dot cleartext request to an LLM host must be refused with 403, got: {buf:?}"
         );
     }
 }
