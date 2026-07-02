@@ -81,15 +81,36 @@ pub static RENAME_TMP: HashMap<u64, [u8; MAX_PATH_LEN]> =
 #[map]
 pub static RENAME_ENTRY_TS: HashMap<u64, u64> = HashMap::with_max_entries(MAX_ENTRIES, 0);
 
-/// Path pattern blocklist: paths that should trigger an alert.
-/// Key is a hash of the path prefix, value is 1 (deny).
+/// Path blocklist: paths whose access should be flagged as sensitive.
+///
+/// **Match contract (AAASM-3921a/b — corrected).** The key is the **exact,
+/// NUL-padded full path** as captured from the syscall argument, and the kprobe
+/// does an **exact `HashMap::get` equality** match — NOT a hash of a prefix and
+/// NOT a directory-prefix match. Earlier docs claimed "hash of the path prefix"
+/// / prefix matching; the implementation never did either, so directory deny
+/// rules (e.g. `/etc/`) silently never fired and non-canonical paths
+/// (`/etc//shadow`, `/etc/../etc/shadow`, symlinks) evaded the in-kernel check.
+///
+/// Because this layer is **OBSERVE-ONLY** (it sets an alert flag; it does not
+/// deny), prefix and canonicalization matching are reconciled in userspace:
+/// [`SensitivePathDetector`](../../aa_ebpf/alert/struct.SensitivePathDetector.html)
+/// canonicalizes each event path and does boundary-aware prefix matching, and
+/// the final `is_sensitive` verdict is the OR of the kernel exact-match flag
+/// and the userspace canonical-prefix match.
+///
+/// **Deferred (needs Linux):** moving canonicalization / prefix matching into
+/// the kernel requires a `d_path` / dentry walk, which cannot be written or
+/// verifier-validated without a Linux kernel target — tracked under AAASM-3921.
 #[map]
 pub static PATH_BLOCKLIST: HashMap<[u8; MAX_PATH_LEN], u8> =
     HashMap::with_max_entries(MAX_PATH_PATTERNS, 0);
 
-/// Path pattern allowlist: paths whose events should be suppressed.
-/// If a path matches this map, the kprobe skips event emission entirely.
-/// Key is the path (null-padded), value is 1 (allow / suppress).
+/// Path allowlist: paths whose events should be suppressed.
+///
+/// If a path matches this map the kprobe skips event emission entirely. Same
+/// **exact, NUL-padded full-path equality** contract as [`PATH_BLOCKLIST`]
+/// (see its docs for the prefix/canonicalization reconciliation and the
+/// deferred in-kernel `d_path` work). Value is `1` (allow / suppress).
 #[map]
 pub static PATH_ALLOWLIST: HashMap<[u8; MAX_PATH_LEN], u8> =
     HashMap::with_max_entries(MAX_PATH_PATTERNS, 0);

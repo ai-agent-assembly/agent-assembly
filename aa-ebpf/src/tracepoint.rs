@@ -1,7 +1,9 @@
 //! Tracepoint management for process exec monitoring (AAASM-39).
 //!
-//! Attaches the `sched/sched_process_exec` and `sched/sched_process_exit`
-//! tracepoints from the `aa-exec-probes` BPF binary.
+//! Attaches the `sched/sched_process_fork`, `sched/sched_process_exec`, and
+//! `sched/sched_process_exit` tracepoints from the `aa-exec-probes` BPF binary.
+//! The fork tracepoint supplies the real parent pid and descendant coverage
+//! (AAASM-3921c).
 
 #[cfg(target_os = "linux")]
 use aya::Ebpf;
@@ -24,12 +26,12 @@ pub struct TracepointManager {
 }
 
 impl TracepointManager {
-    /// Attach both `sched/sched_process_exec` and `sched/sched_process_exit`
-    /// tracepoint programs.
+    /// Attach the `sched/sched_process_fork`, `sched/sched_process_exec`, and
+    /// `sched/sched_process_exit` tracepoint programs.
     ///
-    /// These tracepoints fire for every `execve`/`execveat` and process exit
-    /// on the system. The BPF-side PID filter (`EXEC_PID_FILTER`) limits
-    /// which events are emitted to the ring buffer.
+    /// These tracepoints fire for every `fork`/`clone`, `execve`/`execveat`,
+    /// and process exit on the system. The BPF-side PID filter
+    /// (`EXEC_PID_FILTER`) limits which events are emitted to the ring buffer.
     ///
     /// # Errors
     ///
@@ -43,7 +45,16 @@ impl TracepointManager {
     pub fn attach(bpf: &mut Ebpf) -> Result<Self, EbpfError> {
         use aya::programs::TracePoint;
 
+        // Publish the kernel's `task_struct` field offsets so the exec probe can
+        // read `current->real_parent->tgid` directly (AAASM-3921c). Best-effort:
+        // if BTF is unavailable or the map is missing the probe falls back to
+        // its fork-populated map path, so a failure here is not fatal.
+        Self::populate_task_offsets(bpf);
+
         let tracepoints: &[(&str, &str, &str)] = &[
+            // Attach fork first so the child→parent map is populated before any
+            // exec it enables can be observed (AAASM-3921c).
+            ("handle_sched_process_fork", "sched", "sched_process_fork"),
             ("handle_sched_process_exec", "sched", "sched_process_exec"),
             ("handle_sched_process_exit", "sched", "sched_process_exit"),
         ];
@@ -69,6 +80,47 @@ impl TracepointManager {
         }
 
         Ok(Self { _links: links })
+    }
+
+    /// Resolve `task_struct.real_parent` / `task_struct.tgid` byte-offsets from
+    /// the running kernel's BTF and write them into the exec probe's
+    /// `TASK_OFFSETS` array map (index 0 = `real_parent`, 1 = `tgid`).
+    ///
+    /// Best-effort and non-fatal: on any failure the map is left zeroed and the
+    /// probe falls back to its fork-populated `PARENT_TGID` map (AAASM-3921c).
+    #[cfg(target_os = "linux")]
+    fn populate_task_offsets(bpf: &mut Ebpf) {
+        let Some(offsets) = crate::btf_offsets::task_offsets_from_sys() else {
+            tracing::warn!("task_struct BTF offsets unavailable; exec ppid falls back to fork map");
+            return;
+        };
+
+        let Some(map) = bpf.map_mut("TASK_OFFSETS") else {
+            tracing::warn!("TASK_OFFSETS map not found; exec ppid falls back to fork map");
+            return;
+        };
+
+        let mut arr: aya::maps::Array<_, u32> = match aya::maps::Array::try_from(map) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::warn!(error = %e, "TASK_OFFSETS not an Array map; skipping offset publish");
+                return;
+            }
+        };
+
+        if let Err(e) = arr
+            .set(0, offsets.real_parent, 0)
+            .and_then(|()| arr.set(1, offsets.tgid, 0))
+        {
+            tracing::warn!(error = %e, "failed to write TASK_OFFSETS; exec ppid falls back to fork map");
+            return;
+        }
+
+        tracing::info!(
+            real_parent = offsets.real_parent,
+            tgid = offsets.tgid,
+            "published task_struct offsets for CO-RE exec ppid"
+        );
     }
 
     /// Explicitly detach all tracepoints.

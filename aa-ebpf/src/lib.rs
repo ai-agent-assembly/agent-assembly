@@ -44,6 +44,7 @@
 // Cross-platform modules (no aya dependency).
 pub mod agent_discover;
 pub mod alert;
+pub mod btf_offsets;
 pub mod control;
 pub mod error;
 pub mod events;

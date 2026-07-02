@@ -55,7 +55,13 @@ use crate::maps::PathPattern;
 /// with the file I/O kprobe subsystem. It is only functional on Linux; on
 /// other platforms it returns [`EbpfError::ProgramLoad`] immediately.
 pub struct FileIoLoader {
-    /// Target PID to monitor (and its descendants).
+    /// Target PID to monitor.
+    ///
+    /// NOTE (AAASM-3916): unlike the exec and syscall-guard loaders, the
+    /// file-I/O probe has **no** `sched_process_fork` propagation, so only this
+    /// exact tgid is monitored — descendants are NOT followed. Descendant
+    /// file-I/O telemetry is a follow-up (a fork tracepoint mirroring
+    /// `PID_FILTER` membership like the syscall guard does).
     #[allow(dead_code)]
     target_pid: u32,
     /// Loaded BPF object handle (Linux only).
@@ -64,7 +70,8 @@ pub struct FileIoLoader {
 }
 
 impl FileIoLoader {
-    /// Create a new loader targeting the given PID and its descendants.
+    /// Create a new loader targeting the given PID (this exact tgid only; see
+    /// the `target_pid` field note on the lack of descendant propagation).
     pub fn new(target_pid: u32) -> Self {
         Self {
             target_pid,
@@ -545,11 +552,21 @@ impl SyscallGuardLoader {
         }
     }
 
-    /// Attach the `aa_syscall_guard` program at `raw_syscalls/sys_enter`.
+    /// Attach the enforcement tracepoint (`aa_syscall_guard` at
+    /// `raw_syscalls/sys_enter`), the descendant-confinement tracepoint
+    /// (`aa_syscall_guard_fork` at `sched/sched_process_fork`, AAASM-3916), and
+    /// the confinement-cleanup tracepoint (`aa_syscall_guard_exit` at
+    /// `sched/sched_process_exit`, AAASM-3921c).
+    ///
+    /// The fork tracepoint must be attached so that children of a confined
+    /// process inherit `PID_FILTER` membership and cannot run unconfined; the
+    /// exit tracepoint releases those entries so the map cannot exhaust (which
+    /// would make later descendants fail open) and reused pids cannot inherit
+    /// stale confinement.
     ///
     /// # Errors
     ///
-    /// Returns [`EbpfError::ProbeAttach`] on non-Linux or if the tracepoint
+    /// Returns [`EbpfError::ProbeAttach`] on non-Linux or if either tracepoint
     /// fails to attach.
     pub fn attach(&mut self) -> Result<(), EbpfError> {
         #[cfg(not(target_os = "linux"))]
@@ -566,18 +583,31 @@ impl SyscallGuardLoader {
                 .as_mut()
                 .ok_or_else(|| EbpfError::ProbeAttach("BPF not loaded — call load() first".into()))?;
 
-            let program: &mut TracePoint = bpf
-                .program_mut("aa_syscall_guard")
-                .ok_or_else(|| EbpfError::ProbeAttach("aa_syscall_guard program not found".into()))?
-                .try_into()
-                .map_err(|e: aya::programs::ProgramError| EbpfError::ProbeAttach(e.to_string()))?;
+            // (program name, tracepoint category, tracepoint name)
+            let tracepoints: &[(&str, &str, &str)] = &[
+                ("aa_syscall_guard", "raw_syscalls", "sys_enter"),
+                ("aa_syscall_guard_fork", "sched", "sched_process_fork"),
+                // Release PID_FILTER entries on exit so the map cannot exhaust
+                // (fail-open) and reused pids cannot inherit stale confinement
+                // (AAASM-3921c).
+                ("aa_syscall_guard_exit", "sched", "sched_process_exit"),
+            ];
 
-            program.load().map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
-            program
-                .attach("raw_syscalls", "sys_enter")
-                .map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
+            for (prog_name, category, tp_name) in tracepoints {
+                let program: &mut TracePoint = bpf
+                    .program_mut(prog_name)
+                    .ok_or_else(|| EbpfError::ProbeAttach(format!("{prog_name} program not found")))?
+                    .try_into()
+                    .map_err(|e: aya::programs::ProgramError| EbpfError::ProbeAttach(e.to_string()))?;
 
-            tracing::info!("syscall-guard tracepoint attached at raw_syscalls/sys_enter");
+                program.load().map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
+                program
+                    .attach(category, tp_name)
+                    .map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
+
+                tracing::info!(program = prog_name, tracepoint = %format!("{category}/{tp_name}"), "syscall-guard tracepoint attached");
+            }
+
             Ok(())
         }
     }
