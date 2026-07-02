@@ -53,6 +53,7 @@ flags:
   rust:
     paths:
       - aa-core/src/
+      - aa-auth/src/
       - aa-security/src/
       - aa-storage/src/
       - aa-storage-memory/src/
@@ -61,6 +62,7 @@ flags:
       - aa-storage-postgres/src/
       - aa-storage-sqlite-buffer/src/
       - aa-runtime/src/
+      - aa-ebpf-common/src/
       - aa-proxy/src/
       - aa-sdk-client/src/
       - aa-wasm/src/
@@ -68,6 +70,7 @@ flags:
       - aa-gateway/src/
       - aa-api/src/
       - aa-cli/src/
+      - aa-devtool-contract/src/
       - aa-devtool/src/
       - aa-devtool-claude-code/src/
       - aa-devtool-codex/src/
