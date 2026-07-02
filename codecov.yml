@@ -34,9 +34,15 @@ coverage:
 # Paths excluded from all coverage reports (including PR patch coverage).
 # Listed binaries are run manually (not by `cargo test`), so coverage tooling
 # never observes them and they would otherwise drag patch coverage to 0%.
+#
+# aa-ebpf/src: the userspace eBPF loader has no testable logic; the coverage
+# job already `--exclude aa-ebpf` and SonarCloud drops it via sonar.exclusions
+# (aa-ebpf/src/**). Mirroring it here keeps Codecov's denominator aligned with
+# SonarCloud's — otherwise its ~2% coverage drags only the Codecov number down.
 ignore:
   - "conformance/src/bin/"
   - "aa-proxy/src/main.rs"
+  - "aa-ebpf/src/"
 
 comment:
   layout: "reach,diff,flags,tree"
