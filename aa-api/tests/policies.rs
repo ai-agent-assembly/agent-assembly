@@ -2,6 +2,7 @@
 
 mod common;
 
+use aa_api::auth::scope::Scope;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
@@ -79,6 +80,67 @@ async fn create_policy_returns_400_for_invalid_yaml() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn list_policies_forbidden_for_read_only_caller() {
+    // AAASM-3995(a): policy versions are cross-tenant governance documents, so a
+    // plain Read caller must not be able to enumerate the full policy set.
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/policies")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn list_policies_allowed_for_admin_caller() {
+    let (token, entry) =
+        common::generate_test_api_key("admin-key", vec![Scope::Read, Scope::Write, Scope::Admin]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/policies")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn get_active_policy_forbidden_for_read_only_caller() {
+    // AAASM-3995(a): the active policy is the full cross-tenant document.
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/policies/active")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
