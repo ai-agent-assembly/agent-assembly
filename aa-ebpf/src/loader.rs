@@ -553,11 +553,16 @@ impl SyscallGuardLoader {
     }
 
     /// Attach the enforcement tracepoint (`aa_syscall_guard` at
-    /// `raw_syscalls/sys_enter`) and the descendant-confinement tracepoint
-    /// (`aa_syscall_guard_fork` at `sched/sched_process_fork`, AAASM-3916).
+    /// `raw_syscalls/sys_enter`), the descendant-confinement tracepoint
+    /// (`aa_syscall_guard_fork` at `sched/sched_process_fork`, AAASM-3916), and
+    /// the confinement-cleanup tracepoint (`aa_syscall_guard_exit` at
+    /// `sched/sched_process_exit`, AAASM-3921c).
     ///
     /// The fork tracepoint must be attached so that children of a confined
-    /// process inherit `PID_FILTER` membership and cannot run unconfined.
+    /// process inherit `PID_FILTER` membership and cannot run unconfined; the
+    /// exit tracepoint releases those entries so the map cannot exhaust (which
+    /// would make later descendants fail open) and reused pids cannot inherit
+    /// stale confinement.
     ///
     /// # Errors
     ///
@@ -582,6 +587,10 @@ impl SyscallGuardLoader {
             let tracepoints: &[(&str, &str, &str)] = &[
                 ("aa_syscall_guard", "raw_syscalls", "sys_enter"),
                 ("aa_syscall_guard_fork", "sched", "sched_process_fork"),
+                // Release PID_FILTER entries on exit so the map cannot exhaust
+                // (fail-open) and reused pids cannot inherit stale confinement
+                // (AAASM-3921c).
+                ("aa_syscall_guard_exit", "sched", "sched_process_exit"),
             ];
 
             for (prog_name, category, tp_name) in tracepoints {
