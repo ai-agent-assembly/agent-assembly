@@ -524,9 +524,10 @@ async fn webhook_secret_header_is_not_returned_in_cleartext() {
     let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
     let app = aa_api::build_app(state);
 
-    // An admin caller creates a webhook destination with a secret.
-    // AAASM-3894: destination mutations now require admin scope.
-    let write_token = common::generate_test_jwt("w", &[Scope::Admin]);
+    // A tenant-scoped Write caller creates a webhook destination with a secret.
+    // AAASM-3911: destination mutations are Write scope, confined to the
+    // caller's tenant; a same-tenant reader (below) can then fetch it.
+    let write_token = common::generate_test_jwt_for_team("w", &[Scope::Read, Scope::Write], "team-x");
     let payload = json!({
         "name": "hook",
         "kind": "webhook",
@@ -552,8 +553,9 @@ async fn webhook_secret_header_is_not_returned_in_cleartext() {
     );
     let id = created["id"].as_str().unwrap().to_string();
 
-    // A read caller fetching the destination must not receive the raw secret.
-    let read_token = common::generate_test_jwt("r", &[Scope::Read]);
+    // A same-tenant read caller fetching the destination must not receive the
+    // raw secret.
+    let read_token = common::generate_test_jwt_for_team("r", &[Scope::Read], "team-x");
     let resp = app
         .oneshot(bearer_empty(
             "GET",
@@ -839,44 +841,90 @@ async fn update_destination_with_malformed_json_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ── AAASM-3894 — destination mutations require admin scope ────────────────────
+// ── AAASM-3911 — destination mutations are tenant-scoped Write ────────────────
 //
-// Destinations carry no team_id/org_id, so before this fix any Write-scope key —
-// in any tenant — could create/update/delete/test-fire every tenant's
-// notification targets. Gate the mutations on admin scope; a non-admin
-// (write-only) caller must be rejected, while an admin caller is allowed.
+// AAASM-3894 gated destination mutations on admin scope as a stopgap because
+// destinations carried no tenant. Now each destination is stamped with (and
+// confined to) its creating tenant, so mutations revert to Write scope: a
+// tenant-confined Write key manages ONLY its own tenant's destinations, while
+// an admin key retains cross-tenant access.
 
+/// A tenant-confined Write key manages ONLY its own tenant's destinations: it
+/// cannot list, read, update, delete, or test-fire another tenant's, while an
+/// admin key retains cross-tenant access.
 #[tokio::test]
-async fn create_destination_write_only_token_is_403() {
+async fn write_key_is_confined_to_its_own_tenant_destinations() {
     let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
     let app = aa_api::build_app(state);
-    let token = common::generate_test_jwt("u", &[Scope::Write]);
+
+    let write = &[Scope::Read, Scope::Write];
+    let token_a = common::generate_test_jwt_for_team("key-a", write, "team-a");
+    let token_b = common::generate_test_jwt_for_team("key-b", write, "team-b");
+    let token_admin = common::generate_test_jwt("key-admin", &[Scope::Admin]);
+
+    // Team A (Write) creates a destination → 201 (reverted from the 3894 stopgap
+    // that required admin).
     let resp = app
+        .clone()
         .oneshot(bearer_json(
             "POST",
             "/api/v1/alerts/destinations",
-            &token,
-            webhook_payload("hook", "https://example.com/hook"),
+            &token_a,
+            webhook_payload("hook-a", "https://example.com/hook-a"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "team-A Write key can create");
+    let dst_a = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // Team B (Write) creates its own destination → 201.
+    let resp = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations",
+            &token_b,
+            webhook_payload("hook-b", "https://example.com/hook-b"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let dst_b = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // Team B's list must contain only its own destination — never team-A's.
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty("GET", "/api/v1/alerts/destinations", &token_b))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let items = body_json(resp).await;
+    let items = items.as_array().unwrap();
+    assert_eq!(items.len(), 1, "team-B sees only its own destination");
+    assert_eq!(items[0]["id"], dst_b);
+
+    // Team B cannot read / update / delete / test-fire team-A's destination.
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty(
+            "GET",
+            &format!("/api/v1/alerts/destinations/{dst_a}"),
+            &token_b,
         ))
         .await
         .unwrap();
     assert_eq!(
         resp.status(),
         StatusCode::FORBIDDEN,
-        "a non-admin write caller must not create a destination"
+        "team-B cannot read team-A's destination"
     );
-}
 
-#[tokio::test]
-async fn update_destination_write_only_token_is_403() {
-    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
-    let app = aa_api::build_app(state);
-    let token = common::generate_test_jwt("u", &[Scope::Write]);
     let resp = app
+        .clone()
         .oneshot(bearer_json(
             "PUT",
-            "/api/v1/alerts/destinations/dst_x",
-            &token,
+            &format!("/api/v1/alerts/destinations/{dst_a}"),
+            &token_b,
             json!({ "enabled": false }),
         ))
         .await
@@ -884,36 +932,32 @@ async fn update_destination_write_only_token_is_403() {
     assert_eq!(
         resp.status(),
         StatusCode::FORBIDDEN,
-        "a non-admin write caller must not update a destination"
+        "team-B cannot update team-A's destination"
     );
-}
 
-#[tokio::test]
-async fn delete_destination_write_only_token_is_403() {
-    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
-    let app = aa_api::build_app(state);
-    let token = common::generate_test_jwt("u", &[Scope::Write]);
     let resp = app
-        .oneshot(bearer_empty("DELETE", "/api/v1/alerts/destinations/dst_x", &token))
+        .clone()
+        .oneshot(bearer_empty(
+            "DELETE",
+            &format!("/api/v1/alerts/destinations/{dst_a}"),
+            &token_b,
+        ))
         .await
         .unwrap();
     assert_eq!(
         resp.status(),
         StatusCode::FORBIDDEN,
-        "a non-admin write caller must not delete a destination"
+        "team-B cannot delete team-A's destination"
     );
-}
 
-#[tokio::test]
-async fn test_destination_write_only_token_is_403() {
-    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
-    let app = aa_api::build_app(state);
-    let token = common::generate_test_jwt("u", &[Scope::Write]);
+    // Test-fire ownership is enforced before any egress, so a wrong-tenant
+    // caller is rejected with 403 without a network round-trip.
     let resp = app
+        .clone()
         .oneshot(bearer_json(
             "POST",
-            "/api/v1/alerts/destinations/dst_x/test",
-            &token,
+            &format!("/api/v1/alerts/destinations/{dst_a}/test"),
+            &token_b,
             json!({ "severity": "LOW" }),
         ))
         .await
@@ -921,7 +965,56 @@ async fn test_destination_write_only_token_is_403() {
     assert_eq!(
         resp.status(),
         StatusCode::FORBIDDEN,
-        "a non-admin write caller must not test-fire a destination"
+        "team-B cannot test-fire team-A's destination"
+    );
+
+    // Team A still sees and can read its own destination (untouched by B).
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty("GET", "/api/v1/alerts/destinations", &token_a))
+        .await
+        .unwrap();
+    let items = body_json(resp).await;
+    let items = items.as_array().unwrap();
+    assert_eq!(items.len(), 1, "team-A sees only its own destination");
+    assert_eq!(items[0]["id"], dst_a);
+
+    // Admin sees every tenant's destinations and can act cross-tenant.
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty("GET", "/api/v1/alerts/destinations", &token_admin))
+        .await
+        .unwrap();
+    let items = body_json(resp).await;
+    assert_eq!(
+        items.as_array().unwrap().len(),
+        2,
+        "admin sees both tenants' destinations"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty(
+            "GET",
+            &format!("/api/v1/alerts/destinations/{dst_a}"),
+            &token_admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "admin reads any tenant's destination");
+
+    let resp = app
+        .oneshot(bearer_empty(
+            "DELETE",
+            &format!("/api/v1/alerts/destinations/{dst_a}"),
+            &token_admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NO_CONTENT,
+        "admin deletes any tenant's destination"
     );
 }
 

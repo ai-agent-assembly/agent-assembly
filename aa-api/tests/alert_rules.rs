@@ -317,6 +317,172 @@ async fn delete_rule_preserves_snapshot_on_already_recorded_alerts() {
     assert_eq!(body["ruleSnapshot"]["metric"], "budget_spent_pct");
 }
 
+// ── AAASM-3911: tenant isolation ────────────────────────────────────────────
+
+/// Attach a Bearer JWT to a request builder body-less GET.
+fn get_as(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn post_as(uri: &str, token: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn put_as(uri: &str, token: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn delete_as(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("DELETE")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn named_rule_body(name: &str) -> serde_json::Value {
+    let mut body = valid_rule_body();
+    body["name"] = json!(name);
+    body
+}
+
+/// A tenant-confined Write key manages ONLY its own tenant's alert rules: it
+/// cannot list, read, update, or delete another tenant's rules, while an admin
+/// key retains cross-tenant access. Reverts the AAASM-3894 admin-gate stopgap.
+#[tokio::test]
+async fn write_key_is_confined_to_its_own_tenant_alert_rules() {
+    let app = common::test_app_with_auth(&[], 1000);
+
+    let write = &[Scope::Read, Scope::Write];
+    let token_a = common::generate_test_jwt_for_team("key-a", write, "team-a");
+    let token_b = common::generate_test_jwt_for_team("key-b", write, "team-b");
+    let token_admin = common::generate_test_jwt("key-admin", &[Scope::Admin]);
+
+    // Team A (Write) creates a rule → 201.
+    let response = app
+        .clone()
+        .oneshot(post_as("/api/v1/alerts/rules", &token_a, named_rule_body("rule-a")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED, "team-A Write key can create");
+    let rule_a_id = read_json(response).await["id"].as_str().unwrap().to_string();
+
+    // Team B (Write) creates its own rule → 201.
+    let response = app
+        .clone()
+        .oneshot(post_as("/api/v1/alerts/rules", &token_b, named_rule_body("rule-b")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let rule_b_id = read_json(response).await["id"].as_str().unwrap().to_string();
+
+    // Team B's list must contain only its own rule — never team-A's.
+    let response = app
+        .clone()
+        .oneshot(get_as("/api/v1/alerts/rules", &token_b))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let arr = read_json(response).await;
+    let arr = arr.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "team-B sees only its own rule");
+    assert_eq!(arr[0]["id"], rule_b_id);
+
+    // Team B cannot read team-A's rule.
+    let response = app
+        .clone()
+        .oneshot(get_as(&format!("/api/v1/alerts/rules/{rule_a_id}"), &token_b))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "team-B cannot read team-A's rule"
+    );
+
+    // Team B cannot update team-A's rule.
+    let response = app
+        .clone()
+        .oneshot(put_as(
+            &format!("/api/v1/alerts/rules/{rule_a_id}"),
+            &token_b,
+            named_rule_body("rule-a-hijack"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "team-B cannot update team-A's rule"
+    );
+
+    // Team B cannot delete team-A's rule.
+    let response = app
+        .clone()
+        .oneshot(delete_as(&format!("/api/v1/alerts/rules/{rule_a_id}"), &token_b))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "team-B cannot delete team-A's rule"
+    );
+
+    // Team A still sees and can read its own rule (untouched by B's attempts).
+    let response = app
+        .clone()
+        .oneshot(get_as("/api/v1/alerts/rules", &token_a))
+        .await
+        .unwrap();
+    let arr = read_json(response).await;
+    let arr = arr.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "team-A sees only its own rule");
+    assert_eq!(arr[0]["id"], rule_a_id);
+
+    // Admin sees every tenant's rules and can act cross-tenant.
+    let response = app
+        .clone()
+        .oneshot(get_as("/api/v1/alerts/rules", &token_admin))
+        .await
+        .unwrap();
+    let arr = read_json(response).await;
+    assert_eq!(arr.as_array().unwrap().len(), 2, "admin sees both tenants' rules");
+
+    let response = app
+        .clone()
+        .oneshot(get_as(&format!("/api/v1/alerts/rules/{rule_a_id}"), &token_admin))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "admin reads any tenant's rule");
+
+    let response = app
+        .oneshot(delete_as(&format!("/api/v1/alerts/rules/{rule_a_id}"), &token_admin))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NO_CONTENT,
+        "admin deletes any tenant's rule"
+    );
+}
+
 #[tokio::test]
 async fn create_accepts_every_operator_variant() {
     let app = common::test_app();
@@ -364,11 +530,13 @@ async fn create_with_unknown_severity_returns_invalid_severity() {
     assert_eq!(json["error_code"], "invalid_severity");
 }
 
-// ── AAASM-3894 — alert-rule mutations require admin scope ─────────────────────
+// ── AAASM-3911 — alert-rule mutations are tenant-scoped Write ─────────────────
 //
-// Alert rules carry no team_id/org_id, so before this fix any Write-scope key —
-// in any tenant — could create/update/delete every tenant's alerting. Gate the
-// mutations on admin scope; a non-admin (write-only) caller must be rejected.
+// AAASM-3894 gated alert-rule mutations on admin scope as a stopgap because
+// rules carried no tenant. Now each rule is stamped with (and confined to) its
+// creating tenant, so mutations revert to Write scope — see
+// `write_key_is_confined_to_its_own_tenant_alert_rules` above for the full
+// isolation contract. An admin caller still creates rules cross-tenant.
 
 use aa_api::auth::config::AuthMode;
 use aa_api::auth::scope::Scope;
@@ -387,32 +555,39 @@ fn bearer(method: &str, uri: &str, token: &str, body: Option<serde_json::Value>)
     }
 }
 
+/// A tenant-confined Write key cannot mutate another tenant's rule: PUT / DELETE
+/// against a rule the caller's tenant does not own is refused. (Creation and the
+/// full isolation contract are covered by
+/// `write_key_is_confined_to_its_own_tenant_alert_rules`.)
 #[tokio::test]
-async fn create_rule_write_only_token_is_403() {
+async fn write_key_cannot_mutate_another_tenants_rule() {
     let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
     let app = aa_api::build_app(state);
-    let token = common::generate_test_jwt("u", &[Scope::Write]);
+    let write = &[Scope::Read, Scope::Write];
+    let token_a = common::generate_test_jwt_for_team("key-a", write, "team-a");
+    let token_b = common::generate_test_jwt_for_team("key-b", write, "team-b");
+
+    // Team A creates a rule.
     let resp = app
-        .oneshot(bearer("POST", "/api/v1/alerts/rules", &token, Some(valid_rule_body())))
+        .clone()
+        .oneshot(bearer(
+            "POST",
+            "/api/v1/alerts/rules",
+            &token_a,
+            Some(valid_rule_body()),
+        ))
         .await
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::FORBIDDEN,
-        "a non-admin write caller must not create an alert rule"
-    );
-}
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = read_json(resp).await["id"].as_str().unwrap().to_string();
 
-#[tokio::test]
-async fn update_rule_write_only_token_is_403() {
-    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
-    let app = aa_api::build_app(state);
-    let token = common::generate_test_jwt("u", &[Scope::Write]);
+    // Team B cannot update or delete it.
     let resp = app
+        .clone()
         .oneshot(bearer(
             "PUT",
-            "/api/v1/alerts/rules/any-id",
-            &token,
+            &format!("/api/v1/alerts/rules/{id}"),
+            &token_b,
             Some(valid_rule_body()),
         ))
         .await
@@ -420,23 +595,17 @@ async fn update_rule_write_only_token_is_403() {
     assert_eq!(
         resp.status(),
         StatusCode::FORBIDDEN,
-        "a non-admin write caller must not update an alert rule"
+        "team-B cannot update team-A's rule"
     );
-}
 
-#[tokio::test]
-async fn delete_rule_write_only_token_is_403() {
-    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
-    let app = aa_api::build_app(state);
-    let token = common::generate_test_jwt("u", &[Scope::Write]);
     let resp = app
-        .oneshot(bearer("DELETE", "/api/v1/alerts/rules/any-id", &token, None))
+        .oneshot(bearer("DELETE", &format!("/api/v1/alerts/rules/{id}"), &token_b, None))
         .await
         .unwrap();
     assert_eq!(
         resp.status(),
         StatusCode::FORBIDDEN,
-        "a non-admin write caller must not delete an alert rule"
+        "team-B cannot delete team-A's rule"
     );
 }
 
