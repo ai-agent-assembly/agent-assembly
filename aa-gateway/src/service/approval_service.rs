@@ -16,18 +16,30 @@ use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::iam::VerifiedCaller;
 use crate::service::convert;
+use crate::service::TenancyMode;
 
-/// Tenant-authorization rule for an approval action (AAASM-3788).
+/// Tenant-authorization rule for an approval action (AAASM-3788, AAASM-4021).
 ///
 /// A credentialed caller may act on an approval only when the caller and the
 /// approval are not in *different* tenants. When both the caller and the
-/// approval carry a `team_id`, they must match; if either side is untenanted
-/// the action is allowed (the untenanted/single-tenant deployment fallback,
-/// mirroring the policy-service tenancy residual under AAASM-3416). The
-/// interceptor has already guaranteed the caller is authenticated.
-fn caller_may_act_on(caller: &VerifiedCaller, approval_team: Option<&str>) -> bool {
+/// approval carry a `team_id`, they must match. If either side is untenanted
+/// the action is allowed — the untenanted/single-tenant deployment fallback,
+/// mirroring the policy-service tenancy residual under AAASM-3416.
+///
+/// AAASM-4021: that fallback is safe in an [`Untenanted`](TenancyMode::Untenanted)
+/// deployment, but in a [`Tenanted`](TenancyMode::Tenanted) one it would let a
+/// registered but *team-less* caller act on any tenant's approval. So when
+/// tenancy is enforced, a team-less caller acting on a *tenanted* approval is
+/// denied; the permissive fallback is preserved for every untenanted case
+/// (untenanted resource, or untenanted deployment). The interceptor has already
+/// guaranteed the caller is authenticated.
+fn caller_may_act_on(caller: &VerifiedCaller, approval_team: Option<&str>, mode: TenancyMode) -> bool {
     match (caller.team_id.as_deref(), approval_team) {
         (Some(caller_team), Some(approval_team)) => caller_team == approval_team,
+        // Team-less caller vs a tenanted approval: permissive only when tenancy
+        // is not being enforced (AAASM-4021).
+        (None, Some(_)) => mode == TenancyMode::Untenanted,
+        // Untenanted approval (shared/global) — unchanged fallback.
         _ => true,
     }
 }
@@ -37,6 +49,10 @@ pub struct ApprovalServiceImpl {
     queue: Arc<ApprovalQueue>,
     escalation_scheduler: Option<Arc<EscalationScheduler>>,
     db_escalation_scheduler: Option<Arc<DbEscalationScheduler>>,
+    /// Deployment tenancy posture for the cross-tenant guard (AAASM-4021).
+    /// Defaults to [`TenancyMode::Untenanted`] so OSS/single-tenant deployments
+    /// keep the permissive fallback.
+    tenancy_mode: TenancyMode,
 }
 
 impl ApprovalServiceImpl {
@@ -46,6 +62,7 @@ impl ApprovalServiceImpl {
             queue,
             escalation_scheduler: None,
             db_escalation_scheduler: None,
+            tenancy_mode: TenancyMode::default(),
         }
     }
 
@@ -60,6 +77,7 @@ impl ApprovalServiceImpl {
             queue,
             escalation_scheduler,
             db_escalation_scheduler: None,
+            tenancy_mode: TenancyMode::default(),
         }
     }
 
@@ -68,6 +86,15 @@ impl ApprovalServiceImpl {
     /// When present, `decide()` also cancels the DB-backed escalation row.
     pub fn with_db_scheduler(mut self, scheduler: Option<Arc<DbEscalationScheduler>>) -> Self {
         self.db_escalation_scheduler = scheduler;
+        self
+    }
+
+    /// Set the deployment tenancy posture (AAASM-4021).
+    ///
+    /// In [`TenancyMode::Tenanted`] a team-less caller can no longer act on a
+    /// tenanted approval via the untenanted fallback.
+    pub fn with_tenancy_mode(mut self, mode: TenancyMode) -> Self {
+        self.tenancy_mode = mode;
         self
     }
 
@@ -80,7 +107,7 @@ impl ApprovalServiceImpl {
     fn enforce_decide_tenancy(&self, caller: &VerifiedCaller, request_id: &str) -> Result<(), Status> {
         if let Ok(id) = request_id.parse::<ApprovalRequestId>() {
             if let Some(ApprovalLookup::Pending(pending)) = self.queue.get_by_id(id) {
-                if !caller_may_act_on(caller, pending.team_id.as_deref()) {
+                if !caller_may_act_on(caller, pending.team_id.as_deref(), self.tenancy_mode) {
                     return Err(Status::permission_denied("approval belongs to a different tenant"));
                 }
             }
@@ -129,7 +156,7 @@ impl ApprovalService for ApprovalServiceImpl {
         let requests = pending
             .iter()
             .filter(|p| match &caller {
-                Some(c) => caller_may_act_on(c, p.team_id.as_deref()),
+                Some(c) => caller_may_act_on(c, p.team_id.as_deref(), self.tenancy_mode),
                 None => true,
             })
             .map(convert::pending_to_proto)
@@ -357,6 +384,60 @@ mod tests {
 
         let resp = service.decide(req).await.unwrap().into_inner();
         assert!(resp.success);
+    }
+
+    // AAASM-4021 — the untenanted fallback must not let a registered but
+    // team-less caller act on a tenanted approval once tenancy is enforced.
+    #[tokio::test]
+    async fn decide_tenanted_mode_teamless_caller_denied_on_tenanted_approval() {
+        let queue = Arc::new(ApprovalQueue::new());
+        let service = ApprovalServiceImpl::new(Arc::clone(&queue)).with_tenancy_mode(TenancyMode::Tenanted);
+        let id = Uuid::new_v4();
+        queue.submit(make_approval_request_with_team(id, Some("team-b")));
+
+        let mut req = tonic::Request::new(DecideRequest {
+            request_id: id.to_string(),
+            decision: ApprovalDecisionType::Approved.into(),
+            decided_by: "teamless".to_string(),
+            reason: String::new(),
+        });
+        req.extensions_mut().insert(verified_caller(None));
+
+        let err = service.decide(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn caller_may_act_on_tenancy_matrix() {
+        // Same-tenant match / mismatch is mode-independent.
+        assert!(caller_may_act_on(
+            &verified_caller(Some("t")),
+            Some("t"),
+            TenancyMode::Tenanted
+        ));
+        assert!(!caller_may_act_on(
+            &verified_caller(Some("t")),
+            Some("u"),
+            TenancyMode::Untenanted
+        ));
+        // Team-less caller vs tenanted approval: permissive only when untenanted.
+        assert!(caller_may_act_on(
+            &verified_caller(None),
+            Some("t"),
+            TenancyMode::Untenanted
+        ));
+        assert!(!caller_may_act_on(
+            &verified_caller(None),
+            Some("t"),
+            TenancyMode::Tenanted
+        ));
+        // Untenanted approval stays permissive in either mode.
+        assert!(caller_may_act_on(
+            &verified_caller(Some("t")),
+            None,
+            TenancyMode::Tenanted
+        ));
+        assert!(caller_may_act_on(&verified_caller(None), None, TenancyMode::Tenanted));
     }
 
     #[tokio::test]
