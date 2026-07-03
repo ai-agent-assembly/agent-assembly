@@ -26,6 +26,7 @@ use crate::registry::convert::{proto_agent_id_to_key, validate_proto_agent_id};
 use crate::registry::store::AgentRecord;
 use crate::registry::token::{generate_credential_token, validate_token};
 use crate::registry::{AgentRegistry, AgentStatus, LineageError, OrphanMode, RegistryError, SuspendReason};
+use crate::service::TenancyMode;
 
 /// Default heartbeat interval returned to agents at registration (seconds).
 const DEFAULT_HEARTBEAT_INTERVAL_SEC: i64 = 30;
@@ -217,6 +218,11 @@ pub struct AgentLifecycleServiceImpl {
     /// process-local [`InMemoryChallengeStore`]; a horizontally-scaled gateway
     /// injects a shared backend via [`Self::with_challenge_store`].
     challenges: Arc<dyn ChallengeStoreLike>,
+    /// Deployment tenancy posture (AAASM-4032). Defaults to
+    /// [`TenancyMode::Untenanted`] so OSS/single-tenant deployments register
+    /// team-less agents exactly as before; in [`TenancyMode::Tenanted`],
+    /// `Register` rejects an agent that carries no `team_id`.
+    tenancy_mode: TenancyMode,
 }
 
 impl AgentLifecycleServiceImpl {
@@ -229,6 +235,7 @@ impl AgentLifecycleServiceImpl {
             audit_seq: Arc::new(AtomicU64::new(0)),
             audit_last_hash: Arc::new(Mutex::new([0u8; 32])),
             challenges: Arc::new(InMemoryChallengeStore::default()),
+            tenancy_mode: TenancyMode::default(),
         }
     }
 
@@ -244,6 +251,7 @@ impl AgentLifecycleServiceImpl {
             audit_seq: Arc::new(AtomicU64::new(0)),
             audit_last_hash: Arc::new(Mutex::new([0u8; 32])),
             challenges: Arc::new(InMemoryChallengeStore::default()),
+            tenancy_mode: TenancyMode::default(),
         }
     }
 
@@ -265,6 +273,16 @@ impl AgentLifecycleServiceImpl {
     /// registration fails closed.
     pub fn with_challenge_store(mut self, challenges: Arc<dyn ChallengeStoreLike>) -> Self {
         self.challenges = challenges;
+        self
+    }
+
+    /// Set the deployment tenancy posture (AAASM-4032).
+    ///
+    /// In [`TenancyMode::Tenanted`], `Register` rejects a team-less agent
+    /// (empty/absent `team_id`) with `FailedPrecondition`. Under the default
+    /// [`TenancyMode::Untenanted`], registration is unchanged.
+    pub fn with_tenancy_mode(mut self, mode: TenancyMode) -> Self {
+        self.tenancy_mode = mode;
         self
     }
 }
@@ -323,6 +341,17 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             .as_ref()
             .ok_or_else(|| Status::invalid_argument("missing agent_id"))?;
         validate_proto_agent_id(proto_id).map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        // AAASM-4032: in a Tenanted deployment posture, every agent MUST belong
+        // to a team. Reject a team-less registration up front (before the
+        // possession-proof challenge is consumed) so a caller cannot register an
+        // agent that would then pass every tenant's cross-tenant fallback check.
+        // Under the default Untenanted posture this guard is inert.
+        if self.tenancy_mode == TenancyMode::Tenanted && proto_id.team_id.is_empty() {
+            return Err(Status::failed_precondition(
+                "tenanted gateway: registration requires a non-empty team_id (AAASM-4032)",
+            ));
+        }
 
         if req.public_key.is_empty() {
             return Err(Status::invalid_argument("missing public_key"));
