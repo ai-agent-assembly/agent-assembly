@@ -5,6 +5,50 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-rc.3] — 2026-07-03 (pre-release)
+
+> **Not for production use.** Third **release candidate** in the v0.0.1 series
+> (patch on the `rc` channel). A large security-hardening cut; no API, ABI, or
+> wire-protocol stability commitment at `0.x.y`. `protocol/v1` unchanged.
+
+### Security
+
+- **Epic AAASM-3913** (1 High / 7 Med / 4 Low) — invalidation-subscribe caller
+  binding, dashboard REST-poll terminal sanitization, eBPF descendant-confinement
+  (fork/exec propagation), storage tenant-isolation, SDK fail-open hardening.
+- **Epic AAASM-3979** (2 High / 13 Med / 4 Low) — WebSocket event/alert streams
+  now tenant-isolated (fail-closed per-frame gate); tool-scoped policies now
+  actually evaluated (were dead-loaded); atomic budget reserve (TOCTOU); gateway
+  RPC deadline → fail-closed Deny; proxy host-canonicalization + plaintext DLP
+  refusal; email-scanner linearization; sandbox table/epoch caps; op-control NATS
+  boot posture; SDK codec caps + `resolve_decision` → Deny.
+- **Epic AAASM-4010** (1 High / 6 Med / 5 Low) — eBPF Layer 3 wired to the
+  privileged loaderd (was dormant in prod; validated on a real kernel); file-io
+  attach-list completed; node/python/go SDK enforce fail-closed parity; LangChain
+  co-install governance bypass fixed; aa-sandbox memory/table/instance count caps;
+  release-job GitHub Environment protection; npm OIDC Trusted Publishing; aa-api
+  `parse_agent_id` panic-DoS; tenancy-posture guard; supply-chain CI hardening.
+- **Follow-ups AAASM-4031/4032/4033/4034** — is_sensitive propagated to the audit
+  event; `TenancyMode` wired from config + tenanted registration invariant;
+  runtime→loaderd orchestration e2e (real-kernel validated); langchain-installed
+  `__getattr__` contract test.
+- **Epic AAASM-3898** — aa-auth crate extraction (leaf crate; gateway guards
+  `/admin/status`; zero-config bypass-default preserved).
+
+### Release security posture
+
+Stage-0 `/release-security-gate` (patch tier) **PASS** — see
+[`docs/release/security-signoff/v0.0.1-rc.3.md`](docs/release/security-signoff/v0.0.1-rc.3.md).
+`cargo deny check advisories` ok; 0 open CodeQL / Dependabot; no unaddressed
+Critical/High (every sweep High fixed + adversarially re-verified). Residual items
+are deployment-config (GitHub Environments / npmjs Trusted-Publisher) and tracked
+out-of-scope follow-ups.
+
+### Changed
+
+- Workspace version bumped `0.0.1-rc.2` → `0.0.1-rc.3` (all crates inherit via
+  `version.workspace = true`; `Cargo.lock` + `sonar.projectVersion` realigned).
+
 ## [0.0.1-rc.2] — 2026-06-27 (pre-release)
 
 > **Not for production use.** Second **release candidate** in the v0.0.1 series
