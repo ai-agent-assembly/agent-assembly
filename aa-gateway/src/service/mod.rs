@@ -25,6 +25,58 @@ pub enum TenancyMode {
     Tenanted,
 }
 
+impl TenancyMode {
+    /// Environment variable that selects the deployment tenancy posture at
+    /// gateway boot (AAASM-4032).
+    pub const ENV_VAR: &'static str = "AA_GATEWAY_TENANCY_MODE";
+
+    /// Resolve the tenancy posture from [`Self::ENV_VAR`].
+    ///
+    /// Accepts `tenanted` / `untenanted` case-insensitively (surrounding
+    /// whitespace ignored). An unset, empty, or unrecognised value falls back to
+    /// the [`Untenanted`](Self::Untenanted) default, so OSS/single-tenant
+    /// deployments keep zero-config behaviour.
+    pub fn from_env() -> Self {
+        match std::env::var(Self::ENV_VAR) {
+            Ok(v) => Self::parse(&v),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Parse a posture string, defaulting to [`Untenanted`](Self::Untenanted)
+    /// for anything other than an explicit `tenanted`.
+    fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "tenanted" => Self::Tenanted,
+            _ => Self::Untenanted,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tenancy_mode_tests {
+    use super::TenancyMode;
+
+    #[test]
+    fn default_is_untenanted() {
+        assert_eq!(TenancyMode::default(), TenancyMode::Untenanted);
+    }
+
+    #[test]
+    fn parse_tenanted_variants() {
+        assert_eq!(TenancyMode::parse("tenanted"), TenancyMode::Tenanted);
+        assert_eq!(TenancyMode::parse("Tenanted"), TenancyMode::Tenanted);
+        assert_eq!(TenancyMode::parse("  TENANTED  "), TenancyMode::Tenanted);
+    }
+
+    #[test]
+    fn parse_untenanted_and_unknown_fall_back_to_untenanted() {
+        assert_eq!(TenancyMode::parse("untenanted"), TenancyMode::Untenanted);
+        assert_eq!(TenancyMode::parse(""), TenancyMode::Untenanted);
+        assert_eq!(TenancyMode::parse("nonsense"), TenancyMode::Untenanted);
+    }
+}
+
 pub mod approval_service;
 pub mod audit_service;
 pub mod convert;

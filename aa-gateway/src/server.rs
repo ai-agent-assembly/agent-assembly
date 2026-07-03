@@ -15,7 +15,7 @@ use crate::registry::AgentRegistry;
 use crate::secrets::InMemorySecretsStore;
 use crate::service::{
     AgentLifecycleServiceImpl, ApprovalServiceImpl, AuditServiceImpl, PolicyServiceImpl, SecretsServiceImpl,
-    TopologyServiceImpl,
+    TenancyMode, TopologyServiceImpl,
 };
 use aa_core::{AuditEntry, AuditEventType};
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleServiceServer;
@@ -580,7 +580,11 @@ pub async fn serve_tcp(
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
         .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
-    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
+    // AAASM-4032: resolve the deployment tenancy posture once at boot and thread
+    // it through the tenancy-aware services. Default is Untenanted so OSS/single-
+    // tenant behaviour (and existing tests) are unchanged.
+    let tenancy_mode = TenancyMode::from_env();
+    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo).with_tenancy_mode(tenancy_mode);
     // AAASM-3788 — build the agent-plane auth interceptors from the shared
     // registry before it is moved into the lifecycle service. `auth` is
     // fail-closed (applied to the previously-unauthenticated services); `enrich`
@@ -603,11 +607,14 @@ pub async fn serve_tcp(
         }
     };
     let lifecycle_svc = match challenge_store {
-        Some(store) => AgentLifecycleServiceImpl::new(registry).with_challenge_store(store),
-        None => AgentLifecycleServiceImpl::new(registry),
+        Some(store) => AgentLifecycleServiceImpl::new(registry)
+            .with_challenge_store(store)
+            .with_tenancy_mode(tenancy_mode),
+        None => AgentLifecycleServiceImpl::new(registry).with_tenancy_mode(tenancy_mode),
     };
-    let approval_svc =
-        ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
+    let approval_svc = ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler)
+        .with_db_scheduler(db_scheduler)
+        .with_tenancy_mode(tenancy_mode);
     let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
 
     let addr = listen_addr.parse()?;
@@ -714,7 +721,11 @@ pub async fn serve_uds(
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
         .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
-    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
+    // AAASM-4032: resolve the deployment tenancy posture once at boot and thread
+    // it through the tenancy-aware services. Default is Untenanted so OSS/single-
+    // tenant behaviour (and existing tests) are unchanged.
+    let tenancy_mode = TenancyMode::from_env();
+    let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo).with_tenancy_mode(tenancy_mode);
     // AAASM-3788 — agent-plane auth interceptors (see serve_tcp for the
     // fail-closed vs enrich rationale). UDS is additionally protected by
     // filesystem permissions; the credential interceptor is enforced regardless.
@@ -734,11 +745,14 @@ pub async fn serve_uds(
         }
     };
     let lifecycle_svc = match challenge_store {
-        Some(store) => AgentLifecycleServiceImpl::new(registry).with_challenge_store(store),
-        None => AgentLifecycleServiceImpl::new(registry),
+        Some(store) => AgentLifecycleServiceImpl::new(registry)
+            .with_challenge_store(store)
+            .with_tenancy_mode(tenancy_mode),
+        None => AgentLifecycleServiceImpl::new(registry).with_tenancy_mode(tenancy_mode),
     };
-    let approval_svc =
-        ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
+    let approval_svc = ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler)
+        .with_db_scheduler(db_scheduler)
+        .with_tenancy_mode(tenancy_mode);
     let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
 
     tracing::info!(socket = %socket_path.display(), "starting gRPC server on UDS (per-RPC credential auth enforced)");
