@@ -462,15 +462,15 @@ impl PolicyEngine {
     }
 
     /// Directory-cascade loader that adopts a **pre-built** budget tracker —
-    /// the multi-document analogue of [`load_from_file_with_budget`].
+    /// the multi-document analogue of `load_from_file_with_budget`.
     ///
     /// The shipped `aa-gateway` binary uses this so the gateway's
     /// persistence loop (background writer + shutdown flush) owns the same
     /// `Arc<BudgetTracker>` it restored from disk, exactly as it does for the
     /// single-file path. Scope-index population and primary-doc selection are
-    /// identical to [`load_cascade_from_dir`]; only the budget-tracker
+    /// identical to `load_cascade_from_dir`; only the budget-tracker
     /// ownership differs. A directory watcher is attached for hot-reload —
-    /// see [`load_cascade_from_dir`] semantics (AAASM-3497).
+    /// see `load_cascade_from_dir` semantics (AAASM-3497).
     pub fn load_cascade_from_dir_with_budget(dir: &Path, budget: Arc<BudgetTracker>) -> Result<Self, PolicyLoadError> {
         let parsed = Self::read_cascade_dir(dir)?;
         Ok(Self::assemble_cascade(dir, parsed, budget))

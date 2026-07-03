@@ -82,7 +82,7 @@ pub use syscall::SyscallKind;
 ///
 /// Embedded from `aa-ebpf-probes/src/main.rs` at build time via `aya-build`.
 /// Contains kprobes for openat, read, write, unlink, and rename syscalls.
-/// Pass this slice to [`aya::Ebpf::load`] to obtain a handle to all programs
+/// Pass this slice to `aya::Ebpf::load` to obtain a handle to all programs
 /// in the probe crate.
 ///
 /// Only meaningful on Linux — on other platforms this constant is absent.
@@ -96,7 +96,7 @@ pub static AA_FILE_IO_BPF: &[u8] = aya::include_bytes_aligned!(concat!(
 ///
 /// Embedded from `aa-ebpf-probes/src/exec_probes.rs` at build time.
 /// Contains two programs: `handle_sched_process_exec`, `handle_sched_process_exit`.
-/// Pass this slice to [`aya::Ebpf::load`] to obtain a handle.
+/// Pass this slice to `aya::Ebpf::load` to obtain a handle.
 ///
 /// Only meaningful on Linux — on other platforms this constant is absent.
 #[cfg(target_os = "linux")]
@@ -109,7 +109,7 @@ pub static AA_EXEC_BPF: &[u8] = aya::include_bytes_aligned!(concat!(
 ///
 /// Embedded from `aa-ebpf-probes/src/ssl_probes.rs` at build time.
 /// Contains three programs: `ssl_write`, `ssl_read_entry`, `ssl_read_exit`.
-/// Pass this slice to [`aya::Ebpf::load`] to obtain a handle.
+/// Pass this slice to `aya::Ebpf::load` to obtain a handle.
 ///
 /// Only meaningful on Linux — on other platforms this constant is absent.
 #[cfg(target_os = "linux")]
@@ -123,7 +123,7 @@ pub static AA_TLS_BPF: &[u8] = aya::include_bytes_aligned!(concat!(
 ///
 /// Embedded from `aa-ebpf-probes/src/syscall_guard.rs` at build time.
 /// Contains one ENFORCING program: `aa_syscall_guard` at
-/// `raw_syscalls/sys_enter`. Pass this slice to [`aya::Ebpf::load`] to obtain
+/// `raw_syscalls/sys_enter`. Pass this slice to `aya::Ebpf::load` to obtain
 /// a handle.
 ///
 /// Only meaningful on Linux — on other platforms this constant is absent.

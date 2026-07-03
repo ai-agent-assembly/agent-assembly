@@ -105,7 +105,7 @@ impl PolicyServiceImpl {
     /// Create a new service backed by the given policy engine and audit channel.
     ///
     /// `initial_hash` should be the `entry_hash` of the last persisted audit entry
-    /// (obtained via [`AuditWriter::read_last_hash`]) so the hash chain is maintained
+    /// (obtained via `AuditWriter::read_last_hash`) so the hash chain is maintained
     /// across process restarts. Pass `[0u8; 32]` for a fresh chain.
     pub fn new(
         engine: Arc<PolicyEngine>,
@@ -275,7 +275,7 @@ impl PolicyServiceImpl {
         self
     }
 
-    /// Attach an [`OpsRegistry`] for in-flight operation tracking (AAASM-1422).
+    /// Attach an `OpsRegistry` for in-flight operation tracking (AAASM-1422).
     ///
     /// When present, every `check_action` call ingests an op keyed by
     /// `"{trace_id}:{span_id}"` and transitions it on the engine decision:
@@ -286,7 +286,7 @@ impl PolicyServiceImpl {
         self
     }
 
-    /// Attach an [`OpControlPublisher`] for the SDK return-channel (AAASM-1653).
+    /// Attach an `OpControlPublisher` for the SDK return-channel (AAASM-1653).
     ///
     /// When present, [`PolicyService::op_control_stream`] subscribes to the
     /// publisher and forwards every envelope whose `agent_id` matches the
@@ -294,7 +294,7 @@ impl PolicyServiceImpl {
     /// publisher attached, subscription requests are rejected with
     /// `Status::unavailable("op control channel not configured")`.
     ///
-    /// [`OpControlPublisher`]: crate::ops::OpControlPublisher
+    /// `OpControlPublisher`: crate::ops::OpControlPublisher
     pub fn with_ops_publisher(mut self, publisher: SharedOpControlPublisher) -> Self {
         self.ops_publisher = Some(publisher);
         self
@@ -1612,7 +1612,7 @@ impl PolicyService for PolicyServiceImpl {
 
     /// AAASM-1653: gateway → SDK push channel for op-lifecycle signals.
     ///
-    /// Subscribes the caller to the configured [`OpControlPublisher`] and
+    /// Subscribes the caller to the configured `OpControlPublisher` and
     /// forwards every envelope whose `agent_id` matches the request's
     /// `agent_id`. The stream stays open until either the client cancels
     /// (`Closed` from the broadcast receiver) or the publisher is dropped.
@@ -1634,7 +1634,7 @@ impl PolicyService for PolicyServiceImpl {
     /// a credential-less peer could subscribe with an arbitrary triple and read
     /// another tenant's pause/resume/terminate signals + op_ids. The check is
     /// skipped only when no registry is attached (test fixtures / untenanted
-    /// deployments), mirroring [`validate_credential_token`].
+    /// deployments), mirroring `validate_credential_token`.
     async fn op_control_stream(
         &self,
         request: Request<OpControlSubscribeRequest>,

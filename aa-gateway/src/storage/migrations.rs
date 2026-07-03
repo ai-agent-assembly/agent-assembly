@@ -5,7 +5,7 @@
 //! (production). Migration files live in `aa-gateway/migrations/` and are
 //! embedded into the binary at compile time. Re-running an already-applied
 //! migration is a no-op (idempotent), and a failed migration surfaces as
-//! [`StorageError::MigrationFailed`].
+//! `StorageError`.
 //!
 //! The wiring of [`run_migrations`] into `local_mode.rs` / `remote_mode.rs`
 //! is owned by Epic 18 Story S-I (AAASM-1590); when an instance of
@@ -23,14 +23,14 @@ use super::error::{StorageError, StorageResult};
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// Apply `migrator` against `conn`, mapping any driver error to
-/// [`StorageError::MigrationFailed`].
+/// `StorageError`.
 ///
 /// Kept `pub(crate)` so tests can drive the runner with fixture migrators
 /// (good and bad) without leaking `sqlx` types onto the public surface.
 ///
 /// # Errors
 ///
-/// Returns [`StorageError::MigrationFailed`] when a migration fails to
+/// Returns `StorageError` when a migration fails to
 /// apply, the checksum verification fails, or the connection cannot be
 /// acquired.
 pub(crate) async fn apply<'a, A>(migrator: &Migrator, conn: A) -> StorageResult<()>
@@ -53,7 +53,7 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`StorageError::MigrationFailed`] when any migration fails to
+/// Returns `StorageError` when any migration fails to
 /// apply or verify.
 pub async fn run_migrations<'a, A>(conn: A) -> StorageResult<()>
 where

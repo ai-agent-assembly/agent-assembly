@@ -319,7 +319,7 @@ pub enum ApprovalConvertError {
 }
 
 /// Convert a proto [`DecideRequest`] into the core types needed to call
-/// [`ApprovalQueue::decide`].
+/// `ApprovalQueue::decide`.
 pub fn decide_request_to_core(
     req: &DecideRequest,
 ) -> Result<(ApprovalRequestId, ApprovalDecision), ApprovalConvertError> {

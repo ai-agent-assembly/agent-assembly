@@ -111,7 +111,7 @@ pub trait ChallengeStoreLike: Send + Sync {
 /// In-memory, process-local [`ChallengeStoreLike`] (AAASM-3866).
 ///
 /// The default store: correct for single-replica / dev deployments and for
-/// tests. The backing map lives behind an [`Arc`] so cheap clones share one
+/// tests. The backing map lives behind an `Arc` so cheap clones share one
 /// backend — modelling, within a single process, the "one shared store fronted
 /// by N replicas" topology a production [`ChallengeStoreLike`] must support. For
 /// an actually cross-process shared store, inject the Redis-backed

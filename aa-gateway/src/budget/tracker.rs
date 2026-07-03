@@ -230,7 +230,7 @@ impl BudgetTracker {
     /// Create a tracker pre-loaded with persisted state that sends alerts on an
     /// externally-owned channel.
     ///
-    /// Combines [`with_state`] (restoring prior spend) with [`new_with_alert_sender`]
+    /// Combines `with_state` (restoring prior spend) with `new_with_alert_sender`
     /// (sharing a broadcast channel created upstream).
     pub fn with_state_and_alert_sender(
         pricing: PricingTable,
@@ -696,7 +696,7 @@ impl BudgetTracker {
     /// AAASM-3986 — atomically check the agent's (and its ancestors') budget and,
     /// when there is headroom for `amount`, commit that spend across the agent,
     /// its ancestors, and the team / org / global tiers — all under the same
-    /// per-ancestor lock set used by [`check_and_decrement`].
+    /// per-ancestor lock set used by `check_and_decrement`.
     ///
     /// This closes the check→record TOCTOU in the live LLM-call path. The
     /// previous flow read accumulated spend (Stage 7) and only recorded it

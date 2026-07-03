@@ -115,7 +115,7 @@ fn mcp_unparseable_response_bytes() -> Vec<u8> {
 /// The running proxy server.
 ///
 /// Create via [`ProxyServer::new`], then drive the accept loop with
-/// [`ProxyServer::run`]. Internally wrapped in [`Arc`] so connection
+/// [`ProxyServer::run`]. Internally wrapped in `Arc` so connection
 /// tasks can share the TLS context and interceptor.
 pub struct ProxyServer {
     config: ProxyConfig,

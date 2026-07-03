@@ -1,7 +1,7 @@
-//! Connection settings consumed by [`PostgresBackend::connect`](super::postgres::PostgresBackend::connect).
+//! Connection settings consumed by `PostgresBackend`.
 //!
 //! Lives inside `aa-gateway::storage` so the PostgreSQL backend can be wired
-//! end-to-end before Epic 18 S-H lands the unified [`StorageConfig`]. Once
+//! end-to-end before Epic 18 S-H lands the unified `StorageConfig`. Once
 //! S-H ships, the canonical type moves to `aa-core::config` and this module
 //! is expected to re-export it.
 
@@ -12,8 +12,8 @@ use aa_core::config::TimescaleConfig;
 pub struct PostgresConfig {
     /// Database URL (e.g. `postgres://user:pass@host:5432/db`).
     ///
-    /// `None` means the operator did not provide one; [`PostgresBackend::connect`]
-    /// surfaces a [`StorageError::ConnectionFailed`] mentioning
+    /// `None` means the operator did not provide one; `PostgresBackend`
+    /// surfaces a `StorageError` mentioning
     /// `AAASM_DATABASE_URL` so the missing-config path is obvious.
     pub database_url: Option<String>,
     /// Upper bound on connection-pool size.
@@ -23,7 +23,7 @@ pub struct PostgresConfig {
     /// Seconds before `acquire` from the pool times out.
     pub connect_timeout_secs: u64,
     /// TimescaleDB-specific knobs. `enabled = false` skips the hypertable
-    /// setup step in [`PostgresBackend::apply_timescaledb_setup`] (Epic 18
+    /// setup step in `PostgresBackend` (Epic 18
     /// S-D #3); see [`aa_core::config::TimescaleConfig`].
     pub timescaledb: TimescaleConfig,
 }

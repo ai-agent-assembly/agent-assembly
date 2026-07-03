@@ -3,7 +3,7 @@
 //! The privileged `aa-ebpf-loaderd` control socket is owner-only (`0600`), but a
 //! peer-credential check is defence-in-depth: it makes the trust boundary
 //! explicit and testable and rejects any connection whose process UID does not
-//! match the UID the daemon itself runs as. Because [`dispatch`] performs no
+//! match the UID the daemon itself runs as. Because `dispatch` performs no
 //! caller authentication of its own, the socket permission was previously the
 //! *entire* trust boundary; under a permissive daemon umask there is a window
 //! where the `0600` mode is not yet applied (closed separately by the umask-

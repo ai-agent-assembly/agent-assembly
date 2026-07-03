@@ -18,7 +18,7 @@
 //! ## Value-type ownership
 //!
 //! The storage layer defines its own value types ([`AuditEvent`],
-//! [`AgentRecord`], [`PolicyVersion`], …) rather than reusing the gateway's
+//! `AgentRecord`, [`PolicyVersion`], …) rather than reusing the gateway's
 //! richer runtime structs. Keeping the two sides separate prevents the
 //! storage schema from drifting whenever a runtime type grows new fields.
 

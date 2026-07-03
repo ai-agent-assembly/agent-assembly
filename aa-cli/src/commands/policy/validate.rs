@@ -14,7 +14,7 @@ pub struct ValidateArgs {
 
 /// Execute the `aasm policy validate` command.
 ///
-/// Validates the policy YAML file locally using [`PolicyValidator::from_yaml`].
+/// Validates the policy YAML file locally using `aa_gateway::policy::PolicyValidator::from_yaml`.
 /// Exits 0 if valid, 1 if invalid with error details printed to stderr.
 pub fn run(args: ValidateArgs) -> ExitCode {
     let yaml = match std::fs::read_to_string(&args.file) {

@@ -368,7 +368,7 @@ impl AgentRegistry {
     }
 
     /// Remove an agent from the registry. Returns the removed record and a list of
-    /// [`OrphanEffect`]s describing what happened to each descendant under `mode`.
+    /// `OrphanEffect`s describing what happened to each descendant under `mode`.
     ///
     /// Also removes any associated control stream sender.
     pub fn deregister(
@@ -782,7 +782,7 @@ impl AgentRegistry {
     }
 
     /// Deregister any active agent whose age (now_secs - registered_at) exceeds the
-    /// maximum configured for its team via [`set_team_max_age`].
+    /// maximum configured for its team via `set_team_max_age`.
     ///
     /// Returns the agent keys of every agent that was force-deregistered so callers
     /// can emit [`aa_core::AuditEventType::AgentForceDeregistered`] events.

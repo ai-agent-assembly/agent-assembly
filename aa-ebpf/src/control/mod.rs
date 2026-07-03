@@ -12,7 +12,7 @@
 //! reach the daemon to detach the probes (AAASM-3561 AC #2).
 //!
 //! The wire protocol lives in [`protocol`]; framing in [`codec`]; the privileged
-//! server in [`server`] (Linux only); the client connector in [`client`].
+//! server in `server` (Linux only); the client connector in [`client`].
 
 pub mod codec;
 pub mod protocol;

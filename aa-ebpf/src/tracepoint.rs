@@ -40,7 +40,7 @@ impl TracepointManager {
     ///
     /// # Arguments
     ///
-    /// * `bpf` — live [`Ebpf`] handle from loading [`crate::AA_EXEC_BPF`].
+    /// * `bpf` — live `Ebpf` handle from loading [`crate::AA_EXEC_BPF`].
     #[cfg(target_os = "linux")]
     pub fn attach(bpf: &mut Ebpf) -> Result<Self, EbpfError> {
         use aya::programs::TracePoint;

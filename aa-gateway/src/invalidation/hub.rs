@@ -190,7 +190,7 @@ impl InvalidationHub {
 
     /// Fan an `ApprovalResolved` event out to every connected Assembly.
     ///
-    /// Reuses the same push channel as [`broadcast_policy_invalidated`]: a
+    /// Reuses the same push channel as `broadcast_policy_invalidated`: a
     /// blocked agent that subscribed (via an `ApprovalSink`) is woken the
     /// instant a human reviewer's verdict is recorded, instead of polling.
     /// `request_id` identifies the resolved approval request; `decision` is

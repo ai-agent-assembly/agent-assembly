@@ -16,7 +16,7 @@
 //!
 //! This module closes that gap: when the eBPF layer is active the runtime
 //! connects to the loaderd control socket as an unprivileged client
-//! ([`aa_ebpf::control::client::LoaderControlClient`]) and asks the daemon to
+//! (`aa_ebpf::control::client::LoaderControlClient`) and asks the daemon to
 //! load the probe sets, push the sensitive-path map, and (opt-in) load the
 //! syscall guard with its policy-derived allowlist. No BPF handle or fd ever
 //! crosses the boundary — only typed control messages.
