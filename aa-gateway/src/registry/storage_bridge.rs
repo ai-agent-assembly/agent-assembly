@@ -1,4 +1,4 @@
-//! Conversion between the runtime `AgentRecord`(super::store::AgentRecord)
+//! Conversion between the runtime `AgentRecord`
 //! and the durable [`storage::AgentRecord`](crate::storage::AgentRecord).
 //!
 //! The two records are intentionally different shapes (see

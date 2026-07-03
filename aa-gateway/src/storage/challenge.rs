@@ -10,7 +10,7 @@
 //! [`AgentLifecycleServiceImpl::with_challenge_store`](crate::service::AgentLifecycleServiceImpl::with_challenge_store)
 //! so any replica can issue and any replica can consume. It reuses the gateway's
 //! existing optional `redis` dependency (the same one behind
-//! `RedisPolicyCache`(super::cache::RedisPolicyCache)); no new dependency is
+//! `RedisPolicyCache`); no new dependency is
 //! added, and like the policy cache it is gated behind the `redis-cache` Cargo
 //! feature. The `redis` driver is confined to the `storage` module per the
 //! driver-isolation rule (see [`super`]).
@@ -81,7 +81,7 @@ impl RedisChallengeStore {
     ///
     /// Returns `StorageError` when `config.url` is `None`,
     /// the URL cannot be parsed, or the manager cannot complete its initial
-    /// handshake. Mirrors `RedisPolicyCache`(super::cache::RedisPolicyCache::connect)
+    /// handshake. Mirrors `RedisPolicyCache`
     /// so both shared stores share one connection convention.
     pub async fn connect(config: &RedisConfig) -> StorageResult<Self> {
         let url = config.url.as_deref().ok_or_else(|| {

@@ -25,7 +25,7 @@ use super::{PostgresBackend, PostgresConfig, SqliteBackend, SqliteConfig, Storag
 ///
 /// # Errors
 ///
-/// Surfaces any `StorageError`(super::StorageError) raised by the
+/// Surfaces any `StorageError` raised by the
 /// underlying `SqliteBackend::open` or `migrate` calls — typically
 /// `ConnectionFailed` (bad path / permissions) or `MigrationFailed`
 /// (schema apply error).

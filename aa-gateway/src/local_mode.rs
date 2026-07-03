@@ -215,7 +215,7 @@ pub enum LocalModeError {
     /// Distinct from [`LocalModeError::Storage`] so the underlying
     /// `sqlx::Error` chain stays intact in the existing variant while
     /// this one carries the richer
-    /// `StorageError`(crate::storage::StorageError) surface introduced
+    /// `StorageError` surface introduced
     /// by Epic 18 Story S-I.
     #[error("storage backend error at {path}: {source}", path = path.display())]
     StorageBackend {

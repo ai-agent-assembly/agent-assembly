@@ -1,6 +1,6 @@
 //! Cross-process op-control delivery over a NATS subject (AAASM-3883).
 //!
-//! `OpControlPublisher`(super::OpControlPublisher) is an **in-process**
+//! `OpControlPublisher` is an **in-process**
 //! `tokio::sync::broadcast`. In the shipped product the operator halt endpoints
 //! (`AppState.ops_registry`, aa-api-server process) and the gRPC
 //! `PolicyService.op_control_stream` that runtimes subscribe to (aa-gateway
@@ -24,7 +24,7 @@
 //!   (replaying everything still within retention, so a halt published while this
 //!   gateway had no consumer attached is still delivered), and forwards each received
 //!   envelope into the gateway's in-process
-//!   `OpControlPublisher`(super::OpControlPublisher) — acking it — so the existing
+//!   `OpControlPublisher` — acking it — so the existing
 //!   `op_control_stream` filtering / reserved-key matching delivers it to runtimes
 //!   unchanged.
 //!

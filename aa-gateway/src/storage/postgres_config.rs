@@ -1,4 +1,4 @@
-//! Connection settings consumed by `PostgresBackend`(super::postgres::PostgresBackend::connect).
+//! Connection settings consumed by `PostgresBackend`.
 //!
 //! Lives inside `aa-gateway::storage` so the PostgreSQL backend can be wired
 //! end-to-end before Epic 18 S-H lands the unified `StorageConfig`. Once

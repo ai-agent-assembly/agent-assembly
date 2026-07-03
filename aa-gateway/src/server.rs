@@ -301,7 +301,7 @@ fn setup_op_control() -> crate::ops::SharedOpControlPublisher {
 /// Mirrors [`PolicyCache::from_config_async`](crate::storage::PolicyCache::from_config_async):
 /// when the shared Redis cache backend is enabled **and** the `redis-cache`
 /// feature is compiled in, connect a replica-shared
-/// `RedisChallengeStore`(crate::storage::RedisChallengeStore) so a
+/// `RedisChallengeStore` so a
 /// multi-replica gateway can issue a registration nonce on one replica and
 /// consume it on another. Returns `None` when Redis is disabled, the feature is
 /// not built in, or the connection fails — the caller then keeps the in-memory

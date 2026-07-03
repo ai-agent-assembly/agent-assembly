@@ -28,9 +28,9 @@ pub trait StorageBackend: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// - `StorageError`(super::StorageError::QueryFailed)
+    /// - `StorageError`
     ///   when the backend rejects the write.
-    /// - `StorageError`(super::StorageError::ConnectionFailed)
+    /// - `StorageError`
     ///   when the connection is lost.
     async fn append_audit_event(&self, event: &AuditEvent) -> StorageResult<()>;
 
@@ -38,7 +38,7 @@ pub trait StorageBackend: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// - `StorageError`(super::StorageError::QueryFailed)
+    /// - `StorageError`
     ///   when the filter is invalid for the backend or the query fails.
     async fn query_audit_events(&self, filter: AuditFilter) -> StorageResult<Vec<AuditEvent>>;
 
@@ -53,9 +53,9 @@ pub trait StorageBackend: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// - `StorageError`(super::StorageError::Conflict)
+    /// - `StorageError`
     ///   when an optimistic-concurrency check fails.
-    /// - `StorageError`(super::StorageError::QueryFailed)
+    /// - `StorageError`
     ///   on backend failure.
     async fn upsert_agent(&self, record: AgentRecord) -> StorageResult<()>;
 
@@ -64,8 +64,8 @@ pub trait StorageBackend: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns `Ok(None)` for unknown ids; only backend failure surfaces
-    /// as `StorageError`(super::StorageError::QueryFailed) /
-    /// `StorageError`(super::StorageError::ConnectionFailed).
+    /// as `StorageError` /
+    /// `StorageError`.
     async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>>;
 
     /// Return all agent records matching `filter`, paged per the filter limits.
@@ -79,7 +79,7 @@ pub trait StorageBackend: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// - `StorageError`(super::StorageError::NotFound)
+    /// - `StorageError`
     ///   when no record matches.
     async fn delete_agent(&self, id: &AgentId) -> StorageResult<()>;
 
@@ -91,7 +91,7 @@ pub trait StorageBackend: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// - `StorageError`(super::StorageError::Conflict)
+    /// - `StorageError`
     ///   if a same-name, same-content version already exists and the
     ///   backend rejects the duplicate.
     async fn save_policy(&self, doc: PolicyDocument) -> StorageResult<PolicyVersion>;
@@ -101,7 +101,7 @@ pub trait StorageBackend: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns `Ok(None)` for unknown names; only backend failure surfaces
-    /// as a `StorageError`(super::StorageError).
+    /// as a `StorageError`.
     async fn get_active_policy(&self, name: &str) -> StorageResult<Option<PolicyDocument>>;
 
     /// List all stored versions of `name` (metadata only).
@@ -116,7 +116,7 @@ pub trait StorageBackend: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// - `StorageError`(super::StorageError::NotFound)
+    /// - `StorageError`
     ///   if `(name, version)` does not exist.
     async fn rollback_policy(&self, name: &str, version: u32) -> StorageResult<()>;
 
@@ -141,7 +141,7 @@ pub trait StorageBackend: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// - `StorageError`(super::StorageError::MigrationFailed)
+    /// - `StorageError`
     ///   when a migration fails to apply or verify.
     async fn migrate(&self) -> StorageResult<()>;
 
@@ -153,9 +153,9 @@ pub trait StorageBackend: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// - `StorageError`(super::StorageError::RetentionError)
+    /// - `StorageError`
     ///   on a non-fatal retention failure.
-    /// - `StorageError`(super::StorageError::QueryFailed)
+    /// - `StorageError`
     ///   on backend failure during the run.
     async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats>;
 

@@ -108,7 +108,7 @@ impl OpControlPublisher {
     /// (AAASM-3881).
     ///
     /// Routed to the subscriber whose composite id matches `agent_id`, exactly
-    /// like `publish`(Self::publish), but under the server-side reserved key
+    /// like `publish`, but under the server-side reserved key
     /// the runtime always consults (AAASM-3873). Because the op-id is derived
     /// from the agent identity the gateway knows — not from the agent-supplied
     /// `trace_id` — the resulting halt cannot be evaded by an absent or forged

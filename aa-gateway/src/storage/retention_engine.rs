@@ -95,7 +95,7 @@ impl RetentionEngine {
     ///
     /// # Errors
     ///
-    /// Surfaces any `StorageError`(super::StorageError) returned by
+    /// Surfaces any `StorageError` returned by
     /// [`apply_retention`](StorageBackend::apply_retention).
     pub async fn run_once(&self) -> StorageResult<RetentionStats> {
         let policy = self.config.load().to_policy();
@@ -128,7 +128,7 @@ impl RetentionEngine {
     ///
     /// The task loops until `shutdown` is cancelled: on each iteration it
     /// waits until the next scheduled instant, invokes
-    /// `run_once`(Self::run_once), logs any error and continues (one
+    /// `run_once`, logs any error and continues (one
     /// transient failure does not kill the loop).
     ///
     /// # Errors

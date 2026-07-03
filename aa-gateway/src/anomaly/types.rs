@@ -97,7 +97,7 @@ impl AnomalyResponse {
 /// agent behavior.
 ///
 /// Carries the anomaly classification, the chosen response action, and enough
-/// context to populate an `AlertTriggered`(proto) message once the event bus
+/// context to populate an `AlertTriggered` message once the event bus
 /// (AAASM-141) is wired up.
 #[derive(Debug, Clone)]
 pub struct AnomalyEvent {
