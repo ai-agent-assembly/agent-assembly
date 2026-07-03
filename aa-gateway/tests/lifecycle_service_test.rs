@@ -119,6 +119,30 @@ async fn start_server_with_engine(
     (addr, registry, engine)
 }
 
+/// AAASM-4032: start a server whose lifecycle service runs under an explicit
+/// tenancy posture, so the registration invariant can be exercised.
+async fn start_server_with_tenancy(mode: aa_gateway::service::TenancyMode) -> (SocketAddr, Arc<AgentRegistry>) {
+    let registry = Arc::new(AgentRegistry::new());
+    let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_tenancy_mode(mode);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let registry_clone = Arc::clone(&registry);
+    tokio::spawn(async move {
+        let _reg = registry_clone;
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        Server::builder()
+            .add_service(AgentLifecycleServiceServer::new(service))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    (addr, registry)
+}
+
 // ── Full lifecycle test ────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1203,6 +1227,104 @@ async fn register_proof_over_a_different_value_than_the_issued_nonce_is_rejected
         .unwrap_err();
 
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
+}
+
+// ── AAASM-4032: tenanted registration invariant ──────────────────────────────
+//
+// Under the default Untenanted posture, a team-less agent registers exactly as
+// before. Under Tenanted, registration requires a non-empty team_id — a team-
+// less agent is rejected with FailedPrecondition, while an agent that carries a
+// team registers normally.
+
+/// Build a well-formed RegisterRequest for `agent_id`, leaving the
+/// possession-proof fields for `register_with_challenge` to populate.
+fn register_req(agent_id: ProtoAgentId, name: &str) -> RegisterRequest {
+    RegisterRequest {
+        agent_id: Some(agent_id),
+        name: name.into(),
+        framework: "custom".into(),
+        version: "1.0.0".into(),
+        risk_tier: 0,
+        tool_names: vec![],
+        public_key: test_ed25519_public_key_hex(),
+        metadata: Default::default(),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn untenanted_default_accepts_team_less_registration() {
+    let (addr, _registry) = start_server_with_tenancy(aa_gateway::service::TenancyMode::Untenanted).await;
+    let mut client = connect(addr).await;
+
+    let resp = register_with_challenge(
+        &mut client,
+        register_req(
+            ProtoAgentId {
+                org_id: "org-untenanted".into(),
+                team_id: String::new(),
+                agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+            },
+            "team-less-untenanted",
+        ),
+    )
+    .await
+    .expect("untenanted posture must accept a team-less agent")
+    .into_inner();
+
+    assert!(!resp.credential_token.is_empty());
+    assert_eq!(resp.team_id, None, "team-less agent normalizes team_id to None");
+}
+
+#[tokio::test]
+async fn tenanted_rejects_team_less_registration() {
+    let (addr, _registry) = start_server_with_tenancy(aa_gateway::service::TenancyMode::Tenanted).await;
+    let mut client = connect(addr).await;
+
+    let status = register_with_challenge(
+        &mut client,
+        register_req(
+            ProtoAgentId {
+                org_id: "org-tenanted".into(),
+                team_id: String::new(),
+                agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+            },
+            "team-less-tenanted",
+        ),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        status.message().contains("team_id"),
+        "error must name the missing team_id: {}",
+        status.message()
+    );
+}
+
+#[tokio::test]
+async fn tenanted_accepts_registration_with_team() {
+    let (addr, _registry) = start_server_with_tenancy(aa_gateway::service::TenancyMode::Tenanted).await;
+    let mut client = connect(addr).await;
+
+    let resp = register_with_challenge(
+        &mut client,
+        register_req(
+            ProtoAgentId {
+                org_id: "org-tenanted".into(),
+                team_id: "team-alpha".into(),
+                agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+            },
+            "teamed-tenanted",
+        ),
+    )
+    .await
+    .expect("tenanted posture must accept an agent that carries a team")
+    .into_inner();
+
+    assert!(!resp.credential_token.is_empty());
+    assert_eq!(resp.team_id, Some("team-alpha".into()));
 }
 
 #[tokio::test]
