@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aa-api"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-auth",
  "aa-core",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "aa-auth"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "argon2",
  "axum",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "aa-cache"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-cache",
  "aa-core",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "aa-cli"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "aa-devtool",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "aa-core"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "aa-security",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-devtool-contract",
  "async-trait",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-claude-code"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-devtool-contract",
  "async-trait",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-codex"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-devtool-contract",
  "async-trait",
@@ -198,14 +198,14 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-contract"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
 ]
 
 [[package]]
 name = "aa-devtool-copilot"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-devtool-contract",
  "async-trait",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-saas"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-devtool-contract",
  "async-trait",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-sample-myeditor"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-devtool-contract",
  "async-trait",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "aa-devtool-windsurf"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-devtool-contract",
  "async-trait",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "aa-ebpf"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "aa-ebpf-common",
@@ -280,11 +280,11 @@ dependencies = [
 
 [[package]]
 name = "aa-ebpf-common"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 
 [[package]]
 name = "aa-gateway"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-auth",
  "aa-core",
@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "aa-integration-tests"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-api",
  "aa-core",
@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "aa-proto"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "prost",
  "tonic",
@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "aa-proxy"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "aa-proto",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "aa-runtime"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "aa-ebpf",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "aa-sandbox"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "tempfile",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "aa-sdk-client"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-proto",
  "aa-security",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "aa-security"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aho-corasick",
  "criterion",
@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "aa-storage"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "async-trait",
@@ -542,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "aa-storage-memory"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "aa-storage",
@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "aa-storage-postgres"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "aa-storage",
@@ -574,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "aa-storage-redis"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "aa-storage",
@@ -592,7 +592,7 @@ dependencies = [
 
 [[package]]
 name = "aa-storage-sqlite-buffer"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "async-trait",
@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "aa-wasm"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "wasm-bindgen",
@@ -1869,7 +1869,7 @@ dependencies = [
 
 [[package]]
 name = "conformance"
-version = "0.0.1-rc.2"
+version = "0.0.1-rc.3"
 dependencies = [
  "aa-core",
  "aa-proto",
