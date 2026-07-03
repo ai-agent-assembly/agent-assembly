@@ -7,14 +7,14 @@ repository.workspace = true
 description = "Control plane — policy enforcement engine and agent registry for Agent Assembly"
 
 [dependencies]
-aa-core      = { path = "../aa-core", version = "0.0.1-rc.2", features = ["serde"] }
+aa-core      = { path = "../aa-core", version = "0.0.1-rc.3", features = ["serde"] }
 # AAASM-3907: the shared HTTP auth framework (AuthConfig / ApiKeyStore /
 # JwtVerifier / RateLimiter / RequireAdmin) extracted to a leaf crate by
 # AAASM-3899. Path-only like aa-api — the gateway never publishes against it.
 aa-auth      = { path = "../aa-auth" }
-aa-security  = { path = "../aa-security", version = "0.0.1-rc.2", features = ["serde"] }
-aa-proto     = { path = "../aa-proto", version = "0.0.1-rc.2" }
-aa-runtime   = { path = "../aa-runtime", version = "0.0.1-rc.2" }
+aa-security  = { path = "../aa-security", version = "0.0.1-rc.3", features = ["serde"] }
+aa-proto     = { path = "../aa-proto", version = "0.0.1-rc.3" }
+aa-runtime   = { path = "../aa-runtime", version = "0.0.1-rc.3" }
 tokio        = { workspace = true, features = ["full"] }
 regex        = "1"
 serde        = { workspace = true }
