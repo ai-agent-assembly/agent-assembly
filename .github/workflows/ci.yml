@@ -637,12 +637,20 @@ jobs:
         working-directory: proto
       - name: Create local base branch for buf breaking check
         if: github.event_name == 'pull_request'
-        run: git fetch origin ${{ github.base_ref }}:${{ github.base_ref }}
+        # AAASM-4022: route github.base_ref through a quoted env var instead of
+        # expanding it directly into the shell command (workflow-injection
+        # hardening — the ${{ }} expansion is otherwise pasted verbatim into the
+        # run script).
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF:$BASE_REF"
       - name: Check breaking changes against base branch
         if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           buf breaking \
-            --against "../.git#branch=${{ github.base_ref }},subdir=proto"
+            --against "../.git#branch=$BASE_REF,subdir=proto"
         working-directory: proto
 
 
