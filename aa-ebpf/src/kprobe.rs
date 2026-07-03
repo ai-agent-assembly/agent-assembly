@@ -59,21 +59,15 @@ impl KprobeManager {
                 .map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
         }
 
-        // Attach all file I/O kprobe programs to their kernel functions.
-        // `aa_sys_unlink_legacy` / `aa_sys_rename_legacy` cover the legacy
-        // syscall entry points that glibc on x86_64 invokes for libc
-        // `unlink()` / `rename()` — bypassing the at-variant probes
-        // above. See AAASM-1574.
-        let probes: &[(&str, &str)] = &[
-            ("aa_sys_openat", "__x64_sys_openat"),
-            ("aa_sys_openat_ret", "__x64_sys_openat"),
-            ("aa_sys_read", "__x64_sys_read"),
-            ("aa_sys_write", "__x64_sys_write"),
-            ("aa_sys_unlink", "__x64_sys_unlinkat"),
-            ("aa_sys_unlink_legacy", "__x64_sys_unlink"),
-            ("aa_sys_rename", "__x64_sys_renameat2"),
-            ("aa_sys_rename_legacy", "__x64_sys_rename"),
-        ];
+        // Attach all file I/O kprobe programs to their kernel functions from the
+        // single authoritative target list ([`KprobeManager::KPROBE_TARGETS`]).
+        // Every observed syscall has BOTH an entry kprobe and a return
+        // kretprobe — emission happens in the kretprobe, so attaching entry
+        // probes alone yields no events (AAASM-4012). The `*_legacy` pairs cover
+        // the legacy syscall entry points that glibc on x86_64 invokes for libc
+        // `unlink()` / `rename()`, bypassing the at-variant probes. See
+        // AAASM-1574.
+        let probes = Self::KPROBE_TARGETS;
 
         let mut links: Vec<Box<dyn std::any::Any>> = Vec::with_capacity(probes.len());
 
@@ -137,17 +131,32 @@ impl KprobeManager {
         false
     }
 
-    /// The complete list of (BPF program name, kernel function) pairs that
-    /// `attach()` will load. Exposed for testing and introspection.
+    /// The complete, authoritative list of (BPF program name, kernel function)
+    /// pairs that `attach()` loads — the single source of truth shared with
+    /// [`crate::loader::FileIoLoader::attach_kprobes`] so both entry points
+    /// attach an identical probe set (AAASM-4012). Exposed for testing and
+    /// introspection.
+    ///
+    /// Each observed syscall contributes an entry kprobe **and** a return
+    /// kretprobe (`*_ret`); the event is emitted from the kretprobe, so a
+    /// missing `*_ret` silently drops all events for that syscall. The
+    /// `*_legacy` / `*_legacy_ret` pairs cover glibc's legacy `unlink(2)` /
+    /// `rename(2)` entry points on x86_64 (AAASM-1574).
     pub const KPROBE_TARGETS: &[(&str, &str)] = &[
         ("aa_sys_openat", "__x64_sys_openat"),
         ("aa_sys_openat_ret", "__x64_sys_openat"),
         ("aa_sys_read", "__x64_sys_read"),
+        ("aa_sys_read_ret", "__x64_sys_read"),
         ("aa_sys_write", "__x64_sys_write"),
+        ("aa_sys_write_ret", "__x64_sys_write"),
         ("aa_sys_unlink", "__x64_sys_unlinkat"),
+        ("aa_sys_unlink_ret", "__x64_sys_unlinkat"),
         ("aa_sys_unlink_legacy", "__x64_sys_unlink"),
+        ("aa_sys_unlink_legacy_ret", "__x64_sys_unlink"),
         ("aa_sys_rename", "__x64_sys_renameat2"),
+        ("aa_sys_rename_ret", "__x64_sys_renameat2"),
         ("aa_sys_rename_legacy", "__x64_sys_rename"),
+        ("aa_sys_rename_legacy_ret", "__x64_sys_rename"),
     ];
 }
 
@@ -173,17 +182,48 @@ mod tests {
     #[test]
     fn kprobe_targets_covers_all_file_io_syscalls() {
         let targets = KprobeManager::KPROBE_TARGETS;
-        assert_eq!(targets.len(), 8);
+        // openat/read/write/unlink(at)/rename(at2) + the two legacy syscalls,
+        // each with an entry kprobe AND a return kretprobe = 14 programs.
+        assert_eq!(targets.len(), 14);
 
         let prog_names: Vec<&str> = targets.iter().map(|(p, _)| *p).collect();
-        assert!(prog_names.contains(&"aa_sys_openat"));
-        assert!(prog_names.contains(&"aa_sys_openat_ret"));
-        assert!(prog_names.contains(&"aa_sys_read"));
-        assert!(prog_names.contains(&"aa_sys_write"));
-        assert!(prog_names.contains(&"aa_sys_unlink"));
-        assert!(prog_names.contains(&"aa_sys_unlink_legacy"));
-        assert!(prog_names.contains(&"aa_sys_rename"));
-        assert!(prog_names.contains(&"aa_sys_rename_legacy"));
+        for name in [
+            "aa_sys_openat",
+            "aa_sys_openat_ret",
+            "aa_sys_read",
+            "aa_sys_read_ret",
+            "aa_sys_write",
+            "aa_sys_write_ret",
+            "aa_sys_unlink",
+            "aa_sys_unlink_ret",
+            "aa_sys_unlink_legacy",
+            "aa_sys_unlink_legacy_ret",
+            "aa_sys_rename",
+            "aa_sys_rename_ret",
+            "aa_sys_rename_legacy",
+            "aa_sys_rename_legacy_ret",
+        ] {
+            assert!(prog_names.contains(&name), "missing probe program {name}");
+        }
+    }
+
+    #[test]
+    fn kprobe_targets_pair_every_entry_with_a_return_probe() {
+        // Every non-`_ret` entry program must have a matching `_ret` kretprobe
+        // on the same kernel function — the event is emitted from the
+        // kretprobe, so a missing pair silently drops that syscall's events
+        // (AAASM-4012).
+        let targets = KprobeManager::KPROBE_TARGETS;
+        let names: Vec<&str> = targets.iter().map(|(p, _)| *p).collect();
+        for (prog, _) in targets {
+            if !prog.ends_with("_ret") {
+                let ret = format!("{prog}_ret");
+                assert!(
+                    names.contains(&ret.as_str()),
+                    "entry probe {prog} has no paired return probe {ret}"
+                );
+            }
+        }
     }
 
     #[test]
