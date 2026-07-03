@@ -74,6 +74,22 @@ impl std::error::Error for HostFnRateLimitMarker {}
 /// a config field can follow once those call sites adopt `..Default::default()`.
 const MAX_TABLE_ELEMENTS: usize = 10_000;
 
+/// Maximum number of linear memories, tables, and instances a single store may
+/// create (AAASM-4015).
+///
+/// Wasmtime's [`ResourceLimiter`] count defaults are ~10 000 each. A hostile
+/// module can exploit those generous ceilings to *multiply* the intended
+/// per-store resource budget: many memories each get a fresh
+/// [`StoreLimits::max_bytes`] allowance, and many tables each get a fresh
+/// [`MAX_TABLE_ELEMENTS`] allowance, turning the per-item caps into an OOM-DoS.
+/// A sandboxed tool needs exactly one memory, one table, and one instance, so
+/// each count is pinned to 1 — modules declaring more are rejected at
+/// instantiation. Multi-memory is additionally gated off at validation in
+/// [`SandboxRuntime::new`] as defense in depth.
+const MAX_MEMORIES: usize = 1;
+const MAX_TABLES: usize = 1;
+const MAX_INSTANCES: usize = 1;
+
 /// Per-store resource caps enforced via [`Store::limiter`].
 ///
 /// `memory_growing` denies any grow that would push the guest above
@@ -107,6 +123,24 @@ impl ResourceLimiter for StoreLimits {
         // without the host eagerly allocating the requested slots — closing
         // the uncapped-`table.grow` OOM-DoS gap. (AAASM-3990.)
         Ok(desired <= self.max_table_elements)
+    }
+
+    // Pin the per-store memory/table/instance *counts* (AAASM-4015). Left at
+    // wasmtime's ~10 000 defaults, a hostile module could declare many memories
+    // or tables, each carrying its own `max_bytes` / `max_table_elements`
+    // allowance and thereby multiplying past the intended per-store ceiling. A
+    // sandboxed tool needs exactly one of each; exceeding these fails
+    // instantiation.
+    fn memories(&self) -> usize {
+        MAX_MEMORIES
+    }
+
+    fn tables(&self) -> usize {
+        MAX_TABLES
+    }
+
+    fn instances(&self) -> usize {
+        MAX_INSTANCES
     }
 }
 
@@ -177,6 +211,14 @@ impl SandboxRuntime {
         let mut engine_config = Config::new();
         engine_config.consume_fuel(true);
         engine_config.epoch_interruption(true);
+        // Disable the multi-memory proposal (AAASM-4015). A sandboxed tool needs
+        // exactly one linear memory; leaving multi-memory on (wasmtime's default)
+        // lets a hostile module declare many memories, each of which is a
+        // separate `StoreLimits::max_bytes` allowance — multiplying the intended
+        // per-store memory ceiling into an OOM-DoS. Gating it at validation
+        // rejects such modules before instantiation. `reference_types` stays on:
+        // funcref tables and `table.grow` (capped separately below) depend on it.
+        engine_config.wasm_multi_memory(false);
         let engine = Engine::new(&engine_config).map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         let mut linker: Linker<StoreState> = Linker::new(&engine);
         p1::add_to_linker_sync(&mut linker, |s: &mut StoreState| &mut s.wasi)
@@ -243,6 +285,24 @@ impl SandboxRuntime {
 
         let mut builder = WasiCtx::builder();
         for preopen in &self.config.preopened_dirs {
+            // Reject non-regular-file preopen targets (AAASM-4015). The
+            // wall-clock watchdog interrupts the guest by advancing the engine
+            // epoch, but it cannot preempt a guest blocked *inside* a WASI host
+            // call — e.g. a `fd_read` on a FIFO/device/socket that never yields.
+            // Validating that every preopen target is a directory or regular
+            // file (following symlinks) forbids those blocking targets up front,
+            // which is a lower-risk fix than abandoning an in-flight host call on
+            // a worker thread. `metadata` follows symlinks, so a symlink to a
+            // device resolves to the device and is rejected.
+            let metadata = std::fs::metadata(&preopen.host_path)
+                .map_err(|e| SandboxError::Wasmtime(format!("preopen {:?}: {e}", preopen.host_path)))?;
+            let file_type = metadata.file_type();
+            if !(file_type.is_dir() || file_type.is_file()) {
+                return Err(SandboxError::Wasmtime(format!(
+                    "preopen target {:?} is not a regular file or directory (FIFOs, devices, and sockets are forbidden)",
+                    preopen.host_path
+                )));
+            }
             // Least-privilege grant: read-only unless the policy explicitly
             // opted this mount into read-write. Avoids the DirPerms::all() /
             // FilePerms::all() over-grant. (AAASM-3618.)
@@ -313,10 +373,19 @@ impl SandboxRuntime {
             })
         };
 
-        let instance = self
-            .linker
-            .instantiate(&mut store, &module)
-            .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        let instance = self.linker.instantiate(&mut store, &module).map_err(|e| {
+            // An oversized *initial* linear memory trips `StoreLimits::memory_growing`
+            // during instantiation (the initial allocation is a grow from 0), which
+            // rides out through this `instantiate` error rather than the post-`call`
+            // branch below. Without this downcast such an OOM would be misclassified
+            // as a generic `Wasmtime` (→ SandboxTerminated) instead of
+            // `MemoryExhausted` (→ SandboxOomKilled). (Folded from AAASM-4020.)
+            if e.downcast_ref::<MemoryExhaustedMarker>().is_some() {
+                SandboxError::MemoryExhausted
+            } else {
+                SandboxError::Wasmtime(e.to_string())
+            }
+        })?;
         let start = instance
             .get_typed_func::<(), ()>(&mut store, "_start")
             .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
@@ -723,6 +792,148 @@ mod tests {
         assert!(
             matches!(result, Err(SandboxError::WallClockTimeout)),
             "expected SandboxError::WallClockTimeout, got {:?}",
+            result,
+        );
+    }
+
+    /// Multi-memory module (AAASM-4015): declares two linear memories. With the
+    /// multi-memory proposal disabled in the engine `Config`, wasmtime rejects
+    /// it at validation, so it never reaches instantiation — the count-multiply
+    /// OOM-DoS is closed before the module can allocate anything.
+    const MULTI_MEMORY_WAT: &str = r#"
+        (module
+          (memory 1)
+          (memory 1)
+          (func (export "_start")))
+    "#;
+
+    #[test]
+    fn run_tool_rejects_multi_memory_module() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with default caps must construct");
+        let wasm = wat::parse_str(MULTI_MEMORY_WAT).expect("multi-memory WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        // Multi-memory is gated off, so the module fails to validate.
+        assert!(
+            matches!(result, Err(SandboxError::InvalidWasm(_))),
+            "multi-memory module must be rejected at validation, got {:?}",
+            result,
+        );
+    }
+
+    /// Multi-table module (AAASM-4015): declares two funcref tables. Multiple
+    /// tables rely on the reference-types proposal (kept enabled), so this
+    /// validates but must be rejected at instantiation by the `tables()` count
+    /// cap (`MAX_TABLES == 1`).
+    const MULTI_TABLE_WAT: &str = r#"
+        (module
+          (table 1 funcref)
+          (table 1 funcref)
+          (func (export "_start")))
+    "#;
+
+    #[test]
+    fn run_tool_rejects_multi_table_module() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with default caps must construct");
+        let wasm = wat::parse_str(MULTI_TABLE_WAT).expect("multi-table WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        // The table-count cap rejects the second table at instantiation.
+        assert!(
+            matches!(result, Err(SandboxError::Wasmtime(_))),
+            "multi-table module must be rejected at instantiation, got {:?}",
+            result,
+        );
+    }
+
+    /// A module with exactly one memory and one table — the legitimate shape —
+    /// must still instantiate and run cleanly under the count caps. Guards the
+    /// caps against over-rejecting normal modules.
+    const SINGLE_MEMORY_TABLE_WAT: &str = r#"
+        (module
+          (memory 1)
+          (table 1 funcref)
+          (func (export "_start")))
+    "#;
+
+    #[test]
+    fn run_tool_allows_single_memory_and_table() {
+        let runtime =
+            SandboxRuntime::new(SandboxConfig::default()).expect("SandboxRuntime with default caps must construct");
+        let wasm = wat::parse_str(SINGLE_MEMORY_TABLE_WAT).expect("single-memory/table WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Ok(SandboxOutput { exit_code: 0 })),
+            "single memory + single table module must run cleanly, got {:?}",
+            result,
+        );
+    }
+
+    /// Preopen validation (AAASM-4015): a preopen whose host target is a FIFO
+    /// (not a directory or regular file) must be rejected up front, before the
+    /// guest can block inside a WASI host call reading it.
+    #[cfg(unix)]
+    #[test]
+    fn run_tool_rejects_non_regular_file_preopen() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let fifo = dir.path().join("pipe");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo must be spawnable");
+        assert!(status.success(), "mkfifo must create the FIFO");
+
+        let config = SandboxConfig {
+            preopened_dirs: vec![crate::policy::PreopenedDir {
+                host_path: fifo,
+                guest_path: ".".to_string(),
+                access: PreopenAccess::ReadOnly,
+            }],
+            ..Default::default()
+        };
+        let runtime = SandboxRuntime::new(config).expect("runtime must construct");
+        let wasm = wat::parse_str(SINGLE_MEMORY_TABLE_WAT).expect("WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::Wasmtime(_))),
+            "FIFO preopen target must be rejected, got {:?}",
+            result,
+        );
+    }
+
+    /// Instantiate-time OOM telemetry (folded from AAASM-4020): a module whose
+    /// *initial* linear memory already exceeds the store byte cap trips
+    /// `memory_growing` during `instantiate` (before any guest code runs). That
+    /// path must map to `MemoryExhausted` (→ SandboxOomKilled), not the generic
+    /// `Wasmtime` (→ SandboxTerminated) misclassification.
+    const OVERSIZED_INITIAL_MEMORY_WAT: &str = r#"
+        (module
+          (memory 100)
+          (func (export "_start")))
+    "#;
+
+    #[test]
+    fn run_tool_maps_instantiate_time_oom_to_memory_exhausted() {
+        // Default cap is 16 pages; a 100-page initial memory overshoots it during
+        // the instantiation-time initial allocation.
+        let runtime = SandboxRuntime::new(SandboxConfig::default())
+            .expect("SandboxRuntime with default memory cap must construct");
+        let wasm =
+            wat::parse_str(OVERSIZED_INITIAL_MEMORY_WAT).expect("oversized-initial-memory WAT fixture must parse");
+
+        let result = runtime.run_tool(&wasm, &[]);
+
+        assert!(
+            matches!(result, Err(SandboxError::MemoryExhausted)),
+            "oversized initial memory must map to MemoryExhausted at instantiate time, got {:?}",
             result,
         );
     }
