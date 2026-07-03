@@ -80,6 +80,7 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 | v0.0.1-beta.4 | v0.0.1-beta.5 (PyPI `0.0.1b5`) ✓ | v0.0.1-beta.5 ✓ | v0.0.1-beta.3 ✓ | protocol/v1 |
 | v0.0.1-rc.1 | v0.0.1-rc.1 (PyPI `0.0.1rc1`) ✓ | v0.0.1-rc.1 ✓ | v0.0.1-rc.1 ✓ | protocol/v1 |
 | v0.0.1-rc.2 | v0.0.1-rc.2 (PyPI `0.0.1rc2`) ✓ | v0.0.1-rc.2 ✓ | v0.0.1-rc.2 ✓ | protocol/v1 |
+| v0.0.1-rc.3 | v0.0.1-rc.3 (PyPI `0.0.1rc3`) ✓ | v0.0.1-rc.3 ✓ | v0.0.1-rc.3 ✓ | protocol/v1 |
 
 **Legend:**
 - ✓ Compatible — fully supported
@@ -91,6 +92,8 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 > **Note (v0.0.1-rc.1):** first release-candidate cut — a coordinated promotion to the `rc` channel across all components. `aa-runtime` v0.0.1-rc.1 pairs with python-sdk `0.0.1rc1`, node-sdk `v0.0.1-rc.1`, and go-sdk `v0.0.1-rc.1`, all `protocol/v1`-compatible. The SDK `rc.1` cuts follow this tag's `release.yml` fan-out (per the `aa-ffi-pin` SDK-coordination SOP).
 
 > **Note (v0.0.1-rc.2):** second release candidate (patch on the `rc` channel) — security-hardening + coverage cut. `aa-runtime` v0.0.1-rc.2 pairs with python-sdk `0.0.1rc2`, node-sdk `v0.0.1-rc.2`, and go-sdk `v0.0.1-rc.2`, all `protocol/v1`-compatible. SDK `rc.2` cuts follow this tag's `release.yml` fan-out.
+
+> **Note (v0.0.1-rc.3):** third release candidate (patch on the `rc` channel) — a large security-hardening cut (Epics AAASM-3913 / 3979 / 4010 + follow-ups; eBPF Layer 3 brought online). No wire-protocol change. `aa-runtime` v0.0.1-rc.3 pairs with python-sdk `0.0.1rc3`, node-sdk `v0.0.1-rc.3`, and go-sdk `v0.0.1-rc.3`, all `protocol/v1`-compatible. SDK `rc.3` cuts follow this tag's `release.yml` fan-out (per the `aa-ffi-pin` SDK-coordination SOP).
 
 ---
 
