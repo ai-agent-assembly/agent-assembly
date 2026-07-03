@@ -40,6 +40,9 @@ pub fn file_io_to_audit(event: &FileIoEvent) -> AuditEvent {
             // the syscall has only an entry hook (read / write / unlink /
             // rename — follow-up under AAASM-1425).
             latency_ms: (event.duration_ns / 1_000_000) as i64,
+            // Carry the kernel-side sensitive-path classification
+            // (AAASM-4012) through to the audit event (AAASM-4031).
+            sensitive: event.is_sensitive,
         })),
         ..AuditEvent::default()
     }
@@ -230,6 +233,30 @@ mod tests {
         let detail = audit.detail.expect("detail should be set");
         match detail {
             Detail::FileOp(ref fop) => assert_eq!(fop.latency_ms, 2),
+            _ => panic!("expected FileOp detail"),
+        }
+    }
+
+    #[test]
+    fn file_io_to_audit_propagates_sensitive_true() {
+        let mut event = make_file_io(SyscallKind::Read, "/etc/passwd");
+        event.is_sensitive = true;
+        let audit = file_io_to_audit(&event);
+        let detail = audit.detail.expect("detail should be set");
+        match detail {
+            Detail::FileOp(ref fop) => assert!(fop.sensitive),
+            _ => panic!("expected FileOp detail"),
+        }
+    }
+
+    #[test]
+    fn file_io_to_audit_propagates_sensitive_false() {
+        let event = make_file_io(SyscallKind::Read, "/tmp/ordinary.txt");
+        assert!(!event.is_sensitive);
+        let audit = file_io_to_audit(&event);
+        let detail = audit.detail.expect("detail should be set");
+        match detail {
+            Detail::FileOp(ref fop) => assert!(!fop.sensitive),
             _ => panic!("expected FileOp detail"),
         }
     }
