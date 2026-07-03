@@ -793,6 +793,7 @@ mod tests {
                 bytes: 1024,
                 source: "sdk_hook".into(),
                 latency_ms: 0,
+                sensitive: false,
             })),
         );
         let fields = unwrap_audit_fields(build_violation_payload(&ev));
@@ -871,6 +872,7 @@ mod tests {
                 bytes: 1024,
                 source: "ebpf".into(),
                 latency_ms: 42,
+                sensitive: false,
             })),
         );
         let fields = unwrap_audit_fields(build_violation_payload(&ev));

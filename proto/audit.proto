@@ -175,6 +175,11 @@ message FileOpDetail {
   // tracked under AAASM-1425. Schema lives here so the wire path is
   // ready when the kernel-side instrumentation lands.
   int64  latency_ms = 5;
+  // Whether the accessed path matched the eBPF sensitive-path classifier
+  // (AAASM-4012). `false` for SDK-hook sourced events and for paths the
+  // kernel probe did not flag. Additive field (default `false`) so events
+  // serialized before this field existed still decode.
+  bool   sensitive  = 6;
 }
 
 // NetworkCallDetail records the outcome of an outbound network request.

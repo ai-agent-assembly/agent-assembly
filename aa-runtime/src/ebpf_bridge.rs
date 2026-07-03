@@ -40,6 +40,9 @@ pub fn file_io_to_audit(event: &FileIoEvent) -> AuditEvent {
             // the syscall has only an entry hook (read / write / unlink /
             // rename — follow-up under AAASM-1425).
             latency_ms: (event.duration_ns / 1_000_000) as i64,
+            // Carry the kernel-side sensitive-path classification
+            // (AAASM-4012) through to the audit event (AAASM-4031).
+            sensitive: event.is_sensitive,
         })),
         ..AuditEvent::default()
     }
