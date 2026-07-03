@@ -40,7 +40,12 @@ fn default_log_path() -> PathBuf {
 /// Resolve the aa-proxy binary by trying, in order:
 /// 1. `which aa-proxy` (checks PATH)
 /// 2. `~/.cargo/bin/aa-proxy`
-/// 3. `./target/release/aa-proxy`
+///
+/// The former `./target/release/aa-proxy` cwd-relative fallback was dropped
+/// (AAASM-4020): resolving a binary relative to the current working directory
+/// lets whoever controls where `aasm` is invoked substitute an attacker-planted
+/// `aa-proxy`. Only trusted, absolute locations (PATH, the cargo bin dir) are
+/// honored.
 pub fn resolve_binary() -> Option<PathBuf> {
     #[cfg(unix)]
     {
@@ -59,11 +64,6 @@ pub fn resolve_binary() -> Option<PathBuf> {
         if cargo_bin.exists() {
             return Some(cargo_bin);
         }
-    }
-
-    let local = PathBuf::from("./target/release/aa-proxy");
-    if local.exists() {
-        return Some(local);
     }
 
     None
@@ -98,8 +98,8 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     let Some(binary) = resolve_binary() else {
         eprintln!(
             "error: aa-proxy binary not found.\n\
-             Install with `cargo install aa-proxy` or ensure it is on PATH, \
-             in ~/.cargo/bin, or at ./target/release/aa-proxy."
+             Install with `cargo install aa-proxy` or ensure it is on PATH \
+             or in ~/.cargo/bin."
         );
         return ExitCode::FAILURE;
     };
