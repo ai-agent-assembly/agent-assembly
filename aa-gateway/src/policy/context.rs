@@ -130,7 +130,7 @@ mod production_context_tests {
         s.parse().unwrap()
     }
 
-    /// Build an [`AgentRecord`] with the fields the graph-variable getters read;
+    /// Build an `AgentRecord` with the fields the graph-variable getters read;
     /// the rest are inert defaults. Children are linked automatically by
     /// `AgentRegistry::register`, so callers never set them here.
     #[allow(clippy::too_many_arguments)]

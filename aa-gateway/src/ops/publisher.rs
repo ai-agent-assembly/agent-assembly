@@ -3,7 +3,7 @@
 //! `OpControlPublisher` is the gateway-side broadcast point that subscribed
 //! SDK clients (via `PolicyService::OpControlStream`, AAASM-1653) receive
 //! pause / resume / terminate signals on. PR-D ships the channel + handler;
-//! PR-H wires the [`OpsRegistry`] transitions to call [`publish`] with the
+//! PR-H wires the `OpsRegistry` transitions to call `publish` with the
 //! matching signal.
 //!
 //! Implementation: a single `tokio::sync::broadcast` channel. Subscribers
@@ -51,7 +51,7 @@ pub struct OpControlEnvelope {
     /// Fleet-wide halt marker (AAASM-3881). When `true`, every subscriber
     /// receives the envelope regardless of [`agent_id`](Self::agent_id), so a
     /// global kill switch reaches all runtimes under the reserved op-id `"*"`.
-    /// Set only by [`OpControlPublisher::publish_global_halt`]; every
+    /// Set only by `OpControlPublisher`; every
     /// per-agent publish leaves it `false`.
     pub global: bool,
 }
@@ -59,8 +59,8 @@ pub struct OpControlEnvelope {
 /// Broadcast publisher for op-control signals.
 ///
 /// Wrap in `Arc` and clone-share between the policy service handler (which
-/// calls [`subscribe`]) and the OpsRegistry call sites (which call
-/// [`publish`] — wiring lands in PR-H).
+/// calls `subscribe`) and the OpsRegistry call sites (which call
+/// `publish` — wiring lands in PR-H).
 pub struct OpControlPublisher {
     tx: broadcast::Sender<OpControlEnvelope>,
     sequence: AtomicU64,
@@ -108,7 +108,7 @@ impl OpControlPublisher {
     /// (AAASM-3881).
     ///
     /// Routed to the subscriber whose composite id matches `agent_id`, exactly
-    /// like [`publish`](Self::publish), but under the server-side reserved key
+    /// like `publish`(Self::publish), but under the server-side reserved key
     /// the runtime always consults (AAASM-3873). Because the op-id is derived
     /// from the agent identity the gateway knows — not from the agent-supplied
     /// `trace_id` — the resulting halt cannot be evaded by an absent or forged

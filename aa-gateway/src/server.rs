@@ -205,8 +205,8 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
 /// is a directory.
 ///
 /// AAASM-3499 — a directory activates the multi-document Global/Org/Team/Agent
-/// cascade via [`PolicyEngine::load_cascade_from_dir_with_budget`]; a single
-/// file preserves the long-standing [`PolicyEngine::load_from_file_with_budget`]
+/// cascade via `PolicyEngine::load_cascade_from_dir_with_budget`; a single
+/// file preserves the long-standing `PolicyEngine::load_from_file_with_budget`
 /// behaviour unchanged (back-compat). Both adopt the pre-built `tracker` so the
 /// gateway's persistence loop owns the same budget state either way.
 fn load_policy_engine(
@@ -301,7 +301,7 @@ fn setup_op_control() -> crate::ops::SharedOpControlPublisher {
 /// Mirrors [`PolicyCache::from_config_async`](crate::storage::PolicyCache::from_config_async):
 /// when the shared Redis cache backend is enabled **and** the `redis-cache`
 /// feature is compiled in, connect a replica-shared
-/// [`RedisChallengeStore`](crate::storage::RedisChallengeStore) so a
+/// `RedisChallengeStore`(crate::storage::RedisChallengeStore) so a
 /// multi-replica gateway can issue a registration nonce on one replica and
 /// consume it on another. Returns `None` when Redis is disabled, the feature is
 /// not built in, or the connection fails — the caller then keeps the in-memory

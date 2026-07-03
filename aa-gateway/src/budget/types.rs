@@ -41,7 +41,7 @@ pub enum BudgetWindow {
     Duration(std::time::Duration),
 }
 
-/// Error returned by [`super::tracker::BudgetTracker::check_and_decrement`].
+/// Error returned by `super::tracker::BudgetTracker::check_and_decrement`.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum BudgetError {
     /// An ancestor agent's budget is exhausted; the spend was not applied to any node.
@@ -93,7 +93,7 @@ pub struct BudgetState {
     ///
     /// `None` preserves the historical date-only reset path (and the
     /// back-compat for `budget.json` files written before AAASM-1600);
-    /// `Some(t)` is populated by [`maybe_reset_window`] when the tracker
+    /// `Some(t)` is populated by `maybe_reset_window` when the tracker
     /// is configured with [`BudgetWindow::Duration`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_reset_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -143,7 +143,7 @@ impl BudgetState {
 
     /// Window-aware reset.
     ///
-    /// For [`BudgetWindow::Daily`] this is equivalent to [`maybe_reset`] using
+    /// For [`BudgetWindow::Daily`] this is equivalent to `maybe_reset` using
     /// the calendar date of `now` in the supplied timezone.
     ///
     /// For [`BudgetWindow::Duration`] the daily accumulator is zeroed each time

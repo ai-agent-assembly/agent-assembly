@@ -6,11 +6,11 @@
 //! load balancer a nonce issued by `RequestChallenge` on one replica is unknown
 //! to `Register` on another, so registration fails closed.
 //!
-//! [`RedisChallengeStore`] is a drop-in shared backend — inject it via
+//! `RedisChallengeStore` is a drop-in shared backend — inject it via
 //! [`AgentLifecycleServiceImpl::with_challenge_store`](crate::service::AgentLifecycleServiceImpl::with_challenge_store)
 //! so any replica can issue and any replica can consume. It reuses the gateway's
 //! existing optional `redis` dependency (the same one behind
-//! [`RedisPolicyCache`](super::cache::RedisPolicyCache)); no new dependency is
+//! `RedisPolicyCache`(super::cache::RedisPolicyCache)); no new dependency is
 //! added, and like the policy cache it is gated behind the `redis-cache` Cargo
 //! feature. The `redis` driver is confined to the `storage` module per the
 //! driver-isolation rule (see [`super`]).
@@ -79,9 +79,9 @@ impl RedisChallengeStore {
     /// Establish a Redis connection from `config` and wrap it in a
     /// [`ConnectionManager`].
     ///
-    /// Returns [`StorageError::ConnectionFailed`] when `config.url` is `None`,
+    /// Returns `StorageError` when `config.url` is `None`,
     /// the URL cannot be parsed, or the manager cannot complete its initial
-    /// handshake. Mirrors [`RedisPolicyCache::connect`](super::cache::RedisPolicyCache::connect)
+    /// handshake. Mirrors `RedisPolicyCache`(super::cache::RedisPolicyCache::connect)
     /// so both shared stores share one connection convention.
     pub async fn connect(config: &RedisConfig) -> StorageResult<Self> {
         let url = config.url.as_deref().ok_or_else(|| {

@@ -33,7 +33,7 @@ use self::state::DashboardState;
 /// Web-server subcommands for `aasm dashboard`.
 #[derive(Debug, Subcommand)]
 pub enum DashboardCommands {
-    /// Serve the embedded SPA at http://127.0.0.1:<port>. Blocks until Ctrl-C.
+    /// Serve the embedded SPA at `http://127.0.0.1:<port>`. Blocks until Ctrl-C.
     Start(start::StartArgs),
     /// Open the browser to an already-running dashboard.
     Open(open::OpenArgs),

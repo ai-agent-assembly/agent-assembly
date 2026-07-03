@@ -1,6 +1,6 @@
 //! `aasm sandbox` subcommand — execute WebAssembly tools inside the
 //! Agent Assembly tool-execution sandbox (highlight ④ of the product
-//! spec). Surfaces [`aa_sandbox::SandboxRuntime`] to OSS users so the
+//! spec). Surfaces [`aa_sandbox::runtime::SandboxRuntime`] to OSS users so the
 //! filesystem + CPU + memory + wall-clock budgets enforced by
 //! `aa-sandbox` are reachable from the `aasm` CLI without going
 //! through the cloud `aa-api` `/dispatch_tool` HTTP route.

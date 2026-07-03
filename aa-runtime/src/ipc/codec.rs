@@ -12,7 +12,7 @@
 //! Outbound tags (runtime → SDK):
 //!   1 = PolicyResponse   (CheckActionResponse)
 //!   2 = ApprovalDecision (ApprovalDecision)
-//!   3 = Ack              (zero-length varint + empty body: [0x03][0x00])
+//!   3 = Ack              (zero-length varint + empty body: `0x03 0x00`)
 //!   4 = ViolationAlert   (PolicyViolation)
 //!   5 = HandshakeChallenge (HandshakeChallenge) — AAASM-3583
 

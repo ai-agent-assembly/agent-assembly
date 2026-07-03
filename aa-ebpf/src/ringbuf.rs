@@ -37,7 +37,7 @@ pub enum EbpfEvent {
 /// Create via [`RingBufReader::new`], then poll with [`RingBufReader::next`]
 /// inside a Tokio task.
 ///
-/// The reader keeps the [`Ebpf`] handle alive so that all loaded programs and
+/// The reader keeps the `Ebpf` handle alive so that all loaded programs and
 /// maps remain in the kernel for the lifetime of the reader.
 pub struct RingBufReader {
     /// Keeps loaded BPF programs alive; dropping this detaches all probes.
@@ -47,10 +47,10 @@ pub struct RingBufReader {
 }
 
 impl RingBufReader {
-    /// Construct a `RingBufReader` from a loaded [`Ebpf`] handle.
+    /// Construct a `RingBufReader` from a loaded `Ebpf` handle.
     ///
     /// Takes ownership of `bpf`, extracts the `EVENTS` ring buffer map, and
-    /// wraps it in a [`tokio::io::unix::AsyncFd`] for non-blocking polling.
+    /// wraps it in a `tokio::io::unix::AsyncFd` for non-blocking polling.
     ///
     /// # Errors
     ///

@@ -72,8 +72,8 @@ pub enum OpsError {
 
 /// Outcome of an operator halt-delivery attempt (AAASM-3883).
 ///
-/// Returned by [`OpsRegistry::halt_agent_delivery`] /
-/// [`OpsRegistry::halt_global_delivery`] so the HTTP endpoint can distinguish a
+/// Returned by `OpsRegistry` /
+/// `OpsRegistry` so the HTTP endpoint can distinguish a
 /// real delivery from an honest failure and never report a silent-drop `200` for
 /// a kill switch.
 #[derive(Debug, PartialEq, Eq)]
@@ -95,21 +95,21 @@ pub enum HaltDelivery {
 /// shard-level writes during state transitions.
 pub struct OpsRegistry {
     ops: DashMap<String, OpRecord>,
-    /// Per-op routing key for [`OpControlPublisher`] (AAASM-1657).
+    /// Per-op routing key for `OpControlPublisher` (AAASM-1657).
     ///
-    /// Populated by [`OpsRegistry::ingest_with_agent`] so the transition
+    /// Populated by `OpsRegistry` so the transition
     /// methods can address the corresponding SDK subscriber. Ops registered
-    /// via [`OpsRegistry::register`] or [`OpsRegistry::ingest`] (without an
+    /// via `OpsRegistry` or `OpsRegistry` (without an
     /// agent id) silently skip publishing — preserving the pre-1657
     /// behaviour for the AAASM-1525 HTTP `POST /api/v1/ops` register path
     /// and any test fixtures that construct `OpsRegistry::new()` directly.
     agents: DashMap<String, AgentId>,
     /// Optional fan-out publisher for op-control signals (AAASM-1657).
-    /// Wire via [`OpsRegistry::with_publisher`]. `None` means transitions
+    /// Wire via `OpsRegistry`. `None` means transitions
     /// only update local state — no SDK push happens.
     publisher: Option<SharedOpControlPublisher>,
     /// Optional **cross-process** op-control publisher over NATS (AAASM-3883).
-    /// Wire via [`OpsRegistry::with_nats_publisher`]. When set, the operator
+    /// Wire via `OpsRegistry`. When set, the operator
     /// halt-delivery methods publish to the shared NATS subject so a halt issued
     /// in the aa-api process reaches the gateway process that serves
     /// `op_control_stream`. `None` keeps the in-process-only behavior. See
@@ -133,11 +133,11 @@ impl OpsRegistry {
         }
     }
 
-    /// Attach an [`OpControlPublisher`] so subsequent transitions push
+    /// Attach an `OpControlPublisher` so subsequent transitions push
     /// the matching [`OpControlSignal`] to subscribed SDK clients.
     ///
     /// Only transitions on ops that were registered via
-    /// [`OpsRegistry::ingest_with_agent`] trigger a publish — without an
+    /// `OpsRegistry` trigger a publish — without an
     /// agent_id the publisher has nothing to route to.
     pub fn with_publisher(mut self, publisher: SharedOpControlPublisher) -> Self {
         self.publisher = Some(publisher);
@@ -195,7 +195,7 @@ impl OpsRegistry {
         record
     }
 
-    /// Like [`OpsRegistry::ingest`] but also records the owning `agent_id`
+    /// Like `OpsRegistry` but also records the owning `agent_id`
     /// so subsequent transitions can publish the matching `OpControlSignal`
     /// to that agent's subscribed SDK stream (AAASM-1657).
     ///
@@ -317,7 +317,7 @@ impl OpsRegistry {
     ///
     /// Called from `PolicyServiceImpl::check_action` after the engine
     /// returns an `Allow` decision for an op previously created via
-    /// [`OpsRegistry::ingest`].
+    /// `OpsRegistry`.
     ///
     /// Returns the updated record on success.
     /// Returns [`OpsError::NotFound`] if the ID is unknown.
@@ -469,7 +469,7 @@ impl OpsRegistry {
 }
 
 /// Spawn a background tokio task that periodically calls
-/// [`OpsRegistry::sweep`] with the configured TTL (AAASM-1657).
+/// `OpsRegistry` with the configured TTL (AAASM-1657).
 ///
 /// Default tick: every 10 s. Default TTL: 60 s. Returns the `JoinHandle`
 /// so the caller can `.abort()` on shutdown if desired.

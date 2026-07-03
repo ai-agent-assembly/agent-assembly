@@ -1,4 +1,4 @@
-//! Conversion between the runtime [`AgentRecord`](super::store::AgentRecord)
+//! Conversion between the runtime `AgentRecord`(super::store::AgentRecord)
 //! and the durable [`storage::AgentRecord`](crate::storage::AgentRecord).
 //!
 //! The two records are intentionally different shapes (see
@@ -42,7 +42,7 @@ const DEFAULT_ENFORCEMENT_MODE: &str = "enforce";
 /// `metadata["name"]` keeps the storage schema flat.
 const METADATA_KEY_NAME: &str = "name";
 
-/// Convert a runtime [`AgentRecord`] into its durable storage equivalent.
+/// Convert a runtime `AgentRecord` into its durable storage equivalent.
 ///
 /// Lossy — runtime-only fields are dropped. `name` is round-tripped through
 /// `metadata["name"]` so rehydrate can restore it.
@@ -63,7 +63,7 @@ pub fn runtime_to_storage(record: &RuntimeAgentRecord) -> StorageAgentRecord {
     }
 }
 
-/// Synthesise a runtime [`AgentRecord`] from its storage row.
+/// Synthesise a runtime `AgentRecord` from its storage row.
 ///
 /// Used at boot-time rehydrate (see
 /// `AgentRegistry::rehydrate_from_storage`). Fills the runtime-only fields

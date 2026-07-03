@@ -271,7 +271,7 @@ pub trait ApprovalResolvedNotifier: Send + Sync {
 
 /// Concurrent, in-memory store of pending approval requests.
 ///
-/// Constructed via [`ApprovalQueue::new`], which returns an [`Arc`] so the
+/// Constructed via [`ApprovalQueue::new`], which returns an `Arc` so the
 /// queue can be cloned cheaply across tasks (e.g., the timeout spawner holds
 /// a back-reference).
 pub struct ApprovalQueue {
@@ -314,7 +314,7 @@ fn hash_to_16(s: &str) -> [u8; 16] {
 }
 
 impl ApprovalQueue {
-    /// Creates a new, empty queue wrapped in an [`Arc`].
+    /// Creates a new, empty queue wrapped in an `Arc`.
     pub fn new() -> Arc<Self> {
         let (event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
         let (expiry_event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
@@ -736,7 +736,7 @@ impl ApprovalQueue {
     /// # Timeout behaviour
     ///
     /// A `tokio::spawn`ed task sleeps for `request.timeout_secs` seconds, then
-    /// calls `resolve(TimedOut)`. Because [`resolve`] is idempotent, a human
+    /// calls `resolve(TimedOut)`. Because `resolve` is idempotent, a human
     /// decision that arrives before the timeout simply wins the race; the
     /// timeout task's subsequent `resolve` call becomes a no-op.
     pub fn submit(self: &Arc<Self>, request: ApprovalRequest) -> (ApprovalRequestId, ApprovalFuture) {

@@ -84,7 +84,7 @@ fn row_to_audit_event(row: &sqlx::postgres::PgRow) -> StorageResult<AuditEvent> 
     })
 }
 
-/// Decode a single `agent_registry` row into an [`AgentRecord`].
+/// Decode a single `agent_registry` row into an `AgentRecord`.
 ///
 /// Native PostgreSQL types map directly to the value-type fields —
 /// `TIMESTAMPTZ` → `DateTime<Utc>`, `JSONB` → `serde_json::Value` →
@@ -177,7 +177,7 @@ fn policy_document_bytes(value: serde_json::Value) -> Vec<u8> {
 
 /// Map a [`MetricQuery::bucket`] string into the corresponding
 /// PostgreSQL `date_trunc` unit. Returns
-/// [`StorageError::QueryFailed`] for any unsupported value so the
+/// `StorageError` for any unsupported value so the
 /// query never gets near the database with a typo.
 fn metric_bucket_unit(raw: &str) -> StorageResult<&'static str> {
     match raw.trim() {
@@ -247,21 +247,21 @@ fn push_agent_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter:
 
 /// PostgreSQL-backed control-plane storage.
 ///
-/// Created via [`PostgresBackend::connect`]. The trait surface (audit /
+/// Created via `PostgresBackend`. The trait surface (audit /
 /// registry / policy / metrics / lifecycle methods) is filled in by the
 /// later Epic-18 S-C sub-tasks.
 pub struct PostgresBackend {
     pool: PgPool,
     /// TimescaleDB knobs captured from [`PostgresConfig::timescaledb`] at
     /// connect time. Consumed by
-    /// [`PostgresBackend::apply_timescaledb_setup`] from inside `migrate()`.
+    /// `PostgresBackend` from inside `migrate()`.
     timescale_config: TimescaleConfig,
 }
 
 impl PostgresBackend {
     /// Open a connection pool against `config`.
     ///
-    /// Returns [`StorageError::ConnectionFailed`] when `database_url` is
+    /// Returns `StorageError` when `database_url` is
     /// unset or the pool cannot be opened. The error message explicitly
     /// names `AAASM_DATABASE_URL` so operators see the missing-env path
     /// without having to dig through stack traces.
@@ -301,7 +301,7 @@ impl PostgresBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::QueryFailed`] only when the `pg_extension`
+    /// Returns `StorageError` only when the `pg_extension`
     /// probe itself fails (transport / permission). The graceful-fallback
     /// paths above never raise an error — production deployments must be
     /// able to boot against plain PostgreSQL.
@@ -326,7 +326,7 @@ impl PostgresBackend {
 impl StorageBackend for PostgresBackend {
     /// Apply the embedded `migrations/postgres/*.sql` migrations and
     /// then run TimescaleDB runtime gating via
-    /// [`PostgresBackend::apply_timescaledb_setup`].
+    /// `PostgresBackend`.
     ///
     /// Idempotent — sqlx records applied versions in `_sqlx_migrations`,
     /// so calling this against an already-migrated database is a no-op.
@@ -337,9 +337,9 @@ impl StorageBackend for PostgresBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::MigrationFailed`] when any migration fails
+    /// Returns `StorageError` when any migration fails
     /// to apply or sqlx cannot verify previously-applied versions.
-    /// Returns [`StorageError::QueryFailed`] when the extension probe in
+    /// Returns `StorageError` when the extension probe in
     /// `apply_timescaledb_setup` fails (transport / permission).
     async fn migrate(&self) -> StorageResult<()> {
         sqlx::migrate!("./migrations/postgres")
@@ -358,7 +358,7 @@ impl StorageBackend for PostgresBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::QueryFailed`] when the INSERT is rejected
+    /// Returns `StorageError` when the INSERT is rejected
     /// (duplicate `(ts, event_id)` PK, transport failure, etc.).
     async fn append_audit_event(&self, event: &AuditEvent) -> StorageResult<()> {
         sqlx::query(
@@ -390,7 +390,7 @@ impl StorageBackend for PostgresBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::QueryFailed`] on driver errors and when a
+    /// Returns `StorageError` on driver errors and when a
     /// column cannot be decoded into its expected runtime type.
     async fn query_audit_events(&self, filter: AuditFilter) -> StorageResult<Vec<AuditEvent>> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
@@ -424,7 +424,7 @@ impl StorageBackend for PostgresBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::QueryFailed`] on driver errors.
+    /// Returns `StorageError` on driver errors.
     async fn count_audit_events(&self, filter: AuditFilter) -> StorageResult<u64> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT count(*) FROM audit_events");
         push_audit_where(&mut qb, &filter);
@@ -446,7 +446,7 @@ impl StorageBackend for PostgresBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::QueryFailed`] when metadata fails to encode as
+    /// Returns `StorageError` when metadata fails to encode as
     /// JSON or the INSERT/UPDATE is rejected by the driver.
     async fn upsert_agent(&self, record: AgentRecord) -> StorageResult<()> {
         let metadata = serde_json::to_value(&record.metadata)
@@ -478,7 +478,7 @@ impl StorageBackend for PostgresBackend {
     /// Return the agent record for `id`, if registered.
     ///
     /// Returns `Ok(None)` for unknown ids; only backend failure surfaces
-    /// as a [`StorageError`].
+    /// as a `StorageError`.
     async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
         let row = sqlx::query(
             "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
@@ -521,7 +521,7 @@ impl StorageBackend for PostgresBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::NotFound`] when no row matches; the error
+    /// Returns `StorageError` when no row matches; the error
     /// payload carries the offending agent id (TEXT form) so callers can
     /// log it without re-encoding.
     async fn delete_agent(&self, id: &AgentId) -> StorageResult<()> {
@@ -550,9 +550,9 @@ impl StorageBackend for PostgresBackend {
     ///
     /// # Errors
     ///
-    /// - [`StorageError::Conflict`] when the `(name, version)` UNIQUE
+    /// - `StorageError` when the `(name, version)` UNIQUE
     ///   constraint trips (race against a concurrent save for the same name).
-    /// - [`StorageError::QueryFailed`] on any other driver / transaction failure.
+    /// - `StorageError` on any other driver / transaction failure.
     async fn save_policy(&self, doc: PolicyDocument) -> StorageResult<PolicyVersion> {
         let document_json = match serde_json::from_slice::<serde_json::Value>(&doc.bytes) {
             Ok(value) => value,
@@ -617,7 +617,7 @@ impl StorageBackend for PostgresBackend {
     /// # Errors
     ///
     /// Returns `Ok(None)` when no version is active. Driver failures surface
-    /// as [`StorageError::QueryFailed`].
+    /// as `StorageError`.
     async fn get_active_policy(&self, name: &str) -> StorageResult<Option<PolicyDocument>> {
         let row: Option<(serde_json::Value,)> = sqlx::query_as(
             "SELECT document FROM policy_versions \
@@ -637,7 +637,7 @@ impl StorageBackend for PostgresBackend {
     /// List every stored version of `name`, newest first.
     ///
     /// Returns an empty Vec when the name has no saved versions — only
-    /// driver failures surface as [`StorageError`].
+    /// driver failures surface as `StorageError`.
     async fn list_policy_versions(&self, name: &str) -> StorageResult<Vec<PolicyMeta>> {
         let rows: Vec<(i32, chrono::DateTime<chrono::Utc>, bool)> = sqlx::query_as(
             "SELECT version, created_at, is_active FROM policy_versions \
@@ -669,10 +669,10 @@ impl StorageBackend for PostgresBackend {
     ///
     /// # Errors
     ///
-    /// - [`StorageError::NotFound`] when `(name, version)` does not exist.
+    /// - `StorageError` when `(name, version)` does not exist.
     ///   Payload is formatted `"<name>@<version>"` to mirror the SQLite
     ///   backend.
-    /// - [`StorageError::QueryFailed`] on driver / transaction failure.
+    /// - `StorageError` on driver / transaction failure.
     async fn rollback_policy(&self, name: &str, version: u32) -> StorageResult<()> {
         let version_i =
             i32::try_from(version).map_err(|e| StorageError::QueryFailed(format!("version overflow: {e}")))?;
@@ -726,7 +726,7 @@ impl StorageBackend for PostgresBackend {
     ///
     /// # Errors
     ///
-    /// - [`StorageError::QueryFailed`] when `labels` cannot be encoded as
+    /// - `StorageError` when `labels` cannot be encoded as
     ///   JSON or the INSERT is rejected.
     async fn record_metric(&self, m: Metric) -> StorageResult<()> {
         let labels =
@@ -752,7 +752,7 @@ impl StorageBackend for PostgresBackend {
     /// `date_trunc(<unit>, ts)` + `AVG(value)` grouped by the truncated
     /// timestamp. Supported bucket strings are validated by
     /// [`metric_bucket_unit`] before any SQL hits the wire, so a typo
-    /// surfaces as [`StorageError::QueryFailed`] rather than a confusing
+    /// surfaces as `StorageError` rather than a confusing
     /// driver error.
     ///
     /// When `query.bucket` is `None`, raw `(ts, value)` rows are returned.
@@ -760,7 +760,7 @@ impl StorageBackend for PostgresBackend {
     ///
     /// # Errors
     ///
-    /// - [`StorageError::QueryFailed`] for an unsupported bucket string or
+    /// - `StorageError` for an unsupported bucket string or
     ///   any driver failure.
     async fn query_metrics(&self, query: MetricQuery) -> StorageResult<Vec<MetricPoint>> {
         let bucket_unit = query.bucket.as_deref().map(metric_bucket_unit).transpose()?;
@@ -817,7 +817,7 @@ impl StorageBackend for PostgresBackend {
     ///   audit_events WHERE ts < $1`; the affected row count populates
     ///   `dropped_rows`.
     /// * `cold_action = Archive` → returns
-    ///   [`StorageError::RetentionError`] until E18 S-D lands the
+    ///   `StorageError` until E18 S-D lands the
     ///   TimescaleDB `drop_chunks()` path. The error surfaces the
     ///   archive URL so operators see what they configured.
     ///

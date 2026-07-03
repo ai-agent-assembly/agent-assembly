@@ -115,7 +115,7 @@ impl SqliteBackend {
     ///
     /// # Errors
     ///
-    /// - [`StorageError::ConnectionFailed`] if the parent directory cannot
+    /// - `StorageError` if the parent directory cannot
     ///   be created, the pool cannot be opened, or the WAL pragma is rejected.
     pub async fn open(config: &SqliteConfig) -> StorageResult<Self> {
         let path = expand_tilde(&config.path);
@@ -164,7 +164,7 @@ fn agent_id_from_text(s: &str) -> StorageResult<AgentId> {
 ///
 /// Maps TEXT timestamps back to `DateTime<Utc>` and TEXT JSON payloads
 /// back to `serde_json::Value`. Any malformed column produces
-/// [`StorageError::QueryFailed`] with the column name.
+/// `StorageError` with the column name.
 fn row_to_audit_event(row: &sqlx::sqlite::SqliteRow) -> StorageResult<AuditEvent> {
     use sqlx::Row;
 
@@ -257,7 +257,7 @@ fn push_audit_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Sqlite>, filter: &
     }
 }
 
-/// Decode a single `agent_registry` row into an [`AgentRecord`].
+/// Decode a single `agent_registry` row into an `AgentRecord`.
 ///
 /// Maps TEXT timestamps back to `DateTime<Utc>` and TEXT JSON metadata
 /// back to a `BTreeMap<String, String>`.

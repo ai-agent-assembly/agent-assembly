@@ -3,7 +3,7 @@
 //! Receives [`AnomalyEvent`](super::types::AnomalyEvent) values from the
 //! detector and logs the response action via `tracing`. When the event bus
 //! (AAASM-141) is implemented, alerts will be published as
-//! [`AlertTriggered`](proto::event::AlertTriggered) messages.
+//! `AlertTriggered`(proto::event::AlertTriggered) messages.
 
 use super::types::{AnomalyEvent, AnomalyResponse};
 

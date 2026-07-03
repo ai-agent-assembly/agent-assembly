@@ -349,7 +349,7 @@ mod tests {
 
     use aa_proto::assembly::topology::v1::topology_service_server::TopologyService;
 
-    /// Build a minimal active [`AgentRecord`] with an explicit tenant.
+    /// Build a minimal active `AgentRecord` with an explicit tenant.
     fn make_record(
         id: [u8; 16],
         name: &str,

@@ -10,13 +10,13 @@ use crate::error::EbpfError;
 /// Loads the compiled `aa-ebpf-probes` TLS uprobe ELF object into the Linux kernel.
 ///
 /// The object is embedded at build time by `build.rs`.  `EbpfLoader` is the
-/// entry point for all probe attachment in this crate: obtain an [`Ebpf`]
-/// handle from [`EbpfLoader::load`] and pass it to the individual managers
-/// ([`crate::uprobe::UprobeManager`], [`crate::ringbuf::RingBufReader`], etc.).
+/// entry point for all probe attachment in this crate: obtain an `Ebpf`
+/// handle from `EbpfLoader::load` and pass it to the individual managers
+/// (`crate::uprobe::UprobeManager`, `crate::ringbuf::RingBufReader`, etc.).
 pub struct EbpfLoader;
 
 impl EbpfLoader {
-    /// Load the embedded TLS uprobe ELF bytecode and return a live [`Ebpf`] handle.
+    /// Load the embedded TLS uprobe ELF bytecode and return a live `Ebpf` handle.
     ///
     /// Parses the `aa-tls-probes` BPF ELF embedded via
     /// [`crate::AA_TLS_BPF`] and submits it to the kernel.  The returned
