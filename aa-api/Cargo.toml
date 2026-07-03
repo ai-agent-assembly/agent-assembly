@@ -38,7 +38,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tower = { workspace = true }
-tower-http = { workspace = true, features = ["trace", "cors", "compression-gzip", "request-id", "util", "set-header"] }
+tower-http = { workspace = true, features = ["trace", "cors", "compression-gzip", "request-id", "util", "set-header", "catch-panic"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 utoipa = { workspace = true }
