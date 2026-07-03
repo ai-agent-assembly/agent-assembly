@@ -238,6 +238,30 @@ mod tests {
     }
 
     #[test]
+    fn file_io_to_audit_propagates_sensitive_true() {
+        let mut event = make_file_io(SyscallKind::Read, "/etc/passwd");
+        event.is_sensitive = true;
+        let audit = file_io_to_audit(&event);
+        let detail = audit.detail.expect("detail should be set");
+        match detail {
+            Detail::FileOp(ref fop) => assert!(fop.sensitive),
+            _ => panic!("expected FileOp detail"),
+        }
+    }
+
+    #[test]
+    fn file_io_to_audit_propagates_sensitive_false() {
+        let event = make_file_io(SyscallKind::Read, "/tmp/ordinary.txt");
+        assert!(!event.is_sensitive);
+        let audit = file_io_to_audit(&event);
+        let detail = audit.detail.expect("detail should be set");
+        match detail {
+            Detail::FileOp(ref fop) => assert!(!fop.sensitive),
+            _ => panic!("expected FileOp detail"),
+        }
+    }
+
+    #[test]
     fn file_io_to_audit_maps_all_syscall_kinds() {
         let cases = [
             (SyscallKind::Openat, "create"),
