@@ -212,13 +212,47 @@ fn degrade(
     degraded_layers.push(sub_layer.to_string());
 }
 
+/// Bound (ms) on every individual loaderd control round-trip.
+///
+/// The former in-process `aya::Ebpf::load` path failed *fast* (local EPERM);
+/// driving an external daemon substitutes network-style I/O into the boot
+/// critical path, and the control client's `read_frame` has no timeout of its
+/// own — a daemon that accepts the connection but never replies would otherwise
+/// wedge runtime boot forever. Each request is therefore wrapped in this
+/// deadline; on elapse the sub-layer degrades exactly as a connect failure does.
+/// Overridable via `AA_EBPF_LOADERD_TIMEOUT_MS`.
+#[cfg(target_os = "linux")]
+fn loaderd_deadline() -> std::time::Duration {
+    let ms = std::env::var("AA_EBPF_LOADERD_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(5_000);
+    std::time::Duration::from_millis(ms)
+}
+
+/// Await a loaderd control future under [`loaderd_deadline`]; a timeout maps to
+/// an error string so the caller degrades the sub-layer rather than hanging.
+#[cfg(target_os = "linux")]
+async fn await_loaderd<F, T, E>(fut: F) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    match tokio::time::timeout(loaderd_deadline(), fut).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_elapsed) => Err("timed out waiting for loaderd".to_string()),
+    }
+}
+
 /// Drive the privileged loaderd daemon to bring up the eBPF layer (Linux).
 ///
 /// Connects to the control socket as an unprivileged client and executes the
-/// control plan from [`plan_control_ops`]. Each failed operation degrades only
-/// its own sub-layer; a failure to reach the daemon degrades all of them. This
-/// replaces the former in-process `aya::Ebpf::load` path, which could only
-/// EPERM-degrade on the (deliberately unprivileged) runtime.
+/// control plan from [`plan_control_ops`]. Each failed (or timed-out) operation
+/// degrades only its own sub-layer; a failure to reach the daemon degrades all
+/// of them. This replaces the former in-process `aya::Ebpf::load` path, which
+/// could only EPERM-degrade on the (deliberately unprivileged) runtime.
 #[cfg(target_os = "linux")]
 pub(crate) async fn drive_ebpf_layer(
     broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
@@ -235,7 +269,7 @@ pub(crate) async fn drive_ebpf_layer(
     let observe_pid = std::process::id();
     let plan = plan_control_ops(&ruleset, confine_pid);
 
-    let mut client = match LoaderControlClient::connect(&socket).await {
+    let mut client = match await_loaderd(LoaderControlClient::connect(&socket)).await {
         Ok(c) => c,
         Err(e) => {
             let reason = format!("loaderd control socket unreachable at {}: {e}", socket.display());
@@ -261,10 +295,23 @@ pub(crate) async fn drive_ebpf_layer(
                     ProbeKind::Tls => (ProbeSet::Tls, observe_pid),
                     ProbeKind::FileIo => (ProbeSet::FileIo, observe_pid),
                     ProbeKind::Exec => (ProbeSet::Exec, observe_pid),
-                    // Only ever reached when confine_pid is Some (see planner).
-                    ProbeKind::SyscallGuard => (ProbeSet::SyscallGuard, confine_pid.unwrap_or(observe_pid)),
+                    // The planner only emits SyscallGuard when confine_pid is
+                    // Some. Never fall back to the runtime's own PID: the guard
+                    // is a default-deny SIGKILL probe, so scoping it to
+                    // `observe_pid` would make the runtime kill itself. If the
+                    // invariant is ever broken, skip the load loudly instead.
+                    ProbeKind::SyscallGuard => match confine_pid {
+                        Some(pid) => (ProbeSet::SyscallGuard, pid),
+                        None => {
+                            tracing::error!(
+                                "BUG: SyscallGuard planned without a confine PID; refusing to scope \
+                                 the SIGKILL guard to the runtime's own PID"
+                            );
+                            continue;
+                        }
+                    },
                 };
-                if let Err(e) = client.load_probe_set(set, pid).await {
+                if let Err(e) = await_loaderd(client.load_probe_set(set, pid)).await {
                     degrade(
                         broadcast_tx,
                         degraded_layers,
@@ -278,7 +325,7 @@ pub(crate) async fn drive_ebpf_layer(
                     .into_iter()
                     .map(|(pattern, deny)| PathRuleWire { pattern, deny })
                     .collect();
-                if let Err(e) = client.update_path_map(wire).await {
+                if let Err(e) = await_loaderd(client.update_path_map(wire)).await {
                     degrade(
                         broadcast_tx,
                         degraded_layers,
@@ -288,7 +335,7 @@ pub(crate) async fn drive_ebpf_layer(
                 }
             }
             PlannedOp::UpdateSyscallAllowlist(syscalls) => {
-                if let Err(e) = client.update_syscall_allowlist(syscalls).await {
+                if let Err(e) = await_loaderd(client.update_syscall_allowlist(syscalls)).await {
                     degrade(
                         broadcast_tx,
                         degraded_layers,
