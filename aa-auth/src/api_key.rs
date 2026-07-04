@@ -1,5 +1,6 @@
 //! API key generation, validation, and storage.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use argon2::password_hash::SaltString;
@@ -8,6 +9,7 @@ use dashmap::DashMap;
 use rand::RngExt as _;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::scope::Scope;
@@ -17,6 +19,14 @@ const API_KEY_PREFIX: &str = "aa_";
 
 /// Expected length of the hex portion of an API key.
 const API_KEY_HEX_LEN: usize = 32;
+
+/// Hex length of the per-key lookup index derived by [`ApiKey::lookup`].
+///
+/// 16 hex chars = 64 bits of SHA-256 output — enough that unrelated keys almost
+/// never share a bucket (so a bogus token normally selects zero candidates and
+/// runs argon2 zero times), while a collision only ever adds one extra argon2
+/// verification, never restoring the O(N) fan-out.
+const KEY_LOOKUP_HEX_LEN: usize = 16;
 
 /// An Agent Assembly API key in `aa_<32-hex-chars>` format.
 #[derive(Debug, Clone)]
@@ -76,6 +86,23 @@ impl ApiKey {
         };
         Argon2::default().verify_password(self.0.as_bytes(), &parsed).is_ok()
     }
+
+    /// Derive the fast, non-secret lookup index for this key (AAASM-4075).
+    ///
+    /// A truncated SHA-256 of the raw key. Because SHA-256 is preimage-resistant,
+    /// persisting this alongside the argon2 hash leaks nothing about the key even
+    /// if the key store is exfiltrated, yet it lets [`ApiKeyStore::validate_detailed`]
+    /// select the single candidate entry in O(1) and run the expensive argon2
+    /// verification only on that candidate — never once per stored key. argon2
+    /// remains the sole authority for the final match.
+    pub fn lookup(&self) -> String {
+        let digest = Sha256::digest(self.0.as_bytes());
+        let mut out = String::with_capacity(KEY_LOOKUP_HEX_LEN);
+        for b in &digest[..KEY_LOOKUP_HEX_LEN / 2] {
+            out.push_str(&format!("{b:02x}"));
+        }
+        out
+    }
 }
 
 /// A stored API key entry with metadata.
@@ -100,11 +127,27 @@ pub struct ApiKeyEntry {
     /// AAASM-3139 — the org this key is scoped to. See [`ApiKeyEntry::team_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org_id: Option<String>,
+    /// AAASM-4075 — the fast lookup index ([`ApiKey::lookup`]) for this key.
+    ///
+    /// Populated when the entry is created from a known raw key so the store can
+    /// select it in O(1) and run argon2 only on this candidate. `None` marks a
+    /// legacy entry (e.g. loaded from a key file written before this field
+    /// existed); such entries fall back to the pre-index argon2 scan, so they do
+    /// not benefit from the anti-fan-out guarantee but remain fully valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_lookup: Option<String>,
 }
 
 /// In-memory store of API key entries loaded from a JSON file.
 pub struct ApiKeyStore {
     entries: Vec<ApiKeyEntry>,
+    /// AAASM-4075 — maps a key's [`ApiKey::lookup`] index to the entry indices
+    /// sharing it, so `validate_detailed` selects candidates in O(1) instead of
+    /// running argon2 against every entry. Built once at construction.
+    lookup_index: HashMap<String, Vec<usize>>,
+    /// AAASM-4075 — indices of entries with no `key_lookup` (legacy). These are
+    /// unavoidably argon2-scanned on every call; the set is normally empty.
+    unindexed: Vec<usize>,
     /// Runtime-revoked key IDs; checked during every `validate_detailed` call.
     revoked_ids: DashMap<String, ()>,
 }
@@ -116,10 +159,28 @@ impl ApiKeyStore {
     /// single admin key from the environment (or a generated one) without a
     /// keys-on-disk file.
     pub fn from_entries(entries: Vec<ApiKeyEntry>) -> Self {
+        let (lookup_index, unindexed) = Self::build_index(&entries);
         Self {
             entries,
+            lookup_index,
+            unindexed,
             revoked_ids: DashMap::new(),
         }
+    }
+
+    /// Partition entries into the [`ApiKey::lookup`] index and the legacy
+    /// (no-`key_lookup`) fallback set. Shared by every constructor so the two
+    /// stay in sync (AAASM-4075).
+    fn build_index(entries: &[ApiKeyEntry]) -> (HashMap<String, Vec<usize>>, Vec<usize>) {
+        let mut lookup_index: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut unindexed = Vec::new();
+        for (idx, entry) in entries.iter().enumerate() {
+            match &entry.key_lookup {
+                Some(lookup) => lookup_index.entry(lookup.clone()).or_default().push(idx),
+                None => unindexed.push(idx),
+            }
+        }
+        (lookup_index, unindexed)
     }
 
     /// Load API key entries from a JSON file.
@@ -127,19 +188,13 @@ impl ApiKeyStore {
     /// Returns an empty store if the file does not exist.
     pub fn load(path: &Path) -> Result<Self, ApiKeyError> {
         if !path.exists() {
-            return Ok(Self {
-                entries: Vec::new(),
-                revoked_ids: DashMap::new(),
-            });
+            return Ok(Self::from_entries(Vec::new()));
         }
 
         let content = std::fs::read_to_string(path).map_err(|e| ApiKeyError::Io(e.to_string()))?;
         let entries: Vec<ApiKeyEntry> =
             serde_json::from_str(&content).map_err(|e| ApiKeyError::ParseError(e.to_string()))?;
-        Ok(Self {
-            entries,
-            revoked_ids: DashMap::new(),
-        })
+        Ok(Self::from_entries(entries))
     }
 
     /// Mark a key ID as revoked; subsequent `validate_detailed` calls for that
@@ -155,7 +210,23 @@ impl ApiKeyStore {
     /// other failure (parse error, wrong hash, unknown key).
     pub fn validate_detailed(&self, raw_key: &str) -> Result<&ApiKeyEntry, KeyNotValid> {
         let key = ApiKey::parse(raw_key).map_err(|_| KeyNotValid::NotFound)?;
-        match self.entries.iter().find(|entry| key.verify(&entry.key_hash)) {
+
+        // AAASM-4075 — select candidates by the cheap SHA-256 lookup index so an
+        // unauthenticated attacker bursting well-formed-but-invalid tokens cannot
+        // force one argon2 verification per stored key (a CPU/memory DoS). Only
+        // entries whose lookup matches, plus any legacy entries lacking the index,
+        // are argon2-verified; a bogus token normally selects zero indexed
+        // candidates. argon2 stays the sole authority for the final match.
+        let lookup = key.lookup();
+        let candidates = self
+            .lookup_index
+            .get(&lookup)
+            .into_iter()
+            .flatten()
+            .chain(self.unindexed.iter())
+            .filter_map(|&idx| self.entries.get(idx));
+
+        match candidates.into_iter().find(|entry| key.verify(&entry.key_hash)) {
             None => Err(KeyNotValid::NotFound),
             Some(entry) => {
                 if self.revoked_ids.contains_key(&entry.id) {
@@ -301,11 +372,9 @@ mod tests {
             label: Some("test key".to_string()),
             team_id: None,
             org_id: None,
+            key_lookup: Some(key.lookup()),
         };
-        let store = ApiKeyStore {
-            entries: vec![entry],
-            revoked_ids: DashMap::new(),
-        };
+        let store = ApiKeyStore::from_entries(vec![entry]);
 
         let result = store.validate(key.as_str());
         assert!(result.is_some());
@@ -325,11 +394,9 @@ mod tests {
             label: None,
             team_id: None,
             org_id: None,
+            key_lookup: Some(key1.lookup()),
         };
-        let store = ApiKeyStore {
-            entries: vec![entry],
-            revoked_ids: DashMap::new(),
-        };
+        let store = ApiKeyStore::from_entries(vec![entry]);
 
         let result = store.validate(key2.as_str());
         assert!(result.is_none());
@@ -360,6 +427,7 @@ mod tests {
             label: None,
             team_id: None,
             org_id: None,
+            key_lookup: Some(key.lookup()),
         };
         let store = ApiKeyStore::from_entries(vec![entry]);
         assert_eq!(store.len(), 1);
@@ -388,5 +456,64 @@ mod tests {
         let store = ApiKeyStore::from_entries(vec![]);
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
+    }
+
+    /// AAASM-4075 (anti-fan-out DoS): `validate_detailed` must argon2-verify only
+    /// the entries selected by the incoming key's lookup bucket, never every
+    /// stored key. We prove the fan-out is gone by filing an entry whose argon2
+    /// hash *would* match the probe token but under a *different* lookup bucket: a
+    /// naive fan-out scan would verify and match it, whereas the indexed scan must
+    /// not even reach it — so the probe is `NotFound`.
+    #[test]
+    fn invalid_token_is_not_verified_against_mismatched_lookup_bucket() {
+        let probe = ApiKey::generate();
+        let probe_hash = probe.hash().expect("hash");
+
+        // Entry whose hash matches `probe`, deliberately filed under a bucket that
+        // does not match `probe.lookup()`.
+        let wrong_bucket = "deadbeefdeadbeef".to_string();
+        assert_ne!(
+            wrong_bucket,
+            probe.lookup(),
+            "fixture bucket must differ from the probe's real lookup"
+        );
+        let trap = ApiKeyEntry {
+            id: "trap".to_string(),
+            key_hash: probe_hash,
+            scopes: vec![Scope::Admin],
+            created_at: 0,
+            label: None,
+            team_id: None,
+            org_id: None,
+            key_lookup: Some(wrong_bucket),
+        };
+        let store = ApiKeyStore::from_entries(vec![trap]);
+
+        // The probe's own hash is present, but the index never selects it (and so
+        // argon2 never runs on it), proving there is no per-key fan-out.
+        assert!(matches!(
+            store.validate_detailed(probe.as_str()),
+            Err(KeyNotValid::NotFound)
+        ));
+    }
+
+    /// AAASM-4075 backward-compat: an entry with no `key_lookup` (e.g. loaded from
+    /// a key file written before the index existed) still authenticates via the
+    /// legacy argon2 fallback scan.
+    #[test]
+    fn legacy_entry_without_lookup_still_validates() {
+        let key = ApiKey::generate();
+        let entry = ApiKeyEntry {
+            id: "legacy".to_string(),
+            key_hash: key.hash().expect("hash"),
+            scopes: vec![Scope::Read],
+            created_at: 0,
+            label: None,
+            team_id: None,
+            org_id: None,
+            key_lookup: None,
+        };
+        let store = ApiKeyStore::from_entries(vec![entry]);
+        assert_eq!(store.validate(key.as_str()).map(|e| e.id.as_str()), Some("legacy"));
     }
 }

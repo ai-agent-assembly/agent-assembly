@@ -411,7 +411,8 @@ impl CredentialScanner {
 /// of one detector is reported once.
 ///
 /// The high-entropy detector runs additive passes (whitespace-token, long-hex,
-/// long-base64): a base64 secret that is *also* a whitespace token — e.g. a PEM
+/// long-base64, separator-grouped-hex): a base64 secret that is *also* a
+/// whitespace token — e.g. a PEM
 /// body on its own line, or a bare `token=<b64>` — trips both the token pass and
 /// the base64-run pass, yielding two overlapping `GenericHighEntropy` findings
 /// for one secret. This collapses that double-count.
@@ -669,9 +670,11 @@ fn is_base64_char(b: u8) -> bool {
 }
 
 /// Scans `text` for generic secret-like tokens, reporting them as
-/// [`CredentialKind::GenericHighEntropy`]. Three additive passes run; each only
+/// [`CredentialKind::GenericHighEntropy`]. Four additive passes run; each only
 /// *adds* findings, so the literal/URL/PEM detectors are never displaced and the
-/// conformance behaviour of the original whitespace pass is preserved exactly:
+/// conformance behaviour of the original whitespace pass is preserved exactly.
+/// A secret caught by more than one pass yields overlapping same-kind findings
+/// that [`scan`]'s final [`dedupe_same_kind_overlaps`] collapses back to one:
 ///
 /// 1. **Whitespace-token entropy** (unchanged spec behaviour) — a whitespace
 ///    token of length 20–64 with Shannon entropy > [`ENTROPY_BITS_GATE`].
@@ -682,6 +685,12 @@ fn is_base64_char(b: u8) -> bool {
 ///    ≥ [`BASE64_RUN_MIN_LEN`] whose entropy exceeds the gate, closing both the
 ///    old > 64-char length evasion and the compact-JSON evasion where a base64
 ///    secret carries no whitespace and its delimited run is ≤ 64 chars.
+/// 4. **Separator-grouped hex run** (AAASM-4075) — a hex run broken into groups
+///    by `:` / `-` separators (e.g. `de:ad:be:ef:…`) whose total hex-digit count
+///    reaches [`HEX_RUN_MIN_LEN`]. Such reformatting splits the contiguous run
+///    into 2-char groups that clear neither the pass-2 length bar nor (with `-`
+///    kept inside the base64 alphabet) the pass-3 entropy gate, so it evades
+///    passes 1-3 entirely; this pass closes that gap.
 fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
     // Pass 1: whitespace-delimited high-entropy tokens, length 20–64.
     let mut offset = 0usize;
@@ -708,6 +717,8 @@ fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
     // Passes 2 & 3: contiguous encoded-blob runs that the token pass misses.
     scan_long_hex_runs(text, findings);
     scan_long_base64_runs(text, findings);
+    // Pass 4: separator-grouped hex runs the contiguous passes miss (AAASM-4075).
+    scan_separated_hex_runs(text, findings);
 }
 
 /// Pass 2 — flag every contiguous hex run of length ≥ [`HEX_RUN_MIN_LEN`].
@@ -746,6 +757,60 @@ fn scan_long_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
         let run = &text[start..i];
         if run.len() >= BASE64_RUN_MIN_LEN && shannon_entropy(run) > ENTROPY_BITS_GATE {
             findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
+        }
+    }
+}
+
+/// Returns `true` for the intra-token separators that a secret can be rewritten
+/// around to split it into small groups (`de:ad:be:ef…`, `de-ad-be-ef…`). Note
+/// `-` is also a base64url character, so dash-grouping additionally dilutes the
+/// per-run entropy below [`ENTROPY_BITS_GATE`] — both reasons the contiguous
+/// passes miss these tokens.
+fn is_hex_group_separator(b: u8) -> bool {
+    matches!(b, b':' | b'-')
+}
+
+/// Pass 4 — flag a hex run split into groups by `:` / `-` separators whose total
+/// hex-digit count reaches [`HEX_RUN_MIN_LEN`] (AAASM-4075).
+///
+/// Scans each maximal run of `[0-9a-fA-F:-]`, counts only the hex digits (the
+/// separators are the evasion and are not part of the secret's entropy), and
+/// flags the run — trimmed to its first/last hex digit — when it both contains a
+/// separator (a contiguous run is already handled by [`scan_long_hex_runs`]) and
+/// carries at least [`HEX_RUN_MIN_LEN`] hex digits. Keying the bar on the same
+/// 64-digit threshold as the contiguous rule keeps benign grouped hex — MAC
+/// addresses (12 digits) and dash-delimited UUIDs (32 digits) — below the bar.
+fn scan_separated_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_hexdigit() && !is_hex_group_separator(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut hex_count = 0usize;
+        let mut has_separator = false;
+        let mut first_hex: Option<usize> = None;
+        let mut last_hex = start;
+        while i < bytes.len() && (bytes[i].is_ascii_hexdigit() || is_hex_group_separator(bytes[i])) {
+            if bytes[i].is_ascii_hexdigit() {
+                hex_count += 1;
+                first_hex.get_or_insert(i);
+                last_hex = i;
+            } else {
+                has_separator = true;
+            }
+            i += 1;
+        }
+        if has_separator && hex_count >= HEX_RUN_MIN_LEN {
+            if let Some(span_start) = first_hex {
+                findings.push(CredentialFinding::new(
+                    CredentialKind::GenericHighEntropy,
+                    span_start,
+                    last_hex + 1,
+                ));
+            }
         }
     }
 }
@@ -1215,6 +1280,59 @@ mod tests {
             ">64-char base64 token must be flagged: {:?}",
             result.findings
         );
+    }
+
+    /// AAASM-4075: a 64-hex secret reformatted with `:` (or `-`) separators
+    /// splits into 2-char groups that clear neither the contiguous-hex length bar
+    /// nor the base64 entropy gate, evading passes 1-3. The separator-grouped pass
+    /// must still flag it once the total hex-digit count reaches 64.
+    #[test]
+    fn detects_separator_delimited_hex_secret() {
+        let scanner = CredentialScanner::new();
+        // The 64-hex secret from `detects_64_char_lowercase_hex_secret`, regrouped
+        // into colon-separated byte pairs (32 groups × 2 hex = 64 hex digits).
+        let raw = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let colon = raw
+            .as_bytes()
+            .chunks(2)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join(":");
+        let dash = colon.replace(':', "-");
+        for secret in [&colon, &dash] {
+            let result = scanner.scan(&format!("token={secret}"));
+            assert!(
+                result
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+                "separator-delimited hex secret must be flagged: {secret:?} -> {:?}",
+                result.findings
+            );
+            // And end-to-end the raw secret must not survive redaction.
+            let text = format!(r#"{{"api_token":"{secret}"}}"#);
+            let redacted = scanner.scan(&text).redact(&text);
+            assert!(!redacted.contains(secret.as_str()), "raw secret survived: {redacted}");
+        }
+    }
+
+    /// A MAC address (12 hex digits) and a dash-delimited UUID (32 hex digits)
+    /// carry separators but stay well under the 64-digit bar, so the AAASM-4075
+    /// pass must leave them clean — no new false positives.
+    #[test]
+    fn does_not_flag_short_separated_hex() {
+        let scanner = CredentialScanner::new();
+        for text in ["mac de:ad:be:ef:00:01 up", "id 550e8400-e29b-41d4-a716-446655440000 ok"] {
+            let result = scanner.scan(text);
+            assert!(
+                !result
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+                "short separated hex wrongly flagged: {text:?} -> {:?}",
+                result.findings
+            );
+        }
     }
 
     /// A 64-char base64 secret in punctuation-delimited (compact-JSON) context —
