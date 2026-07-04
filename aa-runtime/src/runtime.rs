@@ -46,6 +46,7 @@ fn spawn_proxy(
     tracker: &TaskTracker,
     broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
     active_layers: crate::layer::LayerSet,
+    gateway_endpoint: Option<&str>,
     degraded_layers: &mut Vec<String>,
 ) {
     let proxy_bin = match which::which("aa-proxy") {
@@ -60,11 +61,21 @@ fn spawn_proxy(
 
     let proxy_broadcast_tx = broadcast_tx.clone();
     let proxy_bin_display = proxy_bin.display().to_string();
+    // AAASM-4127: forward the runtime's gateway endpoint to the child proxy so
+    // its MCP `tools/call` enforcement activates. The proxy reads
+    // `AA_PROXY_GATEWAY_ENDPOINT`; without it the spawned proxy runs in
+    // raw-passthrough with MCP enforcement silently OFF. When an endpoint is
+    // configured we also disable `llm_only` so non-LLM MCP hosts are intercepted
+    // and routed to the gateway rather than transparently tunnelled.
+    let proxy_gateway_endpoint = gateway_endpoint.map(str::to_owned);
     tracker.spawn(async move {
-        let result = tokio::process::Command::new(&proxy_bin)
-            .kill_on_drop(true)
-            .status()
-            .await;
+        let mut command = tokio::process::Command::new(&proxy_bin);
+        command.kill_on_drop(true);
+        if let Some(endpoint) = &proxy_gateway_endpoint {
+            command.env("AA_PROXY_GATEWAY_ENDPOINT", endpoint);
+            command.env("AA_PROXY_LLM_ONLY", "false");
+        }
+        let result = command.status().await;
         match result {
             Ok(status) if status.success() => {
                 tracing::info!("proxy subsystem exited normally");
@@ -644,7 +655,13 @@ pub async fn run(config: RuntimeConfig) {
 
     // Spawn the proxy subsystem if the PROXY layer is active.
     if active_layers.contains(crate::layer::LayerSet::PROXY) {
-        spawn_proxy(&tracker, &broadcast_tx, active_layers, &mut degraded_layers);
+        spawn_proxy(
+            &tracker,
+            &broadcast_tx,
+            active_layers,
+            config.gateway_endpoint.as_deref(),
+            &mut degraded_layers,
+        );
     }
 
     // Shared metrics — future health/metrics endpoints will receive an Arc clone.
@@ -1122,7 +1139,7 @@ mod tests {
         let active_layers = crate::layer::LayerSet::PROXY | crate::layer::LayerSet::SDK;
         let mut degraded = Vec::new();
 
-        super::spawn_proxy(&tracker, &tx, active_layers, &mut degraded);
+        super::spawn_proxy(&tracker, &tx, active_layers, None, &mut degraded);
 
         std::env::set_var("PATH", &orig_path);
 
@@ -1165,7 +1182,7 @@ mod tests {
         let active_layers = crate::layer::LayerSet::PROXY | crate::layer::LayerSet::SDK;
         let mut degraded = Vec::new();
 
-        super::spawn_proxy(&tracker, &tx, active_layers, &mut degraded);
+        super::spawn_proxy(&tracker, &tx, active_layers, None, &mut degraded);
 
         // Binary found, so no immediate degradation.
         assert!(!degraded.contains(&"proxy".to_string()));
