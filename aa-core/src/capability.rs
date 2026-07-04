@@ -146,9 +146,17 @@ pub fn action_to_capability(action: &crate::GovernanceAction) -> Option<Capabili
             mode: FileMode::Read, ..
         } => Some(Capability::FileRead),
         GovernanceAction::FileAccess {
-            mode: FileMode::Write | FileMode::Append | FileMode::Delete,
+            mode: FileMode::Write | FileMode::Append,
             ..
         } => Some(Capability::FileWrite),
+        // Delete is a first-class verb (AAASM-4103): it maps to FileDelete, not
+        // FileWrite, so a policy can allow writes yet deny deletes. A pre-4103
+        // `file_write` allow no longer implies delete — delete needs an explicit
+        // `file_delete` grant (fail-closed). See `capability_is_denied` for the
+        // reverse defense-in-depth rule on the deny side.
+        GovernanceAction::FileAccess {
+            mode: FileMode::Delete, ..
+        } => Some(Capability::FileDelete),
         GovernanceAction::NetworkRequest { .. } => Some(Capability::NetworkOutbound),
         GovernanceAction::ProcessExec { .. } => Some(Capability::TerminalExec),
         GovernanceAction::SendMessage { .. } => None,
@@ -448,12 +456,13 @@ mod tests {
     }
 
     #[test]
-    fn action_to_capability_file_delete_is_file_write() {
+    fn action_to_capability_file_delete_is_file_delete() {
+        // AAASM-4103: Delete is its own capability, not FileWrite.
         let action = crate::GovernanceAction::FileAccess {
             path: "/tmp/f".to_string(),
             mode: crate::policy::FileMode::Delete,
         };
-        assert_eq!(super::action_to_capability(&action), Some(Capability::FileWrite));
+        assert_eq!(super::action_to_capability(&action), Some(Capability::FileDelete));
     }
 
     #[test]
