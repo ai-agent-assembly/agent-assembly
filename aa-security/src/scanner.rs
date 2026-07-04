@@ -647,6 +647,12 @@ fn is_base64_char(b: u8) -> bool {
 /// 3. **Long base64 run** (AAASM-3870) — a contiguous base64/base64url run
 ///    longer than [`BASE64_RUN_MIN_LEN`] whose entropy exceeds the gate, closing
 ///    the > 64-char length evasion that the pass-1 upper bound skipped.
+/// 4. **Separator-grouped hex run** (AAASM-4075) — a hex run broken into groups
+///    by `:` / `-` separators (e.g. `de:ad:be:ef:…`) whose total hex-digit count
+///    reaches [`HEX_RUN_MIN_LEN`]. Such reformatting splits the contiguous run
+///    into 2-char groups that clear neither the pass-2 length bar nor (with `-`
+///    kept inside the base64 alphabet) the pass-3 entropy gate, so it evades
+///    passes 1-3 entirely; this pass closes that gap.
 fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
     // Pass 1: whitespace-delimited high-entropy tokens, length 20–64.
     let mut offset = 0usize;
@@ -673,6 +679,8 @@ fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
     // Passes 2 & 3: contiguous encoded-blob runs that the token pass misses.
     scan_long_hex_runs(text, findings);
     scan_long_base64_runs(text, findings);
+    // Pass 4: separator-grouped hex runs the contiguous passes miss (AAASM-4075).
+    scan_separated_hex_runs(text, findings);
 }
 
 /// Pass 2 — flag every contiguous hex run of length ≥ [`HEX_RUN_MIN_LEN`].
@@ -711,6 +719,60 @@ fn scan_long_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
         let run = &text[start..i];
         if run.len() > BASE64_RUN_MIN_LEN && shannon_entropy(run) > ENTROPY_BITS_GATE {
             findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
+        }
+    }
+}
+
+/// Returns `true` for the intra-token separators that a secret can be rewritten
+/// around to split it into small groups (`de:ad:be:ef…`, `de-ad-be-ef…`). Note
+/// `-` is also a base64url character, so dash-grouping additionally dilutes the
+/// per-run entropy below [`ENTROPY_BITS_GATE`] — both reasons the contiguous
+/// passes miss these tokens.
+fn is_hex_group_separator(b: u8) -> bool {
+    matches!(b, b':' | b'-')
+}
+
+/// Pass 4 — flag a hex run split into groups by `:` / `-` separators whose total
+/// hex-digit count reaches [`HEX_RUN_MIN_LEN`] (AAASM-4075).
+///
+/// Scans each maximal run of `[0-9a-fA-F:-]`, counts only the hex digits (the
+/// separators are the evasion and are not part of the secret's entropy), and
+/// flags the run — trimmed to its first/last hex digit — when it both contains a
+/// separator (a contiguous run is already handled by [`scan_long_hex_runs`]) and
+/// carries at least [`HEX_RUN_MIN_LEN`] hex digits. Keying the bar on the same
+/// 64-digit threshold as the contiguous rule keeps benign grouped hex — MAC
+/// addresses (12 digits) and dash-delimited UUIDs (32 digits) — below the bar.
+fn scan_separated_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_hexdigit() && !is_hex_group_separator(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut hex_count = 0usize;
+        let mut has_separator = false;
+        let mut first_hex: Option<usize> = None;
+        let mut last_hex = start;
+        while i < bytes.len() && (bytes[i].is_ascii_hexdigit() || is_hex_group_separator(bytes[i])) {
+            if bytes[i].is_ascii_hexdigit() {
+                hex_count += 1;
+                first_hex.get_or_insert(i);
+                last_hex = i;
+            } else {
+                has_separator = true;
+            }
+            i += 1;
+        }
+        if has_separator && hex_count >= HEX_RUN_MIN_LEN {
+            if let Some(span_start) = first_hex {
+                findings.push(CredentialFinding::new(
+                    CredentialKind::GenericHighEntropy,
+                    span_start,
+                    last_hex + 1,
+                ));
+            }
         }
     }
 }
