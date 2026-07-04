@@ -187,7 +187,7 @@ do not block.
 ### 5. Homebrew tap — formula version + matching SHA256SUMS
 
 ```bash
-FORMULA="$(gh api repos/ai-agent-assembly/homebrew-agent-assembly/contents/Formula/aasm.rb \
+FORMULA="$(gh api repos/ai-agent-assembly/homebrew-tap/contents/Formula/aasm.rb \
   --jq '.content' | base64 -d)"
 printf '%s\n' "$FORMULA" | grep -E '^[[:space:]]*version '
 printf '%s\n' "$FORMULA" | grep -E 'sha256 '

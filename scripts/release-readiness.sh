@@ -105,8 +105,8 @@ for SECRET in CRATES_IO_TOKEN CROSS_REPO_DISPATCH_PAT HOMEBREW_TAP_TOKEN \
   fi
 done
 
-# 9. No open bot PRs on homebrew-agent-assembly for OTHER versions
-STALE_TAP_PRS="$(gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state open \
+# 9. No open bot PRs on homebrew-tap for OTHER versions
+STALE_TAP_PRS="$(gh pr list --repo ai-agent-assembly/homebrew-tap --state open \
   --json number,headRefName,title \
   --jq ".[] | select(.headRefName | startswith(\"bot/aasm-\")) | select(.headRefName != \"bot/aasm-${VERSION}\") | \"#\(.number) \(.headRefName)\"" \
   2>/dev/null || true)"

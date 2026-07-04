@@ -62,16 +62,16 @@ else
 fi
 
 # ─── 2. Homebrew tap ──────────────────────────────────────────────────────
-FORMULA_CONTENT="$(gh api repos/ai-agent-assembly/homebrew-agent-assembly/contents/Formula/aasm.rb \
+FORMULA_CONTENT="$(gh api repos/ai-agent-assembly/homebrew-tap/contents/Formula/aasm.rb \
   --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true)"
 if [ -z "$FORMULA_CONTENT" ]; then
   bad "Homebrew tap  " "Formula/aasm.rb not readable" \
       "gh workflow run release.yml --repo ai-agent-assembly/agent-assembly -f release_tag=$TAG"
 elif printf '%s\n' "$FORMULA_CONTENT" | grep -qE "^[[:space:]]*version \"${VERSION//./\\.}\""; then
-  TAP_PR_STATE="$(gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state all \
+  TAP_PR_STATE="$(gh pr list --repo ai-agent-assembly/homebrew-tap --state all \
     --json state,number,headRefName \
     --jq ".[] | select(.headRefName == \"bot/aasm-${VERSION}\") | .state" 2>/dev/null | head -1)"
-  TAP_PR_NUM="$(gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state all \
+  TAP_PR_NUM="$(gh pr list --repo ai-agent-assembly/homebrew-tap --state all \
     --json state,number,headRefName \
     --jq ".[] | select(.headRefName == \"bot/aasm-${VERSION}\") | .number" 2>/dev/null | head -1)"
   if [ "$TAP_PR_STATE" = "MERGED" ]; then
@@ -82,12 +82,12 @@ elif printf '%s\n' "$FORMULA_CONTENT" | grep -qE "^[[:space:]]*version \"${VERSI
     ok "Homebrew tap  " "formula at $VERSION on master (no matching bot PR found)"
   fi
 else
-  TAP_PR_NUM="$(gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state open \
+  TAP_PR_NUM="$(gh pr list --repo ai-agent-assembly/homebrew-tap --state open \
     --json number,headRefName \
     --jq ".[] | select(.headRefName == \"bot/aasm-${VERSION}\") | .number" 2>/dev/null | head -1)"
   if [ -n "$TAP_PR_NUM" ]; then
     bad "Homebrew tap  " "formula on master NOT at $VERSION; PR #${TAP_PR_NUM} open" \
-        "gh pr merge ${TAP_PR_NUM} --repo ai-agent-assembly/homebrew-agent-assembly --squash"
+        "gh pr merge ${TAP_PR_NUM} --repo ai-agent-assembly/homebrew-tap --squash"
   else
     bad "Homebrew tap  " "formula on master NOT at $VERSION; no open bot PR" \
         "gh workflow run release.yml --repo ai-agent-assembly/agent-assembly -f release_tag=$TAG"
