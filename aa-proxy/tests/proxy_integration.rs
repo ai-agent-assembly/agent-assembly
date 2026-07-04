@@ -18,6 +18,7 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         ca_dir: ca_dir.to_path_buf(),
         cert_cache_capacity: 10,
         llm_only: false,
+        mitm_hosts: Vec::new(),
         denied_hosts: Vec::new(),
         network_allowlist: Vec::new(),
         skip_upstream_tls_verify: false,
@@ -412,6 +413,7 @@ mod attacker {
             ca_dir: ca_dir.to_path_buf(),
             cert_cache_capacity: 10,
             llm_only: false,
+            mitm_hosts: Vec::new(),
             denied_hosts: Vec::new(),
             network_allowlist: allowlist,
             // Accept the mock upstream's self-signed cert.

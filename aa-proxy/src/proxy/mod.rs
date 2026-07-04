@@ -1196,6 +1196,7 @@ mod tests {
             ca_dir: dir.path().to_path_buf(),
             cert_cache_capacity: 8,
             llm_only: true,
+            mitm_hosts: Vec::new(),
             denied_hosts,
             network_allowlist: allowlist,
             skip_upstream_tls_verify: false,
