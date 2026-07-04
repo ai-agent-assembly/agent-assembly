@@ -99,22 +99,45 @@ async fn llm_spend_accrues_and_later_call_is_denied_once_limit_exceeded() {
 }
 
 #[tokio::test]
-async fn unknown_model_accrues_no_spend() {
+async fn unknown_model_accrues_fallback_spend_and_engages_cap() {
+    // AAASM-4069 fail-closed: an unrecognised model name must NOT price to
+    // $0.00. Previously it did, so no spend accrued and the daily/monthly cap
+    // was bypassed entirely — an agent could pick any model outside the
+    // built-in pricing table for unlimited unmetered spend. It must now be
+    // priced at the conservative fallback rate so spend accrues and the cap
+    // engages just like a known model.
     let (audit_tx, _audit_rx) = mpsc::channel::<AuditEntry>(4096);
     let service = make_service(audit_tx);
 
-    // An unrecognised model name prices to $0.00, so no spend accrues and a
-    // large number of calls all stay allowed.
-    for _ in 0..5 {
-        let resp = service
-            .check_action(Request::new(llm_call_request("some-unknown-model", 1_000_000)))
-            .await
-            .expect("check_action ok")
-            .into_inner();
-        assert_eq!(
-            resp.decision,
-            Decision::Allow as i32,
-            "unknown model must accrue no spend and stay allowed"
-        );
-    }
+    // First call: spend is $0 at evaluation, so it is allowed. It then accrues
+    // the fallback-priced cost (1M prompt tokens at the costliest-known rate,
+    // ~$15) against the agent's $0.50 daily budget.
+    let first = service
+        .check_action(Request::new(llm_call_request("some-unknown-model", 1_000_000)))
+        .await
+        .expect("first check_action ok")
+        .into_inner();
+    assert_eq!(
+        first.decision,
+        Decision::Allow as i32,
+        "first unknown-model call must be allowed (no spend recorded yet)"
+    );
+
+    // Second call: accrued fallback spend now exceeds the $0.50 daily limit, so
+    // Stage 7 denies it. Before the fix this stayed allowed forever.
+    let second = service
+        .check_action(Request::new(llm_call_request("some-unknown-model", 1_000_000)))
+        .await
+        .expect("second check_action ok")
+        .into_inner();
+    assert_eq!(
+        second.decision,
+        Decision::Deny as i32,
+        "unknown-model spend must accrue and eventually hit the daily cap"
+    );
+    assert!(
+        second.reason.contains("budget"),
+        "deny reason must reference the budget, got: {}",
+        second.reason
+    );
 }

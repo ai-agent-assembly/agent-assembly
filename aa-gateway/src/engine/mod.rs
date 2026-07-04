@@ -1460,18 +1460,21 @@ impl PolicyEngine {
     /// [`crate::budget::types::Model::infer_from_name`]; output tokens are
     /// treated as `0` because the pre-execution check has no completion yet.
     ///
-    /// Returns `0.0` for an unrecognised model (no spend accrued) so an
-    /// unknown name never silently charges against a wrong price.
+    /// AAASM-4069 — an unrecognised model name is priced at the conservative
+    /// fallback rate (the costliest known model), NOT `0.0`. Returning `0.0`
+    /// previously made the `cost <= 0.0` accrual short-circuit skip the budget
+    /// reservation, so an agent could pick any model outside the built-in table
+    /// (o1/o3, gemini-*, llama-*, "gpt-5", …) for unlimited unmetered spend.
+    /// Fail closed instead: unknown-model spend still accrues and the cap
+    /// engages. The model name is attacker-controlled — this must not panic.
     pub fn llm_call_cost_usd(&self, model_name: &str, input_tokens: u64, output_tokens: u64) -> f64 {
-        let Some((provider, model)) = crate::budget::types::Model::infer_from_name(model_name) else {
-            return 0.0;
-        };
         use rust_decimal::prelude::ToPrimitive;
-        self.budget
-            .pricing()
-            .cost_usd(provider, model, input_tokens, output_tokens)
-            .to_f64()
-            .unwrap_or(0.0)
+        let pricing = self.budget.pricing();
+        let cost = match crate::budget::types::Model::infer_from_name(model_name) {
+            Some((provider, model)) => pricing.cost_usd(provider, model, input_tokens, output_tokens),
+            None => pricing.fallback_cost_usd(input_tokens, output_tokens),
+        };
+        cost.to_f64().unwrap_or(0.0)
     }
 
     /// Resolve the budget tenancy (`team_id`, `org_id`) for `ctx` from the
@@ -2413,6 +2416,45 @@ mod tests {
 
         let state = engine.budget.agent_state(&ctx.agent_id).expect("agent has spend");
         assert_eq!(state.spent_usd, rust_decimal::Decimal::try_from(10.0).unwrap());
+    }
+
+    #[test]
+    fn unknown_model_accrues_fallback_spend_and_engages_budget_cap() {
+        // AAASM-4069 regression: a model outside the built-in pricing table
+        // (here "o3-mini") must NOT price to $0. Previously it did, and the
+        // `cost <= 0.0` accrual short-circuit skipped the budget reservation
+        // entirely — an agent could pick any current model for unlimited
+        // unmetered spend. It must now fail closed: cost > 0, spend accrues,
+        // and the daily cap engages just like a known model.
+        let mut doc = empty_doc();
+        doc.budget = Some(BudgetPolicy {
+            daily_limit_usd: Some(1.0),
+            monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
+            timezone: None,
+            action_on_exceed: ActionOnExceed::default(),
+            window: None,
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+
+        // An unrecognized model with a non-empty prompt is priced at the
+        // conservative fallback rate, never $0.
+        let cost = engine.llm_call_cost_usd("o3-mini", 10_000, 0);
+        assert!(cost > 0.0, "unknown model must not price to zero (was {cost})");
+
+        // The priced spend actually reserves against the budget, so repeated
+        // unknown-model calls exhaust the $1 daily cap and are then denied —
+        // proving the reservation is reachable, not bypassed.
+        let mut denied = false;
+        for _ in 0..1_000 {
+            if engine.check_and_accrue_llm_spend(&ctx, cost).is_some() {
+                denied = true;
+                break;
+            }
+        }
+        assert!(denied, "unknown-model spend must eventually hit the daily cap");
     }
 
     #[test]
