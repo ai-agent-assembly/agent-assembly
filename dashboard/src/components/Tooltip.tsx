@@ -10,7 +10,9 @@ interface TooltipProps {
 
 export function Tooltip({ content, children, open = false }: Readonly<TooltipProps>) {
   const [hovered, setHovered] = useState(false)
-  const visible = open || hovered
+  // Empty content means "no tooltip" — lets callers conditionally attach a hint
+  // (e.g. only when a control is disabled) without wrapping markup twice.
+  const visible = (open || hovered) && content.length > 0
 
   return (
     <span
