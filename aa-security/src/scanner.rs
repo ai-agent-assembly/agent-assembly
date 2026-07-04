@@ -1429,6 +1429,49 @@ mod tests {
         assert!(redacted.contains("[REDACTED:GenericHighEntropy]"));
     }
 
+    /// AAASM-4093: a `<64-hex><base64-tail>` run trips both the long-hex pass
+    /// (span `[start, 64)`) and the base64-run pass (span `[start, 64+K)`). Both
+    /// are `GenericHighEntropy` at the same offset; the shorter hex finding sorts
+    /// first. The same-kind dedupe must *widen* the survivor's span to the union
+    /// rather than drop the longer base64 finding, or `redact` forwards the tail
+    /// bytes `[64, 64+K)` in the clear. Assert the full run is masked and that the
+    /// secret is still counted exactly once.
+    #[test]
+    fn redact_covers_base64_tail_after_long_hex_run() {
+        let scanner = CredentialScanner::new();
+        // 64 hex digits followed by a non-hex base64 tail; the whole contiguous
+        // run is base64 and its Shannon entropy clears the gate, so the base64
+        // pass spans the full 84 chars while the hex pass stops at 64.
+        let hex = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let tail = "GHIJKLMNOPQRSTUVWXYZ";
+        let secret = format!("{hex}{tail}");
+        assert_eq!(hex.len(), 64);
+        assert!(!tail.is_empty(), "tail must add bytes beyond the 64-hex span");
+
+        let text = format!(r#"{{"api_token":"{secret}"}}"#);
+        let result = scanner.scan(&text);
+
+        // Exactly one GenericHighEntropy finding for the run (count unchanged
+        // from the AAASM-4071 same-kind dedupe).
+        let entropy_findings = result
+            .findings
+            .iter()
+            .filter(|f| f.kind == CredentialKind::GenericHighEntropy)
+            .count();
+        assert_eq!(
+            entropy_findings, 1,
+            "expected exactly one GenericHighEntropy finding: {:?}",
+            result.findings
+        );
+
+        // The whole run — including the base64 tail bytes [64, 64+K) — is masked.
+        let redacted = result.redact(&text);
+        assert!(!redacted.contains(&secret), "raw secret survived: {redacted}");
+        assert!(!redacted.contains(tail), "base64 tail survived un-redacted: {redacted}");
+        assert!(!redacted.contains(hex), "hex prefix survived: {redacted}");
+        assert!(redacted.contains("[REDACTED:GenericHighEntropy]"));
+    }
+
     /// The additive passes must not disturb the original whitespace-token
     /// behaviour: a database URL still yields its specific URL finding plus the
     /// whole-blob GenericHighEntropy at offset 0 (3 findings), exactly as the
