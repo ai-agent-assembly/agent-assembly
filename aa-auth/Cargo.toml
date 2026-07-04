@@ -16,6 +16,11 @@ rand = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Fast lookup-hash for the API-key prefix index (AAASM-4075): a truncated SHA-256
+# of the raw key selects the single candidate entry so `validate_detailed` runs
+# argon2 once, not once per stored key, on unauthenticated input. sha2 is a
+# workspace dependency already pulled in transitively by argon2.
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 utoipa = { workspace = true }

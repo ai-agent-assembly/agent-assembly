@@ -246,6 +246,7 @@ pub fn generate_test_api_key(id: &str, scopes: Vec<Scope>) -> (String, ApiKeyEnt
         label: Some(format!("test key {id}")),
         team_id: None,
         org_id: None,
+        key_lookup: Some(key.lookup()),
     };
     (key.as_str().to_string(), entry)
 }

@@ -434,6 +434,9 @@ impl AppState {
                     label: Some("local single-process admin key".to_string()),
                     team_id: None,
                     org_id: None,
+                    // AAASM-4075 — index this key so credential validation runs
+                    // argon2 only on the matching candidate, not per-key.
+                    key_lookup: Some(parsed.lookup()),
                 };
                 state.auth_config = Arc::new(AuthConfig {
                     mode: AuthMode::On,

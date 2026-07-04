@@ -156,6 +156,7 @@ async fn issued_jwt_retains_caller_tenant() {
         label: Some("tenant key".to_string()),
         team_id: Some("alpha".to_string()),
         org_id: Some("org-1".to_string()),
+        key_lookup: Some(key.lookup()),
     };
     let app = common::test_app_with_auth(&[entry], 1000);
 
