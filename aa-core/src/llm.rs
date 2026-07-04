@@ -54,8 +54,9 @@ impl Model {
     /// `gpt-4o-2024-08-06` maps to `Gpt4o` (not `Gpt4`) and
     /// `command-r-plus` maps to `CommandRPlus` (not `CommandR`).
     ///
-    /// Returns `None` for an unrecognised model name — the caller treats an
-    /// unknown model as zero cost (no spend accrued) rather than guessing.
+    /// Returns `None` for an unrecognised model name. Callers must decide how
+    /// to price an unknown model — the gateway budget stage fails closed at a
+    /// conservative fallback rate (AAASM-4069) rather than treating it as free.
     pub fn infer_from_name(name: &str) -> Option<(Provider, Self)> {
         let n = name.to_ascii_lowercase();
         // Most-specific patterns first; substrings of others must come earlier.

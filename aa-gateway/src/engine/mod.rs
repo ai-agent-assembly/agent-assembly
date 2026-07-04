@@ -1460,18 +1460,21 @@ impl PolicyEngine {
     /// [`crate::budget::types::Model::infer_from_name`]; output tokens are
     /// treated as `0` because the pre-execution check has no completion yet.
     ///
-    /// Returns `0.0` for an unrecognised model (no spend accrued) so an
-    /// unknown name never silently charges against a wrong price.
+    /// AAASM-4069 — an unrecognised model name is priced at the conservative
+    /// fallback rate (the costliest known model), NOT `0.0`. Returning `0.0`
+    /// previously made the `cost <= 0.0` accrual short-circuit skip the budget
+    /// reservation, so an agent could pick any model outside the built-in table
+    /// (o1/o3, gemini-*, llama-*, "gpt-5", …) for unlimited unmetered spend.
+    /// Fail closed instead: unknown-model spend still accrues and the cap
+    /// engages. The model name is attacker-controlled — this must not panic.
     pub fn llm_call_cost_usd(&self, model_name: &str, input_tokens: u64, output_tokens: u64) -> f64 {
-        let Some((provider, model)) = crate::budget::types::Model::infer_from_name(model_name) else {
-            return 0.0;
-        };
         use rust_decimal::prelude::ToPrimitive;
-        self.budget
-            .pricing()
-            .cost_usd(provider, model, input_tokens, output_tokens)
-            .to_f64()
-            .unwrap_or(0.0)
+        let pricing = self.budget.pricing();
+        let cost = match crate::budget::types::Model::infer_from_name(model_name) {
+            Some((provider, model)) => pricing.cost_usd(provider, model, input_tokens, output_tokens),
+            None => pricing.fallback_cost_usd(input_tokens, output_tokens),
+        };
+        cost.to_f64().unwrap_or(0.0)
     }
 
     /// Resolve the budget tenancy (`team_id`, `org_id`) for `ctx` from the
