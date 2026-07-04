@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { analyticsFetch } from './analyticsFetch'
 import { encodeFilters } from './urlState'
 import type { FilterParams } from './urlState'
 import type { GroupBy } from './costBreakdown'
@@ -24,9 +25,9 @@ export function useCostBreakdownQuery(groupBy: GroupBy, filters: FilterParams) {
     queryFn: async (): Promise<CostBreakdownResponse> => {
       const params = encodeFilters(filters)
       params.set('groupBy', groupBy)
-      const res = await fetch(`/api/v1/analytics/cost-breakdown?${params}`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      return res.json() as Promise<CostBreakdownResponse>
+      return analyticsFetch<CostBreakdownResponse>(
+        `/api/v1/analytics/cost-breakdown?${params}`,
+      )
     },
   })
 }

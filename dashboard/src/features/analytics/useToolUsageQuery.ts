@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { analyticsFetch } from './analyticsFetch'
 import { encodeFilters } from './urlState'
 import type { FilterParams } from './urlState'
 import type { ToolStat } from './toolUsageUtils'
@@ -12,9 +13,9 @@ export function useToolUsageQuery(filters: FilterParams) {
     queryKey: ['analytics', 'tool-usage', filters],
     queryFn: async (): Promise<ToolUsageResponse> => {
       const params = encodeFilters(filters)
-      const res = await fetch(`/api/v1/analytics/tool-usage?${params}`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      return res.json() as Promise<ToolUsageResponse>
+      return analyticsFetch<ToolUsageResponse>(
+        `/api/v1/analytics/tool-usage?${params}`,
+      )
     },
   })
 }
