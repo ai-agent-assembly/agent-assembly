@@ -81,7 +81,7 @@ triple.
 
 ### 5. Homebrew tap
 
-`ai-agent-assembly/homebrew-agent-assembly` `master` carries
+`ai-agent-assembly/homebrew-tap` `master` carries
 `Formula/aasm.rb` with `version "0.0.1-alpha.9"` and 4 `sha256` literals
 that match the sums in the release's `SHA256SUMS` asset.
 

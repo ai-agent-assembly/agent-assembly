@@ -209,4 +209,4 @@ confirm.
   fresh tag, not a republish).
 - Validate go-sdk channels (decoupled, RUNBOOK section 7).
 - Touch repos other than `ai-agent-assembly/{agent-assembly,python-sdk,
-  node-sdk,homebrew-agent-assembly}`.
+  node-sdk,homebrew-tap}`.

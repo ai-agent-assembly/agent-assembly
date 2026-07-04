@@ -6,7 +6,7 @@
 
 This runbook assumes the operator has push rights to
 `ai-agent-assembly/agent-assembly` and merge rights on the
-`ai-agent-assembly/homebrew-agent-assembly` tap.
+`ai-agent-assembly/homebrew-tap` tap.
 
 ---
 
@@ -110,7 +110,7 @@ per the "Post-release verification" section of `RELEASING.md`.
 ## 4. Manual gate — merge the Homebrew tap PR (within ~5 minutes)
 
 `release.yml`'s `update-homebrew-tap` job opens a PR against
-`ai-agent-assembly/homebrew-agent-assembly` with branch `bot/aasm-<version>`
+`ai-agent-assembly/homebrew-tap` with branch `bot/aasm-<version>`
 and title `🤖 (formula): aasm <version>`.
 
 **Until that PR is merged, `brew install aasm` will still resolve to the
@@ -118,8 +118,8 @@ previous version.** The formula file on the tap's master branch is what
 Homebrew reads; the bot-created branch is invisible to `brew install`.
 
 ```bash
-gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state open
-gh pr merge <pr-number> --repo ai-agent-assembly/homebrew-agent-assembly --squash
+gh pr list --repo ai-agent-assembly/homebrew-tap --state open
+gh pr merge <pr-number> --repo ai-agent-assembly/homebrew-tap --squash
 ```
 
 ## 5. Verification
