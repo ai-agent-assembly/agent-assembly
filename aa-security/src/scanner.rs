@@ -401,8 +401,37 @@ impl CredentialScanner {
         scan_azure_account_key(text, &mut findings);
 
         findings.sort_by_key(|f| f.offset);
+        dedupe_same_kind_overlaps(&mut findings);
         ScanResult { findings }
     }
+}
+
+/// Drop findings of the **same kind** whose byte span overlaps an
+/// already-kept finding of that kind, so a single secret caught by two passes
+/// of one detector is reported once.
+///
+/// The high-entropy detector runs additive passes (whitespace-token, long-hex,
+/// long-base64): a base64 secret that is *also* a whitespace token — e.g. a PEM
+/// body on its own line, or a bare `token=<b64>` — trips both the token pass and
+/// the base64-run pass, yielding two overlapping `GenericHighEntropy` findings
+/// for one secret. This collapses that double-count.
+///
+/// Only *same-kind* overlaps are removed: overlaps across different kinds are
+/// deliberately kept, because a connection URL legitimately produces distinct
+/// coincident findings (e.g. `PostgresUrl` + `GenericHighEntropy` + `EmailAddress`
+/// over the same region) that `redact` coalesces into one span but that callers
+/// count as separate detections. `findings` must already be sorted by `offset`,
+/// so any earlier same-kind finding `k` has `k.offset <= f.offset`; the spans
+/// therefore overlap exactly when `f.offset < k.end`.
+fn dedupe_same_kind_overlaps(findings: &mut Vec<CredentialFinding>) {
+    let mut kept: Vec<CredentialFinding> = Vec::with_capacity(findings.len());
+    for f in findings.drain(..) {
+        let covered = kept.iter().any(|k| k.kind == f.kind && f.offset < k.end);
+        if !covered {
+            kept.push(f);
+        }
+    }
+    *findings = kept;
 }
 
 // ---------------------------------------------------------------------------
