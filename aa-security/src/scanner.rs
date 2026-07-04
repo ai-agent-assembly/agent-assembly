@@ -1244,6 +1244,59 @@ mod tests {
         );
     }
 
+    /// AAASM-4075: a 64-hex secret reformatted with `:` (or `-`) separators
+    /// splits into 2-char groups that clear neither the contiguous-hex length bar
+    /// nor the base64 entropy gate, evading passes 1-3. The separator-grouped pass
+    /// must still flag it once the total hex-digit count reaches 64.
+    #[test]
+    fn detects_separator_delimited_hex_secret() {
+        let scanner = CredentialScanner::new();
+        // The 64-hex secret from `detects_64_char_lowercase_hex_secret`, regrouped
+        // into colon-separated byte pairs (32 groups × 2 hex = 64 hex digits).
+        let raw = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let colon = raw
+            .as_bytes()
+            .chunks(2)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join(":");
+        let dash = colon.replace(':', "-");
+        for secret in [&colon, &dash] {
+            let result = scanner.scan(&format!("token={secret}"));
+            assert!(
+                result
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+                "separator-delimited hex secret must be flagged: {secret:?} -> {:?}",
+                result.findings
+            );
+            // And end-to-end the raw secret must not survive redaction.
+            let text = format!(r#"{{"api_token":"{secret}"}}"#);
+            let redacted = scanner.scan(&text).redact(&text);
+            assert!(!redacted.contains(secret.as_str()), "raw secret survived: {redacted}");
+        }
+    }
+
+    /// A MAC address (12 hex digits) and a dash-delimited UUID (32 hex digits)
+    /// carry separators but stay well under the 64-digit bar, so the AAASM-4075
+    /// pass must leave them clean — no new false positives.
+    #[test]
+    fn does_not_flag_short_separated_hex() {
+        let scanner = CredentialScanner::new();
+        for text in ["mac de:ad:be:ef:00:01 up", "id 550e8400-e29b-41d4-a716-446655440000 ok"] {
+            let result = scanner.scan(text);
+            assert!(
+                !result
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+                "short separated hex wrongly flagged: {text:?} -> {:?}",
+                result.findings
+            );
+        }
+    }
+
     /// Branded literal prefixes must remain detected after the rewrite — the
     /// long-token rules must not displace the high-signal AC matchers.
     #[test]
