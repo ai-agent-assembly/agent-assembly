@@ -378,28 +378,33 @@ impl ProxyServer {
         Ok(upstream_tls)
     }
 
-    /// Non-LLM, gateway-aware data path: read the HTTP request inside the
-    /// MitM TLS tunnel, try to parse it as an MCP `tools/call` envelope, and
-    /// either enforce the gateway's decision on the wire or forward the
-    /// body transparently.
+    /// Non-LLM MitM data path: read the HTTP request inside the MitM TLS
+    /// tunnel, run credential-DLP on the body, and — when a `gateway` is
+    /// configured — also enforce MCP `tools/call` decisions on the wire.
+    ///
+    /// AAASM-4126: this path runs the credential scanner (`intercept_request`)
+    /// on **every** MitM'd non-LLM body before forwarding, so a secret POSTed to
+    /// a provider outside the built-in `detect_api` set (reached via
+    /// `llm_only=false` or an operator `mitm_hosts` entry) is scanned exactly as
+    /// an LLM-host body is. `gateway` is `Option` because DLP must run whether or
+    /// not MCP enforcement is configured; the previous no-gateway path
+    /// raw-copied the body upstream un-inspected.
     ///
     /// Branches:
     ///
     /// * **MCP detected, gateway returns `Allow` or `Redact`** — forward the
-    ///   original body to upstream and continue bidirectional copy.
-    ///   (`Redact` is logged and forwarded as `Allow` for now — response-side
-    ///   rewriting lands in AAASM-1941.)
+    ///   (DLP-scanned) body to upstream and relay the redacted response.
     /// * **MCP detected, gateway returns `Deny`** — write a JSON-RPC 2.0
     ///   error envelope to the client TLS stream, do not dial upstream.
-    /// * **MCP detected, gateway RPC failed** — log the error, fall through
-    ///   to transparent forward. Soft-degradation matches `aa-runtime`'s
-    ///   policy.
-    /// * **Body is not MCP** — transparently forward what was read plus the
-    ///   remaining stream.
-    async fn handle_non_llm_with_gateway(
+    /// * **MCP detected, gateway RPC failed** — deny (fail-closed) unless
+    ///   `mcp_fail_open` is set.
+    /// * **Body is not MCP (or no gateway)** — DLP-scan, then forward the
+    ///   (possibly redacted) body and relay the upstream response. A `Block`
+    ///   verdict returns 403 without dialing upstream.
+    async fn handle_non_llm_mitm(
         self: &Arc<Self>,
         client_tls: tokio_rustls::server::TlsStream<TcpStream>,
-        gateway: &Arc<Mutex<GatewayClient>>,
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
         host: &str,
         target: &str,
     ) -> Result<(), ProxyError> {
@@ -423,126 +428,172 @@ impl ProxyServer {
             return Ok(());
         }
 
-        // MCP detection. On a successful request-side eval, carry the parsed
-        // call AND its serialised args bytes forward so the response-side
-        // path below can re-use both for audit emission (args go into
-        // `ToolCallDetail.args_json`).
-        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = if let Some(call) =
-            parse_mcp_request(&req.body)
-        {
-            let target_url = format!("https://{host}{path}", path = req.target);
-            // Serialise args once and reuse across the audit emissions on
-            // both the request-side (Allow/Deny) and the response-side
-            // (post-redact) paths.
-            let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
-            match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
-                Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
-                    tracing::info!(
-                        tool_name = %call.tool_name,
-                        %host,
-                        "MCP call allowed by gateway, forwarding to upstream with response-side scanning",
-                    );
-                    self.interceptor
-                        .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
-                        .await;
-                    Some((call, args_bytes))
+        // MCP detection — only when a gateway is configured. On a successful
+        // request-side eval, carry the parsed call AND its serialised args bytes
+        // forward so the response-side path below can re-use both for audit
+        // emission (args go into `ToolCallDetail.args_json`). With no gateway
+        // there is nothing to enforce MCP against, so `mcp_call` stays `None`
+        // and the body still flows through the credential-DLP gate below.
+        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = if let Some(gateway) = gateway {
+            if let Some(call) = parse_mcp_request(&req.body) {
+                let target_url = format!("https://{host}{path}", path = req.target);
+                // Serialise args once and reuse across the audit emissions on
+                // both the request-side (Allow/Deny) and the response-side
+                // (post-redact) paths.
+                let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
+                match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
+                    Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
+                        tracing::info!(
+                            tool_name = %call.tool_name,
+                            %host,
+                            "MCP call allowed by gateway, forwarding to upstream with response-side scanning",
+                        );
+                        self.interceptor
+                            .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
+                            .await;
+                        Some((call, args_bytes))
+                    }
+                    Ok(McpDecision::Deny { reason }) => {
+                        tracing::info!(
+                            tool_name = %call.tool_name,
+                            %host,
+                            %reason,
+                            "MCP call denied by gateway, returning JSON-RPC error envelope",
+                        );
+                        self.interceptor
+                            .emit_mcp_decision(&call.tool_name, &args_bytes, true, &reason)
+                            .await;
+                        let body = build_jsonrpc_error_response(-32000, &reason);
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(),
+                            body,
+                        );
+                        let mut client_tls = client_reader.into_inner();
+                        client_tls.write_all(resp.as_bytes()).await?;
+                        let _ = client_tls.shutdown().await;
+                        return Ok(());
+                    }
+                    Err(e) if self.config.mcp_fail_open => {
+                        tracing::warn!(
+                            tool_name = %call.tool_name,
+                            %host,
+                            error = %e,
+                            "gateway CheckAction failed; forwarding without enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        // AAASM-3357: fail-closed — a governance check that
+                        // cannot reach its authority must not pass through. Deny
+                        // the MCP call with a JSON-RPC error envelope, mirroring
+                        // an explicit gateway Deny.
+                        let reason = "MCP enforcement unavailable: gateway CheckAction failed (fail-closed)";
+                        tracing::error!(
+                            tool_name = %call.tool_name,
+                            %host,
+                            error = %e,
+                            "gateway CheckAction failed; denying MCP call (fail-closed). \
+                             Set AA_PROXY_MCP_FAIL_OPEN=1 to forward without enforcement instead.",
+                        );
+                        self.interceptor
+                            .emit_mcp_decision(&call.tool_name, &args_bytes, true, reason)
+                            .await;
+                        let body = build_jsonrpc_error_response(-32000, reason);
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(),
+                            body,
+                        );
+                        let mut client_tls = client_reader.into_inner();
+                        client_tls.write_all(resp.as_bytes()).await?;
+                        let _ = client_tls.shutdown().await;
+                        return Ok(());
+                    }
                 }
-                Ok(McpDecision::Deny { reason }) => {
-                    tracing::info!(
-                        tool_name = %call.tool_name,
-                        %host,
-                        %reason,
-                        "MCP call denied by gateway, returning JSON-RPC error envelope",
-                    );
-                    self.interceptor
-                        .emit_mcp_decision(&call.tool_name, &args_bytes, true, &reason)
-                        .await;
-                    let body = build_jsonrpc_error_response(-32000, &reason);
-                    let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(),
-                        body,
-                    );
-                    let mut client_tls = client_reader.into_inner();
-                    client_tls.write_all(resp.as_bytes()).await?;
-                    let _ = client_tls.shutdown().await;
-                    return Ok(());
-                }
-                Err(e) if self.config.mcp_fail_open => {
-                    tracing::warn!(
-                        tool_name = %call.tool_name,
-                        %host,
-                        error = %e,
-                        "gateway CheckAction failed; forwarding without enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
-                    );
-                    None
-                }
-                Err(e) => {
-                    // AAASM-3357: fail-closed — a governance check that
-                    // cannot reach its authority must not pass through. Deny
-                    // the MCP call with a JSON-RPC error envelope, mirroring
-                    // an explicit gateway Deny.
-                    let reason = "MCP enforcement unavailable: gateway CheckAction failed (fail-closed)";
-                    tracing::error!(
-                        tool_name = %call.tool_name,
-                        %host,
-                        error = %e,
-                        "gateway CheckAction failed; denying MCP call (fail-closed). \
-                         Set AA_PROXY_MCP_FAIL_OPEN=1 to forward without enforcement instead.",
-                    );
-                    self.interceptor
-                        .emit_mcp_decision(&call.tool_name, &args_bytes, true, reason)
-                        .await;
-                    let body = build_jsonrpc_error_response(-32000, reason);
-                    let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(),
-                        body,
-                    );
-                    let mut client_tls = client_reader.into_inner();
-                    client_tls.write_all(resp.as_bytes()).await?;
-                    let _ = client_tls.shutdown().await;
-                    return Ok(());
-                }
+            } else if is_unenforceable_tool_call(&req.body) {
+                // AAASM-4070: `parse_mcp_request` only deserialises a single
+                // JSON-RPC object, so a `tools/call` wrapped in a batch array
+                // (`[{…tools/call…}]`) or malformed just enough to fail strict
+                // extraction returned `None` above — and the pre-fix `else` branch
+                // forwarded that body upstream with NO gateway CheckAction and NO
+                // credential/DLP scan. A steered agent used a one-element batch to
+                // slip a denied tool call past enforcement. Fail closed: this body
+                // is a tool-call attempt the enforcement path cannot evaluate, so
+                // deny it with a JSON-RPC error envelope instead of forwarding,
+                // mirroring an explicit gateway Deny. Non-MCP traffic is unaffected
+                // (the detector only fires on `method == "tools/call"`).
+                let reason = "MCP tools/call in unsupported JSON-RPC framing (batch array or malformed envelope) cannot be enforced and was rejected (fail-closed)";
+                tracing::warn!(
+                    %host,
+                    "MCP tools/call bypass attempt via batch/malformed framing; denying (fail-closed). \
+                     The gateway CheckAction and credential scan cannot evaluate this envelope.",
+                );
+                self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+                // -32600 = JSON-RPC "Invalid Request": the proxy does not accept
+                // this framing for an enforceable tool call.
+                let body = build_jsonrpc_error_response(-32600, reason);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body,
+                );
+                let mut client_tls = client_reader.into_inner();
+                client_tls.write_all(resp.as_bytes()).await?;
+                let _ = client_tls.shutdown().await;
+                return Ok(());
+            } else {
+                None
             }
-        } else if is_unenforceable_tool_call(&req.body) {
-            // AAASM-4070: `parse_mcp_request` only deserialises a single
-            // JSON-RPC object, so a `tools/call` wrapped in a batch array
-            // (`[{…tools/call…}]`) or malformed just enough to fail strict
-            // extraction returned `None` above — and the pre-fix `else` branch
-            // forwarded that body upstream with NO gateway CheckAction and NO
-            // credential/DLP scan. A steered agent used a one-element batch to
-            // slip a denied tool call past enforcement. Fail closed: this body
-            // is a tool-call attempt the enforcement path cannot evaluate, so
-            // deny it with a JSON-RPC error envelope instead of forwarding,
-            // mirroring an explicit gateway Deny. Non-MCP traffic is unaffected
-            // (the detector only fires on `method == "tools/call"`).
-            let reason = "MCP tools/call in unsupported JSON-RPC framing (batch array or malformed envelope) cannot be enforced and was rejected (fail-closed)";
-            tracing::warn!(
-                %host,
-                "MCP tools/call bypass attempt via batch/malformed framing; denying (fail-closed). \
-                 The gateway CheckAction and credential scan cannot evaluate this envelope.",
-            );
-            self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
-            // -32600 = JSON-RPC "Invalid Request": the proxy does not accept
-            // this framing for an enforceable tool call.
-            let body = build_jsonrpc_error_response(-32600, reason);
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body,
-            );
-            let mut client_tls = client_reader.into_inner();
-            client_tls.write_all(resp.as_bytes()).await?;
-            let _ = client_tls.shutdown().await;
-            return Ok(());
         } else {
             None
         };
 
-        // Forward the (consumed) request body to upstream.
+        // AAASM-4126: run credential-DLP on the request body for EVERY MitM'd
+        // non-LLM host — not just the three built-in LLM providers. Before this,
+        // body-DLP ran only inside `handle_llm_mitm` (gated on `detect_api`), so
+        // a secret POSTed to any other MitM'd host reached upstream un-scanned.
+        // A `Block` verdict refuses the forward (403); a redact verdict forwards
+        // the redacted bytes. An MCP `Deny`/unenforceable body already returned
+        // above, so this only runs on bodies that are about to be forwarded.
+        let verdict = self
+            .interceptor
+            .intercept_request(&req.body, self.config.credential_action);
+        if verdict.decision == VerdictDecision::Block {
+            tracing::info!(
+                %host,
+                findings = verdict.findings.len(),
+                "credential_action=Block on non-LLM MitM host: refusing forward, returning 403",
+            );
+            self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::Blocked)
+                .await;
+            let mut client_tls = client_reader.into_inner();
+            client_tls
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            let _ = client_tls.shutdown().await;
+            return Ok(());
+        }
+        let forward_body: &[u8] = match verdict.decision {
+            VerdictDecision::ForwardRedacted => {
+                self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::ForwardedRedacted)
+                    .await;
+                verdict
+                    .redacted_body
+                    .as_deref()
+                    .expect("ForwardRedacted always carries redacted_body")
+            }
+            VerdictDecision::AlertAndForward => {
+                self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::Forwarded)
+                    .await;
+                &req.body
+            }
+            _ => &req.body,
+        };
+
+        // Forward the (consumed, DLP-scanned) request body to upstream.
         let upstream_tls = self.dial_upstream_tls(host, target).await?;
-        let outgoing = serialize_http_request(&req, &req.body);
+        let outgoing = serialize_http_request(&req, forward_body);
         let mut client_tls = client_reader.into_inner();
         let (upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
         upstream_write.write_all(&outgoing).await?;
@@ -911,9 +962,13 @@ impl ProxyServer {
         // Emit allow audit event for the accepted connection.
         self.interceptor.emit_policy_decision(host, false).await;
 
-        // When llm_only is enabled, skip TLS MitM for non-LLM hosts and
-        // just tunnel the raw TCP bytes transparently.
-        if self.config.llm_only && detect_api(host) == LlmApiPattern::Unknown {
+        // When llm_only is enabled, skip TLS MitM for hosts we don't intercept
+        // and just tunnel the raw TCP bytes transparently. AAASM-4126: the set
+        // of intercepted hosts is no longer just the three built-in LLM
+        // providers — an operator-configured `mitm_hosts` entry is MitM'd (and
+        // therefore DLP-scanned) too, so a secret to another provider isn't
+        // silently tunnelled past the scanner.
+        if self.config.llm_only && !self.should_mitm(host) {
             tracing::debug!(%host, "llm_only mode — transparent tunnel (no MitM)");
             return self.transparent_tunnel(stream, target).await;
         }
@@ -944,36 +999,32 @@ impl ProxyServer {
             return self.handle_llm_mitm(client_tls, host, target, pattern).await;
         }
 
-        // Non-LLM pattern.
-        //
-        // When a gateway client is configured, attempt MCP detection
-        // on the inbound HTTPS request body: a JSON-RPC 2.0 `tools/call`
-        // envelope is dispatched to the gateway PolicyService and
-        // enforced on the wire (Deny → JSON-RPC error envelope, Allow →
-        // forward, Redact → forward unchanged until AAASM-1941 lands
-        // response-side rewriting). Non-MCP bodies fall through to a
-        // transparent forward of the bytes we've already read.
-        //
-        // When no gateway is configured, preserve the historical raw
-        // bidirectional copy (no body inspection at all).
-        if let Some(gateway) = self.gateway_client.get() {
-            self.handle_non_llm_with_gateway(client_tls, gateway, host, target)
-                .await?;
-        } else {
-            let upstream_tls = self.dial_upstream_tls(host, target).await?;
-            let (mut client_read, mut client_write) = tokio::io::split(client_tls);
-            let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
-
-            let client_to_upstream = tokio::io::copy(&mut client_read, &mut upstream_write);
-            let upstream_to_client = tokio::io::copy(&mut upstream_read, &mut client_write);
-
-            tokio::select! {
-                r = client_to_upstream => { r?; }
-                r = upstream_to_client => { r?; }
-            }
-        }
+        // Non-LLM pattern (this host is MitM'd because llm_only is off, or it
+        // was added to `mitm_hosts`). Route through the non-LLM handler, which
+        // reads the inbound request, runs credential-DLP on the body
+        // (AAASM-4126) and — when a gateway is configured — also enforces MCP
+        // `tools/call` decisions on the wire. Passing the gateway as `Option`
+        // means a body reaching upstream is always scanned, whether or not a
+        // gateway is configured (the historical no-gateway path raw-copied the
+        // body upstream un-inspected, which let a secret to any MitM'd non-LLM
+        // host bypass DLP).
+        self.handle_non_llm_mitm(client_tls, self.gateway_client.get(), host, target)
+            .await?;
 
         Ok(())
+    }
+
+    /// Whether the proxy should TLS-MitM (and therefore body-scan) traffic to
+    /// `host`. `true` for a built-in LLM provider (`detect_api`) or any host
+    /// matching the operator-configured [`ProxyConfig::mitm_hosts`] set. Under
+    /// `llm_only`, hosts for which this returns `false` are transparent-tunnelled
+    /// without inspection; when `llm_only` is `false` every host is MitM'd and
+    /// this gate is not consulted. `host` must already be canonicalised.
+    fn should_mitm(&self, host: &str) -> bool {
+        detect_api(host) != LlmApiPattern::Unknown
+            // fail-closed variant: an empty `mitm_hosts` adds nothing (returns
+            // false) rather than matching every host.
+            || aa_core::policy::is_host_allowed_by_egress_allowlist_fail_closed(host, &self.config.mitm_hosts)
     }
 
     /// Raw bidirectional copy between an established client `stream` and the
