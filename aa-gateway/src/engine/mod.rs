@@ -2419,6 +2419,45 @@ mod tests {
     }
 
     #[test]
+    fn unknown_model_accrues_fallback_spend_and_engages_budget_cap() {
+        // AAASM-4069 regression: a model outside the built-in pricing table
+        // (here "o3-mini") must NOT price to $0. Previously it did, and the
+        // `cost <= 0.0` accrual short-circuit skipped the budget reservation
+        // entirely — an agent could pick any current model for unlimited
+        // unmetered spend. It must now fail closed: cost > 0, spend accrues,
+        // and the daily cap engages just like a known model.
+        let mut doc = empty_doc();
+        doc.budget = Some(BudgetPolicy {
+            daily_limit_usd: Some(1.0),
+            monthly_limit_usd: None,
+            org_daily_limit_usd: None,
+            org_monthly_limit_usd: None,
+            timezone: None,
+            action_on_exceed: ActionOnExceed::default(),
+            window: None,
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+
+        // An unrecognized model with a non-empty prompt is priced at the
+        // conservative fallback rate, never $0.
+        let cost = engine.llm_call_cost_usd("o3-mini", 10_000, 0);
+        assert!(cost > 0.0, "unknown model must not price to zero (was {cost})");
+
+        // The priced spend actually reserves against the budget, so repeated
+        // unknown-model calls exhaust the $1 daily cap and are then denied —
+        // proving the reservation is reachable, not bypassed.
+        let mut denied = false;
+        for _ in 0..1_000 {
+            if engine.check_and_accrue_llm_spend(&ctx, cost).is_some() {
+                denied = true;
+                break;
+            }
+        }
+        assert!(denied, "unknown-model spend must eventually hit the daily cap");
+    }
+
+    #[test]
     fn check_and_accrue_llm_spend_no_overspend_under_parallel_checks() {
         // AAASM-3986: the atomic check+commit must never let concurrent
         // reservations for one tenant overspend the daily limit. With a $10

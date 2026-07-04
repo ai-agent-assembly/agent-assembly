@@ -214,6 +214,29 @@ mod tests {
     }
 
     #[test]
+    fn fallback_cost_usd_is_nonzero_and_uses_costliest_rate() {
+        // AAASM-4069: an unknown model must price at the costliest known rate
+        // (Claude 3 Opus) so it can never be cheaper than a metered call.
+        fn d(s: &str) -> rust_decimal::Decimal {
+            s.parse().unwrap()
+        }
+        let table = PricingTable::default_table();
+        // 10,000 input tokens × $0.015/1k = $0.15 (Opus input rate).
+        assert_eq!(table.fallback_cost_usd(10_000, 0), d("0.15"));
+        // 1,000 input + 1,000 output = $0.015 + $0.075 = $0.09.
+        assert_eq!(table.fallback_cost_usd(1_000, 1_000), d("0.09"));
+        // The fallback rate matches the most expensive default entry.
+        let opus = table
+            .entry(
+                crate::budget::types::Provider::Anthropic,
+                crate::budget::types::Model::Claude3Opus,
+            )
+            .unwrap();
+        assert_eq!(table.fallback_entry().input_per_1k_usd, opus.input_per_1k_usd);
+        assert_eq!(table.fallback_entry().output_per_1k_usd, opus.output_per_1k_usd);
+    }
+
+    #[test]
     fn load_from_file_falls_back_to_defaults_on_missing_file() {
         let path = std::path::Path::new("/nonexistent/path/pricing.json");
         let table = PricingTable::load_from_file(path);
