@@ -607,3 +607,52 @@ async fn get_approval_includes_routing_status_when_recorded() {
     let history = json["routing_status"]["history"].as_array().unwrap();
     assert_eq!(history[0]["from_role"], "oncall");
 }
+
+// ── AAASM-4104 — per-operation authz regression coverage ────────────────────
+//
+// The approval decision endpoints (approve, reject) gate the mutation behind the
+// compile-time `RequireWrite` scope extractor, which runs before the handler
+// body. These tests lock in that a read-scoped caller is rejected with 403 so a
+// future refactor that drops the extractor is caught.
+
+use aa_api::auth::scope::Scope;
+
+#[tokio::test]
+async fn approve_action_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/approvals/00000000-0000-0000-0000-000000000000/approve")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn reject_action_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/approvals/00000000-0000-0000-0000-000000000000/reject")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}

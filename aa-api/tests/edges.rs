@@ -649,3 +649,40 @@ async fn list_topology_edges_with_team_filter_keeps_only_team_edges() {
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0]["source_agent_id"], hex(0x01));
 }
+
+// ── AAASM-4104 — per-operation authz regression coverage ────────────────────
+//
+// `POST /topology/edges` gates edge creation behind the compile-time
+// `RequireWrite` scope extractor, which runs before the handler body. This test
+// locks in that a read-scoped caller is rejected with 403 so a future refactor
+// that drops the extractor is caught.
+
+use aa_api::auth::scope::Scope;
+
+#[tokio::test]
+async fn report_edge_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/topology/edges")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "from_agent_id": hex(0x01),
+                        "to_agent_id": hex(0x02),
+                        "edge_type": "delegation",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
