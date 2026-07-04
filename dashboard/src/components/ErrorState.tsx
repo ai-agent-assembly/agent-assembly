@@ -20,7 +20,7 @@ const COPY: Record<ErrorStateKind, CopyEntry> = {
     msg: (
       <>
         Backend returned <code>503 service_unavailable</code>. This is usually transient — retry in a few seconds.
-        If it persists, check <code>status.agent-assembly.io</code>.
+        If it persists, check <code>status.agent-assembly.com</code>.
       </>
     ),
     cta: 'Retry',

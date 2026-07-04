@@ -93,6 +93,42 @@ pub fn parse_mcp_request(body: &[u8]) -> Option<McpToolCall> {
     })
 }
 
+/// Classify a body that [`parse_mcp_request`] could **not** turn into a single
+/// [`McpToolCall`], to decide whether it is nonetheless an attempt to invoke
+/// `tools/call` that must be fail-closed rather than blindly forwarded upstream.
+///
+/// Returns `true` when the body is JSON-RPC framing that references a
+/// `tools/call` the strict single-object parser cannot fully evaluate:
+///
+/// * a top-level JSON-RPC **batch** array with any element carrying
+///   `method == "tools/call"` — `parse_mcp_request` only deserialises a single
+///   object, so a one-element batch `[{…tools/call…}]` returned `None` and was
+///   forwarded upstream with no gateway decision (AAASM-4070); or
+/// * a top-level object whose `method == "tools/call"` but whose envelope fails
+///   strict extraction (wrong/missing `jsonrpc`, missing `params.name`) — a
+///   steered agent could malform these to slip a tool call past enforcement.
+///
+/// Non-JSON bodies, and JSON carrying no `tools/call` method, return `false` so
+/// ordinary non-MCP HTTPS traffic on this route still flows through untouched.
+/// This is deliberately a *detector*, not a parser: it does not change the
+/// `None`-on-false-positive contract [`parse_mcp_request`] relies on.
+pub fn is_unenforceable_tool_call(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    match &value {
+        serde_json::Value::Array(elements) => elements.iter().any(mentions_tools_call),
+        serde_json::Value::Object(_) => mentions_tools_call(&value),
+        _ => false,
+    }
+}
+
+/// True when `value` is a JSON object whose `method` field is exactly
+/// `"tools/call"` — the marker that a JSON-RPC request intends to invoke a tool.
+fn mentions_tools_call(value: &serde_json::Value) -> bool {
+    value.get("method").and_then(serde_json::Value::as_str) == Some(MCP_TOOLS_CALL_METHOD)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +216,77 @@ mod tests {
         let call = parse_mcp_request(body).expect("missing arguments must still parse");
         assert_eq!(call.tool_name, "ping");
         assert_eq!(call.arguments, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn one_element_batch_tools_call_is_flagged_unenforceable() {
+        // AAASM-4070 regression: the bypass vector. `parse_mcp_request` only
+        // deserialises a single object, so this one-element batch returned
+        // `None` and the caller's pre-fix `else` branch forwarded it upstream
+        // with NO gateway CheckAction and NO credential/DLP scan. The detector
+        // must flag it so the caller fails closed instead of forwarding.
+        let body = br#"[
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "execute_bash", "arguments": { "cmd": "rm -rf /" } }
+            }
+        ]"#;
+        assert!(
+            parse_mcp_request(body).is_none(),
+            "batch must not parse as a single call"
+        );
+        assert!(
+            is_unenforceable_tool_call(body),
+            "a one-element batch tools/call must be flagged so it is fail-closed, not forwarded"
+        );
+    }
+
+    #[test]
+    fn multi_element_batch_with_a_tools_call_is_flagged() {
+        // A tool call hidden among benign requests in a batch must still be
+        // flagged — any element carrying `method == "tools/call"` taints the
+        // whole batch, since the strict parser can enforce none of them.
+        let body = br#"[
+            {"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}},
+            {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_file"}}
+        ]"#;
+        assert!(is_unenforceable_tool_call(body));
+    }
+
+    #[test]
+    fn object_tools_call_that_fails_strict_extraction_is_flagged() {
+        // `method == "tools/call"` but the envelope fails strict extraction
+        // (wrong jsonrpc version, missing `params.name`). `parse_mcp_request`
+        // returns `None` for these by contract; the detector must still flag
+        // them as tool-call attempts so a malformed envelope cannot slip a call
+        // past enforcement via the blind-forward path.
+        let wrong_version = br#"{"jsonrpc":"1.0","id":1,"method":"tools/call","params":{"name":"x"}}"#;
+        assert!(parse_mcp_request(wrong_version).is_none());
+        assert!(is_unenforceable_tool_call(wrong_version));
+
+        let missing_name = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#;
+        assert!(parse_mcp_request(missing_name).is_none());
+        assert!(is_unenforceable_tool_call(missing_name));
+    }
+
+    #[test]
+    fn non_tool_call_traffic_is_not_flagged() {
+        // The detector must NOT fire on ordinary non-MCP HTTPS traffic that
+        // happens to flow through this route, or it would break every non-tool
+        // request. A single non-tools/call object, a batch of non-tool
+        // requests, non-JSON bodies, an empty body, and a plain JSON array of
+        // scalars must all pass through untouched (return `false`).
+        assert!(!is_unenforceable_tool_call(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#
+        ));
+        assert!(!is_unenforceable_tool_call(
+            br#"[{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}]"#
+        ));
+        assert!(!is_unenforceable_tool_call(br#"{"hello":"world"}"#));
+        assert!(!is_unenforceable_tool_call(b"not json at all"));
+        assert!(!is_unenforceable_tool_call(b""));
+        assert!(!is_unenforceable_tool_call(b"[1, 2, 3]"));
     }
 }

@@ -1238,7 +1238,10 @@ impl PolicyServiceImpl {
     /// response is returned unchanged when:
     /// * the action is not an `LLM_CALL`;
     /// * the decision was already a hard `Deny` (a denied call did not run);
-    /// * the model name is unrecognised (cost resolves to `0.0`).
+    /// * the priced cost is `0.0` — a genuinely empty call (0 tokens). An
+    ///   unrecognised model name is NO LONGER treated as zero cost (AAASM-4069):
+    ///   it fails closed at the conservative fallback rate so the budget cap
+    ///   still engages instead of being bypassed.
     fn maybe_accrue_llm_spend(&self, req: &CheckActionRequest, response: CheckActionResponse) -> CheckActionResponse {
         use aa_proto::assembly::policy::v1::action_context::Action;
 
