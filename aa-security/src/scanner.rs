@@ -123,7 +123,7 @@ pub enum CredentialKind {
     // Generic
     /// High-entropy or long encoded token: a whitespace token of length 20–64
     /// with Shannon entropy > 4.5 bits/char, a contiguous hex run ≥ 64 chars, or
-    /// a contiguous base64 run > 64 chars above the entropy gate.
+    /// a contiguous base64 run ≥ 20 chars above the entropy gate.
     GenericHighEntropy,
     // Policy-defined
     /// A pattern defined in the policy document's `data.sensitive_patterns` field.
@@ -370,7 +370,7 @@ impl CredentialScanner {
     /// 3. Email address scan.
     /// 4. Generic high-entropy / long-encoded-blob scan: a 20–64 whitespace token
     ///    above the entropy gate, a contiguous hex run ≥ 64 chars, or a base64
-    ///    run > 64 chars above the gate (see [`scan_high_entropy`]).
+    ///    run ≥ 20 chars above the gate (see [`scan_high_entropy`]).
     pub fn scan(&self, text: &str) -> ScanResult {
         if self.disabled {
             return ScanResult { findings: Vec::new() };
@@ -401,8 +401,37 @@ impl CredentialScanner {
         scan_azure_account_key(text, &mut findings);
 
         findings.sort_by_key(|f| f.offset);
+        dedupe_same_kind_overlaps(&mut findings);
         ScanResult { findings }
     }
+}
+
+/// Drop findings of the **same kind** whose byte span overlaps an
+/// already-kept finding of that kind, so a single secret caught by two passes
+/// of one detector is reported once.
+///
+/// The high-entropy detector runs additive passes (whitespace-token, long-hex,
+/// long-base64): a base64 secret that is *also* a whitespace token — e.g. a PEM
+/// body on its own line, or a bare `token=<b64>` — trips both the token pass and
+/// the base64-run pass, yielding two overlapping `GenericHighEntropy` findings
+/// for one secret. This collapses that double-count.
+///
+/// Only *same-kind* overlaps are removed: overlaps across different kinds are
+/// deliberately kept, because a connection URL legitimately produces distinct
+/// coincident findings (e.g. `PostgresUrl` + `GenericHighEntropy` + `EmailAddress`
+/// over the same region) that `redact` coalesces into one span but that callers
+/// count as separate detections. `findings` must already be sorted by `offset`,
+/// so any earlier same-kind finding `k` has `k.offset <= f.offset`; the spans
+/// therefore overlap exactly when `f.offset < k.end`.
+fn dedupe_same_kind_overlaps(findings: &mut Vec<CredentialFinding>) {
+    let mut kept: Vec<CredentialFinding> = Vec::with_capacity(findings.len());
+    for f in findings.drain(..) {
+        let covered = kept.iter().any(|k| k.kind == f.kind && f.offset < k.end);
+        if !covered {
+            kept.push(f);
+        }
+    }
+    *findings = kept;
 }
 
 // ---------------------------------------------------------------------------
@@ -620,13 +649,18 @@ const HEX_RUN_MIN_LEN: usize = 64;
 
 /// Minimum length of a contiguous base64/base64url run flagged as a secret.
 ///
-/// The whitespace-token pass below already covers high-entropy tokens of length
-/// 20–64; this strictly-greater bound (> 64) is the additive AAASM-3870 rule that
-/// catches the long encoded blobs the 64-byte cap skipped, without re-flagging
-/// anything the token pass already handles. Combined with the entropy gate it
-/// stays clear of long-but-structured strings (e.g. connection strings) whose
-/// per-run entropy is below the gate.
-const BASE64_RUN_MIN_LEN: usize = 64;
+/// Set to 20 — the same floor the whitespace-token pass uses (AAASM-4071). The
+/// token pass only inspects `split_whitespace()` tokens, so a base64 secret in a
+/// punctuation-delimited (compact-JSON) context — e.g. `{"api_token":"<64 b64>"}`
+/// — is invisible to it: the whole payload is one whitespace token > 64 chars, so
+/// pass 1 skips it, and the quote-delimited run was exactly 64 chars, which the
+/// old strictly-greater `> 64` bound also skipped, letting a 64-char base64 secret
+/// survive `scan()` clean on the authoritative enforce path. Mirroring the pass-1
+/// floor here (with `>=`, matching [`HEX_RUN_MIN_LEN`]) closes that gap; the
+/// [`ENTROPY_BITS_GATE`] — not the length — is what bounds false positives, so
+/// benign structured runs (hex ids, UUIDs, connection strings) stay below the gate
+/// and clean regardless of length.
+const BASE64_RUN_MIN_LEN: usize = 20;
 
 /// Returns `true` if `b` is in the base64 / base64url alphabet
 /// (alphanumerics plus `+ / - _`). `=` padding and all delimiters are excluded.
@@ -644,9 +678,10 @@ fn is_base64_char(b: u8) -> bool {
 /// 2. **Long hex run** (AAASM-3870) — a contiguous hex run ≥ [`HEX_RUN_MIN_LEN`],
 ///    closing the hex-encoding evasion (hex entropy is capped at 4.0 bits/char,
 ///    below the gate, so pass 1 never catches it at any length).
-/// 3. **Long base64 run** (AAASM-3870) — a contiguous base64/base64url run
-///    longer than [`BASE64_RUN_MIN_LEN`] whose entropy exceeds the gate, closing
-///    the > 64-char length evasion that the pass-1 upper bound skipped.
+/// 3. **Base64 run** (AAASM-3870, AAASM-4071) — a contiguous base64/base64url run
+///    ≥ [`BASE64_RUN_MIN_LEN`] whose entropy exceeds the gate, closing both the
+///    old > 64-char length evasion and the compact-JSON evasion where a base64
+///    secret carries no whitespace and its delimited run is ≤ 64 chars.
 fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
     // Pass 1: whitespace-delimited high-entropy tokens, length 20–64.
     let mut offset = 0usize;
@@ -694,8 +729,8 @@ fn scan_long_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
     }
 }
 
-/// Pass 3 — flag every contiguous base64/base64url run longer than
-/// [`BASE64_RUN_MIN_LEN`] whose Shannon entropy exceeds [`ENTROPY_BITS_GATE`].
+/// Pass 3 — flag every contiguous base64/base64url run of length
+/// ≥ [`BASE64_RUN_MIN_LEN`] whose Shannon entropy exceeds [`ENTROPY_BITS_GATE`].
 fn scan_long_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -709,7 +744,7 @@ fn scan_long_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
             i += 1;
         }
         let run = &text[start..i];
-        if run.len() > BASE64_RUN_MIN_LEN && shannon_entropy(run) > ENTROPY_BITS_GATE {
+        if run.len() >= BASE64_RUN_MIN_LEN && shannon_entropy(run) > ENTROPY_BITS_GATE {
             findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
         }
     }
@@ -1180,6 +1215,32 @@ mod tests {
             ">64-char base64 token must be flagged: {:?}",
             result.findings
         );
+    }
+
+    /// A 64-char base64 secret in punctuation-delimited (compact-JSON) context —
+    /// `{"api_token":"<64 b64>"}` — has no whitespace, so the whole payload is one
+    /// token > 64 chars that pass 1 skips, and the quote-delimited run is exactly
+    /// 64 chars, which the old strictly-greater `> 64` bound also skipped, letting
+    /// the secret survive `scan()` clean. Lowering the base64-run floor to 20 with
+    /// `>=` (AAASM-4071) must now flag and redact it. (Regression.)
+    #[test]
+    fn detects_64_char_base64_secret_in_compact_json() {
+        let scanner = CredentialScanner::new();
+        // 64 base64 chars, Shannon entropy ~5.6 bits/char (well above the gate).
+        let secret = "xK9mP2nQvR7sT4wY1aB6dF3hJ8lN0cE5gI7kM1oQ3uW9zA2bD4fH6jL8pR0tV5xZ";
+        assert_eq!(secret.len(), 64, "fixture must be exactly 64 base64 chars");
+        let text = format!(r#"{{"api_token":"{secret}"}}"#);
+        let result = scanner.scan(&text);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "64-char base64 secret in compact JSON must be flagged: {:?}",
+            result.findings
+        );
+        let redacted = result.redact(&text);
+        assert!(!redacted.contains(secret), "raw base64 secret survived: {redacted}");
     }
 
     /// Branded literal prefixes must remain detected after the rewrite — the
