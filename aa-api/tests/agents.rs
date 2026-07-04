@@ -617,3 +617,72 @@ async fn get_agent_subtree_burn_includes_self_and_child_spend() {
         .collect();
     assert!(names.contains(&"(self)"), "self row must be present; got {names:?}");
 }
+
+// ── AAASM-4104 — per-operation authz regression coverage ────────────────────
+//
+// The agent write endpoints gate mutation behind the compile-time `RequireWrite`
+// scope extractor. These tests lock in that a read-scoped caller is rejected
+// with 403 so a future refactor that drops the extractor is caught. The scope
+// extractor runs before the handler body, so an arbitrary agent id suffices.
+
+use aa_api::auth::scope::Scope;
+
+#[tokio::test]
+async fn delete_agent_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/agents/{}", hex_id(0x01)))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn suspend_agent_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/agents/{}/suspend", hex_id(0x01)))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn resume_agent_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/agents/{}/resume", hex_id(0x01)))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
