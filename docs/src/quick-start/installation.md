@@ -83,10 +83,10 @@ AASM_REQUIRE_SIGNATURE=1 curl -sSf https://agent-assembly.com/install.sh | sh
 ## Homebrew (macOS / Linux)
 
 Install the latest tagged `aasm` release from the
-[Homebrew tap](https://github.com/ai-agent-assembly/homebrew-agent-assembly):
+[Homebrew tap](https://github.com/ai-agent-assembly/homebrew-tap):
 
 ```sh
-brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+brew install ai-agent-assembly/tap/aasm
 ```
 
 ## Pre-built binaries (manual)

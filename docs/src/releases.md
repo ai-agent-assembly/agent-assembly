@@ -26,7 +26,7 @@ A single coordinated tag push fans out to every channel:
 |---|---|
 | GitHub Releases | `aasm-*.tar.gz` binaries + `SHA256SUMS` |
 | crates.io | Workspace crates at the tag version |
-| Homebrew tap | `aasm` formula ([`homebrew-agent-assembly`](https://github.com/ai-agent-assembly/homebrew-agent-assembly)) |
+| Homebrew tap | `aasm` formula ([`homebrew-tap`](https://github.com/ai-agent-assembly/homebrew-tap)) |
 | PyPI / npm | SDK packages |
 | GHCR | Container image |
 
