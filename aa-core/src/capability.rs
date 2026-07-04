@@ -273,6 +273,23 @@ mod tests {
     }
 
     #[test]
+    fn capability_from_str_file_delete() {
+        assert_eq!("file_delete".parse::<Capability>().unwrap(), Capability::FileDelete);
+    }
+
+    #[test]
+    fn capability_file_delete_display_round_trips() {
+        let cap = Capability::FileDelete;
+        assert_eq!(cap.to_string(), "file_delete");
+        assert_eq!(cap.to_string().parse::<Capability>().unwrap(), cap);
+    }
+
+    #[test]
+    fn capability_file_delete_distinct_from_file_write() {
+        assert_ne!(Capability::FileDelete, Capability::FileWrite);
+    }
+
+    #[test]
     fn capability_from_str_network_outbound() {
         assert_eq!(
             "network_outbound".parse::<Capability>().unwrap(),
@@ -500,5 +517,45 @@ mod tests {
             command: "ls".to_string(),
         };
         assert_eq!(super::action_to_capability(&action), Some(Capability::TerminalExec));
+    }
+
+    // ------------------------------------------------------------------
+    // capability_is_denied tests (AAASM-4103 fail-closed migration)
+    // ------------------------------------------------------------------
+
+    fn deny_set(caps: &[Capability]) -> BTreeSet<Capability> {
+        caps.iter().cloned().collect()
+    }
+
+    #[test]
+    fn capability_is_denied_direct_match() {
+        let deny = deny_set(&[Capability::FileDelete]);
+        assert!(super::capability_is_denied(&deny, &Capability::FileDelete));
+    }
+
+    #[test]
+    fn capability_is_denied_empty_set_is_false() {
+        let deny = deny_set(&[]);
+        assert!(!super::capability_is_denied(&deny, &Capability::FileDelete));
+    }
+
+    #[test]
+    fn capability_is_denied_file_write_deny_also_denies_delete() {
+        // Defense in depth: a pre-4103 `file_write` deny keeps blocking delete.
+        let deny = deny_set(&[Capability::FileWrite]);
+        assert!(super::capability_is_denied(&deny, &Capability::FileDelete));
+    }
+
+    #[test]
+    fn capability_is_denied_file_delete_deny_does_not_deny_write() {
+        // Asymmetric: delete-deny must NOT block writes.
+        let deny = deny_set(&[Capability::FileDelete]);
+        assert!(!super::capability_is_denied(&deny, &Capability::FileWrite));
+    }
+
+    #[test]
+    fn capability_is_denied_unrelated_deny_is_false() {
+        let deny = deny_set(&[Capability::NetworkOutbound]);
+        assert!(!super::capability_is_denied(&deny, &Capability::FileDelete));
     }
 }
