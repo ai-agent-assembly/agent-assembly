@@ -28,6 +28,7 @@ fn to_canon_capability(cap: &aa_core::Capability) -> CanonCapability {
     match cap {
         aa_core::Capability::FileRead => CanonCapability::FileRead,
         aa_core::Capability::FileWrite => CanonCapability::FileWrite,
+        aa_core::Capability::FileDelete => CanonCapability::FileDelete,
         aa_core::Capability::NetworkOutbound => CanonCapability::NetworkOutbound,
         aa_core::Capability::NetworkInbound => CanonCapability::NetworkInbound,
         aa_core::Capability::TerminalExec => CanonCapability::TerminalExec,

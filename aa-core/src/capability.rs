@@ -15,6 +15,11 @@ pub enum Capability {
     FileRead,
     /// Write access to the filesystem.
     FileWrite,
+    /// Delete/unlink access to the filesystem.
+    ///
+    /// A distinct verb from [`Capability::FileWrite`] so a policy can allow
+    /// writes while denying deletes (and vice versa). See AAASM-4103.
+    FileDelete,
     /// Outbound network connections.
     NetworkOutbound,
     /// Inbound network connections.
@@ -46,6 +51,7 @@ impl FromStr for Capability {
         match s {
             "file_read" => Ok(Capability::FileRead),
             "file_write" => Ok(Capability::FileWrite),
+            "file_delete" => Ok(Capability::FileDelete),
             "network_outbound" => Ok(Capability::NetworkOutbound),
             "network_inbound" => Ok(Capability::NetworkInbound),
             "terminal_exec" => Ok(Capability::TerminalExec),
@@ -74,6 +80,7 @@ impl core::fmt::Display for Capability {
         match self {
             Capability::FileRead => f.write_str("file_read"),
             Capability::FileWrite => f.write_str("file_write"),
+            Capability::FileDelete => f.write_str("file_delete"),
             Capability::NetworkOutbound => f.write_str("network_outbound"),
             Capability::NetworkInbound => f.write_str("network_inbound"),
             Capability::TerminalExec => f.write_str("terminal_exec"),
