@@ -3266,6 +3266,128 @@ mod tests {
         );
     }
 
+    // ── Primary-path capability stage regression (AAASM-4123) ─────────────────
+
+    /// Load a single-file policy via the same public loader `aasm policy
+    /// simulate` / aa-api use, so `evaluate` takes the primary path (empty
+    /// `scope_index`).
+    fn load_single_file_engine(yaml: &str) -> PolicyEngine {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(tmp, "{yaml}").unwrap();
+        tmp.flush().unwrap();
+        let (alert_tx, _) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(64);
+        PolicyEngine::load_from_file(tmp.path(), alert_tx).expect("policy should load")
+    }
+
+    #[test]
+    fn single_file_strict_policy_enforces_capability_stage() {
+        // AAASM-4123: before the fix the primary path skipped the capability
+        // stage entirely, so a single-file strict policy (deny terminal_exec +
+        // file_write) silently ALLOWED process-exec / file-write / file-delete
+        // even though the network stage correctly denied. Mirrors the shipped
+        // policy-examples/strict.yaml capability floor.
+        let engine = load_single_file_engine(
+            "version: \"1\"\n\
+             network:\n  allowlist:\n    - api.openai.com\n\
+             capabilities:\n  deny:\n    - terminal_exec\n    - file_write\n\
+             tools:\n  read_file:\n    allow: true\n",
+        );
+        let ctx = make_ctx();
+
+        // Proof the primary path actually runs: a non-allowlisted GET is denied
+        // by the network stage.
+        let net = aa_core::GovernanceAction::NetworkRequest {
+            url: "https://evil.example.com/".into(),
+            method: "GET".into(),
+        };
+        assert_eq!(
+            engine.evaluate(&ctx, &net).decision,
+            PolicyResult::Deny {
+                reason: "host not in network allowlist".into()
+            }
+        );
+
+        // terminal_exec deny ⇒ ProcessExec denied.
+        let exec = aa_core::GovernanceAction::ProcessExec { command: "id".into() };
+        assert_eq!(
+            engine.evaluate(&ctx, &exec).decision,
+            PolicyResult::Deny {
+                reason: "capability denied by policy".into()
+            }
+        );
+
+        // file_write deny ⇒ FileAccess::Write denied.
+        let write = aa_core::GovernanceAction::FileAccess {
+            path: "/etc/passwd".into(),
+            mode: aa_core::FileMode::Write,
+        };
+        assert_eq!(
+            engine.evaluate(&ctx, &write).decision,
+            PolicyResult::Deny {
+                reason: "capability denied by policy".into()
+            }
+        );
+
+        // file_write deny ⇒ FileAccess::Delete denied too (defense-in-depth:
+        // a pre-file_delete write-deny must keep blocking delete, AAASM-4103).
+        let delete = aa_core::GovernanceAction::FileAccess {
+            path: "/etc/passwd".into(),
+            mode: aa_core::FileMode::Delete,
+        };
+        assert_eq!(
+            engine.evaluate(&ctx, &delete).decision,
+            PolicyResult::Deny {
+                reason: "capability denied by policy".into()
+            }
+        );
+
+        // file_read is not denied and the allow list is empty ⇒ read is not
+        // blocked by the capability stage.
+        let read = aa_core::GovernanceAction::FileAccess {
+            path: "/tmp/ok".into(),
+            mode: aa_core::FileMode::Read,
+        };
+        assert_ne!(
+            engine.evaluate(&ctx, &read).decision,
+            PolicyResult::Deny {
+                reason: "capability denied by policy".into()
+            }
+        );
+    }
+
+    #[test]
+    fn single_file_file_delete_deny_blocks_delete_on_primary_path() {
+        // AAASM-4123 + AAASM-4103: delete is a first-class verb. A single-file
+        // policy that denies only file_delete must block delete on the primary
+        // path while still permitting writes (delete-deny ≠ write-deny).
+        let engine = load_single_file_engine("version: \"1\"\ncapabilities:\n  deny:\n    - file_delete\n");
+        let ctx = make_ctx();
+
+        let delete = aa_core::GovernanceAction::FileAccess {
+            path: "/tmp/x".into(),
+            mode: aa_core::FileMode::Delete,
+        };
+        assert_eq!(
+            engine.evaluate(&ctx, &delete).decision,
+            PolicyResult::Deny {
+                reason: "capability denied by policy".into()
+            }
+        );
+
+        // A write is NOT denied by a delete-only deny.
+        let write = aa_core::GovernanceAction::FileAccess {
+            path: "/tmp/x".into(),
+            mode: aa_core::FileMode::Write,
+        };
+        assert_ne!(
+            engine.evaluate(&ctx, &write).decision,
+            PolicyResult::Deny {
+                reason: "capability denied by policy".into()
+            }
+        );
+    }
+
     // ── Directory-cascade binary-loader regression (AAASM-3499) ───────────────
 
     /// Build a `ctx` for a distinct agent (`agent_byte`) whose lineage
