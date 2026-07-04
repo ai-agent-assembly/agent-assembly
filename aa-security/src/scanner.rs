@@ -1080,6 +1080,22 @@ mod tests {
             .any(|f| f.kind == CredentialKind::SlackOAuthToken));
     }
 
+    // --- AAASM-4128: sibling token prefixes the entropy backstop misses ---
+
+    #[test]
+    fn detects_and_redacts_github_oauth_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token: gho_1234567890abcdefghijklmnopqrstuvwxyz";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GitHubOAuthToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("gho_"));
+        assert!(redacted.contains("[REDACTED:GitHubOAuthToken]"));
+    }
+
     // --- Cloud credential patterns ---
 
     #[test]
