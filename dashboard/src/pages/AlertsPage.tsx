@@ -21,6 +21,8 @@ import {
   filtersToSearchParams,
 } from '../features/alerts/urlFilters'
 import type { Alert, AlertFilters, AlertRule } from '../features/alerts/types'
+import { Tooltip } from '../components/Tooltip'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 
 function partitionByTab(rows: readonly Alert[], tab: AlertsTab): readonly Alert[] {
   if (tab === 'incidents') return rows.filter((r) => r.status === 'RESOLVED')
@@ -72,6 +74,7 @@ export function AlertsPage() {
   /** When editing an existing rule, holds it so AlertRuleForm pre-fills (AAASM-1393). */
   const [editingRule, setEditingRule] = useState<AlertRule | null>(null)
   const [destinationsOpen, setDestinationsOpen] = useState(false)
+  const { canWrite } = usePermissions()
 
   const queryClient = useQueryClient()
   const streamStatus = useAlertsStream({
@@ -130,22 +133,26 @@ export function AlertsPage() {
           >
             Destinations
           </button>
-          <button
-            type="button"
-            data-testid="alerts-open-rule-form"
-            onClick={() => setRuleFormOpen(true)}
-            style={{
-              padding: '6px 12px',
-              background: 'var(--button-primary-bg)',
-              color: 'var(--button-primary-text)',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '0.875rem',
-            }}
-          >
-            New rule
-          </button>
+          <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+            <button
+              type="button"
+              data-testid="alerts-open-rule-form"
+              onClick={() => setRuleFormOpen(true)}
+              disabled={!canWrite}
+              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+              style={{
+                padding: '6px 12px',
+                background: 'var(--button-primary-bg)',
+                color: 'var(--button-primary-text)',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: canWrite ? 'pointer' : 'not-allowed',
+                fontSize: '0.875rem',
+              }}
+            >
+              New rule
+            </button>
+          </Tooltip>
         </div>
       </header>
 

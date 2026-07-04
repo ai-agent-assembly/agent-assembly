@@ -24,7 +24,9 @@ import { ModeChip } from '../components/fleet/ModeChip'
 import { TrustBar } from '../components/fleet/TrustBar'
 import { useToast } from '../components/Toast'
 import { SuspendReasonDialog } from '../components/SuspendReasonDialog'
+import { Tooltip } from '../components/Tooltip'
 import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 import { FleetFilterBar } from './FleetFilterBar'
 import './FleetPage.css'
 
@@ -292,6 +294,7 @@ export function FleetPage() {
 
   const suspend = useSuspendAgent()
   const resume = useResumeAgent()
+  const { canWrite } = usePermissions()
 
   const reportBulkResult = useCallback(
     (verb: 'suspended' | 'resumed', ids: string[], results: PromiseSettledResult<unknown>[]) => {
@@ -410,32 +413,38 @@ export function FleetPage() {
           <span className="fleet-bulkbar__count" data-testid="fleet-bulkbar-count">
             {selected.size} selected
           </span>
-          <button
-            type="button"
-            className="fleet-bulkbar__btn"
-            onClick={() => toast(`Switched ${selected.size} agents to shadow mode (mock)`, 'info')}
-            data-testid="fleet-bulkbar-shadow"
-          >
-            → shadow mode
-          </button>
-          <button
-            type="button"
-            className="fleet-bulkbar__btn fleet-bulkbar__btn--danger"
-            onClick={() => setShowBulkSuspendDialog(true)}
-            disabled={bulkSuspendPending || bulkResumePending}
-            data-testid="fleet-bulkbar-suspend"
-          >
-            ■ suspend
-          </button>
-          <button
-            type="button"
-            className="fleet-bulkbar__btn"
-            onClick={() => ignorePromise(onClickBulkResume())}
-            disabled={bulkSuspendPending || bulkResumePending}
-            data-testid="fleet-bulkbar-resume"
-          >
-            {bulkResumePending ? 'Resuming…' : '▶ resume'}
-          </button>
+          <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+            <button
+              type="button"
+              className="fleet-bulkbar__btn"
+              onClick={() => toast(`Switched ${selected.size} agents to shadow mode (mock)`, 'info')}
+              disabled={!canWrite}
+              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+              data-testid="fleet-bulkbar-shadow"
+            >
+              → shadow mode
+            </button>
+            <button
+              type="button"
+              className="fleet-bulkbar__btn fleet-bulkbar__btn--danger"
+              onClick={() => setShowBulkSuspendDialog(true)}
+              disabled={bulkSuspendPending || bulkResumePending || !canWrite}
+              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+              data-testid="fleet-bulkbar-suspend"
+            >
+              ■ suspend
+            </button>
+            <button
+              type="button"
+              className="fleet-bulkbar__btn"
+              onClick={() => ignorePromise(onClickBulkResume())}
+              disabled={bulkSuspendPending || bulkResumePending || !canWrite}
+              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+              data-testid="fleet-bulkbar-resume"
+            >
+              {bulkResumePending ? 'Resuming…' : '▶ resume'}
+            </button>
+          </Tooltip>
           <button
             type="button"
             className="fleet-bulkbar__btn fleet-bulkbar__btn--ghost"

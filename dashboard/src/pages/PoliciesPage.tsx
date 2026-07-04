@@ -10,6 +10,8 @@ import { OverlayHost } from '../components/OverlayHost'
 import { useOverlay } from '../components/useOverlay'
 import { useToast } from '../components/Toast'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { Tooltip } from '../components/Tooltip'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 import { PolicyEditorOverlay } from '../features/policies/editor/PolicyEditorOverlay'
 import { emptyDraft, stubDraftFromIdentity } from '../features/policies/editor/constants'
 import { serializeDraft } from '../features/policies/editor/serializeDraft'
@@ -232,6 +234,7 @@ interface PoliciesContentProps {
   readonly onRetry: () => void
   readonly onNew: () => void
   readonly onEdit: (policy: Policy) => void
+  readonly canWrite: boolean
 }
 
 /**
@@ -247,6 +250,7 @@ function PoliciesContent({
   onRetry,
   onNew,
   onEdit,
+  canWrite,
 }: PoliciesContentProps) {
   if (isError) {
     return (
@@ -273,14 +277,18 @@ function PoliciesContent({
         description={emptyStateDescription(filter)}
         action={
           filter === 'all' ? (
-            <button
-              type="button"
-              className="policies-page__new-btn"
-              data-testid="new-policy-empty-btn"
-              onClick={onNew}
-            >
-              + new policy
-            </button>
+            <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+              <button
+                type="button"
+                className="policies-page__new-btn"
+                data-testid="new-policy-empty-btn"
+                onClick={onNew}
+                disabled={!canWrite}
+                title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+              >
+                + new policy
+              </button>
+            </Tooltip>
           ) : undefined
         }
       />
@@ -307,6 +315,7 @@ export function PoliciesPage() {
   const { toast } = useToast()
   const { mutateAsync: createPolicy, isPending: enablingLive } = useCreatePolicy()
   const [enableLiveOpen, setEnableLiveOpen] = useState(false)
+  const { canWrite } = usePermissions()
 
   // Observe-mode policies detected by parsing each policy_yaml client-side.
   // The aa-api `PolicyResponse` doesn't expose `enforcement_mode` as a
@@ -389,14 +398,18 @@ export function PoliciesPage() {
             Visual builder for narrowing rules — open one to edit.
           </p>
         </div>
-        <button
-          type="button"
-          className="policies-page__new-btn"
-          data-testid="new-policy-btn"
-          onClick={handleNew}
-        >
-          + new policy
-        </button>
+        <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+          <button
+            type="button"
+            className="policies-page__new-btn"
+            data-testid="new-policy-btn"
+            onClick={handleNew}
+            disabled={!canWrite}
+            title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+          >
+            + new policy
+          </button>
+        </Tooltip>
       </header>
 
       {showSandboxBanner ? (
@@ -416,6 +429,7 @@ export function PoliciesPage() {
         onRetry={() => ignorePromise(refetch())}
         onNew={handleNew}
         onEdit={handleEdit}
+        canWrite={canWrite}
       />
 
       <OverlayHost name="policy-editor" onRequestClose={attemptCloseEditor}>
