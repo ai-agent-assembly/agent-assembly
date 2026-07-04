@@ -1160,6 +1160,17 @@ mod tests {
         assert!(redacted.contains("[REDACTED:SlackRefreshToken]"));
     }
 
+    #[test]
+    fn detects_and_redacts_aws_sts_temporary_key() {
+        let scanner = CredentialScanner::new();
+        let text = "AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::AwsAccessKey));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ASIA"));
+        assert!(redacted.contains("[REDACTED:AwsAccessKey]"));
+    }
+
     // --- Cloud credential patterns ---
 
     #[test]
