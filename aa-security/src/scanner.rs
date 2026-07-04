@@ -1135,6 +1135,17 @@ mod tests {
         assert!(redacted.contains("[REDACTED:GitHubPat]"));
     }
 
+    #[test]
+    fn detects_and_redacts_slack_app_token() {
+        let scanner = CredentialScanner::new();
+        let text = "SLACK_APP_TOKEN=xapp-1-A012345678-1234567890123-abcdef0123456789abcdef0123456789abcdef";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::SlackAppToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("xapp-"));
+        assert!(redacted.contains("[REDACTED:SlackAppToken]"));
+    }
+
     // --- Cloud credential patterns ---
 
     #[test]
