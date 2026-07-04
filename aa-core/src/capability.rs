@@ -44,6 +44,29 @@ pub struct CapabilitySet {
     pub deny: BTreeSet<Capability>,
 }
 
+impl Capability {
+    /// Whether declaring this capability in a policy actually governs anything.
+    ///
+    /// A capability is *enforceable* only if some [`crate::GovernanceAction`]
+    /// maps to it via [`action_to_capability`] — otherwise no action ever routes
+    /// to it, so a declared allow/deny is silently inert and gives the operator a
+    /// false sense of security (AAASM-4099).
+    ///
+    /// Currently inert (no corresponding action variant): [`Capability::Model`],
+    /// [`Capability::NetworkInbound`], and [`Capability::AgentSpawn`]. This
+    /// predicate is the single source of truth policy validation uses to warn
+    /// loudly when a policy references one of them; keep it in lock-step with
+    /// [`action_to_capability`] — when a new action lands that maps to one of
+    /// these, wire the mapping there and drop it from the inert arm below.
+    #[must_use]
+    pub fn is_enforceable(&self) -> bool {
+        !matches!(
+            self,
+            Capability::Model(_) | Capability::NetworkInbound | Capability::AgentSpawn
+        )
+    }
+}
+
 impl FromStr for Capability {
     type Err = String;
 
@@ -137,8 +160,11 @@ pub fn action_to_capability(action: &crate::GovernanceAction) -> Option<Capabili
     use crate::GovernanceAction;
 
     // NOTE: Capability::AgentSpawn, NetworkInbound, and Model variants have no
-    // corresponding GovernanceAction yet. When new action variants land, add
-    // mappings here to avoid silent policy bypasses.
+    // corresponding GovernanceAction yet — they are flagged by
+    // `Capability::is_enforceable` so policy load warns loudly instead of
+    // presenting a silently-inert control (AAASM-4099). When new action variants
+    // land, add mappings here AND drop the variant from `is_enforceable`'s inert
+    // arm to avoid silent policy bypasses.
     match action {
         GovernanceAction::ToolCall { name, .. } => Some(Capability::McpTool(name.clone())),
         GovernanceAction::ToolResult { tool_name, .. } => Some(Capability::McpTool(tool_name.clone())),
@@ -509,6 +535,63 @@ mod tests {
             method: "GET".to_string(),
         };
         assert_eq!(super::action_to_capability(&action), Some(Capability::NetworkOutbound));
+    }
+
+    // ------------------------------------------------------------------
+    // is_enforceable tests (AAASM-4099)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn is_enforceable_false_for_inert_capabilities() {
+        // These have no GovernanceAction mapping, so declaring them is silently
+        // inert — is_enforceable must flag them so policy load can warn loudly.
+        assert!(!Capability::NetworkInbound.is_enforceable());
+        assert!(!Capability::AgentSpawn.is_enforceable());
+        assert!(!Capability::Model("gpt-4o".to_string()).is_enforceable());
+    }
+
+    #[test]
+    fn is_enforceable_true_for_action_backed_capabilities() {
+        assert!(Capability::FileRead.is_enforceable());
+        assert!(Capability::FileWrite.is_enforceable());
+        assert!(Capability::NetworkOutbound.is_enforceable());
+        assert!(Capability::TerminalExec.is_enforceable());
+        assert!(Capability::McpTool("bash".to_string()).is_enforceable());
+    }
+
+    #[test]
+    fn action_to_capability_only_yields_enforceable_capabilities() {
+        // Invariant: every capability an action can produce must be enforceable,
+        // otherwise stage_capability could deny on a cap load warned was inert.
+        let actions = [
+            crate::GovernanceAction::ToolCall {
+                name: "bash".to_string(),
+                args: "{}".to_string(),
+            },
+            crate::GovernanceAction::FileAccess {
+                path: "/tmp/f".to_string(),
+                mode: crate::policy::FileMode::Read,
+            },
+            crate::GovernanceAction::FileAccess {
+                path: "/tmp/f".to_string(),
+                mode: crate::policy::FileMode::Write,
+            },
+            crate::GovernanceAction::NetworkRequest {
+                url: "https://example.com".to_string(),
+                method: "GET".to_string(),
+            },
+            crate::GovernanceAction::ProcessExec {
+                command: "ls".to_string(),
+            },
+        ];
+        for action in &actions {
+            if let Some(cap) = super::action_to_capability(action) {
+                assert!(
+                    cap.is_enforceable(),
+                    "action {action:?} mapped to inert capability {cap:?}"
+                );
+            }
+        }
     }
 
     #[test]

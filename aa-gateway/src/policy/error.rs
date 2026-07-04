@@ -108,6 +108,21 @@ impl ValidationWarning {
         let message = format!("Unknown key '{}' will be ignored", field);
         Self { field, message }
     }
+
+    /// Construct a warning that a referenced capability is declared but not yet
+    /// enforceable — no governance action routes to it, so the allow/deny is
+    /// silently inert (AAASM-4099). Fail loud so operators are not misled into
+    /// believing the control is active.
+    pub fn inert_capability(field: impl Into<String>, capability: impl std::fmt::Display) -> Self {
+        let field = field.into();
+        let message = format!(
+            "Capability '{}' is declared but NOT enforced — no governance action \
+             maps to it yet, so this allow/deny is currently inert and provides no \
+             protection",
+            capability
+        );
+        Self { field, message }
+    }
 }
 
 impl fmt::Display for ValidationWarning {
@@ -157,6 +172,15 @@ mod tests {
     fn validation_warning_unknown_key_nested_path() {
         let w = ValidationWarning::unknown_key("network.blocklist");
         assert_eq!(w.field, "network.blocklist");
+    }
+
+    #[test]
+    fn validation_warning_inert_capability_is_loud() {
+        let w = ValidationWarning::inert_capability("capabilities.deny[0]", "agent_spawn");
+        assert_eq!(w.field, "capabilities.deny[0]");
+        assert!(w.message.contains("agent_spawn"));
+        assert!(w.message.contains("NOT enforced"));
+        assert!(w.message.contains("inert"));
     }
 
     #[test]

@@ -397,6 +397,14 @@ impl PolicyValidator {
         for (i, s) in raw.allow.unwrap_or_default().iter().enumerate() {
             match s.parse::<aa_core::Capability>() {
                 Ok(cap) => {
+                    // AAASM-4099: warn loudly when a capability has no governance
+                    // action routing to it — the allow/deny would be silently inert.
+                    if !cap.is_enforceable() {
+                        warnings.push(ValidationWarning::inert_capability(
+                            format!("capabilities.allow[{}]", i),
+                            &cap,
+                        ));
+                    }
                     allow.insert(cap);
                 }
                 Err(msg) => errors.push(ValidationError::new(format!("capabilities.allow[{}]", i), msg)),
@@ -407,6 +415,15 @@ impl PolicyValidator {
         for (i, s) in raw.deny.unwrap_or_default().iter().enumerate() {
             match s.parse::<aa_core::Capability>() {
                 Ok(cap) => {
+                    // AAASM-4099: a declared deny on an unenforceable capability
+                    // is the dangerous case — the operator believes they blocked
+                    // it. Surface it loudly.
+                    if !cap.is_enforceable() {
+                        warnings.push(ValidationWarning::inert_capability(
+                            format!("capabilities.deny[{}]", i),
+                            &cap,
+                        ));
+                    }
                     deny.insert(cap);
                 }
                 Err(msg) => errors.push(ValidationError::new(format!("capabilities.deny[{}]", i), msg)),
@@ -931,6 +948,48 @@ mod tests {
         let yaml = "capabilities:\n  allow: []\n  extra_key: true\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert!(out.warnings.iter().any(|w| w.field == "capabilities.extra_key"));
+    }
+
+    #[test]
+    fn capabilities_inert_deny_parses_but_warns_loudly() {
+        // AAASM-4099: network_inbound / agent_spawn / model:* have no governance
+        // action, so a declared deny is silently inert. Loading must still
+        // succeed (shipped strict.yaml relies on it) but MUST warn loudly.
+        for cap in ["network_inbound", "agent_spawn", "model:gpt-4o"] {
+            let yaml = format!("capabilities:\n  deny:\n    - {cap}\n");
+            let out = PolicyValidator::from_yaml(&yaml)
+                .unwrap_or_else(|e| panic!("inert cap {cap} must not be a hard error: {e:?}"));
+            let warning = out
+                .warnings
+                .iter()
+                .find(|w| w.field == "capabilities.deny[0]")
+                .unwrap_or_else(|| panic!("expected inert-capability warning for {cap}"));
+            assert!(
+                warning.message.contains("NOT enforced") && warning.message.contains("inert"),
+                "warning for {cap} must be loud about non-enforcement: {}",
+                warning.message
+            );
+        }
+    }
+
+    #[test]
+    fn capabilities_inert_allow_warns_loudly() {
+        let yaml = "capabilities:\n  allow:\n    - agent_spawn\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(out
+            .warnings
+            .iter()
+            .any(|w| w.field == "capabilities.allow[0]" && w.message.contains("NOT enforced")));
+    }
+
+    #[test]
+    fn capabilities_enforceable_caps_produce_no_inert_warning() {
+        let yaml = "capabilities:\n  deny:\n    - terminal_exec\n    - file_write\n    - network_outbound\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(
+            !out.warnings.iter().any(|w| w.message.contains("NOT enforced")),
+            "action-backed capabilities must not emit an inert warning"
+        );
     }
 
     // ── Full-policy integration ─────────────────────────────────────────────
