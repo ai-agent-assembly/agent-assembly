@@ -1443,6 +1443,7 @@ impl PolicyEngine {
                 let kind = match err {
                     BudgetError::SelfBudgetExhausted { kind } => kind,
                     BudgetError::AncestorBudgetExhausted { kind, .. } => kind,
+                    BudgetError::TenantBudgetExhausted { kind, .. } => kind,
                 };
                 Some(match kind {
                     BudgetKind::Monthly => "monthly budget exceeded",
