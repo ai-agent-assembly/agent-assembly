@@ -1188,6 +1188,32 @@ mod tests {
         );
     }
 
+    /// A 64-char base64 secret in punctuation-delimited (compact-JSON) context —
+    /// `{"api_token":"<64 b64>"}` — has no whitespace, so the whole payload is one
+    /// token > 64 chars that pass 1 skips, and the quote-delimited run is exactly
+    /// 64 chars, which the old strictly-greater `> 64` bound also skipped, letting
+    /// the secret survive `scan()` clean. Lowering the base64-run floor to 20 with
+    /// `>=` (AAASM-4071) must now flag and redact it. (Regression.)
+    #[test]
+    fn detects_64_char_base64_secret_in_compact_json() {
+        let scanner = CredentialScanner::new();
+        // 64 base64 chars, Shannon entropy ~5.6 bits/char (well above the gate).
+        let secret = "xK9mP2nQvR7sT4wY1aB6dF3hJ8lN0cE5gI7kM1oQ3uW9zA2bD4fH6jL8pR0tV5xZ";
+        assert_eq!(secret.len(), 64, "fixture must be exactly 64 base64 chars");
+        let text = format!(r#"{{"api_token":"{secret}"}}"#);
+        let result = scanner.scan(&text);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "64-char base64 secret in compact JSON must be flagged: {:?}",
+            result.findings
+        );
+        let redacted = result.redact(&text);
+        assert!(!redacted.contains(secret), "raw base64 secret survived: {redacted}");
+    }
+
     /// Branded literal prefixes must remain detected after the rewrite — the
     /// long-token rules must not displace the high-signal AC matchers.
     #[test]
