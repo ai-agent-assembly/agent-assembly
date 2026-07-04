@@ -1,22 +1,21 @@
-# Why Codecov and SonarCloud report slightly different coverage percentages
+# Codecov and SonarCloud report the same coverage number
 # ------------------------------------------------------------------------------
-# Both tools now consume the SAME underlying data: the single `lcov.info` that
-# the ci.yml Coverage job produces from one `cargo llvm-cov` run. Codecov reads
-# `lcov.info` directly (see the "Upload to Codecov" step); SonarCloud reads the
-# same file via `sonar.rust.lcov.reportPaths=lcov.info` in
-# `sonar-project.properties`. Neither tool is fed a stale or divergent report.
+# Both tools consume the SAME data: the single `lcov.info` the ci.yml Coverage
+# job produces from one `cargo llvm-cov` run. Codecov reads `lcov.info` directly
+# (see the "Upload to Codecov" step); SonarCloud reads it via
+# `sonar.rust.lcov.reportPaths=lcov.info` in `sonar-project.properties`.
 #
-# A residual few-points gap between the two dashboards is therefore INTENTIONAL
-# and STRUCTURAL, not a regression:
-#   * SonarCloud measures only the crates listed in `sonar.sources` (a subset of
-#     the workspace) and re-derives its own "lines to cover" denominator with the
-#     Sonar analyzer.
-#   * Codecov measures the whole instrumented workspace (the crates below) minus
-#     the `ignore` list, using llvm-cov's line accounting.
-# Different scopes + different denominators => a small, expected delta. Do NOT
-# broaden `sonar.sources` to "close" the gap — that would pull unmeasured crates
-# into the Sonar Quality Gate and risk failing it. The scope difference is by
-# design; this comment is the record of why.
+# The `ignore` list below restricts Codecov to exactly the crates in Sonar's
+# `sonar.sources`, so both tools measure the same file set and their coverage
+# percentages line up (AAASM-4008). Only a sub-percent residual can remain, from
+# SonarCloud re-deriving its own "lines to cover" with the Sonar analyzer vs
+# llvm-cov's line accounting — an engine difference, not a scope one.
+#
+# Trade-off (chosen deliberately): several well-tested crates outside
+# sonar.sources (aa-security, aa-auth, aa-storage*, aa-devtool*, ...) are hidden
+# from Codecov's project total to achieve this parity. Their per-PR diff coverage
+# is still enforced by codecov/patch. If broad Codecov visibility is preferred
+# over an identical headline number, widen the `ignore` list instead.
 codecov:
   token: $CODECOV_TOKEN
   branch: master
