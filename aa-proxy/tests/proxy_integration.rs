@@ -638,4 +638,50 @@ mod attacker {
             "the pipelined second request must not be forwarded; upstream must see exactly one request"
         );
     }
+
+    #[tokio::test]
+    async fn credential_dlp_blocks_secret_to_non_llm_mitm_host() {
+        // AAASM-4126: a secret in a request body to a MitM'd host that is NOT one
+        // of the three built-in providers (openai/anthropic/cohere) must still be
+        // scanned and refused before any byte reaches upstream. The host is
+        // brought under MitM via the operator-configurable `mitm_hosts` set while
+        // `llm_only` stays true (the default posture), exercising both halves of
+        // the fix: the extra provider is intercepted, and body-DLP no longer
+        // depends on `detect_api`.
+        install_crypto();
+        let dir = tempfile::TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let (upstream, log) = start_tls_upstream("{\"ok\":true}").await;
+
+        // A provider outside the built-in detect_api set (Google Gemini).
+        const EXTRA_HOST: &str = "generativelanguage.googleapis.com";
+        let mut config = proxy_config(dir.path(), upstream, Vec::new());
+        config.llm_only = true;
+        config.mitm_hosts = vec![EXTRA_HOST.to_string()];
+        config.credential_action = CredentialAction::Block;
+        let creds = CredentialStore::from_pairs(Vec::<(String, Vec<u8>)>::new());
+        let (proxy, _h) = start_proxy_with_creds(config, ca, creds).await;
+
+        // Synthetic OpenAI-shaped key the default scanner detects (never real).
+        let secret = "sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab";
+        let body = format!("{{\"exfil\":\"{secret}\"}}");
+        let req = format!(
+            "POST /v1beta/models HTTP/1.1\r\nHost: {EXTRA_HOST}\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let response = mitm_roundtrip(proxy, EXTRA_HOST, EXTRA_HOST, req.as_bytes()).await;
+
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.contains("403"),
+            "a secret to a non-LLM MitM host must be blocked with 403, got: {response_str}"
+        );
+        // Give any (erroneous) dial a moment, then assert the upstream saw nothing.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !log.lock().unwrap().saw_request,
+            "the blocked secret must never reach upstream"
+        );
+    }
 }
