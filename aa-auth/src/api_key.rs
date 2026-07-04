@@ -457,4 +457,63 @@ mod tests {
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
     }
+
+    /// AAASM-4075 (anti-fan-out DoS): `validate_detailed` must argon2-verify only
+    /// the entries selected by the incoming key's lookup bucket, never every
+    /// stored key. We prove the fan-out is gone by filing an entry whose argon2
+    /// hash *would* match the probe token but under a *different* lookup bucket: a
+    /// naive fan-out scan would verify and match it, whereas the indexed scan must
+    /// not even reach it — so the probe is `NotFound`.
+    #[test]
+    fn invalid_token_is_not_verified_against_mismatched_lookup_bucket() {
+        let probe = ApiKey::generate();
+        let probe_hash = probe.hash().expect("hash");
+
+        // Entry whose hash matches `probe`, deliberately filed under a bucket that
+        // does not match `probe.lookup()`.
+        let wrong_bucket = "deadbeefdeadbeef".to_string();
+        assert_ne!(
+            wrong_bucket,
+            probe.lookup(),
+            "fixture bucket must differ from the probe's real lookup"
+        );
+        let trap = ApiKeyEntry {
+            id: "trap".to_string(),
+            key_hash: probe_hash,
+            scopes: vec![Scope::Admin],
+            created_at: 0,
+            label: None,
+            team_id: None,
+            org_id: None,
+            key_lookup: Some(wrong_bucket),
+        };
+        let store = ApiKeyStore::from_entries(vec![trap]);
+
+        // The probe's own hash is present, but the index never selects it (and so
+        // argon2 never runs on it), proving there is no per-key fan-out.
+        assert!(matches!(
+            store.validate_detailed(probe.as_str()),
+            Err(KeyNotValid::NotFound)
+        ));
+    }
+
+    /// AAASM-4075 backward-compat: an entry with no `key_lookup` (e.g. loaded from
+    /// a key file written before the index existed) still authenticates via the
+    /// legacy argon2 fallback scan.
+    #[test]
+    fn legacy_entry_without_lookup_still_validates() {
+        let key = ApiKey::generate();
+        let entry = ApiKeyEntry {
+            id: "legacy".to_string(),
+            key_hash: key.hash().expect("hash"),
+            scopes: vec![Scope::Read],
+            created_at: 0,
+            label: None,
+            team_id: None,
+            org_id: None,
+            key_lookup: None,
+        };
+        let store = ApiKeyStore::from_entries(vec![entry]);
+        assert_eq!(store.validate(key.as_str()).map(|e| e.id.as_str()), Some("legacy"));
+    }
 }
