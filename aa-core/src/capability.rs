@@ -163,6 +163,26 @@ pub fn action_to_capability(action: &crate::GovernanceAction) -> Option<Capabili
     }
 }
 
+/// Whether a policy `deny` set blocks `cap`, honoring superset denies.
+///
+/// A `FileWrite` deny also blocks `FileDelete`: policies authored before
+/// `FileDelete` existed (AAASM-4103) expressed "no mutation" as a single
+/// `file_write` deny, and that intent must keep blocking delete — a stale
+/// write-deny must never leak delete (fail-closed migration). The converse is
+/// deliberately absent: a `FileWrite` *allow* never grants `FileDelete`;
+/// delete requires an explicit `file_delete` allow. Net effect: the new verb
+/// can only ever make delete *more* restricted than before, never less.
+///
+/// Requires the `alloc` feature.
+#[cfg(feature = "alloc")]
+pub fn capability_is_denied(deny: &BTreeSet<Capability>, cap: &Capability) -> bool {
+    if deny.contains(cap) {
+        return true;
+    }
+    // Defense in depth: deny(file_write) ⇒ deny(file_delete).
+    matches!(cap, Capability::FileDelete) && deny.contains(&Capability::FileWrite)
+}
+
 /// Per-scope contribution to an effective permission set.
 ///
 /// Carries the `allow` and `deny` capabilities a single policy document declares
