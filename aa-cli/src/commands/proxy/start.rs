@@ -251,6 +251,36 @@ mod tests {
     }
 
     #[test]
+    fn proxy_child_env_gateway_uses_proxy_endpoint_var() {
+        // AAASM-4127 regression guard: aa-proxy reads AA_PROXY_GATEWAY_ENDPOINT,
+        // so `--gateway <url>` must export that exact name. A prior bug exported
+        // AA_GATEWAY_URL (which aa-proxy ignores), leaving gateway_endpoint None
+        // → raw passthrough with MCP enforcement silently OFF.
+        let env = proxy_child_env("127.0.0.1:8899", Some("http://127.0.0.1:50051"));
+        assert!(
+            env.contains(&("AA_PROXY_GATEWAY_ENDPOINT", "http://127.0.0.1:50051".to_string())),
+            "gateway must be exported as AA_PROXY_GATEWAY_ENDPOINT, got: {env:?}"
+        );
+        // llm_only disabled so non-LLM MCP hosts reach the gateway routing
+        // instead of being transparently tunnelled before enforcement.
+        assert!(env.contains(&("AA_PROXY_LLM_ONLY", "false".to_string())));
+        // The old, ignored variable name must never be exported to the child.
+        assert!(
+            !env.iter().any(|(k, _)| *k == "AA_GATEWAY_URL"),
+            "AA_GATEWAY_URL must not be exported (aa-proxy ignores it)"
+        );
+    }
+
+    #[test]
+    fn proxy_child_env_omits_gateway_vars_when_absent() {
+        let env = proxy_child_env("127.0.0.1:8899", None);
+        assert!(!env.iter().any(|(k, _)| *k == "AA_PROXY_GATEWAY_ENDPOINT"));
+        assert!(!env.iter().any(|(k, _)| *k == "AA_PROXY_LLM_ONLY"));
+        // The listen address is always exported.
+        assert!(env.contains(&("AA_PROXY_ADDR", "127.0.0.1:8899".to_string())));
+    }
+
+    #[test]
     fn wait_for_port_returns_false_on_unbound_addr() {
         // Port 1 is privileged and never listening in test environments.
         assert!(!wait_for_port("127.0.0.1:1", Duration::from_millis(200)));
