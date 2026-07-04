@@ -26,7 +26,7 @@ const VERIFIED_LINES: Line[] = [
   { kind: 'cmd', text: 'aa-cli verify' },
   { kind: 'out', text: 'connecting to runtime…  done.' },
   { kind: 'out', text: 'sdk version    1.4.2 (latest)' },
-  { kind: 'out', text: 'control-plane  https://api.agent-assembly.io' },
+  { kind: 'out', text: 'control-plane  https://api.agent-assembly.com' },
   { kind: 'ok', text: '✓ verified · ready to enroll' },
 ]
 
