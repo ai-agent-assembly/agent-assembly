@@ -1166,11 +1166,29 @@ impl PolicyEngine {
         action: &aa_core::GovernanceAction,
     ) -> Option<EvaluationResult> {
         let merged_caps = Self::collect_merged_capabilities(cascade);
+        Self::capability_guard(&merged_caps, action)
+    }
+
+    /// Capability authorization gate shared by BOTH the primary
+    /// (`evaluate_primary`) and cascade (`cascade_capability_guard`) paths: deny
+    /// when `caps.deny` blocks the action's capability, or a non-empty
+    /// `caps.allow` omits it. `None` when the action maps to no capability or is
+    /// permitted.
+    ///
+    /// Extracted so the single-file and directory-cascade paths can never
+    /// diverge again (AAASM-4123): the primary path previously ran every stage
+    /// EXCEPT this one, silently permitting capability-denied actions on the
+    /// single-file surface (`aasm policy simulate`, aa-api, single-file
+    /// gateway). This is the same fail-open-by-omission class closed for the
+    /// network stage via a shared helper (AAASM-3728). `capability_is_denied`
+    /// carries the write-deny⇒delete-deny defense-in-depth rule, so both paths
+    /// inherit it identically.
+    fn capability_guard(caps: &aa_core::CapabilitySet, action: &aa_core::GovernanceAction) -> Option<EvaluationResult> {
         let cap = aa_core::action_to_capability(action)?;
-        if aa_core::capability_is_denied(&merged_caps.deny, &cap) {
+        if aa_core::capability_is_denied(&caps.deny, &cap) {
             return Some(EvaluationResult::deny("capability denied by policy"));
         }
-        if !merged_caps.allow.is_empty() && !merged_caps.allow.contains(&cap) {
+        if !caps.allow.is_empty() && !caps.allow.contains(&cap) {
             return Some(EvaluationResult::deny("capability not in allow list"));
         }
         None
