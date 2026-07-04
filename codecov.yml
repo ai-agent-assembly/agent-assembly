@@ -31,18 +31,44 @@ coverage:
       default:
         target: 70%
 
-# Paths excluded from all coverage reports (including PR patch coverage).
-# Listed binaries are run manually (not by `cargo test`), so coverage tooling
-# never observes them and they would otherwise drag patch coverage to 0%.
-#
-# aa-ebpf/src: the userspace eBPF loader has no testable logic; the coverage
-# job already `--exclude aa-ebpf` and SonarCloud drops it via sonar.exclusions
-# (aa-ebpf/src/**). Mirroring it here keeps Codecov's denominator aligned with
-# SonarCloud's — otherwise its ~2% coverage drags only the Codecov number down.
+# Codecov measures the SAME crate set as SonarCloud's `sonar.sources`, so the two
+# dashboards report the same coverage number. Everything outside `sonar.sources`
+# is excluded here (AAASM-4008 operator decision: parity over breadth):
+#   * aa-ebpf/src            — userspace eBPF loader, no testable logic (the
+#                              coverage job --excludes aa-ebpf; Sonar drops it via
+#                              sonar.exclusions).
+#   * aa-proto               — generated prost/tonic code.
+#   * conformance, aa-integration-tests — test harnesses, not library code.
+#   * aa-auth, aa-security, aa-storage*, aa-cache, aa-sdk-client, aa-sandbox,
+#     aa-devtool*            — real, well-tested library crates, but NOT in
+#                              sonar.sources; excluded so Codecov's denominator
+#                              matches SonarCloud's. (Their coverage is still
+#                              gated per-PR by codecov/patch on the diff.)
+#   * aa-proxy/src/main.rs   — manually-run binary (never observed by tests).
 ignore:
-  - "conformance/src/bin/"
   - "aa-proxy/src/main.rs"
   - "aa-ebpf/src/"
+  - "aa-proto/"
+  - "conformance/"
+  - "aa-integration-tests/"
+  - "examples/"
+  - "aa-auth/"
+  - "aa-security/"
+  - "aa-storage/"
+  - "aa-storage-memory/"
+  - "aa-storage-redis/"
+  - "aa-cache/"
+  - "aa-storage-postgres/"
+  - "aa-storage-sqlite-buffer/"
+  - "aa-sdk-client/"
+  - "aa-sandbox/"
+  - "aa-devtool-contract/"
+  - "aa-devtool/"
+  - "aa-devtool-claude-code/"
+  - "aa-devtool-codex/"
+  - "aa-devtool-copilot/"
+  - "aa-devtool-saas/"
+  - "aa-devtool-windsurf/"
 
 comment:
   layout: "reach,diff,flags,tree"
