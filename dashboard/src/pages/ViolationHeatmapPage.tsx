@@ -49,7 +49,15 @@ export function ViolationHeatmapPage() {
     const params = new URLSearchParams({ window: window_ });
     if (root) params.set("root", root);
 
-    fetch(`/api/v1/audit/violations-by-lineage?${params}`)
+    // Prepend VITE_API_BASE_URL and attach the stored bearer token so this
+    // page reaches the authenticated API origin the same way every other data
+    // path does (mirrors api/client.ts; endpoint not yet in the OpenAPI schema).
+    const base = import.meta.env.VITE_API_BASE_URL ?? "";
+    const token = localStorage.getItem("aa_token");
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    fetch(`${base}/api/v1/audit/violations-by-lineage?${params}`, { headers })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<ApiResponse>;
