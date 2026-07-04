@@ -1096,6 +1096,20 @@ mod tests {
         assert!(redacted.contains("[REDACTED:GitHubOAuthToken]"));
     }
 
+    #[test]
+    fn detects_and_redacts_github_user_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token: ghu_1234567890abcdefghijklmnopqrstuvwxyz";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GitHubUserToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ghu_"));
+        assert!(redacted.contains("[REDACTED:GitHubUserToken]"));
+    }
+
     // --- Cloud credential patterns ---
 
     #[test]
