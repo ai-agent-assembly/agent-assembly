@@ -7,6 +7,7 @@ import * as useAuthModule from '../auth/useAuth'
 function renderLogin(login: (apiKey: string) => Promise<void>) {
   vi.spyOn(useAuthModule, 'useAuth').mockReturnValue({
     token: null,
+    scopes: [],
     login,
     logout: vi.fn(),
   })
