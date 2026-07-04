@@ -22,7 +22,7 @@ export function EmptyStateNoAlerts() {
         above, or read the docs for tips on tuning rule thresholds.
       </p>
       <a
-        href="https://docs.agent-assembly.io/dashboard/alerts"
+        href="https://docs.agent-assembly.com/dashboard/alerts"
         target="_blank"
         rel="noreferrer"
         data-testid="alerts-empty-docs-link"

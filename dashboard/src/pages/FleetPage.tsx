@@ -457,7 +457,7 @@ export function FleetPage() {
       {view === 'agents' && !isLoading && !isError && agents?.length === 0 && (
         <p className="fleet-empty fleet-empty--inline" data-testid="agents-empty">
           No agents registered yet.{' '}
-          <a href="https://docs.agent-assembly.io/quickstart" target="_blank" rel="noreferrer">
+          <a href="https://docs.agent-assembly.com/quickstart" target="_blank" rel="noreferrer">
             Read the quickstart guide →
           </a>
         </p>
