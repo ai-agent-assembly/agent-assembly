@@ -1108,6 +1108,19 @@ impl PolicyEngine {
             return result;
         }
 
+        // Stage 2b — Capability authorization (AAASM-4123). Mirrors the cascade
+        // path's `cascade_capability_guard` via the shared `capability_guard`
+        // helper so the single-file/primary surface (`aasm policy simulate`,
+        // aa-api, single-file gateway) enforces per-op read/write/delete instead
+        // of silently permitting every capability-denied action. Runs before the
+        // tool stages so a capability-denied action never consumes a rate-limit
+        // token. A doc with no `capabilities` block imposes no restriction.
+        if let Some(caps) = &policy.capabilities {
+            if let Some(result) = Self::capability_guard(caps, action) {
+                return result;
+            }
+        }
+
         // Stages 3-5b — Tool/message rules: allow/deny, rate limit, approval.
         if let Some(result) = self.eval_tool_stages(&policy, ctx, action) {
             return result;
