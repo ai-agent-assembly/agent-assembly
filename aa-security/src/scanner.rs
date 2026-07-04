@@ -1124,6 +1124,17 @@ mod tests {
         assert!(redacted.contains("[REDACTED:GitHubRefreshToken]"));
     }
 
+    #[test]
+    fn detects_and_redacts_github_fine_grained_pat() {
+        let scanner = CredentialScanner::new();
+        let text = "token: github_pat_11ABCDE0000abcdefghij_1234567890abcdefghijklmnopqrstuvwxyzABCDEF";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::GitHubPat));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("github_pat_"));
+        assert!(redacted.contains("[REDACTED:GitHubPat]"));
+    }
+
     // --- Cloud credential patterns ---
 
     #[test]
