@@ -1146,6 +1146,20 @@ mod tests {
         assert!(redacted.contains("[REDACTED:SlackAppToken]"));
     }
 
+    #[test]
+    fn detects_and_redacts_slack_refresh_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token=xoxr-123456789012-123456789012-XXXXXXXXXXXX";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::SlackRefreshToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("xoxr-"));
+        assert!(redacted.contains("[REDACTED:SlackRefreshToken]"));
+    }
+
     // --- Cloud credential patterns ---
 
     #[test]
