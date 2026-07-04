@@ -299,6 +299,7 @@ mod tests {
         std::env::remove_var("AA_CA_DIR");
         std::env::remove_var("AA_PROXY_CERT_CACHE_CAPACITY");
         std::env::remove_var("AA_PROXY_LLM_ONLY");
+        std::env::remove_var("AA_PROXY_MITM_HOSTS");
         std::env::remove_var("AA_PROXY_DENIED_HOSTS");
         std::env::remove_var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
         std::env::remove_var("AA_PROXY_CREDENTIAL_ACTION");
@@ -380,6 +381,27 @@ mod tests {
 
         let cfg = ProxyConfig::from_env().unwrap();
         assert_eq!(cfg.denied_hosts, vec!["evil.com", "bad.example.com"]);
+    }
+
+    #[test]
+    fn from_env_reads_mitm_hosts_csv() {
+        // AAASM-4126: operators extend the MitM + DLP surface beyond the built-in
+        // LLM providers via a comma-separated AA_PROXY_MITM_HOSTS list.
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_MITM_HOSTS", "generativelanguage.googleapis.com, *.groq.com");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.mitm_hosts, vec!["generativelanguage.googleapis.com", "*.groq.com"]);
+    }
+
+    #[test]
+    fn from_env_mitm_hosts_defaults_empty() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(cfg.mitm_hosts.is_empty());
     }
 
     #[test]
