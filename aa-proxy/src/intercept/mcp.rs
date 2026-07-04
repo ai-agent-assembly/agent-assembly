@@ -93,6 +93,42 @@ pub fn parse_mcp_request(body: &[u8]) -> Option<McpToolCall> {
     })
 }
 
+/// Classify a body that [`parse_mcp_request`] could **not** turn into a single
+/// [`McpToolCall`], to decide whether it is nonetheless an attempt to invoke
+/// `tools/call` that must be fail-closed rather than blindly forwarded upstream.
+///
+/// Returns `true` when the body is JSON-RPC framing that references a
+/// `tools/call` the strict single-object parser cannot fully evaluate:
+///
+/// * a top-level JSON-RPC **batch** array with any element carrying
+///   `method == "tools/call"` — `parse_mcp_request` only deserialises a single
+///   object, so a one-element batch `[{…tools/call…}]` returned `None` and was
+///   forwarded upstream with no gateway decision (AAASM-4070); or
+/// * a top-level object whose `method == "tools/call"` but whose envelope fails
+///   strict extraction (wrong/missing `jsonrpc`, missing `params.name`) — a
+///   steered agent could malform these to slip a tool call past enforcement.
+///
+/// Non-JSON bodies, and JSON carrying no `tools/call` method, return `false` so
+/// ordinary non-MCP HTTPS traffic on this route still flows through untouched.
+/// This is deliberately a *detector*, not a parser: it does not change the
+/// `None`-on-false-positive contract [`parse_mcp_request`] relies on.
+pub fn is_unenforceable_tool_call(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    match &value {
+        serde_json::Value::Array(elements) => elements.iter().any(mentions_tools_call),
+        serde_json::Value::Object(_) => mentions_tools_call(&value),
+        _ => false,
+    }
+}
+
+/// True when `value` is a JSON object whose `method` field is exactly
+/// `"tools/call"` — the marker that a JSON-RPC request intends to invoke a tool.
+fn mentions_tools_call(value: &serde_json::Value) -> bool {
+    value.get("method").and_then(serde_json::Value::as_str) == Some(MCP_TOOLS_CALL_METHOD)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

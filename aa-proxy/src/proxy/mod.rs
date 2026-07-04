@@ -25,7 +25,7 @@ use crate::credentials::CredentialStore;
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
-use crate::intercept::mcp::parse_mcp_request;
+use crate::intercept::mcp::{is_unenforceable_tool_call, parse_mcp_request};
 use crate::intercept::{InterceptVerdict, Interceptor, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
 use crate::proxy::http::{
@@ -505,6 +505,37 @@ impl ProxyServer {
                     return Ok(());
                 }
             }
+        } else if is_unenforceable_tool_call(&req.body) {
+            // AAASM-4070: `parse_mcp_request` only deserialises a single
+            // JSON-RPC object, so a `tools/call` wrapped in a batch array
+            // (`[{…tools/call…}]`) or malformed just enough to fail strict
+            // extraction returned `None` above — and the pre-fix `else` branch
+            // forwarded that body upstream with NO gateway CheckAction and NO
+            // credential/DLP scan. A steered agent used a one-element batch to
+            // slip a denied tool call past enforcement. Fail closed: this body
+            // is a tool-call attempt the enforcement path cannot evaluate, so
+            // deny it with a JSON-RPC error envelope instead of forwarding,
+            // mirroring an explicit gateway Deny. Non-MCP traffic is unaffected
+            // (the detector only fires on `method == "tools/call"`).
+            let reason = "MCP tools/call in unsupported JSON-RPC framing (batch array or malformed envelope) cannot be enforced and was rejected (fail-closed)";
+            tracing::warn!(
+                %host,
+                "MCP tools/call bypass attempt via batch/malformed framing; denying (fail-closed). \
+                 The gateway CheckAction and credential scan cannot evaluate this envelope.",
+            );
+            self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+            // -32600 = JSON-RPC "Invalid Request": the proxy does not accept
+            // this framing for an enforceable tool call.
+            let body = build_jsonrpc_error_response(-32600, reason);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            let mut client_tls = client_reader.into_inner();
+            client_tls.write_all(resp.as_bytes()).await?;
+            let _ = client_tls.shutdown().await;
+            return Ok(());
         } else {
             None
         };
