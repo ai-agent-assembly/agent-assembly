@@ -1850,4 +1850,38 @@ mod tests {
         assert_eq!(alert.threshold_pct, 80);
         assert_eq!(alert.team_id.as_deref(), Some("team-zeta"));
     }
+
+    // ── AAASM-4124: org/team tier caps must deny in reserve_spend ──────
+
+    #[test]
+    fn reserve_spend_denies_when_org_daily_cap_reached() {
+        use crate::budget::types::{BudgetError, BudgetKind};
+        // Regression: reserve_spend used to discard record_cost's tier verdict,
+        // so a configured org daily cap accumulated but never blocked. Accrue
+        // the org envelope to its cap across two agents, then assert the next
+        // reservation is denied and nothing is committed past the cap.
+        let t = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+            .with_org_daily_limit("5.00".parse().unwrap());
+        let a = agent(70);
+        let b = agent(71);
+        let org = Some("org-acme");
+
+        t.reserve_spend(a, &[], None, org, "3.00".parse().unwrap()).unwrap();
+        t.reserve_spend(b, &[], None, org, "2.00".parse().unwrap()).unwrap();
+
+        // Envelope now sits at the $5.00 cap — the next reservation must deny.
+        let err = t
+            .reserve_spend(a, &[], None, org, "0.01".parse().unwrap())
+            .expect_err("org daily cap reached — reservation must be denied");
+        assert_eq!(
+            err,
+            BudgetError::TenantBudgetExhausted {
+                tier: "org",
+                kind: BudgetKind::Daily,
+            }
+        );
+        // The denied reservation committed nothing: org spend stays at the cap.
+        let five: Decimal = "5.00".parse().unwrap();
+        assert_eq!(t.org_state("org-acme").unwrap().spent_usd, five);
+    }
 }
