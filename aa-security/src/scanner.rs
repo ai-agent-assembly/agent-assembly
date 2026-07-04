@@ -406,9 +406,11 @@ impl CredentialScanner {
     }
 }
 
-/// Drop findings of the **same kind** whose byte span overlaps an
-/// already-kept finding of that kind, so a single secret caught by two passes
-/// of one detector is reported once.
+/// Collapse findings of the **same kind** whose byte spans overlap into one
+/// finding per overlapping cluster, so a single secret caught by two passes of
+/// one detector is reported once — while keeping the survivor's span equal to
+/// the **union** of the overlapping spans so redaction still covers the whole
+/// secret.
 ///
 /// The high-entropy detector runs additive passes (whitespace-token, long-hex,
 /// long-base64, separator-grouped-hex): a base64 secret that is *also* a
@@ -417,7 +419,17 @@ impl CredentialScanner {
 /// the base64-run pass, yielding two overlapping `GenericHighEntropy` findings
 /// for one secret. This collapses that double-count.
 ///
-/// Only *same-kind* overlaps are removed: overlaps across different kinds are
+/// AAASM-4093: the overlapping finding must be *merged into* the survivor, not
+/// dropped outright. Dropping it discarded the longer overlapping pass whenever
+/// the shorter pass happened to sort first — e.g. a ≥64-char hex run
+/// (`[start, 64)`) is kept and the base64 run over the same start plus a non-hex
+/// base64 tail (`[start, 64+K)`) is dropped — so `redact` (which coalesces only
+/// the surviving findings) left bytes `[64, 64+K)` un-redacted on the
+/// sanitize-and-forward path. Extending `k.end = max(k.end, f.end)` keeps the
+/// reported count at one per cluster (unchanged from AAASM-4071) while making the
+/// span the full union.
+///
+/// Only *same-kind* overlaps are merged: overlaps across different kinds are
 /// deliberately kept, because a connection URL legitimately produces distinct
 /// coincident findings (e.g. `PostgresUrl` + `GenericHighEntropy` + `EmailAddress`
 /// over the same region) that `redact` coalesces into one span but that callers
@@ -427,9 +439,11 @@ impl CredentialScanner {
 fn dedupe_same_kind_overlaps(findings: &mut Vec<CredentialFinding>) {
     let mut kept: Vec<CredentialFinding> = Vec::with_capacity(findings.len());
     for f in findings.drain(..) {
-        let covered = kept.iter().any(|k| k.kind == f.kind && f.offset < k.end);
-        if !covered {
-            kept.push(f);
+        match kept.iter_mut().find(|k| k.kind == f.kind && f.offset < k.end) {
+            // Same secret caught by another pass: keep one finding but widen its
+            // span to the union so no tail byte of the longer pass survives.
+            Some(k) => k.end = k.end.max(f.end),
+            None => kept.push(f),
         }
     }
     *findings = kept;
@@ -1412,6 +1426,49 @@ mod tests {
         let result = scanner.scan(&text);
         let redacted = result.redact(&text);
         assert!(!redacted.contains(secret), "raw hex secret survived: {redacted}");
+        assert!(redacted.contains("[REDACTED:GenericHighEntropy]"));
+    }
+
+    /// AAASM-4093: a `<64-hex><base64-tail>` run trips both the long-hex pass
+    /// (span `[start, 64)`) and the base64-run pass (span `[start, 64+K)`). Both
+    /// are `GenericHighEntropy` at the same offset; the shorter hex finding sorts
+    /// first. The same-kind dedupe must *widen* the survivor's span to the union
+    /// rather than drop the longer base64 finding, or `redact` forwards the tail
+    /// bytes `[64, 64+K)` in the clear. Assert the full run is masked and that the
+    /// secret is still counted exactly once.
+    #[test]
+    fn redact_covers_base64_tail_after_long_hex_run() {
+        let scanner = CredentialScanner::new();
+        // 64 hex digits followed by a non-hex base64 tail; the whole contiguous
+        // run is base64 and its Shannon entropy clears the gate, so the base64
+        // pass spans the full 84 chars while the hex pass stops at 64.
+        let hex = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let tail = "GHIJKLMNOPQRSTUVWXYZ";
+        let secret = format!("{hex}{tail}");
+        assert_eq!(hex.len(), 64);
+        assert!(!tail.is_empty(), "tail must add bytes beyond the 64-hex span");
+
+        let text = format!(r#"{{"api_token":"{secret}"}}"#);
+        let result = scanner.scan(&text);
+
+        // Exactly one GenericHighEntropy finding for the run (count unchanged
+        // from the AAASM-4071 same-kind dedupe).
+        let entropy_findings = result
+            .findings
+            .iter()
+            .filter(|f| f.kind == CredentialKind::GenericHighEntropy)
+            .count();
+        assert_eq!(
+            entropy_findings, 1,
+            "expected exactly one GenericHighEntropy finding: {:?}",
+            result.findings
+        );
+
+        // The whole run — including the base64 tail bytes [64, 64+K) — is masked.
+        let redacted = result.redact(&text);
+        assert!(!redacted.contains(&secret), "raw secret survived: {redacted}");
+        assert!(!redacted.contains(tail), "base64 tail survived un-redacted: {redacted}");
+        assert!(!redacted.contains(hex), "hex prefix survived: {redacted}");
         assert!(redacted.contains("[REDACTED:GenericHighEntropy]"));
     }
 
