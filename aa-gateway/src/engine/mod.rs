@@ -1167,7 +1167,7 @@ impl PolicyEngine {
     ) -> Option<EvaluationResult> {
         let merged_caps = Self::collect_merged_capabilities(cascade);
         let cap = aa_core::action_to_capability(action)?;
-        if merged_caps.deny.contains(&cap) {
+        if aa_core::capability_is_denied(&merged_caps.deny, &cap) {
             return Some(EvaluationResult::deny("capability denied by policy"));
         }
         if !merged_caps.allow.is_empty() && !merged_caps.allow.contains(&cap) {

@@ -75,7 +75,8 @@ pub use audit::{AuditEntry, AuditEventType, AuditLog, AuditLogError, Lineage};
 
 #[cfg(feature = "alloc")]
 pub use capability::{
-    action_to_capability, merge_capabilities, Capability, CapabilitySet, EffectivePermissions, PermissionSource,
+    action_to_capability, capability_is_denied, merge_capabilities, Capability, CapabilitySet, EffectivePermissions,
+    PermissionSource,
 };
 
 #[cfg(feature = "std")]

@@ -14,8 +14,9 @@
 //!
 //! - **Filesystem path rules** derived from `tools.*.requires_approval_if`
 //!   predicates of the form `path starts_with "<prefix>"` (each becomes a
-//!   [`PathVerdict::Deny`] [`PathRule`]) and from a capability `file_write`
-//!   deny (which seeds the well-known sensitive-path deny defaults).
+//!   [`PathVerdict::Deny`] [`PathRule`]) and from a capability `file_write` or
+//!   `file_delete` deny (which seeds the well-known sensitive-path deny
+//!   defaults — the kernel path probe cannot tell write from delete).
 //! - **Egress allowlist** copied verbatim from `network.allowlist`.
 //!
 //! Everything else is explicitly **L7-only** and documented in
@@ -106,10 +107,11 @@ impl EbpfRuleSet {
 }
 
 /// Well-known sensitive paths denied in-kernel whenever the policy denies the
-/// `file_write` capability. These mirror the kernel probe's sensitive-path
-/// defaults so a "deny file_write" floor is reflected at the kernel boundary,
-/// not just at L7.
-const SENSITIVE_WRITE_DENY_DEFAULTS: &[&str] = &["/etc", "/root/.ssh", "/var/run/secrets"];
+/// `file_write` or `file_delete` capability. These mirror the kernel probe's
+/// sensitive-path defaults so a "deny mutation" floor is reflected at the
+/// kernel boundary, not just at L7. Delete is included because the path probe
+/// matches on paths, not the mutation verb (AAASM-4103).
+const SENSITIVE_MUTATION_DENY_DEFAULTS: &[&str] = &["/etc", "/root/.ssh", "/var/run/secrets"];
 
 /// Lower a canonical [`PolicyDocument`] to its [`EbpfRuleSet`].
 ///
@@ -118,14 +120,16 @@ const SENSITIVE_WRITE_DENY_DEFAULTS: &[&str] = &["/etc", "/root/.ssh", "/var/run
 pub fn lower_to_ebpf(doc: &PolicyDocument) -> EbpfRuleSet {
     let mut path_rules: Vec<PathRule> = Vec::new();
 
-    // 1. Capability `file_write` deny → seed the sensitive-path deny defaults.
-    let denies_file_write = doc
+    // 1. Capability `file_write` OR `file_delete` deny → seed the sensitive-path
+    //    deny defaults. The kernel path probe matches paths, not the mutation
+    //    verb, so a deny of either mutation capability projects the same floor.
+    let denies_file_mutation = doc
         .capabilities
         .as_ref()
-        .map(|c| c.deny.contains(&Capability::FileWrite))
+        .map(|c| c.deny.contains(&Capability::FileWrite) || c.deny.contains(&Capability::FileDelete))
         .unwrap_or(false);
-    if denies_file_write {
-        for prefix in SENSITIVE_WRITE_DENY_DEFAULTS {
+    if denies_file_mutation {
+        for prefix in SENSITIVE_MUTATION_DENY_DEFAULTS {
             push_unique(
                 &mut path_rules,
                 PathRule {
@@ -226,6 +230,18 @@ mod tests {
     fn file_write_deny_seeds_sensitive_path_denies() {
         let mut caps = CapabilitySet::default();
         caps.deny.insert(Capability::FileWrite);
+        let rules = lower_to_ebpf(&doc_with(Some(caps), vec![], vec![]));
+        let deny: Vec<&str> = rules.deny_paths().collect();
+        assert!(deny.contains(&"/etc"));
+        assert!(deny.contains(&"/root/.ssh"));
+    }
+
+    #[test]
+    fn file_delete_deny_seeds_sensitive_path_denies() {
+        // AAASM-4103: a file_delete deny projects the same kernel path floor as
+        // file_write, since the path probe cannot distinguish the two verbs.
+        let mut caps = CapabilitySet::default();
+        caps.deny.insert(Capability::FileDelete);
         let rules = lower_to_ebpf(&doc_with(Some(caps), vec![], vec![]));
         let deny: Vec<&str> = rules.deny_paths().collect();
         assert!(deny.contains(&"/etc"));

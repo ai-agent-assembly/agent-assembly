@@ -490,7 +490,8 @@ Recognised capability strings:
 | String | Capability |
 |---|---|
 | `file_read` | read the filesystem |
-| `file_write` | write the filesystem |
+| `file_write` | write (create / truncate / append) the filesystem |
+| `file_delete` | delete / unlink files from the filesystem |
 | `network_outbound` | outbound network |
 | `network_inbound` | inbound network |
 | `terminal_exec` | execute shell commands |
@@ -500,6 +501,26 @@ Recognised capability strings:
 
 An unknown capability string, or an `mcp_tool:` / `model:` with an empty name,
 is a validation error.
+
+`file_delete` is a distinct verb from `file_write`, so a policy can allow writes
+while denying deletes (or the reverse). Two fail-closed rules apply:
+
+- A `file_write` **allow** does **not** grant delete — a delete action is denied
+  unless the policy explicitly allows `file_delete`.
+- A `file_write` **deny** still blocks delete (defense in depth), so a policy
+  that denies `file_write` to lock down all mutations keeps blocking deletes
+  even if it never names `file_delete`.
+
+To allow writes but forbid deletion:
+
+```yaml
+capabilities:
+  allow:
+    - file_read
+    - file_write
+  deny:
+    - file_delete
+```
 
 ## `approval`
 

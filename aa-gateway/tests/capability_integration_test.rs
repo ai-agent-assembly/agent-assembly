@@ -340,3 +340,117 @@ fn mcp_tool_capability_allowlist_permits_only_listed_tools() {
         git_result
     );
 }
+
+// ── FileDelete governance (AAASM-4103) ──────────────────────────────────────────
+
+/// A policy that allows `file_write` (but not `file_delete`) must deny a delete:
+/// a write grant no longer implies delete (fail-closed).
+#[test]
+fn delete_denied_when_only_file_write_is_granted() {
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(
+        PolicyScope::Global,
+        &[Capability::FileRead, Capability::FileWrite],
+        &[],
+    ));
+
+    let ctx = make_ctx();
+    let action = GovernanceAction::FileAccess {
+        path: "/tmp/data.txt".into(),
+        mode: aa_core::FileMode::Delete,
+    };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert!(
+        matches!(result, PolicyResult::Deny { .. }),
+        "expected Deny: a file_write grant must not imply delete, got {:?}",
+        result
+    );
+}
+
+/// A policy that explicitly allows `file_delete` must allow a delete action.
+#[test]
+fn delete_allowed_when_file_delete_is_granted() {
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(
+        PolicyScope::Global,
+        &[Capability::FileRead, Capability::FileWrite, Capability::FileDelete],
+        &[],
+    ));
+
+    let ctx = make_ctx();
+    let action = GovernanceAction::FileAccess {
+        path: "/tmp/data.txt".into(),
+        mode: aa_core::FileMode::Delete,
+    };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert_eq!(
+        result,
+        PolicyResult::Allow,
+        "expected Allow: file_delete explicitly granted, got {:?}",
+        result
+    );
+}
+
+/// The headline allow-write-deny-delete shape: with `allow=[file_write]` and
+/// `deny=[file_delete]`, a write is allowed but a delete is denied.
+#[test]
+fn allow_write_deny_delete_governs_verbs_independently() {
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(
+        PolicyScope::Global,
+        &[Capability::FileWrite],
+        &[Capability::FileDelete],
+    ));
+
+    let ctx = make_ctx();
+
+    let write = engine
+        .evaluate(
+            &ctx,
+            &GovernanceAction::FileAccess {
+                path: "/tmp/report.txt".into(),
+                mode: aa_core::FileMode::Write,
+            },
+        )
+        .decision;
+    assert_eq!(write, PolicyResult::Allow, "write must be allowed, got {:?}", write);
+
+    let delete = engine
+        .evaluate(
+            &ctx,
+            &GovernanceAction::FileAccess {
+                path: "/tmp/report.txt".into(),
+                mode: aa_core::FileMode::Delete,
+            },
+        )
+        .decision;
+    assert!(
+        matches!(delete, PolicyResult::Deny { .. }),
+        "delete must be denied, got {:?}",
+        delete
+    );
+}
+
+/// Defense-in-depth: a pre-4103 policy that only denies `file_write` (to lock
+/// down all mutation) must keep blocking delete even though it never names
+/// `file_delete`.
+#[test]
+fn legacy_file_write_deny_still_blocks_delete() {
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(PolicyScope::Global, &[], &[Capability::FileWrite]));
+
+    let ctx = make_ctx();
+    let action = GovernanceAction::FileAccess {
+        path: "/tmp/data.txt".into(),
+        mode: aa_core::FileMode::Delete,
+    };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert!(
+        matches!(result, PolicyResult::Deny { .. }),
+        "expected Deny: a stale file_write deny must keep blocking delete, got {:?}",
+        result
+    );
+}

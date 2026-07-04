@@ -194,7 +194,7 @@ fn stage_tool_allow(doc: &PolicyDocument, action: &aa_core::GovernanceAction) ->
 fn stage_capability(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
     let caps = doc.capabilities.as_ref()?;
     let cap = aa_core::action_to_capability(action)?;
-    if caps.deny.contains(&cap) {
+    if aa_core::capability_is_denied(&caps.deny, &cap) {
         return Some(PolicyDecision::Deny {
             reason: "capability denied by policy".into(),
             source_scope: doc.scope.clone(),
