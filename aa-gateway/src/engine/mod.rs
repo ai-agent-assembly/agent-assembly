@@ -927,8 +927,17 @@ impl PolicyEngine {
     ) -> Option<EvaluationResult> {
         let tool_policy = policy.tools.get(name);
 
-        // Stage 3 — Tool allow/deny.
-        if let Some(tp) = tool_policy {
+        // Stage 3 — Tool allow/deny. AAASM-4152: fall back to the `"*"` wildcard
+        // entry when the tool has no explicit policy, so a
+        // `tools: { "*": { allow: false } }` document denies unknown tools
+        // (fail closed) instead of letting them through the engine's
+        // allow-by-default. Explicit per-tool entries take precedence. This is
+        // the single-file twin of the cascade path's `decision::stage_tool_allow`
+        // — both must honour the wildcard or they diverge (the twin the network
+        // stage shares via `network_request_url_allowed`). Rate-limit (stage 4)
+        // and approval (stage 5) keep the exact `tool_policy` lookup, matching
+        // the cascade twin where only the allow/deny check consults `"*"`.
+        if let Some(tp) = tool_policy.or_else(|| policy.tools.get("*")) {
             if !tp.allow {
                 return Some(EvaluationResult::deny("tool denied by policy"));
             }
