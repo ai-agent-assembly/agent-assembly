@@ -934,9 +934,12 @@ impl PolicyEngine {
         // allow-by-default. Explicit per-tool entries take precedence. This is
         // the single-file twin of the cascade path's `decision::stage_tool_allow`
         // — both must honour the wildcard or they diverge (the twin the network
-        // stage shares via `network_request_url_allowed`). Rate-limit (stage 4)
-        // and approval (stage 5) keep the exact `tool_policy` lookup, matching
-        // the cascade twin where only the allow/deny check consults `"*"`.
+        // stage shares via `network_request_url_allowed`). AAASM-4164: rate-limit
+        // (stage 4) and approval (stage 5) below apply the same `"*"` fallback,
+        // so a wildcard entry carrying `limit_per_hour` / `requires_approval_if`
+        // gates unlisted tools rather than silently skipping those stages. The
+        // cascade twins (`Self::cascade_rate_limit`, `decision::stage_approval`)
+        // consult `"*"` too.
         if let Some(tp) = tool_policy.or_else(|| policy.tools.get("*")) {
             if !tp.allow {
                 return Some(EvaluationResult::deny("tool denied by policy"));
