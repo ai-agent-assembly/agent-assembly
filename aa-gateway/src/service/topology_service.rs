@@ -15,34 +15,16 @@ use aa_proto::assembly::topology::v1::{
 use crate::edges::InMemoryEdgeRepo;
 use crate::iam::VerifiedCaller;
 use crate::registry::{AgentRecord, AgentRegistry, AgentStatus};
-use crate::service::TenancyMode;
 
 /// gRPC service implementation for topology queries.
 pub struct TopologyServiceImpl {
     registry: Arc<AgentRegistry>,
     edge_repo: InMemoryEdgeRepo,
-    /// Deployment tenancy posture for the cross-tenant guard (AAASM-4021).
-    /// Defaults to [`TenancyMode::Untenanted`] so OSS/single-tenant deployments
-    /// keep the permissive fallback.
-    tenancy_mode: TenancyMode,
 }
 
 impl TopologyServiceImpl {
     pub fn new(registry: Arc<AgentRegistry>, edge_repo: InMemoryEdgeRepo) -> Self {
-        Self {
-            registry,
-            edge_repo,
-            tenancy_mode: TenancyMode::default(),
-        }
-    }
-
-    /// Set the deployment tenancy posture (AAASM-4021).
-    ///
-    /// In [`TenancyMode::Tenanted`] a team-less caller can no longer read or
-    /// enumerate a tenanted resource via the untenanted fallback.
-    pub fn with_tenancy_mode(mut self, mode: TenancyMode) -> Self {
-        self.tenancy_mode = mode;
-        self
+        Self { registry, edge_repo }
     }
 }
 
@@ -71,24 +53,22 @@ fn format_id(id: &[u8; 16]) -> String {
 /// untenanted access is allowed (the untenanted/single-tenant deployment
 /// fallback).
 ///
-/// AAASM-4021: in [`TenancyMode::Tenanted`] the fallback is tightened so a
-/// registered but team-less (resp. org-less) caller can no longer read a
-/// *tenanted* resource — that permissive path is kept only for the untenanted
-/// posture. Untenanted resources stay readable in either mode.
-fn caller_may_read(
-    caller: &VerifiedCaller,
-    resource_team: Option<&str>,
-    resource_org: Option<&str>,
-    mode: TenancyMode,
-) -> bool {
+/// AAASM-4140: the fallback is fail-safe — a registered but team-less (resp.
+/// org-less) caller can never read a *tenanted* resource, in any deployment
+/// posture. The permissive path survives only where the resource itself is
+/// untenanted; untenanted resources stay readable and same-tenant access is
+/// unchanged (the AAASM-4133 item-5 residual).
+fn caller_may_read(caller: &VerifiedCaller, resource_team: Option<&str>, resource_org: Option<&str>) -> bool {
     let team_ok = match (caller.team_id.as_deref(), resource_team) {
         (Some(caller_team), Some(resource_team)) => caller_team == resource_team,
-        (None, Some(_)) => mode == TenancyMode::Untenanted,
+        // Team-less caller vs a tenanted resource: fail safe — deny (AAASM-4140).
+        (None, Some(_)) => false,
         _ => true,
     };
     let org_ok = match (caller.org_id.as_deref(), resource_org) {
         (Some(caller_org), Some(resource_org)) => caller_org == resource_org,
-        (None, Some(_)) => mode == TenancyMode::Untenanted,
+        // Org-less caller vs a tenanted resource: fail safe — deny (AAASM-4140).
+        (None, Some(_)) => false,
         _ => true,
     };
     team_ok && org_ok
@@ -159,12 +139,7 @@ impl TopologyService for TopologyServiceImpl {
         // AAASM-3846 — confine a tenanted caller to its own team/org so one team
         // cannot read another team's delegation tree.
         if let Some(caller) = &caller {
-            if !caller_may_read(
-                caller,
-                record.team_id.as_deref(),
-                record.org_id.as_deref(),
-                self.tenancy_mode,
-            ) {
+            if !caller_may_read(caller, record.team_id.as_deref(), record.org_id.as_deref()) {
                 return Err(Status::permission_denied("agent belongs to a different tenant"));
             }
         }
@@ -197,12 +172,7 @@ impl TopologyService for TopologyServiceImpl {
         // AAASM-3846 — a tenanted caller may only trace lineage for an agent in
         // its own team/org.
         if let Some(caller) = &caller {
-            if !caller_may_read(
-                caller,
-                record.team_id.as_deref(),
-                record.org_id.as_deref(),
-                self.tenancy_mode,
-            ) {
+            if !caller_may_read(caller, record.team_id.as_deref(), record.org_id.as_deref()) {
                 return Err(Status::permission_denied("agent belongs to a different tenant"));
             }
         }
@@ -237,10 +207,9 @@ impl TopologyService for TopologyServiceImpl {
                 Some(caller_team) if caller_team != req.team_id => {
                     return Err(Status::permission_denied("team belongs to a different tenant"));
                 }
-                // AAASM-4021: a team-less caller may enumerate an arbitrary
-                // team's roster only in the untenanted posture; when tenancy is
-                // enforced it is confined out of another team's roster.
-                None if self.tenancy_mode == TenancyMode::Tenanted => {
+                // AAASM-4140: fail safe — a team-less caller may not enumerate a
+                // team's roster (a tenanted resource); deny in every posture.
+                None => {
                     return Err(Status::permission_denied("team belongs to a different tenant"));
                 }
                 _ => {}
@@ -307,7 +276,6 @@ impl TopologyService for TopologyServiceImpl {
             &caller,
             source_record.team_id.as_deref(),
             source_record.org_id.as_deref(),
-            self.tenancy_mode,
         ) {
             return Err(Status::permission_denied("source agent belongs to a different tenant"));
         }
@@ -319,7 +287,6 @@ impl TopologyService for TopologyServiceImpl {
             &caller,
             target_record.team_id.as_deref(),
             target_record.org_id.as_deref(),
-            self.tenancy_mode,
         ) {
             return Err(Status::permission_denied("target agent belongs to a different tenant"));
         }
@@ -466,11 +433,12 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::PermissionDenied);
     }
 
+    // AAASM-4140 — zero-config preserved: a team-less caller may still read an
+    // *untenanted* agent (single-tenant deployment fallback).
     #[tokio::test]
-    async fn untenanted_caller_is_allowed_cross_team() {
-        // Single-tenant deployment fallback: an untenanted caller is not confined.
+    async fn teamless_caller_allowed_reading_untenanted_agent() {
         let root: [u8; 16] = [0xd0; 16];
-        let svc = service_with(vec![make_record(root, "root", None, Some("team-b"), Some("org-b"))]);
+        let svc = service_with(vec![make_record(root, "root", None, None, None)]);
 
         let mut req = Request::new(GetAgentTreeRequest {
             agent_id: format_id(&root),
@@ -482,16 +450,12 @@ mod tests {
         assert_eq!(resp.root.unwrap().agent.unwrap().id, format_id(&root));
     }
 
-    fn service_tenanted(records: Vec<AgentRecord>) -> TopologyServiceImpl {
-        service_with(records).with_tenancy_mode(TenancyMode::Tenanted)
-    }
-
-    // AAASM-4021 — the untenanted fallback must not let a registered but
-    // team-less caller read a tenanted agent once tenancy is enforced.
+    // AAASM-4140 — fail-safe fallback: a registered but team-less caller may not
+    // read a tenanted agent, in the default (Untenanted) posture too.
     #[tokio::test]
-    async fn tenanted_mode_teamless_caller_denied_reading_tenanted_agent() {
+    async fn teamless_caller_denied_reading_tenanted_agent() {
         let root: [u8; 16] = [0xf0; 16];
-        let svc = service_tenanted(vec![make_record(root, "root", None, Some("team-b"), Some("org-b"))]);
+        let svc = service_with(vec![make_record(root, "root", None, Some("team-b"), Some("org-b"))]);
 
         let mut req = Request::new(GetAgentTreeRequest {
             agent_id: format_id(&root),
@@ -503,10 +467,12 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::PermissionDenied);
     }
 
+    // AAASM-4140 — fail-safe fallback: a team-less caller may not enumerate a
+    // team's roster, in the default (Untenanted) posture too.
     #[tokio::test]
-    async fn tenanted_mode_teamless_caller_denied_enumerating_team() {
+    async fn teamless_caller_denied_enumerating_team() {
         let agent: [u8; 16] = [0xf1; 16];
-        let svc = service_tenanted(vec![make_record(agent, "a", None, Some("team-b"), None)]);
+        let svc = service_with(vec![make_record(agent, "a", None, Some("team-b"), None)]);
 
         let mut req = Request::new(GetTeamMembersRequest {
             team_id: "team-b".into(),
@@ -518,34 +484,17 @@ mod tests {
     }
 
     #[test]
-    fn caller_may_read_tenancy_matrix() {
-        // Team-less caller vs tenanted resource: permissive only when untenanted.
-        assert!(caller_may_read(
-            &caller(None, None),
-            Some("t"),
-            None,
-            TenancyMode::Untenanted
-        ));
-        assert!(!caller_may_read(
-            &caller(None, None),
-            Some("t"),
-            None,
-            TenancyMode::Tenanted
-        ));
-        // Untenanted resource stays readable in either mode.
-        assert!(caller_may_read(
-            &caller(Some("t"), None),
-            None,
-            None,
-            TenancyMode::Tenanted
-        ));
-        // Same-tenant match is mode-independent.
-        assert!(caller_may_read(
-            &caller(Some("t"), Some("o")),
-            Some("t"),
-            Some("o"),
-            TenancyMode::Tenanted
-        ));
+    fn caller_may_read_matrix() {
+        // Team-less (resp. org-less) caller vs a tenanted resource: fail safe —
+        // denied (AAASM-4140).
+        assert!(!caller_may_read(&caller(None, None), Some("t"), None));
+        assert!(!caller_may_read(&caller(None, None), None, Some("o")));
+        // Untenanted resource stays readable for any caller.
+        assert!(caller_may_read(&caller(Some("t"), None), None, None));
+        assert!(caller_may_read(&caller(None, None), None, None));
+        // Same-tenant match; cross-tenant mismatch.
+        assert!(caller_may_read(&caller(Some("t"), Some("o")), Some("t"), Some("o")));
+        assert!(!caller_may_read(&caller(Some("t"), Some("o")), Some("u"), Some("o")));
     }
 
     // ── report_edge tenant authz (AAASM-3855) ──────────────────────────────
