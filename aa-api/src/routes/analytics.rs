@@ -751,6 +751,97 @@ pub async fn get_tool_usage(
     (StatusCode::OK, Json(ToolUsageResponse { tools }))
 }
 
+/// Format an epoch-nanosecond timestamp as a `YYYY-MM-DD` UTC calendar date.
+fn utc_date(ts_ns: u64) -> String {
+    let secs = (ts_ns / 1_000_000_000) as i64;
+    chrono::DateTime::from_timestamp(secs, 0)
+        .map(|dt| dt.date_naive().to_string())
+        .unwrap_or_default()
+}
+
+/// `GET /api/v1/analytics/policy-effectiveness` — per-rule daily outcome counts.
+///
+/// Groups audit events that carry a non-empty `policy_rule` by rule and by UTC
+/// day, classifying each into the v1 buckets:
+///
+/// * `warns` — the evaluation was a shadow / dry-run (`dry_run: true`).
+/// * `blocks` — a `PolicyViolation` event, or a non-dry-run evaluation whose
+///   `decision` was not an allow.
+/// * `passes` — a non-dry-run evaluation whose `decision` was an allow (or that
+///   recorded no explicit decision).
+///
+/// The rule `name` equals its id in v1 (the audit log records only the rule
+/// identifier). Rules with no recorded evaluations produce no entry, so an idle
+/// window returns an empty rule list. Confined to the caller's tenant.
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/policy-effectiveness",
+    params(AnalyticsParams),
+    responses(
+        (status = 200, description = "Per-rule daily policy effectiveness", body = PolicyEffectivenessResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_policy_effectiveness(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(params): Query<AnalyticsParams>,
+) -> (StatusCode, Json<PolicyEffectivenessResponse>) {
+    let window = window_secs_from_range(params.range.as_deref());
+    let now = now_ns();
+    let since = now.saturating_sub(window.saturating_mul(1_000_000_000));
+
+    let entries = fetch_window_entries(&caller, &state, since).await;
+
+    // rule id -> (date -> (blocks, warns, passes)). BTreeMaps keep both the
+    // rules and the per-rule days in stable ascending order.
+    let mut by_rule: BTreeMap<String, BTreeMap<String, (u64, u64, u64)>> = BTreeMap::new();
+    for e in &entries {
+        let payload: serde_json::Value = match serde_json::from_str(e.payload()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let rule = match payload.get("policy_rule").and_then(|v| v.as_str()) {
+            Some(r) if !r.is_empty() => r.to_string(),
+            _ => continue,
+        };
+        let date = utc_date(e.timestamp_ns());
+        let day = by_rule.entry(rule).or_default().entry(date).or_insert((0, 0, 0));
+
+        let dry_run = payload.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        if dry_run {
+            day.1 += 1;
+        } else if matches!(e.event_type(), AuditEventType::PolicyViolation) {
+            day.0 += 1;
+        } else {
+            match payload.get("decision").and_then(|v| v.as_str()) {
+                Some(d) if !d.eq_ignore_ascii_case("allow") => day.0 += 1,
+                _ => day.2 += 1,
+            }
+        }
+    }
+
+    let rules: Vec<PolicyRuleStat> = by_rule
+        .into_iter()
+        .map(|(id, days_map)| PolicyRuleStat {
+            name: id.clone(),
+            id,
+            days: days_map
+                .into_iter()
+                .map(|(date, (blocks, warns, passes))| PolicyDay {
+                    date,
+                    blocks,
+                    warns,
+                    passes,
+                })
+                .collect(),
+        })
+        .collect();
+
+    (StatusCode::OK, Json(PolicyEffectivenessResponse { rules }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
