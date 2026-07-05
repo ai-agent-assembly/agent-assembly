@@ -32,7 +32,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use aa_core::audit::AuditEventType;
 use aa_core::AuditEntry;
-use aa_gateway::AgentRecord;
+use aa_gateway::{AgentRecord, AgentStatus};
 
 use crate::auth::scope::{RequireRead, Scope};
 use crate::auth::AuthenticatedCaller;
@@ -938,6 +938,63 @@ pub async fn get_approvals(
             },
         }),
     )
+}
+
+/// Current wall-clock time in epoch milliseconds (JS `Date` convention, which
+/// the dashboard sparkline axes format directly).
+fn now_ms() -> i64 {
+    (now_ns() / 1_000_000) as i64
+}
+
+/// Map an agent's registry status to a v1 health score in `[0, 100]`.
+fn health_score(status: &AgentStatus) -> i64 {
+    match status {
+        AgentStatus::Active => 100,
+        AgentStatus::Suspended(_) => 40,
+        AgentStatus::Deregistered => 0,
+    }
+}
+
+/// `GET /api/v1/analytics/fleet-health` — per-agent health sparklines.
+///
+/// The registry exposes point-in-time status, not a health time series, so the
+/// v1 view emits a single current sample per agent: `score` = 100 when Active,
+/// 40 when Suspended, 0 when Deregistered (see [`health_score`]), stamped with
+/// the current epoch-millisecond time. Scoped to the agents the caller may see
+/// (admin sees all; a tenant-scoped caller sees only its own team's agents).
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/fleet-health",
+    params(AnalyticsParams),
+    responses(
+        (status = 200, description = "Per-agent health sparklines", body = FleetHealthResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_fleet_health(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(_params): Query<AnalyticsParams>,
+) -> (StatusCode, Json<FleetHealthResponse>) {
+    let t = now_ms();
+    let agents: Vec<AgentHealth> = visible_agents(&caller, &state)
+        .into_iter()
+        .map(|r| {
+            let id = hex::encode(r.agent_id);
+            let name = if r.name.is_empty() { id.clone() } else { r.name };
+            AgentHealth {
+                id,
+                name,
+                points: vec![HealthPoint {
+                    t,
+                    score: health_score(&r.status),
+                }],
+            }
+        })
+        .collect();
+
+    (StatusCode::OK, Json(FleetHealthResponse { agents }))
 }
 
 #[cfg(test)]
