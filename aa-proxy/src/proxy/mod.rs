@@ -556,9 +556,11 @@ impl ProxyServer {
         // A `Block` verdict refuses the forward (403); a redact verdict forwards
         // the redacted bytes. An MCP `Deny`/unenforceable body already returned
         // above, so this only runs on bodies that are about to be forwarded.
-        let verdict = self
-            .interceptor
-            .intercept_request(&req.body, self.config.credential_action);
+        let verdict = self.interceptor.intercept_request(
+            &req.body,
+            req.header("content-encoding"),
+            self.config.credential_action,
+        );
         if verdict.decision == VerdictDecision::Block {
             tracing::info!(
                 %host,
@@ -788,9 +790,11 @@ impl ProxyServer {
             return Ok(());
         }
 
-        let verdict = self
-            .interceptor
-            .intercept_request(&req.body, self.config.credential_action);
+        let verdict = self.interceptor.intercept_request(
+            &req.body,
+            req.header("content-encoding"),
+            self.config.credential_action,
+        );
 
         // Emit the legacy ProxyEvent for the audit broadcast — keeps
         // existing subscribers wired up unchanged.

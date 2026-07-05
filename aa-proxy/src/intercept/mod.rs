@@ -19,10 +19,13 @@ use aa_runtime::pipeline::PipelineEvent;
 use aa_security::{CredentialFinding, CredentialScanner};
 use bytes::Bytes;
 
+use std::borrow::Cow;
+
 use crate::config::CredentialAction;
 use crate::error::ProxyError;
 use crate::intercept::detect::LlmApiPattern;
 use crate::intercept::extract::{extract_anthropic, extract_cohere, extract_openai, ExtractionError, LlmFields};
+use crate::proxy::http::decompress_content_encoding;
 
 /// What the proxy should do with an intercepted request body after the
 /// scanner has run.
@@ -62,6 +65,47 @@ pub struct InterceptVerdict {
     pub redacted_body: Option<Bytes>,
 }
 
+/// The bytes the credential/DLP scanner should inspect for a body that may
+/// carry a `Content-Encoding`, or a signal that the body is un-inspectable.
+///
+/// AAASM-4156: a `gzip`/`deflate` body must be decompressed before scanning —
+/// scanning the compressed bytes lets an encoded secret slip past. An encoding
+/// the proxy cannot decode yields [`ScanSource::Uninspectable`] so the caller
+/// fails closed (refuse the request / withhold the response) rather than
+/// forwarding a body it never inspected.
+enum ScanSource<'a> {
+    /// Scan these bytes. `encoded` is `true` when they were decompressed from a
+    /// non-identity `Content-Encoding` (the original wire body is compressed).
+    Plaintext { bytes: Cow<'a, [u8]>, encoded: bool },
+    /// The `Content-Encoding` cannot be decoded here — fail closed.
+    Uninspectable,
+}
+
+/// Resolve the [`ScanSource`] for `body` given its `Content-Encoding` header
+/// value (if any). An absent or `identity` encoding is scanned verbatim; a
+/// recognized encoding is decompressed (bounded by `MAX_BODY_LEN`); anything
+/// else is [`ScanSource::Uninspectable`].
+fn scan_source<'a>(body: &'a [u8], content_encoding: Option<&str>) -> ScanSource<'a> {
+    let token = content_encoding.map(str::trim).filter(|s| !s.is_empty());
+    match token {
+        None => ScanSource::Plaintext {
+            bytes: Cow::Borrowed(body),
+            encoded: false,
+        },
+        Some(enc) if enc.eq_ignore_ascii_case("identity") => ScanSource::Plaintext {
+            bytes: Cow::Borrowed(body),
+            encoded: false,
+        },
+        Some(enc) => match decompress_content_encoding(enc, body) {
+            Ok(decoded) => ScanSource::Plaintext {
+                bytes: Cow::Owned(decoded),
+                encoded: true,
+            },
+            Err(_) => ScanSource::Uninspectable,
+        },
+    }
+}
+
 /// Inspects a decrypted HTTP request/response pair, decides whether it is an
 /// LLM API call, and extracts audit-relevant fields from the body.
 ///
@@ -88,7 +132,26 @@ impl Interceptor {
     ///
     /// When the proxy's scanner is disabled (constructed via
     /// `with_scanner(None)`) this returns `Forward` with no findings.
-    pub fn intercept_request(&self, body: &[u8], action: CredentialAction) -> InterceptVerdict {
+    ///
+    /// `content_encoding` is the request's `Content-Encoding` header value (if
+    /// present). A non-identity encoding is decompressed before scanning
+    /// (AAASM-4156) so a `gzip`/`deflate`-encoded secret cannot slip past the
+    /// scanner as opaque compressed bytes. Two fail-closed cases return
+    /// [`VerdictDecision::Block`] with no findings — mirroring the chunked-TE
+    /// stance of refusing an un-inspectable body rather than forwarding it:
+    ///
+    /// * an encoding the proxy cannot decode (`br`, `zstd`, layered lists, or a
+    ///   malformed/oversized stream), and
+    /// * `RedactOnly` findings inside a compressed body — the redacted plaintext
+    ///   cannot be re-encoded to the declared encoding here, and forwarding the
+    ///   original compressed bytes would leak the secret, so the request is
+    ///   blocked. Identity bodies still redact and forward as before.
+    pub fn intercept_request(
+        &self,
+        body: &[u8],
+        content_encoding: Option<&str>,
+        action: CredentialAction,
+    ) -> InterceptVerdict {
         let Some(scanner) = self.scanner.as_ref() else {
             return InterceptVerdict {
                 decision: VerdictDecision::Forward,
@@ -97,7 +160,20 @@ impl Interceptor {
             };
         };
 
-        let text = String::from_utf8_lossy(body);
+        let (bytes, encoded) = match scan_source(body, content_encoding) {
+            ScanSource::Plaintext { bytes, encoded } => (bytes, encoded),
+            ScanSource::Uninspectable => {
+                // Fail closed: the body's Content-Encoding cannot be decoded, so
+                // the scanner never saw the real content. Refuse the forward.
+                return InterceptVerdict {
+                    decision: VerdictDecision::Block,
+                    findings: Vec::new(),
+                    redacted_body: None,
+                };
+            }
+        };
+
+        let text = String::from_utf8_lossy(&bytes);
         let scan = scanner.scan(&text);
         if scan.is_clean() {
             return InterceptVerdict {
@@ -113,6 +189,16 @@ impl Interceptor {
                 findings: scan.findings,
                 redacted_body: None,
             },
+            CredentialAction::RedactOnly if encoded => {
+                // Cannot re-encode the redacted plaintext to the declared
+                // Content-Encoding, and forwarding the original compressed bytes
+                // would relay the secret. Fail closed rather than leak.
+                InterceptVerdict {
+                    decision: VerdictDecision::Block,
+                    findings: scan.findings,
+                    redacted_body: None,
+                }
+            }
             CredentialAction::RedactOnly => {
                 let redacted = scan.redact(&text);
                 InterceptVerdict {
@@ -698,7 +784,7 @@ mod tests {
     fn intercept_request_disabled_scanner_forwards_even_with_credential() {
         let (tx, _rx) = broadcast::channel(16);
         let interceptor = Interceptor::with_scanner(tx, None);
-        let verdict = interceptor.intercept_request(CRED_BODY, CredentialAction::Block);
+        let verdict = interceptor.intercept_request(CRED_BODY, None, CredentialAction::Block);
         assert_eq!(verdict.decision, VerdictDecision::Forward);
         assert!(verdict.findings.is_empty());
         assert!(verdict.redacted_body.is_none());
@@ -707,7 +793,7 @@ mod tests {
     #[test]
     fn intercept_request_clean_body_forwards() {
         let interceptor = make_interceptor();
-        let verdict = interceptor.intercept_request(b"nothing secret here", CredentialAction::Block);
+        let verdict = interceptor.intercept_request(b"nothing secret here", None, CredentialAction::Block);
         assert_eq!(verdict.decision, VerdictDecision::Forward);
         assert!(verdict.findings.is_empty());
         assert!(verdict.redacted_body.is_none());
@@ -716,7 +802,7 @@ mod tests {
     #[test]
     fn intercept_request_block_action_blocks_on_finding() {
         let interceptor = make_interceptor();
-        let verdict = interceptor.intercept_request(CRED_BODY, CredentialAction::Block);
+        let verdict = interceptor.intercept_request(CRED_BODY, None, CredentialAction::Block);
         assert_eq!(verdict.decision, VerdictDecision::Block);
         assert!(!verdict.findings.is_empty(), "a finding must be reported");
         // Block never forwards bytes, so no redacted body is produced.
@@ -726,7 +812,7 @@ mod tests {
     #[test]
     fn intercept_request_redact_only_returns_redacted_bytes() {
         let interceptor = make_interceptor();
-        let verdict = interceptor.intercept_request(CRED_BODY, CredentialAction::RedactOnly);
+        let verdict = interceptor.intercept_request(CRED_BODY, None, CredentialAction::RedactOnly);
         assert_eq!(verdict.decision, VerdictDecision::ForwardRedacted);
         assert!(!verdict.findings.is_empty());
         let redacted = verdict.redacted_body.expect("redact_only must populate the body");
@@ -741,7 +827,7 @@ mod tests {
     #[test]
     fn intercept_request_alert_only_forwards_original_with_findings() {
         let interceptor = make_interceptor();
-        let verdict = interceptor.intercept_request(CRED_BODY, CredentialAction::AlertOnly);
+        let verdict = interceptor.intercept_request(CRED_BODY, None, CredentialAction::AlertOnly);
         assert_eq!(verdict.decision, VerdictDecision::AlertAndForward);
         assert!(!verdict.findings.is_empty());
         // alert_only forwards the original body unmodified, so no redaction.
