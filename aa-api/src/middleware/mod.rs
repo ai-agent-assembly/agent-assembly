@@ -35,5 +35,11 @@ pub fn apply_middleware(router: Router) -> Router {
         // the request task and drop the connection; the outermost catch_panic
         // turns it into a `500 Internal Server Error` so one bad request cannot
         // take down the worker.
+        //
+        // AAASM-4151: this backstop only works when the crate is built with
+        // `panic = "unwind"` — `CatchPanicLayer` uses `std::panic::catch_unwind`,
+        // which is a no-op under `panic = "abort"` (the process aborts before the
+        // catch runs). The shipped `release`/`dist` profiles pin `panic = "unwind"`
+        // for exactly this reason; do not switch them back to "abort".
         .layer(CatchPanicLayer::new())
 }
