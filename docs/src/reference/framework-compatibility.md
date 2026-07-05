@@ -21,9 +21,9 @@ compatibility page:
 
 | SDK | Frameworks (high level) | Authoritative compatibility doc |
 |---|---|---|
-| **Python** (`agent-assembly`) | LangChain · LangGraph · Pydantic AI · CrewAI · Google ADK · MCP · OpenAI Agents · LlamaIndex · Agno · Microsoft Agent Framework · Smolagents · Haystack | [python-sdk → Framework compatibility](https://ai-agent-assembly.github.io/python-sdk/stable/compatibility/frameworks/) |
-| **Node / TypeScript** (`@agent-assembly/sdk`) | LangChain.js · LangGraph.js · Vercel AI SDK · Mastra · OpenAI Agents | [node-sdk → Framework compatibility](https://ai-agent-assembly.github.io/node-sdk/stable/compatibility-versioning/compatibility/) |
-| **Go** (`go-sdk`) | LangChainGo (+ generic tool wrapping) | [go-sdk → Framework compatibility](https://ai-agent-assembly.github.io/go-sdk/stable/compatibility/) |
+| **Python** (`agent-assembly`) | LangChain · LangGraph · Pydantic AI · CrewAI · Google ADK · MCP · OpenAI Agents · LlamaIndex · Agno · Microsoft Agent Framework · Smolagents · Haystack | [python-sdk → Framework compatibility](https://docs.agent-assembly.com/python-sdk/stable/compatibility/frameworks/) |
+| **Node / TypeScript** (`@agent-assembly/sdk`) | LangChain.js · LangGraph.js · Vercel AI SDK · Mastra · OpenAI Agents | [node-sdk → Framework compatibility](https://docs.agent-assembly.com/node-sdk/stable/compatibility-versioning/compatibility/) |
+| **Go** (`go-sdk`) | LangChainGo (+ generic tool wrapping) | [go-sdk → Framework compatibility](https://docs.agent-assembly.com/go-sdk/stable/compatibility/) |
 
 The `/stable/` links resolve at the first GA release (consistent with the docs
 versioning convention); until then they 404 by design.

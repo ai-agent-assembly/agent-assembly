@@ -151,7 +151,7 @@ can move from this repo to the SDKs, the install tap, or the canonical docs.
 | [node-sdk](https://github.com/ai-agent-assembly/node-sdk) | TypeScript / Node.js SDK (napi-rs native + JS client) | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/node-sdk?include_prereleases&sort=semver&label=release&logo=nodedotjs&logoColor=white)](https://github.com/ai-agent-assembly/node-sdk/releases) |
 | [go-sdk](https://github.com/ai-agent-assembly/go-sdk) | Go SDK | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/go-sdk?include_prereleases&sort=semver&label=release&logo=go&logoColor=white)](https://github.com/ai-agent-assembly/go-sdk/releases) |
 | [homebrew-tap](https://github.com/ai-agent-assembly/homebrew-tap) | Homebrew tap for the `aasm` CLI | [![Homebrew tap](https://img.shields.io/badge/homebrew-tap-FBB040?logo=homebrew&logoColor=white)](https://github.com/ai-agent-assembly/homebrew-tap) |
-| [agent-assembly-docs](https://ai-agent-assembly.github.io/agent-assembly-docs/) | Canonical documentation site | [![docs](https://img.shields.io/badge/docs-live-2088FF)](https://docs.agent-assembly.com/) |
+| [agent-assembly-docs](https://docs.agent-assembly.com/) | Canonical documentation site | [![docs](https://img.shields.io/badge/docs-live-2088FF)](https://docs.agent-assembly.com/) |
 | agent-assembly-cloud | Hosted SaaS control plane | ![coming soon](https://img.shields.io/badge/SaaS-coming_soon-8957E5) |
 | agent-assembly-enterprise | Enterprise extensions (delivered via SaaS) | ![coming soon](https://img.shields.io/badge/enterprise-coming_soon-8957E5) |
 
@@ -364,7 +364,7 @@ agent-assembly/
 
 ## Documentation
 
-📖 **Canonical docs site:** <https://ai-agent-assembly.github.io/agent-assembly-docs/>
+📖 **Canonical docs site:** <https://docs.agent-assembly.com/>
 
 The contributor-facing documentation is also published as an [mdBook](https://rust-lang.github.io/mdBook/). Sources live under `docs/src/`. Build it locally with:
 
