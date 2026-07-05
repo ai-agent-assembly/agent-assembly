@@ -111,3 +111,30 @@ async fn tool_usage_returns_tools_array() {
 async fn tool_usage_requires_authentication() {
     assert_requires_auth("/api/v1/analytics/tool-usage").await;
 }
+
+// --- approvals ------------------------------------------------------------
+
+#[tokio::test]
+async fn approvals_returns_analytics_shape() {
+    let json = get_ok_json(common::test_app(), "/api/v1/analytics/approvals?range=30d").await;
+    assert!(json["volume"].is_number(), "volume must be a number");
+    assert!(json["medianTta"].is_number(), "medianTta must be a number");
+    assert!(json["approvalRate"].is_number(), "approvalRate must be a number");
+    assert!(
+        json["byOutcome"]["approved"].is_number(),
+        "byOutcome.approved must be a number"
+    );
+    assert!(
+        json["byOutcome"]["rejected"].is_number(),
+        "byOutcome.rejected must be a number"
+    );
+    assert!(
+        json["byOutcome"]["expired"].is_number(),
+        "byOutcome.expired must be a number"
+    );
+}
+
+#[tokio::test]
+async fn approvals_requires_authentication() {
+    assert_requires_auth("/api/v1/analytics/approvals").await;
+}
