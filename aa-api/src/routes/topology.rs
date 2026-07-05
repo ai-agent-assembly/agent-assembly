@@ -729,6 +729,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_agent_id_rejects_odd_length() {
+        // AAASM-4150: an odd-length id previously sliced past the end of the
+        // string and panicked; hex::decode must reject it as a clean error.
+        assert!(parse_agent_id("abc").is_err());
+    }
+
+    #[test]
     fn matches_status_filter_active() {
         let status = AgentStatus::Active;
         assert!(matches_status_filter(&status, "active"));
