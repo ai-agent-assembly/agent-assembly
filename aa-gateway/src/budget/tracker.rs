@@ -420,6 +420,12 @@ impl BudgetTracker {
         org_id: Option<&str>,
         amount_usd: Decimal,
     ) -> BudgetStatus {
+        // AAASM-4132 — clamp non-positive amounts to zero at the accrual
+        // boundary. `Decimal::try_from(-x)` succeeds, so a negative amount
+        // reaching here would *decrement* accrued spend and reopen headroom
+        // (e.g. after an exhausted budget). No caller supplies a credit today;
+        // clamp defensively before any is ever wired.
+        let amount_usd = amount_usd.max(Decimal::ZERO);
         self.record_cost(agent_id, team_id, org_id, amount_usd)
     }
 
@@ -631,17 +637,33 @@ impl BudgetTracker {
         let now = chrono::Utc::now();
         for &ancestor_bytes in ancestors {
             let ancestor_id = AgentId::from_bytes(ancestor_bytes);
+            // Snapshot the ancestor's window-reset spend once so the monthly and
+            // daily checks below observe the same accumulated totals. Descendant
+            // spend rolls up into the ancestor's `monthly_spent_usd` across daily
+            // resets, so gating only the daily window (the original behaviour)
+            // let cumulative monthly spend exceed a root cap when spread across
+            // children/days — AAASM-4132.
+            let (daily_spent, monthly_spent) = self
+                .per_agent
+                .get(&ancestor_id)
+                .map(|s| {
+                    let mut copy = s.clone();
+                    copy.maybe_reset_window(now, self.window, self.timezone);
+                    (copy.spent_usd, copy.monthly_spent_usd.unwrap_or(Decimal::ZERO))
+                })
+                .unwrap_or((Decimal::ZERO, Decimal::ZERO));
+            // Monthly precedes daily by convention (matches the tenant/self
+            // preflight ordering).
+            if let Some(limit) = self.resolve_limit(&ancestor_id, BudgetKind::Monthly) {
+                if monthly_spent + amount > limit {
+                    return Err(BudgetError::AncestorBudgetExhausted {
+                        ancestor_id: ancestor_bytes,
+                        kind: BudgetKind::Monthly,
+                    });
+                }
+            }
             if let Some(limit) = self.resolve_limit(&ancestor_id, BudgetKind::Daily) {
-                let spent = self
-                    .per_agent
-                    .get(&ancestor_id)
-                    .map(|s| {
-                        let mut copy = s.clone();
-                        copy.maybe_reset_window(now, self.window, self.timezone);
-                        copy.spent_usd
-                    })
-                    .unwrap_or(Decimal::ZERO);
-                if spent + amount > limit {
+                if daily_spent + amount > limit {
                     return Err(BudgetError::AncestorBudgetExhausted {
                         ancestor_id: ancestor_bytes,
                         kind: BudgetKind::Daily,
@@ -1428,6 +1450,29 @@ mod tests {
     }
 
     #[test]
+    fn record_raw_spend_clamps_negative_amount_to_no_op() {
+        // AAASM-4132 — a negative raw amount must not claw back accrued spend or
+        // reopen headroom; it is clamped to a no-op at the accrual boundary.
+        let t = tracker_with_limit("10.00");
+        let id = agent(37);
+        t.record_raw_spend(id, None, None, "9.00".parse().unwrap());
+        assert!(t.check_daily(&id, "9.00".parse().unwrap()), "seeded $9 accrued");
+
+        // Attempt to claw back $5 with a negative amount.
+        t.record_raw_spend(id, None, None, "-5.00".parse().unwrap());
+
+        // Accrued spend is unchanged — headroom is not reopened.
+        assert!(
+            t.check_daily(&id, "9.00".parse().unwrap()),
+            "negative amount must not decrement accrued spend"
+        );
+        assert_eq!(
+            t.per_agent.get(&id).unwrap().spent_usd,
+            "9.00".parse::<Decimal>().unwrap()
+        );
+    }
+
+    #[test]
     fn new_with_alert_sender_uses_external_channel() {
         let (tx, mut rx) = broadcast::channel::<BudgetAlert>(64);
         let t = BudgetTracker::new_with_alert_sender(
@@ -1883,5 +1928,65 @@ mod tests {
         // The denied reservation committed nothing: org spend stays at the cap.
         let five: Decimal = "5.00".parse().unwrap();
         assert_eq!(t.org_state("org-acme").unwrap().spent_usd, five);
+    }
+
+    // ── AAASM-4132: ancestor monthly cap must be enforced ──────────────
+
+    #[test]
+    fn reserve_spend_ancestor_monthly_cap_trips_when_spread_across_days() {
+        use crate::budget::types::{BudgetError, BudgetKind};
+        // Regression: preflight_ancestors gated only the ancestor's *daily*
+        // window, so descendant spend rolling up into the ancestor's monthly
+        // bucket across daily resets never blocked. Spread $3/day over two days
+        // (each day under any daily cap) so the cumulative $6 monthly total
+        // crosses the root's $5 monthly cap and must be denied.
+        let root = agent(90);
+        let child = agent(91);
+        let grandchild = agent(92);
+
+        // Tracker-wide monthly ($1000) makes ancestor monthly accrue
+        // (has_monthly) and keeps grandchild/child within budget; root's low
+        // $5 monthly override is the only binding cap. No daily limits anywhere.
+        let t = BudgetTracker::new(
+            PricingTable::default_table(),
+            None,
+            Some("1000.00".parse().unwrap()),
+            chrono_tz::UTC,
+        )
+        .with_agent_limit(root, None, Some("5.00".parse().unwrap()));
+
+        let ancestors = [*child.as_bytes(), *root.as_bytes()];
+        let three: Decimal = "3.00".parse().unwrap();
+
+        // Day 1: $3 accrues to grandchild, child, and root (monthly). Under $5.
+        t.reserve_spend(grandchild, &ancestors, None, None, three).unwrap();
+        assert_eq!(t.per_agent.get(&root).unwrap().monthly_spent_usd, Some(three));
+
+        // Backdate every entry one day so the DAILY window resets but the
+        // MONTHLY accumulator persists (same technique as
+        // monthly_accumulates_across_daily_resets).
+        for id in [grandchild, child, root] {
+            t.per_agent.alter(&id, |_, mut s| {
+                s.date = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+                s
+            });
+        }
+
+        // Day 2: another $3 would push root's monthly to $6 > $5. Must be denied
+        // in preflight before any spend commits.
+        let result = t.reserve_spend(grandchild, &ancestors, None, None, three);
+        assert!(
+            matches!(
+                result,
+                Err(BudgetError::AncestorBudgetExhausted {
+                    kind: BudgetKind::Monthly,
+                    ..
+                })
+            ),
+            "expected ancestor Monthly exhaustion, got: {:?}",
+            result
+        );
+        // The denied reservation committed nothing: root monthly stays at $3.
+        assert_eq!(t.per_agent.get(&root).unwrap().monthly_spent_usd, Some(three));
     }
 }
