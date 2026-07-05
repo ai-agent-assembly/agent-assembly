@@ -842,6 +842,104 @@ pub async fn get_policy_effectiveness(
     (StatusCode::OK, Json(PolicyEffectivenessResponse { rules }))
 }
 
+/// Median of a slice of durations (seconds); `0.0` for an empty slice. Sorts in
+/// place.
+fn median_secs(values: &mut [u64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_unstable();
+    let n = values.len();
+    if n % 2 == 1 {
+        values[n / 2] as f64
+    } else {
+        (values[n / 2 - 1] as f64 + values[n / 2] as f64) / 2.0
+    }
+}
+
+/// `GET /api/v1/analytics/approvals` — resolved-approval volume, rate and latency.
+///
+/// Aggregates the approval queue's resolved history over records whose decision
+/// timestamp falls in the window, confined to the caller's tenant (admin sees
+/// all teams; a tenant-scoped caller sees only its own team; untagged records
+/// are admin-only — matching the `/approvals` list route). `byOutcome` splits
+/// approved / rejected / `timed_out` (expired); `volume` is their sum;
+/// `approvalRate` = approved / volume; `medianTta` is the median time-to-answer
+/// in seconds across decided (non-expired) approvals.
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/approvals",
+    params(AnalyticsParams),
+    responses(
+        (status = 200, description = "Approval volume, rate and latency", body = ApprovalAnalyticsResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_approvals(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(params): Query<AnalyticsParams>,
+) -> (StatusCode, Json<ApprovalAnalyticsResponse>) {
+    let window = window_secs_from_range(params.range.as_deref());
+    let now_secs = now_ns() / 1_000_000_000;
+    let since_secs = now_secs.saturating_sub(window);
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+
+    let mut approved = 0u64;
+    let mut rejected = 0u64;
+    let mut expired = 0u64;
+    let mut ttas: Vec<u64> = Vec::new();
+
+    for r in state.approval_queue.list_resolved(None, None) {
+        // Window filter on the decision timestamp.
+        if r.decided_at < since_secs || r.decided_at > now_secs {
+            continue;
+        }
+        // Tenant filter mirroring the /approvals list route.
+        let visible = match r.team_id.as_deref() {
+            Some(team) => caller.can_access_team(team),
+            None => is_admin,
+        };
+        if !visible {
+            continue;
+        }
+        match r.status.as_str() {
+            "approved" => {
+                approved += 1;
+                ttas.push(r.decided_at.saturating_sub(r.submitted_at));
+            }
+            "rejected" => {
+                rejected += 1;
+                ttas.push(r.decided_at.saturating_sub(r.submitted_at));
+            }
+            "timed_out" => expired += 1,
+            _ => {}
+        }
+    }
+
+    let volume = approved + rejected + expired;
+    let approval_rate = if volume == 0 {
+        0.0
+    } else {
+        approved as f64 / volume as f64
+    };
+
+    (
+        StatusCode::OK,
+        Json(ApprovalAnalyticsResponse {
+            volume,
+            median_tta: median_secs(&mut ttas),
+            approval_rate,
+            by_outcome: ApprovalOutcome {
+                approved,
+                rejected,
+                expired,
+            },
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
