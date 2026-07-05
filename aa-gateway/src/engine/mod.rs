@@ -1193,9 +1193,15 @@ impl PolicyEngine {
 
     /// Capability authorization gate shared by BOTH the primary
     /// (`evaluate_primary`) and cascade (`cascade_capability_guard`) paths: deny
-    /// when `caps.deny` blocks the action's capability, or a non-empty
+    /// when `caps.deny` blocks the action's capability, or when an allow-list
+    /// restriction is in force (`CapabilitySet::allow_is_restricted`) and
     /// `caps.allow` omits it. `None` when the action maps to no capability or is
     /// permitted.
+    ///
+    /// The restriction check keys off `allow_is_restricted()` rather than
+    /// `!allow.is_empty()` so a disjoint multi-tier cascade that intersects two
+    /// whitelists down to an empty `allow` fails *closed* (deny-all) instead of
+    /// reading empty as "no allow-list" and permitting everything (AAASM-4154).
     ///
     /// Extracted so the single-file and directory-cascade paths can never
     /// diverge again (AAASM-4123): the primary path previously ran every stage
@@ -1210,7 +1216,10 @@ impl PolicyEngine {
         if aa_core::capability_is_denied(&caps.deny, &cap) {
             return Some(EvaluationResult::deny("capability denied by policy"));
         }
-        if !caps.allow.is_empty() && !caps.allow.contains(&cap) {
+        // Fail closed when a restriction is in force: an empty merged allow-list
+        // that carries `allow_restricted` means a disjoint cascade collapsed two
+        // whitelists to nothing — deny everything, never allow-all (AAASM-4154).
+        if caps.allow_is_restricted() && !caps.allow.contains(&cap) {
             return Some(EvaluationResult::deny("capability not in allow list"));
         }
         None
@@ -3217,6 +3226,7 @@ mod tests {
         aa_core::CapabilitySet {
             allow: allow.iter().cloned().collect::<BTreeSet<_>>(),
             deny: deny.iter().cloned().collect::<BTreeSet<_>>(),
+            allow_restricted: false,
         }
     }
 

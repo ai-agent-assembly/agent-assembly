@@ -198,7 +198,8 @@ fn stage_tool_allow(doc: &PolicyDocument, action: &aa_core::GovernanceAction) ->
 }
 
 /// Stage 3.5 — Capability check: deny when this doc's capability set blocks the
-/// action's capability (explicit deny, or omitted from a non-empty allow set).
+/// action's capability (explicit deny, or omitted while an allow-list
+/// restriction is in force — see `CapabilitySet::allow_is_restricted`).
 fn stage_capability(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
     let caps = doc.capabilities.as_ref()?;
     let cap = aa_core::action_to_capability(action)?;
@@ -208,7 +209,9 @@ fn stage_capability(doc: &PolicyDocument, action: &aa_core::GovernanceAction) ->
             source_scope: doc.scope.clone(),
         });
     }
-    if !caps.allow.is_empty() && !caps.allow.contains(&cap) {
+    // Fail closed when a restriction is in force even if the allow-list is now
+    // empty (a disjoint cascade merge collapsed it) — never allow-all (AAASM-4154).
+    if caps.allow_is_restricted() && !caps.allow.contains(&cap) {
         return Some(PolicyDecision::Deny {
             reason: "capability not in allow list".into(),
             source_scope: doc.scope.clone(),
@@ -358,6 +361,7 @@ mod tests {
         CapabilitySet {
             allow: allow.iter().cloned().collect::<BTreeSet<_>>(),
             deny: deny.iter().cloned().collect::<BTreeSet<_>>(),
+            allow_restricted: false,
         }
     }
 

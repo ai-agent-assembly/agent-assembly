@@ -430,7 +430,14 @@ impl PolicyValidator {
             }
         }
 
-        Some(aa_core::CapabilitySet { allow, deny })
+        // A non-empty allow-list at this scope is itself a restriction; record it
+        // so a later disjoint cascade merge cannot silently drop it (AAASM-4154).
+        let allow_restricted = !allow.is_empty();
+        Some(aa_core::CapabilitySet {
+            allow,
+            deny,
+            allow_restricted,
+        })
     }
 
     fn validate_tools(

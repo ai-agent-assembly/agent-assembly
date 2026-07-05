@@ -42,6 +42,34 @@ pub struct CapabilitySet {
     pub allow: BTreeSet<Capability>,
     /// Capabilities explicitly denied.
     pub deny: BTreeSet<Capability>,
+    /// Whether an allow-list restriction is in force, independent of whether
+    /// `allow` currently lists anything.
+    ///
+    /// Set once any cascade tier contributes a non-empty allow-list. It exists
+    /// to disambiguate the two meanings an empty `allow` would otherwise
+    /// conflate: "no allow-list was ever declared" (unrestricted — only `deny`
+    /// governs) versus "an allow-list was declared but a disjoint multi-tier
+    /// intersection collapsed it to empty" (deny-all). Without this flag,
+    /// merging two disjoint restrictive whitelists produces an empty `allow`
+    /// that the guard reads as "no restriction", failing *open* to allow-all —
+    /// the inverse of most-restrictive-wins (AAASM-4154). `serde(default)` keeps
+    /// older serialized sets (which lack the field) deserializing unchanged.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub allow_restricted: bool,
+}
+
+impl CapabilitySet {
+    /// Whether an allow-list restriction governs this set.
+    ///
+    /// True when the set whitelists at least one capability, or when a prior
+    /// cascade tier declared a non-empty allow that a disjoint merge collapsed
+    /// to empty (`allow_restricted`). When this is true, the capability guard
+    /// must deny any capability absent from `allow`; an empty `allow` therefore
+    /// means deny-all, never "no restriction" (AAASM-4154).
+    #[must_use]
+    pub fn allow_is_restricted(&self) -> bool {
+        self.allow_restricted || !self.allow.is_empty()
+    }
 }
 
 impl Capability {
@@ -124,6 +152,10 @@ impl core::fmt::Display for Capability {
 ///   - Parent empty, child non-empty → `child.allow` minus merged deny.
 ///   - Parent non-empty, child empty → `parent.allow` minus merged deny.
 ///   - Both non-empty → intersection of `parent.allow` and `child.allow`, minus merged deny.
+/// - `allow_restricted` = set once either input restricts (carries its flag) or
+///   declares a non-empty allow-list. This preserves the restriction across a
+///   disjoint intersection that empties `allow`, so the guard fails *closed*
+///   (deny-all) instead of reading empty as "unrestricted" (AAASM-4154).
 ///
 /// Requires the `alloc` feature.
 #[cfg(feature = "alloc")]
@@ -147,7 +179,16 @@ pub fn merge_capabilities(parent: &CapabilitySet, child: &CapabilitySet) -> Capa
             .collect(),
     };
 
-    CapabilitySet { allow, deny }
+    // A restriction is in force if either input already carries one or declares
+    // a non-empty allow-list — even when the intersection above empties `allow`.
+    let allow_restricted =
+        parent.allow_restricted || child.allow_restricted || !parent.allow.is_empty() || !child.allow.is_empty();
+
+    CapabilitySet {
+        allow,
+        deny,
+        allow_restricted,
+    }
 }
 
 /// Map a [`crate::GovernanceAction`] to the [`Capability`] it exercises,
@@ -392,6 +433,7 @@ mod tests {
         CapabilitySet {
             allow: allow.iter().cloned().collect(),
             deny: deny.iter().cloned().collect(),
+            allow_restricted: false,
         }
     }
 
@@ -640,5 +682,71 @@ mod tests {
     fn capability_is_denied_unrelated_deny_is_false() {
         let deny = deny_set(&[Capability::NetworkOutbound]);
         assert!(!super::capability_is_denied(&deny, &Capability::FileDelete));
+    }
+
+    // ------------------------------------------------------------------
+    // allow_restricted / allow_is_restricted (AAASM-4154)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn allow_is_restricted_true_when_allow_non_empty() {
+        // A non-empty allow-list is a restriction even without the flag set.
+        let cs = cap_set(&[Capability::FileRead], &[]);
+        assert!(cs.allow_is_restricted());
+    }
+
+    #[test]
+    fn allow_is_restricted_false_when_no_allow_declared() {
+        // Deny-only (or empty) set with no restriction flag → unrestricted.
+        let cs = cap_set(&[], &[Capability::TerminalExec]);
+        assert!(!cs.allow_is_restricted());
+    }
+
+    #[test]
+    fn allow_is_restricted_true_when_flag_set_but_allow_empty() {
+        // The collapsed-cascade shape: empty allow but restriction carried.
+        let cs = CapabilitySet {
+            allow: BTreeSet::new(),
+            deny: BTreeSet::new(),
+            allow_restricted: true,
+        };
+        assert!(cs.allow_is_restricted());
+    }
+
+    #[test]
+    fn merge_disjoint_allow_lists_stays_restricted_with_empty_allow() {
+        // AAASM-4154: two disjoint non-empty allow-lists intersect to empty, but
+        // the restriction must survive so the guard fails closed (deny-all)
+        // rather than reading empty allow as "no restriction" (allow-all).
+        let parent = cap_set(&[Capability::FileRead], &[]);
+        let child = cap_set(&[Capability::FileWrite], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.allow.is_empty(), "disjoint allow-lists intersect to empty");
+        assert!(result.allow_restricted, "restriction must persist across the collapse");
+        assert!(
+            result.allow_is_restricted(),
+            "guard must treat the collapsed set as restricted (deny-all)"
+        );
+    }
+
+    #[test]
+    fn merge_single_tier_allow_is_restricted() {
+        // A lone declared allow-list is a restriction after merge.
+        let parent = CapabilitySet::default();
+        let child = cap_set(&[Capability::FileRead], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.allow.contains(&Capability::FileRead));
+        assert!(result.allow_restricted);
+    }
+
+    #[test]
+    fn merge_no_allow_declared_is_unrestricted() {
+        // Deny-only tiers never manufacture an allow-list restriction.
+        let parent = cap_set(&[], &[Capability::FileWrite]);
+        let child = cap_set(&[], &[Capability::TerminalExec]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.allow.is_empty());
+        assert!(!result.allow_restricted);
+        assert!(!result.allow_is_restricted());
     }
 }
