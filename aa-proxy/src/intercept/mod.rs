@@ -973,6 +973,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn redact_response_gzip_credential_is_withheld() {
+        // A gzip'd upstream response carrying a secret was previously relayed
+        // compressed (unredacted). It must now decompress, detect the secret,
+        // and — unable to re-encode a redaction — withhold the body (fail closed).
+        let interceptor = make_interceptor();
+        assert_eq!(
+            interceptor.redact_response_body(&gzip(CRED_BODY), Some("gzip")),
+            ResponseScan::Withhold
+        );
+    }
+
+    #[test]
+    fn redact_response_gzip_clean_body_forwards() {
+        let interceptor = make_interceptor();
+        assert_eq!(
+            interceptor.redact_response_body(&gzip(b"clean upstream response"), Some("gzip")),
+            ResponseScan::Forward
+        );
+    }
+
+    #[test]
+    fn redact_response_unsupported_encoding_is_withheld() {
+        // An encoding the proxy cannot decode is un-inspectable → withhold.
+        let interceptor = make_interceptor();
+        assert_eq!(
+            interceptor.redact_response_body(b"\x1b\x00\x00brotli", Some("br")),
+            ResponseScan::Withhold
+        );
+    }
+
+    #[test]
+    fn redact_response_identity_still_redacts() {
+        // An identity (plaintext) response with findings redacts exactly as
+        // before — the encoding handling must not disturb the identity path.
+        let interceptor = make_interceptor();
+        let ResponseScan::Redact(redacted) = interceptor.redact_response_body(CRED_BODY, Some("identity")) else {
+            panic!("a plaintext credential payload must redact");
+        };
+        assert!(
+            !redacted
+                .windows(b"TESTONLY-NOT-REAL".len())
+                .any(|w| w == b"TESTONLY-NOT-REAL"),
+            "redacted response must not contain the raw secret"
+        );
+    }
+
     // ── emit_policy_decision (CONNECT tunnel audit) ─────────────────────────
 
     #[tokio::test]
