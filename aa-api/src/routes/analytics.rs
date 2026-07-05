@@ -21,8 +21,21 @@
 //! synthetic series. Those decisions are called out in each handler's doc
 //! comment.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::extract::Query;
+use axum::http::StatusCode;
+use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
+
+use aa_core::audit::AuditEventType;
+use aa_core::AuditEntry;
+use aa_gateway::AgentRecord;
+
+use crate::auth::scope::{RequireRead, Scope};
+use crate::auth::AuthenticatedCaller;
+use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
 // Query parameters
@@ -270,4 +283,263 @@ pub struct FleetHealthResponse {
     pub agents: Vec<AgentHealth>,
 }
 
-// Shared helpers and the seven handlers follow in subsequent commits.
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+/// Resolve a dashboard range filter to a window length in seconds.
+///
+/// Accepts the presets `24h` / `7d` / `30d` / `90d` and custom
+/// `YYYY-MM-DD..YYYY-MM-DD` ranges (inclusive of both endpoints). Any
+/// unrecognised or absent value falls back to the `7d` default the dashboard
+/// uses.
+fn window_secs_from_range(range: Option<&str>) -> u64 {
+    const DAY: u64 = 86_400;
+    match range {
+        Some("24h") => DAY,
+        Some("7d") => 7 * DAY,
+        Some("30d") => 30 * DAY,
+        Some("90d") => 90 * DAY,
+        Some(custom) if custom.contains("..") => parse_custom_range(custom).unwrap_or(7 * DAY),
+        _ => 7 * DAY,
+    }
+}
+
+/// Parse a `YYYY-MM-DD..YYYY-MM-DD` custom range into an inclusive window in
+/// seconds. Returns `None` for malformed input or an inverted range.
+fn parse_custom_range(s: &str) -> Option<u64> {
+    let (start, end) = s.split_once("..")?;
+    let start = chrono::NaiveDate::parse_from_str(start.trim(), "%Y-%m-%d").ok()?;
+    let end = chrono::NaiveDate::parse_from_str(end.trim(), "%Y-%m-%d").ok()?;
+    let days = (end - start).num_days();
+    if days < 0 {
+        return None;
+    }
+    Some((days as u64 + 1) * 86_400)
+}
+
+/// Current wall-clock time in epoch nanoseconds.
+fn now_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
+/// Confine a set of audit entries to the caller's tenant.
+///
+/// Mirrors [`crate::routes::audit`]: an admin sees every org's entries; a
+/// tenant-scoped caller sees only its own org; a non-admin caller with no org
+/// scope sees nothing (rather than a cross-tenant dump).
+fn scope_entries(caller: &AuthenticatedCaller, entries: Vec<AuditEntry>) -> Vec<AuditEntry> {
+    if caller.scopes.contains(&Scope::Admin) {
+        return entries;
+    }
+    match caller.tenant.org_id.as_deref() {
+        Some(org) => entries.into_iter().filter(|e| e.org_id() == Some(org)).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Fetch audit entries at or after `since_ns`, confined to the caller's tenant.
+///
+/// Reads the full JSONL log via [`AuditReader::list`] and filters by timestamp;
+/// the in-process reader holds the same entries the other audit aggregations
+/// read, so no new data source is introduced.
+async fn fetch_window_entries(caller: &AuthenticatedCaller, state: &AppState, since_ns: u64) -> Vec<AuditEntry> {
+    let (entries, _total) = state
+        .audit_reader
+        .list(usize::MAX, 0, None, None, None)
+        .await
+        .unwrap_or_default();
+    let entries: Vec<AuditEntry> = entries.into_iter().filter(|e| e.timestamp_ns() >= since_ns).collect();
+    scope_entries(caller, entries)
+}
+
+/// Agents the caller may see: admin sees all; a tenant-scoped caller sees only
+/// its own team's agents; a caller with no team scope sees none. Matches the
+/// tenant posture the cost and approval read routes apply.
+fn visible_agents(caller: &AuthenticatedCaller, state: &AppState) -> Vec<AgentRecord> {
+    let all = state.agent_registry.list();
+    if caller.scopes.contains(&Scope::Admin) {
+        return all;
+    }
+    all.into_iter()
+        .filter(|r| match r.team_id.as_deref() {
+            Some(team) => caller.can_access_team(team),
+            None => false,
+        })
+        .collect()
+}
+
+/// Fractional change of `cur` versus `prev`; `0.0` when there is no prior
+/// window to compare against.
+fn delta_ratio(cur: u64, prev: u64) -> f64 {
+    if prev == 0 {
+        0.0
+    } else {
+        (cur as f64 - prev as f64) / prev as f64
+    }
+}
+
+/// Count audit entries in the half-open window `[lo, hi)` whose event type is a
+/// tool invocation (`ToolCallIntercepted` or `ToolDispatched`).
+fn count_invocations(entries: &[AuditEntry], lo: u64, hi: u64) -> u64 {
+    entries
+        .iter()
+        .filter(|e| {
+            let t = e.timestamp_ns();
+            t >= lo
+                && t < hi
+                && matches!(
+                    e.event_type(),
+                    AuditEventType::ToolCallIntercepted | AuditEventType::ToolDispatched
+                )
+        })
+        .count() as u64
+}
+
+/// Count `PolicyViolation` audit entries in the half-open window `[lo, hi)`.
+fn count_violations(entries: &[AuditEntry], lo: u64, hi: u64) -> u64 {
+    entries
+        .iter()
+        .filter(|e| {
+            let t = e.timestamp_ns();
+            t >= lo && t < hi && matches!(e.event_type(), AuditEventType::PolicyViolation)
+        })
+        .count() as u64
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/analytics/kpis` — a single scalar KPI plus its window-over-window delta.
+///
+/// v1 metric definitions (documented because several are not uniquely
+/// determined by the available in-process state):
+///
+/// * `agents` — number of registered agents the caller may see (registry is
+///   point-in-time, so `delta` is always `0.0`).
+/// * `invocations` — count of `ToolCallIntercepted` + `ToolDispatched` audit
+///   events in the window; `delta` compares against the immediately preceding
+///   equal-length window.
+/// * `cost` — current daily spend (USD) from the budget tracker snapshot
+///   (point-in-time; `delta` is `0.0`, `unit` = `USD`).
+/// * `anomalies` — count of `PolicyViolation` audit events in the window (the
+///   closest available signal to an anomaly); `delta` is window-over-window.
+/// * `p99` — request-tail latency. **No latency source exists** in the
+///   in-process audit/budget state, so this honestly returns `0.0` (`unit` =
+///   `ms`) rather than a fabricated value.
+///
+/// Audit-derived metrics are confined to the caller's tenant; registry/budget
+/// metrics use the same visibility rules as the cost route.
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/kpis",
+    params(KpiParams),
+    responses(
+        (status = 200, description = "KPI value and window-over-window delta", body = KpiResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_kpis(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(params): Query<KpiParams>,
+) -> (StatusCode, Json<KpiResponse>) {
+    let window = window_secs_from_range(params.range.as_deref());
+    let metric = params.metric.unwrap_or_else(|| "invocations".to_string());
+
+    let now = now_ns();
+    let window_ns = window.saturating_mul(1_000_000_000);
+    let since = now.saturating_sub(window_ns);
+    let prev_since = since.saturating_sub(window_ns);
+
+    let (value, delta, unit) = match metric.as_str() {
+        "agents" => (visible_agents(&caller, &state).len() as f64, 0.0, None),
+        "cost" => {
+            let spent = state
+                .budget_tracker
+                .snapshot()
+                .global
+                .spent_usd
+                .to_string()
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            (spent, 0.0, Some("USD".to_string()))
+        }
+        "invocations" => {
+            let entries = fetch_window_entries(&caller, &state, prev_since).await;
+            let cur = count_invocations(&entries, since, now);
+            let prev = count_invocations(&entries, prev_since, since);
+            (cur as f64, delta_ratio(cur, prev), None)
+        }
+        "anomalies" => {
+            let entries = fetch_window_entries(&caller, &state, prev_since).await;
+            let cur = count_violations(&entries, since, now);
+            let prev = count_violations(&entries, prev_since, since);
+            (cur as f64, delta_ratio(cur, prev), None)
+        }
+        // No request-latency source exists — report zero honestly.
+        "p99" => (0.0, 0.0, Some("ms".to_string())),
+        // Unknown metric: echo it back with a zero value rather than 400,
+        // matching the tolerant filter behaviour of the other read routes.
+        _ => (0.0, 0.0, None),
+    };
+
+    (
+        StatusCode::OK,
+        Json(KpiResponse {
+            metric,
+            value,
+            delta,
+            unit,
+        }),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn range_presets_resolve_to_expected_windows() {
+        assert_eq!(window_secs_from_range(Some("24h")), 86_400);
+        assert_eq!(window_secs_from_range(Some("7d")), 604_800);
+        assert_eq!(window_secs_from_range(Some("30d")), 2_592_000);
+        assert_eq!(window_secs_from_range(Some("90d")), 7_776_000);
+    }
+
+    #[test]
+    fn range_defaults_to_seven_days_when_absent_or_unknown() {
+        assert_eq!(window_secs_from_range(None), 604_800);
+        assert_eq!(window_secs_from_range(Some("bogus")), 604_800);
+    }
+
+    #[test]
+    fn custom_range_is_inclusive_of_both_endpoints() {
+        // 2026-01-01 .. 2026-01-07 spans 7 calendar days inclusive.
+        assert_eq!(window_secs_from_range(Some("2026-01-01..2026-01-07")), 7 * 86_400);
+    }
+
+    #[test]
+    fn custom_range_rejects_inverted_or_malformed() {
+        assert_eq!(window_secs_from_range(Some("2026-01-07..2026-01-01")), 604_800);
+        assert_eq!(parse_custom_range("not-a-range"), None);
+        assert_eq!(parse_custom_range("2026-13-01..2026-13-02"), None);
+    }
+
+    #[test]
+    fn delta_ratio_is_zero_without_a_prior_window() {
+        assert_eq!(delta_ratio(5, 0), 0.0);
+        assert_eq!(delta_ratio(0, 0), 0.0);
+    }
+
+    #[test]
+    fn delta_ratio_computes_fractional_change() {
+        assert_eq!(delta_ratio(12, 10), 0.2);
+        assert_eq!(delta_ratio(8, 10), -0.2);
+    }
+}
