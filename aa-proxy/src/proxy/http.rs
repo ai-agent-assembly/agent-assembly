@@ -12,6 +12,9 @@
 //! an un-scanned body. The response side still parses the head and leaves a
 //! chunked body empty (the MCP path falls back to a transparent relay).
 
+use std::io::Read;
+
+use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use crate::error::ProxyError;
@@ -94,6 +97,76 @@ where
     let text = String::from_utf8(line).map_err(|_| ProxyError::Config("invalid UTF-8 in HTTP header line".into()))?;
     out.push_str(&text);
     Ok(n)
+}
+
+/// Decompress a MitM'd body carrying a single recognized `Content-Encoding`
+/// token, returning the plaintext the DLP scanner should inspect.
+///
+/// AAASM-4156 (fail-closed): scanning a compressed body scans opaque bytes, so a
+/// `gzip`/`deflate`-encoded secret matches no literal/entropy rule and slips past
+/// DLP — the same un-inspectable-body gap the chunked-`Transfer-Encoding` path
+/// fails closed on (see [`read_http_request`]). This decompresses recognized
+/// encodings so the scanner sees the real content, and **fails closed** for
+/// anything it cannot decode:
+///
+/// * `gzip` / `x-gzip` and `deflate` (zlib-wrapped or raw) are decompressed.
+/// * Any other token — notably `br` (brotli, which would need a *new*
+///   dependency), `zstd`, `compress`, or a layered `a, b` list — returns
+///   [`ProxyError::Config`] so the caller withholds the body rather than
+///   forwarding one it could not inspect.
+///
+/// The output is bounded by [`MAX_BODY_LEN`]: decompression is read through a
+/// `Read::take` limiter and any output exceeding the cap is rejected, so a
+/// small compressed payload cannot expand into a decompression-bomb OOM.
+///
+/// Callers must handle the `identity` (or absent) encoding themselves — this
+/// function is only for a non-identity token and always attempts a decode.
+pub fn decompress_content_encoding(encoding: &str, body: &[u8]) -> Result<Vec<u8>, ProxyError> {
+    let token = encoding.trim();
+    // A comma-separated list is a layered encoding (e.g. `gzip, br`); this
+    // parser decodes at most one layer, so refuse rather than half-inspect.
+    if token.contains(',') {
+        return Err(ProxyError::Config(format!(
+            "layered Content-Encoding {token:?} is not inspectable; refusing (fail-closed)"
+        )));
+    }
+    if token.eq_ignore_ascii_case("gzip") || token.eq_ignore_ascii_case("x-gzip") {
+        read_bounded(GzDecoder::new(body), token)
+    } else if token.eq_ignore_ascii_case("deflate") {
+        // HTTP `deflate` is ambiguous: RFC 7230 means zlib-wrapped (RFC 1950),
+        // but some servers send raw DEFLATE (RFC 1951). Try zlib first, then
+        // fall back to raw; if neither decodes cleanly (or either exceeds the
+        // cap), fail closed below.
+        match read_bounded(ZlibDecoder::new(body), token) {
+            Ok(plain) => Ok(plain),
+            Err(_) => read_bounded(DeflateDecoder::new(body), token),
+        }
+    } else {
+        Err(ProxyError::Config(format!(
+            "unsupported Content-Encoding {token:?} is not inspectable; refusing (fail-closed)"
+        )))
+    }
+}
+
+/// Read a decoder to completion, bounded by [`MAX_BODY_LEN`]. Returns
+/// [`ProxyError::Config`] if the decoded stream would exceed the cap (a
+/// decompression bomb) or the compressed input is malformed.
+fn read_bounded<R: Read>(decoder: R, token: &str) -> Result<Vec<u8>, ProxyError> {
+    let mut out = Vec::new();
+    // Read one byte past the cap so an exactly-cap-sized body is accepted while
+    // anything larger is detected without buffering the whole expansion.
+    let mut limited = decoder.take(MAX_BODY_LEN as u64 + 1);
+    limited.read_to_end(&mut out).map_err(|e| {
+        ProxyError::Config(format!(
+            "failed to decompress {token} body: {e}; refusing (fail-closed)"
+        ))
+    })?;
+    if out.len() > MAX_BODY_LEN {
+        return Err(ProxyError::Config(format!(
+            "decompressed {token} body exceeds maximum {MAX_BODY_LEN} bytes; refusing (fail-closed)"
+        )));
+    }
+    Ok(out)
 }
 
 /// A parsed HTTP request from the proxy's MitM tunnel.
