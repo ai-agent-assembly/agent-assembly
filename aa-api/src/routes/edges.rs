@@ -85,14 +85,18 @@ fn authorize_edge_target(caller: &AuthenticatedCaller, state: &AppState, target:
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Parse a hex-encoded agent ID string into an [`AgentId`].
+///
+/// Decodes via [`hex::decode`] rather than slicing the input by byte index: the
+/// previous `&id[i..i + 2]` implementation panicked on an odd-length id (index
+/// past the end) or a multibyte path segment (a non-char-boundary slice),
+/// turning a malformed `{id}` path parameter into a request-thread panic
+/// (AAASM-4018 / AAASM-4150). `hex::decode` rejects odd-length and non-hex input
+/// with a clean `Err`, so every malformed id now surfaces as a `400` instead.
 fn parse_agent_id(id: &str) -> Result<AgentId, ProblemDetail> {
-    let bytes: Vec<u8> = (0..id.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&id[i..i + 2], 16))
-        .collect::<Result<Vec<u8>, _>>()
-        .map_err(|_| {
-            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid agent ID format: {id}"))
-        })?;
+    let bytes = hex::decode(id).map_err(|_| {
+        ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid agent ID format: {id}"))
+    })?;
     let arr: [u8; 16] = bytes.try_into().map_err(|_| {
         ProblemDetail::from_status(StatusCode::BAD_REQUEST)
             .with_detail(format!("Agent ID must be 32 hex characters: {id}"))
@@ -637,4 +641,27 @@ pub async fn list_topology_edges(
 
     let count = edges.len();
     Ok((StatusCode::OK, Json(TopologyEdgeListResponse { edges, count })))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_agent_id_rejects_odd_length() {
+        // AAASM-4150: an odd-length id previously sliced past the end of the
+        // string and panicked; hex::decode must reject it as a clean error.
+        assert!(parse_agent_id("abc").is_err());
+    }
+
+    #[test]
+    fn parse_agent_id_rejects_multibyte() {
+        // AAASM-4150: a multibyte segment previously sliced a non-char-boundary
+        // and panicked; hex::decode must reject it as a clean error.
+        assert!(parse_agent_id("€0").is_err());
+    }
 }
