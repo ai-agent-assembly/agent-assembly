@@ -1244,6 +1244,20 @@ impl PolicyServiceImpl {
         }
     }
 
+    /// AAASM-4125 — conservative server-side floor for a *client-declared* prompt
+    /// token count that is non-positive (`0`, negative, or an omitted proto field
+    /// which deserializes to `0`). A real LLM call always consumes some prompt
+    /// tokens; a declared `0` is therefore either an omission or a deliberate
+    /// under-report and must NOT be trusted as a genuinely empty call. Pricing it
+    /// at `$0` trips the `cost <= 0.0` accrual short-circuit and skips the budget
+    /// reservation entirely, giving an agent that always sends `prompt_tokens: 0`
+    /// unmetered LLM spend indefinitely. Flooring to a minimum estimate keeps the
+    /// call priced non-zero so the daily / monthly cap engages (fail-closed,
+    /// mirroring the unknown-model handling in AAASM-4069). Legitimate calls that
+    /// report a real positive count are priced on that count and are unaffected,
+    /// so no legitimate call is double-charged.
+    const MIN_ESTIMATED_PROMPT_TOKENS: u64 = 1_000;
+
     /// AAASM-3353 / AAASM-3986 — atomically reserve the cost of a non-denied LLM
     /// call against the agent's budget so daily / monthly limits actually fire,
     /// with no check→record TOCTOU.
@@ -1263,10 +1277,14 @@ impl PolicyServiceImpl {
     /// response is returned unchanged when:
     /// * the action is not an `LLM_CALL`;
     /// * the decision was already a hard `Deny` (a denied call did not run);
-    /// * the priced cost is `0.0` — a genuinely empty call (0 tokens). An
-    ///   unrecognised model name is NO LONGER treated as zero cost (AAASM-4069):
-    ///   it fails closed at the conservative fallback rate so the budget cap
-    ///   still engages instead of being bypassed.
+    /// * the priced cost is `0.0`. Two client-controlled inputs that used to
+    ///   force a `0.0` price — and so bypass metering — now fail closed instead:
+    ///   an unrecognised model name is priced at the conservative fallback rate
+    ///   (AAASM-4069), and a client-declared prompt-token count of `0` (or a
+    ///   negative / omitted value, which the proto deserializes to `0`) is
+    ///   floored to [`Self::MIN_ESTIMATED_PROMPT_TOKENS`] rather than trusted as
+    ///   a genuinely empty call (AAASM-4125). A `0.0` price is therefore only
+    ///   reached for a truly unpriceable call, not a client-declared empty one.
     fn maybe_accrue_llm_spend(&self, req: &CheckActionRequest, response: CheckActionResponse) -> CheckActionResponse {
         use aa_proto::assembly::policy::v1::action_context::Action;
 
@@ -1279,7 +1297,14 @@ impl PolicyServiceImpl {
             return response;
         };
 
-        let input_tokens = lc.prompt_tokens.max(0) as u64;
+        // AAASM-4125 — `prompt_tokens` is client-supplied (see `convert.rs`). A
+        // non-positive declared count must not price to `$0` and bypass metering,
+        // so floor it to a conservative server-side minimum; a real positive count
+        // is used as-is.
+        let input_tokens = match u64::try_from(lc.prompt_tokens) {
+            Ok(t) if t > 0 => t,
+            _ => Self::MIN_ESTIMATED_PROMPT_TOKENS,
+        };
         // The pre-execution check has no completion yet, so output tokens are 0.
         let cost = self.engine.llm_call_cost_usd(&lc.model, input_tokens, 0);
         if cost <= 0.0 {

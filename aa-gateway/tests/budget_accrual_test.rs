@@ -29,9 +29,23 @@ budget:
   action_on_exceed: deny
 "#;
 
+/// A daily limit small enough that the server-side prompt-token floor priced for
+/// a *single* `prompt_tokens: 0` call (AAASM-4125) already exceeds it on the next
+/// check — proving the floored call accrued spend rather than pricing to $0.
+const TINY_BUDGET_YAML: &str = r#"
+version: "1"
+budget:
+  daily_limit_usd: 0.001
+  action_on_exceed: deny
+"#;
+
 fn make_service(audit_tx: mpsc::Sender<AuditEntry>) -> PolicyServiceImpl {
+    make_service_with_budget(BUDGET_YAML, audit_tx)
+}
+
+fn make_service_with_budget(budget_yaml: &str, audit_tx: mpsc::Sender<AuditEntry>) -> PolicyServiceImpl {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    write!(tmp, "{}", BUDGET_YAML).unwrap();
+    write!(tmp, "{}", budget_yaml).unwrap();
     tmp.flush().unwrap();
     let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
     let engine = PolicyEngine::load_from_file(tmp.path(), alert_tx).unwrap();
@@ -90,6 +104,52 @@ async fn llm_spend_accrues_and_later_call_is_denied_once_limit_exceeded() {
         second.decision,
         Decision::Deny as i32,
         "second call must be denied once accrued spend exceeds the daily limit"
+    );
+    assert!(
+        second.reason.contains("budget"),
+        "deny reason must reference the budget, got: {}",
+        second.reason
+    );
+}
+
+#[tokio::test]
+async fn zero_prompt_tokens_still_accrues_spend_and_engages_cap() {
+    // AAASM-4125 fail-closed: `prompt_tokens` is client-supplied. A declared `0`
+    // (or a negative / omitted value) used to price the pre-execution call to
+    // $0.00, tripping the `cost <= 0.0` accrual short-circuit so NO spend accrued
+    // — an agent that always sent `prompt_tokens: 0` had unmetered LLM spend
+    // indefinitely, even for a known priced model. A non-positive count must now
+    // be floored to a conservative server-side minimum so the call still accrues
+    // and the daily/monthly cap engages.
+    let (audit_tx, _audit_rx) = mpsc::channel::<AuditEntry>(4096);
+    let service = make_service_with_budget(TINY_BUDGET_YAML, audit_tx);
+
+    // First call: spend is $0 at evaluation, so it is allowed. Despite the
+    // client declaring `prompt_tokens: 0` for a known priced model (gpt-4o), it
+    // must accrue the floored cost against the tiny daily budget.
+    let first = service
+        .check_action(Request::new(llm_call_request("gpt-4o", 0)))
+        .await
+        .expect("first check_action ok")
+        .into_inner();
+    assert_eq!(
+        first.decision,
+        Decision::Allow as i32,
+        "first zero-token call must be allowed (no spend recorded yet)"
+    );
+
+    // Second call: the floored spend from the first call now exceeds the tiny
+    // daily limit, so Stage 7 denies it. Before the fix this stayed allowed
+    // forever because a client-declared 0 priced to $0 and never accrued.
+    let second = service
+        .check_action(Request::new(llm_call_request("gpt-4o", 0)))
+        .await
+        .expect("second check_action ok")
+        .into_inner();
+    assert_eq!(
+        second.decision,
+        Decision::Deny as i32,
+        "zero-token spend must accrue and eventually hit the daily cap"
     );
     assert!(
         second.reason.contains("budget"),
