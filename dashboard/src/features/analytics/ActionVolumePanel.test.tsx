@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
-import { ActionVolumePanel } from './ActionVolumePanel'
+import { ActionVolumePanel, makeTickFormatter } from './ActionVolumePanel'
 import { transformSeries } from './actionVolumeUtils'
 import type { ActionVolumeSeries } from './useActionVolumeQuery'
 
@@ -102,6 +102,28 @@ describe('transformSeries', () => {
     const row = rows.find(r => r['t'] === 2_000_000)!
     expect(row['agent-a']).toBe(20)
     expect(row['agent-b']).toBe(8)
+  })
+})
+
+// ── makeTickFormatter guard tests ─────────────────────────────────────────────
+
+describe('makeTickFormatter', () => {
+  it('formats an in-range timestamp instead of throwing', () => {
+    const fmt = makeTickFormatter('30d')
+    expect(fmt(1_700_000_000_000)).not.toBe('—')
+  })
+
+  it('returns a placeholder for a timestamp beyond JS Date range', () => {
+    const fmt = makeTickFormatter('24h')
+    // 8.64e15 is the max; anything larger makes Intl.DateTimeFormat throw.
+    expect(fmt(8.64e15 + 1)).toBe('—')
+    expect(fmt(-8.64e15 - 1)).toBe('—')
+  })
+
+  it('returns a placeholder for non-finite ticks', () => {
+    const fmt = makeTickFormatter('7d')
+    expect(fmt(Number.NaN)).toBe('—')
+    expect(fmt(Number.POSITIVE_INFINITY)).toBe('—')
   })
 })
 
