@@ -642,3 +642,19 @@ pub async fn list_topology_edges(
     let count = edges.len();
     Ok((StatusCode::OK, Json(TopologyEdgeListResponse { edges, count })))
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_agent_id_rejects_odd_length() {
+        // AAASM-4150: an odd-length id previously sliced past the end of the
+        // string and panicked; hex::decode must reject it as a clean error.
+        assert!(parse_agent_id("abc").is_err());
+    }
+}
