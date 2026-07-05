@@ -59,7 +59,7 @@ impl InMemoryAlertStore {
     fn next_id(&self) -> String {
         self.id_gen
             .lock()
-            .expect("id generator lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .generate()
             .expect("ULID monotonic generation overflow (impossible in normal operation)")
             .to_string()
@@ -79,7 +79,7 @@ impl AlertStore for InMemoryAlertStore {
         let stored = stored_alert_from(alert, id.clone(), timestamp);
 
         {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             if buf.len() >= self.capacity {
                 buf.pop_front();
             }
@@ -96,7 +96,7 @@ impl AlertStore for InMemoryAlertStore {
         let stored = stored_secret_alert_from(alert, id.clone(), timestamp);
 
         {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             if buf.len() >= self.capacity {
                 buf.pop_front();
             }
@@ -112,7 +112,7 @@ impl AlertStore for InMemoryAlertStore {
         let stored = super::stored_anomaly_alert_from(event, id.clone(), timestamp);
 
         {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             if buf.len() >= self.capacity {
                 buf.pop_front();
             }
@@ -128,7 +128,7 @@ impl AlertStore for InMemoryAlertStore {
         let stored = stored_rule_alert_from(seed, id.clone(), timestamp);
 
         {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             if buf.len() >= self.capacity {
                 buf.pop_front();
             }
@@ -149,7 +149,7 @@ impl AlertStore for InMemoryAlertStore {
             // Look for an existing alert with the same rule_id whose
             // dedup window has not yet expired. Hold the write lock for
             // the whole search-and-mutate to avoid a TOCTOU race.
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             for alert in buf.iter_mut() {
                 let Some(ctx) = alert.rule_context.as_mut() else {
                     continue;
@@ -183,7 +183,7 @@ impl AlertStore for InMemoryAlertStore {
         }
 
         {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             if buf.len() >= self.capacity {
                 buf.pop_front();
             }
@@ -194,7 +194,7 @@ impl AlertStore for InMemoryAlertStore {
     }
 
     fn list(&self, limit: usize, offset: usize) -> (Vec<StoredAlert>, u64) {
-        let buf = self.alerts.read().expect("alert store lock poisoned");
+        let buf = self.alerts.read().unwrap_or_else(|e| e.into_inner());
         let total = buf.len() as u64;
 
         // Return newest-first by iterating in reverse.
@@ -204,13 +204,13 @@ impl AlertStore for InMemoryAlertStore {
     }
 
     fn get_by_id(&self, id: &str) -> Option<StoredAlert> {
-        let buf = self.alerts.read().expect("alert store lock poisoned");
+        let buf = self.alerts.read().unwrap_or_else(|e| e.into_inner());
         buf.iter().find(|a| a.id == id).cloned()
     }
 
     fn resolve(&self, id: &str, _reason: Option<&str>) -> Option<StoredAlert> {
         let (snapshot, was_mutation) = {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             let alert = buf.iter_mut().find(|a| a.id == id)?;
             // Idempotent: don't bump timestamps on subsequent resolves.
             let mutated = alert.status != "resolved";
@@ -234,7 +234,7 @@ impl AlertStore for InMemoryAlertStore {
 
     fn suppress(&self, id: &str) -> Option<StoredAlert> {
         let snapshot = {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             let alert = buf.iter_mut().find(|a| a.id == id)?;
             if alert.status == "suppressed" {
                 // Defensive: refuse to overwrite an existing prior_status.
@@ -250,7 +250,7 @@ impl AlertStore for InMemoryAlertStore {
     }
 
     fn restore(&self, id: &str) -> Option<StoredAlert> {
-        let mut buf = self.alerts.write().expect("alert store lock poisoned");
+        let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
         let alert = buf.iter_mut().find(|a| a.id == id)?;
         if alert.status != "suppressed" {
             return None; // not currently under a silence
