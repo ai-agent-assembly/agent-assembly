@@ -98,3 +98,16 @@ async fn action_volume_returns_series_array() {
 async fn action_volume_requires_authentication() {
     assert_requires_auth("/api/v1/analytics/action-volume").await;
 }
+
+// --- tool-usage -----------------------------------------------------------
+
+#[tokio::test]
+async fn tool_usage_returns_tools_array() {
+    let json = get_ok_json(common::test_app(), "/api/v1/analytics/tool-usage?range=7d").await;
+    assert!(json["tools"].is_array(), "tools must be an array");
+}
+
+#[tokio::test]
+async fn tool_usage_requires_authentication() {
+    assert_requires_auth("/api/v1/analytics/tool-usage").await;
+}
