@@ -1837,6 +1837,7 @@ mod layer_integration {
             &tracker,
             &tx,
             crate::layer::LayerSet::EBPF | crate::layer::LayerSet::PROXY,
+            None,
             &mut degraded,
         );
 
@@ -1918,6 +1919,7 @@ mod layer_integration {
             &tracker,
             &tx,
             crate::layer::LayerSet::EBPF | crate::layer::LayerSet::PROXY,
+            None,
             &mut degraded,
         );
 
