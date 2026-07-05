@@ -683,4 +683,70 @@ mod tests {
         let deny = deny_set(&[Capability::NetworkOutbound]);
         assert!(!super::capability_is_denied(&deny, &Capability::FileDelete));
     }
+
+    // ------------------------------------------------------------------
+    // allow_restricted / allow_is_restricted (AAASM-4154)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn allow_is_restricted_true_when_allow_non_empty() {
+        // A non-empty allow-list is a restriction even without the flag set.
+        let cs = cap_set(&[Capability::FileRead], &[]);
+        assert!(cs.allow_is_restricted());
+    }
+
+    #[test]
+    fn allow_is_restricted_false_when_no_allow_declared() {
+        // Deny-only (or empty) set with no restriction flag → unrestricted.
+        let cs = cap_set(&[], &[Capability::TerminalExec]);
+        assert!(!cs.allow_is_restricted());
+    }
+
+    #[test]
+    fn allow_is_restricted_true_when_flag_set_but_allow_empty() {
+        // The collapsed-cascade shape: empty allow but restriction carried.
+        let cs = CapabilitySet {
+            allow: BTreeSet::new(),
+            deny: BTreeSet::new(),
+            allow_restricted: true,
+        };
+        assert!(cs.allow_is_restricted());
+    }
+
+    #[test]
+    fn merge_disjoint_allow_lists_stays_restricted_with_empty_allow() {
+        // AAASM-4154: two disjoint non-empty allow-lists intersect to empty, but
+        // the restriction must survive so the guard fails closed (deny-all)
+        // rather than reading empty allow as "no restriction" (allow-all).
+        let parent = cap_set(&[Capability::FileRead], &[]);
+        let child = cap_set(&[Capability::FileWrite], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.allow.is_empty(), "disjoint allow-lists intersect to empty");
+        assert!(result.allow_restricted, "restriction must persist across the collapse");
+        assert!(
+            result.allow_is_restricted(),
+            "guard must treat the collapsed set as restricted (deny-all)"
+        );
+    }
+
+    #[test]
+    fn merge_single_tier_allow_is_restricted() {
+        // A lone declared allow-list is a restriction after merge.
+        let parent = CapabilitySet::default();
+        let child = cap_set(&[Capability::FileRead], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.allow.contains(&Capability::FileRead));
+        assert!(result.allow_restricted);
+    }
+
+    #[test]
+    fn merge_no_allow_declared_is_unrestricted() {
+        // Deny-only tiers never manufacture an allow-list restriction.
+        let parent = cap_set(&[], &[Capability::FileWrite]);
+        let child = cap_set(&[], &[Capability::TerminalExec]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.allow.is_empty());
+        assert!(!result.allow_restricted);
+        assert!(!result.allow_is_restricted());
+    }
 }
