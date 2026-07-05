@@ -871,6 +871,76 @@ mod tests {
         assert!(verdict.redacted_body.is_none());
     }
 
+    // ── Content-Encoding request-body DLP (AAASM-4156) ──────────────────────
+
+    /// gzip-compress `data` for building encoded test bodies.
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        let mut e = GzEncoder::new(Vec::new(), Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    #[test]
+    fn intercept_request_gzip_credential_is_blocked_not_forwarded() {
+        // The headline gap: a gzip'd secret was scanned compressed (matching
+        // nothing) and forwarded. It must now be decompressed, detected, and
+        // blocked.
+        let interceptor = make_interceptor();
+        let verdict = interceptor.intercept_request(&gzip(CRED_BODY), Some("gzip"), CredentialAction::Block);
+        assert_eq!(verdict.decision, VerdictDecision::Block);
+        assert!(!verdict.findings.is_empty(), "decompressed secret must be detected");
+    }
+
+    #[test]
+    fn intercept_request_gzip_clean_body_forwards() {
+        // A clean gzip'd body decompresses to clean plaintext and forwards
+        // (the original compressed bytes) unchanged.
+        let interceptor = make_interceptor();
+        let verdict =
+            interceptor.intercept_request(&gzip(b"nothing secret here"), Some("gzip"), CredentialAction::Block);
+        assert_eq!(verdict.decision, VerdictDecision::Forward);
+        assert!(verdict.findings.is_empty());
+    }
+
+    #[test]
+    fn intercept_request_unsupported_encoding_fails_closed() {
+        // An encoding the proxy cannot decode is un-inspectable, so the request
+        // is blocked even though no secret was (or could be) seen.
+        let interceptor = make_interceptor();
+        let verdict = interceptor.intercept_request(b"\x1b\x00\x00brotli", Some("br"), CredentialAction::Block);
+        assert_eq!(verdict.decision, VerdictDecision::Block);
+        assert!(
+            verdict.findings.is_empty(),
+            "fail-closed block reports no findings (the body was never inspected)"
+        );
+    }
+
+    #[test]
+    fn intercept_request_identity_encoding_is_unchanged() {
+        // An explicit `identity` (and the absent-header path) scans the raw body
+        // exactly as before — a clean plaintext body forwards.
+        let interceptor = make_interceptor();
+        let verdict = interceptor.intercept_request(b"nothing secret here", Some("identity"), CredentialAction::Block);
+        assert_eq!(verdict.decision, VerdictDecision::Forward);
+        assert!(verdict.findings.is_empty());
+    }
+
+    #[test]
+    fn intercept_request_redact_only_compressed_fails_closed() {
+        // RedactOnly cannot re-encode a redacted plaintext to the declared
+        // encoding, and forwarding the original compressed bytes would leak the
+        // secret — so it escalates to a fail-closed Block rather than forwarding.
+        let interceptor = make_interceptor();
+        let verdict = interceptor.intercept_request(&gzip(CRED_BODY), Some("gzip"), CredentialAction::RedactOnly);
+        assert_eq!(verdict.decision, VerdictDecision::Block);
+        assert!(!verdict.findings.is_empty());
+        assert!(verdict.redacted_body.is_none());
+    }
+
     // ── redact_response_body ────────────────────────────────────────────────
 
     #[test]
