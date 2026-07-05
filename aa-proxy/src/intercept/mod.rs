@@ -65,6 +65,22 @@ pub struct InterceptVerdict {
     pub redacted_body: Option<Bytes>,
 }
 
+/// Outcome of [`Interceptor::redact_response_body`] for an upstream response
+/// body the MCP data path is about to relay to the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResponseScan {
+    /// Forward the original upstream body unchanged — the scanner is disabled
+    /// or the (decoded) payload is clean.
+    Forward,
+    /// Forward these bytes in place of the original: findings were replaced with
+    /// the scanner's `[REDACTED:<kind>]` markers.
+    Redact(Vec<u8>),
+    /// The body could not be inspected — an undecodable `Content-Encoding`, or a
+    /// compressed body carrying findings that cannot be safely re-encoded here.
+    /// The caller must withhold the upstream body and fail closed (AAASM-4156).
+    Withhold,
+}
+
 /// The bytes the credential/DLP scanner should inspect for a body that may
 /// carry a `Content-Encoding`, or a signal that the body is un-inspectable.
 ///
@@ -288,24 +304,45 @@ impl Interceptor {
     /// Scan a response-side payload for credentials and return the redacted
     /// form when findings are present.
     ///
-    /// Returns `None` when the scanner is disabled or the payload is clean.
-    /// On `Some(redacted)`, the secret bytes have been replaced with the
-    /// scanner's `[REDACTED:<kind>]` markers and the caller should forward
-    /// the redacted bytes in place of the original.
+    /// Returns [`ResponseScan::Forward`] when the scanner is disabled or the
+    /// (decoded) payload is clean; [`ResponseScan::Redact`] with the redacted
+    /// bytes when findings are replaced with `[REDACTED:<kind>]` markers; and
+    /// [`ResponseScan::Withhold`] when the body cannot be inspected and the
+    /// caller must fail closed.
+    ///
+    /// `content_encoding` is the response's `Content-Encoding` header value (if
+    /// present). A non-identity encoding is decompressed before scanning
+    /// (AAASM-4156) so a `gzip`/`deflate`-encoded secret in an upstream response
+    /// is inspected as plaintext rather than relayed as opaque compressed bytes.
+    /// An encoding the proxy cannot decode, and findings inside a compressed body
+    /// (which cannot be re-encoded to the declared encoding without leaking the
+    /// secret), both return [`ResponseScan::Withhold`].
     ///
     /// Used by the AAASM-1930 MCP data path to redact upstream response
     /// bodies before they reach the client (ST-Q-3). The proxy's default
     /// scanner carries the same `aa_security::CredentialScanner` patterns the
     /// gateway uses for ToolResult evaluation, so the redaction shape
     /// matches what `mcp_redact_secrets.yaml` would produce gateway-side.
-    pub fn redact_response_body(&self, body: &[u8]) -> Option<Vec<u8>> {
-        let scanner = self.scanner.as_ref()?;
-        let text = String::from_utf8_lossy(body);
+    pub fn redact_response_body(&self, body: &[u8], content_encoding: Option<&str>) -> ResponseScan {
+        let Some(scanner) = self.scanner.as_ref() else {
+            return ResponseScan::Forward;
+        };
+        let (bytes, encoded) = match scan_source(body, content_encoding) {
+            ScanSource::Plaintext { bytes, encoded } => (bytes, encoded),
+            ScanSource::Uninspectable => return ResponseScan::Withhold,
+        };
+        let text = String::from_utf8_lossy(&bytes);
         let scan = scanner.scan(&text);
         if scan.is_clean() {
-            return None;
+            return ResponseScan::Forward;
         }
-        Some(scan.redact(&text).into_bytes())
+        if encoded {
+            // Findings inside a compressed body cannot be re-encoded to the
+            // declared Content-Encoding here, and forwarding the original
+            // compressed bytes would relay the secret. Withhold (fail closed).
+            return ResponseScan::Withhold;
+        }
+        ResponseScan::Redact(scan.redact(&text).into_bytes())
     }
 
     /// Emit an audit event recording the gateway's decision for an MCP
@@ -837,24 +874,27 @@ mod tests {
     // ── redact_response_body ────────────────────────────────────────────────
 
     #[test]
-    fn redact_response_body_disabled_scanner_returns_none() {
+    fn redact_response_body_disabled_scanner_forwards() {
         let (tx, _rx) = broadcast::channel(16);
         let interceptor = Interceptor::with_scanner(tx, None);
-        assert!(interceptor.redact_response_body(CRED_BODY).is_none());
+        assert_eq!(interceptor.redact_response_body(CRED_BODY, None), ResponseScan::Forward);
     }
 
     #[test]
-    fn redact_response_body_clean_payload_returns_none() {
+    fn redact_response_body_clean_payload_forwards() {
         let interceptor = make_interceptor();
-        assert!(interceptor.redact_response_body(b"clean upstream response").is_none());
+        assert_eq!(
+            interceptor.redact_response_body(b"clean upstream response", None),
+            ResponseScan::Forward
+        );
     }
 
     #[test]
     fn redact_response_body_with_credential_returns_redacted() {
         let interceptor = make_interceptor();
-        let redacted = interceptor
-            .redact_response_body(CRED_BODY)
-            .expect("a credential payload must yield redacted bytes");
+        let ResponseScan::Redact(redacted) = interceptor.redact_response_body(CRED_BODY, None) else {
+            panic!("a credential payload must yield redacted bytes");
+        };
         assert!(
             !redacted
                 .windows(b"TESTONLY-NOT-REAL".len())
