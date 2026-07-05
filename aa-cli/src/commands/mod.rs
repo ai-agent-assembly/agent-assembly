@@ -57,7 +57,7 @@ pub enum Commands {
     Policy(policy::PolicyArgs),
     /// Manage named API contexts (connection profiles).
     Context(context::ContextArgs),
-    /// Validate an `agent-assembly.toml` runtime configuration file.
+    /// Work with `agent-assembly.toml` runtime config (see `validate` and `boot` subcommands).
     Config(config::ConfigArgs),
     /// Generate shell completion scripts.
     Completion(completion::CompletionArgs),

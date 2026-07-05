@@ -11,8 +11,8 @@ spec:
   scope: global
 
   network:
-    # Empty-but-present allowlist still allows any host (an empty list means
-    # "no restriction"). To actually restrict egress, list the exact hosts.
+    # An empty-but-present allowlist denies all egress (fail-closed): every host
+    # is blocked until you list it. List the exact hosts you want to permit.
     allowlist:
       - api.openai.com
       - api.anthropic.com
