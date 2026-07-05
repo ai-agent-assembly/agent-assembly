@@ -500,6 +500,85 @@ pub async fn get_kpis(
     )
 }
 
+/// `GET /api/v1/analytics/cost-breakdown` — stacked spend broken down by a dimension.
+///
+/// The budget tracker exposes **point-in-time** spend (today's totals per agent
+/// and per team), not a time series, so the v1 response emits a single bucket
+/// labelled with the current budget date. Grouping:
+///
+/// * `agent` (default) — one segment per agent, from the budget snapshot's
+///   per-agent breakdown. Only an admin sees the per-agent rows (they are not
+///   team-keyed, so exposing them to a tenant caller would leak other tenants'
+///   agents — same rule the `/costs` route applies).
+/// * `team` — one segment per team; an admin sees every team, a tenant-scoped
+///   caller sees only its own team's row.
+/// * `model` — **no per-model spend source exists** in the budget tracker, so
+///   this returns an empty bucket list rather than fabricated segments.
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/cost-breakdown",
+    params(CostBreakdownParams),
+    responses(
+        (status = 200, description = "Cost broken down into stacked segments", body = CostBreakdownResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_cost_breakdown(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(params): Query<CostBreakdownParams>,
+) -> (StatusCode, Json<CostBreakdownResponse>) {
+    let group_by = params.group_by.as_deref().unwrap_or("agent");
+    let snapshot = state.budget_tracker.snapshot();
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let caller_team = caller.tenant.team_id.as_deref();
+    let label = snapshot.global.date.to_string();
+
+    let segments: Vec<CostSegment> = match group_by {
+        "team" => {
+            let mut rows: Vec<CostSegment> = snapshot
+                .team_budgets
+                .iter()
+                .filter(|(team, _)| is_admin || caller_team == Some(team.as_str()))
+                .map(|(team, st)| CostSegment {
+                    key: team.clone(),
+                    name: team.clone(),
+                    value: st.spent_usd.to_string().parse::<f64>().unwrap_or(0.0),
+                })
+                .collect();
+            rows.sort_by(|a, b| a.key.cmp(&b.key));
+            rows
+        }
+        // No per-model spend is tracked by the budget engine.
+        "model" => Vec::new(),
+        // Default: group by agent. Per-agent rows are admin-only (not team-keyed).
+        _ => {
+            if is_admin {
+                snapshot
+                    .per_agent
+                    .iter()
+                    .map(|e| CostSegment {
+                        key: e.agent_id_hex.clone(),
+                        name: e.agent_id_hex.clone(),
+                        value: e.state.spent_usd.to_string().parse::<f64>().unwrap_or(0.0),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+    };
+
+    let buckets = if segments.is_empty() {
+        Vec::new()
+    } else {
+        vec![CostBucket { label, segments }]
+    };
+
+    (StatusCode::OK, Json(CostBreakdownResponse { buckets }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
