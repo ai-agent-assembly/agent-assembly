@@ -662,6 +662,95 @@ pub async fn get_action_volume(
     (StatusCode::OK, Json(ActionVolumeResponse { series }))
 }
 
+/// Extract a tool identifier from an audit payload, trying the explicit `tool`
+/// / `tool_name` keys first and falling back to the policy `action_type` label
+/// (the closest grouping key the gateway records for evaluated actions).
+fn extract_tool_name(payload: &serde_json::Value) -> Option<String> {
+    for key in ["tool", "tool_name", "action_type"] {
+        if let Some(s) = payload.get(key).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Whether an audit payload's policy `decision` represents a blocked/denied
+/// outcome (anything other than an explicit allow). A missing decision is
+/// treated as a success.
+fn decision_is_error(payload: &serde_json::Value) -> bool {
+    match payload.get("decision").and_then(|v| v.as_str()) {
+        Some(d) => !d.eq_ignore_ascii_case("allow"),
+        None => false,
+    }
+}
+
+/// `GET /api/v1/analytics/tool-usage` — per-tool call counts and error rate.
+///
+/// Aggregates `ToolCallIntercepted` / `ToolDispatched` audit events in the
+/// window by tool identifier (see [`extract_tool_name`]). `calls` is the event
+/// count; `errorRate` is the fraction whose policy `decision` was not an allow
+/// (see [`decision_is_error`]) — the v1 definition of a failed tool call.
+/// Events whose payload carries no resolvable tool name are skipped, so a
+/// window with no tool activity returns an empty list rather than a synthetic
+/// tool. Confined to the caller's tenant.
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/tool-usage",
+    params(AnalyticsParams),
+    responses(
+        (status = 200, description = "Per-tool call statistics", body = ToolUsageResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_tool_usage(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(params): Query<AnalyticsParams>,
+) -> (StatusCode, Json<ToolUsageResponse>) {
+    let window = window_secs_from_range(params.range.as_deref());
+    let now = now_ns();
+    let since = now.saturating_sub(window.saturating_mul(1_000_000_000));
+
+    let entries = fetch_window_entries(&caller, &state, since).await;
+
+    // tool name -> (call count, error count)
+    let mut by_tool: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    for e in &entries {
+        if !matches!(
+            e.event_type(),
+            AuditEventType::ToolCallIntercepted | AuditEventType::ToolDispatched
+        ) {
+            continue;
+        }
+        let payload: serde_json::Value = match serde_json::from_str(e.payload()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some(name) = extract_tool_name(&payload) else {
+            continue;
+        };
+        let slot = by_tool.entry(name).or_insert((0, 0));
+        slot.0 += 1;
+        if decision_is_error(&payload) {
+            slot.1 += 1;
+        }
+    }
+
+    let tools: Vec<ToolStat> = by_tool
+        .into_iter()
+        .map(|(name, (calls, errors))| ToolStat {
+            name,
+            calls,
+            error_rate: if calls == 0 { 0.0 } else { errors as f64 / calls as f64 },
+        })
+        .collect();
+
+    (StatusCode::OK, Json(ToolUsageResponse { tools }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
