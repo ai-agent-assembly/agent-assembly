@@ -7,6 +7,7 @@ import { PolicyEffectivenessPanel } from '../features/analytics/PolicyEffectiven
 import { ToolUsagePanel } from '../features/analytics/ToolUsagePanel'
 import { FleetHealthPanel } from '../features/analytics/FleetHealthPanel'
 import { ApprovalAnalyticsPanel } from '../features/analytics/ApprovalAnalyticsPanel'
+import { PanelErrorBoundary } from '../features/analytics/PanelErrorBoundary'
 import { useAgentsQuery } from '../features/agents/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import '../features/analytics/KpiStrip.css'
@@ -33,14 +34,28 @@ export function AnalyticsPage() {
         isLoadingAgents={agentsQuery.isPending}
         isLoadingTeams={teamsQuery.isPending}
       />
-      <KpiStrip />
+      <PanelErrorBoundary panelName="Key metrics">
+        <KpiStrip />
+      </PanelErrorBoundary>
       <div className="analytics-page__panels">
-        <ActionVolumePanel />
-        <CostBreakdownPanel />
-        <PolicyEffectivenessPanel />
-        <ToolUsagePanel />
-        <FleetHealthPanel />
-        <ApprovalAnalyticsPanel />
+        <PanelErrorBoundary panelName="Action Volume">
+          <ActionVolumePanel />
+        </PanelErrorBoundary>
+        <PanelErrorBoundary panelName="Cost Breakdown">
+          <CostBreakdownPanel />
+        </PanelErrorBoundary>
+        <PanelErrorBoundary panelName="Policy Effectiveness">
+          <PolicyEffectivenessPanel />
+        </PanelErrorBoundary>
+        <PanelErrorBoundary panelName="Tool Usage">
+          <ToolUsagePanel />
+        </PanelErrorBoundary>
+        <PanelErrorBoundary panelName="Fleet Health">
+          <FleetHealthPanel />
+        </PanelErrorBoundary>
+        <PanelErrorBoundary panelName="Approval Analytics">
+          <ApprovalAnalyticsPanel />
+        </PanelErrorBoundary>
       </div>
     </main>
   )
