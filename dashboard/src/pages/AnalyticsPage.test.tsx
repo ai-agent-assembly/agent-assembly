@@ -1,28 +1,54 @@
 import { render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
+import type { ReactNode } from 'react'
 import { AnalyticsPage } from './AnalyticsPage'
-import { ANALYTICS_BACKEND_AVAILABLE } from '../features/analytics/analyticsBackend'
 
-// The analytics dashboard is entirely backed by the /api/v1/analytics/*
-// endpoints, which do not exist in aa-api yet (AAASM-4138). Until they ship the
-// flag stays off and the page must degrade to the shared "coming soon"
-// placeholder rather than mount panels that would all fail their fetches.
+// recharts (used by the analytics panels) needs ResizeObserver in jsdom.
+class ResizeObserverStub {
+  observe() {
+    /* intentionally empty: jsdom test stub — recharts only needs the API to exist */
+  }
+  unobserve() {
+    /* intentionally empty: jsdom test stub */
+  }
+  disconnect() {
+    /* intentionally empty: jsdom test stub */
+  }
+}
+globalThis.ResizeObserver = ResizeObserverStub
+
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/analytics']}>{children}</MemoryRouter>
+    </QueryClientProvider>
+  )
+}
+
+// The /api/v1/analytics/* endpoints now ship (AAASM-4141), so the page mounts the
+// live panels — which each issue their own authenticated fetch — instead of the
+// ComingSoon placeholder.
 describe('AnalyticsPage', () => {
-  it('is gated off until the analytics backend exists', () => {
-    expect(ANALYTICS_BACKEND_AVAILABLE).toBe(false)
+  beforeEach(() => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({}),
+    })
   })
 
-  it('renders the coming-soon placeholder while the backend is unavailable', () => {
-    render(
-      <MemoryRouter initialEntries={['/analytics']}>
-        <AnalyticsPage />
-      </MemoryRouter>,
-    )
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
 
-    const placeholder = screen.getByTestId('coming-soon')
-    expect(placeholder).toBeInTheDocument()
+  it('renders the live analytics dashboard, not the coming-soon placeholder', () => {
+    render(<AnalyticsPage />, { wrapper: Wrapper })
+
+    // No placeholder — the backend is available.
+    expect(screen.queryByTestId('coming-soon')).not.toBeInTheDocument()
+    // The dashboard shell and its real data panels mount.
     expect(screen.getByRole('heading', { name: 'Analytics' })).toBeInTheDocument()
-    // None of the analytics data panels should mount while gated.
-    expect(screen.queryByTestId('cost-breakdown-panel')).not.toBeInTheDocument()
+    expect(screen.getByTestId('cost-breakdown-panel')).toBeInTheDocument()
   })
 })
