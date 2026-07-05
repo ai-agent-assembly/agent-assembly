@@ -85,3 +85,16 @@ async fn cost_breakdown_model_grouping_is_empty() {
 async fn cost_breakdown_requires_authentication() {
     assert_requires_auth("/api/v1/analytics/cost-breakdown?groupBy=agent").await;
 }
+
+// --- action-volume --------------------------------------------------------
+
+#[tokio::test]
+async fn action_volume_returns_series_array() {
+    let json = get_ok_json(common::test_app(), "/api/v1/analytics/action-volume?range=24h").await;
+    assert!(json["series"].is_array(), "series must be an array");
+}
+
+#[tokio::test]
+async fn action_volume_requires_authentication() {
+    assert_requires_auth("/api/v1/analytics/action-volume").await;
+}
