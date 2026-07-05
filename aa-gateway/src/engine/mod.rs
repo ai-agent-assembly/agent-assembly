@@ -2180,6 +2180,45 @@ mod tests {
     }
 
     #[test]
+    fn tool_wildcard_deny_blocks_unlisted_tool() {
+        // AAASM-4152: the single-file `evaluate_primary` path must honour the
+        // `"*"` wildcard so `tools: { "*": { allow: false }, read_file: allow }`
+        // denies an unlisted tool. Previously the exact-only lookup let it fall
+        // through to allow-by-default — the behaviourally-proven fail-open.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "*".to_string(),
+            ToolPolicy {
+                allow: false,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        doc.tools.insert(
+            "read_file".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        // Explicitly-allowed tool passes.
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("read_file", "")).decision,
+            PolicyResult::Allow
+        );
+        // Unlisted tool falls back to the `"*"` deny.
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("exfiltrate_secrets", "")).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            }
+        );
+    }
+
+    #[test]
     fn rate_limit_denies_after_capacity_exhausted() {
         let mut doc = empty_doc();
         doc.tools.insert(
