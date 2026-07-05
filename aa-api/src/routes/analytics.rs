@@ -357,33 +357,30 @@ fn scope_entries(caller: &AuthenticatedCaller, entries: Vec<AuditEntry>) -> Vec<
 /// Upper bound on the number of audit events a single analytics request pulls
 /// from the audit log.
 ///
-/// [`AuditReader::list`] returns entries newest-first, so this caps each
-/// analytics aggregation to the most recent `MAX_ANALYTICS_AUDIT_EVENTS` events
-/// and then narrows them to the query's time window — bounding per-request work
-/// instead of the former unbounded `usize::MAX` full-log read (AAASM-4145). The
-/// ceiling is high enough that realistic dashboard windows are never truncated,
-/// yet fixed so a growing log can't turn one analytics call into an unbounded
-/// scan. A window holding more than the cap counts only its most recent events.
-///
-/// Follow-up: the reader still scans every JSONL file before slicing to this
-/// limit; a server-side time-windowed reader (filtering by `since_ns` during the
-/// scan) would remove that cost entirely and is tracked separately.
+/// [`AuditReader::list_windowed`] returns entries newest-first, so this caps
+/// each analytics aggregation to the most recent `MAX_ANALYTICS_AUDIT_EVENTS`
+/// events within the query's time window — bounding per-request work instead of
+/// the former unbounded `usize::MAX` full-log read (AAASM-4145). The ceiling is
+/// high enough that realistic dashboard windows are never truncated, yet fixed
+/// so a growing log can't turn one analytics call into an unbounded scan. A
+/// window holding more than the cap counts only its most recent events.
 const MAX_ANALYTICS_AUDIT_EVENTS: usize = 100_000;
 
 /// Fetch audit entries at or after `since_ns`, confined to the caller's tenant.
 ///
-/// Reads the most recent [`MAX_ANALYTICS_AUDIT_EVENTS`] entries via
-/// [`AuditReader::list`] (newest-first) and filters by timestamp; the in-process
-/// reader holds the same entries the other audit aggregations read, so no new
-/// data source is introduced. The read is bounded (AAASM-4145): a window with
-/// more events than the cap aggregates only its most recent ones.
+/// Pushes the `since_ns` window into [`AuditReader::list_windowed`] so entries
+/// older than the window are dropped during the directory scan and never
+/// collected (AAASM-4147) — no client-side timestamp re-filter is needed. The
+/// read stays bounded by [`MAX_ANALYTICS_AUDIT_EVENTS`] (AAASM-4145): a window
+/// with more events than the cap aggregates only its most recent ones. The
+/// in-process reader holds the same entries the other audit aggregations read,
+/// so no new data source is introduced.
 async fn fetch_window_entries(caller: &AuthenticatedCaller, state: &AppState, since_ns: u64) -> Vec<AuditEntry> {
     let (entries, _total) = state
         .audit_reader
-        .list(MAX_ANALYTICS_AUDIT_EVENTS, 0, None, None, None)
+        .list_windowed(since_ns, MAX_ANALYTICS_AUDIT_EVENTS, 0, None, None, None)
         .await
         .unwrap_or_default();
-    let entries: Vec<AuditEntry> = entries.into_iter().filter(|e| e.timestamp_ns() >= since_ns).collect();
     scope_entries(caller, entries)
 }
 
@@ -1058,6 +1055,64 @@ mod tests {
         assert_eq!(delta_ratio(8, 10), -0.2);
     }
 
+    /// AAASM-4147: `fetch_window_entries` now pushes the `since_ns` window into
+    /// the reader (`list_windowed`) instead of over-reading then client-filtering.
+    /// For a window inside the data the result must be exactly the in-window
+    /// entries — identical to the pre-change `list()`-then-`>= since` behaviour —
+    /// so analytics aggregations are unaffected.
+    #[tokio::test]
+    async fn fetch_window_entries_returns_only_in_window_entries() {
+        use aa_core::audit::Lineage;
+        use aa_core::{AgentId, SessionId};
+        use aa_gateway::AuditReader;
+        use std::sync::Arc;
+
+        fn entry(seq: u64, ts: u64) -> AuditEntry {
+            AuditEntry::new_with_lineage(
+                seq,
+                ts,
+                AuditEventType::ToolCallIntercepted,
+                AgentId::from_bytes([0xAB; 16]),
+                SessionId::from_bytes([0xEE; 16]),
+                "{}".to_string(),
+                [0u8; 32],
+                Lineage::default(),
+            )
+        }
+
+        // Seed a temp audit dir: two entries older than the window, two within.
+        let dir = std::env::temp_dir().join(format!("aa-4147-fetch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create audit dir");
+        let entries = [entry(0, 100), entry(1, 200), entry(2, 300), entry(3, 400)];
+        let mut contents = String::new();
+        for e in &entries {
+            contents.push_str(&serde_json::to_string(e).unwrap());
+            contents.push('\n');
+        }
+        std::fs::write(dir.join("audit.jsonl"), contents).expect("write jsonl");
+
+        let mut state = AppState::local_in_memory().expect("state builds");
+        state.audit_reader = Arc::new(AuditReader::new(dir.clone()));
+
+        // Admin caller so tenant scoping is the identity and can't mask the window.
+        let caller = AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes: vec![Scope::Admin],
+            tenant: crate::auth::Tenant {
+                team_id: None,
+                org_id: None,
+            },
+        };
+
+        let since = 300;
+        let got = fetch_window_entries(&caller, &state, since).await;
+
+        let mut seqs: Vec<u64> = got.iter().map(|e| e.seq()).collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, vec![2, 3], "only entries with timestamp_ns >= since are returned");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
     #[test]
     fn analytics_audit_read_is_bounded_not_unbounded() {
         // AAASM-4145: the analytics handlers must cap the audit-log read rather
