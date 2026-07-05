@@ -28,7 +28,7 @@ impl ReplayBuffer {
 
     /// Push an event into the buffer, evicting the oldest if at capacity.
     pub fn push(&self, event: GovernanceEvent) {
-        let mut buf = self.inner.lock().expect("replay buffer lock poisoned");
+        let mut buf = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if buf.len() >= MAX_CAPACITY {
             buf.pop_front();
         }
@@ -40,7 +40,7 @@ impl ReplayBuffer {
     /// Returns an empty vec if `since_id` is beyond the newest event
     /// or the buffer is empty.
     pub fn events_since(&self, since_id: EventId) -> Vec<GovernanceEvent> {
-        let buf = self.inner.lock().expect("replay buffer lock poisoned");
+        let buf = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         buf.iter().filter(|e| e.id > since_id).cloned().collect()
     }
 }
