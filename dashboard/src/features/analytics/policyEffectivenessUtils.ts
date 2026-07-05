@@ -11,6 +11,17 @@ export interface PolicyRule {
   days: PolicyDay[]
 }
 
+const DATE_FMT = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+const DATE_PLACEHOLDER = '—'
+
+// A malformed 200 response can carry an unparseable date string; new Date(iso)
+// then yields an Invalid Date and Intl.DateTimeFormat throws "Invalid time
+// value" mid-render. Fall back to a placeholder instead of throwing.
+export function formatDate(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? DATE_PLACEHOLDER : DATE_FMT.format(d)
+}
+
 export function computeRatio(day: PolicyDay): number {
   const total = day.blocks + day.warns + day.passes
   return total === 0 ? 0 : day.blocks / total

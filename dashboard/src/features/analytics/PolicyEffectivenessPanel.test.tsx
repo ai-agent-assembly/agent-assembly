@@ -2,13 +2,14 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
-import { PolicyEffectivenessPanel, formatDate } from './PolicyEffectivenessPanel'
+import { PolicyEffectivenessPanel } from './PolicyEffectivenessPanel'
 import {
   computeRatio,
   computeRowTotals,
   collectDates,
   ratioToColor,
   sortRulesByBlocks,
+  formatDate,
 } from './policyEffectivenessUtils'
 import type { PolicyRule } from './policyEffectivenessUtils'
 
