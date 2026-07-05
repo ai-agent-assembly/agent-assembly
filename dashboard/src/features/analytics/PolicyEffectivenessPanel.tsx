@@ -19,9 +19,14 @@ interface TooltipState {
 }
 
 const DATE_FMT = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+const DATE_PLACEHOLDER = '—'
 
-function formatDate(iso: string): string {
-  return DATE_FMT.format(new Date(iso))
+// A malformed 200 response can carry an unparseable date string; new Date(iso)
+// then yields an Invalid Date and Intl.DateTimeFormat throws "Invalid time
+// value" mid-render. Fall back to a placeholder instead of throwing.
+export function formatDate(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? DATE_PLACEHOLDER : DATE_FMT.format(d)
 }
 
 interface HeatmapCellProps {
