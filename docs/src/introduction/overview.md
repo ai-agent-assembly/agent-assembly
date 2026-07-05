@@ -90,6 +90,6 @@ This book is the reference for **contributors and operators of the
 `agent-assembly` core** — people running the gateway, writing policy, and
 deploying the interception layers. If you are instead building an application
 *with* a language SDK, start from the per-SDK guides: [Python
-SDK](https://ai-agent-assembly.github.io/python-sdk/stable/), [Node
-SDK](https://ai-agent-assembly.github.io/node-sdk/stable/), [Go
-SDK](https://ai-agent-assembly.github.io/go-sdk/stable/).
+SDK](https://docs.agent-assembly.com/python-sdk/stable/), [Node
+SDK](https://docs.agent-assembly.com/node-sdk/stable/), [Go
+SDK](https://docs.agent-assembly.com/go-sdk/stable/).

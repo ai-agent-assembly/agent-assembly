@@ -42,6 +42,6 @@ repo links above, presented in the SDK's own docs site.
   build.) Do NOT "fix" these by switching to pre-release/latest.
 -->
 
-- **Python** — [python-sdk examples](https://ai-agent-assembly.github.io/python-sdk/stable/examples/)
-- **Node** — [node-sdk examples](https://ai-agent-assembly.github.io/node-sdk/stable/examples/)
-- **Go** — [go-sdk examples](https://ai-agent-assembly.github.io/go-sdk/stable/examples/)
+- **Python** — [python-sdk examples](https://docs.agent-assembly.com/python-sdk/stable/examples/)
+- **Node** — [node-sdk examples](https://docs.agent-assembly.com/node-sdk/stable/examples/)
+- **Go** — [go-sdk examples](https://docs.agent-assembly.com/go-sdk/stable/examples/)
