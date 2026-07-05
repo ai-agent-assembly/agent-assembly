@@ -230,8 +230,17 @@ fn stage_approval(
     policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
 ) -> Option<PolicyDecision> {
     match action {
+        // AAASM-4164: fall back to the `"*"` wildcard entry (exact entry wins) so a
+        // `tools: { "*": { requires_approval_if: "<guard>" } }` scope gates
+        // unlisted tools behind approval instead of skipping the check — the
+        // cascade twin of `eval_toolcall_stages`' stage-5 wildcard fallback.
         aa_core::GovernanceAction::ToolCall { name, .. }
-            if approval_condition_met(doc.tools.get(name), ctx, action, policy_ctx) =>
+            if approval_condition_met(
+                doc.tools.get(name).or_else(|| doc.tools.get("*")),
+                ctx,
+                action,
+                policy_ctx,
+            ) =>
         {
             Some(PolicyDecision::RequireApproval {
                 reason: format!("approval required for tool '{name}'"),
