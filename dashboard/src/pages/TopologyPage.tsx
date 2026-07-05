@@ -36,7 +36,7 @@ export function TopologyPage() {
     <main className="topology-page" data-testid="topology-view">
       <header className="topology-page__head" data-testid="topology-header">
         <h1 className="topology-page__title">
-          Topology<span className="topology-page__meta" data-testid="topology-meta">
+          Topology{' '}<span className="topology-page__meta" data-testid="topology-meta">
             · {agentCount} agent{agentCount === 1 ? '' : 's'} · {teamCount} team{teamCount === 1 ? '' : 's'}
           </span>
         </h1>

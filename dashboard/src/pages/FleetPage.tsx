@@ -349,7 +349,7 @@ export function FleetPage() {
       <header className="fleet-page__head" data-testid="fleet-page-head">
         <div className="fleet-page__heading">
           <h1 className="fleet-page__title">
-            Fleet<span className="fleet-page__count" data-testid="fleet-page-count">
+            Fleet{' '}<span className="fleet-page__count" data-testid="fleet-page-count">
               · {filteredCount} of {totalAgents} agents
             </span>
           </h1>
