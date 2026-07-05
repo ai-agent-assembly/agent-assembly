@@ -955,8 +955,11 @@ impl PolicyEngine {
             }
         }
 
-        // Stage 5 — Approval condition for ToolCall.
-        self.eval_approval_condition(policy, tool_policy, ctx, action)
+        // Stage 5 — Approval condition for ToolCall. AAASM-4164: fall back to the
+        // `"*"` wildcard entry (exact entry wins) so a
+        // `tools: { "*": { requires_approval_if: "<guard>" } }` document gates
+        // unlisted tools behind approval instead of skipping the check.
+        self.eval_approval_condition(policy, tool_policy.or_else(|| policy.tools.get("*")), ctx, action)
     }
 
     /// Evaluate a tool/channel policy's `requires_approval_if` expression for
