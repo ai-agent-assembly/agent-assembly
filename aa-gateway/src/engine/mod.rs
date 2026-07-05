@@ -2243,6 +2243,183 @@ mod tests {
     }
 
     #[test]
+    fn tool_wildcard_rate_limit_caps_unlisted_tool() {
+        // AAASM-4164: a `"*"` wildcard carrying `limit_per_hour` must rate-limit
+        // an unlisted tool on the single-file path (stage 4), not leave it
+        // uncapped. An explicit per-tool entry still takes precedence: a tool
+        // with its own entry (no limit) is never capped by the wildcard.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "*".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: Some(1),
+                requires_approval_if: None,
+            },
+        );
+        doc.tools.insert(
+            "read_file".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+
+        // Unlisted tool falls back to the `"*"` cap: first call passes, second denies.
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("search", "")).decision,
+            PolicyResult::Allow
+        );
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("search", "")).decision,
+            PolicyResult::Deny {
+                reason: "rate limit exceeded".into()
+            }
+        );
+        // Explicit entry (no limit) wins over the wildcard — never rate-limited.
+        for _ in 0..3 {
+            assert_eq!(
+                engine.evaluate(&ctx, &tool_call("read_file", "")).decision,
+                PolicyResult::Allow
+            );
+        }
+    }
+
+    #[test]
+    fn tool_wildcard_approval_gates_unlisted_tool() {
+        // AAASM-4164: a `"*"` wildcard carrying `requires_approval_if` must gate
+        // an unlisted tool on the single-file path (stage 5), not skip approval.
+        // An explicit per-tool entry (no approval guard) still takes precedence.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "*".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                // Always true for any real tool name — proves the wildcard guard
+                // is consulted regardless of the unlisted tool's name.
+                requires_approval_if: Some(r#"tool != "__never_matches__""#.to_string()),
+            },
+        );
+        doc.tools.insert(
+            "read_file".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+
+        // Unlisted tool falls back to the `"*"` approval guard.
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("exfiltrate_secrets", "")).decision,
+            PolicyResult::RequiresApproval { timeout_secs: 300 }
+        );
+        // Explicit entry (no guard) wins over the wildcard — allowed outright.
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("read_file", "")).decision,
+            PolicyResult::Allow
+        );
+    }
+
+    #[test]
+    fn cascade_wildcard_rate_limit_caps_unlisted_tool() {
+        // AAASM-4164: the cascade path's `cascade_rate_limit` must honour a
+        // `"*"` wildcard `limit_per_hour` for an unlisted tool (stage 4), the
+        // twin of the single-file fix. Explicit entries still take precedence.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "*".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: Some(1),
+                requires_approval_if: None,
+            },
+        );
+        doc.tools.insert(
+            "read_file".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let cascade = vec![Arc::new(doc)];
+
+        assert_eq!(
+            engine
+                .evaluate_with_cascade(cascade.clone(), &ctx, &tool_call("search", ""))
+                .decision,
+            PolicyResult::Allow
+        );
+        assert_eq!(
+            engine
+                .evaluate_with_cascade(cascade.clone(), &ctx, &tool_call("search", ""))
+                .decision,
+            PolicyResult::Deny {
+                reason: "rate limit exceeded".into()
+            }
+        );
+        // Explicit entry (no limit) wins over the wildcard.
+        for _ in 0..3 {
+            assert_eq!(
+                engine
+                    .evaluate_with_cascade(cascade.clone(), &ctx, &tool_call("read_file", ""))
+                    .decision,
+                PolicyResult::Allow
+            );
+        }
+    }
+
+    #[test]
+    fn cascade_wildcard_approval_gates_unlisted_tool() {
+        // AAASM-4164: the cascade path's `stage_approval` must honour a `"*"`
+        // wildcard `requires_approval_if` for an unlisted tool (stage 5), the
+        // twin of the single-file fix. Explicit entries still take precedence.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "*".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: Some(r#"tool != "__never_matches__""#.to_string()),
+            },
+        );
+        doc.tools.insert(
+            "read_file".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let cascade = vec![Arc::new(doc)];
+
+        assert_eq!(
+            engine
+                .evaluate_with_cascade(cascade.clone(), &ctx, &tool_call("exfiltrate_secrets", ""))
+                .decision,
+            PolicyResult::RequiresApproval { timeout_secs: 300 }
+        );
+        // Explicit entry (no guard) wins over the wildcard.
+        assert_eq!(
+            engine
+                .evaluate_with_cascade(cascade, &ctx, &tool_call("read_file", ""))
+                .decision,
+            PolicyResult::Allow
+        );
+    }
+
+    #[test]
     fn rate_limit_denies_after_capacity_exhausted() {
         let mut doc = empty_doc();
         doc.tools.insert(
