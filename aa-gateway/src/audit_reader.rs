@@ -39,7 +39,49 @@ impl AuditReader {
         event_type: Option<&str>,
         org_id: Option<&str>,
     ) -> io::Result<(Vec<AuditEntry>, u64)> {
-        let mut all_entries = self.read_all_entries().await?;
+        self.list_inner(None, limit, offset, agent_id, event_type, org_id).await
+    }
+
+    /// List audit entries within a server-side time window, else identical to
+    /// [`list`](Self::list).
+    ///
+    /// Entries older than `since_ns` (`timestamp_ns() < since_ns`) are dropped
+    /// during the directory scan and never collected — so `total` and the
+    /// returned page reflect only the window, and a windowed consumer no longer
+    /// over-reads the whole audit log (AAASM-4147). Newest-first ordering, the
+    /// `limit`/`offset` paging, and the agent/event/org filter semantics are
+    /// exactly those of [`list`](Self::list). Callers that want no window use
+    /// [`list`](Self::list).
+    pub async fn list_windowed(
+        &self,
+        since_ns: u64,
+        limit: usize,
+        offset: usize,
+        agent_id: Option<&str>,
+        event_type: Option<&str>,
+        org_id: Option<&str>,
+    ) -> io::Result<(Vec<AuditEntry>, u64)> {
+        self.list_inner(Some(since_ns), limit, offset, agent_id, event_type, org_id)
+            .await
+    }
+
+    /// Shared paginated-listing path for [`list`](Self::list) and
+    /// [`list_windowed`](Self::list_windowed).
+    ///
+    /// `since_ns` is pushed into the directory scan so out-of-window entries are
+    /// never collected; the remaining agent/event/org filtering, newest-first
+    /// sort, and `limit`/`offset` slicing are applied identically for both
+    /// entry points.
+    async fn list_inner(
+        &self,
+        since_ns: Option<u64>,
+        limit: usize,
+        offset: usize,
+        agent_id: Option<&str>,
+        event_type: Option<&str>,
+        org_id: Option<&str>,
+    ) -> io::Result<(Vec<AuditEntry>, u64)> {
+        let mut all_entries = self.read_all_entries_windowed(since_ns).await?;
 
         // Parse filter values once.
         let agent_filter: Option<AgentId> = agent_id.and_then(parse_agent_id);
@@ -97,6 +139,25 @@ impl AuditReader {
 
     /// Read and parse all JSONL files in the audit directory.
     async fn read_all_entries(&self) -> io::Result<Vec<AuditEntry>> {
+        self.read_all_entries_windowed(None).await
+    }
+
+    /// Read and parse JSONL entries, optionally dropping entries older than a
+    /// time window during the scan.
+    ///
+    /// When `since_ns` is `Some(w)`, an entry is collected only if
+    /// `timestamp_ns() >= w`; out-of-window entries are discarded as they are
+    /// parsed and never enter the returned `Vec`. This is the point of the
+    /// windowed read (AAASM-4147): a consumer that only wants a recent window no
+    /// longer materialises the whole log in memory. `None` collects everything,
+    /// preserving the original `read_all_entries` behaviour.
+    ///
+    /// Follow-up: files are still all opened and every line parsed before the
+    /// window test. JSONL files are rotated roughly in time order, so skipping
+    /// whole files outside the window would be the larger win — but that needs a
+    /// stable filename→time contract from the writer's rotation scheme, so it is
+    /// deferred to a separate ticket rather than guessed at here.
+    async fn read_all_entries_windowed(&self, since_ns: Option<u64>) -> io::Result<Vec<AuditEntry>> {
         let mut entries = Vec::new();
 
         let mut dir = match tokio::fs::read_dir(&self.dir).await {
@@ -121,7 +182,10 @@ impl AuditReader {
                 }
                 // Skip incomplete or corrupt lines (e.g. partial writes).
                 if let Ok(audit_entry) = serde_json::from_str::<AuditEntry>(&line) {
-                    entries.push(audit_entry);
+                    // Drop entries older than the window before collecting.
+                    if since_ns.map_or(true, |since| audit_entry.timestamp_ns() >= since) {
+                        entries.push(audit_entry);
+                    }
                 }
             }
         }
