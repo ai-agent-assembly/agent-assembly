@@ -138,3 +138,16 @@ async fn approvals_returns_analytics_shape() {
 async fn approvals_requires_authentication() {
     assert_requires_auth("/api/v1/analytics/approvals").await;
 }
+
+// --- policy-effectiveness -------------------------------------------------
+
+#[tokio::test]
+async fn policy_effectiveness_returns_rules_array() {
+    let json = get_ok_json(common::test_app(), "/api/v1/analytics/policy-effectiveness?range=7d").await;
+    assert!(json["rules"].is_array(), "rules must be an array");
+}
+
+#[tokio::test]
+async fn policy_effectiveness_requires_authentication() {
+    assert_requires_auth("/api/v1/analytics/policy-effectiveness").await;
+}
