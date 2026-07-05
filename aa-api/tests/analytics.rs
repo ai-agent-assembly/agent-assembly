@@ -61,3 +61,27 @@ async fn kpis_cost_metric_reports_usd_unit() {
 async fn kpis_requires_authentication() {
     assert_requires_auth("/api/v1/analytics/kpis?metric=agents").await;
 }
+
+// --- cost-breakdown -------------------------------------------------------
+
+#[tokio::test]
+async fn cost_breakdown_returns_buckets_array() {
+    let json = get_ok_json(
+        common::test_app(),
+        "/api/v1/analytics/cost-breakdown?groupBy=agent&range=30d",
+    )
+    .await;
+    assert!(json["buckets"].is_array(), "buckets must be an array");
+}
+
+#[tokio::test]
+async fn cost_breakdown_model_grouping_is_empty() {
+    // No per-model spend source exists — the model grouping returns no buckets.
+    let json = get_ok_json(common::test_app(), "/api/v1/analytics/cost-breakdown?groupBy=model").await;
+    assert_eq!(json["buckets"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn cost_breakdown_requires_authentication() {
+    assert_requires_auth("/api/v1/analytics/cost-breakdown?groupBy=agent").await;
+}
