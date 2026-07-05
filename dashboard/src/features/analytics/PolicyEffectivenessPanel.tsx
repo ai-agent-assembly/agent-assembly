@@ -7,6 +7,7 @@ import {
   sortRulesByBlocks,
   collectDates,
   ratioToColor,
+  formatDate,
 } from './policyEffectivenessUtils'
 import type { PolicyDay } from './policyEffectivenessUtils'
 
@@ -16,12 +17,6 @@ interface TooltipState {
   day: PolicyDay
   x: number
   y: number
-}
-
-const DATE_FMT = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
-
-function formatDate(iso: string): string {
-  return DATE_FMT.format(new Date(iso))
 }
 
 interface HeatmapCellProps {

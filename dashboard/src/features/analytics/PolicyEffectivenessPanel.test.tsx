@@ -9,6 +9,7 @@ import {
   collectDates,
   ratioToColor,
   sortRulesByBlocks,
+  formatDate,
 } from './policyEffectivenessUtils'
 import type { PolicyRule } from './policyEffectivenessUtils'
 
@@ -126,6 +127,19 @@ describe('sortRulesByBlocks', () => {
   })
 })
 
+// ── formatDate guard tests ────────────────────────────────────────────────────
+
+describe('formatDate', () => {
+  it('formats a valid ISO date', () => {
+    expect(formatDate('2026-01-15')).not.toBe('—')
+  })
+
+  it('returns a placeholder for an unparseable date string', () => {
+    expect(formatDate('not-a-date')).toBe('—')
+    expect(formatDate('')).toBe('—')
+  })
+})
+
 // ── PolicyEffectivenessPanel integration tests ────────────────────────────────
 
 describe('PolicyEffectivenessPanel', () => {
@@ -210,5 +224,21 @@ describe('PolicyEffectivenessPanel', () => {
     render(<PolicyEffectivenessPanel />, { wrapper: Wrapper })
     expect(await screen.findByText('Deny PII egress')).toBeInTheDocument()
     expect(screen.getByText('Rate limit burst')).toBeInTheDocument()
+  })
+
+  it('renders the grid without throwing when a day carries an unparseable date', async () => {
+    const badDate: PolicyRule[] = [
+      {
+        id: 'r1',
+        name: 'Bad date rule',
+        days: [{ date: 'not-a-date', blocks: 1, warns: 0, passes: 0 }],
+      },
+    ]
+    mockFetch(badDate)
+    render(<PolicyEffectivenessPanel />, { wrapper: Wrapper })
+    // Panel renders its grid (no whole-view crash); the header shows the
+    // placeholder rather than throwing "Invalid time value".
+    expect(await screen.findByRole('grid')).toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
   })
 })

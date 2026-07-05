@@ -11,24 +11,7 @@ import {
 import { useAnalyticsFilters } from './useAnalyticsFilters'
 import { useActionVolumeQuery } from './useActionVolumeQuery'
 import { useChartPalette } from './useChartPalette'
-import { transformSeries } from './actionVolumeUtils'
-import type { RangeOption } from './urlState'
-
-function makeTickFormatter(range: RangeOption): (t: number) => string {
-  if (range === '24h') {
-    return t =>
-      new Intl.DateTimeFormat('en', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      }).format(t)
-  }
-  if (range === '7d') {
-    return t => new Intl.DateTimeFormat('en', { weekday: 'short' }).format(t)
-  }
-  return t =>
-    new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(t)
-}
+import { transformSeries, makeTickFormatter } from './actionVolumeUtils'
 
 export function ActionVolumePanel() {
   const { filters } = useAnalyticsFilters()
