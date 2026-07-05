@@ -6,6 +6,7 @@ pub mod admin;
 pub mod agents;
 pub mod alert_rules;
 pub mod alerts;
+pub mod analytics;
 pub mod approvals;
 pub mod audit;
 pub mod auth;
