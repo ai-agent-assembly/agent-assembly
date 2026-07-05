@@ -455,3 +455,53 @@ fn legacy_file_write_deny_still_blocks_delete() {
         result
     );
 }
+
+// ── Disjoint cascade allow-lists (AAASM-4154) ───────────────────────────────────
+
+/// The headline fail-open: two cascade tiers with DISJOINT non-empty allow-lists
+/// (Global `allow=[file_read]`, Team `allow=[file_write]`) intersect to an empty
+/// merged allow. Before the fix an empty merged allow was read as "no
+/// restriction", so an unlisted capability like `TerminalExec` was permitted —
+/// combining two restrictive whitelists escalated privilege to allow-all. The
+/// merged set must instead stay restricted and DENY the unlisted capability.
+#[test]
+fn cascade_disjoint_allow_lists_deny_unlisted_capability() {
+    let agent_id = AgentId::from_bytes([1u8; 16]);
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(PolicyScope::Global, &[Capability::FileRead], &[]));
+    engine.load_policy(cap_doc(PolicyScope::Agent(agent_id), &[Capability::FileWrite], &[]));
+
+    let ctx = make_ctx();
+    let action = GovernanceAction::ProcessExec { command: "sh".into() };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert!(
+        matches!(result, PolicyResult::Deny { .. }),
+        "expected Deny: disjoint allow-lists must not collapse to allow-all, got {:?}",
+        result
+    );
+}
+
+/// The same disjoint collapse must not nullify a delete restriction: with the
+/// merged allow-list emptied, `FileDelete` (whitelisted by neither tier) is not
+/// implicitly permitted — the set stays restricted and denies it (AAASM-4154).
+#[test]
+fn cascade_disjoint_allow_lists_deny_file_delete() {
+    let agent_id = AgentId::from_bytes([1u8; 16]);
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(PolicyScope::Global, &[Capability::FileRead], &[]));
+    engine.load_policy(cap_doc(PolicyScope::Agent(agent_id), &[Capability::FileWrite], &[]));
+
+    let ctx = make_ctx();
+    let action = GovernanceAction::FileAccess {
+        path: "/tmp/secret.txt".into(),
+        mode: aa_core::FileMode::Delete,
+    };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert!(
+        matches!(result, PolicyResult::Deny { .. }),
+        "expected Deny: a collapsed disjoint allow-list must still deny delete, got {:?}",
+        result
+    );
+}
