@@ -147,13 +147,19 @@ describe('CostsPage', () => {
     expect(cool.dataset.thresholdBucket).toBe('ok')
   })
 
-  it('renders the reused per-agent cost breakdown panel', async () => {
+  // The per-agent breakdown depends on the /api/v1/analytics/* endpoints, which
+  // do not exist in aa-api yet (AAASM-4138), so it is gated to a "coming soon"
+  // placeholder rather than the live chart.
+  it('gates the per-agent cost breakdown behind a coming-soon placeholder', async () => {
     setupMocks()
     mockBreakdownFetch()
     render(<CostsPage />, { wrapper: Wrapper })
 
-    expect(await screen.findByTestId('cost-breakdown-panel')).toBeInTheDocument()
+    expect(await screen.findByTestId('cost-breakdown-unavailable')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Cost Breakdown' })).toBeInTheDocument()
+    expect(screen.getByText('Per-agent cost breakdown is coming soon')).toBeInTheDocument()
+    // The live chart panel must not render while the backend is unavailable.
+    expect(screen.queryByTestId('cost-breakdown-panel')).not.toBeInTheDocument()
   })
 
   it('switches KPI figures to the monthly period via the toggle', async () => {
