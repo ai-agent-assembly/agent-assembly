@@ -1,9 +1,10 @@
 /**
- * Canonical 12-route navigation for the governance dashboard.
+ * Navigation route table for the governance dashboard.
  *
- * Mirrors the `ROUTES` const defined in `design/v1/hi-fi/shell.jsx`.
- * The AppShell nav renders entries grouped by `group`; `App.tsx` wires
- * each `path` to either an implemented page or `<ComingSoon />`.
+ * The first 12 entries mirror the canonical `ROUTES` const in
+ * `design/v1/hi-fi/shell.jsx`; `analytics` (num 13) is an addition beyond that
+ * design (see the note on that entry). The AppShell nav renders entries grouped
+ * by `group`; `App.tsx` wires each `path` to an implemented page or `<ComingSoon />`.
  */
 
 export type RouteGroup = 'monitor' | 'control' | 'manage'
@@ -41,6 +42,10 @@ export const CANONICAL_ROUTES: readonly CanonicalRoute[] = [
   { id: 'costs',      num: '10', label: 'Cost & Budget',    group: 'manage',  path: '/costs' },
   { id: 'teams',      num: '11', label: 'Agent Groups',     group: 'manage',  path: '/teams' },
   { id: 'identity',   num: '12', label: 'Members & Access', group: 'manage',  path: '/identity' },
+  // Beyond the design's canonical 12: the analytics dashboard (AAASM-4142) went
+  // live after the hi-fi shell was drawn and was previously reachable only by
+  // direct URL. Surfaced here as an observability/reporting view (AAASM-4158).
+  { id: 'analytics',  num: '13', label: 'Analytics',        group: 'monitor', path: '/analytics' },
 ] as const
 
 export const ROUTE_GROUPS: readonly RouteGroup[] = ['monitor', 'control', 'manage'] as const
