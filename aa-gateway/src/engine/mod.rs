@@ -1247,9 +1247,13 @@ impl PolicyEngine {
         let aa_core::GovernanceAction::ToolCall { name, .. } = action else {
             return None;
         };
+        // AAASM-4164: within each doc the exact per-tool entry wins, falling back
+        // to that doc's `"*"` wildcard, so a `tools: { "*": { limit_per_hour: N } }`
+        // scope rate-limits unlisted tools instead of leaving them uncapped —
+        // mirroring `stage_tool_allow`'s wildcard fallback.
         let min_limit = cascade
             .iter()
-            .filter_map(|doc| doc.tools.get(name))
+            .filter_map(|doc| doc.tools.get(name).or_else(|| doc.tools.get("*")))
             .filter_map(|tp| tp.limit_per_hour)
             .min()?;
         if !self.try_consume_rate(name, min_limit) {
