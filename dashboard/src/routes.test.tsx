@@ -15,8 +15,8 @@ vi.mock('./features/approvals/ApprovalsBellButton', () => ({
 }))
 
 describe('CANONICAL_ROUTES config', () => {
-  it('declares exactly 12 routes', () => {
-    expect(CANONICAL_ROUTES).toHaveLength(12)
+  it('declares 13 routes — the canonical 12 plus analytics', () => {
+    expect(CANONICAL_ROUTES).toHaveLength(13)
   })
 
   it('covers all three groups (monitor, control, manage)', () => {
@@ -37,19 +37,26 @@ describe('CANONICAL_ROUTES config', () => {
   })
 
   it('includes the 12 canonical ids from design/v1/hi-fi/shell.jsx', () => {
-    const ids = CANONICAL_ROUTES.map((r) => r.id).sort((a, b) => a.localeCompare(b))
+    const ids = CANONICAL_ROUTES.map((r) => r.id)
     expect(ids).toEqual(
-      [
+      expect.arrayContaining([
         'alerts', 'audit', 'capability', 'costs', 'fleet', 'identity',
         'live', 'overview', 'policy', 'scrub', 'teams', 'topology',
-      ].sort((a, b) => a.localeCompare(b)),
+      ]),
     )
   })
 
-  it('every num is a zero-padded two-digit sequence 01..12', () => {
+  it('adds analytics as a monitor-group route beyond the canonical 12 (AAASM-4158)', () => {
+    const analytics = CANONICAL_ROUTES.find((r) => r.id === 'analytics')
+    expect(analytics).toBeDefined()
+    expect(analytics!.path).toBe('/analytics')
+    expect(analytics!.group).toBe('monitor')
+  })
+
+  it('every num is a zero-padded two-digit sequence 01..13', () => {
     const nums = CANONICAL_ROUTES.map((r) => r.num).sort((a, b) => a.localeCompare(b))
     expect(nums).toEqual([
-      '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12',
+      '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13',
     ])
   })
 
@@ -88,6 +95,22 @@ describe('AppShell nav-icon rendering (AAASM-1373)', () => {
       if (route.id === 'alerts') continue
       expect(screen.queryByTestId(`nav-icon-${route.id}`)).toBeNull()
     }
+  })
+})
+
+describe('AppShell analytics nav entry (AAASM-4158)', () => {
+  it('renders an Analytics nav link that targets /analytics', async () => {
+    const { AppShell } = await import('./components/AppShell')
+    render(
+      <MemoryRouter initialEntries={['/overview']}>
+        <AppShell />
+      </MemoryRouter>,
+    )
+
+    const analyticsLink = screen.getByTestId('nav-link-analytics')
+    expect(analyticsLink).toBeInTheDocument()
+    expect(analyticsLink).toHaveAttribute('href', '/analytics')
+    expect(analyticsLink).toHaveTextContent('Analytics')
   })
 })
 
