@@ -943,8 +943,13 @@ impl PolicyEngine {
             }
         }
 
-        // Stage 4 — Tool rate limit.
-        if let Some(limit) = tool_policy.and_then(|tp| tp.limit_per_hour) {
+        // Stage 4 — Tool rate limit. AAASM-4164: fall back to the `"*"` wildcard
+        // entry (exact entry wins) so a `tools: { "*": { limit_per_hour: N } }`
+        // document rate-limits unlisted tools instead of leaving them uncapped.
+        if let Some(limit) = tool_policy
+            .or_else(|| policy.tools.get("*"))
+            .and_then(|tp| tp.limit_per_hour)
+        {
             if !self.try_consume_rate(name, limit) {
                 return Some(EvaluationResult::deny("rate limit exceeded"));
             }
