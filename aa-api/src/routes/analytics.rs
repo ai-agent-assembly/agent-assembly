@@ -21,6 +21,7 @@
 //! synthetic series. Those decisions are called out in each handler's doc
 //! comment.
 
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::Query;
@@ -326,6 +327,18 @@ fn now_ns() -> u64 {
         .as_nanos() as u64
 }
 
+/// Map an audit event type to the action-volume series it contributes to, or
+/// `None` for event types the chart does not track.
+fn action_category(ev: AuditEventType) -> Option<(&'static str, &'static str)> {
+    match ev {
+        AuditEventType::ToolCallIntercepted => Some(("intercepted", "Intercepted")),
+        AuditEventType::ToolDispatched => Some(("dispatched", "Dispatched")),
+        AuditEventType::PolicyViolation => Some(("violations", "Policy Violations")),
+        AuditEventType::ApprovalRequested => Some(("approvals", "Approvals Requested")),
+        _ => None,
+    }
+}
+
 /// Confine a set of audit entries to the caller's tenant.
 ///
 /// Mirrors [`crate::routes::audit`]: an admin sees every org's entries; a
@@ -577,6 +590,76 @@ pub async fn get_cost_breakdown(
     };
 
     (StatusCode::OK, Json(CostBreakdownResponse { buckets }))
+}
+
+/// Number of time buckets the action-volume / series endpoints divide a window
+/// into. Fixed count (not a fixed width) so every range renders a comparable
+/// line density.
+const SERIES_BUCKETS: usize = 24;
+
+/// `GET /api/v1/analytics/action-volume` — action counts over time, per category.
+///
+/// Buckets the requested window into [`SERIES_BUCKETS`] equal slices and counts
+/// audit events per slice, grouped into a small set of action categories
+/// (`intercepted`, `dispatched`, `violations`, `approvals` — see
+/// [`action_category`]). Each emitted series carries a point for every bucket
+/// (including zeros) so the line chart is continuous; `t` is the bucket-start
+/// epoch-millisecond timestamp. Only categories that recorded at least one
+/// event in the window are emitted, so an idle window yields an empty series
+/// list rather than fabricated activity. Confined to the caller's tenant.
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/action-volume",
+    params(AnalyticsParams),
+    responses(
+        (status = 200, description = "Per-category action-volume time series", body = ActionVolumeResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_action_volume(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(params): Query<AnalyticsParams>,
+) -> (StatusCode, Json<ActionVolumeResponse>) {
+    let window = window_secs_from_range(params.range.as_deref());
+    let now = now_ns();
+    let window_ns = window.saturating_mul(1_000_000_000);
+    let since = now.saturating_sub(window_ns);
+    let bucket_ns = (window_ns / SERIES_BUCKETS as u64).max(1);
+
+    let entries = fetch_window_entries(&caller, &state, since).await;
+
+    // category key -> (display name, per-bucket counts)
+    let mut by_category: BTreeMap<&'static str, (&'static str, Vec<u64>)> = BTreeMap::new();
+    for e in &entries {
+        if let Some((key, name)) = action_category(e.event_type()) {
+            let idx = ((e.timestamp_ns().saturating_sub(since)) / bucket_ns) as usize;
+            let idx = idx.min(SERIES_BUCKETS - 1);
+            let slot = by_category
+                .entry(key)
+                .or_insert_with(|| (name, vec![0u64; SERIES_BUCKETS]));
+            slot.1[idx] += 1;
+        }
+    }
+
+    let series: Vec<ActionVolumeSeries> = by_category
+        .into_iter()
+        .map(|(key, (name, counts))| ActionVolumeSeries {
+            key: key.to_string(),
+            name: name.to_string(),
+            points: counts
+                .into_iter()
+                .enumerate()
+                .map(|(i, c)| SeriesPoint {
+                    t: ((since + i as u64 * bucket_ns) / 1_000_000) as i64,
+                    value: c as f64,
+                })
+                .collect(),
+        })
+        .collect();
+
+    (StatusCode::OK, Json(ActionVolumeResponse { series }))
 }
 
 #[cfg(test)]
