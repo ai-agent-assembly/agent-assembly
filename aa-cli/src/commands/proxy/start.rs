@@ -69,6 +69,26 @@ pub fn resolve_binary() -> Option<PathBuf> {
     None
 }
 
+/// Build the environment overrides applied to the spawned `aa-proxy` child.
+///
+/// AAASM-4127: the proxy reads its gateway endpoint from
+/// `AA_PROXY_GATEWAY_ENDPOINT` — **not** `AA_GATEWAY_URL`, which it ignores — and
+/// only performs MCP `tools/call` enforcement when that endpoint is set. A prior
+/// version exported `AA_GATEWAY_URL`, so `aasm proxy start --gateway <url>` left
+/// `gateway_endpoint = None` → raw passthrough with MCP enforcement silently OFF.
+///
+/// When a gateway is configured we also force `AA_PROXY_LLM_ONLY=false` so
+/// non-LLM MCP hosts are intercepted and routed to the gateway's PolicyService
+/// rather than transparently tunnelled before enforcement can run.
+fn proxy_child_env(listen: &str, gateway: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut env = vec![("AA_PROXY_ADDR", listen.to_string())];
+    if let Some(gw) = gateway {
+        env.push(("AA_PROXY_GATEWAY_ENDPOINT", gw.to_string()));
+        env.push(("AA_PROXY_LLM_ONLY", "false".to_string()));
+    }
+    env
+}
+
 /// Poll TCP connect on `addr` until the socket accepts or `timeout` elapses.
 fn wait_for_port(addr: &str, timeout: Duration) -> bool {
     let Ok(sock_addr) = addr.parse::<SocketAddr>() else {
@@ -105,9 +125,8 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     };
 
     let mut cmd = std::process::Command::new(&binary);
-    cmd.env("AA_PROXY_ADDR", &args.listen);
-    if let Some(ref gw) = args.gateway {
-        cmd.env("AA_GATEWAY_URL", gw);
+    for (key, value) in proxy_child_env(&args.listen, args.gateway.as_deref()) {
+        cmd.env(key, value);
     }
     if let Some(ref ca_dir) = args.ca_dir {
         cmd.env("AA_CA_DIR", ca_dir);
@@ -229,6 +248,36 @@ mod tests {
     fn start_args_no_detach_flag() {
         let w = Wrapper::parse_from(["test", "--no-detach"]);
         assert!(w.inner.no_detach);
+    }
+
+    #[test]
+    fn proxy_child_env_gateway_uses_proxy_endpoint_var() {
+        // AAASM-4127 regression guard: aa-proxy reads AA_PROXY_GATEWAY_ENDPOINT,
+        // so `--gateway <url>` must export that exact name. A prior bug exported
+        // AA_GATEWAY_URL (which aa-proxy ignores), leaving gateway_endpoint None
+        // → raw passthrough with MCP enforcement silently OFF.
+        let env = proxy_child_env("127.0.0.1:8899", Some("http://127.0.0.1:50051"));
+        assert!(
+            env.contains(&("AA_PROXY_GATEWAY_ENDPOINT", "http://127.0.0.1:50051".to_string())),
+            "gateway must be exported as AA_PROXY_GATEWAY_ENDPOINT, got: {env:?}"
+        );
+        // llm_only disabled so non-LLM MCP hosts reach the gateway routing
+        // instead of being transparently tunnelled before enforcement.
+        assert!(env.contains(&("AA_PROXY_LLM_ONLY", "false".to_string())));
+        // The old, ignored variable name must never be exported to the child.
+        assert!(
+            !env.iter().any(|(k, _)| *k == "AA_GATEWAY_URL"),
+            "AA_GATEWAY_URL must not be exported (aa-proxy ignores it)"
+        );
+    }
+
+    #[test]
+    fn proxy_child_env_omits_gateway_vars_when_absent() {
+        let env = proxy_child_env("127.0.0.1:8899", None);
+        assert!(!env.iter().any(|(k, _)| *k == "AA_PROXY_GATEWAY_ENDPOINT"));
+        assert!(!env.iter().any(|(k, _)| *k == "AA_PROXY_LLM_ONLY"));
+        // The listen address is always exported.
+        assert!(env.contains(&("AA_PROXY_ADDR", "127.0.0.1:8899".to_string())));
     }
 
     #[test]
