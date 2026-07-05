@@ -183,6 +183,39 @@ impl ChallengeStoreLike for InMemoryChallengeStore {
 /// `Status::unauthenticated` when the proof is missing, malformed, or does not
 /// verify — so no `credential_token` is minted for a caller that merely presents
 /// a public key it does not hold.
+/// Resolve the authoritative per-agent `enforcement_mode` override to store for
+/// a *self-registering* agent, dropping any client-supplied claim that would
+/// *weaken* enforcement (AAASM-4121).
+///
+/// `enforcement_mode` is a downgrade lever: on the `CheckAction` hot path a
+/// stored `Observe`/`Disabled` mode rewrites a `Deny`/`RequiresApproval` into an
+/// audited `Allow` (`engine::transform_for_observe_mode`). `Register` is the
+/// unauthenticated bootstrap path — its only gate is an Ed25519 possession-proof
+/// over a server nonce, which proves *key ownership*, NOT authorization. So a
+/// self-registering agent must not be able to neutralize its own governance by
+/// claiming `enforcement_mode = Observe/Disabled`.
+///
+/// Only a claim that *strengthens* enforcement (`Enforce`) is honored; a weaker
+/// claim is dropped to `None` so the server-side default (`Enforce`, resolved in
+/// `resolve_enforcement_mode`) governs. Operator-driven observe→enforce rollout
+/// belongs in server-side policy/config, never a client registration claim.
+/// Mirrors the trust-boundary treatment of forged tenancy in
+/// `PolicyServiceImpl::apply_authoritative_tenancy` (AAASM-3992).
+fn authoritative_enforcement_mode(proto_value: i32) -> Option<aa_core::EnforcementMode> {
+    match aa_core::EnforcementMode::from_proto_i32(proto_value) {
+        Some(aa_core::EnforcementMode::Enforce) => Some(aa_core::EnforcementMode::Enforce),
+        Some(weaker) => {
+            tracing::warn!(
+                ?weaker,
+                "ignoring client-supplied weaker enforcement_mode on self-registration; \
+                 defaulting to Enforce (AAASM-4121)"
+            );
+            None
+        }
+        None => None,
+    }
+}
+
 fn verify_possession_proof(
     verifying_key: &ed25519_dalek::VerifyingKey,
     challenge: &[u8],
@@ -458,7 +491,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             root_agent_id,
             children: Vec::new(),
             parent_key: resolved_parent_key,
-            enforcement_mode: aa_core::EnforcementMode::from_proto_i32(req.enforcement_mode),
+            enforcement_mode: authoritative_enforcement_mode(req.enforcement_mode),
             org_id: echo_org_id,
         };
 

@@ -1058,11 +1058,13 @@ async fn root_agent_id_when_parent_unknown_returns_invalid_argument() {
 }
 
 #[tokio::test]
-async fn register_persists_enforcement_mode_observe_override_on_agent_record() {
-    // AAASM-1557 contract: RegisterRequest.enforcement_mode = OBSERVE (proto
-    // value 2) is parsed via EnforcementMode::from_proto_i32 and stored as
-    // Some(Observe) on the AgentRecord. Resolution layer (separate test)
-    // takes care of using it; this test asserts the storage side only.
+async fn register_drops_client_supplied_weaker_enforcement_mode() {
+    // AAASM-4121 trust boundary: Register is the unauthenticated bootstrap path,
+    // so a client-supplied enforcement_mode = OBSERVE (proto value 2) — which
+    // would downgrade the agent's own Deny verdicts to audited Allow — must NOT
+    // be persisted. It is dropped to None so the server-side default (Enforce)
+    // governs. Supersedes the earlier AAASM-1557 storage contract that trusted
+    // the client claim. A strengthening Enforce claim is still honored.
     use aa_proto::assembly::common::v1::EnforcementMode as ProtoMode;
 
     let (addr, registry) = start_server().await;
@@ -1094,13 +1096,17 @@ async fn register_persists_enforcement_mode_observe_override_on_agent_record() {
     .await
     .unwrap();
 
-    // Reach into the registry and confirm the override landed on the record.
+    // The client-supplied Observe downgrade must have been dropped: the record
+    // carries no per-agent override, so resolution falls back to Enforce.
     let stored = registry
         .list()
         .into_iter()
         .find(|r| r.name == "experimental-agent")
         .expect("registered agent must be present in registry");
-    assert_eq!(stored.enforcement_mode, Some(aa_core::EnforcementMode::Observe));
+    assert_eq!(
+        stored.enforcement_mode, None,
+        "client-supplied Observe on self-registration must be dropped (AAASM-4121)"
+    );
 }
 
 // ── AAASM-3866: server-nonce possession proof ────────────────────────────────
