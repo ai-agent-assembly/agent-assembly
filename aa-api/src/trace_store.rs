@@ -85,7 +85,7 @@ impl TraceStore for InMemoryTraceStore {
 
         if is_new_session {
             // Evict oldest session if at capacity.
-            let mut order = self.session_order.lock().expect("session_order lock poisoned");
+            let mut order = self.session_order.lock().unwrap_or_else(|e| e.into_inner());
             if order.len() >= self.max_sessions {
                 if let Some(oldest) = order.pop_front() {
                     self.sessions.remove(&oldest);
@@ -126,7 +126,7 @@ impl TraceStore for InMemoryTraceStore {
     }
 
     fn list_sessions(&self, limit: usize) -> Result<Vec<String>, TraceStoreError> {
-        let order = self.session_order.lock().expect("session_order lock poisoned");
+        let order = self.session_order.lock().unwrap_or_else(|e| e.into_inner());
         // Return most recent first.
         Ok(order.iter().rev().take(limit).cloned().collect())
     }

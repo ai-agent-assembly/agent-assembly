@@ -58,19 +58,19 @@ impl Default for InMemorySilenceStore {
 
 impl SilenceStore for InMemorySilenceStore {
     fn insert(&self, record: SilenceRecord) {
-        let mut map = self.records.write().expect("silence store lock poisoned");
+        let mut map = self.records.write().unwrap_or_else(|e| e.into_inner());
         map.insert(record.id.clone(), record);
     }
 
     fn get_active_for_alert(&self, alert_id: &str, now: DateTime<Utc>) -> Option<SilenceRecord> {
-        let map = self.records.read().expect("silence store lock poisoned");
+        let map = self.records.read().unwrap_or_else(|e| e.into_inner());
         map.values()
             .find(|r| r.alert_id == alert_id && expires_at_after(&r.expires_at, now))
             .cloned()
     }
 
     fn expire_due(&self, now: DateTime<Utc>) -> Vec<SilenceRecord> {
-        let mut map = self.records.write().expect("silence store lock poisoned");
+        let mut map = self.records.write().unwrap_or_else(|e| e.into_inner());
         let expired_ids: Vec<String> = map
             .iter()
             .filter(|(_, r)| !expires_at_after(&r.expires_at, now))
