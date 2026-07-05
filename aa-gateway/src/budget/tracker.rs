@@ -123,6 +123,14 @@ pub struct BudgetTracker {
     /// Per-ancestor mutex used to serialise concurrent check_and_decrement calls
     /// that share an ancestor. Keyed by ancestor `AgentId`; acquired root-down.
     pub(crate) parent_locks: DashMap<AgentId, std::sync::Arc<parking_lot::Mutex<()>>>,
+    /// AAASM-4124 — per-tenant mutex serialising concurrent `reserve_spend`
+    /// calls that roll spend into the same team or org envelope. Keyed by a
+    /// namespaced tenant id (`"team:<id>"` / `"org:<id>"`) so a team and an org
+    /// that share a name never collide. Acquired *after* the agent/ancestor
+    /// locks (team before org) so every caller observes one global lock order —
+    /// this makes the tenant check-then-commit atomic without deadlocking
+    /// against the agent-tier lock domain.
+    pub(crate) tenant_locks: DashMap<String, std::sync::Arc<parking_lot::Mutex<()>>>,
     /// Per-agent daily spend history (in-memory; not persisted across restarts).
     /// Powers the subtree-burn time-series surface (AAASM-1055). Keyed by
     /// agent, then by calendar date (in `timezone`). Values are the
@@ -172,6 +180,7 @@ impl BudgetTracker {
             org_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
             parent_locks: DashMap::new(),
+            tenant_locks: DashMap::new(),
             spend_history: DashMap::new(),
             alert_tx,
             timezone,
@@ -268,6 +277,7 @@ impl BudgetTracker {
             org_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
             parent_locks: DashMap::new(),
+            tenant_locks: DashMap::new(),
             spend_history: DashMap::new(),
             alert_tx,
             timezone,
@@ -297,6 +307,20 @@ impl BudgetTracker {
         use std::sync::Arc;
         self.parent_locks
             .entry(ancestor_id)
+            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
+            .value()
+            .clone()
+    }
+
+    /// Return an `Arc` wrapping the per-tenant `parking_lot::Mutex`, creating it
+    /// if absent. `key` must be the namespaced tenant id (`"team:<id>"` /
+    /// `"org:<id>"`). Callers acquire these *after* the agent/ancestor locks
+    /// (team before org) so all reservations share one global lock order and the
+    /// tenant check-then-commit stays atomic without deadlock (AAASM-4124).
+    fn get_or_create_tenant_lock(&self, key: String) -> std::sync::Arc<parking_lot::Mutex<()>> {
+        use std::sync::Arc;
+        self.tenant_locks
+            .entry(key)
             .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
             .value()
             .clone()
@@ -628,6 +652,52 @@ impl BudgetTracker {
         Ok(())
     }
 
+    /// Preflight one tenant tier (team or org) without mutating state: return
+    /// `Err(TenantBudgetExhausted)` when the tier's already-accumulated spend
+    /// has reached its monthly or daily cap (monthly precedes daily, matching
+    /// [`Self::tier_limit_exceeded`]). The `spent >= limit` test and ordering
+    /// mirror the agent-self preflight in [`Self::reserve_spend`], so a
+    /// reservation is denied the instant the tenant envelope sits at or over a
+    /// configured cap — the verdict `reserve_spend` previously computed inside
+    /// `record_cost` and then discarded (AAASM-4124). Must run under the tenant
+    /// lock so the check and the subsequent commit stay atomic.
+    fn preflight_tenant(
+        &self,
+        budgets: &DashMap<String, BudgetState>,
+        key: &str,
+        tier: &'static str,
+        monthly_limit: Option<Decimal>,
+        daily_limit: Option<Decimal>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), crate::budget::types::BudgetError> {
+        use crate::budget::types::{BudgetError, BudgetKind};
+        let (daily_spent, monthly_spent) = budgets
+            .get(key)
+            .map(|s| {
+                let mut copy = s.clone();
+                copy.maybe_reset_window(now, self.window, self.timezone);
+                (copy.spent_usd, copy.monthly_spent_usd.unwrap_or(Decimal::ZERO))
+            })
+            .unwrap_or((Decimal::ZERO, Decimal::ZERO));
+        if let Some(limit) = monthly_limit {
+            if monthly_spent >= limit {
+                return Err(BudgetError::TenantBudgetExhausted {
+                    tier,
+                    kind: BudgetKind::Monthly,
+                });
+            }
+        }
+        if let Some(limit) = daily_limit {
+            if daily_spent >= limit {
+                return Err(BudgetError::TenantBudgetExhausted {
+                    tier,
+                    kind: BudgetKind::Daily,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Atomically check all ancestor budgets then record spend for `agent_id` and every ancestor.
     ///
     /// Callers supply `ancestors` from `AgentRegistry::ancestors_of(agent_id)` so this method
@@ -736,6 +806,20 @@ impl BudgetTracker {
         let _guards: Vec<_> = lock_arcs.iter().map(|arc| arc.lock()).collect();
         metrics::histogram!("budget_parent_lock_wait_seconds").record(lock_wait_start.elapsed().as_secs_f64());
 
+        // AAASM-4124 — serialise reservations that share a team/org envelope so
+        // the tenant check-then-commit below is atomic. Acquired *after* the
+        // agent/ancestor locks (team before org), giving every caller one global
+        // lock order (agent-domain → team → org) — no cross-domain deadlock. The
+        // arcs outlive the guards (separate Vec) so the guards borrow validly.
+        let mut tenant_lock_arcs: Vec<std::sync::Arc<parking_lot::Mutex<()>>> = Vec::new();
+        if let Some(tid) = team_id {
+            tenant_lock_arcs.push(self.get_or_create_tenant_lock(format!("team:{tid}")));
+        }
+        if let Some(oid) = org_id {
+            tenant_lock_arcs.push(self.get_or_create_tenant_lock(format!("org:{oid}")));
+        }
+        let _tenant_guards: Vec<_> = tenant_lock_arcs.iter().map(|arc| arc.lock()).collect();
+
         // Phase 1: preflight the agent's own monthly-then-daily limit, then
         // every ancestor's daily limit. The agent check uses `spent >= limit`
         // — identical to the Stage-7 read-check (`check_daily` / `check_monthly`)
@@ -771,6 +855,32 @@ impl BudgetTracker {
             }
         }
         self.preflight_ancestors(ancestors, amount)?;
+
+        // Tenant-tier preflight (AAASM-4124): deny before commit when the team
+        // or org envelope is already at/over a configured cap. This restores the
+        // team/org verdict that `record_cost` computes and this method used to
+        // discard, closing the org/team budget fail-open. Runs under the tenant
+        // locks acquired above so the check and the commit are atomic.
+        if let Some(tid) = team_id {
+            self.preflight_tenant(
+                &self.team_budgets,
+                tid,
+                "team",
+                self.team_monthly_limit_usd,
+                self.team_daily_limit_usd,
+                now,
+            )?;
+        }
+        if let Some(oid) = org_id {
+            self.preflight_tenant(
+                &self.org_budgets,
+                oid,
+                "org",
+                self.org_monthly_limit_usd,
+                self.org_daily_limit_usd,
+                now,
+            )?;
+        }
 
         // Phase 2: commit. `record_cost` folds the spend into the agent, team,
         // org, and global tiers (plus history + threshold alerts); the ancestor
@@ -1739,5 +1849,39 @@ mod tests {
         let alert = rx.try_recv().expect("expected 80% monthly team alert");
         assert_eq!(alert.threshold_pct, 80);
         assert_eq!(alert.team_id.as_deref(), Some("team-zeta"));
+    }
+
+    // ── AAASM-4124: org/team tier caps must deny in reserve_spend ──────
+
+    #[test]
+    fn reserve_spend_denies_when_org_daily_cap_reached() {
+        use crate::budget::types::{BudgetError, BudgetKind};
+        // Regression: reserve_spend used to discard record_cost's tier verdict,
+        // so a configured org daily cap accumulated but never blocked. Accrue
+        // the org envelope to its cap across two agents, then assert the next
+        // reservation is denied and nothing is committed past the cap.
+        let t = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+            .with_org_daily_limit("5.00".parse().unwrap());
+        let a = agent(70);
+        let b = agent(71);
+        let org = Some("org-acme");
+
+        t.reserve_spend(a, &[], None, org, "3.00".parse().unwrap()).unwrap();
+        t.reserve_spend(b, &[], None, org, "2.00".parse().unwrap()).unwrap();
+
+        // Envelope now sits at the $5.00 cap — the next reservation must deny.
+        let err = t
+            .reserve_spend(a, &[], None, org, "0.01".parse().unwrap())
+            .expect_err("org daily cap reached — reservation must be denied");
+        assert_eq!(
+            err,
+            BudgetError::TenantBudgetExhausted {
+                tier: "org",
+                kind: BudgetKind::Daily,
+            }
+        );
+        // The denied reservation committed nothing: org spend stays at the cap.
+        let five: Decimal = "5.00".parse().unwrap();
+        assert_eq!(t.org_state("org-acme").unwrap().spent_usd, five);
     }
 }

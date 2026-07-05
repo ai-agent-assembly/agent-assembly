@@ -62,6 +62,20 @@ pub enum BudgetError {
         /// Which window (daily/monthly) was exhausted.
         kind: BudgetKind,
     },
+    /// AAASM-4124 — a team- or org-tier cap the reservation rolls up into is at
+    /// or over its configured limit; nothing was committed. Distinct from
+    /// [`Self::SelfBudgetExhausted`] because the tripped cap belongs to the
+    /// tenant envelope (shared across the tenant's agents), not the calling
+    /// agent's own budget. `reserve_spend` previously discarded `record_cost`'s
+    /// tier verdict, so a configured org/team daily or monthly cap silently
+    /// failed open.
+    #[error("{tier} budget exhausted ({kind:?})")]
+    TenantBudgetExhausted {
+        /// Which tenant tier tripped: `"team"` or `"org"`.
+        tier: &'static str,
+        /// Which window (daily/monthly) was exhausted.
+        kind: BudgetKind,
+    },
 }
 
 /// Result returned by [`super::tracker::BudgetTracker::record_usage`].
