@@ -37,6 +37,20 @@ const AC_PATTERNS: &[&str] = &[
     "\"type\":\"service_account\"",   // 18 GcpServiceAccount (compact, no space)
     "\"type\" :\"service_account\"",  // 19 GcpServiceAccount (space before colon)
     "\"type\" : \"service_account\"", // 20 GcpServiceAccount (spaces around colon)
+    // AAASM-4128: near-parity token prefixes that share a brand stem with the
+    // detectors above. The brand prefix dilutes each token's run entropy below
+    // the 4.5 gate (and `xapp-` tokens exceed the 20–64 whitespace-token window),
+    // so the entropy backstop never catches them — literal-prefix detection is
+    // the only reliable path. `github_pat_` (fine-grained PAT) and `ASIA` (STS
+    // temporary access key ID) are the same credential kind as their siblings,
+    // mirroring the GCP multi-pattern → single-kind mapping above.
+    "gho_",        // 21 GitHubOAuthToken
+    "ghu_",        // 22 GitHubUserToken
+    "ghr_",        // 23 GitHubRefreshToken
+    "github_pat_", // 24 GitHubPat (fine-grained PAT)
+    "xapp-",       // 25 SlackAppToken
+    "xoxr-",       // 26 SlackRefreshToken
+    "ASIA",        // 27 AwsAccessKey (STS temporary access key ID)
 ];
 
 /// Maps AC pattern index → [`CredentialKind`].
@@ -62,6 +76,13 @@ const AC_KINDS: &[CredentialKind] = &[
     CredentialKind::GcpServiceAccount,     // 18 (compact JSON)
     CredentialKind::GcpServiceAccount,     // 19 (space before colon)
     CredentialKind::GcpServiceAccount,     // 20 (spaces around colon)
+    CredentialKind::GitHubOAuthToken,      // 21
+    CredentialKind::GitHubUserToken,       // 22
+    CredentialKind::GitHubRefreshToken,    // 23
+    CredentialKind::GitHubPat,             // 24 (fine-grained PAT)
+    CredentialKind::SlackAppToken,         // 25
+    CredentialKind::SlackRefreshToken,     // 26
+    CredentialKind::AwsAccessKey,          // 27 (STS temporary access key ID)
 ];
 
 // ---------------------------------------------------------------------------
@@ -75,7 +96,7 @@ pub enum CredentialKind {
     // API keys
     /// Anthropic API key (prefix `sk-ant-`).
     AnthropicKey,
-    /// AWS access key ID (prefix `AKIA`).
+    /// AWS access key ID (long-term prefix `AKIA`, STS temporary prefix `ASIA`).
     AwsAccessKey,
     /// GCP service account JSON credential (contains `"type": "service_account"`).
     GcpServiceAccount,
@@ -87,12 +108,22 @@ pub enum CredentialKind {
     // Auth tokens
     /// GitHub App installation token (prefix `ghs_`).
     GitHubAppToken,
-    /// GitHub personal access token (prefix `ghp_`).
+    /// GitHub OAuth access token (prefix `gho_`).
+    GitHubOAuthToken,
+    /// GitHub personal access token (classic prefix `ghp_`, fine-grained prefix `github_pat_`).
     GitHubPat,
+    /// GitHub refresh token (prefix `ghr_`).
+    GitHubRefreshToken,
+    /// GitHub user-to-server token (prefix `ghu_`).
+    GitHubUserToken,
+    /// Slack app-level token (prefix `xapp-`).
+    SlackAppToken,
     /// Slack bot token (prefix `xoxb-`).
     SlackBotToken,
     /// Slack OAuth token (prefix `xoxa-`).
     SlackOAuthToken,
+    /// Slack refresh token (prefix `xoxr-`).
+    SlackRefreshToken,
     /// Slack user token (prefix `xoxp-`).
     SlackUserToken,
     // Database URLs
@@ -143,7 +174,10 @@ impl CredentialKind {
             Self::GcpServiceAccount => "GcpServiceAccount",
             Self::GenericHighEntropy => "GenericHighEntropy",
             Self::GitHubAppToken => "GitHubAppToken",
+            Self::GitHubOAuthToken => "GitHubOAuthToken",
             Self::GitHubPat => "GitHubPat",
+            Self::GitHubRefreshToken => "GitHubRefreshToken",
+            Self::GitHubUserToken => "GitHubUserToken",
             Self::MongodbUrl => "MongodbUrl",
             Self::MysqlUrl => "MysqlUrl",
             Self::OpenAiKey => "OpenAiKey",
@@ -152,8 +186,10 @@ impl CredentialKind {
             Self::PostgresUrl => "PostgresUrl",
             Self::PrivateKey => "PrivateKey",
             Self::RsaPrivateKey => "RsaPrivateKey",
+            Self::SlackAppToken => "SlackAppToken",
             Self::SlackBotToken => "SlackBotToken",
             Self::SlackOAuthToken => "SlackOAuthToken",
+            Self::SlackRefreshToken => "SlackRefreshToken",
             Self::SlackUserToken => "SlackUserToken",
             Self::SsnPattern => "SsnPattern",
             Self::Custom => "Custom",
@@ -184,7 +220,10 @@ impl CredentialKind {
             | Self::EcPrivateKey
             | Self::GcpServiceAccount
             | Self::GitHubAppToken
+            | Self::GitHubOAuthToken
             | Self::GitHubPat
+            | Self::GitHubRefreshToken
+            | Self::GitHubUserToken
             | Self::MongodbUrl
             | Self::MysqlUrl
             | Self::OpenAiKey
@@ -193,8 +232,10 @@ impl CredentialKind {
             | Self::PostgresUrl
             | Self::PrivateKey
             | Self::RsaPrivateKey
+            | Self::SlackAppToken
             | Self::SlackBotToken
             | Self::SlackOAuthToken
+            | Self::SlackRefreshToken
             | Self::SlackUserToken
             | Self::SsnPattern
             | Self::Custom => 2,
@@ -1037,6 +1078,97 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.kind == CredentialKind::SlackOAuthToken));
+    }
+
+    // --- AAASM-4128: sibling token prefixes the entropy backstop misses ---
+
+    #[test]
+    fn detects_and_redacts_github_oauth_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token: gho_1234567890abcdefghijklmnopqrstuvwxyz";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GitHubOAuthToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("gho_"));
+        assert!(redacted.contains("[REDACTED:GitHubOAuthToken]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_github_user_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token: ghu_1234567890abcdefghijklmnopqrstuvwxyz";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GitHubUserToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ghu_"));
+        assert!(redacted.contains("[REDACTED:GitHubUserToken]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_github_refresh_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token: ghr_1234567890abcdefghijklmnopqrstuvwxyz";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GitHubRefreshToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ghr_"));
+        assert!(redacted.contains("[REDACTED:GitHubRefreshToken]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_github_fine_grained_pat() {
+        let scanner = CredentialScanner::new();
+        let text = "token: github_pat_11ABCDE0000abcdefghij_1234567890abcdefghijklmnopqrstuvwxyzABCDEF";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::GitHubPat));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("github_pat_"));
+        assert!(redacted.contains("[REDACTED:GitHubPat]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_slack_app_token() {
+        let scanner = CredentialScanner::new();
+        let text = "SLACK_APP_TOKEN=xapp-1-A012345678-1234567890123-abcdef0123456789abcdef0123456789abcdef";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::SlackAppToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("xapp-"));
+        assert!(redacted.contains("[REDACTED:SlackAppToken]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_slack_refresh_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token=xoxr-123456789012-123456789012-XXXXXXXXXXXX";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::SlackRefreshToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("xoxr-"));
+        assert!(redacted.contains("[REDACTED:SlackRefreshToken]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_aws_sts_temporary_key() {
+        let scanner = CredentialScanner::new();
+        let text = "AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::AwsAccessKey));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ASIA"));
+        assert!(redacted.contains("[REDACTED:AwsAccessKey]"));
     }
 
     // --- Cloud credential patterns ---
