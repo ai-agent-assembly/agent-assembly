@@ -175,11 +175,19 @@ pub(crate) fn network_request_url_allowed(url: &str, np: &crate::policy::Network
 }
 
 /// Stage 3 — Tool allow/deny: deny a `ToolCall` whose tool policy is not allowed.
+///
+/// AAASM-4152: the `"*"` tools key is a wildcard fallback, not a literal tool
+/// name. An exact per-tool entry takes precedence; a tool with no explicit
+/// entry falls back to the `"*"` policy. This mirrors the network stage's
+/// wildcard support and lets `tools: { "*": { allow: false } }` deny unknown
+/// tools (fail closed). Previously the exact-only `get(name)` returned `None`
+/// for any unlisted tool, so the stage fell through to the engine's
+/// allow-by-default — a fail-open tool control.
 fn stage_tool_allow(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
     let aa_core::GovernanceAction::ToolCall { name, .. } = action else {
         return None;
     };
-    let tp = doc.tools.get(name)?;
+    let tp = doc.tools.get(name).or_else(|| doc.tools.get("*"))?;
     if !tp.allow {
         return Some(PolicyDecision::Deny {
             reason: "tool denied by policy".into(),
@@ -524,6 +532,68 @@ mod tests {
         let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
         let d = stage_network(&doc, &net_action("https://evil.attacker.net:8443/x")).expect("deny");
         assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    // ── Stage 3: tool allow/deny wildcard fail-closed (AAASM-4152) ──────────
+
+    fn tool_action(name: &str) -> GovernanceAction {
+        GovernanceAction::ToolCall {
+            name: name.into(),
+            args: "{}".into(),
+        }
+    }
+
+    fn doc_with_tools(tools: &[(&str, bool)]) -> PolicyDocument {
+        let mut doc = minimal_doc(None);
+        doc.tools = tools
+            .iter()
+            .map(|(name, allow)| {
+                (
+                    (*name).to_string(),
+                    crate::policy::document::ToolPolicy {
+                        allow: *allow,
+                        limit_per_hour: None,
+                        requires_approval_if: None,
+                    },
+                )
+            })
+            .collect();
+        doc
+    }
+
+    #[test]
+    fn stage_tool_wildcard_deny_denies_unlisted_tool() {
+        // AAASM-4152: `tools: { "*": { allow: false }, read_file: { allow: true } }`
+        // must deny an unlisted tool — the `"*"` key is a wildcard fallback, not a
+        // literal name. Previously the unlisted tool fell through to allow-by-default.
+        let doc = doc_with_tools(&[("*", false), ("read_file", true)]);
+        let d = stage_tool_allow(&doc, &tool_action("exfiltrate_secrets")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_tool_wildcard_deny_allows_explicitly_listed_tool() {
+        // An explicit per-tool entry takes precedence over the `"*"` fallback.
+        let doc = doc_with_tools(&[("*", false), ("read_file", true)]);
+        assert_eq!(stage_tool_allow(&doc, &tool_action("read_file")), None);
+    }
+
+    #[test]
+    fn stage_tool_explicit_entry_overrides_wildcard_allow() {
+        // A per-tool deny beats a permissive `"*": allow` fallback.
+        let doc = doc_with_tools(&[("*", true), ("dangerous", false)]);
+        let d = stage_tool_allow(&doc, &tool_action("dangerous")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+        // And an unlisted tool falls back to the permissive wildcard → allow.
+        assert_eq!(stage_tool_allow(&doc, &tool_action("anything_else")), None);
+    }
+
+    #[test]
+    fn stage_tool_no_matching_entry_is_noop() {
+        // No exact entry and no `"*"` fallback → stage abstains (returns None),
+        // deferring to later stages / the engine default.
+        let doc = doc_with_tools(&[("read_file", true)]);
+        assert_eq!(stage_tool_allow(&doc, &tool_action("write_file")), None);
     }
 
     // ── Stage 1: schedule timezone fail-closed (AAASM-3133) ─────────────────

@@ -927,8 +927,17 @@ impl PolicyEngine {
     ) -> Option<EvaluationResult> {
         let tool_policy = policy.tools.get(name);
 
-        // Stage 3 — Tool allow/deny.
-        if let Some(tp) = tool_policy {
+        // Stage 3 — Tool allow/deny. AAASM-4152: fall back to the `"*"` wildcard
+        // entry when the tool has no explicit policy, so a
+        // `tools: { "*": { allow: false } }` document denies unknown tools
+        // (fail closed) instead of letting them through the engine's
+        // allow-by-default. Explicit per-tool entries take precedence. This is
+        // the single-file twin of the cascade path's `decision::stage_tool_allow`
+        // — both must honour the wildcard or they diverge (the twin the network
+        // stage shares via `network_request_url_allowed`). Rate-limit (stage 4)
+        // and approval (stage 5) keep the exact `tool_policy` lookup, matching
+        // the cascade twin where only the allow/deny check consults `"*"`.
+        if let Some(tp) = tool_policy.or_else(|| policy.tools.get("*")) {
             if !tp.allow {
                 return Some(EvaluationResult::deny("tool denied by policy"));
             }
@@ -2168,6 +2177,45 @@ mod tests {
         let ctx = make_ctx();
         let action = tool_call("ls", "");
         assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+    }
+
+    #[test]
+    fn tool_wildcard_deny_blocks_unlisted_tool() {
+        // AAASM-4152: the single-file `evaluate_primary` path must honour the
+        // `"*"` wildcard so `tools: { "*": { allow: false }, read_file: allow }`
+        // denies an unlisted tool. Previously the exact-only lookup let it fall
+        // through to allow-by-default — the behaviourally-proven fail-open.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "*".to_string(),
+            ToolPolicy {
+                allow: false,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        doc.tools.insert(
+            "read_file".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        // Explicitly-allowed tool passes.
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("read_file", "")).decision,
+            PolicyResult::Allow
+        );
+        // Unlisted tool falls back to the `"*"` deny.
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("exfiltrate_secrets", "")).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            }
+        );
     }
 
     #[test]
