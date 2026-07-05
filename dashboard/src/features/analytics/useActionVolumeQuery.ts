@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { analyticsFetch } from './analyticsFetch'
 import { encodeFilters } from './urlState'
 import type { FilterParams } from './urlState'
 
@@ -22,9 +23,9 @@ export function useActionVolumeQuery(filters: FilterParams) {
     queryKey: ['analytics', 'action-volume', filters],
     queryFn: async (): Promise<ActionVolumeResponse> => {
       const params = encodeFilters(filters)
-      const res = await fetch(`/api/v1/analytics/action-volume?${params}`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      return res.json() as Promise<ActionVolumeResponse>
+      return analyticsFetch<ActionVolumeResponse>(
+        `/api/v1/analytics/action-volume?${params}`,
+      )
     },
   })
 }
