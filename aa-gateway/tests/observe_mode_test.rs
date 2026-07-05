@@ -71,10 +71,15 @@ async fn start_server_with_audit_rx(policy_yaml: &str) -> (SocketAddr, Arc<Agent
 }
 
 /// Construct an `AgentRecord` carrying `enforcement_mode` and register it.
+///
+/// AAASM-4133 — agent-scoped controls (enforcement override) now resolve from
+/// the token-derived owner, so each agent must carry its OWN credential token
+/// for per-agent isolation to hold. `credential_token` is therefore explicit.
 fn register_agent_with_mode(
     registry: &AgentRegistry,
     agent_name: &str,
     proto_id: &ProtoAgentId,
+    credential_token: &str,
     mode: Option<aa_core::EnforcementMode>,
 ) {
     let key = proto_agent_id_to_key(proto_id);
@@ -86,7 +91,7 @@ fn register_agent_with_mode(
         risk_tier: 0,
         tool_names: vec![],
         public_key: "pk".into(),
-        credential_token: "tok".into(),
+        credential_token: credential_token.into(),
         metadata: BTreeMap::new(),
         registered_at: Utc::now(),
         last_heartbeat: Utc::now(),
@@ -114,10 +119,10 @@ fn register_agent_with_mode(
     registry.register(record).unwrap();
 }
 
-fn tool_call_request_for(proto_id: &ProtoAgentId, tool_name: &str) -> CheckActionRequest {
+fn tool_call_request_for(proto_id: &ProtoAgentId, credential_token: &str, tool_name: &str) -> CheckActionRequest {
     CheckActionRequest {
         agent_id: Some(proto_id.clone()),
-        credential_token: "tok".into(),
+        credential_token: credential_token.into(),
         trace_id: format!("trace-{tool_name}"),
         span_id: "span-1".into(),
         action_type: ActionType::ToolCall as i32,
@@ -171,12 +176,13 @@ async fn st_sandbox_1_observe_mode_with_deny_rule_returns_allow_and_dry_run_audi
         &registry,
         "observe-agent",
         &proto_id,
+        "tok",
         Some(aa_core::EnforcementMode::Observe),
     );
 
     let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
     let resp = client
-        .check_action(tool_call_request_for(&proto_id, "bash"))
+        .check_action(tool_call_request_for(&proto_id, "tok", "bash"))
         .await
         .unwrap()
         .into_inner();
@@ -224,12 +230,13 @@ tools:
         &registry,
         "observe-clean-agent",
         &proto_id,
+        "tok",
         Some(aa_core::EnforcementMode::Observe),
     );
 
     let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
     let resp = client
-        .check_action(tool_call_request_for(&proto_id, "web_search"))
+        .check_action(tool_call_request_for(&proto_id, "tok", "web_search"))
         .await
         .unwrap()
         .into_inner();
@@ -257,11 +264,11 @@ async fn st_sandbox_3_enforce_mode_with_deny_rule_still_blocks_agent() {
         team_id: "team".into(),
         agent_id: "enforce-agent".into(),
     };
-    register_agent_with_mode(&registry, "enforce-agent", &proto_id, None);
+    register_agent_with_mode(&registry, "enforce-agent", &proto_id, "tok", None);
 
     let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
     let resp = client
-        .check_action(tool_call_request_for(&proto_id, "bash"))
+        .check_action(tool_call_request_for(&proto_id, "tok", "bash"))
         .await
         .unwrap()
         .into_inner();
@@ -304,18 +311,19 @@ async fn st_sandbox_4_per_agent_override_isolates_two_agents_under_one_policy() 
         &registry,
         "experimental-agent",
         &experimental_id,
+        "tok-experimental",
         Some(aa_core::EnforcementMode::Observe),
     );
-    register_agent_with_mode(&registry, "trusted-agent", &trusted_id, None);
+    register_agent_with_mode(&registry, "trusted-agent", &trusted_id, "tok-trusted", None);
 
     let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
     let experimental_resp = client
-        .check_action(tool_call_request_for(&experimental_id, "bash"))
+        .check_action(tool_call_request_for(&experimental_id, "tok-experimental", "bash"))
         .await
         .unwrap()
         .into_inner();
     let trusted_resp = client
-        .check_action(tool_call_request_for(&trusted_id, "bash"))
+        .check_action(tool_call_request_for(&trusted_id, "tok-trusted", "bash"))
         .await
         .unwrap()
         .into_inner();
