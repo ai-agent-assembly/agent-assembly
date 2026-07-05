@@ -534,6 +534,68 @@ mod tests {
         assert!(matches!(d, PolicyDecision::Deny { .. }));
     }
 
+    // ── Stage 3: tool allow/deny wildcard fail-closed (AAASM-4152) ──────────
+
+    fn tool_action(name: &str) -> GovernanceAction {
+        GovernanceAction::ToolCall {
+            name: name.into(),
+            args: "{}".into(),
+        }
+    }
+
+    fn doc_with_tools(tools: &[(&str, bool)]) -> PolicyDocument {
+        let mut doc = minimal_doc(None);
+        doc.tools = tools
+            .iter()
+            .map(|(name, allow)| {
+                (
+                    (*name).to_string(),
+                    crate::policy::document::ToolPolicy {
+                        allow: *allow,
+                        limit_per_hour: None,
+                        requires_approval_if: None,
+                    },
+                )
+            })
+            .collect();
+        doc
+    }
+
+    #[test]
+    fn stage_tool_wildcard_deny_denies_unlisted_tool() {
+        // AAASM-4152: `tools: { "*": { allow: false }, read_file: { allow: true } }`
+        // must deny an unlisted tool — the `"*"` key is a wildcard fallback, not a
+        // literal name. Previously the unlisted tool fell through to allow-by-default.
+        let doc = doc_with_tools(&[("*", false), ("read_file", true)]);
+        let d = stage_tool_allow(&doc, &tool_action("exfiltrate_secrets")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_tool_wildcard_deny_allows_explicitly_listed_tool() {
+        // An explicit per-tool entry takes precedence over the `"*"` fallback.
+        let doc = doc_with_tools(&[("*", false), ("read_file", true)]);
+        assert_eq!(stage_tool_allow(&doc, &tool_action("read_file")), None);
+    }
+
+    #[test]
+    fn stage_tool_explicit_entry_overrides_wildcard_allow() {
+        // A per-tool deny beats a permissive `"*": allow` fallback.
+        let doc = doc_with_tools(&[("*", true), ("dangerous", false)]);
+        let d = stage_tool_allow(&doc, &tool_action("dangerous")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+        // And an unlisted tool falls back to the permissive wildcard → allow.
+        assert_eq!(stage_tool_allow(&doc, &tool_action("anything_else")), None);
+    }
+
+    #[test]
+    fn stage_tool_no_matching_entry_is_noop() {
+        // No exact entry and no `"*"` fallback → stage abstains (returns None),
+        // deferring to later stages / the engine default.
+        let doc = doc_with_tools(&[("read_file", true)]);
+        assert_eq!(stage_tool_allow(&doc, &tool_action("write_file")), None);
+    }
+
     // ── Stage 1: schedule timezone fail-closed (AAASM-3133) ─────────────────
 
     fn doc_with_schedule(tz: &str, start: &str, end: &str) -> PolicyDocument {
