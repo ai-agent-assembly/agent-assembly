@@ -420,6 +420,12 @@ impl BudgetTracker {
         org_id: Option<&str>,
         amount_usd: Decimal,
     ) -> BudgetStatus {
+        // AAASM-4132 — clamp non-positive amounts to zero at the accrual
+        // boundary. `Decimal::try_from(-x)` succeeds, so a negative amount
+        // reaching here would *decrement* accrued spend and reopen headroom
+        // (e.g. after an exhausted budget). No caller supplies a credit today;
+        // clamp defensively before any is ever wired.
+        let amount_usd = amount_usd.max(Decimal::ZERO);
         self.record_cost(agent_id, team_id, org_id, amount_usd)
     }
 
@@ -1441,6 +1447,29 @@ mod tests {
         t.record_raw_spend(id, None, None, "9.50".parse().unwrap());
         let alert = rx.try_recv().expect("expected 95% alert");
         assert_eq!(alert.threshold_pct, 95);
+    }
+
+    #[test]
+    fn record_raw_spend_clamps_negative_amount_to_no_op() {
+        // AAASM-4132 — a negative raw amount must not claw back accrued spend or
+        // reopen headroom; it is clamped to a no-op at the accrual boundary.
+        let t = tracker_with_limit("10.00");
+        let id = agent(37);
+        t.record_raw_spend(id, None, None, "9.00".parse().unwrap());
+        assert!(t.check_daily(&id, "9.00".parse().unwrap()), "seeded $9 accrued");
+
+        // Attempt to claw back $5 with a negative amount.
+        t.record_raw_spend(id, None, None, "-5.00".parse().unwrap());
+
+        // Accrued spend is unchanged — headroom is not reopened.
+        assert!(
+            t.check_daily(&id, "9.00".parse().unwrap()),
+            "negative amount must not decrement accrued spend"
+        );
+        assert_eq!(
+            t.per_agent.get(&id).unwrap().spent_usd,
+            "9.00".parse::<Decimal>().unwrap()
+        );
     }
 
     #[test]
