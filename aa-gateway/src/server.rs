@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 
 use crate::anomaly::{AnomalyConfig, AnomalyDetector, AnomalyEvent};
@@ -38,6 +39,15 @@ use crate::budget::persistence::{
 };
 use crate::budget::{BudgetAlert, BudgetTracker, BudgetWindow};
 use tokio_util::sync::CancellationToken;
+
+/// Explicit inbound gRPC message-size cap for every gateway service (AAASM-4133).
+///
+/// tonic defaults `max_decoding_message_size` to 4 MiB; pin it explicitly on
+/// each service so the ceiling is intentional and centrally tunable rather than
+/// an implicit library default an agent-supplied payload could quietly rely on.
+/// The value matches the current default, so existing traffic is unaffected —
+/// only the bound is now owned in-tree.
+const MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 /// Default audit directory.
 ///
@@ -639,17 +649,33 @@ pub async fn serve_tcp(
     tracing::info!(%addr, "starting gRPC server on TCP (per-RPC credential auth enforced)");
 
     Server::builder()
-        .add_service(PolicyServiceServer::with_interceptor(policy_svc, enrich.clone()))
-        .add_service(AuditServiceServer::with_interceptor(audit_svc, auth.clone()))
-        .add_service(AgentLifecycleServiceServer::with_interceptor(
-            lifecycle_svc,
+        .add_service(InterceptedService::new(
+            PolicyServiceServer::new(policy_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
             enrich.clone(),
         ))
-        .add_service(ApprovalServiceServer::with_interceptor(approval_svc, auth.clone()))
-        .add_service(TopologyServiceServer::with_interceptor(topology_svc, auth.clone()))
-        .add_service(SecretsServiceServer::with_interceptor(secrets_svc, auth.clone()))
-        .add_service(InvalidationServiceServer::with_interceptor(
-            InvalidationServiceImpl::new(Arc::clone(&invalidation_hub)),
+        .add_service(InterceptedService::new(
+            AuditServiceServer::new(audit_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            AgentLifecycleServiceServer::new(lifecycle_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            enrich.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            ApprovalServiceServer::new(approval_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            TopologyServiceServer::new(topology_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            SecretsServiceServer::new(secrets_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            InvalidationServiceServer::new(InvalidationServiceImpl::new(Arc::clone(&invalidation_hub)))
+                .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
             auth.clone(),
         ))
         .serve_with_shutdown(addr, async move {
@@ -765,17 +791,33 @@ pub async fn serve_uds(
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(uds);
 
     Server::builder()
-        .add_service(PolicyServiceServer::with_interceptor(policy_svc, enrich.clone()))
-        .add_service(AuditServiceServer::with_interceptor(audit_svc, auth.clone()))
-        .add_service(AgentLifecycleServiceServer::with_interceptor(
-            lifecycle_svc,
+        .add_service(InterceptedService::new(
+            PolicyServiceServer::new(policy_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
             enrich.clone(),
         ))
-        .add_service(ApprovalServiceServer::with_interceptor(approval_svc, auth.clone()))
-        .add_service(TopologyServiceServer::with_interceptor(topology_svc, auth.clone()))
-        .add_service(SecretsServiceServer::with_interceptor(secrets_svc, auth.clone()))
-        .add_service(InvalidationServiceServer::with_interceptor(
-            InvalidationServiceImpl::new(Arc::clone(&invalidation_hub)),
+        .add_service(InterceptedService::new(
+            AuditServiceServer::new(audit_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            AgentLifecycleServiceServer::new(lifecycle_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            enrich.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            ApprovalServiceServer::new(approval_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            TopologyServiceServer::new(topology_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            SecretsServiceServer::new(secrets_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            InvalidationServiceServer::new(InvalidationServiceImpl::new(Arc::clone(&invalidation_hub)))
+                .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
             auth.clone(),
         ))
         .serve_with_incoming_shutdown(incoming, async move {
