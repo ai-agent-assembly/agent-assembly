@@ -147,11 +147,19 @@ opt-level = 2
 lto = "thin"
 codegen-units = 16
 strip = true
-panic = "abort"
+# AAASM-4151: MUST stay "unwind", not "abort". The shipped aa-gateway daemon
+# (built with this profile via release.yml) installs a tower `CatchPanicLayer`
+# as its DoS backstop — a handler panic becomes a 500 instead of crashing the
+# whole multi-tenant worker. `catch_unwind` cannot intercept a panic under
+# `panic = "abort"`, which would silently make that layer inert in production.
+# The original AAASM-1206 switch to "abort" was a binary-size optimization only;
+# abort-on-panic is the wrong default for a long-lived server. The `dist` profile
+# below inherits this, so both shipped profiles keep unwinding.
+panic = "unwind"
 
 # Size-optimized profile for shipped binaries only (release.yml --profile dist).
-# Inherits release (strip + panic=abort) and restores the slowest, smallest
-# settings that the default `release` profile used to carry.
+# Inherits release (strip + panic=unwind — see AAASM-4151) and restores the
+# slowest, smallest settings that the default `release` profile used to carry.
 [profile.dist]
 inherits = "release"
 opt-level = "z"
