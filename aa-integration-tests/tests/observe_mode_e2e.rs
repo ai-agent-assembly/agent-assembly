@@ -108,10 +108,15 @@ async fn start_gateway_with_policy_fixture(
 /// Build and register an `AgentRecord` carrying an optional per-agent
 /// `enforcement_mode` override. `None` leaves the agent on the policy
 /// default (which today is hardcoded `Enforce`).
+///
+/// AAASM-4133 — agent-scoped controls (enforcement override) now resolve from
+/// the token-derived owner, so each agent must carry its OWN credential token
+/// for per-agent isolation to hold. `credential_token` is therefore explicit.
 fn register_agent_with_mode(
     registry: &AgentRegistry,
     agent_name: &str,
     proto_id: &ProtoAgentId,
+    credential_token: &str,
     mode: Option<aa_core::EnforcementMode>,
 ) {
     let key = proto_agent_id_to_key(proto_id);
@@ -123,7 +128,7 @@ fn register_agent_with_mode(
         risk_tier: 0,
         tool_names: vec![],
         public_key: "pk".into(),
-        credential_token: "tok".into(),
+        credential_token: credential_token.into(),
         metadata: BTreeMap::new(),
         registered_at: Utc::now(),
         last_heartbeat: Utc::now(),
@@ -152,10 +157,10 @@ fn register_agent_with_mode(
 }
 
 /// Build a `CheckActionRequest` for the given agent invoking `tool_name`.
-fn tool_call_request_for(proto_id: &ProtoAgentId, tool_name: &str) -> CheckActionRequest {
+fn tool_call_request_for(proto_id: &ProtoAgentId, credential_token: &str, tool_name: &str) -> CheckActionRequest {
     CheckActionRequest {
         agent_id: Some(proto_id.clone()),
-        credential_token: "tok".into(),
+        credential_token: credential_token.into(),
         trace_id: format!("trace-{tool_name}"),
         span_id: "span-1".into(),
         action_type: ActionType::ToolCall as i32,
@@ -205,6 +210,7 @@ async fn st_r_1_observe_mode_deny_rule_returns_allow_and_dry_run_audit() {
         &registry,
         "observe-agent",
         &proto_id,
+        "tok",
         Some(aa_core::EnforcementMode::Observe),
     );
 
@@ -212,7 +218,7 @@ async fn st_r_1_observe_mode_deny_rule_returns_allow_and_dry_run_audit() {
         .await
         .expect("connect to PolicyService");
     let resp = client
-        .check_action(tool_call_request_for(&proto_id, "bash"))
+        .check_action(tool_call_request_for(&proto_id, "tok", "bash"))
         .await
         .expect("check_action RPC")
         .into_inner();
@@ -268,6 +274,7 @@ async fn st_r_2_observe_mode_allow_decision_emits_no_shadow_metadata() {
         &registry,
         "observe-clean-agent",
         &proto_id,
+        "tok",
         Some(aa_core::EnforcementMode::Observe),
     );
 
@@ -275,7 +282,7 @@ async fn st_r_2_observe_mode_allow_decision_emits_no_shadow_metadata() {
         .await
         .expect("connect to PolicyService");
     let resp = client
-        .check_action(tool_call_request_for(&proto_id, "read_file"))
+        .check_action(tool_call_request_for(&proto_id, "tok", "read_file"))
         .await
         .expect("check_action RPC")
         .into_inner();
@@ -375,13 +382,13 @@ async fn st_r_4_enforce_mode_deny_still_blocks_and_emits_no_shadow_event() {
         team_id: "team-st-r-4".into(),
         agent_id: "enforce-agent".into(),
     };
-    register_agent_with_mode(&registry, "enforce-agent", &proto_id, None);
+    register_agent_with_mode(&registry, "enforce-agent", &proto_id, "tok", None);
 
     let mut client = PolicyServiceClient::connect(format!("http://{addr}"))
         .await
         .expect("connect to PolicyService");
     let resp = client
-        .check_action(tool_call_request_for(&proto_id, "bash"))
+        .check_action(tool_call_request_for(&proto_id, "tok", "bash"))
         .await
         .expect("check_action RPC")
         .into_inner();
@@ -438,21 +445,22 @@ async fn st_r_5_per_agent_override_isolates_observe_from_enforce_under_one_polic
         &registry,
         "experimental-agent",
         &experimental_id,
+        "tok-experimental",
         Some(aa_core::EnforcementMode::Observe),
     );
-    register_agent_with_mode(&registry, "trusted-agent", &trusted_id, None);
+    register_agent_with_mode(&registry, "trusted-agent", &trusted_id, "tok-trusted", None);
 
     let mut client = PolicyServiceClient::connect(format!("http://{addr}"))
         .await
         .expect("connect to PolicyService");
 
     let experimental_resp = client
-        .check_action(tool_call_request_for(&experimental_id, "bash"))
+        .check_action(tool_call_request_for(&experimental_id, "tok-experimental", "bash"))
         .await
         .expect("check_action RPC (experimental)")
         .into_inner();
     let trusted_resp = client
-        .check_action(tool_call_request_for(&trusted_id, "bash"))
+        .check_action(tool_call_request_for(&trusted_id, "tok-trusted", "bash"))
         .await
         .expect("check_action RPC (trusted)")
         .into_inner();
