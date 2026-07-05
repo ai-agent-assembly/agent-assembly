@@ -1057,4 +1057,14 @@ mod tests {
         assert_eq!(delta_ratio(12, 10), 0.2);
         assert_eq!(delta_ratio(8, 10), -0.2);
     }
+
+    #[test]
+    fn analytics_audit_read_is_bounded_not_unbounded() {
+        // AAASM-4145: the analytics handlers must cap the audit-log read rather
+        // than pull the whole log (`usize::MAX`) per request. `black_box` keeps
+        // this a runtime check so a regression to an unbounded read is caught.
+        let cap = std::hint::black_box(MAX_ANALYTICS_AUDIT_EVENTS);
+        assert!(cap < usize::MAX, "analytics audit read must be bounded, not usize::MAX");
+        assert_eq!(cap, 100_000);
+    }
 }
