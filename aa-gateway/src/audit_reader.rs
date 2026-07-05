@@ -604,6 +604,92 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    // ── list_windowed (AAASM-4147) ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_windowed_excludes_entries_older_than_since_ns() {
+        let tmp = TempDir::new().expect("tempdir");
+        let child = AgentId::from_bytes(CHILD_BYTES);
+        let entries = vec![
+            make_entry(0, 100, ToolCallIntercepted, child, None),
+            make_entry(1, 200, ToolCallIntercepted, child, None),
+            make_entry(2, 300, ToolCallIntercepted, child, None),
+        ];
+        write_entries(tmp.path(), &entries);
+
+        let reader = AuditReader::new(tmp.path().to_path_buf());
+        let (page, total) = reader
+            .list_windowed(200, 100, 0, None, None, None)
+            .await
+            .expect("list_windowed");
+
+        // 200 and 300 satisfy >= 200; 100 is excluded. Newest-first ordering.
+        assert_eq!(total, 2, "total counts only in-window entries");
+        let seqs: Vec<u64> = page.iter().map(|e| e.seq()).collect();
+        assert_eq!(seqs, vec![2, 1], "newest-first, older entry dropped");
+        assert!(page.iter().all(|e| e.timestamp_ns() >= 200));
+    }
+
+    #[tokio::test]
+    async fn list_windowed_does_not_collect_out_of_window_entries() {
+        let tmp = TempDir::new().expect("tempdir");
+        let child = AgentId::from_bytes(CHILD_BYTES);
+        // Only one of five entries is inside the window.
+        let entries = vec![
+            make_entry(0, 10, ToolCallIntercepted, child, None),
+            make_entry(1, 20, ToolCallIntercepted, child, None),
+            make_entry(2, 30, ToolCallIntercepted, child, None),
+            make_entry(3, 40, ToolCallIntercepted, child, None),
+            make_entry(4, 1000, ToolCallIntercepted, child, None),
+        ];
+        write_entries(tmp.path(), &entries);
+
+        let reader = AuditReader::new(tmp.path().to_path_buf());
+        // Ask for far more than the window holds: the page can only contain the
+        // in-window entry, and `total` proves the out-of-window rows were never
+        // collected (not merely paged out).
+        let (page, total) = reader
+            .list_windowed(1000, 100, 0, None, None, None)
+            .await
+            .expect("list_windowed");
+
+        assert_eq!(total, 1, "out-of-window entries are never collected or counted");
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].seq(), 4);
+    }
+
+    #[tokio::test]
+    async fn list_windowed_matches_list_then_client_filter() {
+        // The exact transformation `analytics::fetch_window_entries` performs:
+        // `list_windowed(since, ..)` must equal `list(..)` re-filtered by
+        // `timestamp_ns >= since`, so pushing the window into the reader leaves
+        // analytics results unchanged for a window inside the data.
+        let tmp = TempDir::new().expect("tempdir");
+        let child = AgentId::from_bytes(CHILD_BYTES);
+        let entries = vec![
+            make_entry(0, 100, ToolCallIntercepted, child, None),
+            make_entry(1, 250, PolicyViolation, child, None),
+            make_entry(2, 400, ApprovalGranted, child, None),
+            make_entry(3, 550, ToolCallIntercepted, child, None),
+        ];
+        write_entries(tmp.path(), &entries);
+
+        let reader = AuditReader::new(tmp.path().to_path_buf());
+        let since = 250;
+
+        let (windowed, windowed_total) = reader
+            .list_windowed(since, 100, 0, None, None, None)
+            .await
+            .expect("list_windowed");
+
+        let (all, _all_total) = reader.list(100, 0, None, None, None).await.expect("list");
+        let expected: Vec<AuditEntry> = all.into_iter().filter(|e| e.timestamp_ns() >= since).collect();
+
+        let windowed_seqs: Vec<u64> = windowed.iter().map(|e| e.seq()).collect();
+        let expected_seqs: Vec<u64> = expected.iter().map(|e| e.seq()).collect();
+        assert_eq!(windowed_seqs, expected_seqs, "windowed read must match list+filter");
+        assert_eq!(windowed_total as usize, expected.len());
+    }
     #[test]
     fn payload_has_dry_run_true_accepts_only_explicit_true() {
         assert!(payload_has_dry_run_true(r#"{"dry_run":true}"#));
