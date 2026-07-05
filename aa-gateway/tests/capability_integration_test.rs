@@ -57,6 +57,7 @@ fn cap_doc(scope: PolicyScope, allow: &[Capability], deny: &[Capability]) -> Pol
         capabilities: Some(CapabilitySet {
             allow: allow.iter().cloned().collect::<BTreeSet<_>>(),
             deny: deny.iter().cloned().collect::<BTreeSet<_>>(),
+            allow_restricted: false,
         }),
     }
 }

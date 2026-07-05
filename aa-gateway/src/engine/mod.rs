@@ -3169,6 +3169,7 @@ mod tests {
         aa_core::CapabilitySet {
             allow: allow.iter().cloned().collect::<BTreeSet<_>>(),
             deny: deny.iter().cloned().collect::<BTreeSet<_>>(),
+            allow_restricted: false,
         }
     }
 

@@ -430,7 +430,11 @@ impl PolicyValidator {
             }
         }
 
-        Some(aa_core::CapabilitySet { allow, deny })
+        Some(aa_core::CapabilitySet {
+            allow,
+            deny,
+            allow_restricted: false,
+        })
     }
 
     fn validate_tools(

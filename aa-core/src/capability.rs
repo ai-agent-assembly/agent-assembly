@@ -42,6 +42,34 @@ pub struct CapabilitySet {
     pub allow: BTreeSet<Capability>,
     /// Capabilities explicitly denied.
     pub deny: BTreeSet<Capability>,
+    /// Whether an allow-list restriction is in force, independent of whether
+    /// `allow` currently lists anything.
+    ///
+    /// Set once any cascade tier contributes a non-empty allow-list. It exists
+    /// to disambiguate the two meanings an empty `allow` would otherwise
+    /// conflate: "no allow-list was ever declared" (unrestricted — only `deny`
+    /// governs) versus "an allow-list was declared but a disjoint multi-tier
+    /// intersection collapsed it to empty" (deny-all). Without this flag,
+    /// merging two disjoint restrictive whitelists produces an empty `allow`
+    /// that the guard reads as "no restriction", failing *open* to allow-all —
+    /// the inverse of most-restrictive-wins (AAASM-4154). `serde(default)` keeps
+    /// older serialized sets (which lack the field) deserializing unchanged.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub allow_restricted: bool,
+}
+
+impl CapabilitySet {
+    /// Whether an allow-list restriction governs this set.
+    ///
+    /// True when the set whitelists at least one capability, or when a prior
+    /// cascade tier declared a non-empty allow that a disjoint merge collapsed
+    /// to empty (`allow_restricted`). When this is true, the capability guard
+    /// must deny any capability absent from `allow`; an empty `allow` therefore
+    /// means deny-all, never "no restriction" (AAASM-4154).
+    #[must_use]
+    pub fn allow_is_restricted(&self) -> bool {
+        self.allow_restricted || !self.allow.is_empty()
+    }
 }
 
 impl Capability {
@@ -147,7 +175,11 @@ pub fn merge_capabilities(parent: &CapabilitySet, child: &CapabilitySet) -> Capa
             .collect(),
     };
 
-    CapabilitySet { allow, deny }
+    CapabilitySet {
+        allow,
+        deny,
+        allow_restricted: false,
+    }
 }
 
 /// Map a [`crate::GovernanceAction`] to the [`Capability`] it exercises,
@@ -392,6 +424,7 @@ mod tests {
         CapabilitySet {
             allow: allow.iter().cloned().collect(),
             deny: deny.iter().cloned().collect(),
+            allow_restricted: false,
         }
     }
 
