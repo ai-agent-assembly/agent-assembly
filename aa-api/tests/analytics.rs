@@ -151,3 +151,16 @@ async fn policy_effectiveness_returns_rules_array() {
 async fn policy_effectiveness_requires_authentication() {
     assert_requires_auth("/api/v1/analytics/policy-effectiveness").await;
 }
+
+// --- fleet-health ---------------------------------------------------------
+
+#[tokio::test]
+async fn fleet_health_returns_agents_array() {
+    let json = get_ok_json(common::test_app(), "/api/v1/analytics/fleet-health?range=24h").await;
+    assert!(json["agents"].is_array(), "agents must be an array");
+}
+
+#[tokio::test]
+async fn fleet_health_requires_authentication() {
+    assert_requires_auth("/api/v1/analytics/fleet-health").await;
+}
