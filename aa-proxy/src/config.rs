@@ -48,6 +48,26 @@ pub struct ProxyConfig {
     /// Env: `AA_PROXY_LLM_ONLY` — default: `true`
     pub llm_only: bool,
 
+    /// AAASM-4126 — additional hosts to bring under TLS MitM + credential-DLP
+    /// even when [`Self::llm_only`] is `true`.
+    ///
+    /// Under `llm_only` the proxy MitMs only the built-in LLM providers
+    /// (`detect_api`: OpenAI/Anthropic/Cohere) and transparent-tunnels every
+    /// other host — so a secret POSTed to any other provider (Google, Mistral,
+    /// Groq, Azure OpenAI, Bedrock, …) was never scanned. Operators list extra
+    /// providers here to extend the DLP surface without disabling `llm_only`
+    /// wholesale. Body-DLP then runs on these hosts exactly as it does for the
+    /// built-in providers.
+    ///
+    /// Patterns share the egress-allowlist grammar with
+    /// [`Self::network_allowlist`] (exact case-insensitive match, leftmost-label
+    /// wildcard `*.groq.com`, or universal `*`). An empty list (the default)
+    /// leaves only the built-in LLM hosts under MitM when `llm_only` is `true`.
+    /// Has no effect when `llm_only` is `false` — every host is already MitM'd.
+    ///
+    /// Comma-separated list from env var `AA_PROXY_MITM_HOSTS`.
+    pub mitm_hosts: Vec<String>,
+
     /// Hosts that the proxy will block at the CONNECT level (HTTP 403).
     /// Comma-separated list from env var `AA_PROXY_DENIED_HOSTS`.
     /// Empty means allow all hosts.
@@ -173,6 +193,9 @@ impl ProxyConfig {
 
         let network_allowlist = env_csv("AA_PROXY_NETWORK_ALLOWLIST");
 
+        // AAASM-4126: extra hosts to MitM + DLP-scan even under llm_only.
+        let mitm_hosts = env_csv("AA_PROXY_MITM_HOSTS");
+
         let skip_upstream_tls_verify_requested = env_truthy("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
         // AAASM-3131: this flag disables upstream certificate verification and
         // is for integration tests only. In a release (production) build it must
@@ -210,6 +233,7 @@ impl ProxyConfig {
             ca_dir,
             cert_cache_capacity,
             llm_only,
+            mitm_hosts,
             denied_hosts,
             network_allowlist,
             skip_upstream_tls_verify,
@@ -275,6 +299,7 @@ mod tests {
         std::env::remove_var("AA_CA_DIR");
         std::env::remove_var("AA_PROXY_CERT_CACHE_CAPACITY");
         std::env::remove_var("AA_PROXY_LLM_ONLY");
+        std::env::remove_var("AA_PROXY_MITM_HOSTS");
         std::env::remove_var("AA_PROXY_DENIED_HOSTS");
         std::env::remove_var("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
         std::env::remove_var("AA_PROXY_CREDENTIAL_ACTION");
@@ -356,6 +381,27 @@ mod tests {
 
         let cfg = ProxyConfig::from_env().unwrap();
         assert_eq!(cfg.denied_hosts, vec!["evil.com", "bad.example.com"]);
+    }
+
+    #[test]
+    fn from_env_reads_mitm_hosts_csv() {
+        // AAASM-4126: operators extend the MitM + DLP surface beyond the built-in
+        // LLM providers via a comma-separated AA_PROXY_MITM_HOSTS list.
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_MITM_HOSTS", "generativelanguage.googleapis.com, *.groq.com");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(cfg.mitm_hosts, vec!["generativelanguage.googleapis.com", "*.groq.com"]);
+    }
+
+    #[test]
+    fn from_env_mitm_hosts_defaults_empty() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(cfg.mitm_hosts.is_empty());
     }
 
     #[test]
