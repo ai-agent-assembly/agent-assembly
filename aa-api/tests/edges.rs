@@ -686,3 +686,103 @@ async fn report_edge_with_read_only_scope_is_forbidden() {
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
+
+// ── AAASM-4133 — report_edge authorizes the edge TARGET, not just the source ──
+//
+// A write-scoped, team-scoped caller may own the source (reporting) agent yet
+// still try to point the edge at another team's agent, polluting that team's
+// inbound-topology view. The target must be authorized too.
+
+use aa_api::auth::config::AuthMode;
+
+async fn post_edge_auth(app: axum::Router, token: &str, body: Value) -> StatusCode {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/topology/edges")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+#[tokio::test]
+async fn report_edge_rejects_target_in_another_team() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    // Source belongs to the caller's team (alpha); target belongs to beta.
+    state.agent_registry.register(team_agent(0x01, "alpha")).unwrap();
+    state.agent_registry.register(team_agent(0x02, "beta")).unwrap();
+    let app = build_app(state);
+
+    let token = common::generate_test_jwt_for_team("alpha-writer", &[Scope::Read, Scope::Write], "alpha");
+    let status = post_edge_auth(
+        app,
+        &token,
+        json!({
+            "source_agent_id": hex(0x01),
+            "target_agent_id": hex(0x02),
+            "edge_type": "messages",
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an edge whose target is another team's agent must be rejected",
+    );
+}
+
+#[tokio::test]
+async fn report_edge_allows_target_in_callers_own_team() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    // Both source and target belong to the caller's team (alpha).
+    state.agent_registry.register(team_agent(0x01, "alpha")).unwrap();
+    state.agent_registry.register(team_agent(0x02, "alpha")).unwrap();
+    let app = build_app(state);
+
+    let token = common::generate_test_jwt_for_team("alpha-writer", &[Scope::Read, Scope::Write], "alpha");
+    let status = post_edge_auth(
+        app,
+        &token,
+        json!({
+            "source_agent_id": hex(0x01),
+            "target_agent_id": hex(0x02),
+            "edge_type": "messages",
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "a same-team target must still be accepted (no regression on the legitimate path)",
+    );
+}
+
+#[tokio::test]
+async fn report_edge_allows_team_less_target() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    // Source in the caller's team; target is unregistered / team-less, which is
+    // not "another team's agent" — SDK emitters legitimately record such edges.
+    state.agent_registry.register(team_agent(0x01, "alpha")).unwrap();
+    let app = build_app(state);
+
+    let token = common::generate_test_jwt_for_team("alpha-writer", &[Scope::Read, Scope::Write], "alpha");
+    let status = post_edge_auth(
+        app,
+        &token,
+        json!({
+            "source_agent_id": hex(0x01),
+            "target_agent_id": hex(0x09),
+            "edge_type": "messages",
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "a team-less target must stay allowed");
+}

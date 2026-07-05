@@ -59,6 +59,28 @@ fn authorize_agent_team_access(
     Ok(())
 }
 
+/// Reject an edge whose **target** is another team's agent (AAASM-4133).
+///
+/// `report_edge` already authorizes ownership of the *source* (reporting) agent
+/// (AAASM-3790). Without this check a caller could still insert an edge whose
+/// target is an agent owned by a different team, polluting that team's
+/// inbound-topology view. An admin may target any agent; a team-scoped caller
+/// may target only agents in a team it can access. A **team-less** target is
+/// not "another team's agent", so it stays allowed — SDK emitters legitimately
+/// record edges to as-yet-unregistered or shared/team-less peers.
+fn authorize_edge_target(caller: &AuthenticatedCaller, state: &AppState, target: AgentId) -> Result<(), ProblemDetail> {
+    if caller.scopes.contains(&Scope::Admin) {
+        return Ok(());
+    }
+    if let Some(team) = agent_team_id(state, target) {
+        if !caller.can_access_team(&team) {
+            return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+                .with_detail("Edge target agent belongs to another team".to_string()));
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -213,6 +235,9 @@ pub async fn report_edge(
     // AAASM-3790: write-scope + ownership of the source (reporting) agent so a
     // caller cannot poison another team's topology with fabricated edges.
     authorize_agent_team_access(&caller, &state, source)?;
+    // AAASM-4133: also authorize the target so a caller cannot pollute another
+    // team's inbound topology with an edge pointing at that team's agent.
+    authorize_edge_target(&caller, &state, target)?;
 
     let metadata = if let Some(json_str) = body.metadata_json {
         if json_str.is_empty() {

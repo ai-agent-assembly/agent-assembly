@@ -317,18 +317,41 @@ impl PolicyServiceImpl {
         self
     }
 
-    /// Look up the per-agent `enforcement_mode` override for the request's agent.
+    /// Resolve the authoritative agent key for agent-scoped controls.
     ///
-    /// Returns `Some(_)` when the request's agent is registered AND its record
-    /// carries an explicit override; `None` in every other case (no registry
-    /// attached, agent unregistered, agent registered with no override). The
-    /// resolver in [`crate::engine::resolve_enforcement_mode`] treats `None` as
-    /// "inherit from policy default", so an unknown / unregistered agent
-    /// transparently falls back to live enforcement.
+    /// AAASM-4133 — `req.agent_id` is client-supplied and forgeable (the
+    /// `PolicyService` runs under the non-rejecting `enrich` interceptor). When
+    /// the credential token resolves to a registered owner, that owner's key is
+    /// the trust anchor, so agent-scoped controls bind to it: a credentialed
+    /// caller can neither dodge its own agent-scoped enforcement override by
+    /// presenting a different `agent_id`, nor trip a budget-suspend against a
+    /// victim's claimed id. Falls back to the client-supplied `agent_id` only
+    /// when no token owner resolves — the unregistered OSS runtime→gateway flow
+    /// that forwards checks without a per-agent token — mirroring
+    /// [`Self::apply_authoritative_tenancy`].
+    fn authoritative_agent_key(&self, req: &CheckActionRequest) -> Option<[u8; 16]> {
+        if let Some(registry) = &self.registry {
+            if !req.credential_token.is_empty() {
+                if let Some(owner_key) = registry.find_by_credential_token(&req.credential_token) {
+                    return Some(owner_key);
+                }
+            }
+        }
+        req.agent_id.as_ref().map(proto_agent_id_to_key)
+    }
+
+    /// Look up the per-agent `enforcement_mode` override for the request's
+    /// authoritative agent (see [`Self::authoritative_agent_key`]).
+    ///
+    /// Returns `Some(_)` when that agent is registered AND its record carries an
+    /// explicit override; `None` in every other case (no registry attached,
+    /// agent unregistered, agent registered with no override). The resolver in
+    /// [`crate::engine::resolve_enforcement_mode`] treats `None` as "inherit
+    /// from policy default", so an unknown / unregistered agent transparently
+    /// falls back to live enforcement.
     fn lookup_agent_enforcement_override(&self, req: &CheckActionRequest) -> Option<aa_core::EnforcementMode> {
         let registry = self.registry.as_ref()?;
-        let proto_agent = req.agent_id.as_ref()?;
-        let agent_key = proto_agent_id_to_key(proto_agent);
+        let agent_key = self.authoritative_agent_key(req)?;
         registry.get(&agent_key)?.enforcement_mode
     }
 
@@ -451,11 +474,13 @@ impl PolicyServiceImpl {
             Some(r) => r,
             None => return,
         };
-        let proto_agent = match req.agent_id.as_ref() {
-            Some(a) => a,
+        // AAASM-4133 — suspend the token-derived owner, never a client-claimed
+        // `agent_id`, so a credentialed caller cannot trip budget-suspend on a
+        // victim's id.
+        let agent_key = match self.authoritative_agent_key(req) {
+            Some(k) => k,
             None => return,
         };
-        let agent_key = proto_agent_id_to_key(proto_agent);
         let reason_text = "budget limit exceeded";
         if let Err(e) = registry
             .suspend_and_notify(&agent_key, SuspendReason::BudgetExceeded, reason_text)
@@ -463,7 +488,7 @@ impl PolicyServiceImpl {
         {
             tracing::warn!(error = %e, "failed to suspend agent on budget exceeded");
         } else {
-            tracing::info!(agent_id = ?proto_agent.agent_id, "agent suspended: {reason_text}");
+            tracing::info!(agent_key = ?agent_key, "agent suspended: {reason_text}");
         }
     }
 
