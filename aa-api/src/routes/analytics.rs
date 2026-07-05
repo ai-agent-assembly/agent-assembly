@@ -354,15 +354,33 @@ fn scope_entries(caller: &AuthenticatedCaller, entries: Vec<AuditEntry>) -> Vec<
     }
 }
 
+/// Upper bound on the number of audit events a single analytics request pulls
+/// from the audit log.
+///
+/// [`AuditReader::list`] returns entries newest-first, so this caps each
+/// analytics aggregation to the most recent `MAX_ANALYTICS_AUDIT_EVENTS` events
+/// and then narrows them to the query's time window — bounding per-request work
+/// instead of the former unbounded `usize::MAX` full-log read (AAASM-4145). The
+/// ceiling is high enough that realistic dashboard windows are never truncated,
+/// yet fixed so a growing log can't turn one analytics call into an unbounded
+/// scan. A window holding more than the cap counts only its most recent events.
+///
+/// Follow-up: the reader still scans every JSONL file before slicing to this
+/// limit; a server-side time-windowed reader (filtering by `since_ns` during the
+/// scan) would remove that cost entirely and is tracked separately.
+const MAX_ANALYTICS_AUDIT_EVENTS: usize = 100_000;
+
 /// Fetch audit entries at or after `since_ns`, confined to the caller's tenant.
 ///
-/// Reads the full JSONL log via [`AuditReader::list`] and filters by timestamp;
-/// the in-process reader holds the same entries the other audit aggregations
-/// read, so no new data source is introduced.
+/// Reads the most recent [`MAX_ANALYTICS_AUDIT_EVENTS`] entries via
+/// [`AuditReader::list`] (newest-first) and filters by timestamp; the in-process
+/// reader holds the same entries the other audit aggregations read, so no new
+/// data source is introduced. The read is bounded (AAASM-4145): a window with
+/// more events than the cap aggregates only its most recent ones.
 async fn fetch_window_entries(caller: &AuthenticatedCaller, state: &AppState, since_ns: u64) -> Vec<AuditEntry> {
     let (entries, _total) = state
         .audit_reader
-        .list(usize::MAX, 0, None, None, None)
+        .list(MAX_ANALYTICS_AUDIT_EVENTS, 0, None, None, None)
         .await
         .unwrap_or_default();
     let entries: Vec<AuditEntry> = entries.into_iter().filter(|e| e.timestamp_ns() >= since_ns).collect();
