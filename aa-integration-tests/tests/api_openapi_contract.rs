@@ -45,7 +45,7 @@ fn load_spec() -> Value {
     serde_yaml::from_str(&yaml).expect("openapi/v1.yaml must be valid YAML")
 }
 
-// ── TC-1: spec file loads and has 55 paths ───────────────────────────────────
+// ── TC-1: spec file loads and has 62 paths ───────────────────────────────────
 
 #[test]
 fn openapi_spec_loads_without_errors() {
@@ -60,10 +60,11 @@ fn openapi_spec_loads_without_errors() {
     let path_count = spec["paths"].as_object().expect("spec must have a paths object").len();
 
     // AAASM-3881 added the two operator kill-switch endpoints (halt-agent,
-    // global/halt), bringing the path count from 53 to 55.
+    // global/halt), bringing the path count from 53 to 55. AAASM-4141 added the
+    // seven /api/v1/analytics/* dashboard aggregation endpoints, bringing it to 62.
     assert_eq!(
-        path_count, 55,
-        "openapi/v1.yaml must declare exactly 55 paths, found {path_count}"
+        path_count, 62,
+        "openapi/v1.yaml must declare exactly 62 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -96,6 +97,13 @@ fn openapi_spec_paths_match_implemented_routes() {
     let mut expected: Vec<&str> = vec![
         "/api/v1/admin/retention-policy",
         "/api/v1/admin/retention-policy/run",
+        "/api/v1/analytics/action-volume",
+        "/api/v1/analytics/approvals",
+        "/api/v1/analytics/cost-breakdown",
+        "/api/v1/analytics/fleet-health",
+        "/api/v1/analytics/kpis",
+        "/api/v1/analytics/policy-effectiveness",
+        "/api/v1/analytics/tool-usage",
         "/api/v1/agents",
         "/api/v1/agents/{id}",
         "/api/v1/agents/{id}/budget",

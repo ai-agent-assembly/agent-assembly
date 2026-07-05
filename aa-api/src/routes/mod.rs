@@ -6,6 +6,7 @@ pub mod admin;
 pub mod agents;
 pub mod alert_rules;
 pub mod alerts;
+pub mod analytics;
 pub mod approvals;
 pub mod audit;
 pub mod auth;
@@ -170,6 +171,17 @@ fn protected_router() -> Router {
             get(admin::get_retention_policy).put(admin::update_retention_policy),
         )
         .route("/admin/retention-policy/run", post(admin::run_retention_policy))
+        // Dashboard analytics aggregations (AAASM-4141)
+        .route("/analytics/kpis", get(analytics::get_kpis))
+        .route("/analytics/cost-breakdown", get(analytics::get_cost_breakdown))
+        .route("/analytics/action-volume", get(analytics::get_action_volume))
+        .route("/analytics/tool-usage", get(analytics::get_tool_usage))
+        .route("/analytics/approvals", get(analytics::get_approvals))
+        .route(
+            "/analytics/policy-effectiveness",
+            get(analytics::get_policy_effectiveness),
+        )
+        .route("/analytics/fleet-health", get(analytics::get_fleet_health))
         // Deny-by-default auth gate over every protected route (AAASM-3125).
         .route_layer(axum::middleware::from_fn(crate::auth::gate::require_authentication))
 }

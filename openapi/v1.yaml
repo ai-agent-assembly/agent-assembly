@@ -991,6 +991,380 @@ paths:
                 $ref: '#/components/schemas/AlertResponse'
         '404':
           description: Alert not found
+  /api/v1/analytics/action-volume:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/action-volume` — action counts over time, per category.'
+      description: |-
+        Buckets the requested window into [`SERIES_BUCKETS`] equal slices and counts
+        audit events per slice, grouped into a small set of action categories
+        (`intercepted`, `dispatched`, `violations`, `approvals` — see
+        [`action_category`]). Each emitted series carries a point for every bucket
+        (including zeros) so the line chart is continuous; `t` is the bucket-start
+        epoch-millisecond timestamp. Only categories that recorded at least one
+        event in the window are emitted, so an idle window yields an empty series
+        list rather than fabricated activity. Confined to the caller's tenant.
+      operationId: get_action_volume
+      parameters:
+      - name: range
+        in: query
+        description: Time range preset or custom range. See [`KpiParams::range`].
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: agents
+        in: query
+        description: Comma-separated agent filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: teams
+        in: query
+        description: Comma-separated team filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Per-category action-volume time series
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionVolumeResponse'
+        '401':
+          description: Missing or invalid credentials
+  /api/v1/analytics/approvals:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/approvals` — resolved-approval volume, rate and latency.'
+      description: |-
+        Aggregates the approval queue's resolved history over records whose decision
+        timestamp falls in the window, confined to the caller's tenant (admin sees
+        all teams; a tenant-scoped caller sees only its own team; untagged records
+        are admin-only — matching the `/approvals` list route). `byOutcome` splits
+        approved / rejected / `timed_out` (expired); `volume` is their sum;
+        `approvalRate` = approved / volume; `medianTta` is the median time-to-answer
+        in seconds across decided (non-expired) approvals.
+      operationId: get_approvals
+      parameters:
+      - name: range
+        in: query
+        description: Time range preset or custom range. See [`KpiParams::range`].
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: agents
+        in: query
+        description: Comma-separated agent filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: teams
+        in: query
+        description: Comma-separated team filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Approval volume, rate and latency
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalAnalyticsResponse'
+        '401':
+          description: Missing or invalid credentials
+  /api/v1/analytics/cost-breakdown:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/cost-breakdown` — stacked spend broken down by a dimension.'
+      description: |-
+        The budget tracker exposes **point-in-time** spend (today's totals per agent
+        and per team), not a time series, so the v1 response emits a single bucket
+        labelled with the current budget date. Grouping:
+
+        * `agent` (default) — one segment per agent, from the budget snapshot's
+          per-agent breakdown. Only an admin sees the per-agent rows (they are not
+          team-keyed, so exposing them to a tenant caller would leak other tenants'
+          agents — same rule the `/costs` route applies).
+        * `team` — one segment per team; an admin sees every team, a tenant-scoped
+          caller sees only its own team's row.
+        * `model` — **no per-model spend source exists** in the budget tracker, so
+          this returns an empty bucket list rather than fabricated segments.
+      operationId: get_cost_breakdown
+      parameters:
+      - name: groupBy
+        in: query
+        description: 'Grouping dimension: `agent` | `team` | `model`.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: range
+        in: query
+        description: Time range preset or custom range. See [`KpiParams::range`].
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: agents
+        in: query
+        description: Comma-separated agent filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: teams
+        in: query
+        description: Comma-separated team filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Cost broken down into stacked segments
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostBreakdownResponse'
+        '401':
+          description: Missing or invalid credentials
+  /api/v1/analytics/fleet-health:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/fleet-health` — per-agent health sparklines.'
+      description: |-
+        The registry exposes point-in-time status, not a health time series, so the
+        v1 view emits a single current sample per agent: `score` = 100 when Active,
+        40 when Suspended, 0 when Deregistered (see [`health_score`]), stamped with
+        the current epoch-millisecond time. Scoped to the agents the caller may see
+        (admin sees all; a tenant-scoped caller sees only its own team's agents).
+      operationId: get_fleet_health
+      parameters:
+      - name: range
+        in: query
+        description: Time range preset or custom range. See [`KpiParams::range`].
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: agents
+        in: query
+        description: Comma-separated agent filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: teams
+        in: query
+        description: Comma-separated team filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Per-agent health sparklines
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetHealthResponse'
+        '401':
+          description: Missing or invalid credentials
+  /api/v1/analytics/kpis:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/kpis` — a single scalar KPI plus its window-over-window delta.'
+      description: |-
+        v1 metric definitions (documented because several are not uniquely
+        determined by the available in-process state):
+
+        * `agents` — number of registered agents the caller may see (registry is
+          point-in-time, so `delta` is always `0.0`).
+        * `invocations` — count of `ToolCallIntercepted` + `ToolDispatched` audit
+          events in the window; `delta` compares against the immediately preceding
+          equal-length window.
+        * `cost` — current daily spend (USD) from the budget tracker snapshot
+          (point-in-time; `delta` is `0.0`, `unit` = `USD`).
+        * `anomalies` — count of `PolicyViolation` audit events in the window (the
+          closest available signal to an anomaly); `delta` is window-over-window.
+        * `p99` — request-tail latency. **No latency source exists** in the
+          in-process audit/budget state, so this honestly returns `0.0` (`unit` =
+          `ms`) rather than a fabricated value.
+
+        Audit-derived metrics are confined to the caller's tenant; registry/budget
+        metrics use the same visibility rules as the cost route.
+      operationId: get_kpis
+      parameters:
+      - name: metric
+        in: query
+        description: 'KPI to compute: `agents` | `invocations` | `p99` | `cost` | `anomalies`.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: range
+        in: query
+        description: |-
+          Time range preset (`24h`, `7d`, `30d`, `90d`) or custom
+          `YYYY-MM-DD..YYYY-MM-DD`. Defaults to `7d`.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: agents
+        in: query
+        description: Comma-separated agent filter (reserved; not yet applied to KPIs).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: teams
+        in: query
+        description: Comma-separated team filter (reserved; not yet applied to KPIs).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: KPI value and window-over-window delta
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KpiResponse'
+        '401':
+          description: Missing or invalid credentials
+  /api/v1/analytics/policy-effectiveness:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/policy-effectiveness` — per-rule daily outcome counts.'
+      description: |-
+        Groups audit events that carry a non-empty `policy_rule` by rule and by UTC
+        day, classifying each into the v1 buckets:
+
+        * `warns` — the evaluation was a shadow / dry-run (`dry_run: true`).
+        * `blocks` — a `PolicyViolation` event, or a non-dry-run evaluation whose
+          `decision` was not an allow.
+        * `passes` — a non-dry-run evaluation whose `decision` was an allow (or that
+          recorded no explicit decision).
+
+        The rule `name` equals its id in v1 (the audit log records only the rule
+        identifier). Rules with no recorded evaluations produce no entry, so an idle
+        window returns an empty rule list. Confined to the caller's tenant.
+      operationId: get_policy_effectiveness
+      parameters:
+      - name: range
+        in: query
+        description: Time range preset or custom range. See [`KpiParams::range`].
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: agents
+        in: query
+        description: Comma-separated agent filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: teams
+        in: query
+        description: Comma-separated team filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Per-rule daily policy effectiveness
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyEffectivenessResponse'
+        '401':
+          description: Missing or invalid credentials
+  /api/v1/analytics/tool-usage:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/tool-usage` — per-tool call counts and error rate.'
+      description: |-
+        Aggregates `ToolCallIntercepted` / `ToolDispatched` audit events in the
+        window by tool identifier (see [`extract_tool_name`]). `calls` is the event
+        count; `errorRate` is the fraction whose policy `decision` was not an allow
+        (see [`decision_is_error`]) — the v1 definition of a failed tool call.
+        Events whose payload carries no resolvable tool name are skipped, so a
+        window with no tool activity returns an empty list rather than a synthetic
+        tool. Confined to the caller's tenant.
+      operationId: get_tool_usage
+      parameters:
+      - name: range
+        in: query
+        description: Time range preset or custom range. See [`KpiParams::range`].
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: agents
+        in: query
+        description: Comma-separated agent filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: teams
+        in: query
+        description: Comma-separated team filter (reserved).
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Per-tool call statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolUsageResponse'
+        '401':
+          description: Missing or invalid credentials
   /api/v1/approvals:
     get:
       tags:
@@ -2491,6 +2865,36 @@ paths:
           description: Bad request (invalid query parameters)
 components:
   schemas:
+    ActionVolumeResponse:
+      type: object
+      description: Response for `GET /api/v1/analytics/action-volume`.
+      required:
+      - series
+      properties:
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionVolumeSeries'
+          description: One series per action category (empty when no audit events matched).
+    ActionVolumeSeries:
+      type: object
+      description: One named series in the action-volume chart (an action category).
+      required:
+      - key
+      - name
+      - points
+      properties:
+        key:
+          type: string
+          description: Stable series key.
+        name:
+          type: string
+          description: Human-readable series name.
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/SeriesPoint'
+          description: Time-bucketed points for the series.
     ActiveSessionResponse:
       type: object
       description: Summary of an active session in the API response.
@@ -2530,6 +2934,27 @@ components:
           - string
           - 'null'
           description: Total spend this month in USD for this agent (if monthly tracking is enabled).
+    AgentHealth:
+      type: object
+      description: One agent's health sparkline.
+      required:
+      - id
+      - name
+      - points
+      properties:
+        id:
+          type: string
+          description: Hex-encoded agent id.
+        name:
+          type: string
+          description: Display name (metadata `name`, falling back to the id).
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthPoint'
+          description: |-
+            Health samples. The v1 view emits a single current sample per agent
+            (the registry exposes point-in-time status, not a health time series).
     AgentLineage:
       type: object
       description: |-
@@ -3279,6 +3704,54 @@ components:
       enum:
       - active
       - revoked
+    ApprovalAnalyticsResponse:
+      type: object
+      description: Response for `GET /api/v1/analytics/approvals`.
+      required:
+      - volume
+      - medianTta
+      - approvalRate
+      - byOutcome
+      properties:
+        approvalRate:
+          type: number
+          format: double
+          description: Approval rate = approved / (approved + rejected + expired), `0.0` when none.
+        byOutcome:
+          $ref: '#/components/schemas/ApprovalOutcome'
+          description: Breakdown by final outcome.
+        medianTta:
+          type: number
+          format: double
+          description: Median time-to-answer in seconds across resolved (non-expired) approvals.
+        volume:
+          type: integer
+          format: int64
+          description: Total resolved approvals in the window (approved + rejected + expired).
+          minimum: 0
+    ApprovalOutcome:
+      type: object
+      description: Resolved-outcome counts for the approvals analytics panel.
+      required:
+      - approved
+      - rejected
+      - expired
+      properties:
+        approved:
+          type: integer
+          format: int64
+          description: Approvals granted.
+          minimum: 0
+        expired:
+          type: integer
+          format: int64
+          description: Approvals that expired without a decision (`timed_out`).
+          minimum: 0
+        rejected:
+          type: integer
+          format: int64
+          description: Approvals rejected.
+          minimum: 0
     ApprovalPayload:
       type: object
       description: |-
@@ -3699,6 +4172,52 @@ components:
         error:
           type: string
           description: Always `"connector_failed"`.
+    CostBreakdownResponse:
+      type: object
+      description: Response for `GET /api/v1/analytics/cost-breakdown`.
+      required:
+      - buckets
+      properties:
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostBucket'
+          description: |-
+            Ordered cost buckets. The v1 view emits a single current-day bucket
+            (the budget tracker exposes point-in-time spend, not a time series).
+    CostBucket:
+      type: object
+      description: A single bucket (x-axis position) of the cost-breakdown chart.
+      required:
+      - label
+      - segments
+      properties:
+        label:
+          type: string
+          description: Bucket label (the current calendar date for the v1 point-in-time view).
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostSegment'
+          description: Per-dimension spend segments within this bucket.
+    CostSegment:
+      type: object
+      description: One stacked segment within a cost bucket (a single agent / team / model).
+      required:
+      - key
+      - name
+      - value
+      properties:
+        key:
+          type: string
+          description: Stable segment key (agent id hex, team id, or model name).
+        name:
+          type: string
+          description: Human-readable segment label.
+        value:
+          type: number
+          format: double
+          description: Spend for this segment in USD.
     CostSummary:
       type: object
       description: JSON representation of the cost/budget summary.
@@ -4112,6 +4631,17 @@ components:
       - approval
       - budget
       - ops_change
+    FleetHealthResponse:
+      type: object
+      description: Response for `GET /api/v1/analytics/fleet-health`.
+      required:
+      - agents
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentHealth'
+          description: One entry per agent the caller may see.
     GenerateApiKeyRequest:
       type: object
       required:
@@ -4205,6 +4735,21 @@ components:
         root_agent_id:
           type: string
           description: Root agent ID used for the BFS.
+    HealthPoint:
+      type: object
+      description: 'A single fleet-health sample: `t` epoch milliseconds, `score` 0–100.'
+      required:
+      - t
+      - score
+      properties:
+        score:
+          type: integer
+          format: int64
+          description: Health score in `[0, 100]`.
+        t:
+          type: integer
+          format: int64
+          description: Epoch-millisecond timestamp of the sample.
     HealthResponse:
       type: object
       description: Response body for the health endpoint.
@@ -4247,6 +4792,34 @@ components:
         version:
           type: string
           description: Gateway version (semver from Cargo.toml).
+    KpiResponse:
+      type: object
+      description: |-
+        Response for `GET /api/v1/analytics/kpis` — a single scalar KPI plus the
+        fractional change versus the previous equivalent window.
+      required:
+      - metric
+      - value
+      - delta
+      properties:
+        delta:
+          type: number
+          format: double
+          description: |-
+            Fractional change vs the previous equivalent window
+            (`0.12` = +12%). `0.0` when no prior window is available.
+        metric:
+          type: string
+          description: Echo of the requested metric key.
+        unit:
+          type:
+          - string
+          - 'null'
+          description: Unit hint for the value (e.g. `USD`, `ms`), when meaningful.
+        value:
+          type: number
+          format: double
+          description: Current value of the metric over the requested window.
     LineageStep:
       type: object
       description: |-
@@ -4586,6 +5159,44 @@ components:
           $ref: '#/components/schemas/PolicyStatus'
         version:
           type: string
+    PolicyDay:
+      type: object
+      description: Per-rule, per-day policy outcome counts.
+      required:
+      - date
+      - blocks
+      - warns
+      - passes
+      properties:
+        blocks:
+          type: integer
+          format: int64
+          description: Blocked evaluations (policy violations / denies) for the rule that day.
+          minimum: 0
+        date:
+          type: string
+          description: UTC calendar date (`YYYY-MM-DD`).
+        passes:
+          type: integer
+          format: int64
+          description: Passed (allowed) evaluations for the rule that day.
+          minimum: 0
+        warns:
+          type: integer
+          format: int64
+          description: Warned (shadow / dry-run) evaluations for the rule that day.
+          minimum: 0
+    PolicyEffectivenessResponse:
+      type: object
+      description: Response for `GET /api/v1/analytics/policy-effectiveness`.
+      required:
+      - rules
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyRuleStat'
+          description: One entry per policy rule that recorded at least one evaluation.
     PolicyResponse:
       type: object
       description: JSON representation of a governance policy version.
@@ -4636,6 +5247,25 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Verb'
+    PolicyRuleStat:
+      type: object
+      description: One policy rule's daily effectiveness series.
+      required:
+      - id
+      - name
+      - days
+      properties:
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyDay'
+          description: Per-day outcome counts, ordered by date ascending.
+        id:
+          type: string
+          description: Rule identifier (from the audit payload `policy_rule`).
+        name:
+          type: string
+          description: Human-readable rule name (equals the id in v1).
     PolicyStatus:
       type: string
       description: Lifecycle status of a policy version in the capability view.
@@ -5234,6 +5864,21 @@ components:
       - read
       - write
       - admin
+    SeriesPoint:
+      type: object
+      description: 'A single time-series point: `t` is epoch milliseconds, `value` the count.'
+      required:
+      - t
+      - value
+      properties:
+        t:
+          type: integer
+          format: int64
+          description: Epoch-millisecond timestamp of the bucket (bucket start).
+        value:
+          type: number
+          format: double
+          description: Aggregated value for the bucket.
     Silence:
       type: object
       description: |-
@@ -5544,6 +6189,37 @@ components:
           type:
           - string
           - 'null'
+    ToolStat:
+      type: object
+      description: Per-tool call statistics.
+      required:
+      - name
+      - calls
+      - errorRate
+      properties:
+        calls:
+          type: integer
+          format: int64
+          description: Number of intercepted / dispatched calls in the window.
+          minimum: 0
+        errorRate:
+          type: number
+          format: double
+          description: Fraction (0.0–1.0) of this tool's calls that were blocked/denied.
+        name:
+          type: string
+          description: Tool name as recorded in the audit payload.
+    ToolUsageResponse:
+      type: object
+      description: Response for `GET /api/v1/analytics/tool-usage`.
+      required:
+      - tools
+      properties:
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolStat'
+          description: Per-tool statistics (empty when no tool events carried a tool name).
     TopologyEdgeListResponse:
       type: object
       description: All edges in the topology graph, optionally filtered by team membership.
@@ -6070,6 +6746,8 @@ tags:
   description: Identity & Access — API key list / generate / revoke / rotate
 - name: audit
   description: Audit log aggregations — violation heatmaps and lineage analytics
+- name: analytics
+  description: Dashboard analytics aggregations — KPIs, cost breakdown, action volume, tool usage, approvals, policy effectiveness, fleet health (AAASM-4141)
 - name: admin
   description: Admin operations — retention policy hot-reload and on-demand run (AAASM-1592 S-K)
 - name: dispatch
