@@ -152,6 +152,10 @@ impl core::fmt::Display for Capability {
 ///   - Parent empty, child non-empty → `child.allow` minus merged deny.
 ///   - Parent non-empty, child empty → `parent.allow` minus merged deny.
 ///   - Both non-empty → intersection of `parent.allow` and `child.allow`, minus merged deny.
+/// - `allow_restricted` = set once either input restricts (carries its flag) or
+///   declares a non-empty allow-list. This preserves the restriction across a
+///   disjoint intersection that empties `allow`, so the guard fails *closed*
+///   (deny-all) instead of reading empty as "unrestricted" (AAASM-4154).
 ///
 /// Requires the `alloc` feature.
 #[cfg(feature = "alloc")]
@@ -175,10 +179,15 @@ pub fn merge_capabilities(parent: &CapabilitySet, child: &CapabilitySet) -> Capa
             .collect(),
     };
 
+    // A restriction is in force if either input already carries one or declares
+    // a non-empty allow-list — even when the intersection above empties `allow`.
+    let allow_restricted =
+        parent.allow_restricted || child.allow_restricted || !parent.allow.is_empty() || !child.allow.is_empty();
+
     CapabilitySet {
         allow,
         deny,
-        allow_restricted: false,
+        allow_restricted,
     }
 }
 
