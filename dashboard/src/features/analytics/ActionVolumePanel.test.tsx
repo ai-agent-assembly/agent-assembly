@@ -2,8 +2,8 @@ import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
-import { ActionVolumePanel, makeTickFormatter } from './ActionVolumePanel'
-import { transformSeries } from './actionVolumeUtils'
+import { ActionVolumePanel } from './ActionVolumePanel'
+import { transformSeries, makeTickFormatter } from './actionVolumeUtils'
 import type { ActionVolumeSeries } from './useActionVolumeQuery'
 
 // recharts uses ResizeObserver which is not available in jsdom
