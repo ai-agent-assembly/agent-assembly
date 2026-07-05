@@ -175,11 +175,19 @@ pub(crate) fn network_request_url_allowed(url: &str, np: &crate::policy::Network
 }
 
 /// Stage 3 — Tool allow/deny: deny a `ToolCall` whose tool policy is not allowed.
+///
+/// AAASM-4152: the `"*"` tools key is a wildcard fallback, not a literal tool
+/// name. An exact per-tool entry takes precedence; a tool with no explicit
+/// entry falls back to the `"*"` policy. This mirrors the network stage's
+/// wildcard support and lets `tools: { "*": { allow: false } }` deny unknown
+/// tools (fail closed). Previously the exact-only `get(name)` returned `None`
+/// for any unlisted tool, so the stage fell through to the engine's
+/// allow-by-default — a fail-open tool control.
 fn stage_tool_allow(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
     let aa_core::GovernanceAction::ToolCall { name, .. } = action else {
         return None;
     };
-    let tp = doc.tools.get(name)?;
+    let tp = doc.tools.get(name).or_else(|| doc.tools.get("*"))?;
     if !tp.allow {
         return Some(PolicyDecision::Deny {
             reason: "tool denied by policy".into(),
