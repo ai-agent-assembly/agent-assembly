@@ -12,6 +12,9 @@
 //! an un-scanned body. The response side still parses the head and leaves a
 //! chunked body empty (the MCP path falls back to a transparent relay).
 
+use std::io::Read;
+
+use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use crate::error::ProxyError;
@@ -94,6 +97,76 @@ where
     let text = String::from_utf8(line).map_err(|_| ProxyError::Config("invalid UTF-8 in HTTP header line".into()))?;
     out.push_str(&text);
     Ok(n)
+}
+
+/// Decompress a MitM'd body carrying a single recognized `Content-Encoding`
+/// token, returning the plaintext the DLP scanner should inspect.
+///
+/// AAASM-4156 (fail-closed): scanning a compressed body scans opaque bytes, so a
+/// `gzip`/`deflate`-encoded secret matches no literal/entropy rule and slips past
+/// DLP — the same un-inspectable-body gap the chunked-`Transfer-Encoding` path
+/// fails closed on (see [`read_http_request`]). This decompresses recognized
+/// encodings so the scanner sees the real content, and **fails closed** for
+/// anything it cannot decode:
+///
+/// * `gzip` / `x-gzip` and `deflate` (zlib-wrapped or raw) are decompressed.
+/// * Any other token — notably `br` (brotli, which would need a *new*
+///   dependency), `zstd`, `compress`, or a layered `a, b` list — returns
+///   [`ProxyError::Config`] so the caller withholds the body rather than
+///   forwarding one it could not inspect.
+///
+/// The output is bounded by [`MAX_BODY_LEN`]: decompression is read through a
+/// `Read::take` limiter and any output exceeding the cap is rejected, so a
+/// small compressed payload cannot expand into a decompression-bomb OOM.
+///
+/// Callers must handle the `identity` (or absent) encoding themselves — this
+/// function is only for a non-identity token and always attempts a decode.
+pub fn decompress_content_encoding(encoding: &str, body: &[u8]) -> Result<Vec<u8>, ProxyError> {
+    let token = encoding.trim();
+    // A comma-separated list is a layered encoding (e.g. `gzip, br`); this
+    // parser decodes at most one layer, so refuse rather than half-inspect.
+    if token.contains(',') {
+        return Err(ProxyError::Config(format!(
+            "layered Content-Encoding {token:?} is not inspectable; refusing (fail-closed)"
+        )));
+    }
+    if token.eq_ignore_ascii_case("gzip") || token.eq_ignore_ascii_case("x-gzip") {
+        read_bounded(GzDecoder::new(body), token)
+    } else if token.eq_ignore_ascii_case("deflate") {
+        // HTTP `deflate` is ambiguous: RFC 7230 means zlib-wrapped (RFC 1950),
+        // but some servers send raw DEFLATE (RFC 1951). Try zlib first, then
+        // fall back to raw; if neither decodes cleanly (or either exceeds the
+        // cap), fail closed below.
+        match read_bounded(ZlibDecoder::new(body), token) {
+            Ok(plain) => Ok(plain),
+            Err(_) => read_bounded(DeflateDecoder::new(body), token),
+        }
+    } else {
+        Err(ProxyError::Config(format!(
+            "unsupported Content-Encoding {token:?} is not inspectable; refusing (fail-closed)"
+        )))
+    }
+}
+
+/// Read a decoder to completion, bounded by [`MAX_BODY_LEN`]. Returns
+/// [`ProxyError::Config`] if the decoded stream would exceed the cap (a
+/// decompression bomb) or the compressed input is malformed.
+fn read_bounded<R: Read>(decoder: R, token: &str) -> Result<Vec<u8>, ProxyError> {
+    let mut out = Vec::new();
+    // Read one byte past the cap so an exactly-cap-sized body is accepted while
+    // anything larger is detected without buffering the whole expansion.
+    let mut limited = decoder.take(MAX_BODY_LEN as u64 + 1);
+    limited.read_to_end(&mut out).map_err(|e| {
+        ProxyError::Config(format!(
+            "failed to decompress {token} body: {e}; refusing (fail-closed)"
+        ))
+    })?;
+    if out.len() > MAX_BODY_LEN {
+        return Err(ProxyError::Config(format!(
+            "decompressed {token} body exceeds maximum {MAX_BODY_LEN} bytes; refusing (fail-closed)"
+        )));
+    }
+    Ok(out)
 }
 
 /// A parsed HTTP request from the proxy's MitM tunnel.
@@ -905,5 +978,120 @@ mod tests {
             matches!(&err, ProxyError::Config(msg) if msg.contains("exceeds maximum")),
             "expected over-cap header rejection, got: {err:?}"
         );
+    }
+
+    // ── Content-Encoding decompression (AAASM-4156) ─────────────────────────
+
+    use std::io::Write;
+
+    use flate2::write::{DeflateEncoder, GzEncoder, ZlibEncoder};
+    use flate2::Compression;
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut e = GzEncoder::new(Vec::new(), Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut e = ZlibEncoder::new(Vec::new(), Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    fn raw_deflate(data: &[u8]) -> Vec<u8> {
+        let mut e = DeflateEncoder::new(Vec::new(), Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    #[test]
+    fn decompress_gzip_roundtrips_plaintext() {
+        let plain = b"a secret sk-TESTONLY-NOT-REAL body the scanner must see";
+        let out = decompress_content_encoding("gzip", &gzip(plain)).unwrap();
+        assert_eq!(out, plain);
+    }
+
+    #[test]
+    fn decompress_encoding_token_is_case_insensitive_and_trimmed() {
+        let plain = b"hello";
+        assert_eq!(decompress_content_encoding("  GZip  ", &gzip(plain)).unwrap(), plain);
+    }
+
+    #[test]
+    fn decompress_deflate_accepts_zlib_wrapped() {
+        let plain = b"zlib-wrapped deflate body";
+        assert_eq!(decompress_content_encoding("deflate", &zlib(plain)).unwrap(), plain);
+    }
+
+    #[test]
+    fn decompress_deflate_accepts_raw_stream() {
+        // Some servers send raw RFC-1951 DEFLATE for `Content-Encoding: deflate`;
+        // the zlib-then-raw fallback must decode it too.
+        let plain = b"raw deflate body";
+        assert_eq!(
+            decompress_content_encoding("deflate", &raw_deflate(plain)).unwrap(),
+            plain
+        );
+    }
+
+    #[test]
+    fn decompress_unsupported_brotli_fails_closed() {
+        // `br` would need a new dependency, so it is intentionally refused rather
+        // than forwarded un-inspected.
+        let err = decompress_content_encoding("br", b"\x1b\x00\x00").unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(m) if m.contains("unsupported") && m.contains("fail-closed")),
+            "expected unsupported-encoding fail-closed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn decompress_layered_encoding_fails_closed() {
+        // A comma-separated list is a layered encoding this one-layer decoder
+        // cannot fully invert, so it must fail closed.
+        let err = decompress_content_encoding("gzip, br", &gzip(b"x")).unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(m) if m.contains("layered")),
+            "expected layered-encoding fail-closed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn decompress_malformed_stream_fails_closed() {
+        // Bytes that are not a valid gzip stream must error rather than yield a
+        // partial/empty body the scanner would treat as clean.
+        let err = decompress_content_encoding("gzip", b"this is not a gzip stream").unwrap_err();
+        assert!(
+            matches!(err, ProxyError::Config(_)),
+            "expected Config error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn decompress_bomb_is_bounded_by_max_body_len() {
+        // A tiny gzip stream that expands past MAX_BODY_LEN must be rejected —
+        // the Read::take limiter caps the expansion so a decompression bomb
+        // cannot OOM the proxy.
+        let bomb = gzip(&vec![0u8; MAX_BODY_LEN + 1024]);
+        assert!(
+            bomb.len() < 1024 * 1024,
+            "a highly-compressible bomb is tiny on the wire ({} bytes)",
+            bomb.len()
+        );
+        let err = decompress_content_encoding("gzip", &bomb).unwrap_err();
+        assert!(
+            matches!(&err, ProxyError::Config(m) if m.contains("exceeds maximum")),
+            "expected decompression-bomb rejection, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn decompress_at_cap_boundary_is_accepted() {
+        // A body that decompresses to exactly MAX_BODY_LEN is allowed (the cap is
+        // inclusive); only strictly-larger expansions are rejected.
+        let plain = vec![0u8; MAX_BODY_LEN];
+        let out = decompress_content_encoding("gzip", &gzip(&plain)).unwrap();
+        assert_eq!(out.len(), MAX_BODY_LEN);
     }
 }

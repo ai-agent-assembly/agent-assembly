@@ -26,7 +26,7 @@ use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
 use crate::intercept::mcp::{is_unenforceable_tool_call, parse_mcp_request};
-use crate::intercept::{InterceptVerdict, Interceptor, VerdictDecision};
+use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
 use crate::proxy::http::{
     read_http_request, read_http_response, read_line_capped, serialize_http_request, serialize_http_request_with_auth,
@@ -556,9 +556,11 @@ impl ProxyServer {
         // A `Block` verdict refuses the forward (403); a redact verdict forwards
         // the redacted bytes. An MCP `Deny`/unenforceable body already returned
         // above, so this only runs on bodies that are about to be forwarded.
-        let verdict = self
-            .interceptor
-            .intercept_request(&req.body, self.config.credential_action);
+        let verdict = self.interceptor.intercept_request(
+            &req.body,
+            req.header("content-encoding"),
+            self.config.credential_action,
+        );
         if verdict.decision == VerdictDecision::Block {
             tracing::info!(
                 %host,
@@ -612,21 +614,54 @@ impl ProxyServer {
             let mut upstream_reader = BufReader::new(upstream_read);
             match read_http_response(&mut upstream_reader).await {
                 Ok(Some(resp)) => {
-                    let body_to_forward = match self.interceptor.redact_response_body(&resp.body) {
-                        Some(redacted) => {
-                            tracing::info!(
+                    let content_encoding = resp
+                        .headers
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
+                        .map(|(_, v)| v.as_str());
+                    match self.interceptor.redact_response_body(&resp.body, content_encoding) {
+                        ResponseScan::Withhold => {
+                            // AAASM-4156: the upstream body's Content-Encoding is
+                            // not inspectable (undecodable encoding, or a
+                            // compressed body carrying findings we cannot safely
+                            // re-encode). Relaying it would leak an un-scanned —
+                            // possibly credential-bearing — body to the agent, the
+                            // same leak AAASM-3997 closes for an unparseable
+                            // response. Fail closed: withhold and return a
+                            // JSON-RPC error envelope.
+                            tracing::warn!(
                                 tool_name = %call.tool_name,
-                                "MCP response carried sensitive payload, redacting before forwarding to client",
+                                "MCP response body not inspectable (content-encoding); withholding (fail-closed)",
                             );
                             self.interceptor
-                                .emit_mcp_decision(&call.tool_name, &args_bytes, false, "response redacted")
+                                .emit_mcp_decision(
+                                    &call.tool_name,
+                                    &args_bytes,
+                                    true,
+                                    "response encoding not inspectable, withheld (fail-closed)",
+                                )
                                 .await;
-                            redacted
+                            client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
                         }
-                        None => resp.body.clone(),
-                    };
-                    let modified = serialize_http_response(&resp, &body_to_forward);
-                    client_tls.write_all(&modified).await?;
+                        outcome => {
+                            let body_to_forward = match outcome {
+                                ResponseScan::Redact(redacted) => {
+                                    tracing::info!(
+                                        tool_name = %call.tool_name,
+                                        "MCP response carried sensitive payload, redacting before forwarding to client",
+                                    );
+                                    self.interceptor
+                                        .emit_mcp_decision(&call.tool_name, &args_bytes, false, "response redacted")
+                                        .await;
+                                    redacted
+                                }
+                                // ResponseScan::Forward — Withhold is handled above.
+                                _ => resp.body.clone(),
+                            };
+                            let modified = serialize_http_response(&resp, &body_to_forward);
+                            client_tls.write_all(&modified).await?;
+                        }
+                    }
                 }
                 Ok(None) => {
                     // Upstream closed without writing a response — nothing to forward.
@@ -788,9 +823,11 @@ impl ProxyServer {
             return Ok(());
         }
 
-        let verdict = self
-            .interceptor
-            .intercept_request(&req.body, self.config.credential_action);
+        let verdict = self.interceptor.intercept_request(
+            &req.body,
+            req.header("content-encoding"),
+            self.config.credential_action,
+        );
 
         // Emit the legacy ProxyEvent for the audit broadcast — keeps
         // existing subscribers wired up unchanged.

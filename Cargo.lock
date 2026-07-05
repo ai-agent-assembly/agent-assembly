@@ -428,6 +428,7 @@ dependencies = [
  "clap",
  "criterion",
  "dirs",
+ "flate2",
  "hyper",
  "hyper-util",
  "libc",

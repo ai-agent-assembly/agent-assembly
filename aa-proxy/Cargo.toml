@@ -30,6 +30,15 @@ time         = { workspace = true }
 lru          = "0.18"
 serde        = { workspace = true }
 serde_json   = { workspace = true }
+# AAASM-4156: decompress `Content-Encoding: gzip`/`deflate` MitM'd bodies so the
+# credential/DLP scanner inspects the plaintext instead of the opaque compressed
+# bytes (a gzip'd secret otherwise slips past). flate2 1.1.9 is already resolved
+# in the workspace lock (via tower-http/async-compression and zip), so this adds
+# no new crate to the tree. Default features use the pure-Rust miniz_oxide
+# backend — no C/zlib system dependency. `br` (brotli) is intentionally NOT
+# pulled in: it would be a genuinely new dependency, so the scanner fails closed
+# on brotli-encoded bodies rather than adding one (see decompress_content_encoding).
+flate2       = "1.1"
 anyhow       = { workspace = true }
 thiserror    = { workspace = true }
 dirs                = { workspace = true }
