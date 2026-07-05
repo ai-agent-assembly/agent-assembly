@@ -9,8 +9,6 @@ import { FleetHealthPanel } from '../features/analytics/FleetHealthPanel'
 import { ApprovalAnalyticsPanel } from '../features/analytics/ApprovalAnalyticsPanel'
 import { useAgentsQuery } from '../features/agents/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
-import { ANALYTICS_BACKEND_AVAILABLE } from '../features/analytics/analyticsBackend'
-import { ComingSoon } from './ComingSoon'
 import '../features/analytics/KpiStrip.css'
 import '../features/analytics/ActionVolumePanel.css'
 import '../features/analytics/CostBreakdownPanel.css'
@@ -20,16 +18,6 @@ import '../features/analytics/ApprovalAnalyticsPanel.css'
 import './AnalyticsPage.css'
 
 export function AnalyticsPage() {
-  // The analytics dashboard is entirely backed by the `/api/v1/analytics/*`
-  // endpoints, which do not exist in aa-api yet (AAASM-4138). Show the shared
-  // "not implemented yet" placeholder instead of a page full of failed panels.
-  if (!ANALYTICS_BACKEND_AVAILABLE) {
-    return <ComingSoon name="Analytics" />
-  }
-  return <AnalyticsDashboard />
-}
-
-function AnalyticsDashboard() {
   const { filters, setFilters } = useAnalyticsFilters()
   const agentsQuery = useAgentsQuery()
   const teamsQuery = useTeamsQuery()

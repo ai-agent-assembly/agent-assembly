@@ -1,8 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { CostBreakdownPanel } from '../features/analytics/CostBreakdownPanel'
-import { ANALYTICS_BACKEND_AVAILABLE } from '../features/analytics/analyticsBackend'
-import { EmptyState } from '../components/states'
 import { SegmentedControl } from '../features/analytics/SegmentedControl'
 import { TeamBudgetBar } from '../components/topology/TeamBudgetBar'
 import {
@@ -203,19 +201,7 @@ export function CostsPage() {
       </section>
 
       <section className="costs-section" data-testid="costs-breakdown">
-        {ANALYTICS_BACKEND_AVAILABLE ? (
-          <CostBreakdownPanel />
-        ) : (
-          <div className="cost-breakdown-panel" data-testid="cost-breakdown-unavailable">
-            <div className="cost-breakdown-panel__header">
-              <h2 className="cost-breakdown-panel__title">Cost Breakdown</h2>
-            </div>
-            <EmptyState
-              title="Per-agent cost breakdown is coming soon"
-              description="This view needs the analytics data endpoints, which are not available in this build yet."
-            />
-          </div>
-        )}
+        <CostBreakdownPanel />
       </section>
     </div>
   )
