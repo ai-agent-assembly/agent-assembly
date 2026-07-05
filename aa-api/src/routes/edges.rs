@@ -657,4 +657,11 @@ mod tests {
         // string and panicked; hex::decode must reject it as a clean error.
         assert!(parse_agent_id("abc").is_err());
     }
+
+    #[test]
+    fn parse_agent_id_rejects_multibyte() {
+        // AAASM-4150: a multibyte segment previously sliced a non-char-boundary
+        // and panicked; hex::decode must reject it as a clean error.
+        assert!(parse_agent_id("€0").is_err());
+    }
 }
