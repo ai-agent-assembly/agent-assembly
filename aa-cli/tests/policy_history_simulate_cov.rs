@@ -37,6 +37,18 @@ fn tool_call_jsonl(tool: &str) -> String {
     .unwrap()
 }
 
+/// Serialize one audit-log line whose `payload` is not a valid
+/// `GovernanceAction`, so the replay yields a per-event `decision = "error"`
+/// outcome (a malformed / schema-drifted event).
+fn unparseable_jsonl() -> String {
+    serde_json::to_string(&serde_json::json!({
+        "event_type": "ToolCallIntercepted",
+        "agent_id": "test-agent",
+        "payload": "this is not a serialized governance action",
+    }))
+    .unwrap()
+}
+
 fn write_temp(contents: &str) -> tempfile::NamedTempFile {
     let mut f = tempfile::NamedTempFile::new().unwrap();
     f.write_all(contents.as_bytes()).unwrap();
@@ -96,6 +108,51 @@ fn simulate_unreadable_against_file_returns_failure() {
     let args = SimulateArgs {
         policy: policy.path().to_path_buf(),
         against: Some(std::path::PathBuf::from("/nonexistent/aaasm-3812/audit-log.jsonl")),
+        live: false,
+        duration: None,
+        output_file: None,
+    };
+    assert_eq!(simulate::run(args), ExitCode::FAILURE);
+}
+
+#[test]
+fn simulate_unparseable_events_return_failure() {
+    // AAASM-4175: a fully-unparseable / schema-drifted audit log must fail the
+    // exit gate. Previously the exit code keyed only on `denied`, so every
+    // event erroring out still yielded exit 0 — CI gating on the exit status
+    // treated a broken log as PASS.
+    let policy = write_temp(ALLOW_ALL_POLICY);
+    let log = write_temp(&format!("{}\n{}\n", unparseable_jsonl(), unparseable_jsonl()));
+    let report_path = tempfile::NamedTempFile::new().unwrap();
+
+    let args = SimulateArgs {
+        policy: policy.path().to_path_buf(),
+        against: Some(log.path().to_path_buf()),
+        live: false,
+        duration: None,
+        output_file: Some(report_path.path().to_path_buf()),
+    };
+    assert_eq!(simulate::run(args), ExitCode::FAILURE);
+
+    // The report tallies the unparseable events as errored, with no denials —
+    // the errored count, not denied, is what drives the failure here.
+    let written = std::fs::read_to_string(report_path.path()).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(report["total_events"], 2);
+    assert_eq!(report["errored"], 2);
+    assert_eq!(report["denied"], 0);
+}
+
+#[test]
+fn simulate_one_unparseable_among_allowed_returns_failure() {
+    // A single unparseable event among otherwise-allowed events must still
+    // fail: the old `denied > 0` gate would have passed this log as SUCCESS.
+    let policy = write_temp(ALLOW_ALL_POLICY);
+    let log = write_temp(&format!("{}\n{}\n", tool_call_jsonl("read_file"), unparseable_jsonl()));
+
+    let args = SimulateArgs {
+        policy: policy.path().to_path_buf(),
+        against: Some(log.path().to_path_buf()),
         live: false,
         duration: None,
         output_file: None,
