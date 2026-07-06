@@ -350,16 +350,26 @@ async fn policy_simulate_with_output_file_writes_report() {
     let fixture = CliFixture::start().await.expect("fixture should start");
     let policy = CliFixture::fixture_path("policies/allow_all.yaml");
 
-    // HistoricalReplay::from_file expects JSONL with {event_type, agent_id, payload}.
+    // HistoricalReplay::from_file expects JSONL with {event_type, agent_id, payload},
+    // where `payload` is a serialized `GovernanceAction`. Use a real ToolCall so
+    // the events actually evaluate (allow-all) instead of erroring on an
+    // unparseable payload — otherwise the run now fails the errored>0 exit gate.
     let scratch = tempfile::tempdir().expect("scratch tempdir");
     let log_path = scratch.path().join("events.jsonl");
-    std::fs::write(
-        &log_path,
-        r#"{"event_type":"ToolCallIntercepted","agent_id":"a1","payload":"{}"}
-{"event_type":"ToolCallIntercepted","agent_id":"a2","payload":"{}"}
-"#,
-    )
-    .expect("write replay log");
+    let payload = serde_json::to_string(&aa_core::GovernanceAction::ToolCall {
+        name: "search".to_string(),
+        args: "{}".to_string(),
+    })
+    .expect("serialize governance action");
+    let line = |agent: &str| {
+        serde_json::to_string(&serde_json::json!({
+            "event_type": "ToolCallIntercepted",
+            "agent_id": agent,
+            "payload": payload,
+        }))
+        .expect("serialize audit line")
+    };
+    std::fs::write(&log_path, format!("{}\n{}\n", line("a1"), line("a2"))).expect("write replay log");
     let report_path = scratch.path().join("report.json");
 
     let out = fixture

@@ -50,6 +50,7 @@ impl LiveSimulation {
             denied: 0,
             allowed: 0,
             approval_required: 0,
+            errored: 0,
             budget_impact_usd: None,
             flagged_outcomes: Vec::new(),
         })

@@ -26,6 +26,11 @@ pub struct SimulationReport {
     pub allowed: usize,
     /// Number of events that would have required human approval.
     pub approval_required: usize,
+    /// Number of events that could not be evaluated — e.g. a payload that
+    /// failed to deserialize (a malformed or schema-drifted audit log). These
+    /// yield a per-event `decision = "error"` and must fail an exit-gated run:
+    /// a simulation that could not actually evaluate its input is not a PASS.
+    pub errored: usize,
     /// Estimated budget impact in USD (if budget policy is present).
     pub budget_impact_usd: Option<f64>,
     /// Per-event outcomes for events that were not simply allowed.

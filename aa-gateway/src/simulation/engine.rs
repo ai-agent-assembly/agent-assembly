@@ -92,6 +92,7 @@ impl SimulationEngine {
         let mut allowed = 0usize;
         let mut denied = 0usize;
         let mut approval_required = 0usize;
+        let mut errored = 0usize;
         let mut flagged_outcomes = Vec::new();
 
         for (i, event) in events.iter().enumerate() {
@@ -107,7 +108,9 @@ impl SimulationEngine {
                     flagged_outcomes.push(outcome);
                 }
                 _ => {
-                    // "error" or unknown — treat as flagged
+                    // "error" or unknown — an event that could not be evaluated.
+                    // Counted so an exit-gated run can fail on an unparseable log.
+                    errored += 1;
                     flagged_outcomes.push(outcome);
                 }
             }
@@ -118,6 +121,7 @@ impl SimulationEngine {
             denied,
             allowed,
             approval_required,
+            errored,
             budget_impact_usd: None,
             flagged_outcomes,
         }
