@@ -1926,6 +1926,13 @@ mod tests {
         }
     }
 
+    fn make_ctx_in_team(agent_byte: u8, team: &str) -> AgentContext {
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([agent_byte; 16]);
+        ctx.team_id = Some(team.to_string());
+        ctx
+    }
+
     fn empty_doc() -> PolicyDocument {
         PolicyDocument {
             name: None,
@@ -2316,6 +2323,60 @@ mod tests {
                 PolicyResult::Allow
             );
         }
+    }
+
+    #[test]
+    fn rate_limit_bucket_is_isolated_per_team() {
+        // AAASM-4173: the stage-4 rate-limit bucket must be keyed by tenant
+        // scope (team) + tool name, not tool name alone. A `limit_per_hour` is
+        // per-team — like budgets — so one team exhausting its bucket must NOT
+        // deny another team, while two agents in the SAME team SHARE one bucket
+        // (the limit is enforced within a team, across its agents). With the old
+        // name-only key, team A's calls consumed team B's allowance (a global
+        // bucket per tool name shared across every tenant).
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "search".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: Some(1),
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+
+        let team_a_agent1 = make_ctx_in_team(1, "team-a");
+        let team_a_agent2 = make_ctx_in_team(2, "team-a");
+        let team_b_agent1 = make_ctx_in_team(3, "team-b");
+
+        // Team A consumes its single token.
+        assert_eq!(
+            engine.evaluate(&team_a_agent1, &tool_call("search", "")).decision,
+            PolicyResult::Allow
+        );
+        // A different agent in the SAME team shares the bucket — now exhausted.
+        // (If the key were per-agent, agent2 would get a fresh bucket and pass.)
+        assert_eq!(
+            engine.evaluate(&team_a_agent2, &tool_call("search", "")).decision,
+            PolicyResult::Deny {
+                reason: "rate limit exceeded".into()
+            },
+            "same team + same tool must share one bucket (limit enforced per team)"
+        );
+        // Team B has its OWN bucket — team A's exhaustion must not deny team B.
+        assert_eq!(
+            engine.evaluate(&team_b_agent1, &tool_call("search", "")).decision,
+            PolicyResult::Allow,
+            "a different team must not share team A's bucket (cross-tenant isolation)"
+        );
+        // Team B's own bucket still enforces the limit within team B.
+        assert_eq!(
+            engine.evaluate(&team_b_agent1, &tool_call("search", "")).decision,
+            PolicyResult::Deny {
+                reason: "rate limit exceeded".into()
+            },
+            "team B's own bucket still enforces the per-team limit"
+        );
     }
 
     #[test]
