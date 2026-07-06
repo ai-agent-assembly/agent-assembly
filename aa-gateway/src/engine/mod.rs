@@ -953,7 +953,7 @@ impl PolicyEngine {
             .or_else(|| policy.tools.get("*"))
             .and_then(|tp| tp.limit_per_hour)
         {
-            if !self.try_consume_rate(name, limit) {
+            if !self.try_consume_rate(&self.rate_scope(ctx), name, limit) {
                 return Some(EvaluationResult::deny("rate limit exceeded"));
             }
         }
@@ -1038,13 +1038,42 @@ impl PolicyEngine {
         None
     }
 
-    /// Try to consume one token from the per-tool rate-limit bucket, creating it
-    /// at `limit` tokens/hour on first use. Returns `false` when the bucket is
-    /// empty (request should be denied).
-    fn try_consume_rate(&self, name: &str, limit: u32) -> bool {
+    /// Resolve the tenant scope key that isolates rate-limit buckets, mirroring
+    /// the per-team granularity budgets use (AAASM-4173). The team is derived
+    /// from the authoritative registry owner via [`Self::authoritative_tenancy`]
+    /// — NOT the client-supplied `ctx.team_id` — so a caller cannot forge a
+    /// fresh team id to mint an unshared bucket and slip past the limit (the
+    /// same trust anchor AAASM-3138 established for budget keying). When no team
+    /// is assigned the scope falls back to the agent id, so two teamless agents
+    /// still never share a bucket; the fallback never collapses to a shared or
+    /// empty key, so a missing team can only ever narrow isolation — never
+    /// disable the limit (fail closed).
+    fn rate_scope(&self, ctx: &aa_core::AgentContext) -> String {
+        let (team_id, _org_id) = self.authoritative_tenancy(ctx);
+        match team_id {
+            Some(team) => format!("team:{team}"),
+            None => {
+                let hex: String = ctx.agent_id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+                format!("agent:{hex}")
+            }
+        }
+    }
+
+    /// Try to consume one token from the per-tenant, per-tool rate-limit bucket,
+    /// creating it at `limit` tokens/hour on first use. Returns `false` when the
+    /// bucket is empty (request should be denied).
+    ///
+    /// The bucket is keyed by `(scope, name)` — the tenant `scope` from
+    /// [`Self::rate_scope`] joined with the tool `name` — so a `limit_per_hour`
+    /// isolates per tenant instead of collapsing to one global bucket per tool
+    /// name shared across every team and agent (AAASM-4173). The `\u{1}` (SOH)
+    /// separator cannot appear in a team id or tool name, so distinct
+    /// `(scope, name)` pairs can never alias onto the same bucket.
+    fn try_consume_rate(&self, scope: &str, name: &str, limit: u32) -> bool {
+        let key = format!("{scope}\u{1}{name}");
         let entry = self
             .rate_state
-            .entry(name.to_string())
+            .entry(key)
             .or_insert_with(|| Mutex::new(rate_limit::TokenBucket::new(limit)));
         let mut bucket = entry.lock().unwrap_or_else(|e| e.into_inner());
         bucket.try_consume()
@@ -1242,6 +1271,7 @@ impl PolicyEngine {
     fn cascade_rate_limit(
         &self,
         cascade: &[Arc<PolicyDocument>],
+        ctx: &aa_core::AgentContext,
         action: &aa_core::GovernanceAction,
     ) -> Option<EvaluationResult> {
         let aa_core::GovernanceAction::ToolCall { name, .. } = action else {
@@ -1256,7 +1286,7 @@ impl PolicyEngine {
             .filter_map(|doc| doc.tools.get(name).or_else(|| doc.tools.get("*")))
             .filter_map(|tp| tp.limit_per_hour)
             .min()?;
-        if !self.try_consume_rate(name, min_limit) {
+        if !self.try_consume_rate(&self.rate_scope(ctx), name, min_limit) {
             return Some(EvaluationResult::deny("rate limit exceeded"));
         }
         None
@@ -1351,7 +1381,7 @@ impl PolicyEngine {
         }
 
         // Stage 4 — Rate limiting across the cascade (most restrictive wins).
-        if let Some(result) = self.cascade_rate_limit(&cascade, action) {
+        if let Some(result) = self.cascade_rate_limit(&cascade, ctx, action) {
             return result;
         }
 
