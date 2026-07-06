@@ -40,8 +40,10 @@ pub struct SimulateArgs {
 
 /// Execute the simulate command.
 ///
-/// Returns [`ExitCode::SUCCESS`] if no violations were found,
-/// or [`ExitCode::FAILURE`] if the simulation detected policy violations.
+/// Returns [`ExitCode::SUCCESS`] only when every event evaluated cleanly with no
+/// denials. Returns [`ExitCode::FAILURE`] if the simulation detected policy
+/// violations **or** any event could not be evaluated (e.g. an unparseable /
+/// schema-drifted audit log) — otherwise a fully-broken log would gate as PASS.
 /// This allows CI pipelines to gate on `aasm policy simulate` exit status.
 pub fn run(args: SimulateArgs) -> ExitCode {
     // Load the policy engine from the provided YAML file.
@@ -97,7 +99,18 @@ pub fn run(args: SimulateArgs) -> ExitCode {
 
     print_report(&report);
 
-    if report.denied > 0 {
+    // An event that could not be evaluated (e.g. an unparseable / schema-drifted
+    // payload) must fail the run loudly: a simulation that could not actually
+    // evaluate its input is not a PASS, so CI gating on the exit status catches a
+    // malformed audit log instead of treating it as SUCCESS.
+    if report.errored > 0 {
+        eprintln!(
+            "error: {} event(s) failed to parse and could not be evaluated",
+            report.errored
+        );
+    }
+
+    if report.denied > 0 || report.errored > 0 {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
