@@ -194,6 +194,37 @@ impl HttpRequest {
     }
 }
 
+/// Parse a single header line, returning the key-value pair or an error.
+fn parse_header_line(trimmed: &str) -> Result<(String, String), ProxyError> {
+    trimmed
+        .split_once(':')
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .ok_or_else(|| ProxyError::Config(format!("malformed header line: {trimmed:?}")))
+}
+
+/// Check if headers indicate a chunked transfer encoding (AAASM-3864).
+fn has_chunked_transfer_encoding(headers: &[(String, String)]) -> bool {
+    headers
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked"))
+}
+
+/// Extract and validate Content-Length from headers (AAASM-3891).
+fn extract_content_length(headers: &[(String, String)]) -> Result<usize, ProxyError> {
+    let content_length: usize = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(0);
+
+    if content_length > MAX_BODY_LEN {
+        return Err(ProxyError::Config(format!(
+            "request Content-Length {content_length} exceeds maximum {MAX_BODY_LEN}; refusing (fail-closed)"
+        )));
+    }
+    Ok(content_length)
+}
+
 /// Read and parse an HTTP/1.1 request from `reader`.
 ///
 /// Reads the request line and headers off the stream, then reads exactly
@@ -212,8 +243,7 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     // AAASM-3922: cap the head (request line + headers) so an unbounded header
-    // read cannot OOM the proxy. `head_budget` tracks the remaining total-head
-    // allowance; each line is additionally bounded by `MAX_HEADER_LINE_LEN`.
+    // read cannot OOM the proxy.
     let mut head_budget = MAX_HEADER_BYTES;
     let mut request_line = String::new();
     let n = read_line_capped(reader, &mut request_line, MAX_HEADER_LINE_LEN, head_budget).await?;
@@ -221,6 +251,7 @@ where
         return Ok(None);
     }
     head_budget -= n;
+
     let trimmed = request_line.trim_end_matches(['\r', '\n']);
     let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
     if parts.len() != 3 {
@@ -230,58 +261,15 @@ where
     let target = parts[1].to_string();
     let version = parts[2].to_string();
 
-    let mut headers: Vec<(String, String)> = Vec::new();
-    loop {
-        let mut line = String::new();
-        let n = read_line_capped(reader, &mut line, MAX_HEADER_LINE_LEN, head_budget).await?;
-        if n == 0 {
-            return Err(ProxyError::Config("unexpected EOF reading headers".into()));
-        }
-        head_budget -= n;
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
-            break;
-        }
-        if headers.len() >= MAX_HEADER_COUNT {
-            return Err(ProxyError::Config(format!(
-                "HTTP request exceeds maximum {MAX_HEADER_COUNT} header lines; refusing (fail-closed)"
-            )));
-        }
-        if let Some((k, v)) = trimmed.split_once(':') {
-            headers.push((k.trim().to_string(), v.trim().to_string()));
-        } else {
-            return Err(ProxyError::Config(format!("malformed header line: {trimmed:?}")));
-        }
-    }
+    let headers = read_headers(reader, &mut head_budget).await?;
 
-    // AAASM-3864 (fail-closed): a chunked body cannot be parsed here, so the
-    // credential scanner and `parse_mcp_request` would see an empty body while
-    // the real payload was forwarded un-inspected. Refuse such requests rather
-    // than silently passing an un-scanned body upstream.
-    if headers
-        .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked"))
-    {
+    if has_chunked_transfer_encoding(&headers) {
         return Err(ProxyError::Config(
             "transfer-encoding: chunked request bodies are not inspectable; refusing (fail-closed)".into(),
         ));
     }
 
-    let content_length: usize = headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, v)| v.parse().ok())
-        .unwrap_or(0);
-
-    // AAASM-3891 (fail-closed): reject an over-cap Content-Length *before*
-    // allocating. The header is attacker-controlled, so allocating a buffer
-    // sized to it lets a single request OOM the proxy.
-    if content_length > MAX_BODY_LEN {
-        return Err(ProxyError::Config(format!(
-            "request Content-Length {content_length} exceeds maximum {MAX_BODY_LEN}; refusing (fail-closed)"
-        )));
-    }
-
+    let content_length = extract_content_length(&headers)?;
     let mut body = vec![0u8; content_length];
     if content_length > 0 {
         reader.read_exact(&mut body).await?;
@@ -294,6 +282,36 @@ where
         headers,
         body,
     }))
+}
+
+/// Read HTTP headers from a buffered reader, enforcing size limits.
+async fn read_headers<R>(
+    reader: &mut BufReader<R>,
+    head_budget: &mut usize,
+) -> Result<Vec<(String, String)>, ProxyError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut headers: Vec<(String, String)> = Vec::new();
+    loop {
+        let mut line = String::new();
+        let n = read_line_capped(reader, &mut line, MAX_HEADER_LINE_LEN, *head_budget).await?;
+        if n == 0 {
+            return Err(ProxyError::Config("unexpected EOF reading headers".into()));
+        }
+        *head_budget -= n;
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break;
+        }
+        if headers.len() >= MAX_HEADER_COUNT {
+            return Err(ProxyError::Config(format!(
+                "HTTP request exceeds maximum {MAX_HEADER_COUNT} header lines; refusing (fail-closed)"
+            )));
+        }
+        headers.push(parse_header_line(trimmed)?);
+    }
+    Ok(headers)
 }
 
 /// Re-serialise an [`HttpRequest`] with a replacement body, rewriting the
