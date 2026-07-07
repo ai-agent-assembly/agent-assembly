@@ -53,7 +53,6 @@ export function ConfirmDialog({
     <div
       className="confirm-dialog__backdrop"
       data-testid="confirm-dialog-backdrop"
-      role="presentation"
       onClick={(e) => {
         if (e.target === e.currentTarget) onCancel()
       }}

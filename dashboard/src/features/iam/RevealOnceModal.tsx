@@ -67,7 +67,6 @@ export function RevealOnceModal({
     >
       <div
         className="iam-dialog"
-        role="presentation"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
       >

@@ -53,7 +53,6 @@ export function SuspendReasonDialog({
     <div
       className="suspend-dialog__scrim"
       onClick={handleScrimClick}
-      role="presentation"
       data-testid="suspend-dialog-scrim"
     >
       <form

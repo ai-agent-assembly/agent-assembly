@@ -68,7 +68,6 @@ export function OverlayHost({ name, onRequestClose, children }: OverlayHostProps
     <div
       className="overlay-backdrop"
       data-testid={`overlay-${name}`}
-      role="presentation"
       onClick={handleBackdropClick}
       onKeyDown={handleBackdropKeyDown}
     >

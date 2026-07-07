@@ -61,7 +61,6 @@ export function Drawer({ open, onClose, children, ariaLabel }: Readonly<DrawerPr
       className="drawer-scrim"
       data-testid="drawer-scrim"
       onClick={handleScrimClick}
-      role="presentation"
     >
       <aside
         className="drawer-panel"

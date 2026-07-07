@@ -51,7 +51,6 @@ export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Read
   return (
     <div
       className="cap-drawer-scrim"
-      role="presentation"
       onClick={onClose}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return

@@ -61,7 +61,6 @@ export function TraceDrawer() {
     <div
       className="trace-drawer-scrim"
       data-testid="trace-drawer-scrim"
-      role="presentation"
       onClick={close}
       onKeyDown={e => {
         if (e.target !== e.currentTarget) return
