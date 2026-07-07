@@ -4,25 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Agent Assembly Dashboard</title>
-    <!-- Apply the saved/OS theme before first paint to avoid a flash of the
-         wrong theme. Mirrors getInitialTheme() in src/theme/useTheme.ts. -->
-    <script>
-      (function () {
-        try {
-          var k = 'aa-dashboard-theme';
-          var s = localStorage.getItem(k);
-          var t =
-            s === 'light' || s === 'dark'
-              ? s
-              : window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
-                ? 'dark'
-                : 'light';
-          document.documentElement.setAttribute('data-theme', t);
-        } catch (e) {
-          /* no-op: theme will be applied by React on mount */
-        }
-      })();
-    </script>
+    <!-- Theme initialization: external script for CSP compliance.
+         Applies saved/OS theme before first paint to avoid FOUC.
+         Keep public/theme-init.js in sync with src/theme/useTheme.ts. -->
+    <script src="./theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>
