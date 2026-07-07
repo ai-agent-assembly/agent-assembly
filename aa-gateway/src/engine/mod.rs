@@ -1069,6 +1069,12 @@ impl PolicyEngine {
     /// name shared across every team and agent (AAASM-4173). The `\u{1}` (SOH)
     /// separator cannot appear in a team id or tool name, so distinct
     /// `(scope, name)` pairs can never alias onto the same bucket.
+    ///
+    /// AAASM-4190: when a bucket already exists with a higher capacity, passing
+    /// a tighter `limit` now reduces the bucket's capacity and clamps its tokens
+    /// accordingly. This prevents a bypass when multiple policies apply: a
+    /// single-policy evaluation that created a bucket with limit 100 must not
+    /// allow a cascade with minimum limit 10 to slip through the old capacity.
     fn try_consume_rate(&self, scope: &str, name: &str, limit: u32) -> bool {
         let key = format!("{scope}\u{1}{name}");
         let entry = self
@@ -1076,7 +1082,7 @@ impl PolicyEngine {
             .entry(key)
             .or_insert_with(|| Mutex::new(rate_limit::TokenBucket::new(limit)));
         let mut bucket = entry.lock().unwrap_or_else(|e| e.into_inner());
-        bucket.try_consume()
+        bucket.try_consume_with_limit(limit)
     }
 
     /// Apply the shared Stage 6 credential decision over already-collected

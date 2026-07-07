@@ -29,13 +29,24 @@ impl TokenBucket {
     }
 
     #[allow(dead_code)]
-    /// Try to consume one token from the bucket.
+    /// Try to consume one token from the bucket, enforcing the given limit.
+    ///
+    /// If `limit` is lower than the bucket's current capacity, the capacity is
+    /// tightened to the new limit and tokens are clamped accordingly. This
+    /// prevents a bypass when multiple policies apply: a bucket created with a
+    /// higher limit (e.g., 100) must honour a later, more restrictive policy
+    /// (e.g., limit 10) rather than silently ignoring it (AAASM-4190).
     ///
     /// Refills tokens based on elapsed time since last call, then attempts to consume one token.
     /// Tokens refill at a rate of `capacity` tokens per hour (3600 seconds).
     ///
     /// Returns `true` if a token was consumed, `false` if the bucket is empty.
-    pub(crate) fn try_consume(&mut self) -> bool {
+    pub(crate) fn try_consume_with_limit(&mut self, limit: u32) -> bool {
+        // Tighten capacity if the requested limit is more restrictive.
+        if limit < self.capacity {
+            self.capacity = limit;
+            self.tokens = f64::min(self.tokens, limit as f64);
+        }
         let now = Instant::now();
         let elapsed_secs = (now - self.last_refill).as_secs_f64();
         self.tokens = f64::min(
@@ -49,6 +60,17 @@ impl TokenBucket {
         } else {
             false
         }
+    }
+
+    #[allow(dead_code)]
+    /// Try to consume one token from the bucket.
+    ///
+    /// Refills tokens based on elapsed time since last call, then attempts to consume one token.
+    /// Tokens refill at a rate of `capacity` tokens per hour (3600 seconds).
+    ///
+    /// Returns `true` if a token was consumed, `false` if the bucket is empty.
+    pub(crate) fn try_consume(&mut self) -> bool {
+        self.try_consume_with_limit(self.capacity)
     }
 }
 
@@ -105,5 +127,48 @@ mod tests {
 
         // 11th consume should fail
         assert!(!bucket.try_consume(), "11th consume should fail (capacity is 10)");
+    }
+
+    #[test]
+    fn tighter_limit_reduces_capacity_and_clamps_tokens() {
+        // AAASM-4190: when multiple policies apply, a bucket created with a
+        // higher limit must honour a later, more restrictive limit.
+        let mut bucket = TokenBucket::new(100);
+        // Bucket starts with 100 tokens. Consume 97, leaving 3.
+        for _ in 0..97 {
+            assert!(bucket.try_consume(), "Should consume token");
+        }
+        // Now apply a tighter limit of 2. The bucket's capacity should drop
+        // to 2 and the remaining 3 tokens should clamp to 2.
+        assert!(
+            bucket.try_consume_with_limit(2),
+            "First consume with tighter limit should succeed (2 tokens clamped, now 1)"
+        );
+        assert!(
+            bucket.try_consume_with_limit(2),
+            "Second consume with tighter limit should succeed (now 0)"
+        );
+        // Tokens exhausted after clamping to 2 and consuming twice.
+        assert!(
+            !bucket.try_consume_with_limit(2),
+            "Third consume should fail (capacity tightened to 2, tokens exhausted)"
+        );
+    }
+
+    #[test]
+    fn looser_limit_does_not_expand_capacity() {
+        // Once capacity is set, a looser limit should not expand it.
+        let mut bucket = TokenBucket::new(5);
+        // Consume all 5 tokens.
+        for _ in 0..5 {
+            assert!(bucket.try_consume(), "Should consume token");
+        }
+        // Bucket is empty. Calling with a higher limit (100) should NOT
+        // expand capacity back to 100.
+        assert!(
+            !bucket.try_consume_with_limit(100),
+            "Should still fail (capacity remains 5, not expanded to 100)"
+        );
+        assert_eq!(bucket.capacity, 5, "Capacity should remain 5");
     }
 }
