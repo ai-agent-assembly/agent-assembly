@@ -596,7 +596,8 @@ mod tests {
         assert!(result.is_err(), "misspelled section key must be rejected");
         let errs = result.unwrap_err();
         assert!(
-            errs.iter().any(|e| e.field == "capabilties" && e.message.contains("unknown")),
+            errs.iter()
+                .any(|e| e.field == "capabilties" && e.message.contains("unknown")),
             "expected error mentioning 'capabilties', got: {:?}",
             errs,
         );
