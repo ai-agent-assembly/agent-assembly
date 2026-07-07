@@ -106,45 +106,69 @@ impl From<Destination> for DestinationResponse {
 fn restore_masked_secrets(incoming: &mut DestinationConfig, stored: Option<DestinationConfig>) {
     match incoming {
         DestinationConfig::Webhook { secret_header, .. } => {
-            if secret_header.as_deref() == Some(SECRET_MASK) {
-                *secret_header = match stored {
-                    Some(DestinationConfig::Webhook { secret_header, .. }) => secret_header,
-                    _ => None,
-                };
-            }
+            restore_webhook_secret(secret_header, stored);
         }
         DestinationConfig::Slack { webhook_url, .. } => {
-            if webhook_url == SECRET_MASK {
-                if let Some(DestinationConfig::Slack {
-                    webhook_url: stored_url,
-                    ..
-                }) = stored
-                {
-                    *webhook_url = stored_url;
-                }
-            }
+            restore_slack_secret(webhook_url, stored);
         }
         DestinationConfig::PagerDuty { routing_key, .. } => {
-            if routing_key == SECRET_MASK {
-                if let Some(DestinationConfig::PagerDuty {
-                    routing_key: stored_key,
-                    ..
-                }) = stored
-                {
-                    *routing_key = stored_key;
-                }
-            }
+            restore_pagerduty_secret(routing_key, stored);
         }
         DestinationConfig::OpsGenie { api_key, .. } => {
-            if api_key == SECRET_MASK {
-                if let Some(DestinationConfig::OpsGenie {
-                    api_key: stored_key, ..
-                }) = stored
-                {
-                    *api_key = stored_key;
-                }
-            }
+            restore_opsgenie_secret(api_key, stored);
         }
+    }
+}
+
+/// Restore the webhook `secret_header` from stored config when masked.
+fn restore_webhook_secret(secret_header: &mut Option<String>, stored: Option<DestinationConfig>) {
+    if secret_header.as_deref() != Some(SECRET_MASK) {
+        return;
+    }
+    *secret_header = match stored {
+        Some(DestinationConfig::Webhook { secret_header, .. }) => secret_header,
+        _ => None,
+    };
+}
+
+/// Restore the Slack `webhook_url` from stored config when masked.
+fn restore_slack_secret(webhook_url: &mut String, stored: Option<DestinationConfig>) {
+    if webhook_url != SECRET_MASK {
+        return;
+    }
+    if let Some(DestinationConfig::Slack {
+        webhook_url: stored_url,
+        ..
+    }) = stored
+    {
+        *webhook_url = stored_url;
+    }
+}
+
+/// Restore the PagerDuty `routing_key` from stored config when masked.
+fn restore_pagerduty_secret(routing_key: &mut String, stored: Option<DestinationConfig>) {
+    if routing_key != SECRET_MASK {
+        return;
+    }
+    if let Some(DestinationConfig::PagerDuty {
+        routing_key: stored_key,
+        ..
+    }) = stored
+    {
+        *routing_key = stored_key;
+    }
+}
+
+/// Restore the OpsGenie `api_key` from stored config when masked.
+fn restore_opsgenie_secret(api_key: &mut String, stored: Option<DestinationConfig>) {
+    if api_key != SECRET_MASK {
+        return;
+    }
+    if let Some(DestinationConfig::OpsGenie {
+        api_key: stored_key, ..
+    }) = stored
+    {
+        *api_key = stored_key;
     }
 }
 
