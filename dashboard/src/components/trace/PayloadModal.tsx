@@ -108,7 +108,6 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
     <div
       className="payload-modal-scrim"
       data-testid="payload-modal-scrim"
-      role="presentation"
       onClick={onClose}
       onKeyDown={e => {
         if (e.target !== e.currentTarget) return
@@ -116,6 +115,9 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
         e.preventDefault()
         onClose()
       }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close payload modal"
     >
       <div
         ref={dialogRef}

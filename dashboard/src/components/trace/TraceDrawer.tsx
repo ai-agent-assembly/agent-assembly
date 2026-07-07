@@ -61,7 +61,6 @@ export function TraceDrawer() {
     <div
       className="trace-drawer-scrim"
       data-testid="trace-drawer-scrim"
-      role="presentation"
       onClick={close}
       onKeyDown={e => {
         if (e.target !== e.currentTarget) return
@@ -69,6 +68,9 @@ export function TraceDrawer() {
         e.preventDefault()
         close()
       }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close trace drawer"
     >
       <div
         ref={drawerRef}

@@ -53,7 +53,6 @@ export function ConfirmDialog({
     <div
       className="confirm-dialog__backdrop"
       data-testid="confirm-dialog-backdrop"
-      role="presentation"
       onClick={(e) => {
         if (e.target === e.currentTarget) onCancel()
       }}
@@ -63,6 +62,9 @@ export function ConfirmDialog({
         e.preventDefault()
         onCancel()
       }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close dialog"
     >
       <div className="confirm-dialog" role="alertdialog" aria-modal="true" data-testid="confirm-dialog">
         <h2 className="confirm-dialog__title">{title}</h2>

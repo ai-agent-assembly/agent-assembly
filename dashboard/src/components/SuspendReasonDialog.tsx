@@ -53,7 +53,10 @@ export function SuspendReasonDialog({
     <div
       className="suspend-dialog__scrim"
       onClick={handleScrimClick}
-      role="presentation"
+      onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close dialog"
       data-testid="suspend-dialog-scrim"
     >
       <form

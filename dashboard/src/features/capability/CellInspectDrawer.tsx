@@ -51,7 +51,6 @@ export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Read
   return (
     <div
       className="cap-drawer-scrim"
-      role="presentation"
       onClick={onClose}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return
@@ -59,6 +58,9 @@ export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Read
         e.preventDefault()
         onClose()
       }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close cell inspector"
       data-testid="cell-inspect-scrim"
     >
       <aside
