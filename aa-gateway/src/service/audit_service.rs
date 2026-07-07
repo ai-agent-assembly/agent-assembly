@@ -10,6 +10,7 @@ use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
 use aa_core::{AuditEntry, AuditEventType, Lineage};
+use aa_proto::assembly::audit::v1::audit_event::Detail;
 use aa_proto::assembly::audit::v1::audit_service_server::AuditService;
 use aa_proto::assembly::audit::v1::{AuditEvent, ReportEventsRequest, ReportEventsResponse, StreamEventsResponse};
 use aa_proto::assembly::common::v1::Decision;
@@ -114,13 +115,25 @@ impl AuditServiceImpl {
 
         let event_type = decision_to_audit_event_type(event.decision);
 
-        let payload = serde_json::json!({
+        // AAASM-4191: Extract tool_name from the detail oneof when present.
+        // This ensures the `action` field in the JSON payload is populated for
+        // tool call events, which downstream consumers (audit_consumer, dashboard)
+        // rely on to display the tool name in decision events.
+        let tool_name = match &event.detail {
+            Some(Detail::ToolCall(tc)) => Some(tc.tool_name.clone()),
+            _ => None,
+        };
+
+        let mut payload_map = serde_json::json!({
             "event_id": &event.event_id,
             "action_type": event.action_type,
             "span_id": &event.span_id,
             "parent_span_id": &event.parent_span_id,
-        })
-        .to_string();
+        });
+        if let Some(name) = tool_name {
+            payload_map["action"] = serde_json::Value::String(name);
+        }
+        let payload = payload_map.to_string();
 
         let lineage = self
             .registry
