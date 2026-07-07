@@ -58,6 +58,9 @@ export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Read
         e.preventDefault()
         onClose()
       }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close cell inspector"
       data-testid="cell-inspect-scrim"
     >
       <aside

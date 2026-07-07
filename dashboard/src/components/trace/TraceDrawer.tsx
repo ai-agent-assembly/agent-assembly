@@ -68,6 +68,9 @@ export function TraceDrawer() {
         e.preventDefault()
         close()
       }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close trace drawer"
     >
       <div
         ref={drawerRef}

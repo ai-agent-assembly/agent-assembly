@@ -70,6 +70,9 @@ export function OverlayHost({ name, onRequestClose, children }: OverlayHostProps
       data-testid={`overlay-${name}`}
       onClick={handleBackdropClick}
       onKeyDown={handleBackdropKeyDown}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close overlay"
     >
       <div className="overlay-container" role="dialog" aria-modal="true">
         {children}

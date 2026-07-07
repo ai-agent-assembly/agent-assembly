@@ -54,8 +54,9 @@ export function RevealOnceModal({
   return (
     <div
       className="iam-dialog__backdrop"
-      role="dialog"
-      aria-modal="true"
+      role="button"
+      tabIndex={-1}
+      aria-label="Close modal"
       data-testid="reveal-once-modal"
       onClick={handleBackdropAttempt}
       onKeyDown={(e) => {
