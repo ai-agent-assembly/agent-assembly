@@ -191,7 +191,7 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 
 ## Project Status
 
-🚧 **Alpha — `v0.0.1` pre-release series** _(status as of 2026-06-13)_. The
+🚧 **Alpha — `v0.0.1` pre-release series** _(status as of 2026-07-03)_. The
 public API and wire protocol are **not** stable; do not use in production.
 
 Releases are published as GitHub pre-releases — latest
