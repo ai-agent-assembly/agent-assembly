@@ -246,6 +246,113 @@ where
     }
 }
 
+/// Degrade all probe layers when the daemon is unreachable (Linux).
+#[cfg(target_os = "linux")]
+fn degrade_all_probes(
+    broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
+    degraded_layers: &mut Vec<String>,
+    reason: String,
+    has_confine_pid: bool,
+) {
+    for kind in [ProbeKind::Tls, ProbeKind::FileIo, ProbeKind::Exec] {
+        degrade(broadcast_tx, degraded_layers, kind.sub_layer(), reason.clone());
+    }
+    if has_confine_pid {
+        degrade(
+            broadcast_tx,
+            degraded_layers,
+            ProbeKind::SyscallGuard.sub_layer(),
+            reason,
+        );
+    }
+}
+
+/// Resolve probe set and PID for a load operation (Linux).
+///
+/// Returns `Some((set, pid))` for valid combinations, or `None` if the syscall
+/// guard was planned without a confine PID (a bug — logs an error).
+#[cfg(target_os = "linux")]
+fn resolve_probe_set_and_pid(
+    kind: ProbeKind,
+    observe_pid: u32,
+    confine_pid: Option<u32>,
+) -> Option<(aa_ebpf::control::protocol::ProbeSet, u32)> {
+    use aa_ebpf::control::protocol::ProbeSet;
+
+    match kind {
+        ProbeKind::Tls => Some((ProbeSet::Tls, observe_pid)),
+        ProbeKind::FileIo => Some((ProbeSet::FileIo, observe_pid)),
+        ProbeKind::Exec => Some((ProbeSet::Exec, observe_pid)),
+        // The planner only emits SyscallGuard when confine_pid is Some. Never
+        // fall back to the runtime's own PID: the guard is a default-deny
+        // SIGKILL probe, so scoping it to `observe_pid` would make the runtime
+        // kill itself. If the invariant is ever broken, skip the load loudly.
+        ProbeKind::SyscallGuard => match confine_pid {
+            Some(pid) => Some((ProbeSet::SyscallGuard, pid)),
+            None => {
+                tracing::error!(
+                    "BUG: SyscallGuard planned without a confine PID; refusing to scope \
+                     the SIGKILL guard to the runtime's own PID"
+                );
+                None
+            }
+        },
+    }
+}
+
+/// Execute a single planned operation against the loaderd client (Linux).
+#[cfg(target_os = "linux")]
+async fn execute_planned_op(
+    client: &mut aa_ebpf::control::client::LoaderControlClient,
+    op: PlannedOp,
+    observe_pid: u32,
+    confine_pid: Option<u32>,
+    broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
+    degraded_layers: &mut Vec<String>,
+) {
+    use aa_ebpf::control::protocol::PathRuleWire;
+
+    match op {
+        PlannedOp::Load(kind) => {
+            let Some((set, pid)) = resolve_probe_set_and_pid(kind, observe_pid, confine_pid) else {
+                return;
+            };
+            if let Err(e) = await_loaderd(client.load_probe_set(set, pid)).await {
+                degrade(
+                    broadcast_tx,
+                    degraded_layers,
+                    kind.sub_layer(),
+                    format!("loaderd load failed: {e}"),
+                );
+            }
+        }
+        PlannedOp::UpdatePathMap(rules) => {
+            let wire: Vec<PathRuleWire> = rules
+                .into_iter()
+                .map(|(pattern, deny)| PathRuleWire { pattern, deny })
+                .collect();
+            if let Err(e) = await_loaderd(client.update_path_map(wire)).await {
+                degrade(
+                    broadcast_tx,
+                    degraded_layers,
+                    ProbeKind::FileIo.sub_layer(),
+                    format!("loaderd path map update failed: {e}"),
+                );
+            }
+        }
+        PlannedOp::UpdateSyscallAllowlist(syscalls) => {
+            if let Err(e) = await_loaderd(client.update_syscall_allowlist(syscalls)).await {
+                degrade(
+                    broadcast_tx,
+                    degraded_layers,
+                    ProbeKind::SyscallGuard.sub_layer(),
+                    format!("loaderd syscall allowlist update failed: {e}"),
+                );
+            }
+        }
+    }
+}
+
 /// Drive the privileged loaderd daemon to bring up the eBPF layer (Linux).
 ///
 /// Connects to the control socket as an unprivileged client and executes the
@@ -259,7 +366,6 @@ pub(crate) async fn drive_ebpf_layer(
     degraded_layers: &mut Vec<String>,
 ) {
     use aa_ebpf::control::client::LoaderControlClient;
-    use aa_ebpf::control::protocol::{PathRuleWire, ProbeSet};
 
     let socket = resolve_loaderd_socket();
     let ruleset = load_ebpf_ruleset();
@@ -273,78 +379,21 @@ pub(crate) async fn drive_ebpf_layer(
         Ok(c) => c,
         Err(e) => {
             let reason = format!("loaderd control socket unreachable at {}: {e}", socket.display());
-            for kind in [ProbeKind::Tls, ProbeKind::FileIo, ProbeKind::Exec] {
-                degrade(broadcast_tx, degraded_layers, kind.sub_layer(), reason.clone());
-            }
-            if confine_pid.is_some() {
-                degrade(
-                    broadcast_tx,
-                    degraded_layers,
-                    ProbeKind::SyscallGuard.sub_layer(),
-                    reason.clone(),
-                );
-            }
+            degrade_all_probes(broadcast_tx, degraded_layers, reason, confine_pid.is_some());
             return;
         }
     };
 
     for op in plan {
-        match op {
-            PlannedOp::Load(kind) => {
-                let (set, pid) = match kind {
-                    ProbeKind::Tls => (ProbeSet::Tls, observe_pid),
-                    ProbeKind::FileIo => (ProbeSet::FileIo, observe_pid),
-                    ProbeKind::Exec => (ProbeSet::Exec, observe_pid),
-                    // The planner only emits SyscallGuard when confine_pid is
-                    // Some. Never fall back to the runtime's own PID: the guard
-                    // is a default-deny SIGKILL probe, so scoping it to
-                    // `observe_pid` would make the runtime kill itself. If the
-                    // invariant is ever broken, skip the load loudly instead.
-                    ProbeKind::SyscallGuard => match confine_pid {
-                        Some(pid) => (ProbeSet::SyscallGuard, pid),
-                        None => {
-                            tracing::error!(
-                                "BUG: SyscallGuard planned without a confine PID; refusing to scope \
-                                 the SIGKILL guard to the runtime's own PID"
-                            );
-                            continue;
-                        }
-                    },
-                };
-                if let Err(e) = await_loaderd(client.load_probe_set(set, pid)).await {
-                    degrade(
-                        broadcast_tx,
-                        degraded_layers,
-                        kind.sub_layer(),
-                        format!("loaderd load failed: {e}"),
-                    );
-                }
-            }
-            PlannedOp::UpdatePathMap(rules) => {
-                let wire: Vec<PathRuleWire> = rules
-                    .into_iter()
-                    .map(|(pattern, deny)| PathRuleWire { pattern, deny })
-                    .collect();
-                if let Err(e) = await_loaderd(client.update_path_map(wire)).await {
-                    degrade(
-                        broadcast_tx,
-                        degraded_layers,
-                        ProbeKind::FileIo.sub_layer(),
-                        format!("loaderd path map update failed: {e}"),
-                    );
-                }
-            }
-            PlannedOp::UpdateSyscallAllowlist(syscalls) => {
-                if let Err(e) = await_loaderd(client.update_syscall_allowlist(syscalls)).await {
-                    degrade(
-                        broadcast_tx,
-                        degraded_layers,
-                        ProbeKind::SyscallGuard.sub_layer(),
-                        format!("loaderd syscall allowlist update failed: {e}"),
-                    );
-                }
-            }
-        }
+        execute_planned_op(
+            &mut client,
+            op,
+            observe_pid,
+            confine_pid,
+            broadcast_tx,
+            degraded_layers,
+        )
+        .await;
     }
 
     tracing::info!(socket = %socket.display(), confine_pid = ?confine_pid, "eBPF layer delegated to loaderd");
