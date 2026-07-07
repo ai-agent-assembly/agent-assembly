@@ -120,6 +120,7 @@ dependencies = [
  "hex",
  "include_dir",
  "libc",
+ "mime",
  "mime_guess",
  "open",
  "owo-colors",

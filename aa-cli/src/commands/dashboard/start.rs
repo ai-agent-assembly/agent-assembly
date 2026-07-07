@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
@@ -19,6 +19,31 @@ use crate::config::{resolve_dashboard_port, CliConfig, ResolvedContext};
 use super::pid;
 
 static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/_embedded/dashboard/dist");
+
+/// Content-Security-Policy for production deployment.
+///
+/// Policy rationale:
+/// - `default-src 'self'`: baseline — only same-origin resources by default
+/// - `script-src 'self'`: scripts must come from same origin (no inline)
+/// - `style-src 'self' 'unsafe-inline'`: allow inline styles for React/CSS-in-JS
+/// - `img-src 'self' data: blob:`: images from same origin + data URIs (icons, charts)
+/// - `font-src 'self'`: fonts from same origin
+/// - `connect-src 'self'`: XHR/fetch to same origin (API calls via proxy)
+/// - `frame-ancestors 'none'`: prevent clickjacking via iframes
+/// - `form-action 'self'`: forms only submit to same origin
+/// - `base-uri 'self'`: restrict <base> tag to same origin
+/// - `object-src 'none'`: block plugins (Flash, Java, etc.)
+const CSP_HEADER: &str = "\
+default-src 'self'; \
+script-src 'self'; \
+style-src 'self' 'unsafe-inline'; \
+img-src 'self' data: blob:; \
+font-src 'self'; \
+connect-src 'self'; \
+frame-ancestors 'none'; \
+form-action 'self'; \
+base-uri 'self'; \
+object-src 'none'";
 
 /// Arguments for `aasm dashboard start`.
 #[derive(Debug, Args)]
@@ -84,6 +109,23 @@ async fn run(args: StartArgs, ctx: &ResolvedContext, config: &CliConfig) -> Exit
     ExitCode::SUCCESS
 }
 
+/// Build security headers for HTML responses.
+fn security_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    // CSP: restrict resource loading to mitigate XSS and injection attacks.
+    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP_HEADER));
+    // Prevent MIME-sniffing which can lead to XSS.
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    // Deny framing to prevent clickjacking (belt-and-suspenders with frame-ancestors).
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    // Opt into stricter referrer policy.
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers
+}
+
 /// Serve embedded static files; fall back to `index.html` for SPA routing.
 async fn static_handler(uri: Uri) -> impl IntoResponse {
     let raw = uri.path().trim_start_matches('/');
@@ -91,23 +133,35 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 
     if let Some(file) = ASSETS.get_file(path) {
         let mime = mime_guess::from_path(path).first_or_octet_stream();
-        return (
-            [(header::CONTENT_TYPE, mime.as_ref().to_string())],
-            file.contents().to_vec(),
-        )
-            .into_response();
+        let is_html = mime.type_() == mime::TEXT && mime.subtype() == mime::HTML;
+        let mut response = Response::new(Body::from(file.contents().to_vec()));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(mime.as_ref()).unwrap_or(HeaderValue::from_static("application/octet-stream")),
+        );
+        // Apply security headers to HTML responses only; static assets (JS/CSS/images)
+        // inherit the page's CSP and don't need their own.
+        if is_html {
+            response.headers_mut().extend(security_headers());
+        }
+        return response;
     }
 
-    // SPA fallback: any unmatched path returns index.html.
+    // SPA fallback: any unmatched path returns index.html with security headers.
     if let Some(index) = ASSETS.get_file("index.html") {
-        return (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            index.contents().to_vec(),
-        )
-            .into_response();
+        let mut response = Response::new(Body::from(index.contents().to_vec()));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        response.headers_mut().extend(security_headers());
+        return response;
     }
 
-    (StatusCode::NOT_FOUND, "Not found").into_response()
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("Not found"))
+        .unwrap()
 }
 
 /// Reverse-proxy `/api/*` to the configured gateway address.
