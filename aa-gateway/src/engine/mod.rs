@@ -1307,6 +1307,67 @@ impl PolicyEngine {
         })
     }
 
+    /// Compute the most restrictive credential action across the cascade.
+    ///
+    /// Ranks by protection level: Block > RedactOnly > AlertAndRedact > AlertOnly.
+    fn cascade_credential_action(cascade: &[Arc<PolicyDocument>]) -> CredentialAction {
+        cascade
+            .iter()
+            .filter_map(|d| d.data.as_ref().map(|dp| dp.credential_action))
+            .max_by_key(|a| match a {
+                CredentialAction::Block => 3,
+                CredentialAction::RedactOnly => 2,
+                CredentialAction::AlertAndRedact => 1,
+                CredentialAction::AlertOnly => 0,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Check budget constraints across the cascade, returning an early deny if exceeded.
+    fn check_cascade_budget(
+        &self,
+        cascade: &[Arc<PolicyDocument>],
+        agent_id: &aa_core::identity::AgentId,
+        redacted_payload: Option<String>,
+        credential_findings: Vec<aa_security::CredentialFinding>,
+    ) -> Option<EvaluationResult> {
+        for doc in cascade {
+            if let Some(bp) = &doc.budget {
+                let da = Self::budget_deny_action(bp);
+                if let Some(reason) = self.budget_exceeded_reason(bp, agent_id) {
+                    return Some(EvaluationResult::deny_with(
+                        reason,
+                        redacted_payload,
+                        credential_findings,
+                        da,
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve the merge verdict, using cache when appropriate (AAASM-3995(c)).
+    fn resolve_merge_verdict(
+        &self,
+        cascade: &[Arc<PolicyDocument>],
+        ctx: &aa_core::AgentContext,
+        action: &aa_core::GovernanceAction,
+        cache_key: CacheKey,
+        pctx_dyn: Option<&dyn crate::policy::context::PolicyContext>,
+    ) -> PolicyDecision {
+        let context_dependent = Self::cascade_has_live_context_approval(cascade);
+        if context_dependent {
+            merge_decisions(cascade, ctx, action, pctx_dyn)
+        } else if let Some(cached) = self.decision_cache.get(&cache_key) {
+            cached
+        } else {
+            let v = merge_decisions(cascade, ctx, action, pctx_dyn);
+            self.decision_cache.insert(cache_key, v.clone());
+            v
+        }
+    }
+
     /// Cascade evaluation path: runs `merge_decisions` across all scoped policies,
     /// then applies rate-limit (stage 4), budget (stage 7), and credential scan
     /// (stage 6) at the engine level.
@@ -1316,12 +1377,7 @@ impl PolicyEngine {
         ctx: &aa_core::AgentContext,
         action: &aa_core::GovernanceAction,
     ) -> EvaluationResult {
-        // Stage 1 — Schedule: time-dependent, evaluated FRESH on every request
-        // and never cached. The decision cache below stores only the stateless
-        // stages (2–3, 5); a cached `Allow` computed inside an active-hours
-        // window must not be served once the window has closed, so the schedule
-        // stage is run here, outside the cache, like the stateful stages 4 and 7
-        // (AAASM-3893).
+        // Stage 1 — Schedule: time-dependent, evaluated FRESH on every request.
         if let Some(PolicyDecision::Deny { reason, .. }) = decision::evaluate_schedule_cascade(&cascade) {
             return EvaluationResult {
                 decision: aa_core::PolicyResult::Deny { reason },
@@ -1331,8 +1387,7 @@ impl PolicyEngine {
             };
         }
 
-        // Cache lookup: stateless stages only (2–3, 5). Stateful stages (4, 7),
-        // the capability guard, and the credential scan always run.
+        // Cache setup for stateless stages.
         let epoch = self.policy_epoch.load(Ordering::Relaxed);
         let cache_key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, action);
         let now_secs = chrono::Utc::now().timestamp() as u64;
@@ -1347,25 +1402,9 @@ impl PolicyEngine {
         });
         let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> = pctx.as_ref().map(|c| c as _);
 
-        // AAASM-3995(c): a `requires_approval_if` that references live runtime
-        // context (team.active_agents / team.budget_remaining / …) produces a
-        // verdict that changes as that context changes. The decision cache keys
-        // only on (agent, epoch, action), so caching such a verdict would freeze
-        // a context-dependent approval decision for the cache TTL. Evaluate those
-        // fresh — like the schedule stage above — instead of serving stale.
-        let context_dependent = Self::cascade_has_live_context_approval(&cascade);
-        let verdict = if context_dependent {
-            merge_decisions(&cascade, ctx, action, pctx_dyn)
-        } else if let Some(cached) = self.decision_cache.get(&cache_key) {
-            cached
-        } else {
-            // Stages 1–3 and 5: stateless per-doc rules merged across cascade.
-            let v = merge_decisions(&cascade, ctx, action, pctx_dyn);
-            self.decision_cache.insert(cache_key, v.clone());
-            v
-        };
+        let verdict = self.resolve_merge_verdict(&cascade, ctx, action, cache_key, pctx_dyn);
 
-        // If already denied, return immediately — no need for scan or budget check.
+        // If already denied, return immediately.
         if let PolicyDecision::Deny { reason, .. } = verdict {
             return EvaluationResult {
                 decision: aa_core::PolicyResult::Deny { reason },
@@ -1380,53 +1419,40 @@ impl PolicyEngine {
             return result;
         }
 
-        // Stage 4 — Rate limiting across the cascade (most restrictive wins).
+        // Stage 4 — Rate limiting across the cascade.
         if let Some(result) = self.cascade_rate_limit(&cascade, ctx, action) {
             return result;
         }
 
-        // Stage 6 — Credential scan: accumulate custom patterns from all cascade docs.
+        // Stage 6 — Credential scan.
         let text = action_scan_text(action);
         let scan = self.scanner.scan(text);
         let mut all_findings = scan.findings;
         collect_cascade_custom_findings(&cascade, text, &mut all_findings);
 
-        // Most-restrictive-wins across the cascade ranked by how well each mode
-        // protects the secret: Block > RedactOnly > AlertAndRedact > AlertOnly.
-        // AlertOnly ranks lowest because it is the only mode that forwards the
-        // raw secret (AAASM-3137). Docs without a `data` section don't vote —
-        // RedactOnly remains the default.
-        let credential_action = cascade
-            .iter()
-            .filter_map(|d| d.data.as_ref().map(|dp| dp.credential_action))
-            .max_by_key(|a| match a {
-                CredentialAction::Block => 3,
-                CredentialAction::RedactOnly => 2,
-                CredentialAction::AlertAndRedact => 1,
-                CredentialAction::AlertOnly => 0,
-            })
-            .unwrap_or_default();
-
+        let credential_action = Self::cascade_credential_action(&cascade);
         let (redacted_payload, credential_findings) =
             match Self::apply_credential_scan(text, all_findings, credential_action) {
                 CredentialScanOutcome::Block(result) => return result,
                 CredentialScanOutcome::Continue(payload, findings) => (payload, findings),
             };
 
-        // Stage 7 — Budget: check against all cascade docs' budget configs.
-        // Take the most restrictive (lowest) limit across all policies.
-        let mut deny_action = None;
-        for doc in &cascade {
-            if let Some(bp) = &doc.budget {
-                let da = Self::budget_deny_action(bp);
-                if let Some(reason) = self.budget_exceeded_reason(bp, &ctx.agent_id) {
-                    return EvaluationResult::deny_with(reason, redacted_payload, credential_findings, da);
-                }
-                deny_action = da;
-            }
+        // Stage 7 — Budget check.
+        if let Some(result) = self.check_cascade_budget(
+            &cascade,
+            &ctx.agent_id,
+            redacted_payload.clone(),
+            credential_findings.clone(),
+        ) {
+            return result;
         }
 
-        // Convert the merge verdict to PolicyResult.
+        // Extract deny_action from budget policies (if any).
+        let deny_action = cascade
+            .iter()
+            .filter_map(|doc| doc.budget.as_ref().and_then(Self::budget_deny_action))
+            .next_back();
+
         EvaluationResult {
             decision: verdict.into_policy_result(),
             redacted_payload,

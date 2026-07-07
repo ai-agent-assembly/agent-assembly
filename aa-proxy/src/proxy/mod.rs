@@ -112,6 +112,26 @@ fn mcp_unparseable_response_bytes() -> Vec<u8> {
     .into_bytes()
 }
 
+/// Build an HTTP 200 response carrying a JSON-RPC error envelope.
+fn http_jsonrpc_error_response(code: i32, reason: &str) -> String {
+    let body = build_jsonrpc_error_response(code, reason);
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body,
+    )
+}
+
+/// Outcome of MCP request-side evaluation for the non-LLM MitM path.
+enum McpEvalOutcome {
+    /// Forward allowed — carry the call and serialised args for response-side scanning.
+    Forward(crate::intercept::mcp::McpToolCall, Vec<u8>),
+    /// Denied — connection should be closed after writing the given response.
+    Deny(String),
+    /// No MCP call detected, or gateway unavailable with fail-open — proceed without MCP handling.
+    Skip,
+}
+
 /// The running proxy server.
 ///
 /// Create via [`ProxyServer::new`], then drive the accept loop with
@@ -378,6 +398,169 @@ impl ProxyServer {
         Ok(upstream_tls)
     }
 
+    /// Evaluate an MCP call against the gateway and return the routing outcome.
+    ///
+    /// Extracted from `handle_non_llm_mitm` to reduce cognitive complexity.
+    async fn evaluate_mcp_request(
+        &self,
+        gateway: &Arc<Mutex<GatewayClient>>,
+        req: &HttpRequest,
+        host: &str,
+    ) -> McpEvalOutcome {
+        let Some(call) = parse_mcp_request(&req.body) else {
+            // Not a parseable MCP call — check for bypass attempt.
+            if is_unenforceable_tool_call(&req.body) {
+                let reason = "MCP tools/call in unsupported JSON-RPC framing (batch array or malformed envelope) cannot be enforced and was rejected (fail-closed)";
+                tracing::warn!(
+                    %host,
+                    "MCP tools/call bypass attempt via batch/malformed framing; denying (fail-closed). \
+                     The gateway CheckAction and credential scan cannot evaluate this envelope.",
+                );
+                self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+                return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
+            }
+            return McpEvalOutcome::Skip;
+        };
+
+        let target_url = format!("https://{host}{path}", path = req.target);
+        let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
+
+        match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
+            Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
+                tracing::info!(
+                    tool_name = %call.tool_name,
+                    %host,
+                    "MCP call allowed by gateway, forwarding to upstream with response-side scanning",
+                );
+                self.interceptor
+                    .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
+                    .await;
+                McpEvalOutcome::Forward(call, args_bytes)
+            }
+            Ok(McpDecision::Deny { reason }) => {
+                tracing::info!(
+                    tool_name = %call.tool_name,
+                    %host,
+                    %reason,
+                    "MCP call denied by gateway, returning JSON-RPC error envelope",
+                );
+                self.interceptor
+                    .emit_mcp_decision(&call.tool_name, &args_bytes, true, &reason)
+                    .await;
+                McpEvalOutcome::Deny(http_jsonrpc_error_response(-32000, &reason))
+            }
+            Err(e) if self.config.mcp_fail_open => {
+                tracing::warn!(
+                    tool_name = %call.tool_name,
+                    %host,
+                    error = %e,
+                    "gateway CheckAction failed; forwarding without enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
+                );
+                McpEvalOutcome::Skip
+            }
+            Err(e) => {
+                let reason = "MCP enforcement unavailable: gateway CheckAction failed (fail-closed)";
+                tracing::error!(
+                    tool_name = %call.tool_name,
+                    %host,
+                    error = %e,
+                    "gateway CheckAction failed; denying MCP call (fail-closed). \
+                     Set AA_PROXY_MCP_FAIL_OPEN=1 to forward without enforcement instead.",
+                );
+                self.interceptor
+                    .emit_mcp_decision(&call.tool_name, &args_bytes, true, reason)
+                    .await;
+                McpEvalOutcome::Deny(http_jsonrpc_error_response(-32000, reason))
+            }
+        }
+    }
+
+    /// Handle MCP response scanning and relay to the client.
+    ///
+    /// Extracted from `handle_non_llm_mitm` to reduce cognitive complexity.
+    async fn relay_mcp_response(
+        &self,
+        upstream_read: tokio::io::ReadHalf<tokio_rustls::client::TlsStream<TcpStream>>,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        call: &crate::intercept::mcp::McpToolCall,
+        args_bytes: &[u8],
+    ) -> Result<(), ProxyError> {
+        let mut upstream_reader = BufReader::new(upstream_read);
+        match read_http_response(&mut upstream_reader).await {
+            Ok(Some(resp)) => {
+                let content_encoding = resp
+                    .headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
+                    .map(|(_, v)| v.as_str());
+                self.handle_mcp_response_body(&resp, content_encoding, client_tls, call, args_bytes)
+                    .await
+            }
+            Ok(None) => Ok(()), // Upstream closed without writing a response.
+            Err(e) => {
+                tracing::warn!(
+                    tool_name = %call.tool_name,
+                    error = %e,
+                    "MCP response parse failed; withholding unredacted upstream body (fail-closed)",
+                );
+                self.interceptor
+                    .emit_mcp_decision(
+                        &call.tool_name,
+                        args_bytes,
+                        true,
+                        "response unparseable, withheld (fail-closed)",
+                    )
+                    .await;
+                client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Handle MCP response body scanning and forwarding.
+    async fn handle_mcp_response_body(
+        &self,
+        resp: &http::HttpResponse,
+        content_encoding: Option<&str>,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        call: &crate::intercept::mcp::McpToolCall,
+        args_bytes: &[u8],
+    ) -> Result<(), ProxyError> {
+        match self.interceptor.redact_response_body(&resp.body, content_encoding) {
+            ResponseScan::Withhold => {
+                tracing::warn!(
+                    tool_name = %call.tool_name,
+                    "MCP response body not inspectable (content-encoding); withholding (fail-closed)",
+                );
+                self.interceptor
+                    .emit_mcp_decision(
+                        &call.tool_name,
+                        args_bytes,
+                        true,
+                        "response encoding not inspectable, withheld (fail-closed)",
+                    )
+                    .await;
+                client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
+            }
+            ResponseScan::Redact(redacted) => {
+                tracing::info!(
+                    tool_name = %call.tool_name,
+                    "MCP response carried sensitive payload, redacting before forwarding to client",
+                );
+                self.interceptor
+                    .emit_mcp_decision(&call.tool_name, args_bytes, false, "response redacted")
+                    .await;
+                let modified = serialize_http_response(resp, &redacted);
+                client_tls.write_all(&modified).await?;
+            }
+            ResponseScan::Forward => {
+                let modified = serialize_http_response(resp, &resp.body);
+                client_tls.write_all(&modified).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Non-LLM MitM data path: read the HTTP request inside the MitM TLS
     /// tunnel, run credential-DLP on the body, and — when a `gateway` is
     /// configured — also enforce MCP `tools/call` decisions on the wire.
@@ -414,8 +597,7 @@ impl ProxyServer {
         };
 
         // AAASM-3580: re-enforce the egress allowlist against the in-tunnel
-        // host before any gateway dispatch or upstream dial. Mirrors the LLM
-        // path so a forged Host cannot bypass the allowlist on the MCP route.
+        // host before any gateway dispatch or upstream dial.
         if let Some(reason) = self.in_tunnel_deny_reason(&req) {
             let in_host = Self::effective_request_host(&req).unwrap_or(host);
             tracing::info!(connect_host = %host, in_tunnel_host = %in_host, "in-tunnel egress denied: {reason}");
@@ -428,134 +610,23 @@ impl ProxyServer {
             return Ok(());
         }
 
-        // MCP detection — only when a gateway is configured. On a successful
-        // request-side eval, carry the parsed call AND its serialised args bytes
-        // forward so the response-side path below can re-use both for audit
-        // emission (args go into `ToolCallDetail.args_json`). With no gateway
-        // there is nothing to enforce MCP against, so `mcp_call` stays `None`
-        // and the body still flows through the credential-DLP gate below.
-        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = if let Some(gateway) = gateway {
-            if let Some(call) = parse_mcp_request(&req.body) {
-                let target_url = format!("https://{host}{path}", path = req.target);
-                // Serialise args once and reuse across the audit emissions on
-                // both the request-side (Allow/Deny) and the response-side
-                // (post-redact) paths.
-                let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
-                match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
-                    Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
-                        tracing::info!(
-                            tool_name = %call.tool_name,
-                            %host,
-                            "MCP call allowed by gateway, forwarding to upstream with response-side scanning",
-                        );
-                        self.interceptor
-                            .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
-                            .await;
-                        Some((call, args_bytes))
-                    }
-                    Ok(McpDecision::Deny { reason }) => {
-                        tracing::info!(
-                            tool_name = %call.tool_name,
-                            %host,
-                            %reason,
-                            "MCP call denied by gateway, returning JSON-RPC error envelope",
-                        );
-                        self.interceptor
-                            .emit_mcp_decision(&call.tool_name, &args_bytes, true, &reason)
-                            .await;
-                        let body = build_jsonrpc_error_response(-32000, &reason);
-                        let resp = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                            body.len(),
-                            body,
-                        );
-                        let mut client_tls = client_reader.into_inner();
-                        client_tls.write_all(resp.as_bytes()).await?;
-                        let _ = client_tls.shutdown().await;
-                        return Ok(());
-                    }
-                    Err(e) if self.config.mcp_fail_open => {
-                        tracing::warn!(
-                            tool_name = %call.tool_name,
-                            %host,
-                            error = %e,
-                            "gateway CheckAction failed; forwarding without enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
-                        );
-                        None
-                    }
-                    Err(e) => {
-                        // AAASM-3357: fail-closed — a governance check that
-                        // cannot reach its authority must not pass through. Deny
-                        // the MCP call with a JSON-RPC error envelope, mirroring
-                        // an explicit gateway Deny.
-                        let reason = "MCP enforcement unavailable: gateway CheckAction failed (fail-closed)";
-                        tracing::error!(
-                            tool_name = %call.tool_name,
-                            %host,
-                            error = %e,
-                            "gateway CheckAction failed; denying MCP call (fail-closed). \
-                             Set AA_PROXY_MCP_FAIL_OPEN=1 to forward without enforcement instead.",
-                        );
-                        self.interceptor
-                            .emit_mcp_decision(&call.tool_name, &args_bytes, true, reason)
-                            .await;
-                        let body = build_jsonrpc_error_response(-32000, reason);
-                        let resp = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                            body.len(),
-                            body,
-                        );
-                        let mut client_tls = client_reader.into_inner();
-                        client_tls.write_all(resp.as_bytes()).await?;
-                        let _ = client_tls.shutdown().await;
-                        return Ok(());
-                    }
+        // MCP detection — only when a gateway is configured.
+        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = match gateway {
+            Some(gw) => match self.evaluate_mcp_request(gw, &req, host).await {
+                McpEvalOutcome::Forward(call, args_bytes) => Some((call, args_bytes)),
+                McpEvalOutcome::Deny(resp) => {
+                    let mut client_tls = client_reader.into_inner();
+                    client_tls.write_all(resp.as_bytes()).await?;
+                    let _ = client_tls.shutdown().await;
+                    return Ok(());
                 }
-            } else if is_unenforceable_tool_call(&req.body) {
-                // AAASM-4070: `parse_mcp_request` only deserialises a single
-                // JSON-RPC object, so a `tools/call` wrapped in a batch array
-                // (`[{…tools/call…}]`) or malformed just enough to fail strict
-                // extraction returned `None` above — and the pre-fix `else` branch
-                // forwarded that body upstream with NO gateway CheckAction and NO
-                // credential/DLP scan. A steered agent used a one-element batch to
-                // slip a denied tool call past enforcement. Fail closed: this body
-                // is a tool-call attempt the enforcement path cannot evaluate, so
-                // deny it with a JSON-RPC error envelope instead of forwarding,
-                // mirroring an explicit gateway Deny. Non-MCP traffic is unaffected
-                // (the detector only fires on `method == "tools/call"`).
-                let reason = "MCP tools/call in unsupported JSON-RPC framing (batch array or malformed envelope) cannot be enforced and was rejected (fail-closed)";
-                tracing::warn!(
-                    %host,
-                    "MCP tools/call bypass attempt via batch/malformed framing; denying (fail-closed). \
-                     The gateway CheckAction and credential scan cannot evaluate this envelope.",
-                );
-                self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
-                // -32600 = JSON-RPC "Invalid Request": the proxy does not accept
-                // this framing for an enforceable tool call.
-                let body = build_jsonrpc_error_response(-32600, reason);
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                    body.len(),
-                    body,
-                );
-                let mut client_tls = client_reader.into_inner();
-                client_tls.write_all(resp.as_bytes()).await?;
-                let _ = client_tls.shutdown().await;
-                return Ok(());
-            } else {
-                None
-            }
-        } else {
-            None
+                McpEvalOutcome::Skip => None,
+            },
+            None => None,
         };
 
         // AAASM-4126: run credential-DLP on the request body for EVERY MitM'd
-        // non-LLM host — not just the three built-in LLM providers. Before this,
-        // body-DLP ran only inside `handle_llm_mitm` (gated on `detect_api`), so
-        // a secret POSTed to any other MitM'd host reached upstream un-scanned.
-        // A `Block` verdict refuses the forward (403); a redact verdict forwards
-        // the redacted bytes. An MCP `Deny`/unenforceable body already returned
-        // above, so this only runs on bodies that are about to be forwarded.
+        // non-LLM host.
         let verdict = self.interceptor.intercept_request(
             &req.body,
             req.header("content-encoding"),
@@ -576,6 +647,7 @@ impl ProxyServer {
             let _ = client_tls.shutdown().await;
             return Ok(());
         }
+
         let forward_body: &[u8] = match verdict.decision {
             VerdictDecision::ForwardRedacted => {
                 self.emit_audit_entry(host, &req, &verdict, ProxyAuditDecision::ForwardedRedacted)
@@ -601,102 +673,11 @@ impl ProxyServer {
         upstream_write.write_all(&outgoing).await?;
 
         if let Some((call, args_bytes)) = mcp_call {
-            // MCP response path (AAASM-1930 ST-Q-3): read the upstream
-            // response body-aware, run the proxy's credential scanner on
-            // the body, and forward a redacted version when findings are
-            // present. The scanner is the same `aa_security::CredentialScanner`
-            // the gateway uses internally for ToolResult evaluation, so
-            // the redaction shape matches what `mcp_redact_secrets.yaml`
-            // would produce gateway-side. A future iteration could swap
-            // this for a second `CheckAction` carrying ToolResult to
-            // centralise policy decisions at the gateway — the gateway-
-            // side ToolResult flow landed in AAASM-1941 for that purpose.
-            let mut upstream_reader = BufReader::new(upstream_read);
-            match read_http_response(&mut upstream_reader).await {
-                Ok(Some(resp)) => {
-                    let content_encoding = resp
-                        .headers
-                        .iter()
-                        .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
-                        .map(|(_, v)| v.as_str());
-                    match self.interceptor.redact_response_body(&resp.body, content_encoding) {
-                        ResponseScan::Withhold => {
-                            // AAASM-4156: the upstream body's Content-Encoding is
-                            // not inspectable (undecodable encoding, or a
-                            // compressed body carrying findings we cannot safely
-                            // re-encode). Relaying it would leak an un-scanned —
-                            // possibly credential-bearing — body to the agent, the
-                            // same leak AAASM-3997 closes for an unparseable
-                            // response. Fail closed: withhold and return a
-                            // JSON-RPC error envelope.
-                            tracing::warn!(
-                                tool_name = %call.tool_name,
-                                "MCP response body not inspectable (content-encoding); withholding (fail-closed)",
-                            );
-                            self.interceptor
-                                .emit_mcp_decision(
-                                    &call.tool_name,
-                                    &args_bytes,
-                                    true,
-                                    "response encoding not inspectable, withheld (fail-closed)",
-                                )
-                                .await;
-                            client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
-                        }
-                        outcome => {
-                            let body_to_forward = match outcome {
-                                ResponseScan::Redact(redacted) => {
-                                    tracing::info!(
-                                        tool_name = %call.tool_name,
-                                        "MCP response carried sensitive payload, redacting before forwarding to client",
-                                    );
-                                    self.interceptor
-                                        .emit_mcp_decision(&call.tool_name, &args_bytes, false, "response redacted")
-                                        .await;
-                                    redacted
-                                }
-                                // ResponseScan::Forward — Withhold is handled above.
-                                _ => resp.body.clone(),
-                            };
-                            let modified = serialize_http_response(&resp, &body_to_forward);
-                            client_tls.write_all(&modified).await?;
-                        }
-                    }
-                }
-                Ok(None) => {
-                    // Upstream closed without writing a response — nothing to forward.
-                }
-                Err(e) => {
-                    // AAASM-3997: an MCP response we cannot parse cannot be
-                    // scanned or redacted. Relaying the un-parsed upstream bytes
-                    // (the pre-3997 behaviour) would leak an *unredacted* body —
-                    // potentially carrying credentials the response-side scanner
-                    // would have stripped — straight to the agent. Fail closed:
-                    // withhold the upstream body and return a JSON-RPC error
-                    // envelope instead. (We still never copy client→upstream, so
-                    // AAASM-3864's no-uninspected-request property holds.)
-                    tracing::warn!(
-                        tool_name = %call.tool_name,
-                        error = %e,
-                        "MCP response parse failed; withholding unredacted upstream body (fail-closed)",
-                    );
-                    self.interceptor
-                        .emit_mcp_decision(
-                            &call.tool_name,
-                            &args_bytes,
-                            true,
-                            "response unparseable, withheld (fail-closed)",
-                        )
-                        .await;
-                    client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
-                }
-            }
+            // MCP response path: read, scan, and relay the upstream response.
+            self.relay_mcp_response(upstream_read, &mut client_tls, &call, &args_bytes)
+                .await?;
         } else {
-            // Not MCP (or RPC failed) — relay only the upstream response back to
-            // the client. AAASM-3864 (a): we never copy further client bytes
-            // upstream, so a follow-up request pipelined on the tunnel cannot
-            // reach upstream un-inspected. The serialized request carries
-            // `Connection: close`, bounding this relay.
+            // Not MCP — relay only the upstream response back to the client.
             let mut upstream_read = upstream_read;
             tokio::io::copy(&mut upstream_read, &mut client_tls).await?;
         }

@@ -592,6 +592,114 @@ fn spawn_op_control(tracker: &TaskTracker, config: &RuntimeConfig, op_control: &
     tracing::info!(endpoint, "op-control subscriber spawned — live kill switch active");
 }
 
+/// Log a single correlation outcome.
+fn log_correlation_outcome(outcome: &crate::correlation::CorrelationOutcome) {
+    match outcome {
+        crate::correlation::CorrelationOutcome::Matched(c) => {
+            tracing::info!(
+                intent = %c.intent_event_id,
+                action = %c.action_event_id,
+                strength = c.correlation_strength,
+                delta_ms = c.time_delta_ms,
+                "correlation matched"
+            );
+        }
+        crate::correlation::CorrelationOutcome::UnexpectedAction { action_event_id } => {
+            tracing::warn!(
+                action = %action_event_id,
+                "unexpected action — no matching intent"
+            );
+        }
+        crate::correlation::CorrelationOutcome::IntentWithoutAction { intent_event_id } => {
+            tracing::info!(
+                intent = %intent_event_id,
+                "intent without observed action"
+            );
+        }
+    }
+}
+
+/// Spawn the correlation engine subscriber task.
+fn spawn_correlation_subscriber(
+    tracker: &TaskTracker,
+    config: &RuntimeConfig,
+    token: CancellationToken,
+    correlation_rx: tokio::sync::broadcast::Receiver<crate::pipeline::PipelineEvent>,
+) {
+    let corr_config = crate::correlation::CorrelationConfig::from_runtime_config(config);
+    let corr_interval = Duration::from_millis(corr_config.eviction_interval_ms);
+    let mut engine = crate::correlation::CorrelationEngine::new(corr_config);
+    let mut corr_rx = correlation_rx;
+
+    tracker.spawn(async move {
+        let mut ticker = tokio::time::interval(corr_interval);
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    tracing::info!("correlation subscriber shutting down");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    for outcome in engine.correlate() {
+                        log_correlation_outcome(&outcome);
+                    }
+                    engine.evict(now_ms);
+                }
+                result = corr_rx.recv() => {
+                    handle_correlation_event(&mut engine, result);
+                }
+            }
+        }
+    });
+    tracing::info!("correlation subscriber task spawned");
+}
+
+/// Handle a single event from the correlation broadcast channel.
+fn handle_correlation_event(
+    engine: &mut crate::correlation::CorrelationEngine,
+    result: Result<crate::pipeline::PipelineEvent, tokio::sync::broadcast::error::RecvError>,
+) -> bool {
+    match result {
+        Ok(crate::pipeline::PipelineEvent::Audit(enriched)) => {
+            if let Some(corr_event) = crate::correlation::try_from_enriched(&enriched) {
+                engine.ingest(corr_event);
+            }
+            true
+        }
+        Ok(crate::pipeline::PipelineEvent::LayerDegradation(_)) => true,
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+            tracing::warn!(dropped = n, "correlation subscriber lagged — events lost");
+            true
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+            tracing::info!("broadcast channel closed — correlation subscriber exiting");
+            false
+        }
+    }
+}
+
+/// Check layer availability and record any degradations.
+fn check_layer_availability(active_layers: crate::layer::LayerSet, degraded_layers: &mut Vec<String>) {
+    if !active_layers.contains(crate::layer::LayerSet::EBPF) {
+        tracing::warn!(
+            remaining = %active_layers,
+            "eBPF layer unavailable — requires Linux >= 5.8, BTF, and CAP_BPF"
+        );
+        degraded_layers.push("ebpf".to_string());
+    }
+    if !active_layers.contains(crate::layer::LayerSet::PROXY) {
+        tracing::warn!(
+            remaining = %active_layers,
+            "proxy layer unavailable — aa-proxy binary not found in PATH"
+        );
+        degraded_layers.push("proxy".to_string());
+    }
+}
+
 /// Start the runtime and block until graceful shutdown completes.
 ///
 /// This is the main async entry point called from `main()`. It creates the
@@ -629,20 +737,7 @@ pub async fn run(config: RuntimeConfig) {
     tracing::info!(layers = %active_layers, "active interception layers");
 
     let mut degraded_layers: Vec<String> = Vec::new();
-    if !active_layers.contains(crate::layer::LayerSet::EBPF) {
-        tracing::warn!(
-            remaining = %active_layers,
-            "eBPF layer unavailable — requires Linux >= 5.8, BTF, and CAP_BPF"
-        );
-        degraded_layers.push("ebpf".to_string());
-    }
-    if !active_layers.contains(crate::layer::LayerSet::PROXY) {
-        tracing::warn!(
-            remaining = %active_layers,
-            "proxy layer unavailable — aa-proxy binary not found in PATH"
-        );
-        degraded_layers.push("proxy".to_string());
-    }
+    check_layer_availability(active_layers, &mut degraded_layers);
 
     // Build pipeline config and create the inbound channel at the configured depth.
     let pipeline_config = crate::pipeline::PipelineConfig::from_runtime_config(&config);
@@ -815,77 +910,7 @@ pub async fn run(config: RuntimeConfig) {
     }
 
     // Spawn the correlation engine subscriber task.
-    {
-        let corr_config = crate::correlation::CorrelationConfig::from_runtime_config(&config);
-        let corr_interval = Duration::from_millis(corr_config.eviction_interval_ms);
-        let mut engine = crate::correlation::CorrelationEngine::new(corr_config);
-        let corr_token = token.clone();
-        let mut corr_rx = correlation_rx;
-        tracker.spawn(async move {
-            let mut ticker = tokio::time::interval(corr_interval);
-            loop {
-                tokio::select! {
-                    _ = corr_token.cancelled() => {
-                        tracing::info!("correlation subscriber shutting down");
-                        break;
-                    }
-                    _ = ticker.tick() => {
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
-                        let outcomes = engine.correlate();
-                        for outcome in &outcomes {
-                            match outcome {
-                                crate::correlation::CorrelationOutcome::Matched(c) => {
-                                    tracing::info!(
-                                        intent = %c.intent_event_id,
-                                        action = %c.action_event_id,
-                                        strength = c.correlation_strength,
-                                        delta_ms = c.time_delta_ms,
-                                        "correlation matched"
-                                    );
-                                }
-                                crate::correlation::CorrelationOutcome::UnexpectedAction { action_event_id } => {
-                                    tracing::warn!(
-                                        action = %action_event_id,
-                                        "unexpected action — no matching intent"
-                                    );
-                                }
-                                crate::correlation::CorrelationOutcome::IntentWithoutAction { intent_event_id } => {
-                                    tracing::info!(
-                                        intent = %intent_event_id,
-                                        "intent without observed action"
-                                    );
-                                }
-                            }
-                        }
-                        engine.evict(now_ms);
-                    }
-                    result = corr_rx.recv() => {
-                        match result {
-                            Ok(crate::pipeline::PipelineEvent::Audit(enriched)) => {
-                                if let Some(corr_event) = crate::correlation::try_from_enriched(&enriched) {
-                                    engine.ingest(corr_event);
-                                }
-                            }
-                            Ok(crate::pipeline::PipelineEvent::LayerDegradation(_)) => {
-                                // Layer degradation events are not correlated.
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!(dropped = n, "correlation subscriber lagged — events lost");
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                tracing::info!("broadcast channel closed — correlation subscriber exiting");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        tracing::info!("correlation subscriber task spawned");
-    }
+    spawn_correlation_subscriber(&tracker, &config, token.clone(), correlation_rx);
 
     // Spawn the health/metrics HTTP server task.
     {
