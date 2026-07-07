@@ -1043,18 +1043,39 @@ impl PolicyEngine {
     /// from the authoritative registry owner via [`Self::authoritative_tenancy`]
     /// — NOT the client-supplied `ctx.team_id` — so a caller cannot forge a
     /// fresh team id to mint an unshared bucket and slip past the limit (the
-    /// same trust anchor AAASM-3138 established for budget keying). When no team
-    /// is assigned the scope falls back to the agent id, so two teamless agents
-    /// still never share a bucket; the fallback never collapses to a shared or
-    /// empty key, so a missing team can only ever narrow isolation — never
-    /// disable the limit (fail closed).
+    /// same trust anchor AAASM-3138 established for budget keying).
+    ///
+    /// AAASM-4190: when no team is assigned, the fallback depends on whether the
+    /// agent is *registered*:
+    /// - **Registered** agents (found in registry) → `agent:{hex}` where the
+    ///   agent_id is token-authenticated, so each registered teamless agent gets
+    ///   its own isolated bucket.
+    /// - **Unregistered/anonymous** agents (not in registry) → `anon` shared
+    ///   bucket. The client-supplied `agent_id` is unauthenticated, so rotating
+    ///   it on every request would mint fresh buckets and bypass the rate limit.
+    ///   Collapsing all anonymous callers into one shared bucket closes this
+    ///   bypass — they share the same rate-limit pool.
+    ///
+    /// The fallback never collapses to an empty key, so a missing team can only
+    /// ever narrow isolation — never disable the limit (fail closed).
     fn rate_scope(&self, ctx: &aa_core::AgentContext) -> String {
+        // Check registry to determine if the agent is registered (authenticated).
+        let is_registered = self
+            .registry
+            .as_ref()
+            .is_some_and(|r| r.get(ctx.agent_id.as_bytes()).is_some());
+
         let (team_id, _org_id) = self.authoritative_tenancy(ctx);
         match team_id {
             Some(team) => format!("team:{team}"),
-            None => {
+            None if is_registered => {
+                // Registered but teamless: agent_id is token-authenticated, safe to isolate.
                 let hex: String = ctx.agent_id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
                 format!("agent:{hex}")
+            }
+            None => {
+                // Unregistered/anonymous: agent_id is client-controlled, use shared bucket.
+                "anon".to_string()
             }
         }
     }
@@ -4504,5 +4525,77 @@ mod tests {
         );
 
         drop(tmp);
+    }
+
+    // ── AAASM-4190: rate-limit scope for anonymous callers ────────────────────
+
+    #[test]
+    fn rate_scope_unregistered_agents_share_anon_bucket() {
+        // AAASM-4190: unregistered/anonymous agents must share a single "anon"
+        // bucket. Rotating the client-supplied agent_id must NOT mint a fresh
+        // bucket (that would bypass the rate limit).
+        let registry = Arc::new(crate::registry::AgentRegistry::new());
+        let engine = make_engine(empty_doc()).with_registry(registry);
+
+        // Two different agent_ids that are NOT in the registry.
+        let mut ctx_a = make_ctx();
+        ctx_a.agent_id = AgentId::from_bytes([0xAA; 16]);
+        ctx_a.team_id = None;
+
+        let mut ctx_b = make_ctx();
+        ctx_b.agent_id = AgentId::from_bytes([0xBB; 16]);
+        ctx_b.team_id = None;
+
+        // Both should resolve to the same "anon" scope.
+        let scope_a = engine.rate_scope(&ctx_a);
+        let scope_b = engine.rate_scope(&ctx_b);
+
+        assert_eq!(scope_a, "anon", "unregistered agent should use 'anon' scope");
+        assert_eq!(scope_b, "anon", "unregistered agent should use 'anon' scope");
+        assert_eq!(scope_a, scope_b, "rotating agent_id must not change the scope");
+    }
+
+    #[test]
+    fn rate_scope_registered_teamless_agent_gets_isolated_bucket() {
+        // AAASM-4190: a registered but teamless agent uses its authenticated
+        // agent_id for isolation — distinct from the shared "anon" bucket.
+        let registry = Arc::new(crate::registry::AgentRegistry::new());
+        // Register agent without a team.
+        let mut record = registry_record([0xCC; 16], "placeholder", None);
+        record.team_id = None; // explicitly teamless
+        registry.register(record).expect("register");
+
+        let engine = make_engine(empty_doc()).with_registry(registry);
+
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([0xCC; 16]);
+        ctx.team_id = None;
+
+        let scope = engine.rate_scope(&ctx);
+        // Hex-encoded agent_id for [0xCC; 16] = "cccccccc..." (32 chars).
+        assert!(
+            scope.starts_with("agent:"),
+            "registered teamless agent should use 'agent:<hex>' scope, got: {scope}"
+        );
+        assert_ne!(scope, "anon", "registered agent must not share the anon bucket");
+    }
+
+    #[test]
+    fn rate_scope_registered_with_team_uses_team_scope() {
+        // Sanity check: registered agent with a team uses team scope.
+        let registry = Arc::new(crate::registry::AgentRegistry::new());
+        registry
+            .register(registry_record([0xDD; 16], "my-team", None))
+            .expect("register");
+
+        let engine = make_engine(empty_doc()).with_registry(registry);
+
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([0xDD; 16]);
+        // Note: ctx.team_id is client-supplied and should be ignored.
+        ctx.team_id = Some("forged-team".to_string());
+
+        let scope = engine.rate_scope(&ctx);
+        assert_eq!(scope, "team:my-team", "should use registered team, not client-supplied");
     }
 }

@@ -273,9 +273,29 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// AAASM-4190: validate that a tenant id (team_id or org_id) contains no
+    /// control characters. Control characters in the id could cause bucket-key
+    /// collisions when the id is used as part of a composite key with a
+    /// separator (e.g. `\u{1}` in rate-limit bucket keys).
+    fn validate_tenant_id(id: Option<&str>, field: &'static str) -> Result<(), RegistryError> {
+        if let Some(s) = id {
+            if s.chars().any(|c| c.is_control()) {
+                return Err(RegistryError::InvalidTenantId { field });
+            }
+        }
+        Ok(())
+    }
+
     /// Insert a new agent record. Returns an error if the ID is already registered.
     pub fn register(&self, record: AgentRecord) -> Result<(), RegistryError> {
         use dashmap::mapref::entry::Entry;
+
+        // AAASM-4190: reject tenant ids containing control characters to prevent
+        // bucket-key collision attacks (e.g. team_id containing `\u{1}` could
+        // alias onto a different team's rate-limit bucket).
+        Self::validate_tenant_id(record.team_id.as_deref(), "team_id")?;
+        Self::validate_tenant_id(record.org_id.as_deref(), "org_id")?;
+
         let agent_id = record.agent_id;
         let parent_key = record.parent_key;
         let team_id = record.team_id.clone();
@@ -2135,5 +2155,121 @@ mod sweep_aged_agents_tests {
 
         assert!(evicted.is_empty(), "unconfigured team must not trigger eviction");
         assert_eq!(reg.get(&id).unwrap().status, AgentStatus::Active);
+    }
+}
+
+#[cfg(test)]
+mod tenant_id_validation_tests {
+    use super::*;
+    use crate::registry::{AgentStatus, RegistryError};
+
+    fn minimal_record(id: [u8; 16], team_id: Option<&str>, org_id: Option<&str>) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: "test-agent".into(),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "deadbeef".into(),
+            credential_token: "tok".into(),
+            metadata: Default::default(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: team_id.map(str::to_string),
+            org_id: org_id.map(str::to_string),
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key: None,
+            enforcement_mode: None,
+        }
+    }
+
+    #[test]
+    fn register_rejects_team_id_with_control_chars() {
+        // AAASM-4190: team_id containing control characters (e.g. SOH \u{1})
+        // must be rejected to prevent bucket-key collision attacks.
+        let reg = AgentRegistry::new();
+        let record = minimal_record([1u8; 16], Some("team\u{1}evil"), None);
+        let result = reg.register(record);
+
+        assert!(
+            matches!(result, Err(RegistryError::InvalidTenantId { field: "team_id" })),
+            "expected InvalidTenantId for team_id with control char, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn register_rejects_org_id_with_control_chars() {
+        // AAASM-4190: org_id containing control characters must be rejected.
+        let reg = AgentRegistry::new();
+        let record = minimal_record([2u8; 16], Some("valid-team"), Some("org\u{0}bad"));
+        let result = reg.register(record);
+
+        assert!(
+            matches!(result, Err(RegistryError::InvalidTenantId { field: "org_id" })),
+            "expected InvalidTenantId for org_id with control char, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn register_accepts_valid_tenant_ids() {
+        // Valid team_id and org_id (no control characters) should succeed.
+        let reg = AgentRegistry::new();
+        let record = minimal_record([3u8; 16], Some("valid-team-123"), Some("org_456"));
+        let result = reg.register(record);
+
+        assert!(result.is_ok(), "valid tenant ids should be accepted");
+        assert!(reg.get(&[3u8; 16]).is_some(), "agent should be registered");
+    }
+
+    #[test]
+    fn register_accepts_none_tenant_ids() {
+        // None team_id and org_id should be accepted (anonymous/unregistered path).
+        let reg = AgentRegistry::new();
+        let record = minimal_record([4u8; 16], None, None);
+        let result = reg.register(record);
+
+        assert!(result.is_ok(), "None tenant ids should be accepted");
+    }
+
+    #[test]
+    fn register_rejects_team_id_with_newline() {
+        // Newline is also a control character.
+        let reg = AgentRegistry::new();
+        let record = minimal_record([5u8; 16], Some("team\ninjection"), None);
+        let result = reg.register(record);
+
+        assert!(
+            matches!(result, Err(RegistryError::InvalidTenantId { field: "team_id" })),
+            "expected InvalidTenantId for team_id with newline"
+        );
+    }
+
+    #[test]
+    fn register_rejects_team_id_with_tab() {
+        // Tab is also a control character.
+        let reg = AgentRegistry::new();
+        let record = minimal_record([6u8; 16], Some("team\tevil"), None);
+        let result = reg.register(record);
+
+        assert!(
+            matches!(result, Err(RegistryError::InvalidTenantId { field: "team_id" })),
+            "expected InvalidTenantId for team_id with tab"
+        );
     }
 }
