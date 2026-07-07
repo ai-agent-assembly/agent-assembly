@@ -89,14 +89,29 @@ spec:
     }
 
     #[test]
-    fn unknown_key_produces_warning_not_error() {
+    fn unknown_top_level_key_exits_failure() {
+        // AAASM-4191: unknown top-level keys must fail closed (exit 1), not
+        // silently pass with a warning. A typo'd section would otherwise drop
+        // the restriction entirely.
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         writeln!(tmp, "risk_tier: high").unwrap();
 
         let args = ValidateArgs {
             file: tmp.path().to_path_buf(),
         };
-        assert_eq!(run(args), ExitCode::SUCCESS);
+        assert_eq!(run(args), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn misspelled_section_key_exits_failure() {
+        // AAASM-4191: a typo'd section (e.g. `capabilties`) must fail closed.
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "capabilties:\n  deny:\n    - file_delete").unwrap();
+
+        let args = ValidateArgs {
+            file: tmp.path().to_path_buf(),
+        };
+        assert_eq!(run(args), ExitCode::FAILURE);
     }
 
     #[test]

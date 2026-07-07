@@ -46,6 +46,13 @@ impl PolicyValidator {
         // a fail-OPEN on a misformatted/legacy policy. Fail closed instead:
         // refuse to load the document rather than silently allowing
         // everything. (Full multi-schema support is a follow-up.)
+        //
+        // AAASM-4191: extend fail-closed to ALL unknown top-level keys, not
+        // just `rules`. A typo'd section key (e.g. `capabilties` instead of
+        // `capabilities`) was silently dropped, allowing restrictions to
+        // vanish without any error. Now every unknown top-level key is a
+        // hard validation error — consistent with the product's fail-closed
+        // posture everywhere else.
         for key in raw.unknown.keys() {
             if key == "rules" {
                 errors.push(ValidationError::new(
@@ -55,7 +62,14 @@ impl PolicyValidator {
                      refuses to load this document to avoid an allow-all fallback",
                 ));
             } else {
-                warnings.push(ValidationWarning::unknown_key(key));
+                errors.push(ValidationError::new(
+                    key,
+                    format!(
+                        "unknown top-level key '{}'; valid keys are: version, scope, network, \
+                         schedule, budget, data, tools, capabilities, approval_timeout_secs, approval",
+                        key
+                    ),
+                ));
             }
         }
 
@@ -556,13 +570,37 @@ fn is_hhmm(s: &str) -> bool {
 mod tests {
     use super::*;
 
-    // ── Unknown key warnings ────────────────────────────────────────────────
+    // ── Unknown key errors (AAASM-4191: fail-closed on unknown top-level keys) ─
 
     #[test]
-    fn top_level_unknown_key_produces_warning() {
+    fn top_level_unknown_key_is_validation_error() {
+        // AAASM-4191: unknown top-level keys must fail closed (error), not
+        // silently vanish with a warning. A typo'd section (e.g. `capabilties`)
+        // would otherwise drop the restriction entirely.
         let yaml = "risk_tier: high\n";
-        let out = PolicyValidator::from_yaml(yaml).unwrap();
-        assert!(out.warnings.iter().any(|w| w.field == "risk_tier"));
+        let result = PolicyValidator::from_yaml(yaml);
+        assert!(result.is_err(), "unknown top-level key must be rejected");
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "risk_tier"),
+            "expected error on 'risk_tier' field, got: {:?}",
+            errs,
+        );
+    }
+
+    #[test]
+    fn misspelled_capabilities_section_is_validation_error() {
+        // AAASM-4191: a typo'd section key must not silently drop the restriction.
+        let yaml = "capabilties:\n  deny:\n    - file_delete\n";
+        let result = PolicyValidator::from_yaml(yaml);
+        assert!(result.is_err(), "misspelled section key must be rejected");
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "capabilties" && e.message.contains("unknown")),
+            "expected error mentioning 'capabilties', got: {:?}",
+            errs,
+        );
     }
 
     #[test]
