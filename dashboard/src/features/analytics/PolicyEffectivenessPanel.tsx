@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import React, { useCallback, useMemo, useState } from 'react'
 import { useAnalyticsFilters } from './useAnalyticsFilters'
 import { usePolicyEffectivenessQuery } from './usePolicyEffectivenessQuery'
 import {
@@ -44,6 +44,138 @@ function HeatmapCell({ ruleId, ruleName, date, day, onEnter, onLeave }: Readonly
   )
 }
 
+interface PolicyRule {
+  id: string
+  name: string
+  days: PolicyDay[]
+}
+
+interface HeatmapBodyProps {
+  isPending: boolean
+  isError: boolean
+  rules: PolicyRule[]
+  dates: string[]
+  sortAsc: boolean
+  onToggleSort: () => void
+  sortedRules: PolicyRule[]
+  dayMap: Map<string, Map<string, PolicyDay>>
+  onCellEnter: (rule: { id: string; name: string }, day: PolicyDay, target: HTMLElement) => void
+  onCellLeave: () => void
+  tooltip: TooltipState | null
+}
+
+/**
+ * Renders the heatmap body content based on loading/error/empty/data states.
+ * Extracted from PolicyEffectivenessPanel to keep functions at module scope.
+ */
+function HeatmapBody({
+  isPending,
+  isError,
+  rules,
+  dates,
+  sortAsc,
+  onToggleSort,
+  sortedRules,
+  dayMap,
+  onCellEnter,
+  onCellLeave,
+  tooltip,
+}: Readonly<HeatmapBodyProps>) {
+  if (isPending) {
+    return <div className="policy-effectiveness-panel__skeleton" aria-hidden />
+  }
+  if (isError) {
+    return <p className="policy-effectiveness-panel__error">Failed to load policy data.</p>
+  }
+  if (rules.length === 0) {
+    return (
+      <div className="policy-effectiveness-panel__empty">
+        <p>No policies are enabled for the selected filters.</p>
+        <a href="/policy/builder">Go to Policy Builder</a>
+      </div>
+    )
+  }
+  return (
+    <div className="policy-effectiveness-panel__scroll">
+      <div
+        className="policy-effectiveness-panel__grid"
+        style={{
+          gridTemplateColumns: `180px repeat(${dates.length}, minmax(28px, 1fr))`,
+        }}
+        role="grid"
+        aria-label="Policy effectiveness heatmap"
+      >
+        {/* Header row */}
+        <div className="policy-effectiveness-panel__header-cell">
+          <button
+            type="button"
+            className="policy-effectiveness-panel__sort-btn"
+            onClick={onToggleSort}
+            aria-label={`Sort by blocks ${sortAsc ? 'descending' : 'ascending'}`}
+          >
+            Rule {sortAsc ? '↑' : '↓'}
+          </button>
+        </div>
+        {dates.map(date => (
+          <div key={date} className="policy-effectiveness-panel__date-cell" title={date}>
+            {formatDate(date)}
+          </div>
+        ))}
+
+        {/* Data rows */}
+        {sortedRules.map(rule => (
+          <React.Fragment key={rule.id}>
+            <div
+              className="policy-effectiveness-panel__rule-label"
+              title={rule.name}
+            >
+              {rule.name}
+            </div>
+            {dates.map(date => {
+              const day = dayMap.get(rule.id)?.get(date) ?? {
+                date,
+                blocks: 0,
+                warns: 0,
+                passes: 0,
+              }
+              return (
+                <HeatmapCell
+                  key={`cell-${rule.id}-${date}`}
+                  ruleId={rule.id}
+                  ruleName={rule.name}
+                  date={date}
+                  day={day}
+                  onEnter={onCellEnter}
+                  onLeave={onCellLeave}
+                />
+              )
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+
+      {/* Hover tooltip */}
+      {tooltip && (
+        <div
+          className="policy-effectiveness-panel__tooltip"
+          style={{ left: tooltip.x, top: tooltip.y }}
+          role="tooltip"
+        >
+          <strong>{tooltip.ruleName}</strong>
+          <span>{tooltip.day.date}</span>
+          <span>Blocks: {tooltip.day.blocks}</span>
+          <span>Warns: {tooltip.day.warns}</span>
+          <span>Passes: {tooltip.day.passes}</span>
+          <span>
+            Ratio:{' '}
+            {(computeRatio(tooltip.day) * 100).toFixed(1)}%
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function PolicyEffectivenessPanel() {
   const { filters } = useAnalyticsFilters()
   const { data, isPending, isError } = usePolicyEffectivenessQuery(filters)
@@ -67,113 +199,17 @@ export function PolicyEffectivenessPanel() {
     return m
   }, [rules])
 
-  function showCellTooltip(
-    rule: { id: string; name: string },
-    day: PolicyDay,
-    target: HTMLElement,
-  ) {
-    const rect = target.getBoundingClientRect()
-    setTooltip({ ruleId: rule.id, ruleName: rule.name, day, x: rect.left, y: rect.top })
-  }
+  const showCellTooltip = useCallback(
+    (rule: { id: string; name: string }, day: PolicyDay, target: HTMLElement) => {
+      const rect = target.getBoundingClientRect()
+      setTooltip({ ruleId: rule.id, ruleName: rule.name, day, x: rect.left, y: rect.top })
+    },
+    [],
+  )
 
-  const hideCellTooltip = () => setTooltip(null)
+  const hideCellTooltip = useCallback(() => setTooltip(null), [])
 
-  function renderBody() {
-    if (isPending) {
-      return <div className="policy-effectiveness-panel__skeleton" aria-hidden />
-    }
-    if (isError) {
-      return <p className="policy-effectiveness-panel__error">Failed to load policy data.</p>
-    }
-    if (rules.length === 0) {
-      return (
-        <div className="policy-effectiveness-panel__empty">
-          <p>No policies are enabled for the selected filters.</p>
-          <a href="/policy/builder">Go to Policy Builder</a>
-        </div>
-      )
-    }
-    return (
-      <div className="policy-effectiveness-panel__scroll">
-          <div
-            className="policy-effectiveness-panel__grid"
-            style={{
-              gridTemplateColumns: `180px repeat(${dates.length}, minmax(28px, 1fr))`,
-            }}
-            role="grid"
-            aria-label="Policy effectiveness heatmap"
-          >
-            {/* Header row */}
-            <div className="policy-effectiveness-panel__header-cell">
-              <button
-                type="button"
-                className="policy-effectiveness-panel__sort-btn"
-                onClick={() => setSortAsc(p => !p)}
-                aria-label={`Sort by blocks ${sortAsc ? 'descending' : 'ascending'}`}
-              >
-                Rule {sortAsc ? '↑' : '↓'}
-              </button>
-            </div>
-            {dates.map(date => (
-              <div key={date} className="policy-effectiveness-panel__date-cell" title={date}>
-                {formatDate(date)}
-              </div>
-            ))}
-
-            {/* Data rows */}
-            {sortedRules.map(rule => (
-              <>
-                <div
-                  key={`label-${rule.id}`}
-                  className="policy-effectiveness-panel__rule-label"
-                  title={rule.name}
-                >
-                  {rule.name}
-                </div>
-                {dates.map(date => {
-                  const day = dayMap.get(rule.id)?.get(date) ?? {
-                    date,
-                    blocks: 0,
-                    warns: 0,
-                    passes: 0,
-                  }
-                  return (
-                    <HeatmapCell
-                      key={`cell-${rule.id}-${date}`}
-                      ruleId={rule.id}
-                      ruleName={rule.name}
-                      date={date}
-                      day={day}
-                      onEnter={showCellTooltip}
-                      onLeave={hideCellTooltip}
-                    />
-                  )
-                })}
-              </>
-            ))}
-          </div>
-
-          {/* Hover tooltip */}
-          {tooltip && (
-            <div
-              className="policy-effectiveness-panel__tooltip"
-              style={{ left: tooltip.x, top: tooltip.y }}
-              role="tooltip"
-            >
-              <strong>{tooltip.ruleName}</strong>
-              <span>{tooltip.day.date}</span>
-              <span>Blocks: {tooltip.day.blocks}</span>
-              <span>Warns: {tooltip.day.warns}</span>
-              <span>Passes: {tooltip.day.passes}</span>
-              <span>
-                Ratio:{' '}
-                {(computeRatio(tooltip.day) * 100).toFixed(1)}%
-              </span>
-            </div>
-          )}
-        </div>
-    )
-  }
+  const handleToggleSort = useCallback(() => setSortAsc(p => !p), [])
 
   return (
     <div className="policy-effectiveness-panel" data-testid="policy-effectiveness-panel">
@@ -181,7 +217,19 @@ export function PolicyEffectivenessPanel() {
         <h2 className="policy-effectiveness-panel__title">Policy Effectiveness</h2>
       </div>
 
-      {renderBody()}
+      <HeatmapBody
+        isPending={isPending}
+        isError={isError}
+        rules={rules}
+        dates={dates}
+        sortAsc={sortAsc}
+        onToggleSort={handleToggleSort}
+        sortedRules={sortedRules}
+        dayMap={dayMap}
+        onCellEnter={showCellTooltip}
+        onCellLeave={hideCellTooltip}
+        tooltip={tooltip}
+      />
     </div>
   )
 }
