@@ -1,5 +1,44 @@
 //! Terminal output sanitization for server-supplied text.
 
+/// Char cursor type used by the escape-sequence consumers.
+type CharCursor<'a> = std::iter::Peekable<std::str::Chars<'a>>;
+
+/// Consume a CSI sequence: parameters/intermediates up to a final byte (`0x40`–`0x7e`).
+/// Called after the `ESC [` introducer has been consumed.
+fn consume_csi(chars: &mut CharCursor) {
+    for tail in chars.by_ref() {
+        if ('\u{40}'..='\u{7e}').contains(&tail) {
+            break;
+        }
+    }
+}
+
+/// Consume an OSC sequence: data terminated by BEL (`0x07`) or ST (`ESC \`).
+/// Called after the `ESC ]` introducer has been consumed.
+fn consume_osc(chars: &mut CharCursor) {
+    while let Some(&t) = chars.peek() {
+        if t == '\u{07}' {
+            chars.next();
+            break;
+        }
+        if t == '\u{1b}' {
+            chars.next();
+            if chars.peek() == Some(&'\\') {
+                chars.next();
+            }
+            break;
+        }
+        chars.next();
+    }
+}
+
+/// Whether `c` is a control character that should be stripped: C0 (`0x00`–`0x1f`),
+/// DEL (`0x7f`), or C1 (`0x80`–`0x9f`).
+fn is_control_char(c: char) -> bool {
+    let code = c as u32;
+    code < 0x20 || code == 0x7f || (0x80..=0x9f).contains(&code)
+}
+
 /// Strip terminal control sequences from server-supplied text before it is
 /// printed to the operator's terminal.
 ///
@@ -28,48 +67,31 @@ pub fn sanitize_terminal(input: &str) -> String {
     let mut chars = input.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            // ESC: consume the escape sequence it introduces.
-            '\u{1b}' => match chars.peek() {
-                Some('[') => {
-                    // CSI: parameters/intermediates up to a final byte.
-                    chars.next();
-                    for tail in chars.by_ref() {
-                        if ('\u{40}'..='\u{7e}').contains(&tail) {
-                            break;
-                        }
-                    }
-                }
-                Some(']') => {
-                    // OSC: data terminated by BEL or ST (ESC \).
-                    chars.next();
-                    while let Some(&t) = chars.peek() {
-                        if t == '\u{07}' {
-                            chars.next();
-                            break;
-                        }
-                        if t == '\u{1b}' {
-                            chars.next();
-                            if chars.peek() == Some(&'\\') {
-                                chars.next();
-                            }
-                            break;
-                        }
-                        chars.next();
-                    }
-                }
-                Some(_) => {
-                    // Other two-byte escape (e.g. `ESC c`, `ESC ( B`).
-                    chars.next();
-                }
-                None => {}
-            },
-            // Drop all other C0 control characters, DEL, and C1 controls
-            // (`0x80`–`0x9f`, e.g. `U+009B` 8-bit CSI).
-            c if (c as u32) < 0x20 || c as u32 == 0x7f || (0x80..=0x9f).contains(&(c as u32)) => {}
+            '\u{1b}' => consume_escape_sequence(&mut chars),
+            c if is_control_char(c) => {}
             c => out.push(c),
         }
     }
     out
+}
+
+/// Consume an escape sequence starting after the ESC (`0x1b`) byte.
+fn consume_escape_sequence(chars: &mut CharCursor) {
+    match chars.peek() {
+        Some('[') => {
+            chars.next();
+            consume_csi(chars);
+        }
+        Some(']') => {
+            chars.next();
+            consume_osc(chars);
+        }
+        Some(_) => {
+            // Other two-byte escape (e.g. `ESC c`, `ESC ( B`).
+            chars.next();
+        }
+        None => {}
+    }
 }
 
 #[cfg(test)]

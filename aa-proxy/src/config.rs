@@ -162,88 +162,100 @@ impl ProxyConfig {
     /// Build a `ProxyConfig` from environment variables, falling back to
     /// defaults where variables are not set.
     pub fn from_env() -> Result<Self, ProxyError> {
-        let bind_addr = match std::env::var("AA_PROXY_ADDR") {
-            Ok(val) => val
-                .parse::<SocketAddr>()
-                .map_err(|e| ProxyError::Config(format!("invalid AA_PROXY_ADDR: {e}")))?,
-            Err(_) => SocketAddr::from(([127, 0, 0, 1], 8899)),
-        };
-
-        let ca_dir = match std::env::var("AA_CA_DIR") {
-            Ok(val) => PathBuf::from(val),
-            Err(_) => dirs::home_dir()
-                .ok_or_else(|| ProxyError::Config("cannot determine home directory".into()))?
-                .join(".aa")
-                .join("ca"),
-        };
-
-        let cert_cache_capacity = match std::env::var("AA_PROXY_CERT_CACHE_CAPACITY") {
-            Ok(val) => val
-                .parse::<usize>()
-                .map_err(|e| ProxyError::Config(format!("invalid AA_PROXY_CERT_CACHE_CAPACITY: {e}")))?,
-            Err(_) => 1000,
-        };
-
-        let llm_only = match std::env::var("AA_PROXY_LLM_ONLY") {
-            Ok(val) => val != "0" && val.to_lowercase() != "false",
-            Err(_) => true,
-        };
-
-        let denied_hosts = env_csv("AA_PROXY_DENIED_HOSTS");
-
-        let network_allowlist = env_csv("AA_PROXY_NETWORK_ALLOWLIST");
-
-        // AAASM-4126: extra hosts to MitM + DLP-scan even under llm_only.
-        let mitm_hosts = env_csv("AA_PROXY_MITM_HOSTS");
-
-        let skip_upstream_tls_verify_requested = env_truthy("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
-        // AAASM-3131: this flag disables upstream certificate verification and
-        // is for integration tests only. In a release (production) build it must
-        // be unreachable — silently ignore the request and shout, so a stray env
-        // var in a deployed binary cannot quietly turn the proxy into a MitM that
-        // trusts any upstream certificate.
-        let skip_upstream_tls_verify = if cfg!(debug_assertions) {
-            skip_upstream_tls_verify_requested
-        } else {
-            if skip_upstream_tls_verify_requested {
-                tracing::error!(
-                    "AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY is set but IGNORED in a release build — \
-                     upstream TLS verification stays ENABLED. This flag is debug-only."
-                );
-            }
-            false
-        };
-
-        let credential_action = match std::env::var("AA_PROXY_CREDENTIAL_ACTION") {
-            Ok(val) => parse_credential_action(&val)?,
-            Err(_) => CredentialAction::default(),
-        };
-
-        let gateway_endpoint = match std::env::var("AA_PROXY_GATEWAY_ENDPOINT") {
-            Ok(val) if !val.is_empty() => Some(val),
-            _ => None,
-        };
-
-        // AAASM-3357: default fail-closed. Only an explicit truthy value
-        // opts into the historical fail-open soft-degradation behaviour.
-        let mcp_fail_open = env_truthy("AA_PROXY_MCP_FAIL_OPEN");
-
         Ok(Self {
-            bind_addr,
-            ca_dir,
-            cert_cache_capacity,
-            llm_only,
-            mitm_hosts,
-            denied_hosts,
-            network_allowlist,
-            skip_upstream_tls_verify,
-            credential_action,
+            bind_addr: parse_bind_addr()?,
+            ca_dir: parse_ca_dir()?,
+            cert_cache_capacity: parse_cert_cache_capacity()?,
+            llm_only: parse_llm_only(),
+            mitm_hosts: env_csv("AA_PROXY_MITM_HOSTS"),
+            denied_hosts: env_csv("AA_PROXY_DENIED_HOSTS"),
+            network_allowlist: env_csv("AA_PROXY_NETWORK_ALLOWLIST"),
+            skip_upstream_tls_verify: resolve_skip_upstream_tls_verify(),
+            credential_action: parse_credential_action_env()?,
             upstream_override: None,
-            gateway_endpoint,
-            mcp_fail_open,
+            gateway_endpoint: env_optional("AA_PROXY_GATEWAY_ENDPOINT"),
+            // AAASM-3357: default fail-closed. Only an explicit truthy value
+            // opts into the historical fail-open soft-degradation behaviour.
+            mcp_fail_open: env_truthy("AA_PROXY_MCP_FAIL_OPEN"),
             // No env var: production binaries can never relax the SSRF guard.
             allow_private_connect_targets: false,
         })
+    }
+}
+
+/// Parse the `AA_PROXY_ADDR` env var or return the default bind address.
+fn parse_bind_addr() -> Result<SocketAddr, ProxyError> {
+    match std::env::var("AA_PROXY_ADDR") {
+        Ok(val) => val
+            .parse::<SocketAddr>()
+            .map_err(|e| ProxyError::Config(format!("invalid AA_PROXY_ADDR: {e}"))),
+        Err(_) => Ok(SocketAddr::from(([127, 0, 0, 1], 8899))),
+    }
+}
+
+/// Parse the `AA_CA_DIR` env var or return the default CA directory.
+fn parse_ca_dir() -> Result<PathBuf, ProxyError> {
+    match std::env::var("AA_CA_DIR") {
+        Ok(val) => Ok(PathBuf::from(val)),
+        Err(_) => dirs::home_dir()
+            .ok_or_else(|| ProxyError::Config("cannot determine home directory".into()))
+            .map(|h| h.join(".aa").join("ca")),
+    }
+}
+
+/// Parse the `AA_PROXY_CERT_CACHE_CAPACITY` env var or return the default.
+fn parse_cert_cache_capacity() -> Result<usize, ProxyError> {
+    match std::env::var("AA_PROXY_CERT_CACHE_CAPACITY") {
+        Ok(val) => val
+            .parse::<usize>()
+            .map_err(|e| ProxyError::Config(format!("invalid AA_PROXY_CERT_CACHE_CAPACITY: {e}"))),
+        Err(_) => Ok(1000),
+    }
+}
+
+/// Parse the `AA_PROXY_LLM_ONLY` env var (default `true`).
+fn parse_llm_only() -> bool {
+    match std::env::var("AA_PROXY_LLM_ONLY") {
+        Ok(val) => val != "0" && val.to_lowercase() != "false",
+        Err(_) => true,
+    }
+}
+
+/// Resolve the skip-upstream-TLS-verify flag, enforcing debug-only semantics.
+///
+/// AAASM-3131: this flag disables upstream certificate verification and is for
+/// integration tests only. In a release (production) build it must be
+/// unreachable — silently ignore the request and shout, so a stray env var in a
+/// deployed binary cannot quietly turn the proxy into a MitM that trusts any
+/// upstream certificate.
+fn resolve_skip_upstream_tls_verify() -> bool {
+    let requested = env_truthy("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY");
+    if cfg!(debug_assertions) {
+        requested
+    } else {
+        if requested {
+            tracing::error!(
+                "AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY is set but IGNORED in a release build — \
+                 upstream TLS verification stays ENABLED. This flag is debug-only."
+            );
+        }
+        false
+    }
+}
+
+/// Parse the `AA_PROXY_CREDENTIAL_ACTION` env var or return the default.
+fn parse_credential_action_env() -> Result<CredentialAction, ProxyError> {
+    match std::env::var("AA_PROXY_CREDENTIAL_ACTION") {
+        Ok(val) => parse_credential_action(&val),
+        Err(_) => Ok(CredentialAction::default()),
+    }
+}
+
+/// Read an env var as `Some(value)` when set and non-empty, otherwise `None`.
+fn env_optional(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(val) if !val.is_empty() => Some(val),
+        _ => None,
     }
 }
 
