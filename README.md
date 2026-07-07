@@ -196,7 +196,7 @@ public API and wire protocol are **not** stable; do not use in production.
 
 Releases are published as GitHub pre-releases — latest
 [`v0.0.1-rc.3`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-rc.3)
-(2026-06-20). The coordinated release tag also publishes the CLI, crates, SDK
+(2026-07-03). The coordinated release tag also publishes the CLI, crates, SDK
 packages, and container image:
 
 | Channel | Status |
