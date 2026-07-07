@@ -1450,8 +1450,8 @@ impl PolicyEngine {
         // Extract deny_action from budget policies (if any).
         let deny_action = cascade
             .iter()
-            .filter_map(|doc| doc.budget.as_ref().and_then(|bp| Self::budget_deny_action(bp)))
-            .last();
+            .filter_map(|doc| doc.budget.as_ref().and_then(Self::budget_deny_action))
+            .next_back();
 
         EvaluationResult {
             decision: verdict.into_policy_result(),
