@@ -68,6 +68,9 @@ export function RevealOnceModal({
     >
       <div
         className="iam-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="API key reveal"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
       >
