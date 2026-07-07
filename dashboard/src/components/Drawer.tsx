@@ -61,6 +61,10 @@ export function Drawer({ open, onClose, children, ariaLabel }: Readonly<DrawerPr
       className="drawer-scrim"
       data-testid="drawer-scrim"
       onClick={handleScrimClick}
+      onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close drawer"
     >
       <aside
         className="drawer-panel"
