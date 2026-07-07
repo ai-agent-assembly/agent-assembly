@@ -1438,9 +1438,12 @@ impl PolicyEngine {
             };
 
         // Stage 7 — Budget check.
-        if let Some(result) =
-            self.check_cascade_budget(&cascade, &ctx.agent_id, redacted_payload.clone(), credential_findings.clone())
-        {
+        if let Some(result) = self.check_cascade_budget(
+            &cascade,
+            &ctx.agent_id,
+            redacted_payload.clone(),
+            credential_findings.clone(),
+        ) {
             return result;
         }
 

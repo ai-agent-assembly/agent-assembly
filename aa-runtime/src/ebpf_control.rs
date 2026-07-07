@@ -385,15 +385,7 @@ pub(crate) async fn drive_ebpf_layer(
     };
 
     for op in plan {
-        execute_planned_op(
-            &mut client,
-            op,
-            observe_pid,
-            confine_pid,
-            broadcast_tx,
-            degraded_layers,
-        )
-        .await;
+        execute_planned_op(&mut client, op, observe_pid, confine_pid, broadcast_tx, degraded_layers).await;
     }
 
     tracing::info!(socket = %socket.display(), confine_pid = ?confine_pid, "eBPF layer delegated to loaderd");

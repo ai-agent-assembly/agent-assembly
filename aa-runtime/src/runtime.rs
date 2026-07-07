@@ -683,10 +683,7 @@ fn handle_correlation_event(
 }
 
 /// Check layer availability and record any degradations.
-fn check_layer_availability(
-    active_layers: crate::layer::LayerSet,
-    degraded_layers: &mut Vec<String>,
-) {
+fn check_layer_availability(active_layers: crate::layer::LayerSet, degraded_layers: &mut Vec<String>) {
     if !active_layers.contains(crate::layer::LayerSet::EBPF) {
         tracing::warn!(
             remaining = %active_layers,
