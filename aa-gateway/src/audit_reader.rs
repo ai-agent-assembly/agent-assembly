@@ -168,29 +168,49 @@ impl AuditReader {
 
         while let Some(entry) = dir.next_entry().await? {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            if !is_jsonl_file(&path) {
                 continue;
             }
-
-            let file = tokio::fs::File::open(&path).await?;
-            let reader = tokio::io::BufReader::new(file);
-            let mut lines = reader.lines();
-
-            while let Some(line) = lines.next_line().await? {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                // Skip incomplete or corrupt lines (e.g. partial writes).
-                if let Ok(audit_entry) = serde_json::from_str::<AuditEntry>(&line) {
-                    // Drop entries older than the window before collecting.
-                    if since_ns.map_or(true, |since| audit_entry.timestamp_ns() >= since) {
-                        entries.push(audit_entry);
-                    }
-                }
-            }
+            read_jsonl_file(&path, since_ns, &mut entries).await?;
         }
 
         Ok(entries)
+    }
+}
+
+/// Check if a path has a `.jsonl` extension.
+fn is_jsonl_file(path: &std::path::Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+}
+
+/// Read and parse entries from a single JSONL file, applying the time window filter.
+async fn read_jsonl_file(
+    path: &std::path::Path,
+    since_ns: Option<u64>,
+    entries: &mut Vec<AuditEntry>,
+) -> io::Result<()> {
+    let file = tokio::fs::File::open(path).await?;
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = reader.lines();
+
+    while let Some(line) = lines.next_line().await? {
+        if let Some(entry) = parse_audit_line(&line, since_ns) {
+            entries.push(entry);
+        }
+    }
+    Ok(())
+}
+
+/// Parse a single JSONL line into an AuditEntry if valid and within the time window.
+fn parse_audit_line(line: &str, since_ns: Option<u64>) -> Option<AuditEntry> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    let entry: AuditEntry = serde_json::from_str(line).ok()?;
+    if since_ns.map_or(true, |since| entry.timestamp_ns() >= since) {
+        Some(entry)
+    } else {
+        None
     }
 }
 
