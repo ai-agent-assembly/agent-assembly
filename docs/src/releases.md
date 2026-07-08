@@ -12,8 +12,9 @@ and wire protocol are not yet stable.
 ## Where releases live
 
 - **GitHub Releases:** <https://github.com/ai-agent-assembly/agent-assembly/releases>
-  — the source of truth for published tags and changelogs. The latest tag is a
-  pre-release (`v0.0.1-beta.4`, 2026-06-24).
+  — the source of truth for published tags and changelogs. The workspace is
+  currently at pre-release `{{#include generated/version-tag.md:2}}`; see the
+  GitHub Releases page for the exact publish date and per-tag notes.
 - **Per-tag notes:** the source-controlled release notes live under
   `docs/release/` (one file per tag, e.g. `docs/release/v0.0.1-beta.4.md`).
 - **Top-level changelog:** [`CHANGELOG.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/CHANGELOG.md).
