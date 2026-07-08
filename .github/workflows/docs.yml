@@ -14,6 +14,11 @@ on:
       - 'README.md'
       - 'CONTRIBUTING.md'
       - '.github/workflows/docs.yml'
+      # AAASM-4310: shared metadata sources feed docs/src/generated/. A drift
+      # in either without a matching snippet update must fail docs CI.
+      - 'metadata/**'
+      - 'scripts/generate_docs_metadata.py'
+      - 'Cargo.toml'
   push:
     branches: [master]
     paths:
@@ -21,6 +26,9 @@ on:
       - 'README.md'
       - 'CONTRIBUTING.md'
       - '.github/workflows/docs.yml'
+      - 'metadata/**'
+      - 'scripts/generate_docs_metadata.py'
+      - 'Cargo.toml'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
   # has *succeeded* for that tag. This guarantees we never publish docs for a
@@ -81,6 +89,22 @@ jobs:
       # the channel-gate unit tests on every PR/push before building.
       - name: Run channel-gate unit tests
         run: python3 docs/ci/test_channels.py
+
+      # AAASM-4310: verify the shared metadata snippets in docs/src/generated/
+      # are up to date with Cargo.toml + metadata/docs.yaml. The generator is
+      # idempotent; a non-empty diff means someone edited a source without
+      # regenerating (or edited a generated file by hand). Fail early — before
+      # `mdbook build docs` — so the CI log points at the drift immediately.
+      - name: Regenerate shared docs metadata
+        run: python3 scripts/generate_docs_metadata.py
+
+      - name: Fail if generated docs metadata is stale
+        run: |
+          if ! git diff --exit-code -- docs/src/generated/; then
+            echo "::error::docs/src/generated/ is out of date with Cargo.toml / metadata/docs.yaml." >&2
+            echo "Run 'python3 scripts/generate_docs_metadata.py' locally and commit the result." >&2
+            exit 1
+          fi
 
       - name: Build book
         run: mdbook build docs
