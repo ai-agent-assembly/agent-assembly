@@ -9,8 +9,11 @@
  *
  * The helpers use raw `fetch` instead of the openapi-fetch client
  * because the paths are not yet in the generated schema. Auth header
- * mirrors `api/client.ts` — pulls the JWT from `localStorage`.
+ * mirrors `api/client.ts` — pulls the JWT from the shared `tokenStorage`
+ * helper (sessionStorage-backed since AAASM-4322).
  */
+
+import { getToken } from '../../auth/tokenStorage'
 
 type OpAction = 'pause' | 'resume' | 'terminate'
 
@@ -20,8 +23,7 @@ function buildUrl(id: string, action: OpAction): string {
 }
 
 function authHeader(): Record<string, string> {
-  if (typeof localStorage === 'undefined') return {}
-  const token = localStorage.getItem('aa_token')
+  const token = getToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 

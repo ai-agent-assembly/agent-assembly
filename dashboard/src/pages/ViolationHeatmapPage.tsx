@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useState } from "react";
+import { getToken } from "../auth/tokenStorage";
 import { ViolationHeatmap, ViolationNode } from "../components/ViolationHeatmap";
 
 // ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ export function ViolationHeatmapPage() {
     // page reaches the authenticated API origin the same way every other data
     // path does (mirrors api/client.ts; endpoint not yet in the OpenAPI schema).
     const base = import.meta.env.VITE_API_BASE_URL ?? "";
-    const token = localStorage.getItem("aa_token");
+    const token = getToken();
     const headers: Record<string, string> = {};
     if (token) headers.Authorization = `Bearer ${token}`;
 

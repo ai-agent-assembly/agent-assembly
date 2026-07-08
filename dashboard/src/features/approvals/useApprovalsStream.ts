@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { Approval } from './api'
 import { expireApproval } from './useExpiredApprovals'
 import type { components } from '../../api/generated/schema'
+import { getToken } from '../../auth/tokenStorage'
 
 type GovernanceEvent = components['schemas']['GovernanceEvent']
 type ApprovalPayload = components['schemas']['ApprovalPayload']
@@ -28,7 +29,7 @@ function buildWsUrl(): string {
   const wsBase = base
     ? base.replace(/^https/, 'wss').replace(/^http/, 'ws')
     : `${scheme}://${globalThis.location.host}`
-  const token = localStorage.getItem('aa_token')
+  const token = getToken()
   const query = ['types=approval', token ? `token=${encodeURIComponent(token)}` : '']
     .filter(Boolean)
     .join('&')
