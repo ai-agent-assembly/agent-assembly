@@ -129,6 +129,7 @@
 
 - [Local Development](development/local-development.md)
 - [Consuming the Shared Crates](development/consuming-shared-crates.md)
+- [Shared Docs Metadata](development/shared-docs-metadata.md)
 
 # Architecture Decision Records
 
