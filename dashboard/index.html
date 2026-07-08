@@ -3,6 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Content-Security-Policy (AAASM-4322). Defence-in-depth on top of the
+      sessionStorage move for the auth JWT: constrains where scripts, styles,
+      and network requests may come from so an XSS gadget cannot exfiltrate
+      the token to a third-party origin.
+      - default-src 'self': only same-origin resources unless overridden.
+      - script-src 'self': block inline <script> and third-party JS.
+        (The theme-init script is loaded as an external file to stay CSP-clean.)
+      - style-src 'self' 'unsafe-inline': many components emit inline `style`
+        attributes; tightening this requires a nonce pass we haven't shipped.
+      - connect-src 'self' + ws:/wss:: allow XHR/fetch/WebSocket to the API
+        origin (which is same-origin via VITE_API_BASE_URL in prod) and to
+        the WebSocket upgrade endpoint for live-ops / approvals streams.
+      - frame-ancestors 'none': clickjacking protection — the dashboard must
+        never be embedded in a hostile iframe.
+      - base-uri 'self' + form-action 'self': block <base href> and form
+        POST hijacking that can be chained with a script-src bypass.
+      - object-src 'none' + img-src 'self' data:: block plugins; allow
+        inlined data-URL icons.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    />
     <title>Agent Assembly Dashboard</title>
     <!-- Theme initialization: external script for CSP compliance.
          Applies saved/OS theme before first paint to avoid FOUC.
