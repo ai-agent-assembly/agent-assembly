@@ -310,7 +310,7 @@ describe('useLiveOpsStream', () => {
     expect(ws.readyState).toBe(MockWebSocket.CLOSED)
   })
 
-  it('appends ?token=… to the WS URL when aa_token is present in localStorage', () => {
+  it('appends ?token=… to the WS URL when aa_token is present in sessionStorage', () => {
     const originalGet = Storage.prototype.getItem
     Storage.prototype.getItem = function (key: string) {
       return key === 'aa_token' ? 'jwt-abc' : originalGet.call(this, key)

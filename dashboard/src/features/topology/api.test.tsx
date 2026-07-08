@@ -40,12 +40,12 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 describe('useTopologyQuery', () => {
   beforeEach(() => {
-    localStorage.setItem('aa_token', 'test-token')
+    sessionStorage.setItem('aa_token', 'test-token')
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
-    localStorage.clear()
+    sessionStorage.clear()
   })
 
   it('returns nodes + edges from a successful fetch and forwards the bearer token', async () => {
@@ -97,12 +97,12 @@ const MOCK_RECENT: RecentEvent[] = [
 
 describe('useTopologyNodeRecentEvents', () => {
   beforeEach(() => {
-    localStorage.setItem('aa_token', 'test-token')
+    sessionStorage.setItem('aa_token', 'test-token')
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
-    localStorage.clear()
+    sessionStorage.clear()
   })
 
   it('returns recent events for the given node id and forwards bearer token', async () => {

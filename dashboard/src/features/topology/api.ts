@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { getToken } from '../../auth/tokenStorage'
 import type { TopologyGraph } from './types'
 
 /**
@@ -30,7 +31,7 @@ export function useTopologyQuery() {
     staleTime: 5_000,
     queryFn: async () => {
       const base = import.meta.env.VITE_API_BASE_URL ?? ''
-      const token = localStorage.getItem('aa_token')
+      const token = getToken()
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
 
@@ -56,7 +57,7 @@ export function useTopologyNodeRecentEvents(nodeId: string) {
     staleTime: 5_000,
     queryFn: async () => {
       const base = import.meta.env.VITE_API_BASE_URL ?? ''
-      const token = localStorage.getItem('aa_token')
+      const token = getToken()
       const headers: Record<string, string> = {}
       if (token) headers.Authorization = `Bearer ${token}`
 

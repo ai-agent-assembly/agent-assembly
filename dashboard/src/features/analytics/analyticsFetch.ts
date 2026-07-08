@@ -1,3 +1,5 @@
+import { getToken } from '../../auth/tokenStorage'
+
 /**
  * Base-URL + bearer-auth fetch helper for the analytics data path.
  *
@@ -12,7 +14,7 @@
  */
 export async function analyticsFetch<T>(path: string): Promise<T> {
   const base = import.meta.env.VITE_API_BASE_URL ?? ''
-  const token = localStorage.getItem('aa_token')
+  const token = getToken()
   const headers: Record<string, string> = {}
   if (token) headers.Authorization = `Bearer ${token}`
 

@@ -1,4 +1,5 @@
 import createClient from "openapi-fetch";
+import { getToken } from "../auth/tokenStorage";
 import type { paths } from "./generated/schema";
 
 export const api = createClient<paths>({
@@ -8,7 +9,7 @@ export const api = createClient<paths>({
 // Inject the stored JWT on every request.
 api.use({
   onRequest({ request }) {
-    const token = localStorage.getItem("aa_token");
+    const token = getToken();
     if (token) {
       request.headers.set("Authorization", `Bearer ${token}`);
     }

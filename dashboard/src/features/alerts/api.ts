@@ -5,6 +5,7 @@ import {
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query'
+import { getToken } from '../../auth/tokenStorage'
 import { alertsEndpoints, alertsQueryKeys } from './endpoints'
 import type {
   Alert,
@@ -31,7 +32,7 @@ import type {
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 
 function authHeader(): Record<string, string> {
-  const token = localStorage.getItem('aa_token')
+  const token = getToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 

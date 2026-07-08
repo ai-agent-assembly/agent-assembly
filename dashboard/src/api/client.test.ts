@@ -15,7 +15,7 @@ function lastRequest(): Request {
 
 describe('api client auth middleware', () => {
   beforeEach(() => {
-    localStorage.clear()
+    sessionStorage.clear()
     fetchMock.mockClear()
     vi.stubGlobal('fetch', fetchMock)
   })
@@ -25,7 +25,7 @@ describe('api client auth middleware', () => {
   })
 
   it('injects the stored JWT as a Bearer token', async () => {
-    localStorage.setItem('aa_token', 'jwt-abc')
+    sessionStorage.setItem('aa_token', 'jwt-abc')
     // Cast: the concrete path is irrelevant — we only assert on the headers
     // the middleware attaches before the request leaves the client.
     await api.GET('http://localhost/api/v1/health' as never, { fetch: fetchMock } as never)

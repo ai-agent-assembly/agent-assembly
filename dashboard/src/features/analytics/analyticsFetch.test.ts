@@ -15,13 +15,13 @@ function jsonOk(body: unknown): Response {
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
-  localStorage.clear()
+  sessionStorage.clear()
 })
 
 describe('analyticsFetch', () => {
   it('prefixes VITE_API_BASE_URL and attaches the Authorization bearer header', async () => {
     vi.stubEnv('VITE_API_BASE_URL', 'https://api.example.test')
-    localStorage.setItem('aa_token', 'tok-abc')
+    sessionStorage.setItem('aa_token', 'tok-abc')
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonOk({ ok: true }))
 
     await analyticsFetch('/api/v1/analytics/kpis?metric=cost')

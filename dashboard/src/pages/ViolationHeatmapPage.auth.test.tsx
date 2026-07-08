@@ -16,13 +16,13 @@ function emptyResponse(): Response {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
-  localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe("ViolationHeatmapPage request wiring", () => {
   it("prefixes VITE_API_BASE_URL and sends the Authorization bearer header", async () => {
     vi.stubEnv("VITE_API_BASE_URL", "https://api.example.test");
-    localStorage.setItem("aa_token", "tok-123");
+    sessionStorage.setItem("aa_token", "tok-123");
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(emptyResponse());
 
     render(<ViolationHeatmapPage />);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { components } from '../../api/generated/schema'
+import { getToken } from '../../auth/tokenStorage'
 import type { CallStackNode, CallStackNodeKind, LiveOperation, OperationStatus } from './types'
 import { OPERATION_STATUSES } from './types'
 
@@ -100,8 +101,7 @@ function buildWsUrl(): string {
   const wsBase = base
     ? base.replace(/^https/, 'wss').replace(/^http/, 'ws')
     : `${scheme}://${globalThis.location.host}`
-  const token =
-    typeof localStorage === 'undefined' ? null : localStorage.getItem('aa_token')
+  const token = getToken()
   const query = [
     'types=violation,ops_change',
     token ? `token=${encodeURIComponent(token)}` : '',
