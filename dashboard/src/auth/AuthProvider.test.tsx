@@ -8,19 +8,29 @@ function wrapper({ children }: { children: React.ReactNode }) {
 }
 
 beforeEach(() => {
+  sessionStorage.clear()
   localStorage.clear()
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
+  sessionStorage.clear()
   localStorage.clear()
 })
 
 describe('AuthProvider', () => {
-  it('seeds the token from localStorage on mount', () => {
-    localStorage.setItem('aa_token', 'persisted-token')
+  it('seeds the token from sessionStorage on mount', () => {
+    sessionStorage.setItem('aa_token', 'persisted-token')
     const { result } = renderHook(() => useAuth(), { wrapper })
     expect(result.current.token).toBe('persisted-token')
+  })
+
+  it('ignores any legacy token in localStorage', () => {
+    // Regression guard for AAASM-4322: an XSS-reachable localStorage entry
+    // must not seed the auth state after the migration to sessionStorage.
+    localStorage.setItem('aa_token', 'legacy-token')
+    const { result } = renderHook(() => useAuth(), { wrapper })
+    expect(result.current.token).toBeNull()
   })
 
   it('starts with a null token when none is stored', () => {
@@ -39,7 +49,8 @@ describe('AuthProvider', () => {
     })
 
     await waitFor(() => expect(result.current.token).toBe('new-token'))
-    expect(localStorage.getItem('aa_token')).toBe('new-token')
+    expect(sessionStorage.getItem('aa_token')).toBe('new-token')
+    expect(localStorage.getItem('aa_token')).toBeNull()
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining('/api/v1/auth/token'),
       expect.objectContaining({
@@ -55,11 +66,11 @@ describe('AuthProvider', () => {
 
     await expect(result.current.login('bad-key')).rejects.toThrow('Authentication failed (401)')
     expect(result.current.token).toBeNull()
-    expect(localStorage.getItem('aa_token')).toBeNull()
+    expect(sessionStorage.getItem('aa_token')).toBeNull()
   })
 
   it('logout clears the token from state and storage', async () => {
-    localStorage.setItem('aa_token', 'persisted-token')
+    sessionStorage.setItem('aa_token', 'persisted-token')
     const { result } = renderHook(() => useAuth(), { wrapper })
     expect(result.current.token).toBe('persisted-token')
 
@@ -68,6 +79,6 @@ describe('AuthProvider', () => {
     })
 
     expect(result.current.token).toBeNull()
-    expect(localStorage.getItem('aa_token')).toBeNull()
+    expect(sessionStorage.getItem('aa_token')).toBeNull()
   })
 })
