@@ -19,7 +19,7 @@ let responses: Record<string, { status?: number; body: unknown }>
 beforeEach(() => {
   calls = []
   responses = {}
-  localStorage.setItem('aa_token', 'test-token')
+  sessionStorage.setItem('aa_token', 'test-token')
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init: RequestInit = {}) => {
@@ -45,7 +45,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
-  localStorage.clear()
+  sessionStorage.clear()
 })
 
 const RULE_A: AlertRule = {

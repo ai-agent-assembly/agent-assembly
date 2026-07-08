@@ -28,7 +28,7 @@ function renderShell({ child }: { child?: React.ReactNode } = {}) {
 
 describe('AppShell', () => {
   beforeEach(() => {
-    localStorage.clear()
+    sessionStorage.clear()
   })
 
   it('renders the shell chrome and the routed outlet content', () => {
@@ -39,14 +39,14 @@ describe('AppShell', () => {
   })
 
   it('shows the logged-in token in the topbar and logs out on click', async () => {
-    localStorage.setItem('aa_token', 'jwt-123')
+    sessionStorage.setItem('aa_token', 'jwt-123')
     const user = userEvent.setup()
     renderShell()
     expect(screen.getByTestId('appshell-user')).toHaveTextContent('jwt-123')
 
     await user.click(screen.getByTestId('logout-btn'))
     expect(screen.getByTestId('appshell-user')).toHaveTextContent('')
-    expect(localStorage.getItem('aa_token')).toBeNull()
+    expect(sessionStorage.getItem('aa_token')).toBeNull()
   })
 
   it('toggles the mobile nav open via the hamburger and closes it on nav click', async () => {

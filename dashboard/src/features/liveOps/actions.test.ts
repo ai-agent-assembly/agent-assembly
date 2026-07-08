@@ -3,12 +3,12 @@ import { pauseOp, resumeOp, terminateOp } from './actions'
 
 const fetchSpy = vi.fn()
 const originalFetch = globalThis.fetch
-const originalLocalStorage = globalThis.localStorage
+const originalSessionStorage = globalThis.sessionStorage
 
 function setToken(token: string | null) {
   const store: Record<string, string> = {}
   if (token !== null) store.aa_token = token
-  Object.defineProperty(globalThis, 'localStorage', {
+  Object.defineProperty(globalThis, 'sessionStorage', {
     configurable: true,
     value: {
       getItem: (k: string) => store[k] ?? null,
@@ -44,10 +44,10 @@ describe('liveOps/actions', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch
-    if (originalLocalStorage) {
-      Object.defineProperty(globalThis, 'localStorage', {
+    if (originalSessionStorage) {
+      Object.defineProperty(globalThis, 'sessionStorage', {
         configurable: true,
-        value: originalLocalStorage,
+        value: originalSessionStorage,
       })
     }
   })
@@ -76,7 +76,7 @@ describe('liveOps/actions', () => {
     )
   })
 
-  it('attaches Bearer token from localStorage', async () => {
+  it('attaches Bearer token from sessionStorage (AAASM-4322)', async () => {
     setToken('jwt-abc')
     fetchSpy.mockResolvedValue(okResponse())
     await resumeOp('op-1')

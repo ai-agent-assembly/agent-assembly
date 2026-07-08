@@ -35,12 +35,12 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 describe('useTraceQuery', () => {
   beforeEach(() => {
-    localStorage.setItem('aa_token', 'test-token')
+    sessionStorage.setItem('aa_token', 'test-token')
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
-    localStorage.clear()
+    sessionStorage.clear()
   })
 
   it('returns events from a successful fetch and forwards the bearer token', async () => {

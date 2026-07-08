@@ -72,7 +72,7 @@ describe('OverlayProvider + useOverlay', () => {
 
 describe('AppShell overlay mount points', () => {
   it('renders one <div data-overlay={name}> per OVERLAY_NAMES entry', () => {
-    localStorage.setItem('aa_token', 'test-token')
+    sessionStorage.setItem('aa_token', 'test-token')
     render(withQueryClient(
       <MemoryRouter initialEntries={['/']}>
         <AuthProvider>
@@ -89,13 +89,13 @@ describe('AppShell overlay mount points', () => {
       expect(mount).toBeInTheDocument()
       expect(mount.dataset.overlay).toBe(name)
     }
-    localStorage.clear()
+    sessionStorage.clear()
   })
 })
 
 describe('AppShell canonical nav', () => {
   function renderShell() {
-    localStorage.setItem('aa_token', 'test-token')
+    sessionStorage.setItem('aa_token', 'test-token')
     render(withQueryClient(
       <MemoryRouter initialEntries={['/']}>
         <AuthProvider>
@@ -107,7 +107,7 @@ describe('AppShell canonical nav', () => {
         </AuthProvider>
       </MemoryRouter>,
     ))
-    return () => localStorage.clear()
+    return () => sessionStorage.clear()
   }
 
   it('renders one nav-link-{id} per CANONICAL_ROUTES entry', () => {

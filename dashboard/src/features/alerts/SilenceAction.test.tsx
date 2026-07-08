@@ -13,7 +13,7 @@ let calls: Call[]
 
 beforeEach(() => {
   calls = []
-  localStorage.setItem('aa_token', 'test-token')
+  sessionStorage.setItem('aa_token', 'test-token')
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init: RequestInit = {}) => {
@@ -36,7 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
-  localStorage.clear()
+  sessionStorage.clear()
 })
 
 function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {

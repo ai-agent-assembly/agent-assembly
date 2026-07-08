@@ -30,6 +30,7 @@ function AppRoutes({ initialPath = '/' }: Readonly<{ initialPath?: string }>) {
 }
 
 beforeEach(() => {
+  sessionStorage.clear()
   localStorage.clear()
 })
 
@@ -51,7 +52,7 @@ describe('Router smoke tests', () => {
   })
 
   it('renders protected route when token is present', () => {
-    localStorage.setItem('aa_token', 'test-token')
+    sessionStorage.setItem('aa_token', 'test-token')
     render(<AppRoutes initialPath="/" />)
     expect(screen.getByText('Dashboard home')).toBeInTheDocument()
   })
