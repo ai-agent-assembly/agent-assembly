@@ -34,9 +34,11 @@ protocol_version: "protocol/v1"
 # links, and cross-references from ADRs.
 repo_url: "https://github.com/ai-agent-assembly/agent-assembly"
 
-# Canonical published docs site (GitHub Pages). The `latest/` subpath tracks
-# master; frozen per-tag subpaths are cut on a successful release.
-docs_url: "https://ai-agent-assembly.github.io/agent-assembly/latest/"
+# Canonical published docs site. Served from the `docs.agent-assembly.com`
+# host per ADR-0008 (SaaS host-routing) and root README.md; the GitHub Pages
+# deployment at `ai-agent-assembly.github.io/agent-assembly/` is the upstream
+# mirror the CDN pulls from and MUST NOT be surfaced to readers.
+docs_url: "https://docs.agent-assembly.com/"
 
 # The one-line installer endpoint served by the official website. The
 # `tool.agent-assembly.dev` host is a maintained alternate; the GitHub raw
