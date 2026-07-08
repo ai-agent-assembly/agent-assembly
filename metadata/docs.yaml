@@ -1,0 +1,46 @@
+# Shared documentation metadata for the agent-assembly mdBook site.
+#
+# This file is the single source of truth for values that are NOT already
+# encoded in Cargo.toml but are referenced from multiple docs pages. It is
+# read by scripts/generate_docs_metadata.py, which regenerates the checked-in
+# snippets under docs/src/generated/. Editing a value here and re-running the
+# generator is the ONLY sanctioned way to change that value in the docs.
+#
+# What belongs here:
+#   - Values referenced from two or more docs pages.
+#   - Values that are stable-ish but occasionally change (protocol version,
+#     canonical URLs, installer commands).
+#
+# What does NOT belong here:
+#   - The workspace / runtime version — that is sourced directly from
+#     Cargo.toml `[workspace.package].version` by the generator.
+#   - Historical values (past release tags, changelog entries) — those must
+#     stay literal so that historical accuracy is preserved.
+#
+# To add a new shared value:
+#   1. Add the key below.
+#   2. Extend scripts/generate_docs_metadata.py to emit a new snippet under
+#      docs/src/generated/ using that key.
+#   3. Reference the snippet from a docs page with `{{#include ...}}`.
+#   4. Run `python3 scripts/generate_docs_metadata.py` and commit the result.
+#   5. The docs CI drift check will then fail on any future manual edit that
+#      is not backed by a metadata change.
+
+# The wire protocol version currently supported by aa-runtime.
+# See docs/src/versioning.md for the SemVer rules that govern bumps.
+protocol_version: "protocol/v1"
+
+# Canonical GitHub repository URL used by installer instructions, edit-page
+# links, and cross-references from ADRs.
+repo_url: "https://github.com/ai-agent-assembly/agent-assembly"
+
+# Canonical published docs site (GitHub Pages). The `latest/` subpath tracks
+# master; frozen per-tag subpaths are cut on a successful release.
+docs_url: "https://ai-agent-assembly.github.io/agent-assembly/latest/"
+
+# The one-line installer endpoint served by the official website. The
+# `tool.agent-assembly.dev` host is a maintained alternate; the GitHub raw
+# URL is the fallback for users who want to fetch the script directly.
+install_script_url: "https://agent-assembly.com/install.sh"
+install_script_url_alt: "https://tool.agent-assembly.dev/install.sh"
+install_script_url_raw: "https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh"
