@@ -107,6 +107,27 @@ describe('formatUsd', () => {
   it('formats value as USD currency string', () => {
     expect(formatUsd(1234)).toBe('$1,234')
   })
+
+  it('returns em dash for non-finite values', () => {
+    expect(formatUsd(NaN)).toBe('—')
+    expect(formatUsd(Infinity)).toBe('—')
+    expect(formatUsd(-Infinity)).toBe('—')
+  })
+
+  it('clamps extreme magnitudes to a bounded compact string, never a raw one', () => {
+    // ±Number.MAX_VALUE is finite, so compact notation alone would still print a
+    // ~300-digit "T"-suffixed string; clampChartValue caps it at ±$1T.
+    expect(formatUsd(-Number.MAX_VALUE)).toBe('-$1.0T')
+    expect(formatUsd(Number.MAX_VALUE)).toBe('$1.0T')
+    expect(formatUsd(-Number.MAX_VALUE)).not.toMatch(/\d{6}/)
+    expect(formatUsd(1e12)).toBe('$1.0T')
+    expect(formatUsd(5e9)).toBe('$5.0B')
+  })
+
+  it('formats normal finite values with plain currency notation', () => {
+    expect(formatUsd(320)).toBe('$320')
+    expect(formatUsd(-140)).toBe('-$140')
+  })
 })
 
 // ── CostBreakdownPanel integration tests ─────────────────────────────────────
