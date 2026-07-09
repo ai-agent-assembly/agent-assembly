@@ -25,6 +25,32 @@ export function parseScopesFromJwt(token: string | null): Scope[] {
   }
 }
 
+/**
+ * Extract a display identity from an unverified JWT payload.
+ *
+ * Returns the first present of the `sub`, `username`, `email`, or
+ * `preferred_username` claims so the top bar can show *who* is signed in
+ * without ever rendering the bearer credential itself (AAASM-4331). The
+ * signature is deliberately NOT verified — same rationale as
+ * `parseScopesFromJwt`: the gateway is the sole authority. Returns `null` for a
+ * missing, malformed, or identity-less token, which the caller renders as blank.
+ */
+export function getSubject(token: string | null): string | null {
+  if (!token) return null
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  try {
+    const payload = JSON.parse(base64UrlDecode(parts[1])) as Record<string, unknown>
+    for (const key of ['sub', 'username', 'email', 'preferred_username']) {
+      const value = payload[key]
+      if (typeof value === 'string' && value.length > 0) return value
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 /** Decode a base64url segment (JWT parts are unpadded base64url). */
 function base64UrlDecode(segment: string): string {
   const base64 = segment.replace(/-/g, '+').replace(/_/g, '/')
