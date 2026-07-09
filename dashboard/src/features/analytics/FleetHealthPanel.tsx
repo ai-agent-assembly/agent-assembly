@@ -3,6 +3,7 @@ import { LineChart, Line, ResponsiveContainer } from 'recharts'
 import { useAnalyticsFilters } from './useAnalyticsFilters'
 import { useFleetHealthQuery } from './useFleetHealthQuery'
 import { CHART_CATEGORICAL_PALETTE } from './chartPalette'
+import { clampChartValue } from './chartDomain'
 import type { AgentHealth } from './useFleetHealthQuery'
 
 const SPARKLINE_COLOR = CHART_CATEGORICAL_PALETTE[0]
@@ -43,6 +44,10 @@ export function FleetHealthPanel() {
       <ul className="fleet-health-panel__list" aria-label="Agent health">
           {agents.map(agent => {
             const score = currentScore(agent)
+            const sparkPoints = agent.points.map(p => ({
+              ...p,
+              score: clampChartValue(p.score),
+            }))
             return (
               <li
                 key={agent.id}
@@ -54,7 +59,7 @@ export function FleetHealthPanel() {
                 </span>
                 <span className="fleet-health-panel__sparkline" aria-hidden>
                   <ResponsiveContainer width={120} height={32}>
-                    <LineChart data={agent.points}>
+                    <LineChart data={sparkPoints}>
                       <Line
                         type="monotone"
                         dataKey="score"

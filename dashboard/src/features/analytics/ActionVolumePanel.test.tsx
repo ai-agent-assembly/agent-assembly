@@ -103,6 +103,28 @@ describe('transformSeries', () => {
     expect(row['agent-a']).toBe(20)
     expect(row['agent-b']).toBe(8)
   })
+
+  it('clamps out-of-range values so the axis domain stays finite (AAASM-4334)', () => {
+    // A malformed 200 can carry the schema-boundary value -Number.MAX_VALUE,
+    // which previously collapsed the Recharts Y axis and spawned duplicate tick
+    // keys. Every value reaching the chart must be finite and in-range.
+    const degenerate: ActionVolumeSeries[] = [
+      {
+        key: 'bad',
+        name: 'Bad',
+        points: [
+          { t: 1000, value: -Number.MAX_VALUE },
+          { t: 2000, value: Number.POSITIVE_INFINITY },
+          { t: 3000, value: Number.NaN },
+        ],
+      },
+    ]
+    const rows = transformSeries(degenerate)
+    for (const row of rows) {
+      expect(Number.isFinite(row['bad'])).toBe(true)
+      expect(Math.abs(row['bad'])).toBeLessThanOrEqual(1e12)
+    }
+  })
 })
 
 // ── makeTickFormatter guard tests ─────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
 import { useAnalyticsFilters } from './useAnalyticsFilters'
 import { useToolUsageQuery } from './useToolUsageQuery'
 import { sortToolsByCallsDesc, errorRateColor } from './toolUsageUtils'
+import { clampChartValue } from './chartDomain'
 
 export function ToolUsagePanel() {
   const { filters } = useAnalyticsFilters()
@@ -23,6 +24,7 @@ export function ToolUsagePanel() {
     () =>
       sortToolsByCallsDesc(tools).map((tool) => ({
         ...tool,
+        calls: clampChartValue(tool.calls),
         fill: errorRateColor(tool.errorRate),
       })),
     [tools],
