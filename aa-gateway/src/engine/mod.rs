@@ -3203,6 +3203,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_from_file_nested_unknown_key_fails_closed() {
+        // AAASM-4330: a typo INSIDE a section (`capabilities.dney` for `deny`)
+        // drops the intended restriction. The engine load path must abort
+        // rather than enforce a weaker policy than the author wrote.
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(tmp, "capabilities:\n  dney:\n    - file_delete\n").unwrap();
+        tmp.flush().unwrap();
+        let (alert_tx, _) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(64);
+        let result = PolicyEngine::load_from_file(tmp.path(), alert_tx);
+        assert!(
+            matches!(result, Err(PolicyLoadError::Validation(_))),
+            "expected fail-closed Validation error, got: {:?}",
+            result.err()
+        );
+    }
+
     // ── PolicyEvaluator trait impl ────────────────────────────────────────────
 
     #[test]

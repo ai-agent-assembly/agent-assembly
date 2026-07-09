@@ -115,6 +115,37 @@ spec:
     }
 
     #[test]
+    fn nested_unknown_key_exits_failure() {
+        // AAASM-4330: a typo INSIDE a section (e.g. `capabilities.dney` for
+        // `deny`) must fail closed at the CLI (exit 1), not pass with a warning
+        // while silently dropping the restriction.
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "capabilities:\n  dney:\n    - file_delete").unwrap();
+
+        let args = ValidateArgs {
+            file: tmp.path().to_path_buf(),
+        };
+        assert_eq!(run(args), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn valid_nested_policy_exits_success() {
+        // AAASM-4330 over-rejection guard: a policy whose nested keys are all
+        // spelled correctly must still validate (exit 0).
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            tmp,
+            "capabilities:\n  deny:\n    - file_delete\ntools:\n  bash:\n    allow: true\n    limit_per_hour: 5"
+        )
+        .unwrap();
+
+        let args = ValidateArgs {
+            file: tmp.path().to_path_buf(),
+        };
+        assert_eq!(run(args), ExitCode::SUCCESS);
+    }
+
+    #[test]
     fn multiple_errors_all_reported() {
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         writeln!(
