@@ -114,8 +114,11 @@ export function PolicyEffectivenessPanel() {
                 Rule {sortAsc ? '↑' : '↓'}
               </button>
             </div>
-            {dates.map(date => (
-              <div key={date} className="policy-effectiveness-panel__date-cell" title={date}>
+            {dates.map((date, i) => (
+              // Key by index, not the raw date string: a malformed/degenerate
+              // response can carry coincident dates that would collide into
+              // duplicate React keys.
+              <div key={i} className="policy-effectiveness-panel__date-cell" title={date}>
                 {formatDate(date)}
               </div>
             ))}
@@ -129,7 +132,7 @@ export function PolicyEffectivenessPanel() {
                 >
                   {rule.name}
                 </div>
-                {dates.map(date => {
+                {dates.map((date, i) => {
                   const day = dayMap.get(rule.id)?.get(date) ?? {
                     date,
                     blocks: 0,
@@ -138,7 +141,7 @@ export function PolicyEffectivenessPanel() {
                   }
                   return (
                     <HeatmapCell
-                      key={date}
+                      key={i}
                       ruleId={rule.id}
                       ruleName={rule.name}
                       date={date}

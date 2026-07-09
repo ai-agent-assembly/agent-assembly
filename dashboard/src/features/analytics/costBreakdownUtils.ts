@@ -1,4 +1,5 @@
 import type { CostBucket, CostSegment } from './useCostBreakdownQuery'
+import { clampChartValue } from './chartDomain'
 
 export interface SegmentMeta { key: string; name: string }
 
@@ -30,7 +31,7 @@ export function transformBuckets(buckets: CostBucket[]): Record<string, string |
   return buckets.map(b => {
     const row: Record<string, string | number> = { label: b.label }
     for (const s of b.segments) {
-      row[s.key] = s.value
+      row[s.key] = clampChartValue(s.value)
     }
     return row
   })
