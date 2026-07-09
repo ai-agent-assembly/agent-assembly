@@ -53,6 +53,12 @@ impl PolicyValidator {
         // vanish without any error. Now every unknown top-level key is a
         // hard validation error — consistent with the product's fail-closed
         // posture everywhere else.
+        //
+        // AAASM-4330: the same silent-drop existed one level DOWN — a typo
+        // INSIDE an enforced section (e.g. `capabilities.dney` for `deny`) was
+        // only warned about, so the restriction still vanished and the policy
+        // loaded fail-open. Each section validator now calls
+        // `reject_unknown_keys`, mirroring this top-level rule for nested keys.
         for key in raw.unknown.keys() {
             if key == "rules" {
                 errors.push(ValidationError::new(
@@ -74,13 +80,13 @@ impl PolicyValidator {
         }
 
         // Step 3 — validate each section
-        let network = Self::validate_network(raw.network, &mut errors, &mut warnings);
-        let schedule = Self::validate_schedule(raw.schedule, &mut errors, &mut warnings);
+        let network = Self::validate_network(raw.network, &mut errors);
+        let schedule = Self::validate_schedule(raw.schedule, &mut errors);
         let budget = Self::validate_budget(raw.budget, &mut errors);
         let data = Self::validate_data(raw.data, &mut errors);
-        let tools = Self::validate_tools(raw.tools, &mut errors, &mut warnings);
+        let tools = Self::validate_tools(raw.tools, &mut errors);
         let capabilities = Self::validate_capabilities(raw.capabilities, &mut errors, &mut warnings);
-        let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors, &mut warnings);
+        let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
             Some(0) => {
@@ -153,13 +159,10 @@ impl PolicyValidator {
     fn validate_network(
         raw: Option<crate::policy::raw::RawNetworkPolicy>,
         errors: &mut Vec<ValidationError>,
-        warnings: &mut Vec<ValidationWarning>,
     ) -> Option<NetworkPolicy> {
         let raw = raw?;
 
-        for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(format!("network.{}", key)));
-        }
+        reject_unknown_keys("network", &raw.unknown, errors);
 
         let allowlist = raw.allowlist.unwrap_or_default();
         for (i, entry) in allowlist.iter().enumerate() {
@@ -177,17 +180,12 @@ impl PolicyValidator {
     fn validate_schedule(
         raw: Option<crate::policy::raw::RawSchedulePolicy>,
         errors: &mut Vec<ValidationError>,
-        warnings: &mut Vec<ValidationWarning>,
     ) -> Option<SchedulePolicy> {
         let raw = raw?;
 
-        for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(format!("schedule.{}", key)));
-        }
+        reject_unknown_keys("schedule", &raw.unknown, errors);
 
-        let active_hours = raw
-            .active_hours
-            .and_then(|ah| Self::validate_active_hours(ah, errors, warnings));
+        let active_hours = raw.active_hours.and_then(|ah| Self::validate_active_hours(ah, errors));
 
         Some(SchedulePolicy { active_hours })
     }
@@ -195,11 +193,8 @@ impl PolicyValidator {
     fn validate_active_hours(
         raw: crate::policy::raw::RawActiveHours,
         errors: &mut Vec<ValidationError>,
-        warnings: &mut Vec<ValidationWarning>,
     ) -> Option<ActiveHours> {
-        for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(format!("schedule.active_hours.{}", key)));
-        }
+        reject_unknown_keys("schedule.active_hours", &raw.unknown, errors);
 
         let start = match raw.start {
             Some(s) => {
@@ -280,6 +275,8 @@ impl PolicyValidator {
         errors: &mut Vec<ValidationError>,
     ) -> Option<BudgetPolicy> {
         let raw = raw?;
+
+        reject_unknown_keys("budget", &raw.unknown, errors);
 
         validate_budget_limit_pair(
             raw.daily_limit_usd,
@@ -362,6 +359,8 @@ impl PolicyValidator {
     ) -> Option<DataPolicy> {
         let raw = raw?;
 
+        reject_unknown_keys("data", &raw.unknown, errors);
+
         let patterns = raw.sensitive_patterns.unwrap_or_default();
         for (i, pattern) in patterns.iter().enumerate() {
             if regex::Regex::new(pattern).is_err() {
@@ -403,9 +402,7 @@ impl PolicyValidator {
     ) -> Option<aa_core::CapabilitySet> {
         let raw = raw?;
 
-        for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(format!("capabilities.{}", key)));
-        }
+        reject_unknown_keys("capabilities", &raw.unknown, errors);
 
         let mut allow = std::collections::BTreeSet::new();
         for (i, s) in raw.allow.unwrap_or_default().iter().enumerate() {
@@ -457,7 +454,6 @@ impl PolicyValidator {
     fn validate_tools(
         raw: Option<HashMap<String, crate::policy::raw::RawToolPolicy>>,
         errors: &mut Vec<ValidationError>,
-        warnings: &mut Vec<ValidationWarning>,
     ) -> HashMap<String, ToolPolicy> {
         let raw = match raw {
             Some(m) => m,
@@ -466,9 +462,7 @@ impl PolicyValidator {
 
         let mut tools = HashMap::new();
         for (name, rt) in raw {
-            for key in rt.unknown.keys() {
-                warnings.push(ValidationWarning::unknown_key(format!("tools.{}.{}", name, key)));
-            }
+            reject_unknown_keys(&format!("tools.{}", name), &rt.unknown, errors);
 
             if let Some(expr) = &rt.requires_approval_if {
                 if expr.trim().is_empty() {
@@ -509,19 +503,40 @@ impl PolicyValidator {
 
     fn validate_approval_policy(
         raw: Option<crate::policy::raw::RawApprovalPolicy>,
-        _errors: &mut Vec<ValidationError>,
-        warnings: &mut Vec<ValidationWarning>,
+        errors: &mut Vec<ValidationError>,
     ) -> Option<ApprovalPolicy> {
         let raw = raw?;
 
-        for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(format!("approval.{}", key)));
-        }
+        reject_unknown_keys("approval", &raw.unknown, errors);
 
         Some(ApprovalPolicy {
             timeout_seconds: raw.timeout_seconds,
             escalation_role: raw.escalation_role,
         })
+    }
+}
+
+/// AAASM-4330: reject an unknown key inside an enforced policy section as a hard
+/// validation error (fail-closed), mirroring the top-level AAASM-4191 rule.
+///
+/// Every raw section struct captures stray keys via `#[serde(flatten)] unknown`.
+/// Previously these only produced a warning (and `budget`/`data` dropped them
+/// with no diagnostic at all), so a nested typo — e.g. `dney` for `deny` under
+/// `capabilities` — silently discarded the intended restriction while the policy
+/// still loaded: a fail-OPEN. Promoting to an error means both the CLI `validate`
+/// and the engine `load_from_file` refuse the document rather than enforce a
+/// weaker policy than the author wrote. `section` is the dotted path prefix of
+/// the enclosing section (e.g. `"capabilities"`, `"tools.bash"`).
+fn reject_unknown_keys(section: &str, unknown: &HashMap<String, serde_yaml::Value>, errors: &mut Vec<ValidationError>) {
+    for key in unknown.keys() {
+        errors.push(ValidationError::new(
+            format!("{section}.{key}"),
+            format!(
+                "unknown key '{key}' in the '{section}' policy section; a typo here would \
+                 silently drop the intended restriction, so the document is rejected rather \
+                 than loaded fail-open"
+            ),
+        ));
     }
 }
 
@@ -621,17 +636,21 @@ mod tests {
     }
 
     #[test]
-    fn network_unknown_key_produces_warning() {
+    fn network_unknown_key_is_validation_error() {
+        // AAASM-4330: an unknown key inside `network` must fail closed (error),
+        // not warn — a typo like `blocklist` would otherwise silently drop the
+        // author's intent while the policy still loads.
         let yaml = "network:\n  allowlist:\n    - api.openai.com\n  blocklist:\n    - \"*\"\n";
-        let out = PolicyValidator::from_yaml(yaml).unwrap();
-        assert!(out.warnings.iter().any(|w| w.field == "network.blocklist"));
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "network.blocklist"));
     }
 
     #[test]
-    fn tool_unknown_key_produces_warning() {
+    fn tool_unknown_key_is_validation_error() {
+        // AAASM-4330: an unknown key inside a tool entry must fail closed.
         let yaml = "tools:\n  bash:\n    allow: true\n    constraint: read-only\n";
-        let out = PolicyValidator::from_yaml(yaml).unwrap();
-        assert!(out.warnings.iter().any(|w| w.field == "tools.bash.constraint"));
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "tools.bash.constraint"));
     }
 
     // ── Network allowlist validation ────────────────────────────────────────
@@ -989,10 +1008,11 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_unknown_key_produces_warning() {
+    fn capabilities_unknown_key_is_validation_error() {
+        // AAASM-4330: an unknown key inside `capabilities` must fail closed.
         let yaml = "capabilities:\n  allow: []\n  extra_key: true\n";
-        let out = PolicyValidator::from_yaml(yaml).unwrap();
-        assert!(out.warnings.iter().any(|w| w.field == "capabilities.extra_key"));
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(errs.iter().any(|e| e.field == "capabilities.extra_key"));
     }
 
     #[test]
@@ -1358,7 +1378,7 @@ spec:
     }
 
     #[test]
-    fn approval_policy_unknown_key_produces_warning() {
+    fn approval_policy_unknown_key_is_validation_error() {
         let yaml = r#"
 apiVersion: agent-assembly/v1
 kind: Policy
@@ -1370,35 +1390,38 @@ spec:
     timeout_seconds: 300
     unknown_field: surprise
 "#;
-        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        // AAASM-4330: an unknown key inside `approval` must fail closed.
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
         assert!(
-            out.warnings.iter().any(|w| w.field.contains("unknown_field")),
-            "expected warning for unknown approval field, got: {:?}",
-            out.warnings,
+            errs.iter().any(|e| e.field.contains("unknown_field")),
+            "expected error for unknown approval field, got: {:?}",
+            errs,
         );
     }
 
     // ── Schedule active_hours missing/unknown fields ────────────────────────
 
     #[test]
-    fn schedule_unknown_key_produces_warning() {
+    fn schedule_unknown_key_is_validation_error() {
+        // AAASM-4330: an unknown key inside `schedule` must fail closed.
         let yaml = "schedule:\n  surprise: 1\n";
-        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
         assert!(
-            out.warnings.iter().any(|w| w.field == "schedule.surprise"),
-            "expected warning for unknown schedule key, got: {:?}",
-            out.warnings,
+            errs.iter().any(|e| e.field == "schedule.surprise"),
+            "expected error for unknown schedule key, got: {:?}",
+            errs,
         );
     }
 
     #[test]
-    fn schedule_active_hours_unknown_key_produces_warning() {
+    fn schedule_active_hours_unknown_key_is_validation_error() {
+        // AAASM-4330: an unknown key inside `schedule.active_hours` must fail closed.
         let yaml = "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"18:00\"\n    timezone: \"UTC\"\n    surprise: 1\n";
-        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
         assert!(
-            out.warnings.iter().any(|w| w.field == "schedule.active_hours.surprise"),
-            "expected warning for unknown active_hours key, got: {:?}",
-            out.warnings,
+            errs.iter().any(|e| e.field == "schedule.active_hours.surprise"),
+            "expected error for unknown active_hours key, got: {:?}",
+            errs,
         );
     }
 
@@ -1485,6 +1508,142 @@ spec:
         assert!(
             errs.iter().any(|e| e.field == "capabilities.deny[0]"),
             "invalid deny capability must be rejected, got: {errs:?}"
+        );
+    }
+
+    // ── Nested unknown-key fail-closed (AAASM-4330) ─────────────────────────
+    //
+    // Each case is a realistic single-letter typo of a real nested key. The
+    // typo lands in `#[serde(flatten)] unknown`, so the intended restriction is
+    // dropped. The validator must reject the document (fail-closed) rather than
+    // load a weaker policy than the author wrote.
+
+    #[test]
+    fn nested_capabilities_deny_typo_is_rejected_not_dropped() {
+        // `dney` instead of `deny` → the deny-list is empty → file_delete would
+        // NOT be denied. Must be a hard error, not a silent fail-open.
+        let yaml = "capabilities:\n  dney:\n    - file_delete\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "capabilities.dney"),
+            "typo'd capabilities key must be rejected, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn nested_tool_limit_typo_is_rejected() {
+        // `limt_per_hour` instead of `limit_per_hour` → the rate limit vanishes.
+        let yaml = "tools:\n  bash:\n    allow: true\n    limt_per_hour: 5\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "tools.bash.limt_per_hour"),
+            "typo'd tool key must be rejected, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn nested_network_allowlist_typo_is_rejected() {
+        // `alowlist` instead of `allowlist` → egress restriction silently lost.
+        let yaml = "network:\n  alowlist:\n    - api.openai.com\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "network.alowlist"),
+            "typo'd network key must be rejected, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn nested_approval_typo_is_rejected() {
+        let yaml = "approval:\n  timeuot_seconds: 600\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "approval.timeuot_seconds"),
+            "typo'd approval key must be rejected, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn nested_budget_typo_is_rejected() {
+        // `dayly_limit_usd` → the daily cap vanishes. Budget previously dropped
+        // unknown keys with no diagnostic at all — now a hard error.
+        let yaml = "budget:\n  dayly_limit_usd: 5.0\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "budget.dayly_limit_usd"),
+            "typo'd budget key must be rejected, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn nested_data_typo_is_rejected() {
+        // `credential_actn` → the credential action reverts to the default,
+        // silently weakening a `block` intent.
+        let yaml = "data:\n  credential_actn: block\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "data.credential_actn"),
+            "typo'd data key must be rejected, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn nested_schedule_active_hours_typo_is_rejected() {
+        let yaml = "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"18:00\"\n    timezoen: \"UTC\"\n";
+        let errs = PolicyValidator::from_yaml(yaml).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.field == "schedule.active_hours.timezoen"),
+            "typo'd active_hours key must be rejected, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn valid_policy_exercising_every_nested_key_still_loads() {
+        // Over-rejection guard: a policy that spells every enforced nested key
+        // correctly must still load cleanly (exit 0) with no warnings — the
+        // fail-closed rule must not reject genuinely-valid documents.
+        let yaml = r#"
+version: "1.0"
+scope: global
+approval_timeout_secs: 300
+network:
+  allowlist:
+    - api.openai.com
+schedule:
+  active_hours:
+    start: "09:00"
+    end: "18:00"
+    timezone: "Asia/Taipei"
+budget:
+  daily_limit_usd: 25.0
+  monthly_limit_usd: 400.0
+  org_daily_limit_usd: 50.0
+  org_monthly_limit_usd: 800.0
+  timezone: "UTC"
+  action_on_exceed: deny
+  window: "30m"
+data:
+  sensitive_patterns:
+    - "sk-[a-zA-Z0-9]{48}"
+  credential_action: block
+capabilities:
+  allow:
+    - file_read
+  deny:
+    - terminal_exec
+tools:
+  bash:
+    allow: true
+    limit_per_hour: 10
+    requires_approval_if: "agent.depth > 1"
+approval:
+  timeout_seconds: 600
+  escalation_role: org-admin
+"#;
+        let out = PolicyValidator::from_yaml(yaml).unwrap_or_else(|e| panic!("valid policy must load, got: {e:?}"));
+        assert!(
+            out.warnings.is_empty(),
+            "a fully-valid policy must produce no warnings, got: {:?}",
+            out.warnings
         );
     }
 }
