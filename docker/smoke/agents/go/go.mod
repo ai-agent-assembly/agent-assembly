@@ -3,7 +3,7 @@
 // The go-sdk dependency is pinned to a concrete version (not @latest) so a green
 // smoke run is reproducible — the base image itself `go install`s the SDK at
 // @latest, a MOVING source; pinning here records the version the agent built
-// against. Keep this in step with agent-assembly-examples/go (currently
+// against. Keep this in step with examples/go (currently
 // v0.0.1-beta.2). The runner runs `go mod tidy` in-image to resolve go.sum from
 // the module cache the base image already populated.
 module smoke.agentassembly.local/go-base-image-agent
