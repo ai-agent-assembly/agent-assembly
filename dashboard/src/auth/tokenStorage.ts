@@ -25,4 +25,11 @@ export function setToken(token: string): void {
 
 export function clearToken(): void {
   storage()?.removeItem(TOKEN_KEY)
+  // Also purge any pre-4322 token left behind in localStorage by old builds
+  // that persisted it there. sessionStorage is the sole store now (see module
+  // header); this one-time cleanup stops a stale credential lingering across
+  // the migration (AAASM-4331).
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem(TOKEN_KEY)
+  }
 }

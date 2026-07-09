@@ -38,11 +38,20 @@ describe('AppShell', () => {
     expect(screen.getByTestId('page')).toHaveTextContent('page body')
   })
 
-  it('shows the logged-in token in the topbar and logs out on click', async () => {
-    sessionStorage.setItem('aa_token', 'jwt-123')
+  it('shows the identity claim in the topbar, never the raw token, and logs out on click', async () => {
+    // A real 3-part JWT carrying a `sub` identity claim.
+    const b64url = (o: object) =>
+      btoa(JSON.stringify(o)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
+    const jwt = `${b64url({ alg: 'none' })}.${b64url({ sub: 'alice@acme.io' })}.sig`
+    sessionStorage.setItem('aa_token', jwt)
     const user = userEvent.setup()
     renderShell()
-    expect(screen.getByTestId('appshell-user')).toHaveTextContent('jwt-123')
+
+    const userSpan = screen.getByTestId('appshell-user')
+    expect(userSpan).toHaveTextContent('alice@acme.io')
+    // The raw bearer token must never appear in the DOM (AAASM-4331).
+    expect(userSpan.textContent).not.toContain(jwt)
+    expect(document.body.innerHTML).not.toContain(jwt)
 
     await user.click(screen.getByTestId('logout-btn'))
     expect(screen.getByTestId('appshell-user')).toHaveTextContent('')

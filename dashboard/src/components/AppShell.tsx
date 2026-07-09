@@ -1,6 +1,7 @@
 import { useState, Component, type ReactNode, type ErrorInfo } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { getSubject } from '../auth/jwtScopes'
 import { OverlayProvider } from './OverlayProvider'
 import { OVERLAY_NAMES } from './OverlayContext'
 import { ApprovalsBellButton } from '../features/approvals/ApprovalsBellButton'
@@ -53,6 +54,9 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
 
 export function AppShell() {
   const { token, logout } = useAuth()
+  // Show the signed-in identity, never the raw bearer token — rendering the
+  // credential in the DOM leaks it via screenshots/screen-share (AAASM-4331).
+  const subject = getSubject(token)
   const [navOpen, setNavOpen] = useState(false)
 
   return (
@@ -112,7 +116,7 @@ export function AppShell() {
           <div />
           <div className="appshell__user">
             <ApprovalsBellButton />
-            <span data-testid="appshell-user">{token ?? ''}</span>
+            <span data-testid="appshell-user">{subject ?? ''}</span>
             <ThemeToggle />
             <NavLink
               to="/settings"
