@@ -37,6 +37,7 @@ node_modules/
 dashboard/dist/
 dashboard/playwright-report/
 dashboard/test-results/
+dashboard/package-lock.json
 *.db
 
 # Claude Design handoff export (canonical artefacts are at design/v1/)
