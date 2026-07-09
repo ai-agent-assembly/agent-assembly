@@ -5,7 +5,7 @@ const VALID_SCOPES: readonly Scope[] = ['read', 'write', 'admin']
 /**
  * Extract the `scope` claim from an unverified JWT payload.
  *
- * The dashboard only persists the token string in localStorage, so after a
+ * The dashboard only persists the token string in sessionStorage, so after a
  * reload the token-issue response (which carries `scopes`) is gone — this
  * recovers the caller's scopes from the token itself so the UI can reflect
  * them. The signature is deliberately NOT verified here: the gateway validates
