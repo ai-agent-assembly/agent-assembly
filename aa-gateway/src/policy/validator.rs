@@ -53,6 +53,12 @@ impl PolicyValidator {
         // vanish without any error. Now every unknown top-level key is a
         // hard validation error — consistent with the product's fail-closed
         // posture everywhere else.
+        //
+        // AAASM-4330: the same silent-drop existed one level DOWN — a typo
+        // INSIDE an enforced section (e.g. `capabilities.dney` for `deny`) was
+        // only warned about, so the restriction still vanished and the policy
+        // loaded fail-open. Each section validator now calls
+        // `reject_unknown_keys`, mirroring this top-level rule for nested keys.
         for key in raw.unknown.keys() {
             if key == "rules" {
                 errors.push(ValidationError::new(
@@ -74,13 +80,13 @@ impl PolicyValidator {
         }
 
         // Step 3 — validate each section
-        let network = Self::validate_network(raw.network, &mut errors, &mut warnings);
-        let schedule = Self::validate_schedule(raw.schedule, &mut errors, &mut warnings);
+        let network = Self::validate_network(raw.network, &mut errors);
+        let schedule = Self::validate_schedule(raw.schedule, &mut errors);
         let budget = Self::validate_budget(raw.budget, &mut errors);
         let data = Self::validate_data(raw.data, &mut errors);
-        let tools = Self::validate_tools(raw.tools, &mut errors, &mut warnings);
+        let tools = Self::validate_tools(raw.tools, &mut errors);
         let capabilities = Self::validate_capabilities(raw.capabilities, &mut errors, &mut warnings);
-        let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors, &mut warnings);
+        let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
             Some(0) => {
@@ -153,13 +159,10 @@ impl PolicyValidator {
     fn validate_network(
         raw: Option<crate::policy::raw::RawNetworkPolicy>,
         errors: &mut Vec<ValidationError>,
-        warnings: &mut Vec<ValidationWarning>,
     ) -> Option<NetworkPolicy> {
         let raw = raw?;
 
-        for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(format!("network.{}", key)));
-        }
+        reject_unknown_keys("network", &raw.unknown, errors);
 
         let allowlist = raw.allowlist.unwrap_or_default();
         for (i, entry) in allowlist.iter().enumerate() {
@@ -177,17 +180,12 @@ impl PolicyValidator {
     fn validate_schedule(
         raw: Option<crate::policy::raw::RawSchedulePolicy>,
         errors: &mut Vec<ValidationError>,
-        warnings: &mut Vec<ValidationWarning>,
     ) -> Option<SchedulePolicy> {
         let raw = raw?;
 
-        for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(format!("schedule.{}", key)));
-        }
+        reject_unknown_keys("schedule", &raw.unknown, errors);
 
-        let active_hours = raw
-            .active_hours
-            .and_then(|ah| Self::validate_active_hours(ah, errors, warnings));
+        let active_hours = raw.active_hours.and_then(|ah| Self::validate_active_hours(ah, errors));
 
         Some(SchedulePolicy { active_hours })
     }
@@ -195,11 +193,8 @@ impl PolicyValidator {
     fn validate_active_hours(
         raw: crate::policy::raw::RawActiveHours,
         errors: &mut Vec<ValidationError>,
-        warnings: &mut Vec<ValidationWarning>,
     ) -> Option<ActiveHours> {
-        for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(format!("schedule.active_hours.{}", key)));
-        }
+        reject_unknown_keys("schedule.active_hours", &raw.unknown, errors);
 
         let start = match raw.start {
             Some(s) => {
@@ -280,6 +275,8 @@ impl PolicyValidator {
         errors: &mut Vec<ValidationError>,
     ) -> Option<BudgetPolicy> {
         let raw = raw?;
+
+        reject_unknown_keys("budget", &raw.unknown, errors);
 
         validate_budget_limit_pair(
             raw.daily_limit_usd,
@@ -362,6 +359,8 @@ impl PolicyValidator {
     ) -> Option<DataPolicy> {
         let raw = raw?;
 
+        reject_unknown_keys("data", &raw.unknown, errors);
+
         let patterns = raw.sensitive_patterns.unwrap_or_default();
         for (i, pattern) in patterns.iter().enumerate() {
             if regex::Regex::new(pattern).is_err() {
@@ -403,9 +402,7 @@ impl PolicyValidator {
     ) -> Option<aa_core::CapabilitySet> {
         let raw = raw?;
 
-        for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(format!("capabilities.{}", key)));
-        }
+        reject_unknown_keys("capabilities", &raw.unknown, errors);
 
         let mut allow = std::collections::BTreeSet::new();
         for (i, s) in raw.allow.unwrap_or_default().iter().enumerate() {
@@ -457,7 +454,6 @@ impl PolicyValidator {
     fn validate_tools(
         raw: Option<HashMap<String, crate::policy::raw::RawToolPolicy>>,
         errors: &mut Vec<ValidationError>,
-        warnings: &mut Vec<ValidationWarning>,
     ) -> HashMap<String, ToolPolicy> {
         let raw = match raw {
             Some(m) => m,
@@ -466,9 +462,7 @@ impl PolicyValidator {
 
         let mut tools = HashMap::new();
         for (name, rt) in raw {
-            for key in rt.unknown.keys() {
-                warnings.push(ValidationWarning::unknown_key(format!("tools.{}.{}", name, key)));
-            }
+            reject_unknown_keys(&format!("tools.{}", name), &rt.unknown, errors);
 
             if let Some(expr) = &rt.requires_approval_if {
                 if expr.trim().is_empty() {
@@ -509,19 +503,40 @@ impl PolicyValidator {
 
     fn validate_approval_policy(
         raw: Option<crate::policy::raw::RawApprovalPolicy>,
-        _errors: &mut Vec<ValidationError>,
-        warnings: &mut Vec<ValidationWarning>,
+        errors: &mut Vec<ValidationError>,
     ) -> Option<ApprovalPolicy> {
         let raw = raw?;
 
-        for key in raw.unknown.keys() {
-            warnings.push(ValidationWarning::unknown_key(format!("approval.{}", key)));
-        }
+        reject_unknown_keys("approval", &raw.unknown, errors);
 
         Some(ApprovalPolicy {
             timeout_seconds: raw.timeout_seconds,
             escalation_role: raw.escalation_role,
         })
+    }
+}
+
+/// AAASM-4330: reject an unknown key inside an enforced policy section as a hard
+/// validation error (fail-closed), mirroring the top-level AAASM-4191 rule.
+///
+/// Every raw section struct captures stray keys via `#[serde(flatten)] unknown`.
+/// Previously these only produced a warning (and `budget`/`data` dropped them
+/// with no diagnostic at all), so a nested typo — e.g. `dney` for `deny` under
+/// `capabilities` — silently discarded the intended restriction while the policy
+/// still loaded: a fail-OPEN. Promoting to an error means both the CLI `validate`
+/// and the engine `load_from_file` refuse the document rather than enforce a
+/// weaker policy than the author wrote. `section` is the dotted path prefix of
+/// the enclosing section (e.g. `"capabilities"`, `"tools.bash"`).
+fn reject_unknown_keys(section: &str, unknown: &HashMap<String, serde_yaml::Value>, errors: &mut Vec<ValidationError>) {
+    for key in unknown.keys() {
+        errors.push(ValidationError::new(
+            format!("{section}.{key}"),
+            format!(
+                "unknown key '{key}' in the '{section}' policy section; a typo here would \
+                 silently drop the intended restriction, so the document is rejected rather \
+                 than loaded fail-open"
+            ),
+        ));
     }
 }
 

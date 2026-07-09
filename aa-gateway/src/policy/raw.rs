@@ -9,7 +9,8 @@ use serde::Deserialize;
 pub struct RawNetworkPolicy {
     /// Domain glob patterns the agent may connect to.
     pub allowlist: Option<Vec<String>>,
-    /// Unknown keys captured for warning emission.
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
@@ -23,7 +24,8 @@ pub struct RawActiveHours {
     pub end: Option<String>,
     /// IANA timezone name (e.g. `"Asia/Taipei"`).
     pub timezone: Option<String>,
-    /// Unknown keys captured for warning emission.
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
@@ -33,7 +35,8 @@ pub struct RawActiveHours {
 pub struct RawSchedulePolicy {
     /// Time window during which the agent is permitted to run.
     pub active_hours: Option<RawActiveHours>,
-    /// Unknown keys captured for warning emission.
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
@@ -59,7 +62,8 @@ pub struct RawBudgetPolicy {
     /// (e.g. `"5s"`, `"30m"`, `"1h30m"`). When absent the tracker rolls at the
     /// calendar-day boundary (the historical default). AAASM-1600.
     pub window: Option<String>,
-    /// Unknown keys captured for warning emission.
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
@@ -73,7 +77,8 @@ pub struct RawDataPolicy {
     /// `"alert_only"`, or `"alert_and_redact"`. Validated into a
     /// [`crate::policy::document::CredentialAction`].
     pub credential_action: Option<String>,
-    /// Unknown keys captured for warning emission.
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
@@ -85,7 +90,8 @@ pub struct RawCapabilitySet {
     pub allow: Option<Vec<String>>,
     /// Capability strings that are explicitly denied.
     pub deny: Option<Vec<String>>,
-    /// Unknown keys captured for warning emission.
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
@@ -128,7 +134,8 @@ pub struct RawApprovalPolicy {
     pub timeout_seconds: Option<u32>,
     /// Override the escalation role / approver group for this policy.
     pub escalation_role: Option<String>,
-    /// Unknown keys captured for warning emission.
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
@@ -159,7 +166,8 @@ pub struct RawPolicyDocument {
     pub approval_timeout_secs: Option<u32>,
     /// Per-policy approval escalation override.
     pub approval: Option<RawApprovalPolicy>,
-    /// Unknown top-level keys captured for warning emission.
+    /// Unknown top-level keys captured so the validator can reject them
+    /// (AAASM-4191 fail-closed).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
@@ -173,7 +181,8 @@ pub struct RawToolPolicy {
     pub limit_per_hour: Option<u32>,
     /// CEL expression that triggers human-in-the-loop approval.
     pub requires_approval_if: Option<String>,
-    /// Unknown keys captured for warning emission.
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
