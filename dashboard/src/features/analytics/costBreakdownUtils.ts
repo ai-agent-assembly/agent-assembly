@@ -43,8 +43,31 @@ const USD_FORMAT = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
 })
 
+// Beyond this magnitude the legend total / tooltip label switches to compact
+// currency notation (e.g. $1B, $1T). AAASM-4334's clampChartValue only hardens
+// the chart axis domain; this hardens the label *text*. Sibling of AAASM-4195's
+// formatDelta finite-guard.
+const USD_COMPACT_THRESHOLD = 1e9
+
+const USD_COMPACT_FORMAT = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact',
+  maximumFractionDigits: 1,
+})
+
 export function formatUsd(value: number): string {
-  return USD_FORMAT.format(value)
+  // Non-finite (NaN / ±Infinity) → em dash, mirroring formatDelta. These arise
+  // from a malformed 200 or a zero-baseline division upstream.
+  if (!Number.isFinite(value)) return '—'
+  // Cap the display magnitude to the same finite bound AAASM-4334 clamps the
+  // chart axis to (CHART_VALUE_LIMIT). A schema-boundary value like
+  // ±Number.MAX_VALUE (1.79e308) is finite, so compact notation alone does NOT
+  // bound it — Intl still prints a ~300-digit string suffixed with "T". Reusing
+  // clampChartValue guarantees the label can never exceed ±$1T.
+  const clamped = clampChartValue(value)
+  if (Math.abs(clamped) >= USD_COMPACT_THRESHOLD) return USD_COMPACT_FORMAT.format(clamped)
+  return USD_FORMAT.format(clamped)
 }
 
 export function formatSegment(seg: CostSegment): string {
