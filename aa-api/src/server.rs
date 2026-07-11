@@ -1,13 +1,37 @@
 //! Server builder wiring router, middleware, state, and graceful shutdown.
 
+use std::sync::Arc;
+
 use axum::routing::get;
 use axum::Router;
 use tokio::net::TcpListener;
+use tonic::service::interceptor::InterceptedService;
+use tonic::transport::Server;
+
+use aa_gateway::registry::AgentRegistry;
+use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleServiceServer;
 
 use crate::config::ApiConfig;
 use crate::middleware::apply_middleware;
 use crate::routes;
 use crate::state::AppState;
+
+/// Loopback gRPC endpoint for SDK agent registration in local mode (AAASM-4447).
+///
+/// Loopback-only by design: the agent-registration plane must never be exposed
+/// off-host. This matches the SDK's `DEFAULT_GATEWAY_ENDPOINT`
+/// (`http://127.0.0.1:50051`) so `RuntimeClient.register` reaches the same
+/// process that serves the REST/dashboard surface, with zero SDK change.
+///
+/// `pub` so the security test can assert the shipped bind target is loopback
+/// (never `0.0.0.0`) without reaching into private internals.
+pub const LOCAL_GRPC_ADDR: &str = "127.0.0.1:50051";
+
+/// Max accepted gRPC decode size (4 MiB). Parity with `aa-gateway`'s legacy-grpc
+/// services (`aa-gateway/src/server.rs`): the registration endpoint is
+/// attacker-influenceable, so the response/request buffer is bounded explicitly
+/// rather than relying on tonic's implicit default.
+const MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 /// Build the full Axum application with middleware and state.
 ///
@@ -84,7 +108,10 @@ pub async fn serve_local(
     addr: std::net::SocketAddr,
     auth: crate::state::LocalAuth,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = AppState::local_hardened(auth).await?;
+    // AAASM-4447: back the registry with the durable `~/.aasm/local.db` shared
+    // with `aa-gateway` (not the hermetic temp DB `local_hardened` defaults to),
+    // so agents survive restart and match the gateway's legacy-grpc store.
+    let state = AppState::local_hardened_at(auth, crate::state::resolve_local_registry_db_path()).await?;
     let config = ApiConfig {
         bind_addr: addr,
         auth: (*state.auth_config).clone(),
@@ -102,7 +129,86 @@ pub async fn serve_local(
              `pnpm --dir dashboard build` to enable the SPA"
         );
     }
-    run_server_with_spa(config, state, dist.as_deref()).await
+
+    // AAASM-4447: alongside the axum REST/dashboard server, serve the gRPC
+    // `AgentLifecycleService` on loopback :50051 over the SAME
+    // `Arc<AgentRegistry>` the REST surface reads. This closes the local-mode
+    // registration gap — the SDK's gRPC `RuntimeClient.register` dials
+    // `127.0.0.1:50051`, which local mode previously never served — so a
+    // registered agent is immediately visible in the dashboard. Both servers run
+    // concurrently and drain on the same shutdown signal; a port-in-use gRPC bind
+    // degrades gracefully to REST-only (see `serve_local_grpc`).
+    let registry = std::sync::Arc::clone(&state.agent_registry);
+    let grpc_addr: std::net::SocketAddr = LOCAL_GRPC_ADDR
+        .parse()
+        .expect("LOCAL_GRPC_ADDR is a valid loopback address");
+
+    let rest = run_server_with_spa(config, state, dist.as_deref());
+    let grpc = serve_local_grpc(grpc_addr, registry);
+    tokio::try_join!(rest, grpc)?;
+    Ok(())
+}
+
+/// Bind the local-mode gRPC `AgentLifecycleService` on `addr` and serve until
+/// shutdown, reusing `aa-gateway`'s service impl and possession-proof
+/// enrich interceptor (AAASM-4447 / AAASM-4460 / AAASM-4461).
+///
+/// `addr` must be a loopback address ([`LOCAL_GRPC_ADDR`]); the caller controls
+/// that. If the port is already in use (e.g. an `aa-gateway` process is already
+/// serving it) the bind failure is downgraded to a warning and this returns
+/// `Ok(())` so the REST surface still comes up — the process degrades to
+/// REST-only rather than failing to start. Any other bind error propagates.
+async fn serve_local_grpc(
+    addr: std::net::SocketAddr,
+    registry: Arc<AgentRegistry>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let listener = match TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            tracing::warn!(
+                target: "aa_api::serve_local",
+                %addr,
+                error = %e,
+                "gRPC agent-registration port already in use — serving REST only; \
+                 SDK registration to this endpoint is handled by the process that \
+                 owns the port"
+            );
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    tracing::info!(%addr, "aa-api local gRPC AgentLifecycleService listening (loopback-only)");
+    serve_lifecycle_grpc(listener, registry, crate::shutdown::shutdown_signal()).await
+}
+
+/// Serve the gRPC `AgentLifecycleService` on an already-bound `listener` over
+/// `registry`, until `shutdown` resolves (AAASM-4460).
+///
+/// Extracted so tests can drive the exact production wiring on an ephemeral
+/// port. Reuses `aa-gateway`'s [`AgentLifecycleServiceImpl`] (Register +
+/// RequestChallenge + heartbeat/deregister — the RPCs `RuntimeClient` uses)
+/// rather than duplicating it, and applies the same `enrich_interceptor` the
+/// gateway wraps its lifecycle service with. The `Register` RPC self-validates
+/// the possession-proof challenge, so this adds no new unauthenticated surface.
+pub async fn serve_lifecycle_grpc(
+    listener: TcpListener,
+    registry: Arc<AgentRegistry>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tenancy_mode = aa_gateway::service::TenancyMode::from_env();
+    let lifecycle =
+        aa_gateway::service::AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_tenancy_mode(tenancy_mode);
+    let enrich = aa_gateway::iam::enrich_interceptor(registry);
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    Server::builder()
+        .add_service(InterceptedService::new(
+            AgentLifecycleServiceServer::new(lifecycle).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            enrich,
+        ))
+        .serve_with_incoming_shutdown(incoming, shutdown)
+        .await?;
+    Ok(())
 }
 
 /// Start the HTTP server and block until shutdown.

@@ -49,8 +49,11 @@ futures = { workspace = true }
 hex = { workspace = true }
 moka = { workspace = true, features = ["future"] }
 rust_decimal = { workspace = true, features = ["serde-str"] }
-tokio-stream = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
+# AAASM-4447: serve the gRPC AgentLifecycleService on loopback :50051 in local
+# mode so SDK agent registration reaches the same process the dashboard reads.
+tonic = { workspace = true }
 ulid = "1"
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
@@ -67,7 +70,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 tokio-tungstenite = { workspace = true }
-tonic = { workspace = true }
+aa-sdk-client = { path = "../aa-sdk-client" }
 tower = { workspace = true }
 
 [lints]
