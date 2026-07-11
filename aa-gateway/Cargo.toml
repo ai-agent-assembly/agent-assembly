@@ -26,7 +26,7 @@ serde_yaml   = { workspace = true }
 arc-swap     = "1"
 bs58         = "0.5"
 dashmap      = { workspace = true }
-ed25519-dalek = { version = "2", features = ["std"] }
+ed25519-dalek = "3"
 # CSPRNG for server-issued, single-use registration-challenge nonces
 # (AAASM-3866). `rand::random` draws from an OS-seeded ChaCha thread CSPRNG, so
 # the nonce is unpredictable and the possession proof cannot be precomputed.
