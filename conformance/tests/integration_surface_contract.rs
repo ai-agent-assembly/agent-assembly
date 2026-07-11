@@ -113,3 +113,48 @@ fn gateway_serves_sdk_registration_service() {
         "aa-gateway does not register any tonic service via `.add_service(...)`",
     );
 }
+
+// ── Test 3: the AAASM-4447 gap (ignored, documents the required surface) ─────
+
+/// The server that `aasm start --mode local` launches must expose the agent-
+/// registration surface the SDK's native path needs — **either** the gRPC
+/// `AgentLifecycleService` **or** a documented REST registration route.
+///
+/// This is the exact drift AAASM-4447 uncovered and this ticket exists to catch:
+/// local mode spawns `aa-api-server`, whose crate (`aa-api`) serves only REST
+/// `/api/v1/*` — no `AgentLifecycleServiceServer`, and no registration route —
+/// while the SDK dials gRPC `Register` on `:50051`. So this assertion fails
+/// today.
+///
+/// It is `#[ignore]`d (not deleted, not inverted) so it is a standing, runnable
+/// record of the required surface: once 4447's ADR lands — whether by adding a
+/// gRPC listener to local mode or a REST registration endpoint with a matching
+/// contract — remove the `#[ignore]` and this goes green unmodified.
+#[test]
+#[ignore = "blocked on AAASM-4447: local-mode server (aa-api-server) exposes no \
+            agent-registration surface (neither gRPC AgentLifecycleService nor a REST \
+            registration route) that the SDK's native gRPC Register path can reach"]
+fn local_mode_server_exposes_sdk_registration_surface() {
+    // Which binary does `aasm start --mode local` launch? Read it from the CLI
+    // source so this tracks real behavior instead of a hard-coded assumption.
+    let start_src = surface::read_repo_file("aa-cli/src/commands/start.rs");
+    let program = surface::local_mode_server_program(&start_src)
+        .expect("could not determine the binary `aasm start --mode local` launches from start.rs");
+
+    // Map that binary back to the crate whose surface must satisfy the contract.
+    let crate_dir = surface::crate_dir_for_binary(&program)
+        .unwrap_or_else(|| panic!("no workspace crate provides the `{program}` binary"));
+
+    let serves_grpc = surface::crate_src_contains(&crate_dir, SDK_REGISTRATION_SERVER_TYPE);
+    let has_rest_registration = surface::crate_has_registration_rest_route(&crate_dir);
+
+    assert!(
+        serves_grpc || has_rest_registration,
+        "`aasm start --mode local` launches `{program}` (crate {}), but that crate exposes no \
+         agent-registration surface the SDK can use: it neither serves gRPC \
+         `{SDK_REGISTRATION_SERVICE}` (via `{SDK_REGISTRATION_SERVER_TYPE}`) nor declares a REST \
+         registration route. The SDK's native path dials gRPC `{SDK_REGISTRATION_RPC}`, so an \
+         agent started against local mode can never register. See AAASM-4447.",
+        crate_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+    );
+}
