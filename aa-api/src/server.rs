@@ -22,7 +22,10 @@ use crate::state::AppState;
 /// off-host. This matches the SDK's `DEFAULT_GATEWAY_ENDPOINT`
 /// (`http://127.0.0.1:50051`) so `RuntimeClient.register` reaches the same
 /// process that serves the REST/dashboard surface, with zero SDK change.
-const LOCAL_GRPC_ADDR: &str = "127.0.0.1:50051";
+///
+/// `pub` so the security test can assert the shipped bind target is loopback
+/// (never `0.0.0.0`) without reaching into private internals.
+pub const LOCAL_GRPC_ADDR: &str = "127.0.0.1:50051";
 
 /// Max accepted gRPC decode size (4 MiB). Parity with `aa-gateway`'s legacy-grpc
 /// services (`aa-gateway/src/server.rs`): the registration endpoint is
