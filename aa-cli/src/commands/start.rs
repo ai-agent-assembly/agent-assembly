@@ -308,6 +308,24 @@ mod tests {
     }
 
     #[test]
+    fn binary_name_names_launched_binary_per_mode() {
+        // AAASM-4450: the spawn/exec failure messages interpolate
+        // binary_name(mode), so it must name the binary command() actually
+        // launches — otherwise a `--mode local` failure blames aa-gateway.
+        let addr: SocketAddr = "127.0.0.1:7391".parse().unwrap();
+        assert_eq!(binary_name(ModeArg::Local), "aa-api-server");
+        assert_eq!(binary_name(ModeArg::Remote), "aa-gateway");
+        assert_eq!(
+            ProcessSpawner::new(ModeArg::Local).command(addr).get_program(),
+            binary_name(ModeArg::Local),
+        );
+        assert_eq!(
+            ProcessSpawner::new(ModeArg::Remote).command(addr).get_program(),
+            binary_name(ModeArg::Remote),
+        );
+    }
+
+    #[test]
     fn resolve_listen_addr_local_binds_loopback() {
         let addr = resolve_listen_addr(ModeArg::Local, 7391);
         assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
