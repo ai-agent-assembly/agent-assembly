@@ -79,6 +79,7 @@ jobs:
       schema: ${{ steps.filter.outputs.schema }}
       openapi: ${{ steps.filter.outputs.openapi }}
       storage: ${{ steps.filter.outputs.storage }}
+      conformance: ${{ steps.filter.outputs.conformance }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
@@ -120,6 +121,22 @@ jobs:
             storage:
               - 'aa-gateway/**'
               - 'aa-storage*/**'
+              - '.github/workflows/ci.yml'
+            # AAASM-4454: explicit, self-documenting trigger for the
+            # integration-surface contract tests, which police that the gRPC
+            # registration surface the SDK dials stays present on the server(s)
+            # the CLI starts. These paths are a strict subset of `rust` above
+            # (so this never loses coverage); the conformance job ORs the two,
+            # so the contract still runs if `rust` is ever narrowed. Every path
+            # here is covered by an `on.*.paths` entry (`aa-*/**`,
+            # `conformance/**`), so this is a live trigger, not a dead one.
+            conformance:
+              - 'aa-cli/src/commands/start.rs'
+              - 'aa-gateway/src/local_mode.rs'
+              - 'aa-gateway/src/main.rs'
+              - 'aa-api/src/**'
+              - 'conformance/**'
+              - 'proto/**'
               - '.github/workflows/ci.yml'
             # AAASM-2580: gate the slow eBPF --release jobs (fat-LTO BPF build +
             # bpf-linker compile) so they only run when eBPF code — or this
@@ -972,7 +989,11 @@ jobs:
 
   conformance:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    # AAASM-4454: run on the broad `rust` set OR the narrow surface-contract
+    # `conformance` filter, so the registration-surface contract is guaranteed to
+    # re-run when start.rs / aa-gateway main+local_mode / aa-api / the conformance
+    # crate change, even if `rust` is later narrowed.
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.conformance == 'true'
     name: Rust conformance suite
     runs-on: ubuntu-latest
     steps:
