@@ -352,7 +352,7 @@ impl DevToolAdapter for CopilotAdapter {
         _proxy_addr: Option<&str>,
     ) -> Result<Command, AdapterError> {
         Err(AdapterError::LaunchFailed(
-            "GitHub Copilot is a VS Code extension and cannot be launched by `aa run`; \
+            "GitHub Copilot is a VS Code extension and cannot be launched by `aasm run`; \
              apply governance settings with `aa tool apply copilot` instead"
                 .to_string(),
         ))
@@ -536,6 +536,12 @@ mod tests {
         match result {
             Err(AdapterError::LaunchFailed(msg)) => {
                 assert!(!msg.is_empty(), "error message must not be empty");
+                // The operator binary is `aasm`; the message must not tell users
+                // to run a nonexistent `aa` binary (AAASM-4457).
+                assert!(
+                    msg.contains("aasm run"),
+                    "launch-failed message must name the real binary `aasm run`; got: {msg}"
+                );
             }
             other => panic!("expected LaunchFailed, got {other:?}"),
         }

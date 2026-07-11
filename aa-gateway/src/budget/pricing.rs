@@ -101,7 +101,10 @@ impl PricingTable {
     pub fn load_from_file(path: &std::path::Path) -> Self {
         match std::fs::read_to_string(path) {
             Ok(json) => Self::load_from_json_str(&json).unwrap_or_else(|e| {
-                eprintln!("aa-gateway: pricing.json parse error ({e}); using defaults");
+                eprintln!(
+                    "aa-gateway: failed to parse pricing file {} ({e}); using defaults",
+                    path.display()
+                );
                 Self::default_table()
             }),
             Err(_) => Self::default_table(),

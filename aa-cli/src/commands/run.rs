@@ -296,7 +296,7 @@ async fn register_with_gateway(
 fn emit_observe_banner() {
     eprintln!("⚠️  [AAASM] Running in sandbox/observe mode.");
     eprintln!("    Policy decisions are recorded but NOT enforced.");
-    eprintln!("    Review captured events: aa audit list --dry-run-only");
+    eprintln!("    Review captured events: aasm audit list --dry-run-only");
 }
 
 /// Build the environment map to be inherited by the child process.
