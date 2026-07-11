@@ -52,7 +52,7 @@ tokio-stream = { workspace = true }
 tonic        = { workspace = true }
 tracing      = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-reqwest      = { workspace = true, features = ["json", "rustls-tls"] }
+reqwest      = { workspace = true, features = ["json", "rustls"] }
 uuid         = { workspace = true, features = ["v4", "v5", "v7", "serde"] }
 clap         = { workspace = true, features = ["derive"] }
 moka         = { workspace = true, features = ["sync"] }
