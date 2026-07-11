@@ -147,6 +147,20 @@ pub trait GatewaySpawner {
     fn exec_foreground(&self, addr: SocketAddr) -> std::io::Result<std::process::ExitStatus>;
 }
 
+/// Name of the entrypoint binary launched for `mode` (AAASM-3382):
+/// local mode runs `aa-api-server`, remote mode runs `aa-gateway`.
+///
+/// Single source of truth so the spawn/exec failure messages name the
+/// binary that was actually invoked instead of a hardcoded default —
+/// otherwise a `--mode local` failure misleadingly blames `aa-gateway`
+/// (AAASM-4450).
+fn binary_name(mode: ModeArg) -> &'static str {
+    match mode {
+        ModeArg::Local => "aa-api-server",
+        ModeArg::Remote => "aa-gateway",
+    }
+}
+
 /// Default [`GatewaySpawner`].
 ///
 /// * **Local mode** invokes the `aa-api-server` binary (AAASM-3382), which
@@ -170,12 +184,12 @@ impl ProcessSpawner {
     fn command(&self, addr: SocketAddr) -> Command {
         match self.mode {
             ModeArg::Local => {
-                let mut cmd = Command::new("aa-api-server");
+                let mut cmd = Command::new(binary_name(self.mode));
                 cmd.env("AA_API_ADDR", addr.to_string());
                 cmd
             }
             ModeArg::Remote => {
-                let mut cmd = Command::new("aa-gateway");
+                let mut cmd = Command::new(binary_name(self.mode));
                 cmd.arg("--listen").arg(addr.to_string());
                 cmd
             }
@@ -236,7 +250,7 @@ pub fn run_with_spawner<S: GatewaySpawner>(args: StartArgs, spawner: &S, pid_fil
             Ok(status) if status.success() => ExitCode::SUCCESS,
             Ok(_) => ExitCode::FAILURE,
             Err(e) => {
-                eprintln!("aasm start: failed to exec aa-gateway: {e}");
+                eprintln!("aasm start: failed to exec {}: {e}", binary_name(args.mode));
                 ExitCode::FAILURE
             }
         };
@@ -245,7 +259,7 @@ pub fn run_with_spawner<S: GatewaySpawner>(args: StartArgs, spawner: &S, pid_fil
     let pid = match spawner.spawn_background(addr) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("aasm start: failed to spawn aa-gateway: {e}");
+            eprintln!("aasm start: failed to spawn {}: {e}", binary_name(args.mode));
             return ExitCode::FAILURE;
         }
     };
