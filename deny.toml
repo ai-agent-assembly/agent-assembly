@@ -59,6 +59,14 @@ allow = [
 crate = "webpki-roots"
 allow = ["CDLA-Permissive-2.0"]
 
+[[licenses.exceptions]]
+# AAASM-4431: reqwest 0.13's "rustls" feature now pulls in
+# rustls-platform-verifier, which depends on webpki-root-certs — the same
+# Mozilla CA certificate bundle data (and the same CDLA-Permissive-2.0 data
+# license) as webpki-roots above, just split into its own crate upstream.
+crate = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
+
 [bans]
 # Warn when the same crate appears at multiple versions in the graph
 multiple-versions = "warn"

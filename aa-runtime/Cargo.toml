@@ -25,7 +25,7 @@ bitflags                    = "2"
 bytes                       = { workspace = true }
 dashmap                     = { workspace = true }
 # IPC handshake: verify the SDK's Ed25519 proof of key possession (AAASM-3585).
-ed25519-dalek               = { version = "2", features = ["std"] }
+ed25519-dalek               = "3"
 hex                         = { workspace = true }
 uuid                        = { workspace = true, features = ["v4"] }
 metrics                     = { workspace = true }

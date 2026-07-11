@@ -51,7 +51,7 @@ mime_guess     = "2"
 open           = "5"
 owo-colors     = "4"
 ratatui        = { version = "0.30", features = ["crossterm"] }
-reqwest        = { workspace = true, features = ["rustls-tls", "json", "blocking"] }
+reqwest        = { workspace = true, features = ["rustls", "json", "blocking", "query"] }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 serde_yaml     = { workspace = true }
