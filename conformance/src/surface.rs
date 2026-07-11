@@ -142,17 +142,26 @@ pub fn proto_service_rpcs(proto_src: &str, service: &str) -> Vec<String> {
 /// The program name that `aasm start --mode local` launches, parsed from the
 /// CLI's `start` command source.
 ///
-/// Reads the mapping actually encoded in `start.rs`
-/// (`ModeArg::Local => Command::new("…")`) rather than assuming it, so this
-/// contract test re-evaluates automatically if the local-mode entrypoint is
-/// ever changed. Returns `None` if the arm can't be located.
+/// Reads the mapping actually encoded in `start.rs` rather than assuming it, so
+/// this contract test re-evaluates automatically if the local-mode entrypoint is
+/// ever changed. The binary name is resolved through `start.rs`'s own single
+/// source of truth — the `fn binary_name` match — whose `ModeArg::Local` arm is
+/// a bare string literal (`ModeArg::Local => "aa-api-server"`). This tracks the
+/// real indirection: the spawn site calls `Command::new(binary_name(self.mode))`
+/// rather than embedding the literal, so parsing `binary_name` (not the
+/// `Command::new(...)` call) is what actually mirrors the code. Returns `None`
+/// if the arm can't be located.
 pub fn local_mode_server_program(start_src: &str) -> Option<String> {
-    let arm = start_src.find("ModeArg::Local")?;
-    let after = &start_src[arm..];
-    let cn = after.find("Command::new(")?;
-    let after_cn = &after[cn + "Command::new(".len()..];
-    let q1 = after_cn.find('"')?;
-    let after_q = &after_cn[q1 + 1..];
+    // Scope to `fn binary_name` so we pick the binary-name mapping, not one of
+    // the other `ModeArg::Local =>` arms (listen addr, banner text, etc.).
+    let func = start_src.find("fn binary_name")?;
+    let after_fn = &start_src[func..];
+    let arm = after_fn.find("ModeArg::Local")?;
+    let after_arm = &after_fn[arm..];
+    let fat = after_arm.find("=>")?;
+    let after_fat = &after_arm[fat + "=>".len()..];
+    let q1 = after_fat.find('"')?;
+    let after_q = &after_fat[q1 + 1..];
     let q2 = after_q.find('"')?;
     Some(after_q[..q2].to_string())
 }

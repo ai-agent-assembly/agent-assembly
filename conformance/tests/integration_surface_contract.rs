@@ -13,10 +13,12 @@
 //! the source of truth (see `conformance::surface`) rather than booting
 //! processes — fast, deterministic, and enough to catch this drift class.
 //!
-//! The architecture fix for 4447 itself is being handled separately as an ADR;
-//! this ticket is the *preventive* net. Where the contract cannot hold today,
-//! the test is `#[ignore]`d with a message linking 4447 — a red/ignored contract
-//! that documents the required surface, not a test rigged to pass on the gap.
+//! AAASM-4447 has since landed: `serve_local` in `aa-api` now serves the gRPC
+//! `AgentLifecycleService` on loopback `:50051` alongside its REST surface, so
+//! the local-mode server finally exposes the registration surface the SDK dials.
+//! The contract test that documented that gap
+//! ([`local_mode_server_exposes_sdk_registration_surface`]) is therefore active
+//! (no longer `#[ignore]`d) and passes because the surface genuinely exists now.
 
 use conformance::surface;
 
@@ -114,26 +116,23 @@ fn gateway_serves_sdk_registration_service() {
     );
 }
 
-// ── Test 3: the AAASM-4447 gap (ignored, documents the required surface) ─────
+// ── Test 3: local mode serves that surface (passes since AAASM-4447) ─────────
 
 /// The server that `aasm start --mode local` launches must expose the agent-
 /// registration surface the SDK's native path needs — **either** the gRPC
 /// `AgentLifecycleService` **or** a documented REST registration route.
 ///
-/// This is the exact drift AAASM-4447 uncovered and this ticket exists to catch:
-/// local mode spawns `aa-api-server`, whose crate (`aa-api`) serves only REST
-/// `/api/v1/*` — no `AgentLifecycleServiceServer`, and no registration route —
-/// while the SDK dials gRPC `Register` on `:50051`. So this assertion fails
-/// today.
-///
-/// It is `#[ignore]`d (not deleted, not inverted) so it is a standing, runnable
-/// record of the required surface: once 4447's ADR lands — whether by adding a
-/// gRPC listener to local mode or a REST registration endpoint with a matching
-/// contract — remove the `#[ignore]` and this goes green unmodified.
+/// This is the exact drift AAASM-4447 uncovered: local mode spawns
+/// `aa-api-server`, whose crate is `aa-api`. That crate used to serve only REST
+/// `/api/v1/*` — no `AgentLifecycleServiceServer` — while the SDK dials gRPC
+/// `Register` on `:50051`, so an agent could never register in local mode and
+/// this assertion failed. AAASM-4447 closed the gap: `serve_local` now also
+/// serves the gRPC `AgentLifecycleService` on loopback `:50051` over the same
+/// registry (see `aa-api/src/server.rs`), so `aa-api`'s source now references
+/// `AgentLifecycleServiceServer` and this test passes for the right reason — the
+/// surface genuinely exists, detected by the same source-introspection helper
+/// [`gateway_serves_sdk_registration_service`] uses for remote mode.
 #[test]
-#[ignore = "blocked on AAASM-4447: local-mode server (aa-api-server) exposes no \
-            agent-registration surface (neither gRPC AgentLifecycleService nor a REST \
-            registration route) that the SDK's native gRPC Register path can reach"]
 fn local_mode_server_exposes_sdk_registration_surface() {
     // Which binary does `aasm start --mode local` launch? Read it from the CLI
     // source so this tracks real behavior instead of a hard-coded assumption.
