@@ -11,6 +11,11 @@
 //! 3. `policy_query`    — CheckActionRequest / CheckActionResponse round-trips
 //! 4. `cred_detection`  — CredentialScanner::scan() + ScanResult::redact()
 //! 5. `session_lifecycle` — agent Register → Heartbeat → Deregister → ControlStream
+//! 6. `integration_surface_contract` — the SDK-relied-on network surface is
+//!    actually present on the server(s) the CLI starts (AAASM-4454)
+
+/// Source-introspection helpers for the integration-surface contract tests.
+pub mod surface;
 
 use serde::de::DeserializeOwned;
 use std::path::Path;
