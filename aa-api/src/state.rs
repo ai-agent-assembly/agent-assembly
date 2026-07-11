@@ -391,7 +391,38 @@ impl AppState {
     /// The alert-rule evaluator metric source is still wired by `run_server`; see
     /// [`crate::alerts::rules::evaluator::BudgetMetricSource`] for the real
     /// budget-spent source this entrypoint installs.
+    ///
+    /// AAASM-4447 — the agent registry is backed by a durable SQLite store and
+    /// rehydrated on boot (see [`local_hardened_at`](Self::local_hardened_at)).
+    /// This constructor uses a hermetic per-process temp database so tests stay
+    /// isolated; the shipped [`serve_local`](crate::serve_local) entrypoint
+    /// instead binds the durable `~/.aasm/local.db` shared with `aa-gateway` via
+    /// [`resolve_local_registry_db_path`].
     pub async fn local_hardened(auth: LocalAuth) -> Result<Self, LocalStateError> {
+        use std::sync::atomic::AtomicUsize;
+
+        // Hermetic default: a unique per-process temp registry DB so concurrent
+        // tests / processes do not collide or read a developer's real
+        // `~/.aasm/local.db`.
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let uniq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pid = std::process::id();
+        let registry_db_path = std::env::temp_dir()
+            .join(format!("aa-api-local-registry-{pid}-{uniq}"))
+            .join("local.db");
+        Self::local_hardened_at(auth, registry_db_path).await
+    }
+
+    /// Same as [`local_hardened`](Self::local_hardened) but backs the agent
+    /// registry with the durable SQLite database at `registry_db_path`
+    /// (AAASM-4447 / AAASM-4459).
+    ///
+    /// Split out so the shipped entrypoint can bind the production
+    /// `~/.aasm/local.db` while tests supply a hermetic per-test path.
+    pub async fn local_hardened_at(
+        auth: LocalAuth,
+        registry_db_path: std::path::PathBuf,
+    ) -> Result<Self, LocalStateError> {
         use std::sync::atomic::AtomicUsize;
 
         let mut state = Self::local_in_memory()?;
@@ -508,7 +539,63 @@ impl AppState {
             }
         }
 
+        // --- Durable agent registry (AAASM-4447 / AAASM-4459). ---
+        // `local_in_memory` seeds a throwaway in-memory `AgentRegistry`. Replace
+        // it with one backed by a durable SQLite store and rehydrated on boot,
+        // mirroring the aa-gateway legacy-grpc path (aa-gateway/src/main.rs). The
+        // embedded gRPC `AgentLifecycleService` (AAASM-4460) and the
+        // REST/dashboard surface then share this SAME `Arc<AgentRegistry>`, so an
+        // SDK-registered agent is immediately visible to the dashboard and
+        // persists across restarts.
+        if let Some(parent) = registry_db_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|source| LocalStateError::PolicyWrite {
+                    path: registry_db_path.clone(),
+                    source,
+                })?;
+            }
+        }
+        let registry_storage = aa_gateway::storage::open_sqlite_backend(&registry_db_path)
+            .await
+            .map_err(|e| LocalStateError::Storage(format!("{e}")))?;
+        let registry = Arc::new(AgentRegistry::new().with_storage(registry_storage));
+        let restored = registry
+            .rehydrate_from_storage()
+            .await
+            .map_err(|e| LocalStateError::Storage(format!("registry rehydrate failed: {e}")))?;
+        if restored > 0 {
+            tracing::info!(
+                restored,
+                path = %registry_db_path.display(),
+                "rehydrated agents from durable registry store"
+            );
+        }
+        state.agent_registry = registry;
+
         Ok(state)
+    }
+}
+
+/// Resolve the durable local-mode registry database path (AAASM-4447).
+///
+/// Matches the `aa-gateway` legacy-grpc path exactly: reads
+/// `GatewayConfig.local.storage_path` (default `~/.aasm/local.db`, with `~`
+/// expanded by `GatewayConfig::load`). This is why an agent registered over the
+/// embedded gRPC listener lands in the *same* durable store a gateway process
+/// would use. Falls back to the expanded default when the config cannot be
+/// loaded so an unconfigured host still resolves the shared location.
+pub fn resolve_local_registry_db_path() -> std::path::PathBuf {
+    match aa_core::config::GatewayConfig::load() {
+        Ok(cfg) => cfg.local.storage_path,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "gateway config load failed — using default local registry path"
+            );
+            let mut cfg = aa_core::config::GatewayConfig::default();
+            cfg.expand_paths();
+            cfg.local.storage_path
+        }
     }
 }
 
