@@ -352,7 +352,7 @@ fn st_r_3_aasm_run_observe_emits_banner_and_env_injection() {
         "ST-R-3: observe banner must be printed to stderr before tool output:\n{stderr}",
     );
     assert!(
-        stderr.contains("aa audit list --dry-run-only"),
+        stderr.contains("aasm audit list --dry-run-only"),
         "ST-R-3: banner must point operators at the dry-run audit filter:\n{stderr}",
     );
 
