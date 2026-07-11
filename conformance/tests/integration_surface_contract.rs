@@ -29,6 +29,10 @@ const SDK_REGISTRATION_SERVICE: &str = "AgentLifecycleService";
 /// The specific RPC the SDK invokes to register.
 const SDK_REGISTRATION_RPC: &str = "Register";
 
+/// The tonic-generated server type a gateway registers via `.add_service(...)`
+/// to actually serve [`SDK_REGISTRATION_SERVICE`].
+const SDK_REGISTRATION_SERVER_TYPE: &str = "AgentLifecycleServiceServer";
+
 /// The full lifecycle RPC set the runtime + SDK depend on being present on the
 /// service. Ordered as declared in `proto/agent.proto`.
 const REQUIRED_LIFECYCLE_RPCS: &[&str] = &[
@@ -78,5 +82,34 @@ fn sdk_registration_service_declares_full_lifecycle() {
     assert!(
         rpcs.iter().any(|r| r == SDK_REGISTRATION_RPC),
         "the SDK registration RPC `{SDK_REGISTRATION_RPC}` must exist on `{SDK_REGISTRATION_SERVICE}`",
+    );
+}
+
+// ── Test 2: gateway serves that surface (passes today) ───────────────────────
+
+/// The `aa-gateway` binary — what `aasm start --mode remote` launches — must
+/// actually *serve* the gRPC registration service the SDK depends on.
+///
+/// Declaring the service in the proto (Test 1) is necessary but not sufficient:
+/// a server has to register it via `.add_service(...)`. This test asserts that
+/// remote mode wires up the surface, so a refactor that drops the registration
+/// service from the gateway's tonic router is caught. Passes today; provides
+/// ongoing regression value for the mode that *does* satisfy the contract.
+#[test]
+fn gateway_serves_sdk_registration_service() {
+    let gateway = surface::workspace_root().join("aa-gateway");
+    assert!(
+        gateway.join("src").is_dir(),
+        "expected aa-gateway crate at {}",
+        gateway.display()
+    );
+    assert!(
+        surface::crate_src_contains(&gateway, SDK_REGISTRATION_SERVER_TYPE),
+        "aa-gateway no longer references `{SDK_REGISTRATION_SERVER_TYPE}` — the gRPC \
+         registration surface the SDK depends on may have been removed from the gateway",
+    );
+    assert!(
+        surface::crate_src_contains(&gateway, ".add_service("),
+        "aa-gateway does not register any tonic service via `.add_service(...)`",
     );
 }
