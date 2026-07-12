@@ -75,7 +75,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Build release binaries (cli/gateway/runtime, +proxy on Linux)
+      - name: Build release binaries (cli/gateway/runtime/api, +proxy on Linux)
         # aasm is the operator CLI; aa-gateway is the core daemon that
         # `aasm gateway start` spawns. Both must ship in the CLI tarball
         # (AAASM-2975) so a release / Homebrew install can launch a core —
@@ -87,12 +87,18 @@ jobs:
         # local sidecar) on every target, and aa-proxy on Linux only (the proxy
         # component artifact is Linux-only per ADR-014). They are packaged into
         # their own component tarballs below.
+        #
+        # AAASM-4449: build aa-api's `aa-api-server` binary too. `aasm start
+        # --mode local` execs `aa-api-server` (it serves the dashboard SPA + the
+        # full /api/v1/* REST surface — AAASM-3382), so a GitHub-Release install
+        # that omits it can't run the documented quick-start. Like aa-gateway
+        # it's a normal host binary, so it builds for every matrix target.
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          PKGS=(-p aa-cli -p aa-gateway -p aa-runtime)
+          PKGS=(-p aa-cli -p aa-gateway -p aa-runtime -p aa-api)
           if [ "$RUNNER_OS" = "Linux" ]; then PKGS+=(-p aa-proxy); fi
           cargo build --release --target "$TARGET" "${PKGS[@]}"
 
@@ -116,6 +122,18 @@ jobs:
         shell: bash
         run: |
           BIN="target/${{ matrix.target }}/release/aa-gateway"
+          ls -lh "$BIN"
+          file "$BIN"
+
+      - name: Verify aa-api-server binary built (size + type)
+        # AAASM-4449: aa-api-server is the process `aasm start --mode local`
+        # execs to serve the dashboard + REST API; it ships in its own `api`
+        # component tarball below. As with aa-gateway we don't execute it here
+        # (it would bind a listener); a presence + Mach-O/ELF type check is
+        # enough — the archive step hard-fails anyway if the binary is missing.
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/aa-api-server"
           ls -lh "$BIN"
           file "$BIN"
 
@@ -229,6 +247,13 @@ jobs:
           if [ -f "$REL/aa-runtime" ]; then
             tar -czf "aasm-runtime-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-runtime
           fi
+          # AAASM-4449: the `api` component ships aa-api-server, which
+          # `aasm start --mode local` execs to serve the dashboard + REST API.
+          # Built for every matrix target (normal host binary, no proxy/eBPF
+          # platform restriction), so it packages on all os/arch legs.
+          if [ -f "$REL/aa-api-server" ]; then
+            tar -czf "aasm-api-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-api-server
+          fi
           # proxy is a Linux-only component (ADR-014); only built/packaged there.
           if [ -f "$REL/aa-proxy" ]; then
             tar -czf "aasm-proxy-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-proxy
@@ -304,7 +329,7 @@ jobs:
           {
             printf '{\n  "version": "%s",\n  "components": [\n' "$VER"
             first=1
-            for f in aasm-cli-*.tar.gz aasm-runtime-*.tar.gz aasm-proxy-*.tar.gz; do
+            for f in aasm-cli-*.tar.gz aasm-runtime-*.tar.gz aasm-proxy-*.tar.gz aasm-api-*.tar.gz; do
               [ -e "$f" ] || continue
               comp=$(printf '%s' "$f" | sed -E 's/^aasm-([a-z]+)-.*/\1/')
               osarch=$(printf '%s' "$f" | sed -E 's/.*-([a-z0-9]+-[a-z0-9]+)\.tar\.gz$/\1/')
