@@ -12,6 +12,7 @@ on:
     branches: [master]
     paths:
       - "aa-runtime/**"
+      - "aa-gateway/**"
       - "docker/**"
       - ".github/workflows/docker.yml"
       - "!**/*.md"
@@ -54,6 +55,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build aa-gateway image (PR validation, no push)
+        # AAASM-4480: exercise aa-gateway/Dockerfile on every PR that touches it
+        # (mirrors the aa-runtime PR build). Still no `packages: write` — this
+        # PR path only builds; the tag-only `publish-gateway` job pushes.
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        with:
+          context: .
+          file: aa-gateway/Dockerfile
+          platforms: linux/amd64
+          push: false
+          tags: ghcr.io/ai-agent-assembly/aa-gateway:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   publish-runtime:
     # AAASM-4022: tag-only publish path. `packages: write` lives here (never on
     # the PR build path) so registry write scope is only granted on a v* tag.
@@ -90,6 +105,50 @@ jobs:
           tags: |
             ghcr.io/ai-agent-assembly/aa-runtime:${{ github.ref_name }}
             ghcr.io/ai-agent-assembly/aa-runtime:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish-gateway:
+    # AAASM-4480: tag-only publish path for the aa-gateway image. The
+    # `live-core-enforcement` docker-compose scenario (and the AAASM-4475 live
+    # CI lane) pull ghcr.io/ai-agent-assembly/aa-gateway, which nothing built
+    # before this job existed. Mirrors publish-runtime: `packages: write` lives
+    # here (never on the PR build path) so registry write scope is only granted
+    # on a v* tag. Per ADR-0009 the release tag (`github.ref_name`) is the
+    # immutable product-version coordinate; `latest` is the moving pointer.
+    name: Publish aa-gateway image (tag)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v4
+
+      - name: Set up QEMU (ARM emulation for multi-arch)
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push multi-arch image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        with:
+          context: .
+          file: aa-gateway/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/ai-agent-assembly/aa-gateway:${{ github.ref_name }}
+            ghcr.io/ai-agent-assembly/aa-gateway:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
