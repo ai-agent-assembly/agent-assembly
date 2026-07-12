@@ -329,7 +329,7 @@ jobs:
           {
             printf '{\n  "version": "%s",\n  "components": [\n' "$VER"
             first=1
-            for f in aasm-cli-*.tar.gz aasm-runtime-*.tar.gz aasm-proxy-*.tar.gz; do
+            for f in aasm-cli-*.tar.gz aasm-runtime-*.tar.gz aasm-proxy-*.tar.gz aasm-api-*.tar.gz; do
               [ -e "$f" ] || continue
               comp=$(printf '%s' "$f" | sed -E 's/^aasm-([a-z]+)-.*/\1/')
               osarch=$(printf '%s' "$f" | sed -E 's/.*-([a-z0-9]+-[a-z0-9]+)\.tar\.gz$/\1/')
