@@ -81,6 +81,7 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 | v0.0.1-rc.1 | v0.0.1-rc.1 (PyPI `0.0.1rc1`) ✓ | v0.0.1-rc.1 ✓ | v0.0.1-rc.1 ✓ | protocol/v1 |
 | v0.0.1-rc.2 | v0.0.1-rc.2 (PyPI `0.0.1rc2`) ✓ | v0.0.1-rc.2 ✓ | v0.0.1-rc.2 ✓ | protocol/v1 |
 | v0.0.1-rc.3 | v0.0.1-rc.3 (PyPI `0.0.1rc3`) ✓ | v0.0.1-rc.3 ✓ | v0.0.1-rc.3 ✓ | protocol/v1 |
+| v0.0.1-rc.4 | v0.0.1-rc.4 (PyPI `0.0.1rc4`) ✓ | v0.0.1-rc.4 ✓ | v0.0.1-rc.4 ✓ | protocol/v1 |
 
 **Legend:**
 - ✓ Compatible — fully supported
@@ -94,6 +95,8 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 > **Note (v0.0.1-rc.2):** second release candidate (patch on the `rc` channel) — security-hardening + coverage cut. `aa-runtime` v0.0.1-rc.2 pairs with python-sdk `0.0.1rc2`, node-sdk `v0.0.1-rc.2`, and go-sdk `v0.0.1-rc.2`, all `protocol/v1`-compatible. SDK `rc.2` cuts follow this tag's `release.yml` fan-out.
 
 > **Note (v0.0.1-rc.3):** third release candidate (patch on the `rc` channel) — a large security-hardening cut (Epics AAASM-3913 / 3979 / 4010 + follow-ups; eBPF Layer 3 brought online). No wire-protocol change. `aa-runtime` v0.0.1-rc.3 pairs with python-sdk `0.0.1rc3`, node-sdk `v0.0.1-rc.3`, and go-sdk `v0.0.1-rc.3`, all `protocol/v1`-compatible. SDK `rc.3` cuts follow this tag's `release.yml` fan-out (per the `aa-ffi-pin` SDK-coordination SOP).
+
+> **Note (v0.0.1-rc.4):** fourth release candidate (patch on the `rc` channel) — a release-pipeline completeness cut. Ships the previously-omitted `aa-api-server` binary (AAASM-4449) and publishes the `aa-gateway` container image (AAASM-4480); adds a release-artifact completeness gate (AAASM-4456); the SDK release matrices now build every supported Python interpreter — cp312/cp313/cp314 (AAASM-4446/4453) — and bundle the Node native `.node` binding (AAASM-4467). Local-mode `aasm start` also serves gRPC agent registration on loopback `127.0.0.1:50051` (AAASM-4447). No wire-protocol change. `aa-runtime` v0.0.1-rc.4 pairs with python-sdk `0.0.1rc4`, node-sdk `v0.0.1-rc.4`, and go-sdk `v0.0.1-rc.4`, all `protocol/v1`-compatible. SDK `rc.4` cuts follow this tag's `release.yml` fan-out (per the `aa-ffi-pin` SDK-coordination SOP).
 
 ---
 

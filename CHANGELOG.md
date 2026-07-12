@@ -5,6 +5,86 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-rc.4] — 2026-07-12 (pre-release)
+
+> **Not for production use.** Fourth **release candidate** in the v0.0.1 series
+> (patch on the `rc` channel). Primarily a **release-artifact completeness** cut
+> — the `aa-api-server` binary and the `aa-gateway` container image are now part
+> of the published release set — folded together with the accumulated
+> security-hardening sweeps and the local-mode gRPC registration surface merged
+> since `rc.3`. No API, ABI, or wire-protocol stability commitment at `0.x.y`;
+> `protocol/v1` unchanged.
+
+### Added
+
+- **Local-mode gRPC agent registration** (AAASM-4447) — `aa-api` now serves the
+  gRPC `AgentLifecycleService` on loopback in local mode, backed by a durable
+  SQLite registry, so an SDK-registered agent is visible over REST without a
+  full gateway. Covered by new conformance registration-surface contract tests.
+- **Analytics API + dashboard** (AAASM-4131 / 4138 / 4142 / 4155 / 4158) — seven
+  `/api/v1/analytics/*` endpoints (KPIs, cost-breakdown, action-volume,
+  tool-usage, approvals, policy-effectiveness, fleet-health) with the dashboard
+  Analytics/Costs pages wired to live data, per-panel error isolation, and
+  server-side windowed audit reads.
+- **`aa-gateway` container image** (AAASM-4480) — distroless `cargo-chef`
+  Dockerfile, built on PR validation and published to GHCR on tag.
+- **`file_delete` capability governance** (Epic AAASM-4092) — `FileMode::Delete`
+  → `Capability::FileDelete`, an allow-write-deny-delete policy example, and
+  RBAC-gated mutating dashboard controls.
+
+### Fixed
+
+- **Release-artifact completeness** (the rc.4 driver) — `aa-api-server` is now
+  built (`-p aa-api`), verified, and packaged into the `api` component tarball;
+  the `components.json` glob includes `aasm-api` (AAASM-4449). A
+  release-artifact completeness gate script now runs on PRs (AAASM-4456).
+- **Hardcoded error messages** (AAASM-4457) — `aasm start` / `observe` and the
+  copilot launch path now name the real `aasm` binary and the actual config
+  paths in their error output instead of stale placeholders.
+- Dashboard chart/analytics guards against non-finite values, invalid dates, and
+  out-of-range time domains; accessibility fixes on scrim/modal elements.
+
+### Security
+
+- **`tools: "*"` wildcard** now honored across all three tool stages (allow /
+  rate-limit / approval) on both the single-file and cascade paths (Epics
+  AAASM-4149 / 4163) — previously fail-open.
+- **Rate-limit bypass fixes** — anonymous shared-bucket path (AAASM-4190),
+  multiple-policy application, and per-tenant bucket keying (AAASM-4171 / 4173).
+- **Policy loader fails closed** on unknown top-level and nested section keys
+  (AAASM-4189 / 4330).
+- **Budget fail-closed** — conservative fallback price for unknown LLM models,
+  org/team tier caps and ancestor monthly cap enforced in preflight, negative
+  raw spend clamped at the accrual boundary, `prompt_tokens<=0` floored
+  (Epic AAASM-4092).
+- **Cascade allow-list** fails closed when the merged allow-list is empty; the
+  capability stage is now enforced on the primary and single-file paths
+  (AAASM-4120 / 4123).
+- **Panic-DoS hardening** — agent-id parsing uses `hex::decode` (AAASM-4149 /
+  4150); gRPC `max_decoding_message_size` set; MitM root CA constrained with
+  X.509 NameConstraints.
+- **Credential scanner** detects `gho_` / `ghu_` / `ghr_` / `github_pat_` /
+  `xapp-` / `xoxr-` / `ASIA` prefixes with redaction; overlapping-finding span
+  dedupe.
+- **Proxy** decompresses-then-scans (or withholds) request and MCP response
+  bodies by `Content-Encoding`; credential-DLP runs on all MitM'd request bodies.
+- **Self-registration downgrade** of `enforcement_mode` ignored (AAASM-4121);
+  agent-scoped controls bound to the token-derived id.
+- **Dashboard auth** moved from `localStorage` to `sessionStorage` via a
+  `tokenStorage` helper; identity claim rendered (not the raw token); strict
+  Content-Security-Policy; legacy token purged on logout.
+
+### Changed
+
+- Docs repointed at the canonical `docs.agent-assembly.com` host; generated
+  docs-metadata snippets with a CI drift check; repo-URL references updated
+  after the org prefix rename.
+- Dependency bumps: `ed25519-dalek` 3 (major), `reqwest` 0.13 (major),
+  `crossbeam-epoch` 0.9.20 (RUSTSEC-2024-0587), plus in-range workspace and
+  dashboard updates.
+- Workspace version bumped `0.0.1-rc.3` → `0.0.1-rc.4` (all crates inherit via
+  `version.workspace = true`; `Cargo.lock` + `sonar.projectVersion` realigned).
+
 ## [0.0.1-rc.3] — 2026-07-03 (pre-release)
 
 > **Not for production use.** Third **release candidate** in the v0.0.1 series
