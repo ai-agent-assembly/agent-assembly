@@ -247,6 +247,13 @@ jobs:
           if [ -f "$REL/aa-runtime" ]; then
             tar -czf "aasm-runtime-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-runtime
           fi
+          # AAASM-4449: the `api` component ships aa-api-server, which
+          # `aasm start --mode local` execs to serve the dashboard + REST API.
+          # Built for every matrix target (normal host binary, no proxy/eBPF
+          # platform restriction), so it packages on all os/arch legs.
+          if [ -f "$REL/aa-api-server" ]; then
+            tar -czf "aasm-api-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-api-server
+          fi
           # proxy is a Linux-only component (ADR-014); only built/packaged there.
           if [ -f "$REL/aa-proxy" ]; then
             tar -czf "aasm-proxy-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-proxy
