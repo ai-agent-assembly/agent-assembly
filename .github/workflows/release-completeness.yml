@@ -1,0 +1,36 @@
+name: Release completeness
+
+permissions:
+  contents: read
+
+# AAASM-4456: fail a PR that adds a binary-producing crate without wiring it
+# into the release pipeline (or explicitly allowlisting it as unreleased).
+# Triggers on the workspace manifests + the release workflow + the gate itself,
+# so the gap is caught before it ships, not at tag-cut time (which is how the
+# AAASM-4449 aa-api-server gap went undetected across every rc).
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "*/Cargo.toml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-completeness.yml"
+      - "scripts/check-release-completeness.sh"
+  workflow_dispatch:
+
+jobs:
+  completeness:
+    name: Release-artifact completeness gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Toolchain only — the gate runs `cargo metadata` (resolve, no compile),
+      # so no protobuf/system deps are needed. `jq` is preinstalled on
+      # ubuntu-latest.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Run release-artifact completeness gate
+        run: bash scripts/check-release-completeness.sh
