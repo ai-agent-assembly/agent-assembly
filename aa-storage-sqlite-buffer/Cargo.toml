@@ -10,7 +10,7 @@ description = "Local in-process SQLite event buffer that survives brief gateway/
 # The buffer serializes and replays the storage contract's `AuditEntry` through
 # the `AuditSink` trait, both reached from `aa-core`. `serde` is enabled so
 # `AuditEntry` can be encoded into the on-disk BLOB.
-aa-core = { path = "../aa-core", version = "0.0.1-rc.3", features = ["serde"] }
+aa-core = { path = "../aa-core", version = "0.0.1-rc.4", features = ["serde"] }
 # Pinned to the rusqlite line that depends on `libsqlite3-sys 0.30`, matching
 # the `sqlx-sqlite 0.8.6` already resolved for `aa-gateway`. Only one crate in
 # the workspace may link the native `sqlite3` library, so both must resolve to
