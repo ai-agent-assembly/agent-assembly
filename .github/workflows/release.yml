@@ -125,6 +125,18 @@ jobs:
           ls -lh "$BIN"
           file "$BIN"
 
+      - name: Verify aa-api-server binary built (size + type)
+        # AAASM-4449: aa-api-server is the process `aasm start --mode local`
+        # execs to serve the dashboard + REST API; it ships in its own `api`
+        # component tarball below. As with aa-gateway we don't execute it here
+        # (it would bind a listener); a presence + Mach-O/ELF type check is
+        # enough — the archive step hard-fails anyway if the binary is missing.
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/aa-api-server"
+          ls -lh "$BIN"
+          file "$BIN"
+
       - name: Codesign + notarize aasm (macOS — gated on Apple Developer creds)
         # Dormant until the operator sets the MACOS_SIGNING_ENABLED repo variable
         # AND provisions the APPLE_* secrets; without them this step is skipped and
