@@ -569,21 +569,6 @@ jobs:
           path: artifacts/
           merge-multiple: true
 
-      - name: Extract per-platform sha256
-        id: shas
-        shell: bash
-        run: |
-          cd artifacts
-          if [ ! -f SHA256SUMS ]; then
-            sha256sum aasm-*.tar.gz > SHA256SUMS
-          fi
-          {
-            echo "darwin_arm=$(awk '$2=="aasm-aarch64-apple-darwin.tar.gz"{print $1}' SHA256SUMS)"
-            echo "darwin_intel=$(awk '$2=="aasm-x86_64-apple-darwin.tar.gz"{print $1}' SHA256SUMS)"
-            echo "linux_arm=$(awk '$2=="aasm-aarch64-unknown-linux-gnu.tar.gz"{print $1}' SHA256SUMS)"
-            echo "linux_intel=$(awk '$2=="aasm-x86_64-unknown-linux-gnu.tar.gz"{print $1}' SHA256SUMS)"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Extract release version from tag
         id: version
         shell: bash
@@ -603,22 +588,76 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
-      - name: Rewrite Formula/aasm.rb with new version + shas
+      - name: Bump metadata/versions.rb, regenerate formulas, refresh sha256
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          DARWIN_ARM: ${{ steps.shas.outputs.darwin_arm }}
-          DARWIN_INTEL: ${{ steps.shas.outputs.darwin_intel }}
-          LINUX_ARM: ${{ steps.shas.outputs.linux_arm }}
-          LINUX_INTEL: ${{ steps.shas.outputs.linux_intel }}
         run: |
+          # AAASM-4520: the tap moved to a generator model. metadata/versions.rb
+          # (VERSION + base URL) is the single source of truth; scripts/generate_formulas.rb
+          # rewrites the `version`/`url` literals inside every formula's `# BEGIN/END
+          # GENERATED: version` sentinels; and the tap's "Regenerate + assert clean diff"
+          # CI gate fails any hand-edit that disagrees with the SoT. The per-platform
+          # sha256 values live OUTSIDE those sentinels and are owned by this release
+          # automation (the generator refuses to touch them). So we drive the generator
+          # (never hand-edit Formula/*.rb version/url lines) and then refresh only the
+          # sha256 lines from the release SHA256SUMS. This makes the bot PR regen-clean
+          # AND complete (aasm + aa-gateway + aa-api-server), mirroring the manual rc.4
+          # repair in ai-agent-assembly/homebrew-tap#38.
+          SUMS="$GITHUB_WORKSPACE/artifacts/SHA256SUMS"
+          if [ ! -f "$SUMS" ]; then
+            # The release publishes SHA256SUMS as an artifact; reconstruct it if a
+            # future workflow change stops uploading it. The glob matches every
+            # component tarball (aasm-<target>, aasm-api-*, aasm-proxy-*, aasm-runtime-*).
+            ( cd "$GITHUB_WORKSPACE/artifacts" && sha256sum aasm-*.tar.gz > SHA256SUMS )
+          fi
+
           cd tap
-          sed -i "s|version \".*\"|version \"${VERSION}\"|" Formula/aasm.rb
-          sed -i "/aasm-aarch64-apple-darwin\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${DARWIN_ARM}\"|}" Formula/aasm.rb
-          sed -i "/aasm-x86_64-apple-darwin\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${DARWIN_INTEL}\"|}" Formula/aasm.rb
-          sed -i "/aasm-aarch64-unknown-linux-gnu\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${LINUX_ARM}\"|}" Formula/aasm.rb
-          sed -i "/aasm-x86_64-unknown-linux-gnu\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${LINUX_INTEL}\"|}" Formula/aasm.rb
-          git -C . diff -- Formula/aasm.rb || true
+
+          # 1. Bump the source of truth (version only — shas are not stored here).
+          sed -i "s|VERSION = \".*\"|VERSION = \"${VERSION}\"|" metadata/versions.rb
+
+          # 2. Regenerate the version/url literals so they agree with the SoT (this is
+          #    exactly what the tap's drift check re-runs and asserts a clean diff on).
+          ruby scripts/generate_formulas.rb
+
+          # 3. Refresh the sha256 lines from SHA256SUMS. In every formula a generated
+          #    `url "...<artifact>.tar.gz"` line is followed (after the END sentinel) by
+          #    the `sha256` line for that artifact; we key on the url's basename, look it
+          #    up in SHA256SUMS, and set the following sha256. Artifacts absent from
+          #    SHA256SUMS (the WIP aasm-ebpf / aasm-bundle placeholders) are left
+          #    untouched — exactly as homebrew-tap#38 did.
+          cat > "$RUNNER_TEMP/refresh_tap_shas.rb" <<'RUBY'
+          # frozen_string_literal: true
+          sums = {}
+          File.foreach(ENV.fetch("SUMS")) do |line|
+            sha, name = line.strip.split(/\s+/, 2)
+            next if name.nil? || sha.nil?
+            sums[name.strip] = sha.strip
+          end
+          Dir.glob("Formula/*.rb").sort.each do |path|
+            pending = nil
+            out = File.readlines(path).map do |l|
+              if (m = l.match(/\A\s*url\s+"([^"]+)"/))
+                pending = sums[File.basename(m[1])]
+                l
+              elsif pending && (sm = l.match(/\A(\s*sha256\s+")[^"]*(".*)\z/m))
+                replaced = "#{sm[1]}#{pending}#{sm[2]}"
+                pending = nil
+                replaced
+              else
+                l
+              end
+            end
+            File.write(path, out.join)
+          end
+          RUBY
+          SUMS="$SUMS" ruby "$RUNNER_TEMP/refresh_tap_shas.rb"
+
+          # 4. Re-run the generator: it must report no changes, proving the tap's drift
+          #    gate will pass on the PR we open below.
+          ruby scripts/generate_formulas.rb
+          git -C . diff --stat -- Formula/ metadata/versions.rb || true
 
       - name: Open tap PR via peter-evans/create-pull-request
         # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
@@ -631,13 +670,18 @@ jobs:
           branch: bot/aasm-${{ steps.version.outputs.version }}
           base: master
           delete-branch: true
-          commit-message: "🤖 (formula): Update aasm to ${{ steps.version.outputs.version }}"
+          commit-message: "🤖 (formula): Update tap to ${{ steps.version.outputs.version }}"
           title: "🤖 (formula): aasm ${{ steps.version.outputs.version }}"
           body: |
             Auto-update from agent-assembly release `${{ github.ref_name }}`.
 
-            Bumps `version` and refreshes the four per-platform `sha256` values in
-            `Formula/aasm.rb` from the `SHA256SUMS` published with the release.
+            Bumps `metadata/versions.rb` to `${{ steps.version.outputs.version }}`,
+            regenerates every `Formula/*.rb` via `scripts/generate_formulas.rb`, and
+            refreshes each `sha256` from the release `SHA256SUMS` — for `aasm`
+            (incl. the `aa-api-server` `api` resource), `aasm-proxy`, and
+            `aasm-runtime`. WIP `aasm-ebpf` / `aasm-bundle` placeholder shas are left
+            untouched. This keeps the tap's "Regenerate + assert clean diff" gate green
+            and installs the full binary set (AAASM-4448/AAASM-4520).
 
             Source workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
