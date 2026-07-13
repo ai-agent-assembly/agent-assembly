@@ -29,6 +29,7 @@ dependencies = [
  "http",
  "httpmock",
  "hyper",
+ "include_dir",
  "jsonwebtoken",
  "moka",
  "rand 0.10.2",
