@@ -47,7 +47,13 @@ chrono = { workspace = true, features = ["serde"] }
 chrono-tz = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
+# AAASM-4517: embed the dashboard SPA into `aa-api-server` so a bare release
+# tarball serves the UI at GET / with no adjacent dashboard/dist. `include_dir!`
+# bakes _embedded/dashboard/dist (staged by build.rs / release.yml) into the
+# binary; `tempfile` extracts it at boot for the ServeDir-based SPA router.
+include_dir = "0.7"
 moka = { workspace = true, features = ["future"] }
+tempfile = { workspace = true }
 rust_decimal = { workspace = true, features = ["serde-str"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
@@ -68,7 +74,6 @@ httpmock = "0.8"
 rstest = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tempfile = { workspace = true }
 tokio-tungstenite = { workspace = true }
 aa-sdk-client = { path = "../aa-sdk-client" }
 tower = { workspace = true }

@@ -75,6 +75,23 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+      - name: Stage dashboard/dist into aa-api/_embedded for the release binary
+        # AAASM-4517: aa-api embeds the dashboard SPA via include_dir! (like
+        # aa-cli) so the shipped `aa-api-server` serves the UI at GET / from a
+        # bare unpacked tarball — no adjacent dashboard/dist, no env var.
+        # include_dir! reads _embedded/ at COMPILE time, so the freshly-built
+        # dashboard/dist must be staged BEFORE `cargo build -p aa-api` below.
+        # Mirrors the crates.io leg that stages it into aa-cli/_embedded before
+        # `cargo publish`.
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf aa-api/_embedded
+          mkdir -p aa-api/_embedded/dashboard
+          cp -r dashboard/dist aa-api/_embedded/dashboard/dist
+          # Verify the SPA entry-point made it
+          test -f aa-api/_embedded/dashboard/dist/index.html
+          echo "✓ aa-api/_embedded/dashboard/dist/ staged ($(find aa-api/_embedded -type f | wc -l) files)"
       - name: Build release binaries (cli/gateway/runtime/api, +proxy on Linux)
         # aasm is the operator CLI; aa-gateway is the core daemon that
         # `aasm gateway start` spawns. Both must ship in the CLI tarball
@@ -309,6 +326,61 @@ jobs:
           kill "$AASM_PID" 2>/dev/null || true
           echo "Dashboard smoke test FAILED: server did not respond within 30s"
           exit 1
+
+      - name: Smoke-test local-mode dashboard SPA (Linux x86_64)
+        # AAASM-4517: `aasm start --mode local` execs `aa-api-server`, which must
+        # serve the embedded dashboard SPA at GET / (200 + HTML) — the flagship
+        # quick-start's final "see your agent in the dashboard" step. This is the
+        # exact gap rc.4 shipped: the api binary served REST-only because the SPA
+        # was never bundled into the tarball. The `aasm dashboard start` smoke
+        # above exercises a DIFFERENT (aa-cli-embedded) code path and never
+        # caught this, so this step covers the local-mode path explicitly.
+        #
+        # `aasm` is in the legacy CLI tarball; `aa-api-server` is in the `api`
+        # component tarball — unpack both onto PATH so `aasm start` can exec the
+        # api binary by name.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p local-bin
+          tar -xzf artifacts/aasm-x86_64-unknown-linux-gnu.tar.gz -C local-bin
+          api_tarball=$(ls artifacts/aasm-api-*-linux-amd64.tar.gz | head -n1)
+          echo "Using api component tarball: $api_tarball"
+          tar -xzf "$api_tarball" -C local-bin
+          chmod +x local-bin/aasm local-bin/aa-api-server
+          export PATH="$PWD/local-bin:$PATH"
+          aasm start --mode local --foreground &
+          AASM_PID=$!
+          echo "Started aasm start --mode local (PID $AASM_PID), waiting for :7391..."
+          ok=0
+          body=""
+          for i in $(seq 1 30); do
+            body=$(curl -sS http://127.0.0.1:7391/ 2>/dev/null || true)
+            if printf '%s' "$body" | grep -qi '<!doctype html\|<html'; then
+              echo "Local-mode SPA smoke test: GET / served HTML after ${i}s"
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" -eq 1 ]; then
+            # The REST surface must still coexist with the SPA on the same port
+            # (public health route needs no auth).
+            if curl -sf http://127.0.0.1:7391/api/v1/health -o /dev/null; then
+              echo "REST /api/v1/health reachable alongside the SPA"
+            else
+              echo "Local-mode smoke test FAILED: /api/v1/health not reachable"
+              ok=0
+            fi
+          fi
+          kill "$AASM_PID" 2>/dev/null || true
+          pkill -f aa-api-server 2>/dev/null || true
+          if [ "$ok" -ne 1 ]; then
+            echo "Local-mode SPA smoke test FAILED: GET / did not serve the dashboard SPA within 30s"
+            echo "Last GET / body was: $body"
+            exit 1
+          fi
+          echo "Local-mode dashboard SPA smoke test passed"
 
       - name: Generate SHA256SUMS
         run: |
