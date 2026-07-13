@@ -42,3 +42,28 @@ pub fn extract_embedded_dashboard() -> std::io::Result<tempfile::TempDir> {
     DASHBOARD_ASSETS.extract(tmp.path())?;
     Ok(tmp)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The embedded bundle must always yield a servable `index.html` at the
+    /// root of the extracted directory — that file is what `ServeDir` returns
+    /// for `GET /` and the SPA fallback. This is the AAASM-4517 invariant: a
+    /// bare `aa-api-server` has a real (or build.rs-stub) SPA baked in, never an
+    /// empty bundle. The assertion holds whether the crate was built with a real
+    /// staged `dashboard/dist/` or only the `build.rs` "not built" stub, so it
+    /// is hermetic and does not depend on the release-staging step.
+    #[test]
+    fn embedded_dashboard_extracts_with_index_html() {
+        let tmp = extract_embedded_dashboard().expect("extract embedded dashboard");
+        let index = tmp.path().join("index.html");
+        assert!(
+            index.is_file(),
+            "extracted embedded dashboard must contain index.html at {}",
+            index.display()
+        );
+        let html = std::fs::read_to_string(&index).expect("read index.html");
+        assert!(!html.is_empty(), "embedded index.html must not be empty");
+    }
+}
