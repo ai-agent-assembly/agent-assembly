@@ -116,19 +116,41 @@ pub async fn serve_local(
         bind_addr: addr,
         auth: (*state.auth_config).clone(),
     };
-    // AAASM-3382: resolve the dashboard SPA so a single `aa-api-server` process
-    // serves the React app at `/` *and* the full `/api/v1/*` REST surface. When
-    // no `dashboard/dist/` resolves the server still starts (REST-only) and logs
-    // a warning, mirroring `aa-gateway` local mode.
-    let dist = aa_gateway::dashboard_server::find_dashboard_dist();
-    if dist.is_none() {
-        tracing::warn!(
-            target: "aa_api::serve_local",
-            "no dashboard/dist/ resolved (checked AAASM_DASHBOARD_DIST, installed \
-             layout, and workspace layout); serving the REST API only — run \
-             `pnpm --dir dashboard build` to enable the SPA"
-        );
-    }
+    // AAASM-3382 / AAASM-4517: resolve the dashboard SPA so a single
+    // `aa-api-server` process serves the React app at `/` *and* the full
+    // `/api/v1/*` REST surface.
+    //
+    // First choice is a `dashboard/dist/` on disk (AAASM_DASHBOARD_DIST
+    // override, an installed side-by-side layout, or the workspace dev layout).
+    // A bare release tarball has none of those, so the fallback extracts the
+    // SPA embedded into this binary at build time (AAASM-4517) to a temp dir and
+    // serves that — this is what makes the shipped `aa-api-server` serve the UI
+    // instead of degrading to REST-only. `_embedded_dashboard` owns the temp dir
+    // and must outlive the server (dropping it deletes the files `ServeDir`
+    // reads), so it is bound for the whole `serve_local` scope.
+    let (spa_dist, _embedded_dashboard): (Option<std::path::PathBuf>, Option<tempfile::TempDir>) =
+        match aa_gateway::dashboard_server::find_dashboard_dist() {
+            Some(path) => (Some(path), None),
+            None => match crate::embedded_dashboard::extract_embedded_dashboard() {
+                Ok(tmp) => {
+                    tracing::info!(
+                        target: "aa_api::serve_local",
+                        "no dashboard/dist/ resolved on disk; serving the dashboard SPA \
+                         embedded in this binary (AAASM-4517)"
+                    );
+                    (Some(tmp.path().to_path_buf()), Some(tmp))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "aa_api::serve_local",
+                        error = %e,
+                        "no dashboard/dist/ resolved and embedded SPA extraction failed; \
+                         serving the REST API only"
+                    );
+                    (None, None)
+                }
+            },
+        };
 
     // AAASM-4447: alongside the axum REST/dashboard server, serve the gRPC
     // `AgentLifecycleService` on loopback :50051 over the SAME
@@ -143,7 +165,7 @@ pub async fn serve_local(
         .parse()
         .expect("LOCAL_GRPC_ADDR is a valid loopback address");
 
-    let rest = run_server_with_spa(config, state, dist.as_deref());
+    let rest = run_server_with_spa(config, state, spa_dist.as_deref());
     let grpc = serve_local_grpc(grpc_addr, registry);
     tokio::try_join!(rest, grpc)?;
     Ok(())
