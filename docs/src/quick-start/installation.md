@@ -16,7 +16,7 @@ then how to verify it works. Pick **one** method:
 
 <div class="aaasm-tabs">
 
-<div class="aaasm-tab" data-title="Quick-install script">
+<div class="aaasm-tab" id="quick-install-script" data-title="Quick-install script">
 
 The one-line installer downloads the matching pre-built tarball plus its
 `SHA256SUMS` file from the GitHub Release, verifies the checksum, and installs
@@ -84,7 +84,7 @@ AASM_REQUIRE_SIGNATURE=1 curl -sSf https://agent-assembly.com/install.sh | sh
 
 </div>
 
-<div class="aaasm-tab" data-title="Homebrew">
+<div class="aaasm-tab" id="homebrew-macos--linux" data-title="Homebrew">
 
 Install the latest tagged `aasm` release from the
 [Homebrew tap](https://github.com/ai-agent-assembly/homebrew-tap):
@@ -95,7 +95,7 @@ brew install ai-agent-assembly/tap/aasm
 
 </div>
 
-<div class="aaasm-tab" data-title="Pre-built binaries">
+<div class="aaasm-tab" id="pre-built-binaries-manual" data-title="Pre-built binaries">
 
 Each [GitHub Release](https://github.com/ai-agent-assembly/agent-assembly/releases)
 publishes per-platform tarballs plus a `SHA256SUMS` file and a
@@ -130,7 +130,7 @@ install -m755 aasm ~/.local/bin/aasm
 
 </div>
 
-<div class="aaasm-tab" data-title="Build from source">
+<div class="aaasm-tab" id="build-from-source" data-title="Build from source">
 
 Contributors and anyone who wants the bleeding edge can build from the Cargo
 workspace. This needs the [build prerequisites](requirements.md#building-from-source)
