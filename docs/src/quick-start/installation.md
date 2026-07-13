@@ -14,7 +14,9 @@ then how to verify it works. Pick **one** method:
 > releases are GitHub **pre-releases**. The public API and wire protocol are not
 > yet stable — do not use in production.
 
-## Quick-install script
+<div class="aaasm-tabs">
+
+<div class="aaasm-tab" data-title="Quick-install script">
 
 The one-line installer downloads the matching pre-built tarball plus its
 `SHA256SUMS` file from the GitHub Release, verifies the checksum, and installs
@@ -80,7 +82,9 @@ AASM_REQUIRE_SIGNATURE=1 curl -sSf https://agent-assembly.com/install.sh | sh
 > default `AASM_REQUIRE_SIGNATURE=0` the installer warns and falls back to
 > checksum-only (the SHA-256 check is never skipped).
 
-## Homebrew (macOS / Linux)
+</div>
+
+<div class="aaasm-tab" data-title="Homebrew">
 
 Install the latest tagged `aasm` release from the
 [Homebrew tap](https://github.com/ai-agent-assembly/homebrew-tap):
@@ -89,7 +93,9 @@ Install the latest tagged `aasm` release from the
 brew install ai-agent-assembly/tap/aasm
 ```
 
-## Pre-built binaries (manual)
+</div>
+
+<div class="aaasm-tab" data-title="Pre-built binaries">
 
 Each [GitHub Release](https://github.com/ai-agent-assembly/agent-assembly/releases)
 publishes per-platform tarballs plus a `SHA256SUMS` file and a
@@ -122,7 +128,9 @@ tar -xzf "${ASSET}" aasm
 install -m755 aasm ~/.local/bin/aasm
 ```
 
-## Build from source
+</div>
+
+<div class="aaasm-tab" data-title="Build from source">
 
 Contributors and anyone who wants the bleeding edge can build from the Cargo
 workspace. This needs the [build prerequisites](requirements.md#building-from-source)
@@ -144,6 +152,10 @@ cargo install --path aa-cli      # installs `aasm` into ~/.cargo/bin
 > The eBPF-target crates (`aa-ebpf-probes`, `aa-ebpf-programs`) are intentionally
 > outside the workspace and are **not** built by `cargo build -p aa-cli`. See
 > [Requirements](requirements.md#requirements-per-interception-layer).
+
+</div>
+
+</div>
 
 ## Verify the install
 
