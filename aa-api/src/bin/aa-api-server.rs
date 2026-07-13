@@ -45,6 +45,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let (auth, generated) = LocalAuth::from_env();
+
+    // AAASM-4572: validate the API key's format BEFORE printing the "serving"
+    // banner. `LocalAuth::from_env` only checks `AASM_API_KEY` is non-empty; the
+    // authoritative format check (`aa_… + 32 hex`) lives inside `serve_local`'s
+    // `local_hardened_at`, which runs *after* the banner below. Without this
+    // early gate a malformed key made the process announce "serving full REST
+    // surface on …" and then exit 1 without ever binding the port — a
+    // false-positive readiness signal for any script/monitor scraping the log.
+    // `local_hardened_at` re-validates as the source of truth; this only gates
+    // banner ordering so announce and abort stay mutually exclusive.
+    if let LocalAuth::ApiKey { key } = &auth {
+        if let Err(e) = aa_api::auth::api_key::ApiKey::parse(key) {
+            return Err(format!("invalid AASM_API_KEY: {e}").into());
+        }
+    }
+
     match &auth {
         LocalAuth::Off => {
             eprintln!(
