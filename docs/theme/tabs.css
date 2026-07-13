@@ -1,0 +1,77 @@
+/* AI Agent Assembly — hand-rolled mdBook tabs widget (AAASM-4566).
+   Markup contract (authored in .md via raw HTML blocks):
+     <div class="aaasm-tabs">
+       <div class="aaasm-tab" data-title="Python">...markdown/html...</div>
+       <div class="aaasm-tab" data-title="Node.js">...markdown/html...</div>
+     </div>
+   tabs.js turns each `data-title` child into a clickable tab button and
+   shows exactly one panel at a time. No preprocessor/build-time dependency —
+   this is pure additional-css/additional-js per book.toml.
+   Tab-title font-size is intentionally smaller/tighter than body text
+   (readability goal shared with the sibling-repo Tabs work in AAASM-4548). */
+
+.aaasm-tabs {
+  margin: 1.25rem 0;
+  border: 1px solid var(--table-border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.aaasm-tabs__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-bottom: 1px solid var(--table-border-color);
+  background: var(--sidebar-bg);
+}
+
+.aaasm-tabs__button {
+  appearance: none;
+  cursor: pointer;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 0.8rem;          /* deliberately tighter than .content body text */
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+  padding: 0.5rem 0.9rem;
+  white-space: nowrap;
+}
+
+.aaasm-tabs__button:hover {
+  color: var(--links);
+}
+
+.aaasm-tabs__button:focus-visible {
+  outline: 2px solid var(--links);
+  outline-offset: -2px;
+}
+
+.aaasm-tabs__button[aria-selected="true"] {
+  color: var(--links);
+  border-bottom-color: var(--links);
+}
+
+.aaasm-tabs__panel {
+  padding: 0.9rem 1.1rem;
+}
+
+.aaasm-tabs__panel[hidden] {
+  display: none;
+}
+
+/* .aaasm-tabs__panel wraps the original .aaasm-tab content node in place, so
+   nested content (code blocks, lists, etc.) keeps normal .content styling. */
+.aaasm-tabs__panel > :first-child {
+  margin-top: 0;
+}
+
+.aaasm-tabs__panel > :last-child {
+  margin-bottom: 0;
+}
