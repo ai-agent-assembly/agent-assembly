@@ -5,10 +5,10 @@ then how to verify it works. Pick **one** method:
 
 | Method | Best for | Needs a published release? |
 |---|---|---|
-| [Quick-install script](#quick-install-script) | Fast, reproducible install on macOS / Linux | Yes |
-| [Homebrew tap](#homebrew-macos--linux) | macOS / Linux users who already use Homebrew | Yes |
-| [Pre-built binaries](#pre-built-binaries-manual) | Air-gapped or scripted installs, custom verification | Yes |
-| [`cargo install` / from source](#build-from-source) | Contributors and bleeding-edge builds | No |
+| **Quick-install script** | Fast, reproducible install on macOS / Linux | Yes |
+| **Homebrew tap** | macOS / Linux users who already use Homebrew | Yes |
+| **Pre-built binaries** | Air-gapped or scripted installs, custom verification | Yes |
+| **`cargo install` / from source** | Contributors and bleeding-edge builds | No |
 
 > **Alpha note.** Agent Assembly is in the `v0.0.1` pre-release series; published
 > releases are GitHub **pre-releases**. The public API and wire protocol are not
