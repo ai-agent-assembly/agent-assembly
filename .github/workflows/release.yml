@@ -75,6 +75,23 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+      - name: Stage dashboard/dist into aa-api/_embedded for the release binary
+        # AAASM-4517: aa-api embeds the dashboard SPA via include_dir! (like
+        # aa-cli) so the shipped `aa-api-server` serves the UI at GET / from a
+        # bare unpacked tarball — no adjacent dashboard/dist, no env var.
+        # include_dir! reads _embedded/ at COMPILE time, so the freshly-built
+        # dashboard/dist must be staged BEFORE `cargo build -p aa-api` below.
+        # Mirrors the crates.io leg that stages it into aa-cli/_embedded before
+        # `cargo publish`.
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf aa-api/_embedded
+          mkdir -p aa-api/_embedded/dashboard
+          cp -r dashboard/dist aa-api/_embedded/dashboard/dist
+          # Verify the SPA entry-point made it
+          test -f aa-api/_embedded/dashboard/dist/index.html
+          echo "✓ aa-api/_embedded/dashboard/dist/ staged ($(find aa-api/_embedded -type f | wc -l) files)"
       - name: Build release binaries (cli/gateway/runtime/api, +proxy on Linux)
         # aasm is the operator CLI; aa-gateway is the core daemon that
         # `aasm gateway start` spawns. Both must ship in the CLI tarball
