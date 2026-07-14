@@ -5,6 +5,43 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-rc.5] — 2026-07-14 (pre-release)
+
+> **Not for production use.** Fifth **release candidate** in the v0.0.1 series
+> (patch on the `rc` channel). A **dashboard-embedding + onboarding-docs** cut:
+> the dashboard SPA is now compiled into the `aa-api` binary so local serving no
+> longer 404s, `aasm` fails loudly on a missing API key before it claims to be
+> serving, and the mdBook docs gain a tabs widget with tabbed, anchor-stable
+> installation instructions. No API, ABI, or wire-protocol stability commitment
+> at `0.x.y`; `protocol/v1` unchanged.
+
+### Added
+
+- **Embedded dashboard SPA** (AAASM-4517) — the built dashboard is embedded into
+  the `aa-api` binary at compile time via a `build.rs` + `include_dir!`, so a
+  locally-served gateway ships its UI in-process instead of returning a 404 for
+  the dashboard route (the rc.4 dashboard-404 regression).
+- **mdBook tabs widget** (AAASM-4566) — a reusable tabbed-content widget for the
+  docs site, used to present per-platform / per-tool instructions side by side.
+- **Tabbed installation instructions** (AAASM-4567) — `installation.md` reworked
+  onto the new tabs widget, with stable per-tab anchors (AAASM-4573 / 4574) so
+  deep links to a specific install method survive re-rendering.
+- **Homebrew tap via `versions.rb` generator** (AAASM-4520) — the tap formula is
+  now produced by a `versions.rb` generator rather than hand-maintained.
+
+### Fixed
+
+- **API-key validated before the serving banner** (AAASM-4572) — `aasm` now
+  validates `AASM_API_KEY` up front and fails loudly on a missing/invalid key
+  instead of printing a "serving" banner it cannot honor.
+
+### Changed
+
+- Dependency bumps: `rustls`, `tokio-tungstenite`, `uuid`, `open`,
+  `EmbarkStudios/cargo-deny-action`, and `softprops/action-gh-release`.
+- Workspace version bumped `0.0.1-rc.4` → `0.0.1-rc.5` (all crates inherit via
+  `version.workspace = true`; `Cargo.lock` + `sonar.projectVersion` realigned).
+
 ## [0.0.1-rc.4] — 2026-07-12 (pre-release)
 
 > **Not for production use.** Fourth **release candidate** in the v0.0.1 series
