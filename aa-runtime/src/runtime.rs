@@ -1775,20 +1775,35 @@ mod layer_integration {
         // Give the perf reader tasks time to start their polling loops.
         // They are spawned via tokio::spawn inside start_event_reader and
         // need at least one poll cycle before they can receive events.
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // Trigger file I/O events repeatedly so the kprobes capture at
-        // least one, even if the first trigger races with reader startup.
+        // Poll-until-event instead of a fixed collect window: a fixed 3s
+        // window races the kernel perf-capture path (kprobe -> perf-buffer ->
+        // reader -> broadcast), which is inherently best-effort and can lag on
+        // loaded CI runners, producing intermittent "got none" failures. Each
+        // iteration triggers one file I/O event AND drains whatever has been
+        // captured so far (so the broadcast(64) can't overflow), accumulating
+        // into `events`, and breaks as soon as an eBPF audit event is seen or a
+        // generous overall deadline elapses. This removes the timing race
+        // without weakening the assertion — a real eBPF event is still required.
+        const EBPF_CAPTURE_DEADLINE: Duration = Duration::from_secs(30);
         let trigger_path = "/tmp/aa-integration-test-trigger";
-        for _ in 0..5 {
+        let mut events: Vec<PipelineEvent> = Vec::new();
+        let deadline = tokio::time::Instant::now() + EBPF_CAPTURE_DEADLINE;
+        loop {
             std::fs::write(trigger_path, b"integration-test").expect("write trigger file");
             let _ = std::fs::read_to_string(trigger_path);
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            let mut batch = collect_events(&mut rx, Duration::from_millis(500)).await;
+            events.append(&mut batch);
+
+            let have_ebpf = events
+                .iter()
+                .any(|e| matches!(e, PipelineEvent::Audit(ref a) if a.source == EventSource::EBpf));
+            if have_ebpf || tokio::time::Instant::now() >= deadline {
+                break;
+            }
         }
         let _ = std::fs::remove_file(trigger_path);
-
-        // Collect events.
-        let events = collect_events(&mut rx, Duration::from_secs(3)).await;
 
         // Assert at least one eBPF-sourced audit event arrived.
         let ebpf_events: Vec<_> = events
