@@ -481,7 +481,7 @@ pub async fn register_op(
     // AAASM-3865: registering an op is a mutation; its lifecycle siblings
     // (pause/resume/terminate) all require write scope, but the register path
     // was missed, letting any read-only key create ops.
-    RequireWrite(_caller): RequireWrite,
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Json(req): Json<RegisterOpRequest>,
 ) -> Result<impl IntoResponse, ProblemDetail> {
@@ -490,6 +490,14 @@ pub async fn register_op(
         return Err(
             ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail("op_id must not be empty".to_string())
         );
+    }
+    // AAASM-4653: a brand-new op_id is created under the caller, but if one
+    // already exists it may belong to another tenant — enforce ownership so a
+    // write-scoped caller in one team cannot clobber another tenant's op record
+    // (its lifecycle siblings already gate on `authorize_op_access`). Fail-closed:
+    // an existing op with no resolvable team is admin-only, like the siblings.
+    if state.ops_registry.get(&op_id).is_some() {
+        authorize_op_access(&caller, &state, &op_id)?;
     }
     let record = state.ops_registry.register(op_id);
     tracing::info!(target: "aa_api::ops", op_id = %record.op_id, "op registered");

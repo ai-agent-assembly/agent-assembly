@@ -159,9 +159,17 @@ impl OpsRegistry {
 
     /// Register a new op in the `Running` state.
     ///
-    /// Overwrites any existing record with the same `op_id` (idempotent
-    /// re-registration resets state to `Running`).
+    /// Preserve-idempotent like [`ingest`](Self::ingest): re-registering an
+    /// already-known `op_id` returns the existing record unchanged rather than
+    /// overwriting it and resetting its state to `Running` (AAASM-4653). A
+    /// blind overwrite let a caller clobber another tenant's op record — the
+    /// authorization gate in `register_op` is the primary defense, this makes
+    /// the registry itself fail-closed against a reset even if an op is
+    /// re-registered.
     pub fn register(&self, op_id: String) -> OpRecord {
+        if let Some(existing) = self.ops.get(&op_id) {
+            return existing.clone();
+        }
         let now = chrono::Utc::now().to_rfc3339();
         let record = OpRecord {
             op_id: op_id.clone(),
@@ -519,6 +527,26 @@ mod tests {
         // service may re-call ingest after the SDK retries the request.
         assert_eq!(second.state, OpState::Running);
         assert_eq!(second.registered_at, first.registered_at);
+    }
+
+    #[test]
+    fn register_is_idempotent_and_does_not_clobber_existing_op() {
+        // AAASM-4653: re-registering a known op_id must return the existing
+        // record unchanged rather than overwriting it and resetting the state
+        // to Running — a blind overwrite let a caller clobber another tenant's op.
+        let registry = OpsRegistry::new();
+        let first = registry.ingest("op-1".to_string());
+        registry.allow("op-1").unwrap();
+        registry.pause("op-1").unwrap();
+
+        let re_registered = registry.register("op-1".to_string());
+
+        assert_eq!(
+            re_registered.state,
+            OpState::Paused,
+            "register must not reset an existing op to Running"
+        );
+        assert_eq!(re_registered.registered_at, first.registered_at);
     }
 
     #[test]
