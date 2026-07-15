@@ -1,0 +1,32 @@
+name: Doc Links
+
+# Guards repo-relative Markdown links in the README from silently re-rotting
+# after a docs reorg — the AAASM-4635 regression (README links to
+# docs/src/architecture.md etc. 404'd) that AAASM-4670 makes un-repeatable.
+# Internal-link only: no network calls, so no flaky external-URL failures and
+# no new heavy dependency (portable bash in scripts/check-doc-links.sh).
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'README.md'
+      - 'scripts/check-doc-links.sh'
+      - '.github/workflows/doc-links.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'README.md'
+      - 'scripts/check-doc-links.sh'
+      - '.github/workflows/doc-links.yml'
+
+jobs:
+  check-links:
+    name: Check internal doc links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate internal Markdown links in README
+        run: bash scripts/check-doc-links.sh README.md
