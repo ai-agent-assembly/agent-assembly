@@ -1056,6 +1056,70 @@ async fn register_op_write_token_is_allowed() {
     );
 }
 
+/// AAASM-4653 — register_op required write scope but did no tenant-ownership
+/// check, and `OpsRegistry::register` overwrote any existing record. A
+/// write-scoped caller in team "alpha" could therefore clobber and reset a
+/// "beta" op. A write caller may register a new op under its own team (a), but
+/// must not overwrite a foreign tenant's op (b) — and the beta op's state is
+/// left intact.
+#[tokio::test]
+async fn register_op_cross_tenant_clobber_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xD4, "beta")).unwrap();
+    // Seed a beta-owned op in the Pending state (via a policy-check ingest path).
+    state.ops_registry.ingest_with_agent(
+        "op-beta-register".to_string(),
+        ProtoAgentId {
+            org_id: String::new(),
+            team_id: "beta".to_string(),
+            agent_id: hex_id(0xD4),
+        },
+    );
+    let app = aa_api::build_app(state.clone());
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Write], "alpha");
+
+    // (a) a write caller may register a brand-new op of its own.
+    let created = app
+        .clone()
+        .oneshot(json_bearer(
+            "POST",
+            "/api/v1/ops",
+            &token,
+            r#"{"op_id":"op-alpha-new"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        created.status(),
+        StatusCode::CREATED,
+        "a write caller may register a new op under its own team"
+    );
+
+    // (b) it must not clobber the beta-owned op.
+    let denied = app
+        .oneshot(json_bearer(
+            "POST",
+            "/api/v1/ops",
+            &token,
+            r#"{"op_id":"op-beta-register"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        denied.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant op register (clobber) is denied"
+    );
+
+    // The beta op's state must be untouched — not reset to Running.
+    assert_eq!(
+        state.ops_registry.get("op-beta-register").unwrap().state,
+        aa_gateway::ops::OpState::Pending,
+        "the denied register must not have reset the beta op"
+    );
+}
+
 /// The policy list read must reject an unauthenticated caller (it previously
 /// took no caller, so any request could dump the policy YAML).
 #[tokio::test]
