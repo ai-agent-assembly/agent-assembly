@@ -91,6 +91,13 @@ The verifier (`scripts/check-docs-versions.sh X`) asserts every one of them.
 
 3. **`README.md`** (repo root):
    - the **`AASM_VERSION=vX`** quick-install snippet,
+   - the **Project Status maturity banner** — the `🚧 <maturity> — `v0.0.1-<channel>`
+     series` line and its `_(status as of <date>)_` marker. The maturity word +
+     channel segment must match the channel `X` belongs to (alpha / beta / rc /
+     official). This is the AAASM-4636 drift: the banner still read "Alpha" while
+     the release was `rc`. On a **channel promotion** (alpha→beta→rc→official),
+     bump both the maturity word **and** the `v0.0.1-<channel>` series label; on a
+     same-channel forward-roll, just refresh the "status as of" date.
    - the **Project Status** "latest [`vX`]" release line (and its date).
 
 4. **`docs/src/quick-start/configuration.md`** and
@@ -237,6 +244,9 @@ you touched the script.
 ## Done when
 
 - `scripts/check-docs-versions.sh X` exits 0 in agent-assembly.
+- The **README Project Status maturity banner** names the channel `X` belongs to
+  (maturity word + `v0.0.1-<channel>` series label + refreshed "status as of"
+  date) — not a stale channel (the AAASM-4636 "Alpha"-while-`rc` drift).
 - A new compat-matrix row for `X` exists in **both** the core and hub
   compatibility files.
 - The hub's **static** core/Go badges read `X`.
