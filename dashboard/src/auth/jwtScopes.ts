@@ -53,7 +53,7 @@ export function getSubject(token: string | null): string | null {
 
 /** Decode a base64url segment (JWT parts are unpadded base64url). */
 function base64UrlDecode(segment: string): string {
-  const base64 = segment.replace(/-/g, '+').replace(/_/g, '/')
+  const base64 = segment.replaceAll('-', '+').replaceAll('_', '/')
   const pad = base64.length % 4 === 0 ? '' : '='.repeat(4 - (base64.length % 4))
   return atob(base64 + pad)
 }
