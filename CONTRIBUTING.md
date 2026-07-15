@@ -51,11 +51,18 @@ on; the faster linker is opt-in.
 
 ## Branch Naming
 
+Use the four-part format (matching the org-wide [contribution guide](https://github.com/ai-agent-assembly/.github/blob/main/CONTRIBUTING.md)):
+
 ```
-<version>/<ticket-number>/<short-summary>
+<release-or-phase>/<ticket-number>/<type>/<short-summary>
 ```
 
-Example: `v0.0.1/AAASM-42/add_agent_registry`
+- `<release-or-phase>` — milestone or sprint identifier (e.g. `v0.0.1`, `phase1`).
+- `<ticket-number>` — the ticket reference (e.g. `AAASM-42`).
+- `<type>` — change category: `feat`, `fix`, `refactor`, `test`, `docs`, `config`, `deps`, `remove`, or `lint`.
+- `<short-summary>` — 2–4 words in `snake_case`.
+
+Example: `v0.0.1/AAASM-42/feat/add_agent_registry`
 
 ## Commit Style
 
