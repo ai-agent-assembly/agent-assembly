@@ -135,7 +135,7 @@ The three interception layers, lowest-latency first:
 - **eBPF** (Linux kernel) — catches everything else, including bypass attempts.
 
 Each layer reports to the same gateway, so you get one unified view no matter
-which layers a deployment runs. See the [Architecture overview](docs/src/architecture.md)
+which layers a deployment runs. See the [Architecture overview](docs/src/architecture/README.md)
 for the full picture, or jump straight to the [Quickstart](#quickstart).
 
 ## Ecosystem
@@ -298,7 +298,7 @@ dev-verify passed (22s total)
 ### Next steps
 
 - [SDK repositories](#ecosystem) — Python, Node.js, and Go SDK guides
-- [Architecture Overview](docs/src/architecture.md) — three-layer interception model
+- [Architecture Overview](docs/src/architecture/README.md) — three-layer interception model
 - [Policy examples](policy-examples/) — reference governance policies
 - [Runnable examples](https://github.com/ai-agent-assembly/examples) — learn the runtime, CLI, and policy behavior by running small, framework-specific examples for Python, Node.js/TypeScript, Go, policy enforcement, approvals, audit, trace, and runtime workflows
 
@@ -377,11 +377,11 @@ mdbook serve docs --open
 | Chapter | Description |
 |---|---|
 | [Introduction](docs/src/README.md) | Book overview and audience |
-| [Architecture Overview](docs/src/architecture.md) | Crate dependency graph, three-layer interception, IPC, sidecar lifecycle, policy evaluation |
+| [Architecture Overview](docs/src/architecture/README.md) | Crate dependency graph, three-layer interception, IPC, sidecar lifecycle, policy evaluation |
 | [API Reference](docs/src/api-reference.md) | rustdoc generation flow and per-crate API surface map |
-| [Command-Line Interface](docs/src/cli.md) | `aasm` global flags, command groups, and examples |
+| [Command-Line Interface](docs/src/cli/overview.md) | `aasm` global flags, command groups, and examples |
 | [Policy YAML Reference](docs/src/policy-reference.md) | Complete per-section policy field reference, `requires_approval_if` expression syntax, and example policies |
-| [Dashboard](docs/src/dashboard.md) | Web console and terminal (TUI) governance dashboards |
+| [Dashboard](docs/src/cli/dashboard.md) | Web console and terminal (TUI) governance dashboards |
 | [Local Development](docs/src/development/local-development.md) | From-clone setup, everyday build/test loop, git hooks |
 | [Releases](docs/src/releases.md) | Release state, distribution channels, and process |
 | [Compatibility Matrix](docs/src/compatibility.md) | Which `aa-runtime` versions work with which SDK versions |
