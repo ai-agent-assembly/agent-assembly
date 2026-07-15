@@ -112,3 +112,43 @@ pub async fn delete(ctx: &ResolvedContext, path: &str) -> Result<(), CliError> {
     req.send().await?.error_for_status()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::AUTHORIZATION;
+
+    fn ctx(api_key: Option<&str>) -> ResolvedContext {
+        ResolvedContext {
+            name: None,
+            api_url: "http://127.0.0.1:7391".to_string(),
+            api_key: api_key.map(String::from),
+        }
+    }
+
+    /// Regression test for AAASM-4659: the audit/logs commands GET
+    /// `/api/v1/logs` through `blocking_get`, which must carry the operator
+    /// bearer token, or the default (auth-required) gateway answers 401.
+    #[test]
+    fn blocking_get_attaches_bearer_for_logs_endpoint() {
+        let req = blocking_get(
+            &ctx(Some("secret-token")),
+            "http://127.0.0.1:7391/api/v1/logs?per_page=50&page=1",
+        )
+        .build()
+        .unwrap();
+        let auth = req
+            .headers()
+            .get(AUTHORIZATION)
+            .expect("audit/logs request must carry an Authorization header");
+        assert_eq!(auth, "Bearer secret-token");
+    }
+
+    #[test]
+    fn blocking_get_omits_auth_when_no_api_key() {
+        let req = blocking_get(&ctx(None), "http://127.0.0.1:7391/api/v1/logs")
+            .build()
+            .unwrap();
+        assert!(req.headers().get(AUTHORIZATION).is_none());
+    }
+}
