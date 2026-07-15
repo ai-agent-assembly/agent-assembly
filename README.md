@@ -191,17 +191,17 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 
 ## Project Status
 
-🚧 **Alpha — `v0.0.1` pre-release series** _(status as of 2026-07-03)_. The
+🚧 **Release candidate — `v0.0.1-rc` series** _(status as of 2026-07-15)_. The
 public API and wire protocol are **not** stable; do not use in production.
 
 Releases are published as GitHub pre-releases — latest
-[`v0.0.1-rc.3`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-rc.3)
-(2026-07-03). The coordinated release tag also publishes the CLI, crates, SDK
+[`v0.0.1-rc.5`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-rc.5)
+(2026-07-15). The coordinated release tag also publishes the CLI, crates, SDK
 packages, and container image:
 
 | Channel | Status |
 |---|---|
-| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.9`, `v0.0.1-beta.1`, `beta.2`, `beta.4`, `v0.0.1-rc.1`, `rc.2`, `rc.3`) |
+| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.9`, `v0.0.1-beta.1`, `beta.2`, `beta.4`, `v0.0.1-rc.1` … `rc.5`) |
 | crates.io | ✅ Workspace crates published at the pre-release version |
 | Homebrew tap | ✅ `aasm` formula published for tagged releases |
 | PyPI / npm | ✅ SDK pre-releases published from the release tag |
