@@ -426,6 +426,10 @@ impl ProxyServer {
         let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
 
         match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
+            // `Redact` is bucketed with `Allow` as a forward: the proxy's own
+            // DLP scanner redacts both request and upstream response (see the
+            // `McpDecision::Redact` doc), so the gateway's `RedactInstructions`
+            // need no separate replay here.
             Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
                 tracing::info!(
                     tool_name = %call.tool_name,
