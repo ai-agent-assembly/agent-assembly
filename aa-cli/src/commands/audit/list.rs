@@ -198,7 +198,7 @@ fn render_yaml(entries: &[AuditEntry]) {
 pub fn run(args: ListArgs, ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
     let url = build_url(ctx, &args);
 
-    let response = match reqwest::blocking::get(&url) {
+    let response = match crate::client::blocking_get(ctx, &url).send() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: failed to connect to {}: {e}", ctx.api_url);

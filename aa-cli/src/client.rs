@@ -11,6 +11,23 @@ pub fn build_client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
+/// Build a blocking GET request to `url`, attaching the operator bearer token
+/// from the resolved context when one is present.
+///
+/// This is the blocking analog of the auth-header injection in [`get_json`]:
+/// the default gateway requires API-key auth, so every synchronous (`reqwest::blocking`)
+/// call site that hits the REST surface must send `Authorization: Bearer <key>`
+/// or the request comes back `401`. Routing those call sites through this helper
+/// keeps auth attachment in one place instead of each command re-deriving it
+/// (the audit/logs group regressed by skipping it — AAASM-4659).
+pub fn blocking_get(ctx: &ResolvedContext, url: &str) -> reqwest::blocking::RequestBuilder {
+    let mut req = reqwest::blocking::Client::new().get(url);
+    if let Some(ref key) = ctx.api_key {
+        req = req.bearer_auth(key);
+    }
+    req
+}
+
 /// Perform a GET request to the gateway and deserialize the JSON response.
 pub async fn get_json<T: DeserializeOwned>(ctx: &ResolvedContext, path: &str) -> Result<T, CliError> {
     let url = format!("{}{path}", ctx.api_url);
