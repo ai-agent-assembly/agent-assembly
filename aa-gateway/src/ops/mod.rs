@@ -530,6 +530,26 @@ mod tests {
     }
 
     #[test]
+    fn register_is_idempotent_and_does_not_clobber_existing_op() {
+        // AAASM-4653: re-registering a known op_id must return the existing
+        // record unchanged rather than overwriting it and resetting the state
+        // to Running — a blind overwrite let a caller clobber another tenant's op.
+        let registry = OpsRegistry::new();
+        let first = registry.ingest("op-1".to_string());
+        registry.allow("op-1").unwrap();
+        registry.pause("op-1").unwrap();
+
+        let re_registered = registry.register("op-1".to_string());
+
+        assert_eq!(
+            re_registered.state,
+            OpState::Paused,
+            "register must not reset an existing op to Running"
+        );
+        assert_eq!(re_registered.registered_at, first.registered_at);
+    }
+
+    #[test]
     fn allow_transitions_pending_to_running() {
         let registry = OpsRegistry::new();
         registry.ingest("op-1".to_string());
