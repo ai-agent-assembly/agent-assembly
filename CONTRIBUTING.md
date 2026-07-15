@@ -64,6 +64,14 @@ Use the four-part format (matching the org-wide [contribution guide](https://git
 
 Example: `v0.0.1/AAASM-42/feat/add_agent_registry`
 
+> **External contributors** — the `AAASM-NN` project tracker is private, so you
+> won't be able to mint a ticket. You don't need one: open a GitHub issue first
+> (or reference an existing one) and use your GitHub issue number in the
+> `<ticket-number>` slot (e.g. `v0.0.1/gh-123/feat/add_agent_registry`), or
+> `noticket` if there's no issue yet. A maintainer will create the tracking
+> `AAASM-NN` ticket and link it during review — a missing Jira reference will
+> never block your PR.
+
 ## Commit Style
 
 Use [Gitmoji](https://gitmoji.dev/) prefixed messages:
@@ -104,7 +112,10 @@ To add a new crate to the workspace:
 ## Pull Requests
 
 - Open a PR against `master`.
-- Title format: `[<ticket>] <emoji> (<scope>): <summary>`
+- Title format: `[<ticket>] <emoji> (<scope>): <summary>` — external contributors
+  without Jira access may use a GitHub issue reference (e.g. `[#123]`) or `[N/A]`
+  in place of the `AAASM-NN` ticket; the Jira field in the PR template is
+  optional for community PRs.
 - Fill in the PR template — all checklist items must be addressed.
 - CI must be green before review is requested.
 - At least **1 approval** from the Pioneer team is required to merge.
