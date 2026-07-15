@@ -58,9 +58,19 @@ pub enum McpDecision {
     /// to the client and never dials upstream. `reason` is copied from the
     /// gateway response so the client sees the policy rule that fired.
     Deny { reason: String },
-    /// Forward the call, but rewrite matching fields in the upstream
-    /// response before returning it to the client. `instructions` carries
-    /// the field-path / replacement rules from the gateway.
+    /// Forward the call to upstream. Redaction of sensitive payloads is
+    /// enforced independently by the proxy's own DLP scanner — request
+    /// bodies via `intercept::intercept_request` and upstream responses via
+    /// `intercept::redact_response_body` — not by replaying these gateway
+    /// instructions field-by-field. The proxy data path therefore buckets
+    /// `Redact` together with [`Allow`](McpDecision::Allow) as a forward.
+    ///
+    /// `instructions` carries the gateway's field-path / replacement rules
+    /// verbatim so they survive the response and remain available to
+    /// consumers (audit, future instruction-driven rewriting). At this layer
+    /// they are advisory: the proxy does not separately apply them, because
+    /// its scanner already redacts both directions of the tunnel regardless
+    /// of what the gateway matched.
     Redact { instructions: RedactInstructions },
 }
 
