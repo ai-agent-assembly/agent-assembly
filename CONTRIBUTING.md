@@ -5,9 +5,11 @@ Thank you for your interest in contributing! This guide explains how to set up y
 ## Prerequisites
 
 - **Rust stable** (≥ 1.75) — install via [rustup](https://rustup.rs/)
+- **protoc** — Protocol Buffers compiler (`brew install protobuf` on macOS, `apt-get install protobuf-compiler` on Debian/Ubuntu); required by the `aa-proto` and `aa-gateway` build scripts, so the first `cargo build --workspace` fails without it
 - **cargo-nextest** — `cargo install cargo-nextest`
 - **cargo-deny** — `cargo install cargo-deny`
 - **Lefthook** — `brew install lefthook` (macOS) or see [install guide](https://github.com/evilmartians/lefthook/blob/master/docs/install.md); the hook configuration lives in [`lefthook.toml`](lefthook.toml)
+- **Rust nightly toolchain** (Linux, only for eBPF work) — the `aa-ebpf` crates compile for `bpfel-unknown-none` and require a recent kernel with BTF plus a nightly toolchain (see `aa-ebpf/README.md`); not needed for non-eBPF contributions
 
 ## Setup
 
