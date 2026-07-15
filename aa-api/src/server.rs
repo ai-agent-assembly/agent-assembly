@@ -60,6 +60,11 @@ pub fn build_app_with_spa(state: AppState, spa_dist: Option<&std::path::Path>) -
         // is the SPA `ServeDir`.
         Some(dist) => Router::new()
             .route("/healthz", get(routes::health::health))
+            // `/health` alias (AAASM-4666): unprefixed, trailing-`z`-less health
+            // path a naive probe reaches for. Without it, `/health` falls through
+            // to the SPA catch-all below and returns HTML instead of the health
+            // JSON. Registered before the `.merge`d SPA fallback so it wins.
+            .route("/health", get(routes::health::health))
             .nest("/api/v1", routes::v1_router().fallback(routes::fallback_404))
             .merge(aa_gateway::dashboard_server::dashboard_router(dist))
             .with_state(()),
