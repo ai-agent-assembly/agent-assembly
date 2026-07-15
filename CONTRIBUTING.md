@@ -51,26 +51,24 @@ on; the faster linker is opt-in.
 
 ## Branch Naming
 
-Use the four-part format (matching the org-wide [contribution guide](https://github.com/ai-agent-assembly/.github/blob/main/CONTRIBUTING.md)):
+Use the three-part format:
 
 ```
-<release-or-phase>/<ticket-number>/<type>/<short-summary>
+<release-or-phase>/<ticket>/<short_summary>
 ```
 
 - `<release-or-phase>` — milestone or sprint identifier (e.g. `v0.0.1`, `phase1`).
-- `<ticket-number>` — the ticket reference (e.g. `AAASM-42`).
-- `<type>` — change category: `feat`, `fix`, `refactor`, `test`, `docs`, `config`, `deps`, `remove`, or `lint`.
-- `<short-summary>` — 2–4 words in `snake_case`.
+- `<ticket>` — the ticket reference (e.g. `AAASM-1`).
+- `<short_summary>` — 2–4 words in `snake_case`.
 
-Example: `v0.0.1/AAASM-42/feat/add_agent_registry`
+Example: `v0.0.1/AAASM-1/add_data_models`
 
 > **External contributors** — the `AAASM-NN` project tracker is private, so you
 > won't be able to mint a ticket. You don't need one: open a GitHub issue first
 > (or reference an existing one) and use your GitHub issue number in the
-> `<ticket-number>` slot (e.g. `v0.0.1/gh-123/feat/add_agent_registry`), or
-> `noticket` if there's no issue yet. A maintainer will create the tracking
-> `AAASM-NN` ticket and link it during review — a missing Jira reference will
-> never block your PR.
+> `<ticket>` slot (e.g. `v0.0.1/gh-123/add_data_models`), or `noticket` if
+> there's no issue yet. A maintainer will create the tracking `AAASM-NN` ticket
+> and link it during review — a missing Jira reference will never block your PR.
 
 ## Commit Style
 
