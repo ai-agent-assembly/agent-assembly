@@ -6,7 +6,7 @@ on* and, where necessary, *blocked or scrubbed*. This page covers the
 enforcement machinery: policy evaluation, fail-closed behavior, network-egress
 control, credential scanning & redaction, and budgets as a control. Every claim
 below is grounded in the gateway, runtime, and security crates; for the broader
-component picture see [Architecture](../architecture/README.md).
+component picture see [Architecture](../architecture/index.md).
 
 ## Policy evaluation
 

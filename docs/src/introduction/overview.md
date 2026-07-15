@@ -66,7 +66,7 @@ Agent Assembly turns "trust the agent to behave" into "the runtime enforces what
 the agent may do." It provides:
 
 - **Policy enforcement at the action boundary.** Allow/deny decisions are made by
-  a central [gateway](../architecture/README.md) *before* an action executes,
+  a central [gateway](../architecture/index.md) *before* an action executes,
   driven by declarative policy rather than agent cooperation.
 - **Budget control.** Per-team spend is tracked and enforced; a request that
   would breach the budget is denied, so a runaway loop is stopped, not just

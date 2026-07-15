@@ -22,4 +22,4 @@ Read the pages in order:
 When you are ready to run something, jump to the [Quick Start](../quick-start/requirements.md).
 For the security rationale behind the design, read the [Security
 Model](../security/overview.md); for the crate-level implementation, read
-[Architecture](../architecture/README.md).
+[Architecture](../architecture/index.md).

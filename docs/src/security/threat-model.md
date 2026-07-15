@@ -4,7 +4,7 @@ This page enumerates what the Security Model defends: the **assets** worth
 protecting, the **adversaries** who threaten them, and the concrete **threats**
 each control answers. It is specific to Agent Assembly — the system that governs
 AI agents at the [three interception layers](three-layer-defense.md) and a
-central [gateway](../architecture/README.md).
+central [gateway](../architecture/index.md).
 
 ## Assets
 

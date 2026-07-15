@@ -9,7 +9,7 @@ An **agent** is the workload being governed: an LLM-driven program that decides,
 at runtime, which actions to take to accomplish a goal. From the runtime's point
 of view an agent is an identity that performs *actions* — calling a tool, making
 an LLM request, or reaching out over the network. Agents register with the
-[gateway](../architecture/README.md) and are organized under a **team** and an
+[gateway](../architecture/index.md) and are organized under a **team** and an
 **org**, which is the scope at which policy and budget are applied.
 
 Each governed action is described by an **action type** (for example, a tool call
@@ -30,7 +30,7 @@ broad organizational deny cannot be loosened by a narrower scope. Policy is
 evaluated **server-side, in the gateway** — never by the agent or a dashboard —
 so the decision cannot be tampered with by the workload it governs. The reference
 policies under `policy-examples/` are a good starting point. The detailed
-evaluation path is documented in [Architecture](../architecture/README.md).
+evaluation path is documented in [Architecture](../architecture/index.md).
 
 ## Budget
 

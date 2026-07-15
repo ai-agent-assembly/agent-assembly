@@ -3,11 +3,11 @@
 To govern an action, Agent Assembly must first *observe* it. It does so at
 **three independent interception layers**, each catching what the layers above
 it might miss, and routes every observed action to one central
-[gateway](../architecture/README.md) for the decision. This page explains why
+[gateway](../architecture/index.md) for the decision. This page explains why
 the layers are arranged the way they are and how they **compose** so an agent
 cannot quietly slip through. For the policy decision itself, see
 [Protection and enforcement](protection-model.md); for how implementation maps
-to crates, see [Architecture](../architecture/README.md).
+to crates, see [Architecture](../architecture/index.md).
 
 ## The latency-vs-authority trade-off
 
