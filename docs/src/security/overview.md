@@ -6,7 +6,7 @@ system protects, against whom, and how** — and, just as importantly, **where i
 refuses to place its trust**.
 
 This section is the *why*. For the *how* — concrete crates, types, and data
-paths — follow the cross-links into [Architecture](../architecture/README.md).
+paths — follow the cross-links into [Architecture](../architecture/index.md).
 
 ## What the Security Model protects
 
