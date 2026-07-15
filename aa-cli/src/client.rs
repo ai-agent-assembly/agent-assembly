@@ -11,6 +11,23 @@ pub fn build_client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
+/// Build a blocking GET request to `url`, attaching the operator bearer token
+/// from the resolved context when one is present.
+///
+/// This is the blocking analog of the auth-header injection in [`get_json`]:
+/// the default gateway requires API-key auth, so every synchronous (`reqwest::blocking`)
+/// call site that hits the REST surface must send `Authorization: Bearer <key>`
+/// or the request comes back `401`. Routing those call sites through this helper
+/// keeps auth attachment in one place instead of each command re-deriving it
+/// (the audit/logs group regressed by skipping it — AAASM-4659).
+pub fn blocking_get(ctx: &ResolvedContext, url: &str) -> reqwest::blocking::RequestBuilder {
+    let mut req = reqwest::blocking::Client::new().get(url);
+    if let Some(ref key) = ctx.api_key {
+        req = req.bearer_auth(key);
+    }
+    req
+}
+
 /// Perform a GET request to the gateway and deserialize the JSON response.
 pub async fn get_json<T: DeserializeOwned>(ctx: &ResolvedContext, path: &str) -> Result<T, CliError> {
     let url = format!("{}{path}", ctx.api_url);
@@ -94,4 +111,44 @@ pub async fn delete(ctx: &ResolvedContext, path: &str) -> Result<(), CliError> {
 
     req.send().await?.error_for_status()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::AUTHORIZATION;
+
+    fn ctx(api_key: Option<&str>) -> ResolvedContext {
+        ResolvedContext {
+            name: None,
+            api_url: "http://127.0.0.1:7391".to_string(),
+            api_key: api_key.map(String::from),
+        }
+    }
+
+    /// Regression test for AAASM-4659: the audit/logs commands GET
+    /// `/api/v1/logs` through `blocking_get`, which must carry the operator
+    /// bearer token, or the default (auth-required) gateway answers 401.
+    #[test]
+    fn blocking_get_attaches_bearer_for_logs_endpoint() {
+        let req = blocking_get(
+            &ctx(Some("secret-token")),
+            "http://127.0.0.1:7391/api/v1/logs?per_page=50&page=1",
+        )
+        .build()
+        .unwrap();
+        let auth = req
+            .headers()
+            .get(AUTHORIZATION)
+            .expect("audit/logs request must carry an Authorization header");
+        assert_eq!(auth, "Bearer secret-token");
+    }
+
+    #[test]
+    fn blocking_get_omits_auth_when_no_api_key() {
+        let req = blocking_get(&ctx(None), "http://127.0.0.1:7391/api/v1/logs")
+            .build()
+            .unwrap();
+        assert!(req.headers().get(AUTHORIZATION).is_none());
+    }
 }

@@ -76,7 +76,7 @@ pub fn run(args: LogsArgs, ctx: &ResolvedContext) -> ExitCode {
     let since = args.since.as_deref().and_then(parse_since);
     let until = args.until.as_deref().and_then(parse_until);
 
-    let response = match reqwest::blocking::get(&url) {
+    let response = match crate::client::blocking_get(ctx, &url).send() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: failed to connect to {}: {e}", ctx.api_url);
