@@ -52,22 +52,14 @@ function mockFetch(data: ApprovalAnalyticsResponse) {
 describe('ApprovalAnalyticsPanel — stat formatting', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('formats volume as localized number', async () => {
+  it.each([
+    { label: 'volume as localized number', text: '1,240' },
+    { label: 'medianTta in minutes and seconds', text: '3m 5s' }, // 185s = 3m 5s
+    { label: 'approvalRate as percentage', text: '87.4%' }, // 0.874 → 87.4%
+  ])('formats $label', async ({ text }) => {
     mockFetch(FIXTURE)
     render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
-    expect(await screen.findByText('1,240')).toBeInTheDocument()
-  })
-
-  it('formats medianTta in minutes and seconds', async () => {
-    mockFetch(FIXTURE) // 185s = 3m 5s
-    render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
-    expect(await screen.findByText('3m 5s')).toBeInTheDocument()
-  })
-
-  it('formats approvalRate as percentage', async () => {
-    mockFetch(FIXTURE) // 0.874 → 87.4%
-    render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
-    expect(await screen.findByText('87.4%')).toBeInTheDocument()
+    expect(await screen.findByText(text)).toBeInTheDocument()
   })
 })
 
