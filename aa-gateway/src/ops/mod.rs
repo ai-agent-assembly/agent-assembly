@@ -159,9 +159,17 @@ impl OpsRegistry {
 
     /// Register a new op in the `Running` state.
     ///
-    /// Overwrites any existing record with the same `op_id` (idempotent
-    /// re-registration resets state to `Running`).
+    /// Preserve-idempotent like [`ingest`](Self::ingest): re-registering an
+    /// already-known `op_id` returns the existing record unchanged rather than
+    /// overwriting it and resetting its state to `Running` (AAASM-4653). A
+    /// blind overwrite let a caller clobber another tenant's op record — the
+    /// authorization gate in `register_op` is the primary defense, this makes
+    /// the registry itself fail-closed against a reset even if an op is
+    /// re-registered.
     pub fn register(&self, op_id: String) -> OpRecord {
+        if let Some(existing) = self.ops.get(&op_id) {
+            return existing.clone();
+        }
         let now = chrono::Utc::now().to_rfc3339();
         let record = OpRecord {
             op_id: op_id.clone(),
