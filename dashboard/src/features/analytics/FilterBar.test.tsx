@@ -18,24 +18,14 @@ const MOCK_TEAMS: TeamSummary[] = [
 ]
 
 describe('FilterBar — data-testid attributes', () => {
-  it('has data-testid="analytics-filter-bar" on wrapper', () => {
+  it.each([
+    { testId: 'analytics-filter-bar', on: 'wrapper' },
+    { testId: 'filter-range', on: 'range select' },
+    { testId: 'filter-agents', on: 'agents select' },
+    { testId: 'filter-teams', on: 'teams select' },
+  ])('has data-testid="$testId" on $on', ({ testId }) => {
     render(<FilterBar filters={DEFAULT_FILTERS} onFiltersChange={() => {}} />)
-    expect(screen.getByTestId('analytics-filter-bar')).toBeInTheDocument()
-  })
-
-  it('has data-testid="filter-range" on range select', () => {
-    render(<FilterBar filters={DEFAULT_FILTERS} onFiltersChange={() => {}} />)
-    expect(screen.getByTestId('filter-range')).toBeInTheDocument()
-  })
-
-  it('has data-testid="filter-agents" on agents select', () => {
-    render(<FilterBar filters={DEFAULT_FILTERS} onFiltersChange={() => {}} />)
-    expect(screen.getByTestId('filter-agents')).toBeInTheDocument()
-  })
-
-  it('has data-testid="filter-teams" on teams select', () => {
-    render(<FilterBar filters={DEFAULT_FILTERS} onFiltersChange={() => {}} />)
-    expect(screen.getByTestId('filter-teams')).toBeInTheDocument()
+    expect(screen.getByTestId(testId)).toBeInTheDocument()
   })
 })
 
