@@ -14,10 +14,10 @@ default = []
 integration-test = []
 
 [dependencies]
-aa-core                     = { path = "../aa-core", version = "0.0.1-rc.5", features = ["serde"] }
-aa-security                 = { path = "../aa-security", version = "0.0.1-rc.5", features = ["serde"] }
-aa-proto                    = { path = "../aa-proto", version = "0.0.1-rc.5" }
-aa-storage-sqlite-buffer    = { path = "../aa-storage-sqlite-buffer", version = "0.0.1-rc.5" }
+aa-core                     = { path = "../aa-core", version = "0.0.1-rc.6", features = ["serde"] }
+aa-security                 = { path = "../aa-security", version = "0.0.1-rc.6", features = ["serde"] }
+aa-proto                    = { path = "../aa-proto", version = "0.0.1-rc.6" }
+aa-storage-sqlite-buffer    = { path = "../aa-storage-sqlite-buffer", version = "0.0.1-rc.6" }
 async-nats                  = { workspace = true }
 async-trait                 = { workspace = true }
 axum                        = { workspace = true }
@@ -48,7 +48,7 @@ tracing-subscriber          = { workspace = true, features = ["json", "env-filte
 which                       = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-rc.5" }
+aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-rc.6" }
 
 # Peer-credential (geteuid) check on the IPC socket — all Unix targets
 # (AAASM-3579). Backed by getpeereid/SO_PEERCRED via tokio's peer_cred.
@@ -58,7 +58,7 @@ libc = { workspace = true }
 # Linux-only dev dep: the AAASM-3128 regression test constructs a
 # `TlsCaptureEvent` to prove the DEBUG log never emits its plaintext payload.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-rc.5", features = ["std"] }
+aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-rc.6", features = ["std"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

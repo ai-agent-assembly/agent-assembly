@@ -5,6 +5,56 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.1-rc.6] — 2026-07-16 (pre-release)
+
+> **Not for production use.** Sixth **release candidate** in the v0.0.1 series
+> (patch on the `rc` channel). A **test-quality + tooling-hardening** cut:
+> dashboard test/quality fixes clearing the outstanding SonarCloud findings,
+> a `DOCS_RS` guard so the eBPF crate builds on docs.rs, a handful of
+> correctness/authz fixes in the API and CLI surface, and release-process /
+> CI-docs improvements. No API, ABI, or wire-protocol stability commitment at
+> `0.x.y`; `protocol/v1` unchanged.
+
+### Added
+
+- **`/health` alias endpoint** (`aa-api`) — a `/health` route returning the same
+  health JSON as the existing health endpoint, for probes that expect that path.
+
+### Fixed
+
+- **Tenant ownership enforced in `register_op`** (`aa-api`) — the op-registration
+  path now rejects cross-tenant registration instead of trusting the request's
+  tenant, closing a cross-tenant authorization gap (regression test added).
+- **`OpsRegistry::register` preserves an existing op** (`aa-gateway`) — registering
+  a name that already exists no longer clobbers the prior op.
+- **`aa-cli` sends the `Authorization` header on audit/logs requests** — the audit
+  and logs subcommands now attach the auth header so they work against an
+  authenticated gateway.
+- **`aa-ebpf` skips its probe subprocess build under `DOCS_RS`** (AAASM-4715) —
+  the read-only docs.rs sandbox cannot run the probe build step, so it is skipped
+  when `DOCS_RS` is set, unbreaking the docs.rs build.
+- **Dashboard test-quality / SonarCloud fixes** (AAASM-4694) — parameterized the
+  `ApprovalAnalyticsPanel`, `FilterBar`, and `FleetHealthPanel` tests (S5976),
+  keyed heatmap cells by date rather than index (S6479), named a `useState` setter
+  symmetrically (S6754), switched base64url decoding to `replaceAll` (S7781), and
+  used `Set.has` for JWT scope validation (S7776).
+- **Docs link fixes** — repointed the README architecture/CLI/dashboard links and
+  fixed dead introduction/architecture `README.html` links after the docs reorg;
+  corrected the `McpDecision::Redact` doc to match the proxy-scanner redaction.
+
+### Changed
+
+- **Release-process & CI-docs improvements** (AAASM-4670 / 4671 / 4674 / 4679 /
+  4724) — unified branch naming onto the 3-part `<release-or-phase>/<ticket>/<short_summary>`
+  scheme, added a DCO sign-off checkbox to the PR template and a no-ticket
+  community contribution path, added an internal README doc-link check in CI,
+  reminded `release-tag-cut` to advance the Jira Fix Version ladder, and extended
+  `release-docs-sync` to cover the README maturity/version string.
+- Dependency bumps: `clap`, `which`, `regex`, `redis`, `toml`,
+  `SonarSource/sonarqube-scan-action`, and `actions/setup-node`.
+- Workspace version bumped `0.0.1-rc.5` → `0.0.1-rc.6` (all crates inherit via
+  `version.workspace = true`; `Cargo.lock` + `sonar.projectVersion` realigned).
+
 ## [0.0.1-rc.5] — 2026-07-14 (pre-release)
 
 > **Not for production use.** Fifth **release candidate** in the v0.0.1 series

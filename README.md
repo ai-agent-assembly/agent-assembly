@@ -27,7 +27,7 @@ The alternate host `https://tool.agent-assembly.dev` serves the same script.
 
 ```sh
 # Pin a specific version
-AASM_VERSION=v0.0.1-rc.3 curl -sSf https://agent-assembly.com/install.sh | sh
+AASM_VERSION=v0.0.1-rc.6 curl -sSf https://agent-assembly.com/install.sh | sh
 
 # Custom install directory
 AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh | sh
@@ -191,17 +191,17 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 
 ## Project Status
 
-🚧 **Release candidate — `v0.0.1-rc` series** _(status as of 2026-07-15)_. The
+🚧 **Release candidate — `v0.0.1-rc` series** _(status as of 2026-07-16)_. The
 public API and wire protocol are **not** stable; do not use in production.
 
 Releases are published as GitHub pre-releases — latest
-[`v0.0.1-rc.5`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-rc.5)
-(2026-07-15). The coordinated release tag also publishes the CLI, crates, SDK
+[`v0.0.1-rc.6`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-rc.6)
+(2026-07-16). The coordinated release tag also publishes the CLI, crates, SDK
 packages, and container image:
 
 | Channel | Status |
 |---|---|
-| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.9`, `v0.0.1-beta.1`, `beta.2`, `beta.4`, `v0.0.1-rc.1` … `rc.5`) |
+| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.9`, `v0.0.1-beta.1`, `beta.2`, `beta.4`, `v0.0.1-rc.1` … `rc.6`) |
 | crates.io | ✅ Workspace crates published at the pre-release version |
 | Homebrew tap | ✅ `aasm` formula published for tagged releases |
 | PyPI / npm | ✅ SDK pre-releases published from the release tag |

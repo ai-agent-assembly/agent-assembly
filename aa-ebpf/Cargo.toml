@@ -30,8 +30,8 @@ default = []
 integration-test = []
 
 [dependencies]
-aa-core        = { path = "../aa-core", version = "0.0.1-rc.5" }
-aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-rc.5", features = ["std"] }
+aa-core        = { path = "../aa-core", version = "0.0.1-rc.6" }
+aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-rc.6", features = ["std"] }
 anyhow         = { workspace = true }
 # AAASM-3918: umask tightening + geteuid for the loaderd control-socket hardening
 # (umask-tightened bind, peer-credential UID check). Cross-platform crate.
