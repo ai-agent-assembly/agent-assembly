@@ -77,7 +77,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let release_dir = target_dir.join("bpfel-unknown-none/release");
         let binaries = ["aa-file-io", "aa-exec-probes", "aa-tls-probes", "aa-syscall-guard"];
 
-        let build_ok = if let Some(dir) = probes_dir.as_ref() {
+        // docs.rs's sandbox mounts everything except OUT_DIR/CARGO_TARGET_DIR
+        // read-only, but `current_dir(dir)` below points at the probes'
+        // *source* directory — cargo writing there (e.g. Cargo.lock) hard-fails
+        // the whole build.rs with a raw io::Error instead of falling through to
+        // the stub path. docs.rs sets DOCS_RS=1 for exactly this situation:
+        // skip the subprocess entirely and go straight to stubs (AAASM-4715).
+        let build_ok = if env::var_os("DOCS_RS").is_some() {
+            false
+        } else if let Some(dir) = probes_dir.as_ref() {
             // Run `cargo build --release` inside the probes workspace.
             // aa-ebpf-probes/.cargo/config.toml sets:
             //   target      = "bpfel-unknown-none"
