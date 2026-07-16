@@ -60,7 +60,7 @@ tokio-util = { workspace = true }
 # AAASM-4447: serve the gRPC AgentLifecycleService on loopback :50051 in local
 # mode so SDK agent registration reaches the same process the dashboard reads.
 tonic = { workspace = true }
-ulid = "1"
+ulid = "3"
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
