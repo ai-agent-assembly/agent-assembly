@@ -4,7 +4,7 @@ import { parseScopesFromJwt } from './jwtScopes'
 import { clearToken, getToken, setToken } from './tokenStorage'
 
 export function AuthProvider({ children }: Readonly<{ children: React.ReactNode }>) {
-  const [token, setTokenState] = useState<string | null>(
+  const [tokenState, setTokenState] = useState<string | null>(
     () => getToken(),
   )
   // Seed from the persisted token's JWT claim so a reload keeps reflecting the
@@ -40,8 +40,8 @@ export function AuthProvider({ children }: Readonly<{ children: React.ReactNode 
   }, [])
 
   const value = useMemo(
-    () => ({ token, scopes, login, logout }),
-    [token, scopes, login, logout],
+    () => ({ token: tokenState, scopes, login, logout }),
+    [tokenState, scopes, login, logout],
   )
 
   return (

@@ -1,6 +1,6 @@
 import type { Scope } from './AuthContext'
 
-const VALID_SCOPES: readonly Scope[] = ['read', 'write', 'admin']
+const VALID_SCOPES: ReadonlySet<Scope> = new Set(['read', 'write', 'admin'])
 
 /**
  * Extract the `scope` claim from an unverified JWT payload.
@@ -19,7 +19,7 @@ export function parseScopesFromJwt(token: string | null): Scope[] {
   try {
     const payload = JSON.parse(base64UrlDecode(parts[1])) as { scope?: unknown }
     if (!Array.isArray(payload.scope)) return []
-    return payload.scope.filter((s): s is Scope => VALID_SCOPES.includes(s as Scope))
+    return payload.scope.filter((s): s is Scope => VALID_SCOPES.has(s as Scope))
   } catch {
     return []
   }
@@ -53,7 +53,7 @@ export function getSubject(token: string | null): string | null {
 
 /** Decode a base64url segment (JWT parts are unpadded base64url). */
 function base64UrlDecode(segment: string): string {
-  const base64 = segment.replace(/-/g, '+').replace(/_/g, '/')
+  const base64 = segment.replaceAll('-', '+').replaceAll('_', '/')
   const pad = base64.length % 4 === 0 ? '' : '='.repeat(4 - (base64.length % 4))
   return atob(base64 + pad)
 }

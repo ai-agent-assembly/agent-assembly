@@ -102,30 +102,16 @@ describe('FleetHealthPanel', () => {
     expect(screen.getByText('91')).toBeInTheDocument()
   })
 
-  it('badge for score >= 90 has green class', async () => {
+  it.each([
+    { label: 'score >= 90 has green class', rowId: 'agent-1', variant: 'green', score: '97' },
+    { label: 'score 70-89 has amber class', rowId: 'agent-2', variant: 'amber', score: '75' },
+    { label: 'score < 70 has red class', rowId: 'agent-3', variant: 'red', score: '58' },
+  ])('badge for $label', async ({ rowId, variant, score }) => {
     mockFetch(FOUR_AGENTS)
     render(<FleetHealthPanel />, { wrapper: Wrapper })
-    const row = await screen.findByTestId('fleet-health-row-agent-1')
-    const badge = row.querySelector('.fleet-health-panel__badge--green')
+    const row = await screen.findByTestId(`fleet-health-row-${rowId}`)
+    const badge = row.querySelector(`.fleet-health-panel__badge--${variant}`)
     expect(badge).not.toBeNull()
-    expect(badge).toHaveTextContent('97')
-  })
-
-  it('badge for score 70-89 has amber class', async () => {
-    mockFetch(FOUR_AGENTS)
-    render(<FleetHealthPanel />, { wrapper: Wrapper })
-    const row = await screen.findByTestId('fleet-health-row-agent-2')
-    const badge = row.querySelector('.fleet-health-panel__badge--amber')
-    expect(badge).not.toBeNull()
-    expect(badge).toHaveTextContent('75')
-  })
-
-  it('badge for score < 70 has red class', async () => {
-    mockFetch(FOUR_AGENTS)
-    render(<FleetHealthPanel />, { wrapper: Wrapper })
-    const row = await screen.findByTestId('fleet-health-row-agent-3')
-    const badge = row.querySelector('.fleet-health-panel__badge--red')
-    expect(badge).not.toBeNull()
-    expect(badge).toHaveTextContent('58')
+    expect(badge).toHaveTextContent(score)
   })
 })
