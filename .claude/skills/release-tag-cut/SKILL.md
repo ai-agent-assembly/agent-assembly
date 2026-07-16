@@ -174,6 +174,23 @@ After step 6, both MUST hold (full detail in
 Surface both confirmations, then point the operator at
 `/release-validate-channels v<X>` for the downstream channel matrix.
 
+## Reminder — advance the Jira Fix Version ladder
+
+Cutting `v<X>` ships everything targeted at that version, so the **next** dev work
+needs a target. The release skills do **not** manage Jira versions, so after the cut
+remind the operator to, in Jira (project AAASM):
+
+1. Mark the just-cut version **released** (`released:true` + release date).
+2. **Create the next** Fix Version — for the `agent-assembly` **core** train *and*
+   each affected repo/component train (`python-sdk` / `node-sdk` / `go-sdk`) that
+   participates in this coordinated release — so their tickets have a target.
+
+Use `ticket-authoring`'s `references/fix-versions.md` for the exact REST
+create/release calls. This is a **manual reminder**: the Atlassian MCP has no
+version tool and version writes need a manage-versions token, so the operator (or a
+credentialed release job) does it. Automating this in `release.yml` is a separate
+follow-up, blocked on a CI manage-versions token.
+
 ## What's auto-handled (do NOT manually run)
 
 Once the tag is pushed, `release.yml` auto-runs GitHub Release creation,
@@ -190,6 +207,9 @@ for the full list and rationale.
 - Re-trigger failed `release-*.yml` workflows (RUNBOOK section 6).
 - Cut an `agent-assembly` tag for an SDK-only hotfix (RUNBOOK section 7).
 - Touch repos other than `ai-agent-assembly/agent-assembly`.
+- Create or release Jira Fix Versions — it **reminds** the operator (see
+  "advance the Jira Fix Version ladder"); the operator (or a credentialed release
+  job) creates/releases them. The Atlassian MCP has no version tool.
 
 ## Detailed references
 

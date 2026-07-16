@@ -149,6 +149,12 @@ Surface both confirmations to the operator, then suggest:
 > matrix (GH Release, crates.io, Homebrew tap PR, ghcr.io images, npm,
 > PyPI) per `docs/release/RUNBOOK.md` sections 3–5.
 
+Then **advance the Jira Fix Version ladder** (SKILL.md → "advance the Jira Fix
+Version ladder"): mark the just-cut version released and create the next one for
+the `agent-assembly` core train and each affected SDK/component train, per
+`ticket-authoring`'s `references/fix-versions.md`. Reminder only — the operator
+(or a credentialed release job) creates the versions.
+
 ## What's expected when done
 
 When this skill exits cleanly, the operator should be able to confirm
