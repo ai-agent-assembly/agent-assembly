@@ -63,7 +63,7 @@ async-trait = { workspace = true }
 axum        = { workspace = true, features = ["ws"] }
 chrono      = { workspace = true, default-features = false, features = ["clock"] }
 chrono-tz   = { workspace = true }
-jsonschema  = "0.47"
+jsonschema  = "0.48"
 jsonwebtoken = { workspace = true }
 base64       = "0.22"
 bytes        = { workspace = true }
