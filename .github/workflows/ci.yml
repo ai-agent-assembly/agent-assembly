@@ -1340,7 +1340,7 @@ jobs:
       - name: SonarCloud scan (attempt 1)
         id: sonar-scan-attempt-1
         continue-on-error: true
-        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         with:
           args: -Dsonar.projectVersion=${{ steps.sonar-version.outputs.version }}
         env:
@@ -1355,7 +1355,7 @@ jobs:
         id: sonar-scan-attempt-2
         if: steps.sonar-scan-attempt-1.outcome == 'failure'
         continue-on-error: true
-        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         with:
           args: -Dsonar.projectVersion=${{ steps.sonar-version.outputs.version }}
         env:
@@ -1368,7 +1368,7 @@ jobs:
           sleep 30
       - name: SonarCloud scan (attempt 3 — final)
         if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
-        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         with:
           args: -Dsonar.projectVersion=${{ steps.sonar-version.outputs.version }}
         env:
