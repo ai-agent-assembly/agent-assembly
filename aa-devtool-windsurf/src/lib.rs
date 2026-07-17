@@ -24,7 +24,7 @@ use std::process::Command;
 
 use aa_devtool_contract::{
     AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDecision,
-    PolicyDocument,
+    PolicyDocument, PolicyRule,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -211,6 +211,40 @@ impl Default for WindsurfCascadeAdapter {
     }
 }
 
+/// Fold a single policy rule into the in-progress Windsurf admin settings.
+///
+/// Split out of `generate_managed_settings` so the four action-pattern cases
+/// (MCP server deny, blanket terminal deny, terminal-command allowlist, team
+/// policy-sync registry URL) read as a flat classification rather than a deeply
+/// nested loop body. `terminal_deny_all`/`terminal_allowlist` are accumulated
+/// here and reconciled by the caller after the loop.
+fn apply_policy_rule(
+    rule: &PolicyRule,
+    settings: &mut WindsurfAdminSettings,
+    terminal_deny_all: &mut bool,
+    terminal_allowlist: &mut Vec<String>,
+) {
+    let pat = rule.action_pattern.as_str();
+
+    if let Some(server) = pat.strip_prefix("mcp_tool:") {
+        if rule.decision == PolicyDecision::Deny {
+            // Strip trailing ":deny" if present (defensive).
+            let server_name = server.strip_suffix(":deny").unwrap_or(server);
+            settings.mcp.disabled_servers.push(server_name.to_string());
+        }
+    } else if pat == "terminal_exec" {
+        if rule.decision == PolicyDecision::Deny {
+            *terminal_deny_all = true;
+        }
+    } else if let Some(cmd) = pat.strip_prefix("terminal_exec:") {
+        if rule.decision == PolicyDecision::Allow {
+            terminal_allowlist.push(cmd.to_string());
+        }
+    } else if pat == "team_policy_sync" && rule.decision == PolicyDecision::Allow {
+        settings.policy.registry_url = std::env::var("AA_GATEWAY_URL").ok();
+    }
+}
+
 #[async_trait]
 impl DevToolAdapter for WindsurfCascadeAdapter {
     fn detect(&self) -> Option<DevToolInfo> {
@@ -242,25 +276,7 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
         let mut terminal_allowlist: Vec<String> = vec![];
 
         for rule in &policy.rules {
-            let pat = rule.action_pattern.as_str();
-
-            if let Some(server) = pat.strip_prefix("mcp_tool:") {
-                if rule.decision == PolicyDecision::Deny {
-                    // Strip trailing ":deny" if present (defensive).
-                    let server_name = server.strip_suffix(":deny").unwrap_or(server);
-                    settings.mcp.disabled_servers.push(server_name.to_string());
-                }
-            } else if pat == "terminal_exec" {
-                if rule.decision == PolicyDecision::Deny {
-                    terminal_deny_all = true;
-                }
-            } else if let Some(cmd) = pat.strip_prefix("terminal_exec:") {
-                if rule.decision == PolicyDecision::Allow {
-                    terminal_allowlist.push(cmd.to_string());
-                }
-            } else if pat == "team_policy_sync" && rule.decision == PolicyDecision::Allow {
-                settings.policy.registry_url = std::env::var("AA_GATEWAY_URL").ok();
-            }
+            apply_policy_rule(rule, &mut settings, &mut terminal_deny_all, &mut terminal_allowlist);
         }
 
         settings.terminal.command_allowlist = if terminal_deny_all { vec![] } else { terminal_allowlist };

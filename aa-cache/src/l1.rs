@@ -134,6 +134,53 @@ impl<S: CacheSource> L1Cache<S> {
         }
     }
 
+    /// Perform the single leader load for `key`: load from the wrapped store,
+    /// commit the value under the key's shard lock (unless an `invalidate` raced
+    /// the load), bound the cache size, then wake every waiting follower.
+    ///
+    /// Split out of [`get`](Self::get) so the leader's guarded check-and-insert
+    /// reads as one unit; the epoch snapshot/re-check and shard-guard scoping are
+    /// load-bearing (AAASM-3985 / AAASM-3997) — see the inline notes.
+    async fn load_as_leader(&self, key: &S::Key) -> Result<S::Value> {
+        // Snapshot the invalidation epoch before the load so a push
+        // `invalidate` that lands mid-load is detected below.
+        let epoch_before = self.epoch.load(Ordering::Acquire);
+        let result = self.inner.load(key).await;
+        let mut inserted = false;
+        if let Ok(ref value) = result {
+            // Commit under the key's shard lock, and only if no invalidation
+            // raced the load. Holding the entry guard serializes this
+            // check-and-insert against `invalidate`'s `remove`, so a concurrent
+            // eviction is never lost: either we observe the bumped epoch and skip
+            // the insert, or the remove runs after us and drops the entry we just
+            // wrote. The guard is confined to this inner block so it is dropped
+            // before `enforce_capacity` touches the map.
+            {
+                let entry = self.entries.entry(key.clone());
+                if self.epoch.load(Ordering::Acquire) == epoch_before {
+                    match entry {
+                        Entry::Occupied(mut occupied) => {
+                            occupied.insert(CachedValue::new(value.clone()));
+                        }
+                        Entry::Vacant(vacant) => {
+                            vacant.insert(CachedValue::new(value.clone()));
+                        }
+                    }
+                    inserted = true;
+                }
+            }
+        }
+        // Bound the cache size once the shard guard is released (AAASM-3997).
+        // Only meaningful after a real insert.
+        if inserted {
+            self.enforce_capacity();
+        }
+        if let Some((_, notify)) = self.inflight.remove(key) {
+            notify.notify_waiters();
+        }
+        result
+    }
+
     /// Return a fresh (non-expired) cached value for `key`, if present.
     fn fresh(&self, key: &S::Key) -> Option<S::Value> {
         let entry = self.entries.get(key)?;
@@ -171,46 +218,7 @@ impl<S: CacheSource> L1Cache<S> {
 
             match follower {
                 // Leader: load once, populate, then wake every waiter.
-                None => {
-                    // Snapshot the invalidation epoch before the load so a push
-                    // `invalidate` that lands mid-load is detected below.
-                    let epoch_before = self.epoch.load(Ordering::Acquire);
-                    let result = self.inner.load(&key).await;
-                    let mut inserted = false;
-                    if let Ok(ref value) = result {
-                        // Commit under the key's shard lock, and only if no
-                        // invalidation raced the load. Holding the entry guard
-                        // serializes this check-and-insert against `invalidate`'s
-                        // `remove`, so a concurrent eviction is never lost: either
-                        // we observe the bumped epoch and skip the insert, or the
-                        // remove runs after us and drops the entry we just wrote.
-                        // The guard is confined to this inner block so it is
-                        // dropped before `enforce_capacity` touches the map.
-                        {
-                            let entry = self.entries.entry(key.clone());
-                            if self.epoch.load(Ordering::Acquire) == epoch_before {
-                                match entry {
-                                    Entry::Occupied(mut occupied) => {
-                                        occupied.insert(CachedValue::new(value.clone()));
-                                    }
-                                    Entry::Vacant(vacant) => {
-                                        vacant.insert(CachedValue::new(value.clone()));
-                                    }
-                                }
-                                inserted = true;
-                            }
-                        }
-                    }
-                    // Bound the cache size once the shard guard is released
-                    // (AAASM-3997). Only meaningful after a real insert.
-                    if inserted {
-                        self.enforce_capacity();
-                    }
-                    if let Some((_, notify)) = self.inflight.remove(&key) {
-                        notify.notify_waiters();
-                    }
-                    return result;
-                }
+                None => return self.load_as_leader(&key).await,
                 // Follower: wait for the leader, then retry the loop.
                 Some(notify) => {
                     let waiter = notify.notified();
