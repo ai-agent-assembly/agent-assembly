@@ -284,36 +284,7 @@ impl SandboxRuntime {
             Module::from_binary(&self.engine, wasm_bytes).map_err(|e| SandboxError::InvalidWasm(e.to_string()))?;
 
         let mut builder = WasiCtx::builder();
-        for preopen in &self.config.preopened_dirs {
-            // Reject non-regular-file preopen targets (AAASM-4015). The
-            // wall-clock watchdog interrupts the guest by advancing the engine
-            // epoch, but it cannot preempt a guest blocked *inside* a WASI host
-            // call — e.g. a `fd_read` on a FIFO/device/socket that never yields.
-            // Validating that every preopen target is a directory or regular
-            // file (following symlinks) forbids those blocking targets up front,
-            // which is a lower-risk fix than abandoning an in-flight host call on
-            // a worker thread. `metadata` follows symlinks, so a symlink to a
-            // device resolves to the device and is rejected.
-            let metadata = std::fs::metadata(&preopen.host_path)
-                .map_err(|e| SandboxError::Wasmtime(format!("preopen {:?}: {e}", preopen.host_path)))?;
-            let file_type = metadata.file_type();
-            if !(file_type.is_dir() || file_type.is_file()) {
-                return Err(SandboxError::Wasmtime(format!(
-                    "preopen target {:?} is not a regular file or directory (FIFOs, devices, and sockets are forbidden)",
-                    preopen.host_path
-                )));
-            }
-            // Least-privilege grant: read-only unless the policy explicitly
-            // opted this mount into read-write. Avoids the DirPerms::all() /
-            // FilePerms::all() over-grant. (AAASM-3618.)
-            let (dir_perms, file_perms) = match preopen.access {
-                PreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
-                PreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
-            };
-            builder
-                .preopened_dir(&preopen.host_path, &preopen.guest_path, dir_perms, file_perms)
-                .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
-        }
+        self.add_preopened_dirs(&mut builder)?;
         let wasi = builder.build_p1();
         let limiter = StoreLimits {
             max_bytes: (self.config.limits.memory_pages as usize) * 65_536,
@@ -400,26 +371,67 @@ impl SandboxRuntime {
 
         match call_result {
             Ok(()) => Ok(SandboxOutput { exit_code: 0 }),
-            Err(trap) => {
-                if let Some(I32Exit(code)) = trap.downcast_ref::<I32Exit>() {
-                    if *code == 0 {
-                        Ok(SandboxOutput { exit_code: 0 })
-                    } else {
-                        Err(SandboxError::FilesystemBlocked { errno: *code as u32 })
-                    }
-                } else if matches!(trap.downcast_ref::<Trap>(), Some(Trap::OutOfFuel)) {
-                    Err(SandboxError::CpuTimeout)
-                } else if matches!(trap.downcast_ref::<Trap>(), Some(Trap::Interrupt)) {
-                    Err(SandboxError::WallClockTimeout)
-                } else if trap.downcast_ref::<MemoryExhaustedMarker>().is_some() {
-                    Err(SandboxError::MemoryExhausted)
-                } else if trap.downcast_ref::<HostFnRateLimitMarker>().is_some() {
-                    Err(SandboxError::HostFnRateLimited)
-                } else {
-                    Err(SandboxError::Wasmtime(trap.to_string()))
-                }
-            }
+            Err(trap) => classify_trap(&trap),
         }
+    }
+
+    /// Validate and register every configured preopen directory on `builder`.
+    ///
+    /// Rejects non-regular-file preopen targets (AAASM-4015): the wall-clock
+    /// watchdog interrupts the guest by advancing the engine epoch, but it cannot
+    /// preempt a guest blocked *inside* a WASI host call — e.g. a `fd_read` on a
+    /// FIFO/device/socket that never yields. Validating that every preopen target
+    /// is a directory or regular file (following symlinks) forbids those blocking
+    /// targets up front, which is a lower-risk fix than abandoning an in-flight
+    /// host call on a worker thread. `metadata` follows symlinks, so a symlink to
+    /// a device resolves to the device and is rejected.
+    fn add_preopened_dirs(&self, builder: &mut wasmtime_wasi::WasiCtxBuilder) -> Result<(), SandboxError> {
+        for preopen in &self.config.preopened_dirs {
+            let metadata = std::fs::metadata(&preopen.host_path)
+                .map_err(|e| SandboxError::Wasmtime(format!("preopen {:?}: {e}", preopen.host_path)))?;
+            let file_type = metadata.file_type();
+            if !(file_type.is_dir() || file_type.is_file()) {
+                return Err(SandboxError::Wasmtime(format!(
+                    "preopen target {:?} is not a regular file or directory (FIFOs, devices, and sockets are forbidden)",
+                    preopen.host_path
+                )));
+            }
+            // Least-privilege grant: read-only unless the policy explicitly
+            // opted this mount into read-write. Avoids the DirPerms::all() /
+            // FilePerms::all() over-grant. (AAASM-3618.)
+            let (dir_perms, file_perms) = match preopen.access {
+                PreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
+                PreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
+            };
+            builder
+                .preopened_dir(&preopen.host_path, &preopen.guest_path, dir_perms, file_perms)
+                .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+/// Map a guest trap (or a host-side marker error) onto the matching
+/// [`SandboxError`]. Split out of `run_tool` so the downcast ladder that
+/// narrows `I32Exit` / `OutOfFuel` / `Interrupt` / the memory- and
+/// host-fn-rate-limit markers reads as one classification unit.
+fn classify_trap(trap: &wasmtime::Error) -> Result<SandboxOutput, SandboxError> {
+    if let Some(I32Exit(code)) = trap.downcast_ref::<I32Exit>() {
+        if *code == 0 {
+            Ok(SandboxOutput { exit_code: 0 })
+        } else {
+            Err(SandboxError::FilesystemBlocked { errno: *code as u32 })
+        }
+    } else if matches!(trap.downcast_ref::<Trap>(), Some(Trap::OutOfFuel)) {
+        Err(SandboxError::CpuTimeout)
+    } else if matches!(trap.downcast_ref::<Trap>(), Some(Trap::Interrupt)) {
+        Err(SandboxError::WallClockTimeout)
+    } else if trap.downcast_ref::<MemoryExhaustedMarker>().is_some() {
+        Err(SandboxError::MemoryExhausted)
+    } else if trap.downcast_ref::<HostFnRateLimitMarker>().is_some() {
+        Err(SandboxError::HostFnRateLimited)
+    } else {
+        Err(SandboxError::Wasmtime(trap.to_string()))
     }
 }
 

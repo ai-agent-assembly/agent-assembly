@@ -835,6 +835,47 @@ fn is_hex_group_separator(b: u8) -> bool {
 /// carries at least [`HEX_RUN_MIN_LEN`] hex digits. Keying the bar on the same
 /// 64-digit threshold as the contiguous rule keeps benign grouped hex — MAC
 /// addresses (12 digits) and dash-delimited UUIDs (32 digits) — below the bar.
+/// Result of scanning one maximal `[0-9a-fA-F:-]` run (see [`scan_hex_run`]).
+struct HexRun {
+    /// Byte offset just past the run — where the outer scan resumes.
+    end: usize,
+    /// Number of hex digits in the run (separators excluded).
+    hex_count: usize,
+    /// Whether the run contained at least one `:`/`-` separator.
+    has_separator: bool,
+    /// Offset of the first hex digit, if any (the flagged span's start).
+    first_hex: Option<usize>,
+    /// Offset of the last hex digit seen (the flagged span's inclusive end).
+    last_hex: usize,
+}
+
+/// Scan the maximal `[0-9a-fA-F:-]` run beginning at `start`, tallying the hex
+/// digits and separators so the caller can decide whether it clears the gate.
+fn scan_hex_run(bytes: &[u8], start: usize) -> HexRun {
+    let mut i = start;
+    let mut hex_count = 0usize;
+    let mut has_separator = false;
+    let mut first_hex: Option<usize> = None;
+    let mut last_hex = start;
+    while i < bytes.len() && (bytes[i].is_ascii_hexdigit() || is_hex_group_separator(bytes[i])) {
+        if bytes[i].is_ascii_hexdigit() {
+            hex_count += 1;
+            first_hex.get_or_insert(i);
+            last_hex = i;
+        } else {
+            has_separator = true;
+        }
+        i += 1;
+    }
+    HexRun {
+        end: i,
+        hex_count,
+        has_separator,
+        first_hex,
+        last_hex,
+    }
+}
+
 fn scan_separated_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -843,27 +884,14 @@ fn scan_separated_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
             i += 1;
             continue;
         }
-        let start = i;
-        let mut hex_count = 0usize;
-        let mut has_separator = false;
-        let mut first_hex: Option<usize> = None;
-        let mut last_hex = start;
-        while i < bytes.len() && (bytes[i].is_ascii_hexdigit() || is_hex_group_separator(bytes[i])) {
-            if bytes[i].is_ascii_hexdigit() {
-                hex_count += 1;
-                first_hex.get_or_insert(i);
-                last_hex = i;
-            } else {
-                has_separator = true;
-            }
-            i += 1;
-        }
-        if has_separator && hex_count >= HEX_RUN_MIN_LEN {
-            if let Some(span_start) = first_hex {
+        let run = scan_hex_run(bytes, i);
+        i = run.end;
+        if run.has_separator && run.hex_count >= HEX_RUN_MIN_LEN {
+            if let Some(span_start) = run.first_hex {
                 findings.push(CredentialFinding::new(
                     CredentialKind::GenericHighEntropy,
                     span_start,
-                    last_hex + 1,
+                    run.last_hex + 1,
                 ));
             }
         }

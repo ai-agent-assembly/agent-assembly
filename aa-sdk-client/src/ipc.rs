@@ -175,19 +175,7 @@ async fn ipc_loop(socket_path: PathBuf, agent_id: String, sdk_version: String, m
                 }
             }
             IpcCommand::QueryPolicy { request, resp } => {
-                // Queue the response sender BEFORE writing, so the reader can
-                // never observe the response before the sender is registered.
-                if let Ok(mut q) = pending.lock() {
-                    q.push_back(resp);
-                }
-                if let Err(e) = codec::write_policy_query(&mut writer, &request).await {
-                    tracing::error!(error = %e, "failed to send policy query");
-                    // The query never went out — drop the sender we just queued
-                    // so the caller unblocks with QueryFailed instead of hanging.
-                    if let Ok(mut q) = pending.lock() {
-                        q.pop_back();
-                    }
-                }
+                dispatch_policy_query(&mut writer, &pending, &request, resp).await;
             }
             IpcCommand::Shutdown => {
                 tracing::debug!("IPC shutdown requested");
@@ -197,6 +185,29 @@ async fn ipc_loop(socket_path: PathBuf, agent_id: String, sdk_version: String, m
     }
 
     reader_task.abort();
+}
+
+/// Register `resp` as a pending waiter and ship the policy query to the runtime.
+///
+/// The sender is queued **before** the write so the reader task can never
+/// observe the runtime's response before the waiter is registered. If the write
+/// fails the query never went out, so the just-queued sender is popped back off
+/// — the caller then unblocks with `QueryFailed` instead of hanging.
+async fn dispatch_policy_query(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    pending: &PendingQueries,
+    request: &CheckActionRequest,
+    resp: blocking_mpsc::Sender<CheckActionResponse>,
+) {
+    if let Ok(mut q) = pending.lock() {
+        q.push_back(resp);
+    }
+    if let Err(e) = codec::write_policy_query(writer, request).await {
+        tracing::error!(error = %e, "failed to send policy query");
+        if let Ok(mut q) = pending.lock() {
+            q.pop_back();
+        }
+    }
 }
 
 /// Complete the SDK side of the runtime session handshake (AAASM-3587).
