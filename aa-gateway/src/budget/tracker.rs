@@ -441,7 +441,15 @@ impl BudgetTracker {
         input_tokens: u64,
         output_tokens: u64,
     ) -> BudgetStatus {
-        let cost = self.pricing.cost_usd(provider, model, input_tokens, output_tokens);
+        // AAASM-4744 — clamp a non-positive computed cost to zero. A custom
+        // pricing override (JSON table) can carry a negative rate; the resulting
+        // cost would *decrement* accrued spend and reopen budget headroom, the
+        // same hazard `record_raw_spend` already clamps. Clamp here so both
+        // accrual entry points are fail-safe before folding into `record_cost`.
+        let cost = self
+            .pricing
+            .cost_usd(provider, model, input_tokens, output_tokens)
+            .max(Decimal::ZERO);
         self.record_cost(agent_id, team_id, org_id, cost)
     }
 
@@ -1115,6 +1123,36 @@ mod tests {
         let history = t.agent_spend_history(&aid, 1);
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].1, Decimal::new(500, 2), "should accumulate same-day spend");
+    }
+
+    #[test]
+    fn record_usage_clamps_negative_custom_rate_to_zero() {
+        // AAASM-4744: a custom pricing override with a negative rate must not
+        // decrement accrued spend. record_usage clamps the computed cost to
+        // zero, so today's spend stays at zero rather than going negative.
+        let json = r#"[
+          { "provider": "open_ai", "model": "gpt4o",
+            "input_per_1k_usd": "-0.005", "output_per_1k_usd": "-0.015" }
+        ]"#;
+        let pricing = PricingTable::load_from_json_str(json).unwrap();
+        let t = BudgetTracker::new(pricing, None, None, chrono_tz::UTC);
+        let aid = agent(0xAB);
+        t.record_usage(
+            aid,
+            None,
+            None,
+            crate::budget::types::Provider::OpenAi,
+            crate::budget::types::Model::Gpt4o,
+            10_000,
+            10_000,
+        );
+        let history = t.agent_spend_history(&aid, 1);
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].1,
+            Decimal::ZERO,
+            "a negative custom rate must clamp to zero, never decrement spend"
+        );
     }
 
     #[test]

@@ -60,7 +60,11 @@ impl NotificationConnector for PagerDutyConnector {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ConnectorError::Transport(e.to_string()))?;
+            // AAASM-4744: strip the request URL from the surfaced error. A
+            // reqwest error's Display embeds the URL; `without_url` keeps it out
+            // of the 502 body and logs, consistent with the caller-controlled
+            // connectors.
+            .map_err(|e| ConnectorError::Transport(e.without_url().to_string()))?;
         let status = resp.status().as_u16();
         let resp_body = resp.text().await.unwrap_or_default();
         let resp_body = truncate_body(resp_body);

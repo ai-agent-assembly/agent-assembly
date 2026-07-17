@@ -65,6 +65,16 @@ pub fn build_app_with_spa(state: AppState, spa_dist: Option<&std::path::Path>) -
             // to the SPA catch-all below and returns HTML instead of the health
             // JSON. Registered before the `.merge`d SPA fallback so it wins.
             .route("/health", get(routes::health::health))
+            // `/livez` + `/readyz` (AAASM-4744): Kubernetes-style liveness /
+            // readiness probe paths. Without explicit routes they fall through
+            // to the SPA catch-all below and return `200 index.html`, so an
+            // orchestrator reads the app as healthy regardless of subsystem
+            // state. Alias them to the same health handler (which returns 503
+            // when any subsystem is degraded) so a probe gets a correct status,
+            // not the SPA shell. Registered before the merged SPA fallback so
+            // they win.
+            .route("/livez", get(routes::health::health))
+            .route("/readyz", get(routes::health::health))
             .nest("/api/v1", routes::v1_router().fallback(routes::fallback_404))
             .merge(aa_gateway::dashboard_server::dashboard_router(dist))
             .with_state(()),

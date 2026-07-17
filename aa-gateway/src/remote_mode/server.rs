@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use aa_auth::config::AuthMode;
 use aa_core::config::RemoteModeConfig;
 use axum::{routing::get, Extension, Router};
 use axum_server::tls_rustls::RustlsConfig;
@@ -31,23 +32,49 @@ use crate::storage::{open_postgres_backend, PostgresConfig, StorageBackend};
 /// `HealthzState`'s `"storage"` label tracks the chosen backend so the
 /// minimal `/healthz` body still surfaces `"memory"` vs `"postgres"`
 /// without requiring a backend round-trip.
-pub fn router(storage: Option<Arc<dyn StorageBackend>>, database_url: Option<String>) -> Router {
+///
+/// AAASM-4744 — fail-closed admin-status guard. `/api/v1/admin/status`
+/// discloses backend detail (database host, sqlite path, row counts) and in
+/// BYPASS-DEFAULT mode answers with no credential. That is acceptable on
+/// loopback (the zero-config `aasm status` contract), but exposing it to an
+/// off-loopback caller with no auth is a disclosure gap. `listen_addr` is
+/// consulted so the route is **omitted** when the gateway is bound off-loopback
+/// in bypass mode; the operator is told to enable auth to expose it.
+pub fn router(
+    storage: Option<Arc<dyn StorageBackend>>,
+    database_url: Option<String>,
+    listen_addr: SocketAddr,
+) -> Router {
     let storage_label = if storage.is_some() { "postgres" } else { "memory" };
     let healthz_state = HealthzState::new("remote", storage_label);
     let mut app = Router::new()
         .route("/healthz", get(healthz))
         .layer(Extension(healthz_state));
-    if let Some(backend) = storage {
-        let admin_state = AdminStatusState::new("remote", backend, None, database_url);
-        app = app
-            .route("/api/v1/admin/status", get(admin_status))
-            .layer(Extension(admin_state));
-    }
     // AAASM-3908: layer the four `aa-auth` extensions so the `RequireAdmin`
     // guard on `/api/v1/admin/status` can resolve. BYPASS-DEFAULT — with no
     // auth env set this builds an `AuthMode::Off` config so a bare gateway keeps
     // answering `aasm status` with no credential (AAASM-1591).
-    AuthExtensions::from_env().apply(app)
+    let auth = AuthExtensions::from_env();
+    if let Some(backend) = storage {
+        // Fail-closed (AAASM-4744): in bypass mode the admin endpoint is only
+        // exposed on loopback. Bound off-loopback with no auth, it would leak
+        // backend detail to any reachable caller — refuse to mount it and point
+        // the operator at the auth opt-in instead.
+        let bypass = auth.config.mode == AuthMode::Off;
+        if bypass && !listen_addr.ip().is_loopback() {
+            tracing::warn!(
+                addr = %listen_addr,
+                "not exposing /api/v1/admin/status: bound off-loopback with auth disabled. \
+                 Set AA_GATEWAY_AUTH=on (with AA_JWT_SECRET) to enable the admin endpoint"
+            );
+        } else {
+            let admin_state = AdminStatusState::new("remote", backend, None, database_url);
+            app = app
+                .route("/api/v1/admin/status", get(admin_status))
+                .layer(Extension(admin_state));
+        }
+    }
+    auth.apply(app)
 }
 
 /// Print the operator-facing startup banner via `tracing::info!`.
@@ -157,7 +184,7 @@ pub async fn start_remote_with_handle(cfg: &RemoteModeConfig, handle: Handle<Soc
         None
     };
 
-    let app = router(storage, cfg.database_url.clone()).into_make_service();
+    let app = router(storage, cfg.database_url.clone(), cfg.listen_addr).into_make_service();
 
     if let Some(tls_cfg) = &cfg.tls {
         // Pre-flight cert + key (existence, readability, PEM parse, expiry).
@@ -194,5 +221,71 @@ pub async fn start_remote_with_handle(cfg: &RemoteModeConfig, handle: Handle<Soc
             .serve(app)
             .await
             .map_err(GatewayError::Serve)
+    }
+}
+
+/// AAASM-4744 — the fail-closed guard on `/api/v1/admin/status`: in bypass mode
+/// the endpoint is exposed on loopback (the zero-config `aasm status` contract)
+/// but withheld off-loopback so its backend detail can't leak to an
+/// unauthenticated remote caller.
+#[cfg(test)]
+mod admin_status_bind_guard_tests {
+    use super::*;
+    use crate::storage::{SqliteBackend, SqliteConfig};
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    /// Open a real SQLite-backed `StorageBackend` under a per-test tempdir.
+    async fn sqlite_backend() -> (tempfile::TempDir, Arc<dyn StorageBackend>) {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let backend = SqliteBackend::open(&SqliteConfig {
+            path: tmp.path().join("local.db"),
+        })
+        .await
+        .expect("open sqlite backend");
+        backend.migrate().await.expect("migrate");
+        (tmp, Arc::new(backend))
+    }
+
+    /// Ensure no auth opt-in leaks in from the ambient environment so the router
+    /// resolves to bypass (`AuthMode::Off`) — the posture under test.
+    fn clear_auth_env() {
+        std::env::remove_var("AA_GATEWAY_AUTH");
+        std::env::remove_var("AA_JWT_SECRET");
+    }
+
+    async fn admin_status_code(bind: &str) -> StatusCode {
+        let (_tmp, backend) = sqlite_backend().await;
+        let app = router(Some(backend), None, bind.parse().expect("listen_addr"));
+        app.oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/status")
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("oneshot")
+        .status()
+    }
+
+    #[tokio::test]
+    async fn bypass_on_loopback_exposes_admin_status() {
+        clear_auth_env();
+        assert_eq!(
+            admin_status_code("127.0.0.1:0").await,
+            StatusCode::OK,
+            "loopback bypass must keep /admin/status reachable (zero-config contract)"
+        );
+    }
+
+    #[tokio::test]
+    async fn bypass_off_loopback_withholds_admin_status() {
+        clear_auth_env();
+        assert_eq!(
+            admin_status_code("0.0.0.0:0").await,
+            StatusCode::NOT_FOUND,
+            "off-loopback bypass must not expose /admin/status without auth"
+        );
     }
 }

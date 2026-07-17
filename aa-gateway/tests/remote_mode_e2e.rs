@@ -51,7 +51,7 @@ fn build_test_app(store: AgentStore) -> Router {
     // No storage handle in this test — exercises the /healthz-only
     // remote_mode router path (AAASM-1908 added /api/v1/admin/status
     // only when a backend is wired).
-    aa_gateway::remote_mode::router(None, None).merge(agents)
+    aa_gateway::remote_mode::router(None, None, "127.0.0.1:0".parse().expect("listen_addr")).merge(agents)
 }
 
 /// AAASM-1577 AC #5/#6 — bind the merged production+placeholder router

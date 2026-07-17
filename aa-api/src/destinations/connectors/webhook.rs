@@ -55,7 +55,11 @@ impl NotificationConnector for WebhookConnector {
         let resp = builder
             .send()
             .await
-            .map_err(|e| ConnectorError::Transport(e.to_string()))?;
+            // AAASM-4744: strip the destination URL from the surfaced error. A
+            // reqwest error's Display embeds the request URL, which for a
+            // caller-controlled webhook can carry a query token; `without_url`
+            // drops it so the token never lands in the 502 body or logs.
+            .map_err(|e| ConnectorError::Transport(e.without_url().to_string()))?;
         let status = resp.status().as_u16();
         // AAASM-3789: do NOT capture or return the upstream response body. A
         // webhook test-fire must not reflect origin/internal response content

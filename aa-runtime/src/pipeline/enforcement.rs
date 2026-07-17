@@ -179,11 +179,26 @@ impl RuntimeScanner {
         let started = Instant::now();
         let mut outcome = EnforcementOutcome::default();
         strip_trust_markers(&mut event.inner.labels, &mut outcome);
+        self.scan_labels(&mut event.inner.labels, &mut outcome);
         if let Some(detail) = event.inner.detail.as_mut() {
             self.scan_detail(detail, &mut outcome);
         }
         emit_metrics(&outcome, started.elapsed());
         outcome
+    }
+
+    /// Scan and redact every surviving label *value* in place (AAASM-4744).
+    ///
+    /// `labels` is an SDK-supplied map, so a secret can ride in a label value
+    /// exactly as it can in a detail field. Trust-marker keys are already
+    /// stripped by [`strip_trust_markers`] before this runs; every remaining
+    /// value is passed through the same [`scan_string`](Self::scan_string) path
+    /// (size cap + credential scan + redaction) so a leaked secret is redacted,
+    /// not forwarded. Keys are identifiers and are left untouched.
+    fn scan_labels(&self, labels: &mut std::collections::HashMap<String, String>, outcome: &mut EnforcementOutcome) {
+        for value in labels.values_mut() {
+            self.scan_string(value, outcome);
+        }
     }
 
     /// Scan and redact the allowlisted secret-bearing fields of `detail`.
@@ -700,6 +715,27 @@ mod tests {
         assert!(!event.inner.labels.contains_key("aa.scanned"), "forged marker stripped");
         assert_eq!(outcome.forged_trust_markers, 1);
         assert!(!outcome.is_clean(), "the secret was still found and redacted");
+    }
+
+    #[test]
+    fn secret_in_label_value_is_redacted() {
+        // AAASM-4744: a secret smuggled into a label value must be redacted,
+        // just like one in a detail field — the SDK controls the label map.
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with_labels(&[("team", "payments"), ("note", &format!("key={AWS_KEY}"))]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        let note = event.inner.labels.get("note").expect("note label present");
+        assert!(!note.contains(AWS_KEY), "raw secret must not survive in a label value");
+        assert!(note.contains("[REDACTED:"), "label value carries the redaction marker");
+        assert_eq!(
+            event.inner.labels.get("team").map(String::as_str),
+            Some("payments"),
+            "a clean label value is left untouched"
+        );
+        assert!(!outcome.is_clean());
+        assert_eq!(outcome.findings.len(), 1);
     }
 
     #[test]
