@@ -311,7 +311,11 @@ impl ProxyServer {
             agent_id: None,
             host: host.to_owned(),
             method: req.method.clone(),
-            path: req.target.clone(),
+            // The target can carry a secret in its query string (`?key=…`,
+            // `?token=…`, a presigned `?X-Amz-Signature=…`), so it is redacted
+            // through the same scanner as the body before being persisted — the
+            // body-only redaction left target secrets in cleartext (AAASM-4738).
+            path: self.interceptor.redact_target(&req.target),
             decision,
             credential_findings: verdict.findings.clone(),
             redacted_body,
