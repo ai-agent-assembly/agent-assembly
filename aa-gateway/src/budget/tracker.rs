@@ -441,7 +441,15 @@ impl BudgetTracker {
         input_tokens: u64,
         output_tokens: u64,
     ) -> BudgetStatus {
-        let cost = self.pricing.cost_usd(provider, model, input_tokens, output_tokens);
+        // AAASM-4744 — clamp a non-positive computed cost to zero. A custom
+        // pricing override (JSON table) can carry a negative rate; the resulting
+        // cost would *decrement* accrued spend and reopen budget headroom, the
+        // same hazard `record_raw_spend` already clamps. Clamp here so both
+        // accrual entry points are fail-safe before folding into `record_cost`.
+        let cost = self
+            .pricing
+            .cost_usd(provider, model, input_tokens, output_tokens)
+            .max(Decimal::ZERO);
         self.record_cost(agent_id, team_id, org_id, cost)
     }
 
