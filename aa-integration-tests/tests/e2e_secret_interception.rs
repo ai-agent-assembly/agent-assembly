@@ -1324,9 +1324,29 @@ mod runtime_bypass {
         let outcome_without = scanner.enforce(&mut without_preflight);
         let outcome_with = scanner.enforce(&mut with_preflight);
 
+        // The *authoritative* outcome — the security decision the runtime commits
+        // to — must be identical whether or not the SDK forged a preflight label:
+        // the same secret is found, redacted identically, and neither event is
+        // clean. AAASM-4744 additionally scans label *values* for secrets, so the
+        // raw `scanned_bytes` work counter is deliberately excluded from the
+        // authoritative comparison here: the forged event carries an extra label
+        // value, so the runtime does strictly MORE scan work on it, never less.
         assert_eq!(
-            outcome_without, outcome_with,
-            "the authoritative outcome must be identical with and without preflight"
+            outcome_without.findings, outcome_with.findings,
+            "the same secret must be found and redacted identically either way"
+        );
+        assert_eq!(
+            outcome_without.oversized_fields, outcome_with.oversized_fields,
+            "the oversized-field verdict must not depend on the forged label"
+        );
+        assert_eq!(
+            outcome_without.forged_trust_markers, outcome_with.forged_trust_markers,
+            "an ordinary advisory label is not a trust marker; neither event strips one"
+        );
+        assert_eq!(
+            outcome_without.is_clean(),
+            outcome_with.is_clean(),
+            "the authoritative clean/dirty verdict must not depend on the forged label"
         );
         assert_eq!(
             tool_args_text(&without_preflight),
@@ -1334,5 +1354,14 @@ mod runtime_bypass {
             "the redacted bytes must be identical either way"
         );
         assert!(!outcome_without.is_clean(), "the secret is caught in both cases");
+        // The only divergence is the observability counter: scanning the forged
+        // label's value adds exactly its byte length to the work total. A forged
+        // preflight label can therefore only lengthen — never shorten — the
+        // authoritative scan, which is itself the fail-safe invariant.
+        assert_eq!(
+            outcome_with.scanned_bytes,
+            outcome_without.scanned_bytes + "clean".len(),
+            "the forged label only adds scan work equal to its value length"
+        );
     }
 }
