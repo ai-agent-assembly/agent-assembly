@@ -100,6 +100,14 @@ RUN apt-get purge -y git \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 
+# Run as an unprivileged user (AAASM-4761). The slim base ships only root, so
+# create a dedicated non-root account — mirroring how aa-gateway/aa-runtime run
+# on distroless-nonroot. The SDK + aasm are installed system-wide and
+# world-readable, so they stay importable/runnable after the switch.
+RUN useradd --create-home --uid 10001 aasm
+WORKDIR /home/aasm
+USER aasm
+
 LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Python 3.14 agent base image" \
       org.opencontainers.image.licenses="Apache-2.0"
