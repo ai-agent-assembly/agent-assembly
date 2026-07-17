@@ -277,7 +277,9 @@ impl AppState {
         );
 
         let budget_tracker = Arc::new(BudgetTracker::new(
-            aa_gateway::budget::pricing::PricingTable::default_table(),
+            // AAASM-4793: honours AA_PRICING_FILE when the operator has set it,
+            // falling back to default_table() unchanged when unset.
+            aa_gateway::budget::pricing::PricingTable::from_env(),
             None,
             None,
             chrono_tz::UTC,

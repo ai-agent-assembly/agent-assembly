@@ -2,6 +2,11 @@
 
 use rust_decimal::Decimal;
 
+/// Environment variable naming a custom pricing overrides JSON file
+/// (AAASM-4793). Read by [`PricingTable::from_env`]; unset means
+/// [`PricingTable::default_table`].
+pub const PRICING_FILE_ENV_VAR: &str = "AA_PRICING_FILE";
+
 /// USD cost per 1,000 tokens for one direction (input or output).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PricingEntry {
@@ -108,6 +113,22 @@ impl PricingTable {
                 Self::default_table()
             }),
             Err(_) => Self::default_table(),
+        }
+    }
+
+    /// Build the pricing table for this process (AAASM-4793).
+    ///
+    /// [`load_from_file`](Self::load_from_file) and [`load_from_json_str`](Self::load_from_json_str)
+    /// had no production caller — every `BudgetTracker` construction site hardcoded
+    /// [`default_table`](Self::default_table), so a custom pricing table (and with
+    /// it, the AAASM-4744 partial-table fail-closed fallback) was unreachable
+    /// outside tests. This is the wiring: when [`PRICING_FILE_ENV_VAR`] is set, load
+    /// the operator-supplied overrides from that path; otherwise fall back to
+    /// `default_table()` unchanged, so unset behaviour is identical to before.
+    pub fn from_env() -> Self {
+        match std::env::var_os(PRICING_FILE_ENV_VAR) {
+            Some(path) => Self::load_from_file(std::path::Path::new(&path)),
+            None => Self::default_table(),
         }
     }
 
@@ -284,6 +305,50 @@ mod tests {
         let table = PricingTable::load_from_file(path);
         use crate::budget::types::{Model, Provider};
         assert!(table.entry(Provider::OpenAi, Model::Gpt4o).is_some());
+    }
+
+    #[test]
+    fn from_env_loads_custom_pricing_file_when_env_var_set() {
+        // AAASM-4793: this is the wiring the BudgetTracker construction sites
+        // now call — prove the env var actually reaches a loaded custom table,
+        // not just `default_table()`.
+        use crate::budget::types::{Model, Provider};
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("aa-pricing-test-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"[
+              { "provider": "open_ai", "model": "gpt4o",
+                "input_per_1k_usd": "0.001", "output_per_1k_usd": "0.002" }
+            ]"#,
+        )
+        .unwrap();
+        std::env::set_var(PRICING_FILE_ENV_VAR, &path);
+
+        let table = PricingTable::from_env();
+
+        std::env::remove_var(PRICING_FILE_ENV_VAR);
+        std::fs::remove_file(&path).ok();
+
+        let entry = table.entry(Provider::OpenAi, Model::Gpt4o).expect("gpt4o present");
+        assert_eq!(entry.input_per_1k_usd, "0.001".parse().unwrap());
+        assert_eq!(entry.output_per_1k_usd, "0.002".parse().unwrap());
+    }
+
+    #[test]
+    fn from_env_falls_back_to_default_table_when_unset() {
+        std::env::remove_var(PRICING_FILE_ENV_VAR);
+        use crate::budget::types::{Model, Provider};
+        let table = PricingTable::from_env();
+        let default_entry = PricingTable::default_table()
+            .entry(Provider::OpenAi, Model::Gpt4o)
+            .unwrap()
+            .input_per_1k_usd;
+        assert_eq!(
+            table.entry(Provider::OpenAi, Model::Gpt4o).unwrap().input_per_1k_usd,
+            default_entry,
+            "unset env var must behave identically to default_table()"
+        );
     }
 
     #[test]
