@@ -50,6 +50,10 @@ subtle       = "2"
 similar      = "3"
 tokio-stream = { workspace = true }
 tonic        = { workspace = true }
+# Standard gRPC Health Checking Protocol service (grpc.health.v1.Health) so the
+# published gateway container answers `Health/Check` instead of Unimplemented,
+# making it probeable by orchestrators/liveness checks (AAASM-4759).
+tonic-health = { workspace = true }
 tracing      = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 reqwest      = { workspace = true, features = ["json", "rustls"] }
