@@ -81,6 +81,25 @@ async fn health_alias_serves_json_not_spa_html() {
 }
 
 #[tokio::test]
+async fn livez_and_readyz_serve_json_not_spa_html() {
+    // AAASM-4744: `/livez` and `/readyz` (K8s-style probe paths) must return the
+    // health JSON, not fall through to the SPA catch-all and answer 200 HTML —
+    // which would report the app healthy regardless of subsystem state.
+    let dist = fake_dist();
+    for path in ["/livez", "/readyz"] {
+        let (status, content_type, body) = response_with_content_type(local_app_with_spa(dist.path()), path).await;
+        assert_eq!(status, StatusCode::OK, "{path} must return 200");
+        assert!(
+            content_type.starts_with("application/json"),
+            "{path} must serve health JSON, not SPA HTML; got content-type {content_type:?}"
+        );
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("probe returns JSON");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["api_version"], "v1");
+    }
+}
+
+#[tokio::test]
 async fn api_health_is_served_alongside_spa() {
     let dist = fake_dist();
     let (status, body) = response_to(local_app_with_spa(dist.path()), "/api/v1/health").await;
