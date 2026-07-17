@@ -256,6 +256,29 @@ mod tests {
     }
 
     #[test]
+    fn partial_custom_table_prices_omitted_model_via_fallback_not_zero() {
+        // AAASM-4744: an override JSON that redefines only OpenAI models leaves
+        // Cohere's CommandRPlus in place via the merged defaults, but a *removed*
+        // pair would fall through. Prove the fail-closed path: a pair the table
+        // does not know is priced via the costliest-known fallback, never $0, so
+        // a partial custom table cannot silently zero-price and bypass the cap.
+        use crate::budget::types::{Model, Provider};
+        fn d(s: &str) -> rust_decimal::Decimal {
+            s.parse().unwrap()
+        }
+        let json = r#"[
+          { "provider": "open_ai", "model": "gpt4o",
+            "input_per_1k_usd": "0.001", "output_per_1k_usd": "0.002" }
+        ]"#;
+        let table = PricingTable::load_from_json_str(json).unwrap();
+        // A pair absent from the table (Cohere CommandR + wrong provider mix).
+        let cost = table.cost_usd(Provider::Anthropic, Model::CommandR, 10_000, 0);
+        assert_ne!(cost, rust_decimal::Decimal::ZERO, "omitted model must not price to $0");
+        assert_eq!(cost, table.fallback_cost_usd(10_000, 0));
+        assert_eq!(cost, d("0.15"), "priced at the Opus fallback input rate");
+    }
+
+    #[test]
     fn load_from_file_falls_back_to_defaults_on_missing_file() {
         let path = std::path::Path::new("/nonexistent/path/pricing.json");
         let table = PricingTable::load_from_file(path);
