@@ -111,6 +111,18 @@ The verifier (`scripts/check-docs-versions.sh X`) asserts every one of them.
 5. **`docs/release/vX.md`** — the per-tag release notes file. `release-tag-cut`
    owns creating this; confirm it exists for `X` (do not duplicate its work).
 
+6. **`docker/sdk-versions.json`** — the **single source of truth** for the SDK
+   release pinned into each governed language **base image** (`ghcr.io/…/{python,
+   node,go}`); `docker.yml` reads `.sdk.<lang>` and passes it as the `SDK_VERSION`
+   build-arg. Bump all three to the release's SDK versions for `X` (note the
+   per-ecosystem forms: python PEP 440 `0.0.1rc6`, node `0.0.1-rc.6`, go
+   `v0.0.1-rc.6`). **Forgetting this ships base images with a stale SDK** — the
+   AAASM-4761 drift, where the images stayed on `beta.5`/`beta.3` while the core
+   release was `rc.6`, so a developer building an agent `FROM` them got an old
+   (and, for python, enforcement-broken) SDK. Keep in step with
+   `docs/src/compatibility.md` row for `X`. *(Not yet gated by
+   `check-docs-versions.sh` — until it is, this is a manual can't-forget item.)*
+
 > `agent-assembly.toml.example` carries **no** version literal today — nothing to
 > bump there. Re-check with `grep -nE 'version|0\.0\.1' agent-assembly.toml.example`
 > in case that changes.
