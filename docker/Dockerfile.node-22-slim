@@ -89,6 +89,13 @@ RUN apt-get purge -y git \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 
+# Run as an unprivileged user (AAASM-4761). The node base image ships a
+# built-in non-root `node` user (uid 1000); mirror aa-gateway/aa-runtime running
+# on distroless-nonroot. The globally-installed SDK under $NODE_PATH is
+# world-readable, so it stays require()-able after the switch.
+WORKDIR /home/node
+USER node
+
 LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Node.js 22 agent base image" \
       org.opencontainers.image.licenses="Apache-2.0"
