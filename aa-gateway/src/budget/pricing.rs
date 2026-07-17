@@ -111,7 +111,14 @@ impl PricingTable {
         }
     }
 
-    /// Compute USD cost for a completed LLM call. Returns `Decimal::ZERO` for unknown pairs.
+    /// Compute USD cost for a completed LLM call.
+    ///
+    /// Fail-closed (AAASM-4744): a `(provider, model)` pair absent from the table
+    /// is priced through [`fallback_cost_usd`](Self::fallback_cost_usd) at the
+    /// costliest-known rate, never `$0`. A partial custom pricing table (an
+    /// override JSON that lists only some models) must not silently zero-price
+    /// the models it omits — a `$0` cost would trip the `cost <= 0` accrual
+    /// short-circuit in the gateway and bypass the budget cap entirely.
     pub fn cost_usd(
         &self,
         provider: crate::budget::types::Provider,
@@ -125,7 +132,7 @@ impl PricingTable {
                 let output_cost = entry.output_per_1k_usd * Decimal::from(output_tokens) / Decimal::from(1_000u64);
                 input_cost + output_cost
             }
-            None => Decimal::ZERO,
+            None => self.fallback_cost_usd(input_tokens, output_tokens),
         }
     }
 
@@ -206,13 +213,22 @@ mod tests {
     }
 
     #[test]
-    fn cost_usd_unknown_pair_returns_zero() {
+    fn cost_usd_unknown_pair_prices_via_fail_closed_fallback() {
         use crate::budget::types::{Model, Provider};
+        fn d(s: &str) -> rust_decimal::Decimal {
+            s.parse().unwrap()
+        }
         let table = PricingTable::default_table();
-        // Anthropic + CommandR is not a valid pair
+        // AAASM-4744: Anthropic + CommandR is not a tabled pair. It must price
+        // through the costliest-known fallback (Opus: $0.015 in + $0.075 out),
+        // never $0 — a zero cost would bypass the budget cap.
         assert_eq!(
             table.cost_usd(Provider::Anthropic, Model::CommandR, 1_000, 1_000),
-            rust_decimal::Decimal::ZERO,
+            d("0.09"),
+        );
+        assert_eq!(
+            table.cost_usd(Provider::Anthropic, Model::CommandR, 1_000, 1_000),
+            table.fallback_cost_usd(1_000, 1_000),
         );
     }
 
