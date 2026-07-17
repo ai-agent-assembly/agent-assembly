@@ -75,8 +75,8 @@ cargo doc --workspace --no-deps        # checked on push by hooks
 
 - **Commits:** `<emoji> (<scope>): <imperative summary>` (gitmoji.dev). One logical
   unit per commit; bisectable. Utils/mocks/tests are separate preceding commits.
-- **Branch:** `<release-or-phase>/<ticket>/<type>/<short_summary>`
-  (e.g. `v0.0.1/AAASM-42/feat/add_agent_registry`).
+- **Branch:** `<release-or-phase>/<ticket>/<short_summary>`
+  (e.g. `v0.0.1/AAASM-42/add_agent_registry`).
 - **PR title:** `[<ticket>] <emoji> (<scope>): <summary>`; base branch **always
   `master`**; body follows the repo PR template; ≥1 Pioneer-team approval.
 
