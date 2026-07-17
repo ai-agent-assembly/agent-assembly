@@ -70,9 +70,13 @@ RUN apt-get update \
 # same "stable-else-latest" rule across all three SDK images (and install-cli.sh),
 # so the default is uniform and predictable (ADR 0009). docker.yml passes the
 # manifest pin; a bare `docker build` gets the smart default.
+# `--pre` is required: the pinned SDK is a pre-release (e.g. 0.0.1rc6), and it
+# also makes pip resolve the cp3xx manylinux wheel that ships the compiled
+# `_core` extension — NOT the pure-Python sdist fallback (the bug behind
+# AAASM-4760/4764, where the image shipped a native-less 0.0.1b5).
 ARG SDK_VERSION=""
 RUN if [ -n "$SDK_VERSION" ]; then \
-        pip install --no-cache-dir "agent-assembly==${SDK_VERSION}"; \
+        pip install --no-cache-dir --pre "agent-assembly==${SDK_VERSION}"; \
     else \
         pip install --no-cache-dir agent-assembly \
         || pip install --no-cache-dir --pre agent-assembly; \
@@ -87,12 +91,22 @@ COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
 RUN aasm --version
-RUN python -c "from agent_assembly import init_assembly"
+# Importing `agent_assembly._core` explicitly fails the build if the native
+# extension is missing (pure-Python fallback), guarding AAASM-4760/4764.
+RUN python -c "import agent_assembly._core; from agent_assembly import init_assembly"
 
 # Remove git after install to keep the runtime image lean.
 RUN apt-get purge -y git \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
+
+# Run as an unprivileged user (AAASM-4761). The slim base ships only root, so
+# create a dedicated non-root account — mirroring how aa-gateway/aa-runtime run
+# on distroless-nonroot. The SDK + aasm are installed system-wide and
+# world-readable, so they stay importable/runnable after the switch.
+RUN useradd --create-home --uid 10001 aasm
+WORKDIR /home/aasm
+USER aasm
 
 LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Python 3.13 agent base image" \

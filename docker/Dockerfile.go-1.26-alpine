@@ -87,6 +87,15 @@ RUN if [ -n "$SDK_VERSION" ]; then \
 RUN aasm --version
 RUN go list -m github.com/ai-agent-assembly/go-sdk@latest
 
+# NOTE (AAASM-4761/AAASM-4764): this Go image is a *build-toolchain* base — a
+# downstream agent Dockerfile does `FROM` it, then `COPY`s its source and runs
+# `go build`/`go mod tidy`, which must write to $GOPATH (module cache) and the
+# WORKDIR. Running the builder non-root breaks that flow: a bare `COPY` lands
+# files root-owned, so a non-root user can't rewrite go.mod or the module cache.
+# Go builder images are root by convention — produce a non-root *runtime* image
+# via a multi-stage final stage. So this image intentionally stays root, unlike
+# the python/node SDK base images (runtime bases) which run non-root.
+
 LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Go 1.26 agent base image" \
       org.opencontainers.image.licenses="Apache-2.0"
