@@ -208,7 +208,27 @@ impl RuntimeScanner {
                 (key, value)
             })
             .collect();
-        labels.extend(scanned);
+        // Two *distinct* original keys can redact to the **same** marker — e.g.
+        // two keys each wholly a same-kind secret both become
+        // "[REDACTED:AwsAccessKey]". A plain `extend` would let the second
+        // silently overwrite the first, dropping a distinct (forged/secret-
+        // bearing) label pair from the forwarded and audited event. That is an
+        // audit-completeness gap, not a leak (both are fully redacted), so on a
+        // key collision append a positional suffix to keep every pair
+        // (AAASM-4813). Non-colliding keys insert unchanged.
+        for (key, value) in scanned {
+            if labels.contains_key(&key) {
+                let mut suffix = 2;
+                let mut candidate = format!("{key}#{suffix}");
+                while labels.contains_key(&candidate) {
+                    suffix += 1;
+                    candidate = format!("{key}#{suffix}");
+                }
+                labels.insert(candidate, value);
+            } else {
+                labels.insert(key, value);
+            }
+        }
     }
 
     /// Scan and redact the allowlisted secret-bearing fields of `detail`.
@@ -785,5 +805,45 @@ mod tests {
         );
         assert_eq!(outcome.forged_trust_markers, 0);
         assert!(!outcome.has_forged_trust_markers());
+    }
+
+    #[test]
+    fn two_distinct_secret_keys_of_same_kind_both_survive_redaction() {
+        // AAASM-4813: two *distinct* label keys that each wholly consist of a
+        // same-kind secret both redact to the identical marker
+        // "[REDACTED:AwsAccessKey]". Rebuilding the map must not let the second
+        // overwrite the first — a distinct label pair would silently vanish
+        // from the forwarded/audited event (an audit-completeness gap). Both
+        // pairs must survive.
+        let scanner = RuntimeScanner::new();
+        // Two valid, distinct AWS access-key ids (differ in the final char);
+        // each is wholly the secret, so each redacts to the same marker.
+        const AWS_KEY_A: &str = "AKIAIOSFODNN7EXAMPLE";
+        const AWS_KEY_B: &str = "AKIAIOSFODNN7EXAMPLF";
+        let mut event = event_with_labels(&[(AWS_KEY_A, "value-a"), (AWS_KEY_B, "value-b")]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert_eq!(
+            event.inner.labels.len(),
+            2,
+            "both label pairs must survive the collision"
+        );
+        assert!(
+            !event
+                .inner
+                .labels
+                .keys()
+                .any(|k| k.contains(AWS_KEY_A) || k.contains(AWS_KEY_B)),
+            "no raw secret may survive in a label key"
+        );
+        assert!(
+            event.inner.labels.keys().all(|k| k.contains("[REDACTED:AwsAccessKey]")),
+            "both keys carry the redaction marker"
+        );
+        let mut values: Vec<&str> = event.inner.labels.values().map(String::as_str).collect();
+        values.sort_unstable();
+        assert_eq!(values, vec!["value-a", "value-b"], "neither value was dropped");
+        assert!(!outcome.is_clean());
     }
 }
