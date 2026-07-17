@@ -1126,6 +1126,36 @@ mod tests {
     }
 
     #[test]
+    fn record_usage_clamps_negative_custom_rate_to_zero() {
+        // AAASM-4744: a custom pricing override with a negative rate must not
+        // decrement accrued spend. record_usage clamps the computed cost to
+        // zero, so today's spend stays at zero rather than going negative.
+        let json = r#"[
+          { "provider": "open_ai", "model": "gpt4o",
+            "input_per_1k_usd": "-0.005", "output_per_1k_usd": "-0.015" }
+        ]"#;
+        let pricing = PricingTable::load_from_json_str(json).unwrap();
+        let t = BudgetTracker::new(pricing, None, None, chrono_tz::UTC);
+        let aid = agent(0xAB);
+        t.record_usage(
+            aid,
+            None,
+            None,
+            crate::budget::types::Provider::OpenAi,
+            crate::budget::types::Model::Gpt4o,
+            10_000,
+            10_000,
+        );
+        let history = t.agent_spend_history(&aid, 1);
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].1,
+            Decimal::ZERO,
+            "a negative custom rate must clamp to zero, never decrement spend"
+        );
+    }
+
+    #[test]
     fn agent_spend_history_zero_days_returns_empty_vec() {
         let t = new_tracker();
         let aid = AgentId::from_bytes([0xAA; 16]);
