@@ -58,7 +58,11 @@ impl NotificationConnector for SlackConnector {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ConnectorError::Transport(e.to_string()))?;
+            // AAASM-4744: the Slack `webhook_url` is caller-controlled and can
+            // carry a token in its path/query. A reqwest error's Display embeds
+            // the request URL, so `without_url` strips it before it reaches the
+            // 502 body or logs.
+            .map_err(|e| ConnectorError::Transport(e.without_url().to_string()))?;
         let status = resp.status().as_u16();
         // AAASM-3827: do NOT capture or reflect the upstream response body. The
         // Slack `webhook_url` is caller-controlled, so reflecting the origin's
