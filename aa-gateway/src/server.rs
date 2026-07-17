@@ -883,6 +883,66 @@ mod tests {
     use aa_core::{AgentContext, GovernanceAction, PolicyResult};
     use std::collections::BTreeMap;
 
+    /// AAASM-4759 — the gRPC Health Checking service must answer `Health/Check`
+    /// with `SERVING` (not `Unimplemented`) once the gateway is up, so
+    /// orchestrators/liveness probes can health-check the published container.
+    /// Exercises the real wire path: serve the same `serving_health_service()`
+    /// that `serve_tcp`/`serve_uds` register, then Check it with a gRPC client.
+    #[tokio::test]
+    async fn health_check_reports_serving() {
+        use tonic::server::NamedService;
+        use tonic_health::pb::health_check_response::ServingStatus;
+        use tonic_health::pb::health_client::HealthClient;
+        use tonic_health::pb::HealthCheckRequest;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(serving_health_service().await)
+                .serve_with_incoming_shutdown(incoming, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        // Build the channel via aa-gateway's own tonic transport: tonic-health
+        // itself is compiled without the transport feature, so `HealthClient::
+        // connect` does not exist — construct the channel here and hand it in.
+        let channel = tonic::transport::Channel::from_shared(format!("http://{addr}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let mut client = HealthClient::new(channel);
+
+        // Overall server health ("") — what a k8s gRPC liveness probe checks.
+        let overall = client
+            .check(HealthCheckRequest { service: String::new() })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(overall.status, ServingStatus::Serving as i32);
+
+        // A specific registered service resolves too (not NotFound).
+        let policy_name = <PolicyServiceServer<PolicyServiceImpl> as NamedService>::NAME;
+        let per_service = client
+            .check(HealthCheckRequest {
+                service: policy_name.to_string(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(per_service.status, ServingStatus::Serving as i32);
+
+        let _ = shutdown_tx.send(());
+        server.await.unwrap();
+    }
+
     fn new_tracker() -> Arc<BudgetTracker> {
         Arc::new(BudgetTracker::new(
             crate::budget::PricingTable::default_table(),
