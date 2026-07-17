@@ -216,4 +216,43 @@ mod tests {
         let id = proto_id("did:key:z0OIl");
         assert!(validate_proto_agent_id(&id).is_err());
     }
+
+    // ── did:key ↔ public_key binding (AAASM-4787) ────────────────────────────
+
+    /// Build a well-formed Ed25519 `did:key` that embeds `pubkey`.
+    fn ed25519_did_key(pubkey: &[u8; 32]) -> String {
+        let mut bytes = ED25519_PUB_MULTICODEC.to_vec();
+        bytes.extend_from_slice(pubkey);
+        format!("did:key:z{}", bs58::encode(bytes).into_string())
+    }
+
+    #[test]
+    fn binding_accepts_did_key_matching_public_key() {
+        let pubkey = [3u8; 32];
+        let did = ed25519_did_key(&pubkey);
+        assert_eq!(assert_did_key_binds_public_key(&did, &hex::encode(pubkey)), Ok(()));
+    }
+
+    #[test]
+    fn binding_rejects_did_key_not_matching_public_key() {
+        // did:key embeds one key; the caller supplies a different public_key.
+        let did = ed25519_did_key(&[3u8; 32]);
+        let other = hex::encode([9u8; 32]);
+        assert_eq!(
+            assert_did_key_binds_public_key(&did, &other),
+            Err(DidKeyBindingError::Mismatch)
+        );
+    }
+
+    #[test]
+    fn binding_rejects_non_ed25519_multicodec_did_key() {
+        // secp256k1-pub multicodec is code 0xe7 → varint [0xe7, 0x01].
+        let mut bytes = vec![0xe7, 0x01];
+        bytes.extend_from_slice(&[3u8; 32]);
+        let did = format!("did:key:z{}", bs58::encode(bytes).into_string());
+        assert!(matches!(
+            assert_did_key_binds_public_key(&did, &hex::encode([3u8; 32])),
+            Err(DidKeyBindingError::Malformed(_))
+        ));
+    }
 }
