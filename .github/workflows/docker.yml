@@ -102,6 +102,11 @@ jobs:
           file: aa-runtime/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          # AAASM-4762: generate + push an SBOM attestation alongside the image.
+          # Without this, buildx pushes provenance but `.SBOM == {}`, leaving
+          # consumers with no machine-readable inventory of the image's contents
+          # for vulnerability scanning / supply-chain audit.
+          sbom: true
           tags: |
             ghcr.io/ai-agent-assembly/aa-runtime:${{ github.ref_name }}
             ghcr.io/ai-agent-assembly/aa-runtime:latest
@@ -146,6 +151,11 @@ jobs:
           file: aa-gateway/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          # AAASM-4762: generate + push an SBOM attestation alongside the image.
+          # Without this, buildx pushes provenance but `.SBOM == {}`, leaving
+          # consumers with no machine-readable inventory of the image's contents
+          # for vulnerability scanning / supply-chain audit.
+          sbom: true
           tags: |
             ghcr.io/ai-agent-assembly/aa-gateway:${{ github.ref_name }}
             ghcr.io/ai-agent-assembly/aa-gateway:latest
@@ -321,6 +331,11 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
+          # AAASM-4762: generate + push an SBOM attestation alongside each
+          # published language image. Without this, buildx pushes provenance but
+          # `.SBOM == {}`, leaving consumers with no machine-readable inventory of
+          # the image's contents for vulnerability scanning / supply-chain audit.
+          sbom: true
           build-args: |
             SDK_VERSION=${{ steps.sdkver.outputs.version }}
           tags: |
