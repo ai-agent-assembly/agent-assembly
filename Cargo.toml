@@ -79,6 +79,10 @@ metrics-util = "0.20"
 # Protobuf / gRPC
 prost = "0.14"
 tonic = { version = "0.14", features = ["transport"] }
+# Standard gRPC Health Checking Protocol (grpc.health.v1.Health) service so the
+# published gateway container is probeable by orchestrators/liveness checks
+# (AAASM-4759). Version-locked to tonic 0.14.
+tonic-health = "0.14"
 # HTTP / web
 axum = "0.8"
 hyper = "1"
