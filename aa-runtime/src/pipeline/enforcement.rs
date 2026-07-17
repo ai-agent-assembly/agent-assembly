@@ -718,6 +718,27 @@ mod tests {
     }
 
     #[test]
+    fn secret_in_label_value_is_redacted() {
+        // AAASM-4744: a secret smuggled into a label value must be redacted,
+        // just like one in a detail field — the SDK controls the label map.
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with_labels(&[("team", "payments"), ("note", &format!("key={AWS_KEY}"))]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        let note = event.inner.labels.get("note").expect("note label present");
+        assert!(!note.contains(AWS_KEY), "raw secret must not survive in a label value");
+        assert!(note.contains("[REDACTED:"), "label value carries the redaction marker");
+        assert_eq!(
+            event.inner.labels.get("team").map(String::as_str),
+            Some("payments"),
+            "a clean label value is left untouched"
+        );
+        assert!(!outcome.is_clean());
+        assert_eq!(outcome.findings.len(), 1);
+    }
+
+    #[test]
     fn no_trust_markers_leaves_outcome_unflagged() {
         let scanner = RuntimeScanner::new();
         let mut event = event_with_labels(&[("team", "payments")]);
