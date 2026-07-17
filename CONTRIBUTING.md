@@ -51,22 +51,35 @@ on; the faster linker is opt-in.
 
 ## Branch Naming
 
-Use the three-part format:
+Use the four-part format:
 
 ```
-<release-or-phase>/<ticket>/<short_summary>
+<release-or-phase>/<ticket>/<type>/<short_summary>
 ```
 
 - `<release-or-phase>` — milestone or sprint identifier (e.g. `v0.0.1`, `phase1`).
 - `<ticket>` — the ticket reference (e.g. `AAASM-1`).
+- `<type>` — the change category (see table below).
 - `<short_summary>` — 2–4 words in `snake_case`.
 
-Example: `v0.0.1/AAASM-1/add_data_models`
+| `<type>` | When to use |
+|---|---|
+| `feat` | New feature or capability |
+| `fix` | Bug fix |
+| `refactor` | Refactor with no behavior change |
+| `test` | Test-only change |
+| `docs` | Documentation change |
+| `config` | Configuration change |
+| `deps` | Dependency upgrade |
+| `remove` | Deletion or removal |
+| `lint` | Lint or type-error fix |
+
+Example: `v0.0.1/AAASM-42/feat/add_agent_registry`
 
 > **External contributors** — the `AAASM-NN` project tracker is private, so you
 > won't be able to mint a ticket. You don't need one: open a GitHub issue first
 > (or reference an existing one) and use your GitHub issue number in the
-> `<ticket>` slot (e.g. `v0.0.1/gh-123/add_data_models`), or `noticket` if
+> `<ticket>` slot (e.g. `v0.0.1/gh-123/feat/add_data_models`), or `noticket` if
 > there's no issue yet. A maintainer will create the tracking `AAASM-NN` ticket
 > and link it during review — a missing Jira reference will never block your PR.
 
