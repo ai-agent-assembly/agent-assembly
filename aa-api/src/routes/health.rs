@@ -61,6 +61,15 @@ async fn subsystem_checks(state: &AppState) -> BTreeMap<String, String> {
 /// Returns `200` when all subsystems report healthy; `503` when any subsystem
 /// is degraded. The `checks` map in the response body carries per-subsystem
 /// status strings (`"ok"` or `"degraded"`).
+///
+/// Deliberately unauthenticated, including the `version` field (AAASM-4793):
+/// this is a liveness/readiness probe consumed by orchestrators (k8s, load
+/// balancers) before any credential exchange is possible, so it must be
+/// reachable pre-auth. The version string is the same value already public in
+/// release artifacts and `Cargo.toml`, not sensitive on its own — gating it
+/// would need a second, differently-shaped response for authenticated callers
+/// and would risk breaking existing health-check parsers for no material
+/// security gain.
 #[utoipa::path(
     get,
     path = "/api/v1/health",
