@@ -94,6 +94,14 @@ RUN if [ -n "$SDK_VERSION" ]; then \
 RUN aasm --version
 RUN go list -m github.com/ai-agent-assembly/go-sdk@latest
 
+# Run as an unprivileged user (AAASM-4761). The alpine base ships only root, so
+# create a dedicated non-root account — mirroring how aa-gateway/aa-runtime run
+# on distroless-nonroot. `aasm` and the installed go-sdk binaries under
+# $GOPATH/bin are world-readable/executable, so they stay usable after the switch.
+RUN adduser -D -u 10001 aasm
+WORKDIR /home/aasm
+USER aasm
+
 LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Go 1.24 agent base image" \
       org.opencontainers.image.licenses="Apache-2.0"
