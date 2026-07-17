@@ -224,8 +224,14 @@ impl FileIoLoader {
                         if buf.len() < core::mem::size_of::<FileIoEventRaw>() {
                             continue;
                         }
-                        let raw = unsafe { &*(buf.as_ptr() as *const FileIoEventRaw) };
-                        match FileIoEvent::from_raw(raw) {
+                        // AAASM-4744: the perf buffer is a `BytesMut` whose
+                        // backing allocation carries no alignment guarantee, so
+                        // forming a `&FileIoEventRaw` to `buf.as_ptr()` is UB when
+                        // the pointer is under-aligned. Copy the bytes out through
+                        // an unaligned read into an owned, properly-aligned value
+                        // (the technique `ringbuf::bytes_to` uses) and borrow that.
+                        let raw = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const FileIoEventRaw) };
+                        match FileIoEvent::from_raw(&raw) {
                             Ok(event) => {
                                 let _ = tx.send(event).await;
                             }
