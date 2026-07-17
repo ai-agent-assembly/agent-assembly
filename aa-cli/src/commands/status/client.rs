@@ -90,31 +90,44 @@ impl StatusClient {
 
     /// List all agents via `GET /api/v1/agents`.
     pub async fn list_agents(&self) -> Result<Vec<AgentResponse>, CliError> {
-        let resp = self
-            .http
-            .get(self.url("/api/v1/agents"))
-            .query(&[("per_page", "100")])
-            .send()
-            .await?;
+        // AAASM-4733: this aggregation sub-request hits the same auth-gated
+        // resource as `aasm agent list`, so it must carry the configured bearer
+        // (matching `fetch_admin_status`); otherwise it 401s against an
+        // auth-enforcing API and the ACTIVE AGENTS section renders empty.
+        let mut req = self.http.get(self.url("/api/v1/agents")).query(&[("per_page", "100")]);
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await?;
         let body = resp.json::<PaginatedResponse<AgentResponse>>().await?;
         Ok(body.items)
     }
 
     /// List all approvals via `GET /api/v1/approvals`.
     pub async fn list_approvals(&self) -> Result<Vec<ApprovalResponse>, CliError> {
-        let resp = self
+        // AAASM-4733: same auth-gated resource as `aasm approvals list` — attach
+        // the bearer so PENDING APPROVALS is not silently empty under auth.
+        let mut req = self
             .http
             .get(self.url("/api/v1/approvals"))
-            .query(&[("per_page", "100")])
-            .send()
-            .await?;
+            .query(&[("per_page", "100")]);
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await?;
         let body = resp.json::<PaginatedResponse<ApprovalResponse>>().await?;
         Ok(body.items)
     }
 
     /// Fetch cost summary via `GET /api/v1/costs`.
     pub async fn get_costs(&self) -> Result<CostResponse, CliError> {
-        let resp = self.http.get(self.url("/api/v1/costs")).send().await?;
+        // AAASM-4733: same auth-gated resource as `aasm cost summary` — attach
+        // the bearer so BUDGET STATUS is not silently empty under auth.
+        let mut req = self.http.get(self.url("/api/v1/costs"));
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await?;
         let body = resp.json::<CostResponse>().await?;
         Ok(body)
     }
