@@ -52,7 +52,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Resolve the probes source dir. Sibling takes priority over _embedded;
     // never touch _embedded outside of the publish-staging flow.
-    let probes_dir: Option<PathBuf> = if sibling_probes.join("Cargo.toml").exists() {
+    //
+    // docs.rs mounts the crate source tree read-only outside OUT_DIR. It
+    // always builds from the published tarball (never a sibling workspace
+    // checkout), so it would otherwise always take the _embedded branch and
+    // call restore_manifest_from_stage(), which renames a file *inside*
+    // that read-only tree and hard-fails the build (AAASM-4715 — the first
+    // fix only guarded the later `rustup`/Command call below, not this
+    // earlier and unconditional one). Skip resolution entirely under
+    // DOCS_RS: the Linux build_ok check further down already routes a
+    // `None` probes_dir to the stub-emission fallback.
+    let probes_dir: Option<PathBuf> = if std::env::var_os("DOCS_RS").is_some() {
+        None
+    } else if sibling_probes.join("Cargo.toml").exists() {
         println!("cargo:rerun-if-changed={}", sibling_probes.display());
         Some(sibling_probes)
     } else if embedded_probes.join(STAGED_MANIFEST).exists() || embedded_probes.join("Cargo.toml").exists() {
