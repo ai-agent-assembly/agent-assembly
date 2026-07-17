@@ -187,18 +187,28 @@ impl RuntimeScanner {
         outcome
     }
 
-    /// Scan and redact every surviving label *value* in place (AAASM-4744).
+    /// Scan and redact every surviving label *key and value* in place
+    /// (AAASM-4744, extended by AAASM-4793).
     ///
-    /// `labels` is an SDK-supplied map, so a secret can ride in a label value
-    /// exactly as it can in a detail field. Trust-marker keys are already
-    /// stripped by [`strip_trust_markers`] before this runs; every remaining
-    /// value is passed through the same [`scan_string`](Self::scan_string) path
-    /// (size cap + credential scan + redaction) so a leaked secret is redacted,
-    /// not forwarded. Keys are identifiers and are left untouched.
+    /// `labels` is an SDK-supplied map, so a secret can ride in a label key
+    /// exactly as easily as in a label value — nothing on the wire prevents an
+    /// agent from smuggling a credential into the map's key instead of its
+    /// value. Trust-marker keys are already stripped by [`strip_trust_markers`]
+    /// before this runs; every remaining key and value is passed through the
+    /// same [`scan_string`](Self::scan_string) path (size cap, credential scan,
+    /// and redaction) so a leaked secret is redacted, not forwarded, regardless
+    /// of which side of the map it rode in on. The map is rebuilt because
+    /// `HashMap` keys cannot be mutated in place.
     fn scan_labels(&self, labels: &mut std::collections::HashMap<String, String>, outcome: &mut EnforcementOutcome) {
-        for value in labels.values_mut() {
-            self.scan_string(value, outcome);
-        }
+        let scanned: Vec<(String, String)> = std::mem::take(labels)
+            .into_iter()
+            .map(|(mut key, mut value)| {
+                self.scan_string(&mut key, outcome);
+                self.scan_string(&mut value, outcome);
+                (key, value)
+            })
+            .collect();
+        labels.extend(scanned);
     }
 
     /// Scan and redact the allowlisted secret-bearing fields of `detail`.
@@ -733,6 +743,29 @@ mod tests {
             event.inner.labels.get("team").map(String::as_str),
             Some("payments"),
             "a clean label value is left untouched"
+        );
+        assert!(!outcome.is_clean());
+        assert_eq!(outcome.findings.len(), 1);
+    }
+
+    #[test]
+    fn secret_in_label_key_is_redacted() {
+        // AAASM-4793: the SDK controls the whole labels map, key and value
+        // alike, so a secret smuggled into a label *key* must be redacted just
+        // like one riding in the value.
+        let scanner = RuntimeScanner::new();
+        let poisoned_key = format!("note-{AWS_KEY}");
+        let mut event = event_with_labels(&[(poisoned_key.as_str(), "some-value")]);
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert!(
+            !event.inner.labels.keys().any(|k| k.contains(AWS_KEY)),
+            "raw secret must not survive in a label key"
+        );
+        assert!(
+            event.inner.labels.keys().any(|k| k.contains("[REDACTED:")),
+            "redacted label key carries the redaction marker"
         );
         assert!(!outcome.is_clean());
         assert_eq!(outcome.findings.len(), 1);
