@@ -46,7 +46,9 @@ impl FileIoEvent {
     /// Parse a [`FileIoEventRaw`] received from the BPF perf event array
     /// into a userspace-friendly [`FileIoEvent`].
     pub fn from_raw(raw: &FileIoEventRaw) -> Result<Self, EbpfError> {
-        let syscall = match raw.syscall {
+        let syscall_type = SyscallType::try_from(raw.syscall)
+            .map_err(|e| EbpfError::EventParse(format!("unknown syscall discriminant: {}", e.0)))?;
+        let syscall = match syscall_type {
             SyscallType::Openat => SyscallKind::Openat,
             SyscallType::Read => SyscallKind::Read,
             SyscallType::Write => SyscallKind::Write,
@@ -80,6 +82,25 @@ mod tests {
     use aa_ebpf_common::file::MAX_PATH_LEN;
 
     fn make_raw(path: &str, syscall: SyscallType, flags: u32) -> FileIoEventRaw {
+        let mut path_buf = [0u8; MAX_PATH_LEN];
+        let bytes = path.as_bytes();
+        path_buf[..bytes.len()].copy_from_slice(bytes);
+        FileIoEventRaw {
+            pid: 42,
+            tid: 43,
+            timestamp_ns: 1_000_000,
+            syscall: syscall as u32,
+            flags,
+            return_code: 3,
+            duration_ns: 0,
+            path: path_buf,
+        }
+    }
+
+    /// Like [`make_raw`], but takes the raw `u32` syscall discriminant
+    /// directly rather than a [`SyscallType`] — used to construct events
+    /// with a discriminant that has no corresponding variant (AAASM-4739).
+    fn make_raw_with_syscall_u32(path: &str, syscall: u32, flags: u32) -> FileIoEventRaw {
         let mut path_buf = [0u8; MAX_PATH_LEN];
         let bytes = path.as_bytes();
         path_buf[..bytes.len()].copy_from_slice(bytes);
@@ -176,5 +197,16 @@ mod tests {
         let raw = make_raw("", SyscallType::Unlink, 0);
         let event = FileIoEvent::from_raw(&raw).unwrap();
         assert_eq!(event.path, "");
+    }
+
+    /// Regression test for AAASM-4739: an out-of-range syscall discriminant
+    /// (e.g. from version skew between the BPF object and the userspace
+    /// loader) must be rejected as a handled error, not materialized as an
+    /// invalid enum discriminant (which was instant UB before this fix).
+    #[test]
+    fn from_raw_rejects_out_of_range_syscall_discriminant() {
+        let raw = make_raw_with_syscall_u32("/tmp/x", 99, 0);
+        let result = FileIoEvent::from_raw(&raw);
+        assert!(result.is_err());
     }
 }
