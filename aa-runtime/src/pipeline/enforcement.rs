@@ -179,11 +179,26 @@ impl RuntimeScanner {
         let started = Instant::now();
         let mut outcome = EnforcementOutcome::default();
         strip_trust_markers(&mut event.inner.labels, &mut outcome);
+        self.scan_labels(&mut event.inner.labels, &mut outcome);
         if let Some(detail) = event.inner.detail.as_mut() {
             self.scan_detail(detail, &mut outcome);
         }
         emit_metrics(&outcome, started.elapsed());
         outcome
+    }
+
+    /// Scan and redact every surviving label *value* in place (AAASM-4744).
+    ///
+    /// `labels` is an SDK-supplied map, so a secret can ride in a label value
+    /// exactly as it can in a detail field. Trust-marker keys are already
+    /// stripped by [`strip_trust_markers`] before this runs; every remaining
+    /// value is passed through the same [`scan_string`](Self::scan_string) path
+    /// (size cap + credential scan + redaction) so a leaked secret is redacted,
+    /// not forwarded. Keys are identifiers and are left untouched.
+    fn scan_labels(&self, labels: &mut std::collections::HashMap<String, String>, outcome: &mut EnforcementOutcome) {
+        for value in labels.values_mut() {
+            self.scan_string(value, outcome);
+        }
     }
 
     /// Scan and redact the allowlisted secret-bearing fields of `detail`.
