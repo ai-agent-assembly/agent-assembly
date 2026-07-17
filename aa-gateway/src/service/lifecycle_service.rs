@@ -22,7 +22,9 @@ use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 
 use crate::engine::PolicyEngine;
 use crate::events::publisher::agent_status_changed_to_envelope;
-use crate::registry::convert::{proto_agent_id_to_key, validate_proto_agent_id};
+use crate::registry::convert::{
+    assert_did_key_binds_public_key, proto_agent_id_to_key, validate_proto_agent_id, DidKeyBindingError,
+};
 use crate::registry::store::AgentRecord;
 use crate::registry::token::{generate_credential_token, validate_token};
 use crate::registry::{AgentRegistry, AgentStatus, LineageError, OrphanMode, RegistryError, SuspendReason};
@@ -216,6 +218,26 @@ fn authoritative_enforcement_mode(proto_value: i32) -> Option<aa_core::Enforceme
     }
 }
 
+/// Enforce the AAASM-4787 did:key ↔ public_key binding, mapping the outcome onto
+/// a gRPC status.
+///
+/// `agent_id` (a `did:key`) and `public_key` are both caller-supplied, and the
+/// possession proof only proves the caller holds `public_key` — not that it is
+/// the key the `did:key` names. Without this check an attacker can pair a
+/// victim's `did:key` with their own key pair and squat the victim's identity, so
+/// this must gate any path that issues or consumes a nonce for the pair. A
+/// non-Ed25519 or malformed `did:key`/`public_key` is `InvalidArgument`; a
+/// well-formed `did:key` whose embedded key differs from `public_key` is
+/// `Unauthenticated`.
+fn enforce_did_key_binding(agent_id: &str, public_key: &str) -> Result<(), Status> {
+    assert_did_key_binds_public_key(agent_id, public_key).map_err(|e| match e {
+        DidKeyBindingError::Malformed(msg) => Status::invalid_argument(msg),
+        DidKeyBindingError::Mismatch => {
+            Status::unauthenticated("agent_id did:key embedded public key does not match the supplied public_key")
+        }
+    })
+}
+
 fn verify_possession_proof(
     verifying_key: &ed25519_dalek::VerifyingKey,
     challenge: &[u8],
@@ -356,6 +378,11 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         ed25519_dalek::VerifyingKey::from_bytes(&pk_array)
             .map_err(|_| Status::invalid_argument("invalid Ed25519 public key"))?;
 
+        // AAASM-4787: only ever issue a nonce for a did:key whose embedded
+        // Ed25519 key matches this public_key, so a caller cannot obtain a
+        // challenge for a victim's DID paired with its own key pair.
+        enforce_did_key_binding(&proto_id.agent_id, &req.public_key)?;
+
         let (nonce, expires_at_unix_ms) = self.challenges.issue(&proto_id.agent_id, &req.public_key).await?;
 
         tracing::debug!(agent_id = ?proto_id.agent_id, "registration challenge issued");
@@ -400,6 +427,14 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
                 .map_err(|_| Status::invalid_argument("public_key must be 32 bytes (64 hex chars)"))?,
         )
         .map_err(|_| Status::invalid_argument("invalid Ed25519 public key"))?;
+
+        // AAASM-4787: cryptographically bind the did:key agent_id to public_key
+        // BEFORE consuming the nonce / verifying the proof. The possession proof
+        // only proves the caller holds `public_key`; it says nothing about which
+        // key the did:key names. Without this, an attacker can present a victim's
+        // did:key together with their OWN public_key + a proof under their own
+        // key and squat/register the victim's DID.
+        enforce_did_key_binding(&proto_id.agent_id, &req.public_key)?;
 
         // AAASM-3591 / AAASM-3866: prove the caller actually HOLDS the private
         // key for `public_key` before minting a credential_token. Without this,

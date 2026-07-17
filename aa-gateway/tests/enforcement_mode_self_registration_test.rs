@@ -27,25 +27,25 @@ use aa_proto::assembly::common::v1::{ActionType, AgentId as ProtoAgentId, Decisi
 use aa_proto::assembly::policy::v1::policy_service_client::PolicyServiceClient;
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer;
 use aa_proto::assembly::policy::v1::{action_context::Action, ActionContext, CheckActionRequest, ToolCallContext};
-use ed25519_dalek::Signer;
 use tokio::net::TcpListener;
 use tonic::transport::{Channel, Server};
 
-/// Deterministic Ed25519 test key; its public half is used as the agent's
-/// `public_key` and the challenge is signed with the private half.
-fn test_signing_key() -> ed25519_dalek::SigningKey {
-    ed25519_dalek::SigningKey::from_bytes(&[42u8; 32])
+/// Deterministic Ed25519 test keypair. Register/RequestChallenge bind the
+/// `agent_id` did:key to `public_key` (AAASM-4787), so the did:key, the
+/// `public_key`, and the possession proof are all derived from one keypair.
+fn test_keypair() -> aa_sdk_client::AgentKeypair {
+    aa_sdk_client::AgentKeypair::derive("aaasm-enforce-selfreg-agent")
 }
 
 fn test_public_key_hex() -> String {
-    hex::encode(test_signing_key().verifying_key().as_bytes())
+    test_keypair().public_key_hex()
 }
 
 fn test_agent_id() -> ProtoAgentId {
     ProtoAgentId {
         org_id: "org-test".into(),
         team_id: "team-test".into(),
-        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+        agent_id: test_keypair().did_key(),
     }
 }
 
@@ -111,7 +111,7 @@ async fn register_with_challenge(
         .await
         .unwrap()
         .into_inner();
-    req.possession_proof = test_signing_key().sign(&challenge.nonce).to_bytes().to_vec();
+    req.possession_proof = test_keypair().sign(&challenge.nonce).to_vec();
     req.registration_nonce = challenge.nonce;
     client.register(req).await.unwrap().into_inner().credential_token
 }
