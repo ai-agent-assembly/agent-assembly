@@ -70,7 +70,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         LocalAuth::ApiKey { key } => {
             if generated {
-                eprintln!("aa-api: generated admin API key (set AASM_API_KEY to reuse): {key}");
+                // AAASM-4744: print only a short prefix of the generated key, not
+                // the full secret. Dumping a live admin credential to stderr/logs
+                // is a disclosure gap; the prefix lets an operator correlate the
+                // key in the banner below without leaking it. Set AASM_API_KEY to
+                // run with a known, reusable key.
+                eprintln!(
+                    "aa-api: generated a random admin API key {prefix}… (set AASM_API_KEY to use a known key)",
+                    prefix = &key[..key.len().min(6)]
+                );
             } else {
                 eprintln!("aa-api: using admin API key from AASM_API_KEY");
             }
