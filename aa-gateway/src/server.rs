@@ -533,6 +533,43 @@ fn final_budget_save(tracker: &BudgetTracker, budget_path: &Path) {
     }
 }
 
+/// Build the standard gRPC Health Checking Protocol service
+/// (`grpc.health.v1.Health`) with every gateway service — and the overall
+/// server (`""`) — reported as `SERVING`.
+///
+/// AAASM-4759: the published `aa-gateway` container previously exposed no
+/// health endpoint, so `Health/Check` answered `Unimplemented` and
+/// orchestrators/liveness probes had nothing to call. This is registered
+/// **without** the credential interceptor (unlike every agent-plane service)
+/// so an unauthenticated probe can confirm liveness — the health protocol
+/// carries no sensitive data.
+///
+/// `health_reporter()` seeds the overall server (`""`) as `Serving`; we also
+/// advertise each registered service by name so a per-service `Check` returns
+/// `SERVING` rather than `NotFound`. The trait bound is spelled via
+/// `tonic_health::pb::health_server::Health` because `tonic_health::server`
+/// only re-exports the trait privately.
+async fn serving_health_service(
+) -> tonic_health::pb::health_server::HealthServer<impl tonic_health::pb::health_server::Health + use<>> {
+    let (reporter, health_service) = tonic_health::server::health_reporter();
+    reporter.set_serving::<PolicyServiceServer<PolicyServiceImpl>>().await;
+    reporter.set_serving::<AuditServiceServer<AuditServiceImpl>>().await;
+    reporter
+        .set_serving::<AgentLifecycleServiceServer<AgentLifecycleServiceImpl>>()
+        .await;
+    reporter
+        .set_serving::<ApprovalServiceServer<ApprovalServiceImpl>>()
+        .await;
+    reporter
+        .set_serving::<TopologyServiceServer<TopologyServiceImpl>>()
+        .await;
+    reporter.set_serving::<SecretsServiceServer<SecretsServiceImpl>>().await;
+    reporter
+        .set_serving::<InvalidationServiceServer<InvalidationServiceImpl>>()
+        .await;
+    health_service
+}
+
 /// Start the gRPC server on a TCP address.
 ///
 /// Loads the policy from `policy_path`, wraps it in a `PolicyServiceImpl`, and
@@ -650,6 +687,8 @@ pub async fn serve_tcp(
     tracing::info!(%addr, "starting gRPC server on TCP (per-RPC credential auth enforced)");
 
     Server::builder()
+        // AAASM-4759: unauthenticated liveness endpoint — see `serving_health_service`.
+        .add_service(serving_health_service().await)
         .add_service(InterceptedService::new(
             PolicyServiceServer::new(policy_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
             enrich.clone(),
@@ -793,6 +832,8 @@ pub async fn serve_uds(
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(uds);
 
     Server::builder()
+        // AAASM-4759: unauthenticated liveness endpoint — see `serving_health_service`.
+        .add_service(serving_health_service().await)
         .add_service(InterceptedService::new(
             PolicyServiceServer::new(policy_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
             enrich.clone(),
