@@ -191,7 +191,9 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
     };
 
     let mut tracker = BudgetTracker::with_state_and_alert_sender(
-        crate::budget::PricingTable::default_table(),
+        // AAASM-4793: honours AA_PRICING_FILE when the operator has set it,
+        // falling back to default_table() unchanged when unset.
+        crate::budget::PricingTable::from_env(),
         daily_limit,
         monthly_limit,
         persisted,

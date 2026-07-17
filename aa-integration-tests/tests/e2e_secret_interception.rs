@@ -1327,10 +1327,11 @@ mod runtime_bypass {
         // The *authoritative* outcome — the security decision the runtime commits
         // to — must be identical whether or not the SDK forged a preflight label:
         // the same secret is found, redacted identically, and neither event is
-        // clean. AAASM-4744 additionally scans label *values* for secrets, so the
-        // raw `scanned_bytes` work counter is deliberately excluded from the
-        // authoritative comparison here: the forged event carries an extra label
-        // value, so the runtime does strictly MORE scan work on it, never less.
+        // clean. AAASM-4744/4793 additionally scans label *keys and values* for
+        // secrets, so the raw `scanned_bytes` work counter is deliberately excluded
+        // from the authoritative comparison here: the forged event carries an extra
+        // label key and value, so the runtime does strictly MORE scan work on it,
+        // never less.
         assert_eq!(
             outcome_without.findings, outcome_with.findings,
             "the same secret must be found and redacted identically either way"
@@ -1355,13 +1356,14 @@ mod runtime_bypass {
         );
         assert!(!outcome_without.is_clean(), "the secret is caught in both cases");
         // The only divergence is the observability counter: scanning the forged
-        // label's value adds exactly its byte length to the work total. A forged
+        // label's key and value adds exactly their combined byte length to the
+        // work total (AAASM-4793 scans label keys as well as values). A forged
         // preflight label can therefore only lengthen — never shorten — the
         // authoritative scan, which is itself the fail-safe invariant.
         assert_eq!(
             outcome_with.scanned_bytes,
-            outcome_without.scanned_bytes + "clean".len(),
-            "the forged label only adds scan work equal to its value length"
+            outcome_without.scanned_bytes + "x-aa-preflight".len() + "clean".len(),
+            "the forged label adds scan work equal to its key + value length"
         );
     }
 }
