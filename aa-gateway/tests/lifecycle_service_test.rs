@@ -19,29 +19,47 @@ use tonic::transport::{Channel, Server};
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/// The deterministic test signing key whose public half is
-/// [`test_ed25519_public_key_hex`].
-fn test_signing_key() -> ed25519_dalek::SigningKey {
-    ed25519_dalek::SigningKey::from_bytes(&[42u8; 32])
+/// The deterministic test keypair. Register/RequestChallenge now bind the
+/// `agent_id` did:key to `public_key` (AAASM-4787) — rejecting a did:key that
+/// does not encode the same Ed25519 key as `public_key` — so the fixture derives
+/// the did:key, the `public_key`, and the possession proof from one keypair. The
+/// identity matches [`register_with_sdk_derived_did_key_is_accepted`] so both
+/// resolve to the same did:key.
+fn test_keypair() -> aa_sdk_client::AgentKeypair {
+    aa_sdk_client::AgentKeypair::derive("my-agent-001")
 }
 
-/// Generate a hex-encoded Ed25519 public key for testing.
+/// The fixture's hex-encoded Ed25519 public key — the same key its `agent_id`
+/// did:key encodes.
 fn test_ed25519_public_key_hex() -> String {
-    hex::encode(test_signing_key().verifying_key().as_bytes())
+    test_keypair().public_key_hex()
 }
 
 /// AAASM-3866: drive the two-step registration handshake against a live server.
 ///
 /// Requests a fresh server nonce for `req`'s `agent_id` + `public_key`, signs it
-/// with the test key, and submits Register with the nonce + proof. Any
-/// `possession_proof` / `registration_nonce` already set on `req` is overwritten
-/// — the server-issued nonce is authoritative. Negative cases where the server
-/// rejects the challenge itself (e.g. malformed key/id) surface that error.
+/// with the shared [`test_keypair`], and submits Register with the nonce + proof.
+/// Any `possession_proof` / `registration_nonce` already set on `req` is
+/// overwritten — the server-issued nonce is authoritative. Negative cases where
+/// the server rejects the challenge itself (e.g. malformed key/id) surface that
+/// error. Use [`register_with_challenge_as`] when a request carries a `public_key`
+/// other than the shared fixture's.
 async fn register_with_challenge(
     client: &mut AgentLifecycleServiceClient<Channel>,
+    req: RegisterRequest,
+) -> Result<tonic::Response<RegisterResponse>, tonic::Status> {
+    register_with_challenge_as(client, &test_keypair(), req).await
+}
+
+/// Like [`register_with_challenge`] but signs the possession proof with `kp` — for
+/// topology tests where each agent carries its own keypair so its `agent_id`
+/// did:key binds to its own `public_key` (AAASM-4787). `kp` must be the keypair
+/// whose `public_key` the request declares.
+async fn register_with_challenge_as(
+    client: &mut AgentLifecycleServiceClient<Channel>,
+    kp: &aa_sdk_client::AgentKeypair,
     mut req: RegisterRequest,
 ) -> Result<tonic::Response<RegisterResponse>, tonic::Status> {
-    use ed25519_dalek::Signer;
     let agent_id = req.agent_id.clone().expect("agent_id must be set for challenge");
     let public_key = req.public_key.clone();
     let challenge = client
@@ -51,7 +69,7 @@ async fn register_with_challenge(
         })
         .await?
         .into_inner();
-    req.possession_proof = test_signing_key().sign(&challenge.nonce).to_bytes().to_vec();
+    req.possession_proof = kp.sign(&challenge.nonce).to_vec();
     req.registration_nonce = challenge.nonce;
     client.register(req).await
 }
@@ -60,7 +78,7 @@ fn test_agent_id() -> ProtoAgentId {
     ProtoAgentId {
         org_id: "org-test".into(),
         team_id: "team-test".into(),
-        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+        agent_id: test_keypair().did_key(),
     }
 }
 
@@ -632,14 +650,17 @@ async fn register_echoes_parent_agent_id_and_team_id() {
         .await
         .unwrap();
 
-    // Register the parent first so the sub-agent can be accepted.
+    // Register the parent first so the sub-agent can be accepted. Each agent
+    // carries its own keypair so its did:key binds to its own public_key.
+    let parent_kp = aa_sdk_client::AgentKeypair::derive("echo-parent");
     let parent_id = ProtoAgentId {
         org_id: "org-echo".into(),
         team_id: "team-echo".into(),
-        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into(),
+        agent_id: parent_kp.did_key(),
     };
-    register_with_challenge(
+    register_with_challenge_as(
         &mut client,
+        &parent_kp,
         RegisterRequest {
             agent_id: Some(parent_id),
             name: "parent-agent".into(),
@@ -647,7 +668,7 @@ async fn register_echoes_parent_agent_id_and_team_id() {
             version: "1.0.0".into(),
             risk_tier: 0,
             tool_names: vec![],
-            public_key: test_ed25519_public_key_hex(),
+            public_key: parent_kp.public_key_hex(),
             metadata: Default::default(),
             ..Default::default()
         },
@@ -655,14 +676,16 @@ async fn register_echoes_parent_agent_id_and_team_id() {
     .await
     .unwrap();
 
+    let child_kp = aa_sdk_client::AgentKeypair::derive("echo-child");
     let agent_id = ProtoAgentId {
         org_id: "org-echo".into(),
         team_id: "team-echo".into(),
-        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T".into(),
+        agent_id: child_kp.did_key(),
     };
 
-    let reg_resp = register_with_challenge(
+    let reg_resp = register_with_challenge_as(
         &mut client,
+        &child_kp,
         RegisterRequest {
             agent_id: Some(agent_id),
             name: "echo-agent".into(),
@@ -670,9 +693,9 @@ async fn register_echoes_parent_agent_id_and_team_id() {
             version: "1.0.0".into(),
             risk_tier: 0,
             tool_names: vec![],
-            public_key: test_ed25519_public_key_hex(),
+            public_key: child_kp.public_key_hex(),
             metadata: Default::default(),
-            parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into()),
+            parent_agent_id: Some(parent_kp.did_key()),
             ..Default::default()
         },
     )
@@ -680,10 +703,7 @@ async fn register_echoes_parent_agent_id_and_team_id() {
     .unwrap()
     .into_inner();
 
-    assert_eq!(
-        reg_resp.parent_agent_id,
-        Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into())
-    );
+    assert_eq!(reg_resp.parent_agent_id, Some(parent_kp.did_key()));
     assert_eq!(reg_resp.team_id, Some("team-echo".into()));
     // root_agent_id must be echoed back — parent is root so root = parent's key
     assert!(reg_resp.root_agent_id.is_some());
@@ -700,7 +720,7 @@ async fn register_without_topology_returns_none_echo_fields() {
     let agent_id = ProtoAgentId {
         org_id: "org-no-topo".into(),
         team_id: String::new(),
-        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+        agent_id: test_keypair().did_key(),
     };
 
     let reg_resp = register_with_challenge(
@@ -737,7 +757,7 @@ async fn root_agent_id_for_root_agent_is_set_to_self() {
     let agent_proto_id = ProtoAgentId {
         org_id: "root-org".into(),
         team_id: "root-team".into(),
-        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+        agent_id: test_keypair().did_key(),
     };
     let expected_key = aa_gateway::registry::convert::proto_agent_id_to_key(&agent_proto_id);
 
@@ -777,15 +797,17 @@ async fn root_agent_id_chains_3_levels() {
     let org = "chain-org";
     let team = "chain-team";
 
-    // Register A (root).
+    // Register A (root). Each agent carries its own keypair (AAASM-4787).
+    let kp_a = aa_sdk_client::AgentKeypair::derive("chain-A");
     let proto_a = ProtoAgentId {
         org_id: org.into(),
         team_id: team.into(),
-        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into(),
+        agent_id: kp_a.did_key(),
     };
     let key_a = aa_gateway::registry::convert::proto_agent_id_to_key(&proto_a);
-    register_with_challenge(
+    register_with_challenge_as(
         &mut client,
+        &kp_a,
         RegisterRequest {
             agent_id: Some(proto_a),
             name: "A".into(),
@@ -793,7 +815,7 @@ async fn root_agent_id_chains_3_levels() {
             version: "1.0.0".into(),
             risk_tier: 0,
             tool_names: vec![],
-            public_key: test_ed25519_public_key_hex(),
+            public_key: kp_a.public_key_hex(),
             metadata: Default::default(),
             ..Default::default()
         },
@@ -802,13 +824,15 @@ async fn root_agent_id_chains_3_levels() {
     .unwrap();
 
     // Register B (parent = A).
+    let kp_b = aa_sdk_client::AgentKeypair::derive("chain-B");
     let proto_b = ProtoAgentId {
         org_id: org.into(),
         team_id: team.into(),
-        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T".into(),
+        agent_id: kp_b.did_key(),
     };
-    register_with_challenge(
+    register_with_challenge_as(
         &mut client,
+        &kp_b,
         RegisterRequest {
             agent_id: Some(proto_b),
             name: "B".into(),
@@ -816,9 +840,9 @@ async fn root_agent_id_chains_3_levels() {
             version: "1.0.0".into(),
             risk_tier: 0,
             tool_names: vec![],
-            public_key: test_ed25519_public_key_hex(),
+            public_key: kp_b.public_key_hex(),
             metadata: Default::default(),
-            parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD2T".into()),
+            parent_agent_id: Some(kp_a.did_key()),
             ..Default::default()
         },
     )
@@ -826,13 +850,15 @@ async fn root_agent_id_chains_3_levels() {
     .unwrap();
 
     // Register C (parent = B). C's root_agent_id must equal A's key.
+    let kp_c = aa_sdk_client::AgentKeypair::derive("chain-C");
     let proto_c = ProtoAgentId {
         org_id: org.into(),
         team_id: team.into(),
-        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD4T".into(),
+        agent_id: kp_c.did_key(),
     };
-    let resp_c = register_with_challenge(
+    let resp_c = register_with_challenge_as(
         &mut client,
+        &kp_c,
         RegisterRequest {
             agent_id: Some(proto_c),
             name: "C".into(),
@@ -840,9 +866,9 @@ async fn root_agent_id_chains_3_levels() {
             version: "1.0.0".into(),
             risk_tier: 0,
             tool_names: vec![],
-            public_key: test_ed25519_public_key_hex(),
+            public_key: kp_c.public_key_hex(),
             metadata: Default::default(),
-            parent_agent_id: Some("did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD3T".into()),
+            parent_agent_id: Some(kp_b.did_key()),
             ..Default::default()
         },
     )
@@ -1033,7 +1059,7 @@ async fn root_agent_id_when_parent_unknown_returns_invalid_argument() {
             agent_id: Some(ProtoAgentId {
                 org_id: "unknown-org".into(),
                 team_id: "unknown-team".into(),
-                agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+                agent_id: test_keypair().did_key(),
             }),
             name: "orphan".into(),
             framework: "custom".into(),
@@ -1075,7 +1101,7 @@ async fn register_drops_client_supplied_weaker_enforcement_mode() {
     let proto_id = ProtoAgentId {
         org_id: "org-obs".into(),
         team_id: "team-obs".into(),
-        agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+        agent_id: test_keypair().did_key(),
     };
 
     register_with_challenge(
@@ -1124,8 +1150,7 @@ async fn connect(addr: SocketAddr) -> AgentLifecycleServiceClient<Channel> {
 
 /// Sign `payload` with the test key and return the raw 64-byte proof.
 fn sign(payload: &[u8]) -> Vec<u8> {
-    use ed25519_dalek::Signer;
-    test_signing_key().sign(payload).to_bytes().to_vec()
+    test_keypair().sign(payload).to_vec()
 }
 
 #[tokio::test]
@@ -1269,7 +1294,7 @@ async fn untenanted_default_accepts_team_less_registration() {
             ProtoAgentId {
                 org_id: "org-untenanted".into(),
                 team_id: String::new(),
-                agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+                agent_id: test_keypair().did_key(),
             },
             "team-less-untenanted",
         ),
@@ -1293,7 +1318,7 @@ async fn tenanted_rejects_team_less_registration() {
             ProtoAgentId {
                 org_id: "org-tenanted".into(),
                 team_id: String::new(),
-                agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+                agent_id: test_keypair().did_key(),
             },
             "team-less-tenanted",
         ),
@@ -1320,7 +1345,7 @@ async fn tenanted_accepts_registration_with_team() {
             ProtoAgentId {
                 org_id: "org-tenanted".into(),
                 team_id: "team-alpha".into(),
-                agent_id: "did:key:z6Mkm5rByiqq5UNbvPFPfXtGJwdg2kD1T".into(),
+                agent_id: test_keypair().did_key(),
             },
             "teamed-tenanted",
         ),
