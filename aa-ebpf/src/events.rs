@@ -46,7 +46,9 @@ impl FileIoEvent {
     /// Parse a [`FileIoEventRaw`] received from the BPF perf event array
     /// into a userspace-friendly [`FileIoEvent`].
     pub fn from_raw(raw: &FileIoEventRaw) -> Result<Self, EbpfError> {
-        let syscall = match raw.syscall {
+        let syscall_type = SyscallType::try_from(raw.syscall)
+            .map_err(|e| EbpfError::EventParse(format!("unknown syscall discriminant: {}", e.0)))?;
+        let syscall = match syscall_type {
             SyscallType::Openat => SyscallKind::Openat,
             SyscallType::Read => SyscallKind::Read,
             SyscallType::Write => SyscallKind::Write,
@@ -87,7 +89,7 @@ mod tests {
             pid: 42,
             tid: 43,
             timestamp_ns: 1_000_000,
-            syscall,
+            syscall: syscall as u32,
             flags,
             return_code: 3,
             duration_ns: 0,
