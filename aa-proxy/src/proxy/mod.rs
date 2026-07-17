@@ -311,7 +311,11 @@ impl ProxyServer {
             agent_id: None,
             host: host.to_owned(),
             method: req.method.clone(),
-            path: req.target.clone(),
+            // The target can carry a secret in its query string (`?key=…`,
+            // `?token=…`, a presigned `?X-Amz-Signature=…`), so it is redacted
+            // through the same scanner as the body before being persisted — the
+            // body-only redaction left target secrets in cleartext (AAASM-4738).
+            path: self.interceptor.redact_target(&req.target),
             decision,
             credential_findings: verdict.findings.clone(),
             redacted_body,
@@ -1530,6 +1534,78 @@ mod tests {
         assert!(
             buf.contains("403"),
             "trailing-dot cleartext request to an LLM host must be refused with 403, got: {buf:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_entry_never_writes_raw_secret_in_request_target() {
+        // AAASM-4738 regression: a secret carried in the request target's query
+        // string (e.g. `?key=…`, `?token=…`, a presigned `?X-Amz-Signature=…`)
+        // must be redacted before it reaches the proxy audit JSONL, exactly as
+        // the body is. Previously `emit_audit_entry` stored `req.target`
+        // verbatim, leaking the secret in cleartext.
+        use crate::audit_jsonl::JsonlWriter;
+
+        // Synthetic AWS access key from AWS public documentation. Not real.
+        const FAKE_AWS_ACCESS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let config = ProxyConfig {
+            bind_addr: ([127, 0, 0, 1], 0).into(),
+            ca_dir: dir.path().to_path_buf(),
+            cert_cache_capacity: 8,
+            llm_only: true,
+            mitm_hosts: Vec::new(),
+            denied_hosts: Vec::new(),
+            network_allowlist: Vec::new(),
+            skip_upstream_tls_verify: false,
+            credential_action: crate::config::CredentialAction::default(),
+            upstream_override: None,
+            gateway_endpoint: None,
+            mcp_fail_open: false,
+            allow_private_connect_targets: false,
+        };
+
+        let jsonl_path = dir.path().join("proxy-audit.jsonl");
+        let (audit_tx, rx) = mpsc::channel(4);
+        let writer = JsonlWriter::new(&jsonl_path, rx).await.expect("open jsonl writer");
+        let handle = tokio::spawn(writer.run());
+
+        let (event_tx, _event_rx) = broadcast::channel(8);
+        let server = ProxyServer::new_with_audit_sink(config, ca, event_tx, Some(audit_tx));
+
+        let req = HttpRequest {
+            method: "POST".into(),
+            target: format!("/v1/upload?X-Amz-Credential=demo&key={FAKE_AWS_ACCESS_KEY}"),
+            version: "HTTP/1.1".into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        // A clean body verdict — the secret rides only in the target, so this
+        // isolates target redaction from the already-covered body path.
+        let verdict = InterceptVerdict {
+            decision: VerdictDecision::Forward,
+            findings: Vec::new(),
+            redacted_body: None,
+        };
+        server
+            .emit_audit_entry("api.example.com", &req, &verdict, ProxyAuditDecision::Forwarded)
+            .await;
+
+        // Drop the last server reference so its audit sender closes and the
+        // writer task drains and exits.
+        drop(server);
+        handle.await.expect("writer task joins cleanly");
+
+        let on_disk = tokio::fs::read_to_string(&jsonl_path).await.expect("read JSONL");
+        assert!(
+            !on_disk.contains(FAKE_AWS_ACCESS_KEY),
+            "SECURITY INVARIANT VIOLATED: raw secret from request target present in proxy audit JSONL: {on_disk}",
+        );
+        assert!(
+            on_disk.contains("[REDACTED:AwsAccessKey]"),
+            "JSONL must carry the [REDACTED:AwsAccessKey] marker for the target secret, got: {on_disk}",
         );
     }
 }

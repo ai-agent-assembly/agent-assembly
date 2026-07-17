@@ -231,6 +231,24 @@ impl Interceptor {
         }
     }
 
+    /// Redact any credentials embedded in a request target (path + query
+    /// string) so it can be persisted in an audit record without leaking a
+    /// secret.
+    ///
+    /// The request target reaches the proxy audit JSONL verbatim, and a secret
+    /// can ride in a query parameter (`?key=…`, `?token=…`, a presigned
+    /// `?X-Amz-Signature=…`) just as it can in the body. It must therefore pass
+    /// through the same [`CredentialScanner`] as the body before being written
+    /// (AAASM-4738). When scanning is disabled (`with_scanner(None)`) there is
+    /// no scanner to consult and the target is returned unchanged, mirroring
+    /// the body path.
+    pub fn redact_target(&self, target: &str) -> String {
+        match self.scanner.as_ref() {
+            Some(scanner) => scanner.scan(target).redact(target),
+            None => target.to_owned(),
+        }
+    }
+
     /// Create a new `Interceptor` with default credential scanning enabled.
     pub fn new(event_tx: broadcast::Sender<PipelineEvent>) -> Self {
         Self {
