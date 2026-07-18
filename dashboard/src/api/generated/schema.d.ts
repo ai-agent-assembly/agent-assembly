@@ -5574,6 +5574,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Caller lacks the admin role required to read the global override log */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     apply_override: {

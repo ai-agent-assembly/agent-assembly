@@ -176,6 +176,16 @@ where
     type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        // AAASM-4829: reuse a caller already resolved earlier in this request's
+        // lifecycle (e.g. by the `require_authentication` route-layer gate, which
+        // inserts it into extensions). Re-running the full resolution here would
+        // repeat the argon2 API-key/JWT validation AND a second
+        // `RateLimiter::check`, double-charging the per-key rate limit for every
+        // gated request. A cached caller short-circuits both.
+        if let Some(cached) = parts.extensions.get::<AuthenticatedCaller>() {
+            return Ok(cached.clone());
+        }
+
         // 1. Read auth config from extensions.
         let auth_config = parts
             .extensions
@@ -321,5 +331,42 @@ mod tenant_guard_tests {
     fn no_tenant_scope_yields_none_not_a_client_value() {
         let caller = caller_with_org(None, vec![Scope::Read, Scope::Admin]);
         assert_eq!(caller.storage_tenant_org(), None);
+    }
+
+    /// AAASM-4829: a caller cached in request extensions (by the
+    /// `require_authentication` gate) is reused verbatim — the extractor never
+    /// re-runs credential validation or the rate-limit check. Two things prove
+    /// it: (1) the future resolves synchronously (`Poll::Ready` on first poll,
+    /// no await), and (2) neither the `AuthConfig` nor `RateLimiter` extension is
+    /// present — the resolution path would panic on the missing `AuthConfig`
+    /// rather than return the cached caller.
+    #[test]
+    fn cached_caller_in_extensions_is_reused_without_revalidation() {
+        use std::future::Future;
+        use std::pin::pin;
+        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+        fn noop_waker() -> Waker {
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(|_| RAW, |_| {}, |_| {}, |_| {});
+            const RAW: RawWaker = RawWaker::new(std::ptr::null(), &VTABLE);
+            // SAFETY: the vtable's clone/wake/drop are all no-ops over a null
+            // pointer, so the waker is inert and never dereferences the data.
+            unsafe { Waker::from_raw(RAW) }
+        }
+
+        let cached = caller_with_org(Some("org-A"), vec![Scope::Read, Scope::Write]);
+        let (mut parts, _body) = axum::http::Request::new(()).into_parts();
+        parts.extensions.insert(cached.clone());
+
+        let mut fut = pin!(AuthenticatedCaller::from_request_parts(&mut parts, &()));
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let resolved = match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(r) => r.expect("cached caller is reused"),
+            Poll::Pending => panic!("cached-caller path must complete synchronously"),
+        };
+        assert_eq!(resolved.key_id, cached.key_id);
+        assert_eq!(resolved.scopes, cached.scopes);
+        assert_eq!(resolved.tenant.org_id.as_deref(), Some("org-A"));
     }
 }
