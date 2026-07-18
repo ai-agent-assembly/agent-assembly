@@ -459,7 +459,7 @@ export function FleetPage() {
       {view === 'agents' && isError && (
         <div className="fleet-error" data-testid="agents-error">
           <span>Failed to load agents.</span>
-          <button onClick={() => ignorePromise(refetch())}>Retry</button>
+          <button type="button" onClick={() => ignorePromise(refetch())}>Retry</button>
         </div>
       )}
 

@@ -73,7 +73,7 @@ export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPa
       {isError && (
         <div data-testid="trace-error" style={{ marginTop: '1rem' }}>
           <p style={{ color: 'var(--danger)' }}>Failed to load trace.</p>
-          <button onClick={() => ignorePromise(refetch())}>Retry</button>
+          <button type="button" onClick={() => ignorePromise(refetch())}>Retry</button>
         </div>
       )}
 

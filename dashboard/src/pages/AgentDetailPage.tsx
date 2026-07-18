@@ -260,7 +260,7 @@ export function AgentDetailPage() {
         {!agentLoading && (agentError || !agent) && (
           <div style={{ padding: '1.5rem' }} data-testid="agent-detail-error">
             <p style={{ color: 'var(--danger)' }}>Failed to load agent.</p>
-            <button onClick={() => ignorePromise(refetchAgent())}>Retry</button>
+            <button type="button" onClick={() => ignorePromise(refetchAgent())}>Retry</button>
             <br />
             <button
               type="button"

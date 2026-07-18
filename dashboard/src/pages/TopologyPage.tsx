@@ -53,7 +53,7 @@ export function TopologyPage() {
       {isError && (
         <div data-testid="topology-error" className="topology-page__error">
           <p>Failed to load topology.</p>
-          <button onClick={() => ignorePromise(refetch())}>Retry</button>
+          <button type="button" onClick={() => ignorePromise(refetch())}>Retry</button>
         </div>
       )}
 

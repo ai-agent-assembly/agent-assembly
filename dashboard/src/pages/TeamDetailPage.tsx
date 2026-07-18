@@ -53,6 +53,7 @@ function OpenInTopologyButton({ agentId }: Readonly<{ agentId: string }>) {
   const rootId = lineage.data?.ancestors?.[0]?.id ?? agentId
   return (
     <button
+      type="button"
       data-testid="open-in-topology"
       onClick={() => navigate(`/topology?root=${encodeURIComponent(rootId)}`)}
       disabled={lineage.isLoading}
@@ -107,8 +108,8 @@ function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel, busy }:
         <h2 style={{ marginTop: 0 }}>{title}</h2>
         <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>{body}</div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
-          <button data-testid="confirm-cancel" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button data-testid="confirm-ok" onClick={onConfirm} disabled={busy}>
+          <button type="button" data-testid="confirm-cancel" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button type="button" data-testid="confirm-ok" onClick={onConfirm} disabled={busy}>
             {busy ? 'Working…' : confirmLabel}
           </button>
         </div>
@@ -158,10 +159,10 @@ function ActionBar({ team, onError }: Readonly<ActionBarProps>) {
         data-testid="team-action-bar"
         style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}
       >
-        <button data-testid="team-suspend-btn" onClick={() => setPending('suspend')} disabled={suspend.isPending || resume.isPending}>
+        <button type="button" data-testid="team-suspend-btn" onClick={() => setPending('suspend')} disabled={suspend.isPending || resume.isPending}>
           Suspend Team
         </button>
-        <button data-testid="team-resume-btn" onClick={() => setPending('resume')} disabled={suspend.isPending || resume.isPending}>
+        <button type="button" data-testid="team-resume-btn" onClick={() => setPending('resume')} disabled={suspend.isPending || resume.isPending}>
           Resume Team
         </button>
       </div>

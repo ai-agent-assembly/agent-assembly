@@ -90,6 +90,7 @@ export function ApprovalsFilterBar({ filter, onChange, options }: Readonly<Appro
 
       {isActive && (
         <button
+          type="button"
           data-testid="filter-clear"
           onClick={() => onChange(EMPTY_FILTER)}
           style={{
