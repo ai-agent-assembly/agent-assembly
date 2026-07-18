@@ -6,6 +6,7 @@ import { vi } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { TeamDetailPage } from './TeamDetailPage'
 import * as teamsApi from '../features/teams/api'
+import * as teamPermissions from '../features/teams/permissions'
 import type { AgentLineage, CostSummary, TeamTopology, TeamTopologyResult } from '../features/teams/api'
 
 function mockQuery<T>(p: Partial<UseQueryResult<T, Error>>): UseQueryResult<T, Error> {
@@ -94,6 +95,19 @@ describe('TeamDetailPage', () => {
     expect(screen.getByTestId('team-member-count')).toHaveTextContent('5 members')
     expect(screen.getByTestId('team-total-spend')).toHaveTextContent('$42.00')
     expect(screen.getAllByTestId('team-member-row')).toHaveLength(5)
+  })
+
+  it('clicking Resume Team opens the resume confirmation dialog (manager only)', async () => {
+    const user = userEvent.setup()
+    // The action bar only renders for a user who can manage the team.
+    vi.spyOn(teamPermissions, 'useCanManageTeam').mockReturnValue(true)
+    mockTeam({ data: FIVE_MEMBER_TEAM })
+    mockCosts()
+    mockLineage('a'.repeat(32))
+    render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-alpha']}>{children}</Wrapper> })
+    await screen.findByTestId('team-detail-header')
+    await user.click(screen.getByTestId('team-resume-btn'))
+    expect(await screen.findByText('Resume entire team?')).toBeInTheDocument()
   })
 
   it('renders empty-members message when team has no members', async () => {

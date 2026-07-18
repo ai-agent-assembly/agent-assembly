@@ -65,6 +65,21 @@ describe('TeamsPage', () => {
     await waitFor(() => expect(screen.getByTestId('teams-empty')).toBeInTheDocument())
   })
 
+  it('clicking Retry in the error state refetches the overview', async () => {
+    const user = userEvent.setup()
+    const refetch = vi.fn()
+    vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
+      mockQuery<TopologyOverview>({ data: undefined, isLoading: false, isError: true, refetch }),
+    )
+    vi.spyOn(teamsApi, 'useCostSummaryQuery').mockReturnValue(
+      mockQuery<CostSummary>({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    render(<TeamsPage />, { wrapper: Wrapper })
+    await screen.findByTestId('teams-error')
+    await user.click(screen.getByRole('button', { name: /retry/i }))
+    expect(refetch).toHaveBeenCalledTimes(1)
+  })
+
   it('renders a row per team with burn % from cost summary', async () => {
     setupMocks(makeOverview(3))
     render(<TeamsPage />, { wrapper: Wrapper })
