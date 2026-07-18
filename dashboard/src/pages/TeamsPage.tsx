@@ -139,7 +139,7 @@ export function TeamsPage() {
           style={{ color: 'var(--status-danger-solid)', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
         >
           <span>Failed to load teams.</span>
-          <button onClick={() => ignorePromise(overviewQuery.refetch())}>Retry</button>
+          <button type="button" onClick={() => ignorePromise(overviewQuery.refetch())}>Retry</button>
         </div>
       )}
 
@@ -213,6 +213,7 @@ export function TeamsPage() {
           style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.75rem' }}
         >
           <button
+            type="button"
             data-testid="teams-prev"
             onClick={() => table.previousPage()}
             disabled={!table.getCanPreviousPage()}
@@ -223,6 +224,7 @@ export function TeamsPage() {
             Page {pageIndex + 1} of {pageCount}
           </span>
           <button
+            type="button"
             data-testid="teams-next"
             onClick={() => table.nextPage()}
             disabled={!table.getCanNextPage()}

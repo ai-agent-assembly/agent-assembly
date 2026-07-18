@@ -69,12 +69,14 @@ function RejectDialog({ count, onConfirm, onCancel }: Readonly<RejectDialogProps
         </label>
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
           <button
+            type="button"
             onClick={onCancel}
             style={{ padding: '0.4rem 0.75rem', borderRadius: '0.25rem', border: '1px solid var(--line)', cursor: 'pointer' }}
           >
             Cancel
           </button>
           <button
+            type="button"
             data-testid="reject-confirm-btn"
             disabled={!reason.trim()}
             onClick={() => onConfirm(reason.trim())}
@@ -121,10 +123,10 @@ function TabBar({
 
   return (
     <div style={{ display: 'flex', borderBottom: '1px solid var(--line)', marginBottom: '1rem' }} data-testid="tab-bar">
-      <button style={tabStyle('pending')} onClick={() => onChange('pending')} data-testid="tab-pending">
+      <button type="button" style={tabStyle('pending')} onClick={() => onChange('pending')} data-testid="tab-pending">
         Pending ({pendingCount})
       </button>
-      <button style={tabStyle('decided')} onClick={() => onChange('decided')} data-testid="tab-decided">
+      <button type="button" style={tabStyle('decided')} onClick={() => onChange('decided')} data-testid="tab-decided">
         Decided ({decidedCount})
       </button>
     </div>
@@ -259,6 +261,7 @@ export function ApprovalsPage() {
             >
               <span style={{ color: 'var(--info)', fontWeight: 500 }}>{selected.size} selected</span>
               <button
+                type="button"
                 data-testid="bulk-approve-btn"
                 onClick={() => void handleApprove(Array.from(selected))}
                 style={{
@@ -269,6 +272,7 @@ export function ApprovalsPage() {
                 Approve selected
               </button>
               <button
+                type="button"
                 data-testid="bulk-reject-btn"
                 onClick={() => setRejectFor(Array.from(selected))}
                 style={{
@@ -366,6 +370,7 @@ export function ApprovalsPage() {
                       </td>
                       <td style={{ display: 'flex', gap: '0.375rem' }} onClick={(e) => e.stopPropagation()}>
                         <button
+                          type="button"
                           data-testid="approve-btn"
                           onClick={() => void handleApprove([row.id])}
                           style={{
@@ -376,6 +381,7 @@ export function ApprovalsPage() {
                           Approve
                         </button>
                         <button
+                          type="button"
                           data-testid="reject-btn"
                           onClick={() => setRejectFor([row.id])}
                           style={{

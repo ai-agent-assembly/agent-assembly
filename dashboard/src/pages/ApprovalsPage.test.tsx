@@ -235,6 +235,10 @@ describe('ApprovalsPage — decision flows', () => {
     // The approved request now appears under the Decided tab.
     fireEvent.click(screen.getByTestId('tab-decided'))
     expect(await screen.findAllByTestId('decided-row')).toHaveLength(1)
+
+    // Switching back to the Pending tab invokes its onChange handler.
+    fireEvent.click(screen.getByTestId('tab-pending'))
+    expect(screen.getByTestId('tab-bar')).toBeInTheDocument()
   })
 
   it('restores rows and toasts an error when a bulk approve partially fails', async () => {

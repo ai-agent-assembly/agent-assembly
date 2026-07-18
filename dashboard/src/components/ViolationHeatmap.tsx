@@ -236,6 +236,7 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Readonly<Props>) {
         <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
           Showing {maxNodes} of {nodes.length} agents.{" "}
           <button
+            type="button"
             style={{ color: "var(--shell-accent)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
             onClick={() => setShowAll(true)}
           >

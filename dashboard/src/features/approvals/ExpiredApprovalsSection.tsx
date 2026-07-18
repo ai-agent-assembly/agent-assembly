@@ -14,6 +14,7 @@ export function ExpiredApprovalsSection({ rows }: Readonly<ExpiredApprovalsSecti
   return (
     <section data-testid="expired-approvals-section" style={{ marginTop: '1rem' }}>
       <button
+        type="button"
         data-testid="expired-toggle"
         aria-expanded={expanded}
         onClick={() => setExpanded((v) => !v)}

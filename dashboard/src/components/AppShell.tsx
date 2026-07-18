@@ -40,7 +40,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
         <div className="appshell__error" data-testid="error-boundary">
           <h2>Something went wrong</h2>
           <pre style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>{this.state.error.message}</pre>
-          <button onClick={() => this.setState({ error: null })} style={{ marginTop: '1rem' }}>
+          <button type="button" onClick={() => this.setState({ error: null })} style={{ marginTop: '1rem' }}>
             Try again
           </button>
         </div>
@@ -106,6 +106,7 @@ export function AppShell() {
       <div className="appshell__main">
         <header className="appshell__topbar" data-testid="appshell-topbar">
           <button
+            type="button"
             className="appshell__hamburger"
             data-testid="nav-hamburger"
             aria-label="Toggle navigation"
@@ -127,6 +128,7 @@ export function AppShell() {
               ⚙ Settings
             </NavLink>
             <button
+              type="button"
               className="appshell__logout"
               data-testid="logout-btn"
               onClick={logout}
