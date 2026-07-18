@@ -705,7 +705,10 @@ impl ProxyServer {
         // express "but not internal addresses". Names are re-validated after
         // resolution in `dial_upstream_tls` (DNS-rebind defense).
         if !self.config.allow_private_connect_targets {
-            if let Some(true) = crate::ssrf::blocked_ip_literal(host) {
+            // AAASM-4829: strip brackets/port first so a bracketed IPv6 literal
+            // like `[::1]:443` still parses as `::1` — otherwise the SSRF guard
+            // silently misses it (the bracketed form fails `parse::<IpAddr>()`).
+            if let Some(true) = crate::ssrf::blocked_ip_literal(strip_host_port(host)) {
                 return Some("ssrf: blocked address range");
             }
         }
@@ -746,8 +749,17 @@ impl ProxyServer {
     /// CONNECT-time check already covered the destination, so this is a no-op.
     /// An empty allowlist keeps the default-open behaviour unchanged.
     fn in_tunnel_deny_reason(&self, req: &HttpRequest) -> Option<&'static str> {
-        let host = Self::effective_request_host(req)?;
-        self.connect_deny_reason(host)
+        // AAASM-4829: defense-in-depth against in-tunnel header host-splitting.
+        // Check BOTH the absolute-form request target host AND the `Host` header
+        // and deny if EITHER is disallowed — an agent must not pass the egress
+        // check by pointing the target at an allowlisted host while smuggling a
+        // disallowed host in the `Host` header (or vice versa). Previously only
+        // the target-preferred "effective" host was checked, so a mismatched
+        // pair let the un-checked half slip past the allowlist.
+        [Self::target_request_host(req), Self::header_request_host(req)]
+            .into_iter()
+            .flatten()
+            .find_map(|host| self.connect_deny_reason(host))
     }
 
     /// Extract the effective upstream host the in-tunnel request addresses.
@@ -755,24 +767,31 @@ impl ProxyServer {
     /// Prefers an absolute-form request target (`https://host/...`); otherwise
     /// falls back to the `Host` header. The port (if any) is stripped so the
     /// result is comparable against the allowlist/denylist host grammar.
-    /// Returns `None` when neither yields a host.
+    /// Returns `None` when neither yields a host. Used for logging; the egress
+    /// decision in [`Self::in_tunnel_deny_reason`] checks *both* hosts, not just
+    /// this preferred one.
     fn effective_request_host(req: &HttpRequest) -> Option<&str> {
-        // Absolute-form target, e.g. "https://evil.attacker.com/v1/..." or
-        // "http://evil.attacker.com/...". Strip the scheme, then keep up to the
-        // first '/' (path) — leaving "host[:port]".
-        let from_target = req
+        Self::target_request_host(req).or_else(|| Self::header_request_host(req))
+    }
+
+    /// Host named by an absolute-form request target (`https://host/...` or
+    /// `http://host/...`), with brackets/port stripped, or `None` for an
+    /// origin-form target (`/path`).
+    fn target_request_host(req: &HttpRequest) -> Option<&str> {
+        let rest = req
             .target
             .strip_prefix("https://")
-            .or_else(|| req.target.strip_prefix("http://"))
-            .map(|rest| rest.split('/').next().unwrap_or(rest));
+            .or_else(|| req.target.strip_prefix("http://"))?;
+        let host_port = rest.split('/').next().unwrap_or(rest);
+        let host = strip_host_port(host_port);
+        (!host.is_empty()).then_some(host)
+    }
 
-        let host_port = from_target.or_else(|| req.header("host"))?;
-        let host = host_port.split(':').next().unwrap_or(host_port).trim();
-        if host.is_empty() {
-            None
-        } else {
-            Some(host)
-        }
+    /// Host named by the `Host` header, with brackets/port stripped, or `None`
+    /// when the header is absent or empty.
+    fn header_request_host(req: &HttpRequest) -> Option<&str> {
+        let host = strip_host_port(req.header("host")?);
+        (!host.is_empty()).then_some(host)
     }
 
     /// Inspect, enforce, and forward an LLM-pattern HTTPS request inside an
@@ -1118,7 +1137,7 @@ impl ProxyServer {
         // bypasses `denied_hosts`/`network_allowlist` — the SSRF resolved-IP
         // recheck below only guards address ranges, not policy hosts. Deny here
         // (before any upstream dial), mirroring the CONNECT path's 403.
-        let deny_host = host.split(':').next().unwrap_or(&host);
+        let deny_host = strip_host_port(&host);
         if let Some(reason) = self.connect_deny_reason(deny_host) {
             tracing::info!(host = %deny_host, "plain-HTTP egress denied: {reason}");
             self.interceptor.emit_policy_decision(deny_host, true).await;
@@ -1208,9 +1227,44 @@ impl ProxyServer {
 /// trailing dot. Canonicalising once — strip the port, strip a single trailing
 /// dot, lowercase — closes that bypass. The result carries no port.
 fn canonical_host(host: &str) -> String {
-    let no_port = host.split(':').next().unwrap_or(host);
+    let no_port = strip_host_port(host);
     let no_dot = no_port.strip_suffix('.').unwrap_or(no_port);
     no_dot.to_ascii_lowercase()
+}
+
+/// Strip an optional `:port` suffix from a host, correctly handling a bracketed
+/// IPv6 literal (AAASM-4829).
+///
+/// A bare `host.split(':').next()` mangles IPv6 literals: `[::1]:443` becomes
+/// `[`, which both lets the CONNECT-time `ssrf::blocked_ip_literal` check miss
+/// the real address (it can no longer `parse::<IpAddr>()`) and over-blocks
+/// legitimate IPv6 under a denylist. This unwraps the brackets and drops the
+/// port so the returned value is the real literal (`::1`).
+///
+/// Rules:
+/// - `[<ipv6>]:port` / `[<ipv6>]` → `<ipv6>` (brackets and port removed).
+/// - `host:port` (single `:`) → `host`.
+/// - a bare, unbracketed IPv6 literal (multiple `:`, no brackets) is returned
+///   whole — an IPv6 address requires brackets to carry a port, so every colon
+///   is part of the address.
+/// - anything else is returned unchanged (trimmed).
+fn strip_host_port(host: &str) -> &str {
+    let host = host.trim();
+    if let Some(rest) = host.strip_prefix('[') {
+        // Bracketed IPv6 literal — take the text up to the closing bracket,
+        // discarding any `:port` that follows it. A malformed value with no
+        // closing bracket falls back to the un-bracketed remainder.
+        return match rest.find(']') {
+            Some(end) => &rest[..end],
+            None => rest,
+        };
+    }
+    match host.rfind(':') {
+        // More than one colon and no brackets → bare IPv6 literal, no port.
+        Some(idx) if host[..idx].contains(':') => host,
+        Some(idx) => &host[..idx],
+        None => host,
+    }
 }
 
 /// Parse the upstream host for a plain (non-CONNECT) HTTP request from the
@@ -1367,6 +1421,43 @@ mod tests {
         assert_eq!(canonical_host("evil.com"), "evil.com");
     }
 
+    #[test]
+    fn strip_host_port_handles_bracketed_ipv6() {
+        // AAASM-4829: a bracketed IPv6 literal must yield the real address, not
+        // the mangled `[` that `split(':')` produced.
+        assert_eq!(strip_host_port("[::1]:443"), "::1");
+        assert_eq!(strip_host_port("[::1]"), "::1");
+        assert_eq!(strip_host_port("[2001:db8::1]:8443"), "2001:db8::1");
+        // Bare (unbracketed) IPv6 literal has no port — every colon is address.
+        assert_eq!(strip_host_port("::1"), "::1");
+        assert_eq!(strip_host_port("2001:db8::1"), "2001:db8::1");
+        // IPv4 / DNS host:port and bare hosts behave as before.
+        assert_eq!(strip_host_port("1.2.3.4:80"), "1.2.3.4");
+        assert_eq!(strip_host_port("api.openai.com:443"), "api.openai.com");
+        assert_eq!(strip_host_port("api.openai.com"), "api.openai.com");
+    }
+
+    #[test]
+    fn canonical_host_preserves_bracketed_ipv6_literal() {
+        // AAASM-4829: the previous `split(':')` mangled `[::1]:443` into `[`,
+        // breaking both denylist compares and the SSRF check.
+        assert_eq!(canonical_host("[::1]:443"), "::1");
+        assert_eq!(canonical_host("[2001:DB8::1]:8443"), "2001:db8::1");
+    }
+
+    #[tokio::test]
+    async fn connect_deny_reason_blocks_bracketed_ipv6_loopback() {
+        // AAASM-4829: `[::1]:443` must be caught by the SSRF guard. Before the
+        // bracket-aware port strip, `blocked_ip_literal("[::1]:443")` failed to
+        // parse and the loopback literal slipped through fail-open.
+        let server = server_with(vec![], vec![]).await;
+        assert_eq!(
+            server.connect_deny_reason("[::1]:443"),
+            Some("ssrf: blocked address range")
+        );
+        assert_eq!(server.connect_deny_reason("[::1]"), Some("ssrf: blocked address range"));
+    }
+
     #[tokio::test]
     async fn connect_deny_reason_denylist_defeats_case_and_trailing_dot_evasion() {
         // AAASM-3983: a lowercase `evil.com` denylist entry must catch the
@@ -1425,6 +1516,29 @@ mod tests {
         assert_eq!(server.in_tunnel_deny_reason(&forged), Some("network allowlist"));
         // The allowlisted host inside the tunnel is permitted.
         let ok = req_with(vec![("Host", "api.openai.com")], "/v1/chat/completions");
+        assert_eq!(server.in_tunnel_deny_reason(&ok), None);
+    }
+
+    #[tokio::test]
+    async fn in_tunnel_deny_reason_blocks_disallowed_host_header_with_allowed_target() {
+        // AAASM-4829: header host-splitting defense. The absolute-form target
+        // points at the allowlisted host, but the `Host` header smuggles a
+        // disallowed one. Because BOTH hosts are now checked, the forged header
+        // is denied even though the target alone would have passed.
+        let server = server_with(vec![], vec!["api.openai.com".to_string()]).await;
+        let split = req_with(
+            vec![("Host", "evil.attacker.com")],
+            "https://api.openai.com/v1/chat/completions",
+        );
+        assert_eq!(server.in_tunnel_deny_reason(&split), Some("network allowlist"));
+        // The symmetric case: allowed header, disallowed absolute target.
+        let split2 = req_with(
+            vec![("Host", "api.openai.com")],
+            "https://evil.attacker.com/v1/chat/completions",
+        );
+        assert_eq!(server.in_tunnel_deny_reason(&split2), Some("network allowlist"));
+        // Both halves allowlisted → permitted.
+        let ok = req_with(vec![("Host", "api.openai.com")], "https://api.openai.com/v1/chat");
         assert_eq!(server.in_tunnel_deny_reason(&ok), None);
     }
 
