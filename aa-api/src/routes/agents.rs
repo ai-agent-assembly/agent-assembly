@@ -56,6 +56,23 @@ fn authorize_agent_access(
     Ok(())
 }
 
+/// Whether a descendant discovered while walking an authorized root's subtree
+/// is itself visible to `caller` (AAASM-4841).
+///
+/// A subtree endpoint authorizes its root once (via [`authorize_agent_access`]),
+/// but the root's descendants can be delegated into *other* teams — the same
+/// cross-tenant hazard the topology tree closed in AAASM-4819. Emitting such a
+/// node's id / name / spend, or folding it into a subtree aggregate, is a
+/// cross-tenant IDOR. Gate every descendant on the same team boundary as
+/// [`list_agents`] (AAASM-3865): an admin sees all; a team-scoped caller sees
+/// only its own team's nodes; a team-less node is admin-only.
+fn descendant_visible_to(caller: &AuthenticatedCaller, record: &aa_gateway::registry::AgentRecord) -> bool {
+    match record.team_id.as_deref() {
+        Some(team) => caller.can_access_team(team),
+        None => caller.scopes.contains(&Scope::Admin),
+    }
+}
+
 /// Parse a hex-encoded agent ID string into a 16-byte array.
 ///
 /// Decodes via [`hex::decode`] rather than slicing the input by byte index: the
@@ -632,7 +649,23 @@ pub async fn get_agent_budget(
         return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
             .with_detail("Reading this agent's budget rollup requires admin scope or membership in its team"));
     }
-    let descendants = state.agent_registry.descendants_of(&agent_id_bytes);
+    // AAASM-4841: descendants can be delegated into other teams, and
+    // `subtree_spend` sums every descendant's spend regardless of team. Without
+    // filtering, the "subtree" row would fold a cross-tenant descendant's spend
+    // into the aggregate shown to this caller — an aggregate cross-tenant leak
+    // of the same class as the per-child subtree-burn IDOR. Confine the subtree
+    // to descendants the caller may see (an admin sees all).
+    let descendants: Vec<[u8; 16]> = state
+        .agent_registry
+        .descendants_of(&agent_id_bytes)
+        .into_iter()
+        .filter(|d| {
+            state
+                .agent_registry
+                .get(d)
+                .is_some_and(|rec| descendant_visible_to(&caller, &rec))
+        })
+        .collect();
 
     let rollup = aa_gateway::budget::compute_budget_rollup(
         &agent_id,
@@ -775,20 +808,27 @@ pub async fn get_agent_subtree_burn(
     children.sort();
     for child_id_bytes in children {
         let child_id = aa_core::identity::AgentId::from_bytes(child_id_bytes);
+        // AAASM-4841: the root was authorized by `authorize_agent_access`, but a
+        // direct child may be delegated into another team. Emitting its id /
+        // name / daily spend without a per-child tenant check leaks a
+        // cross-tenant child, exactly the class AAASM-4819 closed in the
+        // topology tree. Omit any child the caller may not see (a missing
+        // record is likewise skipped) so the series never crosses the boundary.
+        let Some(child_record) = state.agent_registry.get(&child_id_bytes) else {
+            continue;
+        };
+        if !descendant_visible_to(&caller, &child_record) {
+            continue;
+        }
         let series = state.budget_tracker.agent_spend_history(&child_id, period_days);
         // Skip children with no recorded spend across the entire window — they
         // would render as a flat zero band and add noise to the legend.
         if !series.iter().any(|(_, amount)| *amount > rust_decimal::Decimal::ZERO) {
             continue;
         }
-        let child_name = state
-            .agent_registry
-            .get(&child_id_bytes)
-            .map(|rec| rec.name)
-            .unwrap_or_else(|| hex::encode(child_id_bytes));
         grids.push(ChildGrid {
             agent_id_hex: hex::encode(child_id_bytes),
-            name: child_name,
+            name: child_record.name,
             series,
         });
     }
