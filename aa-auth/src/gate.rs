@@ -33,7 +33,13 @@ pub async fn require_authentication(request: Request, next: Next) -> Response {
     // `()` is a valid `S: Send + Sync` state for the extractor — all auth
     // inputs come from request extensions, not router state.
     match AuthenticatedCaller::from_request_parts(&mut parts, &()).await {
-        Ok(_caller) => {
+        Ok(caller) => {
+            // AAASM-4829: cache the resolved caller in request extensions so a
+            // downstream extractor (`AuthenticatedCaller` / `RequireRead` / …)
+            // reuses it instead of re-running argon2 validation and a SECOND
+            // `RateLimiter::check` — the double rate-check halved each key's
+            // effective limit for every gated request.
+            parts.extensions.insert(caller);
             let request = Request::from_parts(parts, body);
             next.run(request).await
         }
