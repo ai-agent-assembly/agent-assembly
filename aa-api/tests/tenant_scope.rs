@@ -102,6 +102,20 @@ fn hex_id(id_byte: u8) -> String {
     format!("{id_byte:02x}").repeat(16)
 }
 
+/// Turn a root record into a depth-1 delegated child of `parent_byte`, so the
+/// registry links it under the parent (`register` pushes it into the parent's
+/// `children`, and `ancestors_of` walks back up via `parent_key`). Used by the
+/// AAASM-4819 tree/lineage cross-tenant tests, where a child and its parent
+/// deliberately belong to different tenants.
+fn child_of(mut rec: AgentRecord, parent_byte: u8) -> AgentRecord {
+    rec.depth = 1;
+    rec.parent_key = Some([parent_byte; 16]);
+    rec.parent_agent_id = Some(format!("{parent_byte}"));
+    rec.root_agent_id = Some([parent_byte; 16]);
+    rec.delegation_reason = Some("subtask".to_string());
+    rec
+}
+
 #[tokio::test]
 async fn costs_tenant_caller_sees_only_its_own_team() {
     let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
@@ -500,6 +514,122 @@ async fn topology_tree_cross_tenant_read_is_404() {
     let uri = format!("/api/v1/topology/tree/{}", hex_id(0x71));
     let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// AAASM-4819 — the tree recursion must enforce the tenant boundary on every
+/// descendant, not just the root. A visible root whose subtree contains a
+/// different-team child must return a tree WITHOUT that child (and without its
+/// name / team_id), while the same-team child is still returned.
+#[tokio::test]
+async fn topology_tree_omits_cross_tenant_descendant() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    // Root and one child in team alpha; a second child delegated into team beta.
+    state.agent_registry.register(agent_with_team(0x01, "alpha")).unwrap();
+    state
+        .agent_registry
+        .register(child_of(agent_with_team(0x02, "alpha"), 0x01))
+        .unwrap();
+    state
+        .agent_registry
+        .register(child_of(agent_with_team(0x03, "beta"), 0x01))
+        .unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/topology/tree/{}", hex_id(0x01));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+
+    let children = json["children"].as_array().unwrap();
+    // Only the same-team child survives; the beta child is pruned entirely.
+    assert_eq!(
+        children.len(),
+        1,
+        "cross-tenant descendant must be omitted from the tree"
+    );
+    assert_eq!(children[0]["name"], "agent-2");
+    assert_eq!(children[0]["team_id"], "alpha");
+    // The beta child's identifying fields must not leak anywhere in the response.
+    let raw = json.to_string();
+    assert!(!raw.contains("agent-3"), "beta child name leaked: {raw}");
+    assert!(!raw.contains("beta"), "beta team_id leaked: {raw}");
+    assert!(!raw.contains(&hex_id(0x03)), "beta child id leaked: {raw}");
+}
+
+/// A same-team subtree is returned in full — the boundary check must not prune
+/// legitimately-visible descendants.
+#[tokio::test]
+async fn topology_tree_keeps_same_tenant_descendant() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0x11, "alpha")).unwrap();
+    state
+        .agent_registry
+        .register(child_of(agent_with_team(0x12, "alpha"), 0x11))
+        .unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/topology/tree/{}", hex_id(0x11));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let children = json["children"].as_array().unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0]["name"], "agent-18");
+}
+
+/// AAASM-4819 — the lineage ancestor chain must stop at the first ancestor
+/// outside the caller's tenant. A visible agent with a cross-team parent must
+/// return a lineage WITHOUT that ancestor (and without its name / team_id).
+#[tokio::test]
+async fn topology_lineage_omits_cross_tenant_ancestor() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    // A beta root delegates to an alpha child; the alpha caller owns the child.
+    state.agent_registry.register(agent_with_team(0x21, "beta")).unwrap();
+    state
+        .agent_registry
+        .register(child_of(agent_with_team(0x22, "alpha"), 0x21))
+        .unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/topology/lineage/{}", hex_id(0x22));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+
+    // Only the requested agent itself remains; the beta ancestor is dropped.
+    assert_eq!(json["ancestor_count"], 1, "cross-tenant ancestor must be omitted");
+    let ancestors = json["ancestors"].as_array().unwrap();
+    assert_eq!(ancestors.len(), 1);
+    assert_eq!(ancestors[0]["name"], "agent-34");
+    let raw = json.to_string();
+    assert!(!raw.contains("agent-33"), "beta ancestor name leaked: {raw}");
+    assert!(!raw.contains("beta"), "beta team_id leaked: {raw}");
+}
+
+/// A same-team ancestor chain is returned in full, root-first.
+#[tokio::test]
+async fn topology_lineage_keeps_same_tenant_ancestor() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0x31, "alpha")).unwrap();
+    state
+        .agent_registry
+        .register(child_of(agent_with_team(0x32, "alpha"), 0x31))
+        .unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/topology/lineage/{}", hex_id(0x32));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    // root-first: [root 0x31, self 0x32]
+    assert_eq!(json["ancestor_count"], 2);
+    let ancestors = json["ancestors"].as_array().unwrap();
+    assert_eq!(ancestors[0]["name"], "agent-49");
+    assert_eq!(ancestors[1]["name"], "agent-50");
 }
 
 /// Stats aggregate only the caller's own tenant, never every tenant's counts.

@@ -155,12 +155,23 @@ const MAX_TREE_DEPTH: u32 = 10;
 
 fn build_tree(
     registry: &AgentRegistry,
+    caller: &AuthenticatedCaller,
     agent_id: &[u8; 16],
     remaining_depth: u32,
     status_filter: Option<&str>,
     show_budget: bool,
 ) -> Option<AgentTree> {
     let record = registry.get(agent_id)?;
+    // AAASM-4819 — the handler authorizes only the root; `children_of` recursion
+    // otherwise walks into descendants registered under other teams and leaks
+    // their name / team_id / delegation_reason. Enforce the tenant boundary on
+    // every recursively-discovered node: an out-of-tenant node is omitted, and
+    // because that returns `None` its whole subtree is pruned too, so the walk
+    // never crosses a tenant boundary (mirrors the edges.rs BFS guard,
+    // AAASM-3825).
+    if !record_visible_to(caller, &record) {
+        return None;
+    }
     if let Some(f) = status_filter {
         if !matches_status_filter(&record.status, f) {
             return None;
@@ -170,7 +181,16 @@ fn build_tree(
         registry
             .children_of(agent_id)
             .iter()
-            .filter_map(|child_id| build_tree(registry, child_id, remaining_depth - 1, status_filter, show_budget))
+            .filter_map(|child_id| {
+                build_tree(
+                    registry,
+                    caller,
+                    child_id,
+                    remaining_depth - 1,
+                    status_filter,
+                    show_budget,
+                )
+            })
             .collect()
     } else {
         vec![]
@@ -399,6 +419,7 @@ pub async fn get_tree(
 
     let tree = build_tree(
         &state.agent_registry,
+        &caller,
         &agent_id,
         max_depth,
         params.status.as_deref(),
@@ -552,21 +573,31 @@ pub async fn get_lineage(
     }
 
     // ancestors_of returns parent-first (direct parent at [0], root at end).
-    // Reverse to root-first, then append the requested agent as the final element.
-    let mut ancestor_ids = state.agent_registry.ancestors_of(&agent_id);
-    ancestor_ids.reverse();
-
-    let mut ancestors: Vec<LineageStep> = ancestor_ids
-        .iter()
-        .filter_map(|id| state.agent_registry.get(id))
-        .map(|r| LineageStep {
+    // AAASM-4819 — walk outward from the requested agent (which is already
+    // authorized) toward the root and stop at the first ancestor outside the
+    // caller's tenant: a cross-tenant parent's name / team_id / delegation_reason
+    // (and everything above it) must not leak. This mirrors the edges.rs BFS
+    // tenant boundary (AAASM-3825), which never continues through an
+    // unauthorized node. The visible ancestors are then reversed to the
+    // root-first order the response expects.
+    let ancestor_ids = state.agent_registry.ancestors_of(&agent_id);
+    let mut ancestors: Vec<LineageStep> = Vec::new();
+    for id in &ancestor_ids {
+        let Some(r) = state.agent_registry.get(id) else {
+            continue;
+        };
+        if !record_visible_to(&caller, &r) {
+            break;
+        }
+        ancestors.push(LineageStep {
             id: format_id(&r.agent_id),
             name: r.name.clone(),
             depth: r.depth,
             delegation_reason: r.delegation_reason.clone(),
             team_id: r.team_id.clone(),
-        })
-        .collect();
+        });
+    }
+    ancestors.reverse();
 
     ancestors.push(LineageStep {
         id: format_id(&record.agent_id),
