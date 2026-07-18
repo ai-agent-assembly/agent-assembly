@@ -97,7 +97,7 @@ describe('AlertRulesTable', () => {
       { wrapper: Wrapper },
     )
 
-    await waitFor(() => expect(screen.getByTestId('alert-rules-table')).toBeInTheDocument())
+    expect(await screen.findByTestId('alert-rules-table')).toBeInTheDocument()
     const rows = screen.getAllByTestId('alert-rules-row')
     expect(rows).toHaveLength(2)
     expect(rows[0]).toHaveAttribute('data-rule-id', 'r-a')
@@ -128,9 +128,7 @@ describe('AlertRulesTable', () => {
       { wrapper: Wrapper },
     )
 
-    await waitFor(() =>
-      expect(screen.getByTestId('alerts-empty-no-rules')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('alerts-empty-no-rules')).toBeInTheDocument()
     // The shared empty-state CTA opens the rule form in create mode.
     await userEvent.click(screen.getByTestId('alerts-empty-create-cta'))
     expect(onCreate).toHaveBeenCalledOnce()
@@ -149,7 +147,7 @@ describe('AlertRulesTable', () => {
       { wrapper: Wrapper },
     )
 
-    await waitFor(() => screen.getByTestId('alert-rules-table'))
+    await screen.findByTestId('alert-rules-table')
     await userEvent.click(screen.getByTestId('alert-rules-create'))
     expect(onCreate).toHaveBeenCalledOnce()
 
@@ -169,7 +167,7 @@ describe('AlertRulesTable', () => {
       { wrapper: Wrapper },
     )
 
-    await waitFor(() => screen.getByTestId('alert-rules-table'))
+    await screen.findByTestId('alert-rules-table')
     const editButtons = screen.getAllByTestId('alert-rules-row-edit')
     expect(editButtons).toHaveLength(2)
     await userEvent.click(editButtons[1])
@@ -190,7 +188,7 @@ describe('AlertRulesTable', () => {
       { wrapper: Wrapper },
     )
 
-    await waitFor(() => screen.getByTestId('alert-rules-table'))
+    await screen.findByTestId('alert-rules-table')
     await userEvent.click(screen.getByTestId('alert-rules-row-delete'))
 
     // The DELETE fetch fires against the canonical endpoint.
@@ -217,6 +215,6 @@ describe('AlertRulesTable', () => {
       { wrapper: Wrapper },
     )
 
-    await waitFor(() => expect(screen.getByTestId('alert-rules-error')).toBeInTheDocument())
+    expect(await screen.findByTestId('alert-rules-error')).toBeInTheDocument()
   })
 })

@@ -62,9 +62,9 @@ describe("ViolationHeatmapPage", () => {
 
     render(<ViolationHeatmapPage />);
 
-    await waitFor(() =>
-      expect(screen.getByText(/No violations recorded in this window\./)).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByText(/No violations recorded in this window\./),
+    ).toBeInTheDocument();
     expect(screen.getByText(/0 agents with violations/)).toBeInTheDocument();
   });
 
@@ -79,7 +79,7 @@ describe("ViolationHeatmapPage", () => {
 
     render(<ViolationHeatmapPage />);
 
-    await waitFor(() => expect(screen.getByText(/3 agents with violations/)).toBeInTheDocument());
+    expect(await screen.findByText(/3 agents with violations/)).toBeInTheDocument();
     expect(
       screen.getByTestId("heatmap-node-aaaa0000000000000000000000000001"),
     ).toBeInTheDocument();
@@ -96,7 +96,7 @@ describe("ViolationHeatmapPage", () => {
 
     render(<ViolationHeatmapPage />);
 
-    await waitFor(() => expect(screen.getByText(/1 agent with violations/)).toBeInTheDocument());
+    expect(await screen.findByText(/1 agent with violations/)).toBeInTheDocument();
     // Should not pluralize.
     expect(screen.queryByText(/1 agents with violations/)).not.toBeInTheDocument();
   });
@@ -106,7 +106,7 @@ describe("ViolationHeatmapPage", () => {
 
     render(<ViolationHeatmapPage />);
 
-    await waitFor(() => expect(screen.getByText(/Error: HTTP 500/)).toBeInTheDocument());
+    expect(await screen.findByText(/Error: HTTP 500/)).toBeInTheDocument();
   });
 
   it("renders error state when fetch rejects (network error)", async () => {
@@ -114,7 +114,7 @@ describe("ViolationHeatmapPage", () => {
 
     render(<ViolationHeatmapPage />);
 
-    await waitFor(() => expect(screen.getByText(/Error: network unreachable/)).toBeInTheDocument());
+    expect(await screen.findByText(/Error: network unreachable/)).toBeInTheDocument();
   });
 
   it("refetches with new ?window= when the window selector changes", async () => {

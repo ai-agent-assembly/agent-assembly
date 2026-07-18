@@ -62,7 +62,7 @@ describe('TeamsPage', () => {
   it('shows empty state when no teams exist', async () => {
     setupMocks(makeOverview(0))
     render(<TeamsPage />, { wrapper: Wrapper })
-    await waitFor(() => expect(screen.getByTestId('teams-empty')).toBeInTheDocument())
+    expect(await screen.findByTestId('teams-empty')).toBeInTheDocument()
   })
 
   it('renders a row per team with burn % from cost summary', async () => {

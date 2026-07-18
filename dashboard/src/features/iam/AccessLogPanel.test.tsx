@@ -156,9 +156,7 @@ describe('AccessLogPanel (AAASM-1398)', () => {
     expect(screen.getByTestId('access-log-error')).toBeInTheDocument()
 
     await userEvent.click(retry)
-    await waitFor(() =>
-      expect(screen.getByTestId('access-log-row-evt-after-retry')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('access-log-row-evt-after-retry')).toBeInTheDocument()
   })
 
   it('clicking the row View link still resolves to the audit event path', async () => {

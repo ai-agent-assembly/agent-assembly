@@ -301,9 +301,7 @@ describe('ServiceIdentitiesPanel — rotate', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('api-key-rotate-key-1')).not.toBeInTheDocument(),
     )
-    await waitFor(() =>
-      expect(screen.getByTestId('api-key-row-gen-rotated-1')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('api-key-row-gen-rotated-1')).toBeInTheDocument()
     expect(
       screen.getByTestId('api-key-row-gen-rotated-1').textContent,
     ).toContain('aa_live_zzzz')

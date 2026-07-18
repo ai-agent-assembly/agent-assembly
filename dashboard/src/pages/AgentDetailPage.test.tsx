@@ -209,7 +209,7 @@ describe('AgentDetailPage tab navigation', () => {
     mockHappyPath()
     renderApp('/agents/abc123')
     fireEvent.click(await screen.findByTestId('agent-detail-tab-capability'))
-    await waitFor(() => expect(screen.getByTestId('inherited-permissions-empty')).toBeInTheDocument())
+    expect(await screen.findByTestId('inherited-permissions-empty')).toBeInTheDocument()
     expect(screen.queryByTestId('agent-detail-posture')).not.toBeInTheDocument()
   })
 
@@ -218,7 +218,7 @@ describe('AgentDetailPage tab navigation', () => {
     renderApp('/agents/abc123')
     for (const id of ['traffic', 'policies', 'lineage', 'config'] as const) {
       fireEvent.click(screen.getByTestId(`agent-detail-tab-${id}`))
-      await waitFor(() => expect(screen.getByTestId(`ad-tab-empty-${id}`)).toBeInTheDocument())
+      expect(await screen.findByTestId(`ad-tab-empty-${id}`)).toBeInTheDocument()
     }
   })
 })

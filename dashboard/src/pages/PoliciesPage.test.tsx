@@ -315,7 +315,7 @@ describe('PoliciesPage — save flow', () => {
     await screen.findByTestId('policy-editor-overlay')
     await user.click(screen.getByTestId('editor-save-btn'))
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(screen.getByText('Failed to save policy')).toBeInTheDocument())
+    expect(await screen.findByText('Failed to save policy')).toBeInTheDocument()
     // Overlay is still mounted
     expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
   })

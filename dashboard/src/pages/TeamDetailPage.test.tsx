@@ -89,7 +89,7 @@ describe('TeamDetailPage', () => {
     mockCosts()
     mockLineage('a'.repeat(32))
     render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-alpha']}>{children}</Wrapper> })
-    await waitFor(() => expect(screen.getByTestId('team-detail-header')).toBeInTheDocument())
+    expect(await screen.findByTestId('team-detail-header')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'team-alpha' })).toBeInTheDocument()
     expect(screen.getByTestId('team-member-count')).toHaveTextContent('5 members')
     expect(screen.getByTestId('team-total-spend')).toHaveTextContent('$42.00')
@@ -101,7 +101,7 @@ describe('TeamDetailPage', () => {
     mockCosts()
     mockLineage('x')
     render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-beta']}>{children}</Wrapper> })
-    await waitFor(() => expect(screen.getByTestId('team-members-empty')).toBeInTheDocument())
+    expect(await screen.findByTestId('team-members-empty')).toBeInTheDocument()
   })
 
   it('renders NotFoundPage when team id is unknown', async () => {
@@ -109,7 +109,7 @@ describe('TeamDetailPage', () => {
     mockCosts()
     mockLineage('x')
     render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/missing']}>{children}</Wrapper> })
-    await waitFor(() => expect(screen.getByRole('heading', { name: /404/ })).toBeInTheDocument())
+    expect(await screen.findByRole('heading', { name: /404/ })).toBeInTheDocument()
   })
 
   it('navigates to /topology?root=<topmost ancestor> when Open in topology clicked', async () => {
@@ -121,7 +121,7 @@ describe('TeamDetailPage', () => {
     render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-alpha']}>{children}</Wrapper> })
     await waitFor(() => expect(screen.getAllByTestId('open-in-topology')).toHaveLength(5))
     await user.click(screen.getAllByTestId('open-in-topology')[0])
-    await waitFor(() => expect(screen.getByTestId('topology-page')).toBeInTheDocument())
+    expect(await screen.findByTestId('topology-page')).toBeInTheDocument()
     expect(screen.getByTestId('location')).toHaveTextContent(`/topology?root=${rootId}`)
   })
 

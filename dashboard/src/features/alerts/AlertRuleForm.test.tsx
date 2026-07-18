@@ -108,17 +108,15 @@ describe('AlertRuleForm', () => {
     const onClose = vi.fn()
     render(<AlertRuleForm open={true} onClose={onClose} />, { wrapper: Wrapper })
 
-    await waitFor(() =>
-      expect(screen.getByTestId('rule-destination-d-slack')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('rule-destination-d-slack')).toBeInTheDocument()
     await user.click(screen.getByTestId('rule-destination-d-slack'))
     await user.type(screen.getByTestId('rule-name'), 'Budget guardrail')
     await user.clear(screen.getByTestId('rule-threshold'))
     await user.click(screen.getByTestId('alert-rule-form-submit'))
 
-    await waitFor(() =>
-      expect(screen.getByText(/threshold must be (a number|a finite number)/i)).toBeInTheDocument(),
-    )
+    expect(
+      await screen.findByText(/threshold must be (a number|a finite number)/i),
+    ).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
     expect(calls.some((c) => c.init.method === 'POST' && c.url.endsWith('/rules'))).toBe(false)
   })
@@ -129,11 +127,9 @@ describe('AlertRuleForm', () => {
     render(<AlertRuleForm open={true} onClose={vi.fn()} />, { wrapper: Wrapper })
     await user.type(screen.getByTestId('rule-name'), 'Budget guardrail')
     await user.click(screen.getByTestId('alert-rule-form-submit'))
-    await waitFor(() =>
-      expect(
-        screen.getByText(/at least one destination is required/i),
-      ).toBeInTheDocument(),
-    )
+    expect(
+      await screen.findByText(/at least one destination is required/i),
+    ).toBeInTheDocument()
   })
 
   it('POSTs to /alerts/rules on a valid create submit and closes the modal', async () => {
@@ -147,9 +143,7 @@ describe('AlertRuleForm', () => {
       { wrapper: Wrapper },
     )
 
-    await waitFor(() =>
-      expect(screen.getByTestId('rule-destination-d-slack')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('rule-destination-d-slack')).toBeInTheDocument()
     await user.type(screen.getByTestId('rule-name'), 'Budget guardrail')
     await user.click(screen.getByTestId('rule-destination-d-slack'))
     await user.click(screen.getByTestId('alert-rule-form-submit'))
@@ -191,9 +185,7 @@ describe('AlertRuleForm', () => {
     const onClose = vi.fn()
     render(<AlertRuleForm open={true} onClose={onClose} />, { wrapper: Wrapper })
 
-    await waitFor(() =>
-      expect(screen.getByTestId('rule-destination-d-slack')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('rule-destination-d-slack')).toBeInTheDocument()
     await user.type(screen.getByTestId('rule-name'), 'Budget guardrail')
     await user.click(screen.getByTestId('rule-destination-d-slack'))
     await user.click(screen.getByTestId('alert-rule-form-submit'))

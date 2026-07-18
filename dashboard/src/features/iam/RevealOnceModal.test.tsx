@@ -41,13 +41,11 @@ describe('RevealOnceModal', () => {
     Object.assign(navigator, { clipboard: { writeText } })
     const { onCopied } = renderModal()
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('copy-secret-button'))
-    })
+    fireEvent.click(screen.getByTestId('copy-secret-button'))
 
+    expect(await screen.findByTestId('toast')).toHaveAttribute('data-variant', 'success')
     expect(writeText).toHaveBeenCalledWith('aa-secret-xyz')
     expect(onCopied).toHaveBeenCalledTimes(1)
-    expect(screen.getByTestId('toast')).toHaveAttribute('data-variant', 'success')
   })
 
   it('surfaces a clipboard failure as an error toast', async () => {
@@ -55,14 +53,12 @@ describe('RevealOnceModal', () => {
     Object.assign(navigator, { clipboard: { writeText } })
     const { onCopied } = renderModal()
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('copy-secret-button'))
-    })
+    fireEvent.click(screen.getByTestId('copy-secret-button'))
 
-    expect(onCopied).not.toHaveBeenCalled()
-    const toast = screen.getByTestId('toast')
+    const toast = await screen.findByTestId('toast')
     expect(toast).toHaveAttribute('data-variant', 'error')
     expect(toast).toHaveTextContent('denied')
+    expect(onCopied).not.toHaveBeenCalled()
   })
 
   it('treats a backdrop click before copy as an attempted early close', () => {

@@ -1,4 +1,4 @@
-import { render, screen, act } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FormProvider, useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -78,9 +78,7 @@ describe('DedupAndSuppressionFields', () => {
     const user = userEvent.setup()
     render(<Harness defaults={{ suppressionLabels: [{ key: '1bad', value: '' }] }} />)
 
-    await act(async () => {
-      await user.click(screen.getByTestId('validate'))
-    })
+    await user.click(screen.getByTestId('validate'))
 
     expect(await screen.findByText(/key must match/i)).toBeInTheDocument()
     expect(screen.getByText(/value cannot be empty/i)).toBeInTheDocument()
@@ -90,9 +88,7 @@ describe('DedupAndSuppressionFields', () => {
     const user = userEvent.setup()
     render(<Harness defaults={{ dedupWindowSeconds: -5 }} />)
 
-    await act(async () => {
-      await user.click(screen.getByTestId('validate'))
-    })
+    await user.click(screen.getByTestId('validate'))
 
     expect(await screen.findByText(/dedup window cannot be negative/i)).toBeInTheDocument()
   })
