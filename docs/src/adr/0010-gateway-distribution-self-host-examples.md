@@ -16,13 +16,19 @@ real, locally-running core — cannot run out of the box. Two coupled gaps cause
 
 ### Gap 1 — there is no published gateway image
 
-The org publishes only `aa-runtime`, `go`, `python`, and `node` images to GHCR.
-**`ghcr.io/ai-agent-assembly/aa-gateway` is not published.** The
+> **Update (2026-07, [AAASM-4480](https://lightning-dust-mite.atlassian.net/browse/AAASM-4480)):**
+> this gap is now **closed** — the `publish-gateway` job in `docker.yml` publishes
+> `ghcr.io/ai-agent-assembly/aa-gateway` (version tag + `:latest`) on release tags, exactly the
+> Option A distribution this ADR adopts. The description below records the state at the time of
+> writing (2026-06) that motivated the decision.
+
+At the time of writing, the org published only `aa-runtime`, `go`, `python`, and `node`
+images to GHCR; **`ghcr.io/ai-agent-assembly/aa-gateway` was not yet published.** The
 [examples](https://lightning-dust-mite.atlassian.net/browse/AAASM-3791) scenario — and
-any limited-function OSS self-host of the gateway over Docker — therefore has no gateway
+any limited-function OSS self-host of the gateway over Docker — therefore had no gateway
 image to pull. PR #166 had to *build* `aa-gateway` from the monorepo just to verify agent
-registration. Verified on macOS+Docker: only `:8080` is open on the runtime image, there
-is no `aa-gateway` image in GHCR, and `docker inspect` shows the runtime image is
+registration. Verified on macOS+Docker: only `:8080` was open on the runtime image, there
+was no `aa-gateway` image in GHCR, and `docker inspect` showed the runtime image is
 distroless.
 
 This is in tension with the existing, **accepted** policy decision in
@@ -204,10 +210,12 @@ Rationale, grounded in policy:
 
 ### What this blocks / defers (follow-up work, gated on ratification)
 
-1. **Implementation ticket — publish `aa-gateway` image.** Add the crate's image to
-   `docker.yml`, the `docker/sdk-versions.json`-style version/pin manifest, the
-   compatibility matrix, and the release fan-out; ship it labelled **limited-function**;
-   then point the examples Compose at the pinned tag. (Distribution scope of this ADR.)
+1. **Implementation ticket — publish `aa-gateway` image.** ✅ **Done
+   ([AAASM-4480](https://lightning-dust-mite.atlassian.net/browse/AAASM-4480)):** the
+   `publish-gateway` job in `docker.yml` now builds and pushes
+   `ghcr.io/ai-agent-assembly/aa-gateway` (version tag + `:latest`) on release tags, labelled
+   **limited-function**. Remaining wiring — the version/pin manifest, compatibility matrix, and
+   pointing the examples Compose at the pinned tag — follows the ADR 0009 model.
 2. **Core follow-up — per-tool policy resolution (Gap 2).** Confirm/clarify and, if needed,
    implement the path so the live runtime emits a gateway `CheckAction` for tool checks, so
    the demo's `read_file` allow / `delete_file` deny is actually evaluated by the gateway
