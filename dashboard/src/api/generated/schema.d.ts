@@ -5544,6 +5544,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Caller lacks the admin role required to read the capability matrix */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     list_overrides: {
