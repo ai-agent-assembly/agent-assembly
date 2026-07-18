@@ -83,6 +83,50 @@ async fn revoke_override_rejects_viewer_scope_with_403() {
     );
 }
 
+/// `GET /capability/matrix` is global control-plane state with no per-team
+/// partition (AAASM-4841), so a mere read-scoped caller must be refused with
+/// 403 — mirroring the admin posture of `list_overrides` (AAASM-4829).
+#[tokio::test]
+async fn get_matrix_rejects_viewer_scope_with_403() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/capability/matrix")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not read the capability matrix"
+    );
+}
+
+/// An admin-scoped caller may read the capability matrix.
+#[tokio::test]
+async fn get_matrix_admin_scope_is_allowed() {
+    let (token, entry) = common::generate_test_api_key("admin-key", vec![Scope::Admin]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/capability/matrix")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "an admin caller may read the matrix");
+}
+
 #[tokio::test]
 async fn get_matrix_returns_200_with_dashboard_shape() {
     let app = common::test_app();
