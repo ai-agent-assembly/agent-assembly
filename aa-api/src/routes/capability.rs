@@ -295,17 +295,27 @@ pub struct MatrixQueryParams {
     params(MatrixQueryParams),
     responses(
         (status = 200, description = "Capability matrix snapshot (filtered)", body = CapabilityMatrix),
-        (status = 401, description = "Missing or invalid credentials")
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "Caller lacks the admin role required to read the capability matrix")
     ),
     tag = "capability"
 )]
 pub async fn get_matrix(
     // AAASM-3846 — the capability matrix is sensitive policy state; require an
     // authenticated reader rather than serving it unauthenticated.
-    RequireRead(_caller): RequireRead,
+    // AAASM-4841 — like its `list_overrides` sibling (AAASM-4829), the matrix is
+    // global control-plane state with no per-team partition: a `CapabilityAgent`
+    // row names an agent but carries no team scope, so there is no tenant slice
+    // to hand a team-scoped caller. Gate it to the same admin posture as the
+    // apply/revoke mutation handlers rather than to any authenticated reader.
+    RequireRead(caller): RequireRead,
     Query(params): Query<MatrixQueryParams>,
     Extension(state): Extension<AppState>,
-) -> (StatusCode, Json<CapabilityMatrix>) {
+) -> Result<(StatusCode, Json<CapabilityMatrix>), ProblemDetail> {
+    if !caller.scopes.contains(&Scope::Admin) {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("Reading the capability matrix requires admin scope".to_string()));
+    }
     let mut matrix = state.capability_store.snapshot().await;
 
     if let Some(ref tid) = params.team_id {
@@ -328,7 +338,7 @@ pub async fn get_matrix(
         }
     }
 
-    (StatusCode::OK, Json(matrix))
+    Ok((StatusCode::OK, Json(matrix)))
 }
 
 /// `POST /api/v1/capability/override` — apply a capability override across

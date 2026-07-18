@@ -1677,6 +1677,8 @@ paths:
                 $ref: '#/components/schemas/CapabilityMatrix'
         '401':
           description: Missing or invalid credentials
+        '403':
+          description: Caller lacks the admin role required to read the capability matrix
   /api/v1/capability/override:
     get:
       tags:

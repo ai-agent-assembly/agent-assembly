@@ -825,6 +825,87 @@ async fn subtree_burn_cross_tenant_read_is_403() {
     );
 }
 
+/// AAASM-4841 — subtree-burn authorizes only its root; a direct child delegated
+/// into another team leaks its id / name / daily spend to a caller from the
+/// root's team. The cross-team child must be omitted from the per-child series
+/// while the same-team child is kept, mirroring the AAASM-4819 topology-tree
+/// pruning.
+#[tokio::test]
+async fn subtree_burn_omits_cross_tenant_child() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    // Root and one child in team alpha; a second child delegated into team beta.
+    state.agent_registry.register(agent_with_team(0xD1, "alpha")).unwrap();
+    state
+        .agent_registry
+        .register(child_of(agent_with_team(0xD2, "alpha"), 0xD1))
+        .unwrap();
+    state
+        .agent_registry
+        .register(child_of(agent_with_team(0xD3, "beta"), 0xD1))
+        .unwrap();
+
+    // Record spend for both children so each would otherwise emit a per-child row.
+    state.budget_tracker.record_raw_spend(
+        aa_core::identity::AgentId::from_bytes([0xD2; 16]),
+        Some("alpha"),
+        None,
+        Decimal::new(500, 2),
+    );
+    state.budget_tracker.record_raw_spend(
+        aa_core::identity::AgentId::from_bytes([0xD3; 16]),
+        Some("beta"),
+        None,
+        Decimal::new(900, 2),
+    );
+
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/subtree-burn", hex_id(0xD1));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+
+    // The same-team child is present; the beta child's identifying fields must
+    // not leak anywhere in the response.
+    let raw = json.to_string();
+    assert!(
+        raw.contains("agent-210"),
+        "same-team child (0xD2) must be present: {raw}"
+    );
+    assert!(raw.contains(&hex_id(0xD2)), "same-team child id must be present: {raw}");
+    assert!(!raw.contains("agent-211"), "beta child name (0xD3) leaked: {raw}");
+    assert!(!raw.contains(&hex_id(0xD3)), "beta child id leaked: {raw}");
+}
+
+/// AAASM-4841 — a same-team subtree-burn child is kept in full; the per-child
+/// tenant gate must not prune a legitimately-visible child.
+#[tokio::test]
+async fn subtree_burn_keeps_same_tenant_child() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xE1, "alpha")).unwrap();
+    state
+        .agent_registry
+        .register(child_of(agent_with_team(0xE2, "alpha"), 0xE1))
+        .unwrap();
+    state.budget_tracker.record_raw_spend(
+        aa_core::identity::AgentId::from_bytes([0xE2; 16]),
+        Some("alpha"),
+        None,
+        Decimal::new(500, 2),
+    );
+
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/subtree-burn", hex_id(0xE1));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let raw = body_json(response).await.to_string();
+    assert!(
+        raw.contains(&hex_id(0xE2)),
+        "same-team child must survive the tenant gate: {raw}"
+    );
+}
+
 // AAASM-3790 — report_edge took no caller, letting any key poison another team's
 // topology; the per-agent edge listing leaked cross-team edges.
 #[tokio::test]
