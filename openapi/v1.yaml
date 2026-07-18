@@ -1708,6 +1708,8 @@ paths:
                   $ref: '#/components/schemas/OverrideRecord'
         '401':
           description: Missing or invalid credentials
+        '403':
+          description: Caller lacks the admin role required to read the global override log
     post:
       tags:
       - capability

@@ -24,7 +24,7 @@ use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
 
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
-use crate::auth::scope::RequireRead;
+use crate::auth::scope::{RequireRead, Scope};
 use crate::error::ProblemDetail;
 use crate::models::capability::{
     AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, CapabilityOverrideRequest,
@@ -416,19 +416,30 @@ pub struct ListOverridesParams {
     params(("agent_id" = Option<String>, Query, description = "Filter results to overrides that affect this agent id")),
     responses(
         (status = 200, description = "Active override records", body = Vec<OverrideRecord>),
-        (status = 401, description = "Missing or invalid credentials")
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "Caller lacks the admin role required to read the global override log")
     ),
     tag = "capability"
 )]
 pub async fn list_overrides(
-    // AAASM-3846 — require an authenticated reader before disclosing the
-    // override log.
-    RequireRead(_caller): RequireRead,
+    // AAASM-3846 / AAASM-4829 — the override log is global control-plane state:
+    // it discloses every capability override applied across the whole fleet and
+    // carries no per-team partition (an `OverrideRecord` names agent ids but no
+    // team scope), so there is no tenant slice to hand a team-scoped caller.
+    // Applying or revoking an override is a `PolicyScope::Global` / `OrgAdmin`
+    // mutation (see `apply_override` / `revoke_override`); reading the log of
+    // those mutations is gated to the same admin posture rather than to any
+    // authenticated reader.
+    RequireRead(caller): RequireRead,
     Query(params): Query<ListOverridesParams>,
     Extension(state): Extension<AppState>,
-) -> (StatusCode, Json<Vec<OverrideRecord>>) {
+) -> Result<(StatusCode, Json<Vec<OverrideRecord>>), ProblemDetail> {
+    if !caller.scopes.contains(&Scope::Admin) {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("Reading the capability override log requires admin scope".to_string()));
+    }
     let overrides = state.capability_store.list_overrides(params.agent_id.as_deref()).await;
-    (StatusCode::OK, Json(overrides))
+    Ok((StatusCode::OK, Json(overrides)))
 }
 
 /// `DELETE /api/v1/capability/override/{id}` — revert a previously applied
@@ -736,6 +747,74 @@ fn seeded_sample_calls() -> Vec<SampleCall> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::{AuthenticatedCaller, Tenant};
+
+    fn reader(scopes: Vec<Scope>) -> RequireRead {
+        RequireRead(AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes,
+            tenant: Tenant {
+                team_id: None,
+                org_id: None,
+            },
+        })
+    }
+
+    #[tokio::test]
+    async fn list_overrides_denies_non_admin_reader() {
+        // AAASM-4829: the override log is global control-plane state; a mere
+        // read-scoped caller must be refused, mirroring the admin posture of the
+        // apply/revoke mutation handlers.
+        let state = AppState::local_in_memory().expect("state builds");
+        let err = list_overrides(
+            reader(vec![Scope::Read]),
+            Query(ListOverridesParams { agent_id: None }),
+            Extension(state),
+        )
+        .await
+        .expect_err("non-admin is forbidden");
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
+    }
+
+    #[tokio::test]
+    async fn list_overrides_admin_sees_applied_override_and_filter_works() {
+        let state = AppState::local_in_memory().expect("state builds");
+        let target = state.capability_store.snapshot().await.agents[0].id.clone();
+        Arc::clone(&state.capability_store)
+            .apply_override(&CapabilityOverrideRequest {
+                agent_ids: vec![target.clone()],
+                resource_id: "pg".into(),
+                verb: Verb::Write,
+                decision: Decision::Deny,
+                ttl_seconds: None,
+            })
+            .await
+            .expect("override applies");
+
+        // Admin caller: 200 with the applied override visible.
+        let (status, Json(all)) = list_overrides(
+            reader(vec![Scope::Admin]),
+            Query(ListOverridesParams { agent_id: None }),
+            Extension(state.clone()),
+        )
+        .await
+        .expect("admin may list");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(all.len(), 1);
+        assert!(all[0].agent_ids.contains(&target));
+
+        // The agent_id filter still narrows the result for an admin.
+        let (_status, Json(filtered)) = list_overrides(
+            reader(vec![Scope::Admin]),
+            Query(ListOverridesParams {
+                agent_id: Some("no-such-agent".into()),
+            }),
+            Extension(state),
+        )
+        .await
+        .expect("admin may list filtered");
+        assert!(filtered.is_empty(), "filter to an unaffected agent yields nothing");
+    }
 
     #[tokio::test]
     async fn seeded_store_contains_eight_resources() {
