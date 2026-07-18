@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -76,7 +76,7 @@ describe('TeamDetailPage action bar', () => {
     vi.spyOn(teamsApi, 'useResumeTeam').mockReturnValue(mockMutation({ mutate: vi.fn(), isPending: false }))
 
     render(<TeamDetailPage />, { wrapper: Wrapper })
-    await waitFor(() => expect(screen.getByTestId('team-detail-header')).toBeInTheDocument())
+    expect(await screen.findByTestId('team-detail-header')).toBeInTheDocument()
     expect(screen.queryByTestId('team-action-bar')).not.toBeInTheDocument()
   })
 

@@ -133,7 +133,7 @@ describe('ApprovalsPage', () => {
 
   it('shows empty state when no pending approvals', async () => {
     setup([])
-    await waitFor(() => expect(screen.getByTestId('empty-state-approvals')).toBeInTheDocument())
+    expect(await screen.findByTestId('empty-state-approvals')).toBeInTheDocument()
   })
 
   it('shows loading skeletons while fetching', () => {
@@ -205,11 +205,9 @@ describe('ApprovalsPage', () => {
     fireEvent.click(checkboxes[0])
     fireEvent.click(checkboxes[1])
 
-    await waitFor(() => expect(screen.getByTestId('bulk-toolbar')).toBeInTheDocument())
+    expect(await screen.findByTestId('bulk-toolbar')).toBeInTheDocument()
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('bulk-approve-btn'))
-    })
+    fireEvent.click(screen.getByTestId('bulk-approve-btn'))
 
     await waitFor(() => {
       expect(approveFn).toHaveBeenCalledTimes(2)
@@ -223,7 +221,7 @@ describe('ApprovalsPage', () => {
     await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(1))
 
     fireEvent.click(screen.getByTestId('reject-btn'))
-    await waitFor(() => expect(screen.getByTestId('reject-dialog')).toBeInTheDocument())
+    expect(await screen.findByTestId('reject-dialog')).toBeInTheDocument()
 
     // Confirm should be disabled with empty reason
     expect(screen.getByTestId('reject-confirm-btn')).toBeDisabled()
@@ -258,17 +256,15 @@ describe('ApprovalsPage', () => {
     fireEvent.click(checkboxes[0])
     fireEvent.click(checkboxes[1])
 
-    await waitFor(() => expect(screen.getByTestId('bulk-toolbar')).toBeInTheDocument())
+    expect(await screen.findByTestId('bulk-toolbar')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('bulk-reject-btn'))
-    await waitFor(() => expect(screen.getByTestId('reject-dialog')).toBeInTheDocument())
+    expect(await screen.findByTestId('reject-dialog')).toBeInTheDocument()
 
     fireEvent.change(screen.getByTestId('reject-reason-input'), {
       target: { value: 'policy violation' },
     })
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('reject-confirm-btn'))
-    })
+    fireEvent.click(screen.getByTestId('reject-confirm-btn'))
 
     await waitFor(() => {
       expect(rejectFn).toHaveBeenCalledTimes(2)

@@ -34,9 +34,10 @@ describe('Step2InstallSdk', () => {
     Object.assign(navigator, { clipboard: { writeText } })
 
     render(<Step2InstallSdk state={EMPTY_STATE} onVerified={vi.fn()} />)
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('onboarding-install-copy'))
-    })
+    fireEvent.click(screen.getByTestId('onboarding-install-copy'))
+    // Flush the async clipboard handler's state update (setCopied) without
+    // wrapping the fireEvent call itself — the label flips on a microtask.
+    await act(async () => {})
 
     expect(writeText).toHaveBeenCalledWith('pip install agent-assembly')
     expect(screen.getByTestId('onboarding-install-copy')).toHaveTextContent('✓ copied')
@@ -52,9 +53,10 @@ describe('Step2InstallSdk', () => {
     Object.assign(navigator, { clipboard: { writeText } })
 
     render(<Step2InstallSdk state={EMPTY_STATE} onVerified={vi.fn()} />)
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('onboarding-install-copy'))
-    })
+    fireEvent.click(screen.getByTestId('onboarding-install-copy'))
+    // Flush the async clipboard handler's state update (setCopied) without
+    // wrapping the fireEvent call itself — the label flips on a microtask.
+    await act(async () => {})
     expect(screen.getByTestId('onboarding-install-copy')).toHaveTextContent('✓ copied')
   })
 

@@ -1,6 +1,6 @@
 // Smoke tests for the refactored ApprovalsPage.
 // Comprehensive feature tests live in src/features/approvals/api.test.tsx.
-import { act, render, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
@@ -82,13 +82,13 @@ describe('ApprovalsPage', () => {
   it('renders the page heading', async () => {
     setupMocks([])
     render(<ApprovalsPage />, { wrapper: Wrapper })
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Approvals' })).toBeInTheDocument())
+    expect(await screen.findByRole('heading', { name: 'Approvals' })).toBeInTheDocument()
   })
 
   it('shows shared empty state when no pending approvals', async () => {
     setupMocks([])
     render(<ApprovalsPage />, { wrapper: Wrapper })
-    await waitFor(() => expect(screen.getByTestId('empty-state-approvals')).toBeInTheDocument())
+    expect(await screen.findByTestId('empty-state-approvals')).toBeInTheDocument()
   })
 
   it('shows shared error state on query failure', async () => {
@@ -102,7 +102,7 @@ describe('ApprovalsPage', () => {
       mockMutation({ mutateAsync: vi.fn(), isPending: false }),
     )
     render(<ApprovalsPage />, { wrapper: Wrapper })
-    await waitFor(() => expect(screen.getByTestId('error-state-generic')).toBeInTheDocument())
+    expect(await screen.findByTestId('error-state-generic')).toBeInTheDocument()
   })
 
   it('renders a row for each pending approval', async () => {
@@ -177,7 +177,7 @@ describe('ApprovalsPage', () => {
 
     render(<ApprovalsPage />, { wrapper: SeededWrapper })
     const toggle = await screen.findByTestId('expired-toggle')
-    act(() => { fireEvent.click(toggle) })
+    fireEvent.click(toggle)
     expect(screen.getAllByTestId('expired-row')).toHaveLength(1)
   })
 })
@@ -214,7 +214,7 @@ describe('ApprovalsPage — decision flows', () => {
 
     const selectAll = screen.getByTestId('select-all-checkbox')
     fireEvent.click(selectAll)
-    await waitFor(() => expect(screen.getByTestId('bulk-toolbar')).toBeInTheDocument())
+    expect(await screen.findByTestId('bulk-toolbar')).toBeInTheDocument()
 
     fireEvent.click(selectAll)
     await waitFor(() => expect(screen.queryByTestId('bulk-toolbar')).not.toBeInTheDocument())
@@ -226,9 +226,7 @@ describe('ApprovalsPage — decision flows', () => {
     render(<ApprovalsPage />, { wrapper: SeededWrapper })
     await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(1))
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('approve-btn'))
-    })
+    fireEvent.click(screen.getByTestId('approve-btn'))
     await waitFor(() => expect(approveAsync).toHaveBeenCalledWith({ id: 'a1b2c3d4' }))
     expect(client.getQueryData<Approval[]>(['approvals'])).toEqual([])
 
@@ -252,11 +250,9 @@ describe('ApprovalsPage — decision flows', () => {
     await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(2))
 
     fireEvent.click(screen.getByTestId('select-all-checkbox'))
-    await waitFor(() => expect(screen.getByTestId('bulk-toolbar')).toBeInTheDocument())
+    expect(await screen.findByTestId('bulk-toolbar')).toBeInTheDocument()
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('bulk-approve-btn'))
-    })
+    fireEvent.click(screen.getByTestId('bulk-approve-btn'))
 
     // One of the two rows is restored into the active cache after the failure.
     await waitFor(() => {
@@ -277,14 +273,12 @@ describe('ApprovalsPage — decision flows', () => {
     await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(2))
 
     fireEvent.click(screen.getByTestId('select-all-checkbox'))
-    await waitFor(() => expect(screen.getByTestId('bulk-toolbar')).toBeInTheDocument())
+    expect(await screen.findByTestId('bulk-toolbar')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('bulk-reject-btn'))
     fireEvent.change(await screen.findByTestId('reject-reason-input'), {
       target: { value: 'policy violation' },
     })
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('reject-confirm-btn'))
-    })
+    fireEvent.click(screen.getByTestId('reject-confirm-btn'))
 
     await waitFor(() => {
       const active = client.getQueryData<Approval[]>(['approvals']) ?? []

@@ -72,7 +72,7 @@ describe('FleetPage chrome', () => {
       }),
     )
     renderFleet()
-    await waitFor(() => expect(screen.getByTestId('fleet-page-head')).toBeInTheDocument())
+    expect(await screen.findByTestId('fleet-page-head')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-page-count').textContent).toContain('2 of 2 agents')
     expect(screen.getByTestId('fleet-action-register')).toBeDisabled()
     expect(screen.getByTestId('fleet-action-export')).toBeDisabled()
@@ -84,7 +84,7 @@ describe('FleetPage chrome', () => {
     )
     renderFleet()
     fireEvent.click(screen.getByTestId('fleet-tab-sessions'))
-    await waitFor(() => expect(screen.getByTestId('fleet-sessions-empty')).toBeInTheDocument())
+    expect(await screen.findByTestId('fleet-sessions-empty')).toBeInTheDocument()
     expect(screen.queryByTestId('agents-table')).not.toBeInTheDocument()
   })
 })
@@ -335,7 +335,7 @@ describe('FleetPage bulk action bar', () => {
     expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByTestId('fleet-select-a'))
-    await waitFor(() => expect(screen.getByTestId('fleet-bulkbar')).toBeInTheDocument())
+    expect(await screen.findByTestId('fleet-bulkbar')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('1 selected')
   })
 
@@ -368,7 +368,7 @@ describe('FleetPage bulk action bar', () => {
     )
     renderFleet()
     fireEvent.click(screen.getByTestId('fleet-select-all'))
-    await waitFor(() => expect(screen.getByTestId('fleet-bulkbar-shadow')).toBeInTheDocument())
+    expect(await screen.findByTestId('fleet-bulkbar-shadow')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-bulkbar-suspend')).toBeInTheDocument()
   })
 })
@@ -395,7 +395,7 @@ describe('FleetPage bulk suspend fan-out', () => {
     fireEvent.change(await screen.findByTestId('suspend-dialog-input'), { target: { value: 'budget' } })
     fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
 
-    await waitFor(() => expect(screen.getByText('2 suspended')).toBeInTheDocument())
+    expect(await screen.findByText('2 suspended')).toBeInTheDocument()
     expect(post).toHaveBeenCalledTimes(2)
     await waitFor(() => expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument())
   })
@@ -429,7 +429,7 @@ describe('FleetPage bulk suspend fan-out', () => {
     fireEvent.change(await screen.findByTestId('suspend-dialog-input'), { target: { value: 'budget' } })
     fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
 
-    await waitFor(() => expect(screen.getByText('2 suspended, 1 failed')).toBeInTheDocument())
+    expect(await screen.findByText('2 suspended, 1 failed')).toBeInTheDocument()
     expect(post).toHaveBeenCalledTimes(3)
     expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('1 selected')
     expect(screen.getByTestId('fleet-select-b')).toBeChecked()
@@ -456,7 +456,7 @@ describe('FleetPage bulk suspend fan-out', () => {
     fireEvent.change(await screen.findByTestId('suspend-dialog-input'), { target: { value: 'noop' } })
     fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
 
-    await waitFor(() => expect(screen.getByText('2 failed')).toBeInTheDocument())
+    expect(await screen.findByText('2 failed')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('2 selected')
   })
 })
@@ -481,7 +481,7 @@ describe('FleetPage bulk resume fan-out', () => {
     fireEvent.click(await screen.findByTestId('fleet-select-all'))
     fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
 
-    await waitFor(() => expect(screen.getByText('2 resumed')).toBeInTheDocument())
+    expect(await screen.findByText('2 resumed')).toBeInTheDocument()
     expect(post).toHaveBeenCalledTimes(2)
     expect(post.mock.calls[0]?.[0]).toBe('/api/v1/agents/{id}/resume')
     await waitFor(() => expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument())
@@ -514,7 +514,7 @@ describe('FleetPage bulk resume fan-out', () => {
     fireEvent.click(await screen.findByTestId('fleet-select-all'))
     fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
 
-    await waitFor(() => expect(screen.getByText('2 resumed, 1 failed')).toBeInTheDocument())
+    expect(await screen.findByText('2 resumed, 1 failed')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('1 selected')
     expect(screen.getByTestId('fleet-select-b')).toBeChecked()
   })
@@ -538,7 +538,7 @@ describe('FleetPage bulk resume fan-out', () => {
     fireEvent.click(await screen.findByTestId('fleet-select-all'))
     fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
 
-    await waitFor(() => expect(screen.getByText('2 failed')).toBeInTheDocument())
+    expect(await screen.findByText('2 failed')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('2 selected')
   })
 

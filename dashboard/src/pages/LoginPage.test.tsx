@@ -41,7 +41,7 @@ describe('LoginPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
 
     await waitFor(() => expect(login).toHaveBeenCalledWith('aa_key'))
-    await waitFor(() => expect(screen.getByTestId('home')).toBeInTheDocument())
+    expect(await screen.findByTestId('home')).toBeInTheDocument()
   })
 
   it('shows an error message and stays on the page when login fails', async () => {
@@ -50,9 +50,7 @@ describe('LoginPage', () => {
     fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'aa_bad' } })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
 
-    await waitFor(() =>
-      expect(screen.getByText(/Authentication failed \(401\)/)).toBeInTheDocument(),
-    )
+    expect(await screen.findByText(/Authentication failed \(401\)/)).toBeInTheDocument()
     expect(screen.queryByTestId('home')).not.toBeInTheDocument()
     // Button label resets after the failed attempt.
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()

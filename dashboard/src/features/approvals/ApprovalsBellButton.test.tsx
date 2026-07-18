@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, vi, afterEach } from 'vitest'
@@ -35,7 +35,7 @@ describe('ApprovalsBellButton', () => {
       mockQuery<Approval[]>({ data: [] }),
     )
     render(<ApprovalsBellButton />, { wrapper: Wrapper })
-    await waitFor(() => expect(screen.getByTestId('approvals-bell')).toBeInTheDocument())
+    expect(await screen.findByTestId('approvals-bell')).toBeInTheDocument()
     expect(screen.queryByTestId('approvals-bell-badge')).not.toBeInTheDocument()
   })
 
@@ -53,7 +53,7 @@ describe('ApprovalsBellButton', () => {
       mockQuery<Approval[]>({ data: undefined }),
     )
     render(<ApprovalsBellButton />, { wrapper: Wrapper })
-    await waitFor(() => expect(screen.getByTestId('approvals-bell')).toBeInTheDocument())
+    expect(await screen.findByTestId('approvals-bell')).toBeInTheDocument()
     expect(screen.queryByTestId('approvals-bell-badge')).not.toBeInTheDocument()
   })
 

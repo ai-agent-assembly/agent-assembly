@@ -86,7 +86,7 @@ describe('FleetPage', () => {
       mockQuery<Agent[]>({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
     )
     render(<FleetPage />, { wrapper: ({ children }) => <Wrapper path="/">{children}</Wrapper> })
-    await waitFor(() => expect(screen.getByTestId('agents-empty')).toBeInTheDocument())
+    expect(await screen.findByTestId('agents-empty')).toBeInTheDocument()
   })
 
   it('shows error banner with retry button on failure', () => {
@@ -116,7 +116,7 @@ describe('AgentDetailPage', () => {
       </Wrapper>,
     )
 
-    await waitFor(() => expect(screen.getByTestId('agent-detail')).toBeInTheDocument())
+    expect(await screen.findByTestId('agent-detail')).toBeInTheDocument()
     expect(screen.getByText('test-agent')).toBeInTheDocument()
     // Framework chip + recent events table both surface "langgraph" / "enforced".
     expect(screen.getAllByText('langgraph').length).toBeGreaterThan(0)
