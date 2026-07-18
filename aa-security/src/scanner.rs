@@ -644,7 +644,11 @@ fn scan_digit_sequences(text: &str, findings: &mut Vec<CredentialFinding>) {
                     digits.push(b as char);
                     j += 1;
                 }
-                b' ' | b'-' if !digits.is_empty() => {
+                // Only consume a separator that sits *between* digits. A trailing
+                // separator must not be swallowed into the segment, or an SSN like
+                // "123-45-6789 " would become 12 bytes and fail the exact-11-byte
+                // `is_ssn` check, letting the PII through unredacted (AAASM-4820).
+                b' ' | b'-' if !digits.is_empty() && j + 1 < limit && bytes[j + 1].is_ascii_digit() => {
                     j += 1;
                 }
                 _ => break,
@@ -1329,6 +1333,32 @@ mod tests {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("SSN: 123-45-6789");
         assert!(result.findings.iter().any(|f| f.kind == CredentialKind::SsnPattern));
+    }
+
+    #[test]
+    fn detects_ssn_trailed_by_space() {
+        // Regression (AAASM-4820): a trailing space must not be swallowed into the
+        // digit segment, which would defeat the exact-11-byte SSN check and forward
+        // the PII unredacted.
+        let scanner = CredentialScanner::new();
+        let text = "SSN 123-45-6789 was leaked";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::SsnPattern));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("123-45-6789"));
+        assert!(redacted.contains("[REDACTED:SsnPattern]"));
+    }
+
+    #[test]
+    fn detects_ssn_trailed_by_hyphen() {
+        // Regression (AAASM-4820): a trailing hyphen must likewise not be consumed.
+        let scanner = CredentialScanner::new();
+        let text = "SSN 123-45-6789-leaked";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::SsnPattern));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("123-45-6789"));
+        assert!(redacted.contains("[REDACTED:SsnPattern]"));
     }
 
     #[test]
