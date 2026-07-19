@@ -35,11 +35,14 @@ aasm sandbox run ./tool.wasm --fuel 50000000 --wall-clock-ms 10000
 ```
 
 ```text
-Sandbox run: ./tool.wasm
-  Outcome:    completed
-  Fuel used:  3,201,884 / 50,000,000
-  Wall time:  812ms / 10000ms
+sandbox exited cleanly (exit_code=0)
 ```
+
+On success the command prints a single line with the module's exit code. If the
+sandbox refuses or traps the module (fuel exhaustion, memory-cap or wall-clock
+overrun, or a WASI trap), it instead writes `sandbox refused or trapped the
+module: <reason>` to stderr and exits non-zero. Fuel and wall-time usage are not
+tracked or reported.
 
 ---
 
@@ -52,8 +55,9 @@ aasm sandbox info
 ```
 
 ```text
-Default sandbox limits:
-  Fuel:           10,000,000 units
-  Memory pages:   16  (1 MiB)
-  Wall clock:     5000 ms
+aasm sandbox — WASI preview 1 tool-execution sandbox
+  fuel (instructions):      10000000
+  memory ceiling:           16 pages (1024 KiB)
+  wall-clock deadline (ms): 5000
+  preopened dirs:           (none — fully sealed FS)
 ```
