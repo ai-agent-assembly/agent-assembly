@@ -50,7 +50,7 @@ pub struct PolicyListFilter {
     path = "/api/v1/policies",
     params(PaginationParams, PolicyListFilter),
     responses(
-        (status = 200, description = "Paginated list of policy versions", body = Vec<PolicyResponse>),
+        (status = 200, description = "Paginated list of policy versions", body = PaginatedResponse<PolicyResponse>),
         (status = 403, description = "Caller lacks admin scope")
     ),
     tag = "policies"

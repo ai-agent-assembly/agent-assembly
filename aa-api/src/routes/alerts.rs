@@ -414,7 +414,7 @@ pub struct AlertResponse {
     path = "/api/v1/alerts",
     params(PaginationParams),
     responses(
-        (status = 200, description = "Paginated list of recent alerts", body = Vec<AlertResponse>)
+        (status = 200, description = "Paginated list of recent alerts", body = PaginatedResponse<AlertResponse>)
     ),
     tag = "alerts"
 )]

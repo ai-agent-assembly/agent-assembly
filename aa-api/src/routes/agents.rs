@@ -248,7 +248,7 @@ pub struct ResumeResponse {
 
     params(PaginationParams),
     responses(
-        (status = 200, description = "Paginated list of agents", body = Vec<AgentResponse>)
+        (status = 200, description = "Paginated list of agents", body = PaginatedResponse<AgentResponse>)
     ),
     tag = "agents"
 )]

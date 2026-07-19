@@ -59,7 +59,7 @@ pub struct LogFilterParams {
     path = "/api/v1/logs",
     params(PaginationParams, LogFilterParams),
     responses(
-        (status = 200, description = "Paginated audit log entries", body = Vec<LogEntry>),
+        (status = 200, description = "Paginated audit log entries", body = PaginatedResponse<LogEntry>),
         (status = 401, description = "Missing or invalid credentials")
     ),
     tag = "logs"
