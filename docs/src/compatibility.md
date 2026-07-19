@@ -179,21 +179,49 @@ Each field resolves as **explicit init argument > environment variable > unset**
 If `control_plane_url` is still unset after this chain, it falls back to
 `gateway_url` as described above.
 
-#### Canonical `AA_*` prefix and the deprecated `AAASM_*` alias
+#### Canonical `AA_*` prefix and the deprecated `AAASM_*` alias (SDK env vars only)
 
-`AA_*` is the **canonical** environment-variable prefix across all SDKs —
-`AA_GATEWAY_URL`, `AA_CONTROL_PLANE_URL`, and `AA_API_KEY`. New configuration
-should always use this prefix.
+This canonical/deprecated distinction applies **only to the SDK connection env
+vars** listed above — `AA_GATEWAY_URL`, `AA_CONTROL_PLANE_URL`, and
+`AA_API_KEY`. It does **not** apply to the core config vars (see the next
+section, where `AAASM_*` is the sole non-aliased name).
+
+For those SDK env vars, `AA_*` is the **canonical** prefix and new configuration
+should always use it.
 
 The legacy **`AAASM_*`** prefix — used by the older zero-config gateway resolver
-in each SDK — is a **deprecated alias**. It is still honoured for
-backwards-compatibility, but reading a value from an `AAASM_*` variable emits a
-deprecation warning, and the alias will be removed in a future major version.
-Migrate to the `AA_*` names.
+in each SDK — is a **deprecated alias** for those same SDK env vars. It is still
+honoured for backwards-compatibility, but reading a value from an `AAASM_*`
+variable emits a deprecation warning, and the alias will be removed in a future
+major version. Migrate to the `AA_*` names.
 
 This prefix reconciliation is tracked across the SDKs under
 [AAASM-3019](https://lightning-dust-mite.atlassian.net/browse/AAASM-3019);
 sibling subtasks update the Python, Node, and Go resolvers.
+
+#### Core (`aa-runtime` / gateway) config env vars use `AAASM_*` as the sole name
+
+The `AA_*`-canonical / `AAASM_*`-deprecated-alias story above is **SDK-only**. The
+core runtime's own configuration env vars are a **separate namespace**: they read
+`AAASM_*` as the **sole, non-aliased** name, with **no `AA_*` fallback** and **no
+deprecation warning**. There is no `AA_DATABASE_URL` / `AA_GATEWAY_PORT` / etc. —
+those spellings are read nowhere in the core and are silently ignored. Use the
+`AAASM_*` names below when configuring a self-hosted gateway:
+
+| Core config env var | Configures |
+|---|---|
+| `AAASM_DATABASE_URL` | PostgreSQL connection URL (overrides `storage.postgres.database_url`) |
+| `AAASM_REDIS_URL` | Redis connection URL |
+| `AAASM_SQLITE_PATH` | SQLite event-buffer path |
+| `AAASM_STORAGE_BACKEND` | Storage backend selector (`sqlite` or `postgres`) |
+| `AAASM_GATEWAY_PORT` | Gateway listen port |
+| `AAASM_RETENTION_HOT_DAYS` / `AAASM_RETENTION_WARM_DAYS` / `AAASM_RETENTION_COLD_ACTION` | Audit-retention tiering |
+| `AAASM_TLS_CERT` / `AAASM_TLS_KEY` | Gateway TLS certificate / key paths |
+| `AAASM_DASHBOARD_DIST` | Operator override for the dashboard `dist/` directory served by the gateway |
+
+These are the names the core actually reads (`aa-core/src/config.rs`,
+`aa-gateway/src/storage/postgres.rs`, `aa-gateway/src/dashboard_server.rs`); they
+predate the SDK prefix reconciliation and were never given an `AA_*` alias.
 
 ### Per-SDK notes
 
