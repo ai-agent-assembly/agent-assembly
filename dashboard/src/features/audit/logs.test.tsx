@@ -154,14 +154,14 @@ describe('useAuditLogQuery', () => {
   })
 
   it('omits filters from the query when unset', async () => {
-    get.mockResolvedValue({ data: [] })
+    get.mockResolvedValue({ data: { items: [], page: 1, per_page: 50, total: 0 } })
     const { result } = renderHook(() => useAuditLogQuery(), { wrapper: makeWrapper() })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(get).toHaveBeenCalledWith('/api/v1/logs', { params: { query: {} } })
   })
 
   it('forwards agent and event-type filters as query params', async () => {
-    get.mockResolvedValue({ data: [] })
+    get.mockResolvedValue({ data: { items: [], page: 1, per_page: 50, total: 0 } })
     const { result } = renderHook(
       () => useAuditLogQuery({ agentId: 'abc123', eventType: 'PolicyViolation' }),
       { wrapper: makeWrapper() },
@@ -183,7 +183,7 @@ describe('useAuditLogQuery', () => {
         payload: '{}',
       },
     ]
-    get.mockResolvedValue({ data: entries })
+    get.mockResolvedValue({ data: { items: entries, page: 1, per_page: 50, total: entries.length } })
     const { result } = renderHook(() => useAuditLogQuery(), { wrapper: makeWrapper() })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(result.current.data).toEqual(entries)

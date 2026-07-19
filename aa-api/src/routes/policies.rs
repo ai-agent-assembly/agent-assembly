@@ -12,7 +12,7 @@ use aa_gateway::policy::scope::PolicyScope;
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
 use crate::auth::scope::{RequireRead, Scope};
 use crate::error::ProblemDetail;
-use crate::pagination::{PaginatedResponse, PaginationParams};
+use crate::pagination::PaginationParams;
 use crate::state::AppState;
 
 /// JSON representation of a governance policy version.
@@ -41,6 +41,21 @@ pub struct PolicyListFilter {
     pub include_archived: bool,
 }
 
+/// Paginated `GET /api/v1/policies` body (AAASM-4892) — a named wrapper so the
+/// OpenAPI schema `$ref`s `PolicyResponse` and matches the `{ items, total }`
+/// object the handler serializes, not a bare array.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PaginatedPolicyResponse {
+    /// Policy versions in the current page.
+    pub items: Vec<PolicyResponse>,
+    /// 1-indexed page number echoed from the request.
+    pub page: u32,
+    /// Items per page echoed from the request.
+    pub per_page: u32,
+    /// Total policy versions across all pages.
+    pub total: u64,
+}
+
 /// `GET /api/v1/policies` — list all policy versions.
 ///
 /// List governance policy versions with optional archive inclusion.
@@ -50,7 +65,7 @@ pub struct PolicyListFilter {
     path = "/api/v1/policies",
     params(PaginationParams, PolicyListFilter),
     responses(
-        (status = 200, description = "Paginated list of policy versions", body = Vec<PolicyResponse>),
+        (status = 200, description = "Paginated list of policy versions", body = PaginatedPolicyResponse),
         (status = 403, description = "Caller lacks admin scope")
     ),
     tag = "policies"
@@ -116,7 +131,7 @@ pub async fn list_policies(
 
     Ok((
         StatusCode::OK,
-        Json(PaginatedResponse {
+        Json(PaginatedPolicyResponse {
             items,
             page: params.page(),
             per_page: params.per_page(),

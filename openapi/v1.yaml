@@ -134,9 +134,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AgentResponse'
+                $ref: '#/components/schemas/PaginatedAgentResponse'
   /api/v1/agents/{id}:
     get:
       tags:
@@ -501,9 +499,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AlertResponse'
+                $ref: '#/components/schemas/PaginatedAlertResponse'
   /api/v1/alerts/destinations:
     get:
       tags:
@@ -2112,9 +2108,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/LogEntry'
+                $ref: '#/components/schemas/PaginatedLogResponse'
         '401':
           description: Missing or invalid credentials
   /api/v1/ops:
@@ -2451,9 +2445,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/PolicyResponse'
+                $ref: '#/components/schemas/PaginatedPolicyResponse'
         '403':
           description: Caller lacks admin scope
     post:
@@ -5128,6 +5120,72 @@ components:
         verb:
           $ref: '#/components/schemas/Verb'
           description: Verb within the cell that was changed.
+    PaginatedAgentResponse:
+      type: object
+      description: |-
+        Paginated `GET /api/v1/agents` body (AAASM-4892).
+
+        A named wrapper (mirroring `PaginatedApprovalResponse`) so the OpenAPI schema
+        `$ref`s `AgentResponse` and matches the `{ items, total }` object the handler
+        actually serializes — not the bare array a generic `Vec<T>` annotation implied.
+      required:
+      - items
+      - page
+      - per_page
+      - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentResponse'
+          description: Agents in the current page.
+        page:
+          type: integer
+          format: int32
+          description: 1-indexed page number echoed from the request.
+          minimum: 0
+        per_page:
+          type: integer
+          format: int32
+          description: Items per page echoed from the request.
+          minimum: 0
+        total:
+          type: integer
+          format: int64
+          description: Total agents visible to the caller across all pages.
+          minimum: 0
+    PaginatedAlertResponse:
+      type: object
+      description: |-
+        Paginated `GET /api/v1/alerts` body (AAASM-4892) — a named wrapper so the
+        OpenAPI schema `$ref`s `AlertResponse` and matches the `{ items, total }`
+        object the handler serializes, not a bare array.
+      required:
+      - items
+      - page
+      - per_page
+      - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertResponse'
+          description: Alerts in the current page.
+        page:
+          type: integer
+          format: int32
+          description: 1-indexed page number echoed from the request.
+          minimum: 0
+        per_page:
+          type: integer
+          format: int32
+          description: Items per page echoed from the request.
+          minimum: 0
+        total:
+          type: integer
+          format: int64
+          description: Total alerts visible to the caller across all pages.
+          minimum: 0
     PaginatedApprovalResponse:
       type: object
       description: |-
@@ -5167,6 +5225,70 @@ components:
           type: integer
           format: int64
           description: Total number of items across all pages (after filters).
+          minimum: 0
+    PaginatedLogResponse:
+      type: object
+      description: |-
+        Paginated `GET /api/v1/logs` body (AAASM-4892) — a named wrapper so the
+        OpenAPI schema `$ref`s `LogEntry` and matches the `{ items, total }` object
+        the handler serializes, not a bare array.
+      required:
+      - items
+      - page
+      - per_page
+      - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LogEntry'
+          description: Audit log entries in the current page.
+        page:
+          type: integer
+          format: int32
+          description: 1-indexed page number echoed from the request.
+          minimum: 0
+        per_page:
+          type: integer
+          format: int32
+          description: Items per page echoed from the request.
+          minimum: 0
+        total:
+          type: integer
+          format: int64
+          description: Total entries matching the filter across all pages.
+          minimum: 0
+    PaginatedPolicyResponse:
+      type: object
+      description: |-
+        Paginated `GET /api/v1/policies` body (AAASM-4892) — a named wrapper so the
+        OpenAPI schema `$ref`s `PolicyResponse` and matches the `{ items, total }`
+        object the handler serializes, not a bare array.
+      required:
+      - items
+      - page
+      - per_page
+      - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyResponse'
+          description: Policy versions in the current page.
+        page:
+          type: integer
+          format: int32
+          description: 1-indexed page number echoed from the request.
+          minimum: 0
+        per_page:
+          type: integer
+          format: int32
+          description: Items per page echoed from the request.
+          minimum: 0
+        total:
+          type: integer
+          format: int64
+          description: Total policy versions across all pages.
           minimum: 0
     PermissionSourceResponse:
       type: object

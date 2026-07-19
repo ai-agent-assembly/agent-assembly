@@ -19,7 +19,8 @@ export function useAgentsQuery() {
         params: { query: { per_page: 100 } },
       })
       if (error) throw new Error('Failed to fetch agents')
-      return data ?? []
+      // AAASM-4892: /agents and /logs return a paginated { items, total } object.
+      return data?.items ?? []
     },
   })
 }
@@ -76,7 +77,8 @@ export function useAgentEventsQuery(id: string) {
         params: { query: { agent_id: id, per_page: 50 } },
       })
       if (error) throw new Error('Failed to fetch agent events')
-      return data ?? []
+      // AAASM-4892: /agents and /logs return a paginated { items, total } object.
+      return data?.items ?? []
     },
     enabled: !!id,
   })

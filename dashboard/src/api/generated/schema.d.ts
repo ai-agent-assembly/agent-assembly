@@ -2916,6 +2916,56 @@ export interface components {
             verb: components["schemas"]["Verb"];
         };
         /**
+         * @description Paginated `GET /api/v1/agents` body (AAASM-4892).
+         *
+         *     A named wrapper (mirroring `PaginatedApprovalResponse`) so the OpenAPI schema
+         *     `$ref`s `AgentResponse` and matches the `{ items, total }` object the handler
+         *     actually serializes — not the bare array a generic `Vec<T>` annotation implied.
+         */
+        PaginatedAgentResponse: {
+            /** @description Agents in the current page. */
+            items: components["schemas"]["AgentResponse"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total agents visible to the caller across all pages.
+             */
+            total: number;
+        };
+        /**
+         * @description Paginated `GET /api/v1/alerts` body (AAASM-4892) — a named wrapper so the
+         *     OpenAPI schema `$ref`s `AlertResponse` and matches the `{ items, total }`
+         *     object the handler serializes, not a bare array.
+         */
+        PaginatedAlertResponse: {
+            /** @description Alerts in the current page. */
+            items: components["schemas"]["AlertResponse"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total alerts visible to the caller across all pages.
+             */
+            total: number;
+        };
+        /**
          * @description Paginated wire-format envelope for `GET /api/v1/approvals`.
          *
          *     Mirrors the JSON shape produced by [`PaginatedResponse<ApprovalResponse>`]
@@ -2944,6 +2994,54 @@ export interface components {
             /**
              * Format: int64
              * @description Total number of items across all pages (after filters).
+             */
+            total: number;
+        };
+        /**
+         * @description Paginated `GET /api/v1/logs` body (AAASM-4892) — a named wrapper so the
+         *     OpenAPI schema `$ref`s `LogEntry` and matches the `{ items, total }` object
+         *     the handler serializes, not a bare array.
+         */
+        PaginatedLogResponse: {
+            /** @description Audit log entries in the current page. */
+            items: components["schemas"]["LogEntry"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total entries matching the filter across all pages.
+             */
+            total: number;
+        };
+        /**
+         * @description Paginated `GET /api/v1/policies` body (AAASM-4892) — a named wrapper so the
+         *     OpenAPI schema `$ref`s `PolicyResponse` and matches the `{ items, total }`
+         *     object the handler serializes, not a bare array.
+         */
+        PaginatedPolicyResponse: {
+            /** @description Policy versions in the current page. */
+            items: components["schemas"]["PolicyResponse"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total policy versions across all pages.
              */
             total: number;
         };
@@ -4122,7 +4220,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentResponse"][];
+                    "application/json": components["schemas"]["PaginatedAgentResponse"];
                 };
             };
         };
@@ -4520,7 +4618,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AlertResponse"][];
+                    "application/json": components["schemas"]["PaginatedAlertResponse"];
                 };
             };
         };
@@ -6080,7 +6178,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LogEntry"][];
+                    "application/json": components["schemas"]["PaginatedLogResponse"];
                 };
             };
             /** @description Missing or invalid credentials */
@@ -6434,7 +6532,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PolicyResponse"][];
+                    "application/json": components["schemas"]["PaginatedPolicyResponse"];
                 };
             };
             /** @description Caller lacks admin scope */

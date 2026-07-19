@@ -53,7 +53,8 @@ export function useAuditLogQuery(
       if (eventType) query.event_type = eventType
       const { data, error } = await api.GET('/api/v1/logs', { params: { query } })
       if (error) throw new Error('Failed to fetch audit log')
-      return data ?? []
+      // AAASM-4892: /logs returns a paginated { items, total } object.
+      return data?.items ?? []
     },
   })
 }

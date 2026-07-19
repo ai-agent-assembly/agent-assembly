@@ -41,6 +41,13 @@ impl PaginationParams {
 }
 
 /// Wrapper for paginated list responses.
+///
+/// This is the runtime serialization shape. For the OpenAPI schema, each list
+/// endpoint declares a **named** wrapper (e.g. `PaginatedAgentResponse`) that
+/// `$ref`s its item type — mirroring `PaginatedApprovalResponse` — so the spec
+/// matches this `{ items, page, per_page, total }` object instead of a bare
+/// array (AAASM-4892). A generic `ToSchema` here would inline each item type and
+/// orphan list-only components, so the named wrappers are used instead.
 #[derive(Debug, Clone, Serialize)]
 pub struct PaginatedResponse<T: Serialize> {
     /// Items in the current page.

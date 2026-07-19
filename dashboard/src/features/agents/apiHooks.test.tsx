@@ -34,7 +34,8 @@ afterEach(() => {
 
 describe('useAgentsQuery', () => {
   it('requests up to 100 agents and returns the list', async () => {
-    get.mockResolvedValue({ data: [{ id: 'a1' }] } satisfies FetchResult)
+    // AAASM-4892: /agents returns a paginated { items, total } object.
+    get.mockResolvedValue({ data: { items: [{ id: 'a1' }], page: 1, per_page: 100, total: 1 } } satisfies FetchResult)
     const { result } = renderHook(() => useAgentsQuery(), { wrapper: makeWrapper() })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(result.current.data).toEqual([{ id: 'a1' }])
