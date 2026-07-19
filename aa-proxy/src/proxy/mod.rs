@@ -1382,6 +1382,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plain_http_debug_target_is_redacted() {
+        // AAASM-4863 regression: the `handle_plain_http` debug log renders the
+        // target through `redact_target` (the AAASM-4738 helper) so a secret
+        // riding in the query string never reaches the log in cleartext. This
+        // pins the exact value the `target = %…` field would carry.
+        let server = server_with(vec![], vec![]).await;
+        // A well-known synthetic OpenAI key the default scanner detects. Not real.
+        let target = "/v1/chat?token=sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab";
+        // `redact_target` returns the exact String the `target = %…` debug field
+        // renders (its `Display` is identity).
+        let logged = server.interceptor.redact_target(target);
+        assert!(
+            !logged.contains("sk-TESTONLY-NOT-REAL"),
+            "debug target must not contain the raw secret: {logged}"
+        );
+        assert!(
+            logged.contains("[REDACTED:"),
+            "debug target must carry a redaction label: {logged}"
+        );
+    }
+
+    #[tokio::test]
     async fn connect_deny_reason_blocks_metadata_ip_literal() {
         // SSRF: the cloud metadata endpoint as an IP literal must be denied
         // even with an empty allowlist (which is otherwise allow-all).
