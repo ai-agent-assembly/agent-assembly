@@ -661,6 +661,47 @@ impl SyscallGuardLoader {
             Ok(())
         }
     }
+
+    /// Sum of fork-propagation drops caused by a full `PID_FILTER` (AAASM-4862).
+    ///
+    /// A non-zero value means at least that many forked children of a confined
+    /// process ran **UNCONFINED** because `PID_FILTER` had hit its 1024-entry
+    /// cap when their `sched_process_fork` fired — the fail-open the fork
+    /// tracepoint cannot prevent (it can neither block the fork nor kill an
+    /// unfiltered child). This accessor is the observability surface for that
+    /// otherwise-silent degradation: it reads the BPF-side `FORK_MAP_FULL_DROPS`
+    /// per-CPU counter and returns the total across CPUs. The count is
+    /// monotonic for the life of the loaded program.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EbpfError::MapUpdate`] on non-Linux or if the map is missing /
+    /// cannot be read.
+    pub fn fork_map_full_drops(&self) -> Result<u64, EbpfError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(EbpfError::MapUpdate("eBPF is only supported on Linux".into()))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let bpf = self
+                .bpf
+                .as_ref()
+                .ok_or_else(|| EbpfError::MapUpdate("BPF not loaded — call load() first".into()))?;
+
+            let counter: aya::maps::PerCpuArray<_, u64> = aya::maps::PerCpuArray::try_from(
+                bpf.map("FORK_MAP_FULL_DROPS")
+                    .ok_or_else(|| EbpfError::MapUpdate("FORK_MAP_FULL_DROPS map not found".into()))?,
+            )
+            .map_err(|e| EbpfError::MapUpdate(e.to_string()))?;
+
+            // Per-CPU array: one slot (index 0) holds a private counter per CPU;
+            // the fleet-wide drop total is their sum.
+            let per_cpu = counter.get(&0, 0).map_err(|e| EbpfError::MapUpdate(e.to_string()))?;
+            Ok(per_cpu.iter().copied().sum())
+        }
+    }
 }
 
 #[cfg(test)]
