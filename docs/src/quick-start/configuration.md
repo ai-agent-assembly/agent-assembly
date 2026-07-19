@@ -103,12 +103,18 @@ value, the precedence is noted.
 | `AA_POLICY` | `aasm gateway start` | Default policy path; overridden by `--policy` |
 | `AA_DATA_DIR` | gateway / proxy / dashboard | Directory for PID files and managed-process state |
 | `AA_PROXY_ADDR` | `aasm proxy start` | Proxy listen address (default `127.0.0.1:8899`) |
-| `AA_GATEWAY_URL` | `aasm proxy start` | Gateway URL the proxy reports to |
+| `AA_PROXY_GATEWAY_ENDPOINT` | `aasm proxy start` | Upstream gateway endpoint the proxy reports to (e.g. `http://127.0.0.1:50051`) |
 | `AA_CA_DIR` | `aasm proxy` | Per-host CA material directory |
 
 > Note the two prefixes: **`AASM_*`** variables configure the CLI surface, while
 > **`AA_*`** variables configure the underlying daemons the CLI launches
 > (gateway, proxy). They are not interchangeable.
+
+> Three similarly-named gateway-endpoint variables are **distinct** and not
+> interchangeable: `AA_PROXY_GATEWAY_ENDPOINT` (the proxy's upstream gateway,
+> above), `AA_GATEWAY_ENDPOINT` (used by the runtime / SDK client), and
+> `AA_GATEWAY_URL` (used by the Windsurf devtool). Only
+> `AA_PROXY_GATEWAY_ENDPOINT` affects `aasm proxy start`.
 
 ## Output format
 
