@@ -13,7 +13,7 @@ use aa_gateway::registry::{AgentStatus, OrphanMode};
 use crate::auth::scope::{RequireRead, RequireWrite, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
-use crate::pagination::{PaginatedResponse, PaginationParams};
+use crate::pagination::PaginationParams;
 use crate::state::AppState;
 
 /// Enforce tenant ownership of an agent for a caller that already cleared the
@@ -239,6 +239,23 @@ pub struct ResumeResponse {
     pub new_status: String,
 }
 
+/// Paginated `GET /api/v1/agents` body (AAASM-4892).
+///
+/// A named wrapper (mirroring `PaginatedApprovalResponse`) so the OpenAPI schema
+/// `$ref`s `AgentResponse` and matches the `{ items, total }` object the handler
+/// actually serializes — not the bare array a generic `Vec<T>` annotation implied.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PaginatedAgentResponse {
+    /// Agents in the current page.
+    pub items: Vec<AgentResponse>,
+    /// 1-indexed page number echoed from the request.
+    pub page: u32,
+    /// Items per page echoed from the request.
+    pub per_page: u32,
+    /// Total agents visible to the caller across all pages.
+    pub total: u64,
+}
+
 /// `GET /api/v1/agents` — list all registered agents with pagination.
 ///
 /// Returns a paginated list of all agents currently known to the registry.
@@ -248,7 +265,7 @@ pub struct ResumeResponse {
 
     params(PaginationParams),
     responses(
-        (status = 200, description = "Paginated list of agents", body = PaginatedResponse<AgentResponse>)
+        (status = 200, description = "Paginated list of agents", body = PaginatedAgentResponse)
     ),
     tag = "agents"
 )]
@@ -287,7 +304,7 @@ pub async fn list_agents(
 
     (
         StatusCode::OK,
-        Json(PaginatedResponse {
+        Json(PaginatedAgentResponse {
             items,
             page: params.page(),
             per_page,

@@ -1,7 +1,7 @@
 //! Reusable pagination types for list endpoints.
 
 use serde::{Deserialize, Serialize};
-use utoipa::{IntoParams, ToSchema};
+use utoipa::IntoParams;
 
 /// Default page number when not specified.
 const DEFAULT_PAGE: u32 = 1;
@@ -42,12 +42,14 @@ impl PaginationParams {
 
 /// Wrapper for paginated list responses.
 ///
-/// The generated OpenAPI schema must match this `{ items, page, per_page, total }`
-/// shape — deriving `ToSchema` here (rather than annotating handlers `body =
-/// Vec<T>`) is what keeps the spec honest for consumers that would otherwise
-/// `.map` over a non-array body (AAASM-4892).
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct PaginatedResponse<T: Serialize + ToSchema> {
+/// This is the runtime serialization shape. For the OpenAPI schema, each list
+/// endpoint declares a **named** wrapper (e.g. `PaginatedAgentResponse`) that
+/// `$ref`s its item type — mirroring `PaginatedApprovalResponse` — so the spec
+/// matches this `{ items, page, per_page, total }` object instead of a bare
+/// array (AAASM-4892). A generic `ToSchema` here would inline each item type and
+/// orphan list-only components, so the named wrappers are used instead.
+#[derive(Debug, Clone, Serialize)]
+pub struct PaginatedResponse<T: Serialize> {
     /// Items in the current page.
     pub items: Vec<T>,
     /// Current page number.

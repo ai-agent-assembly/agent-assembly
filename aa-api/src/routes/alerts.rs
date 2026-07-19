@@ -15,7 +15,7 @@ use crate::alerts::StoredAlert;
 use crate::auth::scope::{RequireRead, RequireWrite, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
-use crate::pagination::{PaginatedResponse, PaginationParams};
+use crate::pagination::PaginationParams;
 use crate::state::AppState;
 
 /// Enforce tenant ownership of an alert for a caller that already cleared the
@@ -406,6 +406,21 @@ pub struct AlertResponse {
     pub redacted_value: Option<String>,
 }
 
+/// Paginated `GET /api/v1/alerts` body (AAASM-4892) — a named wrapper so the
+/// OpenAPI schema `$ref`s `AlertResponse` and matches the `{ items, total }`
+/// object the handler serializes, not a bare array.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PaginatedAlertResponse {
+    /// Alerts in the current page.
+    pub items: Vec<AlertResponse>,
+    /// 1-indexed page number echoed from the request.
+    pub page: u32,
+    /// Items per page echoed from the request.
+    pub per_page: u32,
+    /// Total alerts visible to the caller across all pages.
+    pub total: u64,
+}
+
 /// `GET /api/v1/alerts` — list recent governance alerts.
 ///
 /// List recent governance alerts such as budget warnings and policy violations.
@@ -414,7 +429,7 @@ pub struct AlertResponse {
     path = "/api/v1/alerts",
     params(PaginationParams),
     responses(
-        (status = 200, description = "Paginated list of recent alerts", body = PaginatedResponse<AlertResponse>)
+        (status = 200, description = "Paginated list of recent alerts", body = PaginatedAlertResponse)
     ),
     tag = "alerts"
 )]
@@ -454,7 +469,7 @@ pub async fn list_alerts(
 
     (
         StatusCode::OK,
-        Json(PaginatedResponse {
+        Json(PaginatedAlertResponse {
             items,
             page: params.page(),
             per_page: params.per_page(),

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::auth::scope::{RequireRead, Scope};
-use crate::pagination::{PaginatedResponse, PaginationParams};
+use crate::pagination::PaginationParams;
 use crate::state::AppState;
 
 /// JSON representation of an audit log entry.
@@ -43,6 +43,21 @@ pub struct LogFilterParams {
     pub org_id: Option<String>,
 }
 
+/// Paginated `GET /api/v1/logs` body (AAASM-4892) — a named wrapper so the
+/// OpenAPI schema `$ref`s `LogEntry` and matches the `{ items, total }` object
+/// the handler serializes, not a bare array.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PaginatedLogResponse {
+    /// Audit log entries in the current page.
+    pub items: Vec<LogEntry>,
+    /// 1-indexed page number echoed from the request.
+    pub page: u32,
+    /// Items per page echoed from the request.
+    pub per_page: u32,
+    /// Total entries matching the filter across all pages.
+    pub total: u64,
+}
+
 /// `GET /api/v1/logs` — paginated audit log query.
 ///
 /// Query the paginated audit log of governance events.
@@ -59,7 +74,7 @@ pub struct LogFilterParams {
     path = "/api/v1/logs",
     params(PaginationParams, LogFilterParams),
     responses(
-        (status = 200, description = "Paginated audit log entries", body = PaginatedResponse<LogEntry>),
+        (status = 200, description = "Paginated audit log entries", body = PaginatedLogResponse),
         (status = 401, description = "Missing or invalid credentials")
     ),
     tag = "logs"
@@ -120,7 +135,7 @@ pub async fn list_logs(
 
     (
         StatusCode::OK,
-        Json(PaginatedResponse {
+        Json(PaginatedLogResponse {
             items,
             page: params.page(),
             per_page: params.per_page(),
