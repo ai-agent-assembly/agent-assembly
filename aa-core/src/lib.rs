@@ -36,6 +36,7 @@ pub mod evaluators;
 pub mod identity;
 #[cfg(feature = "alloc")]
 pub mod llm;
+pub mod net;
 pub mod policy;
 pub mod risk_tier;
 #[cfg(feature = "std")]

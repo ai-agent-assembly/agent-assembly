@@ -41,9 +41,12 @@ aasm agent list --status Active --framework langgraph
 ```
 
 ```text
-ID        NAME           FRAMEWORK   VERSION   STATUS    TOOLS
-a1b2c3…   research-bot   langgraph   1.2.0     Active    search, fetch
+AGENT_ID   NAME           FRAMEWORK   VERSION   STATUS   PID     SESSIONS   LAST_EVENT
+a1b2c3…    research-bot   langgraph   1.2.0     Active   48213   3          2026-06-09T14:02:11Z
 ```
+
+Columns that the server did not supply render as `-` (e.g. `PID`, `SESSIONS`,
+`LAST_EVENT` for an agent with no live process or events).
 
 ---
 
