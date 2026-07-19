@@ -224,11 +224,15 @@ All read in `aa-proxy/src/config.rs`:
 
 ### L3 — eBPF (`aa-ebpf`, Linux-only)
 
-eBPF probe activation is feature-gated by env flags read by the runtime/eBPF
-layer (`AA_TLS_BPF`, `AA_EXEC_BPF`, `AA_FILE_IO_BPF`) and surfaces events to
-`aa-runtime` over the kernel ring buffer. eBPF is **Linux-only**; on other
-platforms `cargo check -p aa-ebpf` is the supported path and the layer is
-unavailable at runtime.
+eBPF probe activation is driven by env vars read by `aa-runtime`: the eBPF layer
+is selected via `AA_LAYERS` (`aa-runtime/src/layer.rs`), and the loader is tuned
+by `AA_EBPF_INPROCESS_LOAD`, `AA_EBPF_CONFINE_PID`, `AA_EBPF_POLICY_PATH`, and
+`AA_EBPF_LOADERD_SOCK` (`aa-runtime/src/ebpf_control.rs`). Events surface to
+`aa-runtime` over the kernel ring buffer. (`AA_TLS_BPF` / `AA_EXEC_BPF` /
+`AA_FILE_IO_BPF` are **not** runtime env vars — they are the compiled-in BPF
+objects in `aa-ebpf`, verified against the build-time `AA_*_BPF_SHA256`
+digests.) eBPF is **Linux-only**; on other platforms `cargo check -p aa-ebpf` is
+the supported path and the layer is unavailable at runtime.
 
 ### `aa-runtime` — the per-agent chokepoint
 
@@ -239,7 +243,7 @@ Read in `aa-runtime/src/config.rs`:
 | `AA_AGENT_ID` | **Required.** Names the UDS `/tmp/aa-runtime-<agent_id>.sock`. |
 | `AA_POLICY_PATH` | Path to the policy document; empty string disables policy loading. |
 | `AA_METRICS_ADDR` | Prometheus metrics bind address. Default `0.0.0.0:8080`. |
-| `AA_ENFORCEMENT_MODE` | `enforce` (default), `observe`, or `disabled` — controls whether a deny actually blocks. |
+| `AA_ENFORCEMENT_MODE` | `enforce` (default), `observe`, or `disabled`. **Not read by `aa-runtime`** — the CLI (`aa-cli/src/commands/run.rs`) injects it into the launched *agent's* child-process env for the SDK to consume, so setting it on the `aa-runtime` sidecar has no effect. |
 | `AA_ENFORCEMENT_MAX_FIELD_BYTES` | Oversized-field threshold; the enforcement stage redacts whole fields over the limit (fail-closed). |
 | `AA_GATEWAY_ENDPOINT` | gRPC endpoint of the gateway (shared with the SDK client). |
 | `AA_GATEWAY_FAIL_CLOSED` | Deny when the gateway is unreachable. |
@@ -249,7 +253,7 @@ Read in `aa-runtime/src/config.rs`:
 | Knob | Where | Purpose |
 |---|---|---|
 | `AA_MODE` | `aa-gateway/src/main.rs` | Deployment mode: `legacy-grpc`, `local`, or `remote`. The gRPC service is always exposed; `--mode` overrides the env var. |
-| `AASM_GATEWAY_PORT` | `aa-gateway/src/main.rs` | Gateway port in `local` mode. |
+| `AAASM_GATEWAY_PORT` | `aa-core/src/config.rs` | Gateway port in `local` mode. |
 | `AA_AUDIT_DIR` | `aa-gateway/src/server.rs` | Directory for the tamper-evident JSONL audit log. |
 | `AA_DATA_DIR` | `aa-gateway/src/policy/history/config.rs` | Base data dir; e.g. policy history lands under `$AA_DATA_DIR/policy-history/`. |
 | `AA_AUDIT_NATS_URL` + `AA_AUDIT_POSTGRES_URL` | `aa-gateway/src/audit_consumer.rs` | Both must be set to enable the async audit consumer (NATS → Postgres). |
@@ -279,10 +283,10 @@ this loader. See [Data flows → Storage data flow](data-flows.md#storage-data-f
 | Knob | Where | Purpose / default |
 |---|---|---|
 | `AA_API_ADDR` | `aa-api/src/config.rs`, `aa-api/src/bin/aa-api-server.rs` | HTTP bind address. Default `127.0.0.1:7700` (`DEFAULT_ADDR`). |
-| `AA_AUTH` | `aa-api/src/auth/config.rs` | `off` disables auth (all requests treated as admin, logged as a warning); anything else = on. |
-| `AA_JWT_SECRET` | `aa-api/src/auth/config.rs` | HMAC key for JWT; **required** when auth is on, with a minimum length. |
-| `AA_API_KEYS_PATH` | `aa-api/src/auth/config.rs` | Path to the API-keys file. Default `~/.aa/api-keys.json`. |
-| `AA_RATE_LIMIT_RPM` | `aa-api/src/auth/config.rs` | Requests per minute per key. Default `1000`. |
+| `AA_AUTH` | `aa-auth/src/config.rs` | `off` disables auth (all requests treated as admin, logged as a warning); anything else = on. |
+| `AA_JWT_SECRET` | `aa-auth/src/config.rs` | HMAC key for JWT; **required** when auth is on, with a minimum length. |
+| `AA_API_KEYS_PATH` | `aa-auth/src/config.rs` | Path to the API-keys file. Default `~/.aa/api-keys.json`. |
+| `AA_RATE_LIMIT_RPM` | `aa-auth/src/config.rs` | Requests per minute per key. Default `1000`. |
 | `AASM_API_AUTH` / `AASM_API_KEY` | `aa-api/src/state.rs` | Alternate auth toggle (`AASM_API_AUTH=off`) and key for the API surface. |
 
 ### Dashboard / `aasm` CLI
@@ -290,7 +294,7 @@ this loader. See [Data flows → Storage data flow](data-flows.md#storage-data-f
 | Knob | Where | Purpose |
 |---|---|---|
 | `AASM_DASHBOARD_PORT` | `aa-cli/src/config.rs`, `aa-cli/src/commands/dashboard/{start,open}.rs` | Port the dashboard server listens on / the CLI connects to (overridable by `--port`). |
-| `AASM_DASHBOARD_DIST` | `aa-cli` | Path to the built dashboard static assets. |
+| `AAASM_DASHBOARD_DIST` | `aa-gateway/src/dashboard_server.rs` | Path to the built dashboard static assets. |
 
 The dashboard speaks HTTP/OpenAPI (and WS) to `aa-api` on `:7700`; the `aasm`
 CLI speaks gRPC to the gateway on `:50051`.
