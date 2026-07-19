@@ -341,6 +341,53 @@ mod tests {
     }
 
     #[test]
+    fn egress_rejects_newly_closed_ranges() {
+        // AAASM-4859: ranges the local blocklist previously missed, now covered
+        // by the shared aa_core::net set. Each embeds an internal/non-routable
+        // target (several encode the 169.254.169.254 metadata endpoint).
+        for url in [
+            // CGNAT 100.64.0.0/10 and "this network" 0.0.0.0/8.
+            "http://100.64.0.1/hook",
+            "http://0.1.2.3/hook",
+            // 169.254.169.254 via each IPv6 encoding a translator could forward.
+            "http://[::ffff:a9fe:a9fe]/hook",   // IPv4-mapped
+            "http://[64:ff9b::a9fe:a9fe]/hook", // NAT64 64:ff9b::/96
+            "http://[2002:a9fe:a9fe::1]/hook",  // 6to4 2002::/16
+            "http://[::a9fe:a9fe]/hook",        // IPv4-compatible ::/96
+        ] {
+            assert_eq!(
+                egress(url),
+                Err(ValidationError::InvalidConfig(
+                    "webhook.url resolves to a disallowed internal address"
+                )),
+                "{url} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn egress_rejects_metadata_via_every_encoding() {
+        // The 169.254.169.254 cloud-metadata endpoint must be refused however it
+        // is spelled — as a v4 literal and through each IPv6 form.
+        for url in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::ffff:169.254.169.254]/",
+            "http://[::ffff:a9fe:a9fe]/",
+            "http://[64:ff9b::a9fe:a9fe]/",
+            "http://[2002:a9fe:a9fe::1]/",
+            "http://[::a9fe:a9fe]/",
+        ] {
+            assert_eq!(
+                egress(url),
+                Err(ValidationError::InvalidConfig(
+                    "webhook.url resolves to a disallowed internal address"
+                )),
+                "{url} must be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn egress_allows_public_ip() {
         // A public literal IP carries no DNS dependency and must be allowed.
         assert!(egress("http://8.8.8.8/hook").is_ok());
