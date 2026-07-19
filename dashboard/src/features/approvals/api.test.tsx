@@ -161,9 +161,11 @@ describe('ApprovalsPage', () => {
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     )
 
-    renderHook(() => useApprovalsStream(), { wrapper })
+    // AAASM-4861: the stream mints a WS ticket before connecting; inject a
+    // resolved mint so no real network call is attempted in the test.
+    renderHook(() => useApprovalsStream({ mintTicket: () => Promise.resolve('wst_test') }), { wrapper })
 
-    // Wait for WS to open
+    // Wait for WS to open (the socket is created after the mint microtask).
     await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0))
     const ws = MockWebSocket.instances[0]
     await waitFor(() => ws.readyState === 1)
