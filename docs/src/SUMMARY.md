@@ -37,6 +37,7 @@
 - [aasm config](cli/config.md)
 - [aasm context](cli/context.md)
 - [aasm admin](cli/admin.md)
+- [aasm uninstall](cli/uninstall.md)
 - [aasm version](cli/version.md)
 - [aasm completion](cli/completion.md)
 
