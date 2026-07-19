@@ -44,7 +44,8 @@ aasm dashboard start --port 8088 --open
 ```
 
 ```text
-Dashboard serving at http://127.0.0.1:8088  (Ctrl-C to stop)
+Dashboard running at http://127.0.0.1:8088
+Press Ctrl-C to stop.
 ```
 
 Once the server is up, the browser opens to the dashboard **home / overview** —

@@ -125,6 +125,7 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm config`](config.md) | Local | Validate / boot an `agent-assembly.toml`. |
 | [`aasm context`](context.md) | Local | Manage `~/.aa/config.yaml` contexts. |
 | [`aasm admin`](admin.md) | Gateway HTTP | Administrative operations (retention). |
+| [`aasm uninstall`](uninstall.md) | Local | Remove Agent Assembly tools installed via the curl installer (`--purge` also removes local data; Homebrew installs are redirected to `brew uninstall`). |
 | [`aasm version`](version.md) | Gateway HTTP | CLI + gateway/api versions. |
 | [`aasm completion`](completion.md) | Local | Generate shell completion scripts. |
 
