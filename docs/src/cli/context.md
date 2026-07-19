@@ -30,10 +30,13 @@ aasm context list
 ```
 
 ```text
-NAME         API URL                       DEFAULT
-production   https://api.example.com       *
-staging      https://staging.example.com
+production *  https://api.example.com (key set)
+staging  https://staging.example.com
 ```
+
+One line per context — no header row. A ` *` marker follows the default
+context's name, and ` (key set)` follows the URL when an API key is stored for
+that context.
 
 ---
 
