@@ -327,6 +327,22 @@ mod tests {
     }
 
     #[test]
+    fn test_api_key_debug_redacts_plaintext() {
+        let key = ApiKey::generate();
+        let plaintext = key.as_str().to_string();
+        let rendered = format!("{key:?}");
+        assert!(
+            !rendered.contains(&plaintext),
+            "Debug output must not contain the plaintext credential"
+        );
+        // The hex portion alone must not leak either.
+        assert!(
+            !rendered.contains(&plaintext[3..]),
+            "Debug output must not contain the key's hex material"
+        );
+    }
+
+    #[test]
     fn test_api_key_parse_invalid_prefix() {
         let result = ApiKey::parse("bb_00112233445566778899aabbccddeeff");
         assert!(matches!(result, Err(ApiKeyError::InvalidPrefix)));
