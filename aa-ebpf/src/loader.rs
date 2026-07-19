@@ -732,6 +732,19 @@ mod tests {
         ));
     }
 
+    // Documents the AAASM-4862 observability contract: the fork-map-full drop
+    // counter is readable through the loader. On non-Linux the BPF object is a
+    // stub so the accessor surfaces the map error rather than a bogus zero.
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn fork_map_full_drops_returns_error_on_non_linux() {
+        let loader = SyscallGuardLoader::new(1);
+        assert!(matches!(
+            loader.fork_map_full_drops().unwrap_err(),
+            EbpfError::MapUpdate(_)
+        ));
+    }
+
     #[test]
     #[cfg(not(target_os = "linux"))]
     fn load_returns_error_on_non_linux() {
