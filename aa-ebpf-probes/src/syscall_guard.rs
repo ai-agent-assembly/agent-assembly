@@ -83,7 +83,7 @@ use aa_ebpf_common::syscall::MAX_SYSCALL_ALLOWLIST;
 use aya_ebpf::{
     helpers::{bpf_get_current_pid_tgid, bpf_send_signal},
     macros::{map, tracepoint},
-    maps::HashMap,
+    maps::{HashMap, PerCpuArray},
     programs::TracePointContext,
 };
 
@@ -96,6 +96,25 @@ static PID_FILTER: HashMap<u32, u8> = HashMap::with_max_entries(1024, 0);
 /// Syscall allowlist keyed by syscall number; a present key = permitted.
 #[map]
 static SYSCALL_ALLOWLIST: HashMap<u32, u8> = HashMap::with_max_entries(MAX_SYSCALL_ALLOWLIST, 0);
+
+/// Per-CPU counter (single slot) of fork-propagation drops caused by a full
+/// `PID_FILTER` (AAASM-4862).
+///
+/// When [`try_fork_propagate`]'s `insert` fails, `PID_FILTER` is at its
+/// 1024-entry cap and the just-forked child runs **UNCONFINED** — an
+/// unavoidable fail-open at the fork tracepoint (it cannot block the fork, and
+/// a child that never gets a `PID_FILTER` entry also escapes the enforcement
+/// tracepoint, which is the very lookup that gates the kill — so "kill the
+/// child" is not achievable here). This counter makes that otherwise-silent
+/// degradation observable: userspace (`SyscallGuardLoader::fork_map_full_drops`
+/// in `aa-ebpf`) sums the per-CPU slots and surfaces the total.
+///
+/// A *per-CPU counter* rather than a per-event perf/ring record is deliberate:
+/// a fork burst against a full map would otherwise emit an event storm at the
+/// worst possible moment, while a monotonic counter conveys the same "N
+/// children escaped confinement" signal without amplifying the pressure.
+#[map]
+static FORK_MAP_FULL_DROPS: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
 
 /// `SIGKILL` — sent to a monitored process that issues a non-allowlisted
 /// syscall.
@@ -181,9 +200,13 @@ fn try_syscall_guard(ctx: &TracePointContext) -> Result<(), i64> {
 /// copy `PID_FILTER` membership from a monitored parent to the new child so the
 /// child is confined from its first syscall.
 ///
-/// Returns `0` always; the propagation is a best-effort map write and any
-/// failure (map full) leaves the child unconfined — fail-open is unavoidable
-/// here because the tracepoint cannot block the fork.
+/// Returns `0` always; the propagation is a best-effort map write. If it fails,
+/// `PID_FILTER` is at its 1024-entry cap and the child runs unconfined —
+/// fail-open is unavoidable here because the tracepoint cannot block the fork
+/// (and a child with no `PID_FILTER` entry also escapes the enforcement
+/// tracepoint, so killing it is not achievable). That drop is recorded in
+/// [`FORK_MAP_FULL_DROPS`] so the degradation is observable in userspace
+/// instead of silent (AAASM-4862).
 #[tracepoint]
 pub fn aa_syscall_guard_fork(ctx: TracePointContext) -> u32 {
     let _ = try_fork_propagate(&ctx);
@@ -204,8 +227,18 @@ fn try_fork_propagate(ctx: &TracePointContext) -> Result<(), i64> {
     // and is reaped by [`try_exit_cleanup`] when that thread exits (AAASM-3982).
     let child_pid = unsafe { ctx.read_at::<u32>(SCHED_FORK_CHILD_PID_OFFSET) }?;
 
-    // Confine the child by mirroring the parent's PID_FILTER membership.
-    let _ = PID_FILTER.insert(&child_pid, &PID_MONITORED, 0);
+    // Confine the child by mirroring the parent's PID_FILTER membership. A full
+    // map (1024 cap) makes this insert fail and the child then runs UNCONFINED;
+    // bump the per-CPU FORK_MAP_FULL_DROPS counter so the fail-open is
+    // observable rather than silent (AAASM-4862). See that map's docs for why a
+    // counter — not a per-fork perf/ring event — is used here.
+    if PID_FILTER.insert(&child_pid, &PID_MONITORED, 0).is_err() {
+        if let Some(dropped) = FORK_MAP_FULL_DROPS.get_ptr_mut(0) {
+            unsafe {
+                *dropped += 1;
+            }
+        }
+    }
     Ok(())
 }
 
