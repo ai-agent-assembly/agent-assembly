@@ -30,10 +30,14 @@ aasm context list
 ```
 
 ```text
-NAME         API URL                       DEFAULT
-production   https://api.example.com       *
-staging      https://staging.example.com
+production *  https://api.example.com (key set)
+staging  https://staging.example.com
 ```
+
+The default context is marked with a trailing ` *`, and ` (key set)` is
+appended when a context has a stored API key. When no contexts are configured,
+`aasm context list` prints `No contexts configured. Use \`aasm context set\` to
+add one.` instead.
 
 ---
 
@@ -45,14 +49,22 @@ Create or update a named context.
 |---|---|---|---|
 | `<NAME>` | string (arg) | — | Name of the context to create or update. |
 | `--api-url <API_URL>` | string | _required_ | API URL for this context. |
-| `--api-key <API_KEY>` | string | — | API key for this context (optional). |
+| `--api-key <API_KEY>` | string | — | API key for this context (optional). Prefer the `AASM_API_KEY` environment variable — see the note below. |
+
+> **`AASM_API_KEY` env var.** When `--api-key` is omitted, `aasm context set`
+> reads the key from the `AASM_API_KEY` environment variable (an empty value is
+> treated as unset). Passing `--api-key` on the command line prints a warning
+> and is discouraged, because argv is world-readable via `ps`,
+> `/proc/<pid>/cmdline`, and shell history, which leaks the operator bearer
+> token. The global [`--api-key`](overview.md#global-options) flag honors the
+> same `AASM_API_KEY` env var.
 
 ```bash
-aasm context set staging --api-url https://staging.example.com
+AASM_API_KEY=staging-key aasm context set staging --api-url https://staging.example.com
 ```
 
 ```text
-Saved context 'staging'.
+Context 'staging' saved.
 ```
 
 ---
@@ -70,5 +82,5 @@ aasm context use production
 ```
 
 ```text
-Default context set to 'production'.
+Switched to context 'production'.
 ```
