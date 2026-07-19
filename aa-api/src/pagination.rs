@@ -1,7 +1,7 @@
 //! Reusable pagination types for list endpoints.
 
 use serde::{Deserialize, Serialize};
-use utoipa::IntoParams;
+use utoipa::{IntoParams, ToSchema};
 
 /// Default page number when not specified.
 const DEFAULT_PAGE: u32 = 1;
@@ -41,8 +41,13 @@ impl PaginationParams {
 }
 
 /// Wrapper for paginated list responses.
-#[derive(Debug, Clone, Serialize)]
-pub struct PaginatedResponse<T: Serialize> {
+///
+/// The generated OpenAPI schema must match this `{ items, page, per_page, total }`
+/// shape — deriving `ToSchema` here (rather than annotating handlers `body =
+/// Vec<T>`) is what keeps the spec honest for consumers that would otherwise
+/// `.map` over a non-array body (AAASM-4892).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PaginatedResponse<T: Serialize + ToSchema> {
     /// Items in the current page.
     pub items: Vec<T>,
     /// Current page number.
