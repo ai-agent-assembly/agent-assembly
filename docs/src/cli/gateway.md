@@ -25,8 +25,9 @@ aasm gateway <SUBCOMMAND> [OPTIONS]
 ## aasm gateway start
 
 Spawn `aa-gateway` in the background (or foreground with `--no-detach`). The
-binary is resolved from `$PATH`, then `~/.cargo/bin`, then
-`./target/release`, then `./target/debug`.
+binary is resolved in priority order (highest first): alongside the `aasm`
+executable itself (a sibling `aa-gateway`), then `$PATH`, then `~/.cargo/bin`,
+then `./target/release`, then `./target/debug`.
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
