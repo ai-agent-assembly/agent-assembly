@@ -30,7 +30,7 @@ init_assembly(
         "team_id":  "platform",
         "agent_id": "research-bot-001",
     },
-    credential_token=os.environ["AA_CREDENTIAL"],
+    credential_token=os.environ["AA_API_KEY"],
 )
 ```
 
