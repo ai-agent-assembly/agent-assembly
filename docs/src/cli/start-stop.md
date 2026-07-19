@@ -29,6 +29,14 @@ aasm start [OPTIONS]
 | `--foreground` | flag | off | Stay in the foreground; do not daemonize. |
 | `--no-dashboard` | flag | off | Accepted for a stable operator surface but **not yet wired** — currently a no-op. Dashboard serving is determined by the mode: local mode runs `aa-api-server`, which always serves the dashboard. |
 
+> **Exposure caution.** `--mode remote` binds `0.0.0.0`, putting the API and the
+> operator dashboard on the network. The dashboard is designed for local /
+> self-hosted / operator-controlled use — **do not expose it directly to the
+> public internet** without a trusted authenticating layer (VPN, private network,
+> or an authenticated reverse proxy) in front. See
+> [`SECURITY.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/SECURITY.md)
+> and [ADR 0012](../adr/0012-websocket-and-browser-credential-handling.md).
+
 ### Behavior
 
 1. Resolve the listen address from `mode` + `port`.

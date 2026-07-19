@@ -18,3 +18,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0009](0009-versioned-base-image-tags-and-sdk-pinning.md) | Versioned Base-Image Tags & Reproducible SDK Pinning | Proposed |
 | [0010](0010-gateway-distribution-self-host-examples.md) | Gateway Distribution for Self-Host & Examples | Proposed |
 | [0011](0011-cross-process-op-control-nats-subject.md) | Cross-Process Op-Control Delivery via a NATS Subject (durable JetStream) | Accepted |
+| [0012](0012-websocket-and-browser-credential-handling.md) | WebSocket & Browser Credential Handling (OSS vs SaaS) | Accepted |
