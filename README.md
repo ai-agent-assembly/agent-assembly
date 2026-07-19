@@ -161,7 +161,7 @@ can move from this repo to the SDKs, the install tap, or the canonical docs.
 
 ## Crate Map
 
-The Cargo workspace declares **29 members** in the top-level `Cargo.toml`. The table below lists the core architectural crates; storage drivers, dev-tool adapters, and test harnesses are omitted for brevity. Two additional eBPF-target crates live alongside but are intentionally outside the workspace because they compile for the `bpfel-unknown-none` target.
+The Cargo workspace declares **30 members** in the top-level `Cargo.toml`. The table below lists the core architectural crates; storage drivers, dev-tool adapters, and test harnesses are omitted for brevity. Two additional eBPF-target crates live alongside but are intentionally outside the workspace because they compile for the `bpfel-unknown-none` target.
 
 ### Workspace members (core)
 
