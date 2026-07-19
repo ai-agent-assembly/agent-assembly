@@ -1101,7 +1101,13 @@ impl ProxyServer {
         method: &str,
         target: &str,
     ) -> Result<(), ProxyError> {
-        tracing::debug!(method = method, target = target, "plain HTTP request");
+        // AAASM-4863: a secret can ride in the plain-HTTP target's query string
+        // (`?token=…`, a presigned `?X-Amz-Signature=…`) exactly as in the audit
+        // path, so it is redacted through the same scanner (AAASM-4738) before
+        // reaching this debug log — the raw target must never be logged in
+        // cleartext.
+        let redacted_target = self.interceptor.redact_target(target);
+        tracing::debug!(method = method, target = %redacted_target, "plain HTTP request");
 
         // Consume remaining request headers.
         // AAASM-3922: cap the head (per-line + total budget + count) so an
@@ -1373,6 +1379,28 @@ mod tests {
         assert_eq!(first, second);
         drop(second); // an owned String drops here; a leaked &'static str could not.
         assert_eq!(first, "api.example.com");
+    }
+
+    #[tokio::test]
+    async fn plain_http_debug_target_is_redacted() {
+        // AAASM-4863 regression: the `handle_plain_http` debug log renders the
+        // target through `redact_target` (the AAASM-4738 helper) so a secret
+        // riding in the query string never reaches the log in cleartext. This
+        // pins the exact value the `target = %…` field would carry.
+        let server = server_with(vec![], vec![]).await;
+        // A well-known synthetic OpenAI key the default scanner detects. Not real.
+        let target = "/v1/chat?token=sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab";
+        // `redact_target` returns the exact String the `target = %…` debug field
+        // renders (its `Display` is identity).
+        let logged = server.interceptor.redact_target(target);
+        assert!(
+            !logged.contains("sk-TESTONLY-NOT-REAL"),
+            "debug target must not contain the raw secret: {logged}"
+        );
+        assert!(
+            logged.contains("[REDACTED:"),
+            "debug target must carry a redaction label: {logged}"
+        );
     }
 
     #[tokio::test]
