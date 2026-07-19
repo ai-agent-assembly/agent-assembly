@@ -1101,7 +1101,13 @@ impl ProxyServer {
         method: &str,
         target: &str,
     ) -> Result<(), ProxyError> {
-        tracing::debug!(method = method, target = target, "plain HTTP request");
+        // AAASM-4863: a secret can ride in the plain-HTTP target's query string
+        // (`?token=…`, a presigned `?X-Amz-Signature=…`) exactly as in the audit
+        // path, so it is redacted through the same scanner (AAASM-4738) before
+        // reaching this debug log — the raw target must never be logged in
+        // cleartext.
+        let redacted_target = self.interceptor.redact_target(target);
+        tracing::debug!(method = method, target = %redacted_target, "plain HTTP request");
 
         // Consume remaining request headers.
         // AAASM-3922: cap the head (per-line + total budget + count) so an
