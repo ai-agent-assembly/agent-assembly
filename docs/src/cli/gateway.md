@@ -67,7 +67,12 @@ aasm gateway status --json
 ```
 
 ```json
-{ "running": true, "pid": 48213, "listen": "127.0.0.1:50051", "uptime_seconds": 8133 }
+{
+  "running": true,
+  "pid": 48213,
+  "listen": "127.0.0.1:50051",
+  "uptime_seconds": 8133
+}
 ```
 
 ---

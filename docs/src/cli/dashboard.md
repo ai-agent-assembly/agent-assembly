@@ -90,5 +90,5 @@ aasm dashboard stop
 ```
 
 ```text
-Dashboard server stopped.
+Dashboard stopped.
 ```
