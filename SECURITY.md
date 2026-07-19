@@ -65,6 +65,32 @@ Honest boundary: per-endpoint authentication is endpoint hygiene, not an
 absolute control. The sidecar proxy and eBPF layers remain the authoritative
 backstop for bypass attempts.
 
+## Deployment posture — `aa-api` HTTP surface & operator dashboard
+
+The `aa-api` REST/HTTP surface and the bundled React **operator dashboard**
+(including its WebSocket live-ops, approvals, and alert streams) are designed for
+a **local / self-hosted / operator-controlled** deployment — a single process on
+the operator's own host or private network. Treat them accordingly:
+
+1. **Do not expose the dashboard / `aa-api` HTTP surface directly to the public
+   internet** without a trusted authenticating layer in front of it (a VPN, a
+   private network, or an authenticated reverse proxy). `aa-api` binds to loopback
+   by default; binding to a routable interface (e.g. `--mode remote`) puts the API
+   and dashboard on the network.
+2. **Browser session auth is a scoped trade-off.** The dashboard keeps its session
+   JWT in `sessionStorage` under a strict CSP. This is an **intentional, accepted
+   trade-off for the OSS local threat model** — it is *not* hardened against a
+   same-origin XSS, and it is not the design the SaaS edition uses. See
+   [ADR 0012](docs/src/adr/0012-websocket-and-browser-credential-handling.md).
+3. **WebSocket streams carry no credential in the URL.** Browser WS connections
+   authenticate with a short-lived, single-use ticket minted over an authenticated
+   REST call (AAASM-4861), so no long-lived token appears in a URL that
+   proxy/CDN/LB access logs would capture. The application logs the request path
+   only, not the query string; operators who front `aa-api` with their own
+   reverse proxy / CDN should still configure edge redaction of `token` / `ticket`
+   query parameters — infrastructure outside this repo is not automatically
+   protected.
+
 ## Disclosure Policy
 
 We follow coordinated disclosure. Once a fix is available, we will:
