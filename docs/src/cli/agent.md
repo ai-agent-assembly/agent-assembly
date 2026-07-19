@@ -16,8 +16,9 @@ aasm agent <SUBCOMMAND> [OPTIONS]
 | [`resume`](#aasm-agent-resume) | Resume a suspended agent. |
 | [`kill`](#aasm-agent-kill) | Deregister and terminate an agent. |
 
-All subcommands accept the [global options](overview.md#global-options),
-including `--output table|json|yaml`.
+All subcommands accept the [global options](overview.md#global-options).
+`list`, `inspect`, `suspend`, and `resume` honor `--output table|json|yaml`;
+`kill` ignores `--output` and always prints a plain-text confirmation.
 
 ---
 
@@ -48,8 +49,10 @@ a1b2c3…   research-bot   langgraph   1.2.0     Active    search, fetch
 
 ## aasm agent inspect
 
-Render a detailed key-value view of a single agent: identity, status, tools,
-metadata, active sessions, recent events, and recent trace session IDs.
+Render a detailed view of a single agent as a two-column `Field | Value` table
+(identity, status, tools, PID, sessions, last event, policy violations, and
+metadata when present), followed by separate tables for active sessions, recent
+events, and recent traces when the agent has any.
 
 ### Arguments
 
@@ -64,17 +67,33 @@ aasm agent inspect a1b2c3d4e5f600112233445566778899
 ```
 
 ```text
-Agent a1b2c3d4…
-  Name:        research-bot
-  Framework:   langgraph 1.2.0
-  Status:      Active
-  PID:         48213
-  Sessions:    3
-  Violations:  0
-  Tools:       search, fetch, summarize
-  Recent traces:
-    7f3a…  2026-06-09T14:02:11Z   (aasm trace 7f3a…)
+┌───────────────────┬──────────────────────────────────┐
+│ Field             ┆ Value                            │
+╞═══════════════════╪══════════════════════════════════╡
+│ ID                ┆ a1b2c3d4e5f600112233445566778899 │
+│ Name              ┆ research-bot                     │
+│ Framework         ┆ langgraph                        │
+│ Version           ┆ 1.2.0                            │
+│ Status            ┆ Active                           │
+│ Tools             ┆ search, fetch, summarize         │
+│ PID               ┆ 48213                            │
+│ Sessions          ┆ 3                                │
+│ Last Event        ┆ 2026-06-09T14:02:11Z             │
+│ Policy Violations ┆ 0                                │
+└───────────────────┴──────────────────────────────────┘
+
+Recent Traces:
+┌────────────┬──────────────────────┐
+│ SESSION_ID ┆ TIMESTAMP            │
+╞════════════╪══════════════════════╡
+│ 7f3a…      ┆ 2026-06-09T14:02:11Z │
+└────────────┴──────────────────────┘
+Tip: run `aasm trace <session-id>` to visualize a trace
 ```
+
+`Framework` and `Version` are separate rows. When the agent has metadata,
+active sessions, or recent events, those render as their own rows/tables above
+the traces section.
 
 ---
 
@@ -97,7 +116,9 @@ aasm agent suspend a1b2c3… --reason "investigating cost spike" --force
 ```
 
 ```text
-Suspended a1b2c3… : Active → Suspended
+Agent a1b2c3… suspended.
+  Previous status: Active
+  New status:      Suspended(Manual)
 ```
 
 ---
@@ -119,7 +140,9 @@ aasm agent resume a1b2c3…
 ```
 
 ```text
-Resumed a1b2c3… : Suspended → Active
+Agent a1b2c3… resumed.
+  Previous status: Suspended(Manual)
+  New status:      Active
 ```
 
 ---
@@ -142,5 +165,5 @@ aasm agent kill a1b2c3… --force
 ```
 
 ```text
-Killed a1b2c3… — deregistered and terminated.
+Agent a1b2c3… has been killed.
 ```
