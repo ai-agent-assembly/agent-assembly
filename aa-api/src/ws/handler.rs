@@ -8,12 +8,14 @@ use crate::models::{EventType, GovernanceEvent};
 // AAASM-1657 PR-H: the ops-change channel reuses the typed OpsChangePayload
 // shipped in PR-B (AAASM-1651).
 use crate::state::AppState;
+use crate::ws::auth::{resolve_ws_caller, WsHeaderCaller};
 use crate::ws::params::WsQueryParams;
 use crate::ws::tenant::{agent_id_to_bytes, caller_can_view, resolve_event_tenant};
+use crate::ws::ticket::{WsTicketPurpose, WsTicketStore};
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Query, WebSocketUpgrade};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
@@ -59,15 +61,33 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
     tag = "events"
 )]
 pub async fn ws_events_handler(
-    caller: AuthenticatedCaller,
+    WsHeaderCaller(header_caller): WsHeaderCaller,
     ws: WebSocketUpgrade,
     Query(params): Query<WsQueryParams>,
+    Extension(ticket_store): Extension<WsTicketStore>,
     Extension(state): Extension<AppState>,
-) -> impl IntoResponse {
+) -> Response {
+    // AAASM-4861: authenticate the upgrade from a single-use `?ticket=` (the
+    // browser path — a WS handshake can't carry an `Authorization` header) or,
+    // for non-browser clients, the Bearer header. A failure is a 401 before the
+    // protocol switch, never an anonymous stream.
+    let caller = match resolve_ws_caller(
+        &ticket_store,
+        params.ticket.as_deref(),
+        WsTicketPurpose::Events,
+        header_caller,
+    )
+    .await
+    {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
+
     // AAASM-3980: the authenticated caller's tenant travels into the dispatch
     // loop so every live and replayed event is gated against it — the shared
     // broadcast channels are cross-tenant and must not leak to a scoped caller.
     ws.on_upgrade(move |socket| handle_socket(socket, params, state, caller))
+        .into_response()
 }
 
 /// Drive a single WebSocket connection: replay, then stream live events.
