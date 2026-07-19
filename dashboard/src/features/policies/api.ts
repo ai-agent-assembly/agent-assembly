@@ -12,7 +12,8 @@ export function usePoliciesQuery() {
     queryFn: async () => {
       const { data, error } = await api.GET('/api/v1/policies', {})
       if (error) throw new Error('Failed to fetch policies')
-      return data ?? []
+      // AAASM-4892: /policies returns a paginated { items, total } object.
+      return data?.items ?? []
     },
   })
 }
