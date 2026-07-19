@@ -373,3 +373,71 @@ async fn openapi_spec_security_schemes_enforced() {
     let body: Value = resp.json().await.expect("401 response must have a JSON body");
     assert!(body.is_object(), "401 response body must be a JSON object; got: {body}");
 }
+
+// ── TC-6: paginated list endpoints declare an OBJECT body, not an array ───────
+//
+// AAASM-4892: the paginated list handlers return `PaginatedResponse { items,
+// page, per_page, total }`, but four of them were annotated `body = Vec<T>`, so
+// the spec advertised a bare array while the wire body was an object — dashboard
+// consumers that `.map`ed the (non-array) body crashed. This guards every
+// paginated list endpoint: its 200 body must be an object with `items` (array)
+// and `total`, never `type: array`.
+
+/// Resolve a possibly-`$ref` schema node to the concrete schema object.
+fn resolve_schema<'a>(spec: &'a Value, node: &'a Value) -> &'a Value {
+    match node.get("$ref").and_then(Value::as_str) {
+        Some(r) => {
+            let name = r.rsplit('/').next().expect("$ref has a component name");
+            spec.pointer(&format!("/components/schemas/{name}"))
+                .unwrap_or_else(|| panic!("referenced schema {name} must exist"))
+        }
+        None => node,
+    }
+}
+
+#[test]
+fn paginated_list_endpoints_declare_object_body_not_array() {
+    let spec = load_spec();
+    // Every list endpoint whose handler returns a PaginatedResponse wrapper.
+    let paginated_paths = [
+        "/api/v1/agents",
+        "/api/v1/alerts",
+        "/api/v1/policies",
+        "/api/v1/logs",
+        "/api/v1/approvals",
+    ];
+    for path in paginated_paths {
+        // JSON-pointer-escape the path key's slashes (`/` → `~1`).
+        let escaped = path.replace('~', "~0").replace('/', "~1");
+        let schema_node = spec
+            .pointer(&format!(
+                "/paths/{escaped}/get/responses/200/content/application~1json/schema"
+            ))
+            .unwrap_or_else(|| panic!("{path} GET 200 must declare a JSON schema"));
+        let schema = resolve_schema(&spec, schema_node);
+
+        assert_eq!(
+            schema.get("type").and_then(Value::as_str),
+            Some("object"),
+            "{path} 200 body must be an object (paginated wrapper), not a bare array — \
+             a `Vec<T>` annotation over a PaginatedResponse handler is the AAASM-4892 drift"
+        );
+        let props = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("{path} 200 schema must have properties"));
+        assert!(
+            props.contains_key("items"),
+            "{path} 200 body must expose an `items` array"
+        );
+        assert_eq!(
+            props["items"].get("type").and_then(Value::as_str),
+            Some("array"),
+            "{path} 200 `items` must be the array of results"
+        );
+        assert!(
+            props.contains_key("total"),
+            "{path} 200 body must expose a `total` count"
+        );
+    }
+}
