@@ -72,7 +72,7 @@ aasm approvals approve ap-77 --reason "verified safe"
 ```
 
 ```text
-Approved ap-77.
+Approved: ap-77 (status: approved)
 ```
 
 ---
@@ -92,7 +92,7 @@ aasm approvals reject ap-77 --reason "writes outside allowed path"
 ```
 
 ```text
-Rejected ap-77.
+Rejected: ap-77 (status: rejected)
 ```
 
 ---
@@ -111,6 +111,13 @@ aasm approvals watch --interactive
 ```
 
 ```text
-▶ ap-78  a1b2c3…  network_egress  api.openai.com   3m 00s
-  a approve   r reject   ↑/↓ select   q quit
+  aasm approvals watch (interactive)
+  [a] approve  [r] reject  [Up/Down] navigate  [q] quit
+
+  > ap-78  a1b2c3…             network_egress                 3m 00s
 ```
+
+The interactive view marks the selected row with `>` and prints
+`id  agent  action  countdown` per row — it does **not** show a condition
+field. (The non-interactive stream prints `NEW  <id> | agent=… | action=… |
+condition=…` lines instead.)
