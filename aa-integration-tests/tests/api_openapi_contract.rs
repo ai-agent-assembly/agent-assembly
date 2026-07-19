@@ -62,9 +62,10 @@ fn openapi_spec_loads_without_errors() {
     // AAASM-3881 added the two operator kill-switch endpoints (halt-agent,
     // global/halt), bringing the path count from 53 to 55. AAASM-4141 added the
     // seven /api/v1/analytics/* dashboard aggregation endpoints, bringing it to 62.
+    // AAASM-4861 added the /api/v1/auth/ws-ticket mint endpoint, bringing it to 63.
     assert_eq!(
-        path_count, 62,
-        "openapi/v1.yaml must declare exactly 62 paths, found {path_count}"
+        path_count, 63,
+        "openapi/v1.yaml must declare exactly 63 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -130,6 +131,7 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/audit/sandbox-summary",
         "/api/v1/audit/violations-by-lineage",
         "/api/v1/auth/token",
+        "/api/v1/auth/ws-ticket",
         "/api/v1/capability/matrix",
         "/api/v1/capability/override",
         "/api/v1/capability/override/{id}",
