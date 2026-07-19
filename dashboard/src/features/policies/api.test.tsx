@@ -46,7 +46,8 @@ afterEach(() => {
 
 describe('usePoliciesQuery', () => {
   it('returns the policy list on success', async () => {
-    get.mockResolvedValue({ data: [POLICY] } satisfies FetchResult)
+    // AAASM-4892: /policies returns a paginated { items, total } object.
+    get.mockResolvedValue({ data: { items: [POLICY], page: 1, per_page: 50, total: 1 } } satisfies FetchResult)
     const { wrapper } = makeWrapper()
     const { result } = renderHook(() => usePoliciesQuery(), { wrapper })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))

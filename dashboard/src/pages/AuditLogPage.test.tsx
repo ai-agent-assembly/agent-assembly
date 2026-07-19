@@ -72,9 +72,14 @@ function renderPage() {
   )
 }
 
+// AAASM-4892: /logs returns a paginated { items, total } object, not a bare array.
+function page(items: LogEntry[]) {
+  return { items, page: 1, per_page: 50, total: items.length }
+}
+
 beforeEach(() => {
   get = vi.spyOn(api, 'GET') as unknown as Mock
-  get.mockResolvedValue({ data: ENTRIES })
+  get.mockResolvedValue({ data: page(ENTRIES) })
 })
 
 afterEach(() => {
@@ -189,7 +194,7 @@ describe('AuditLogPage', () => {
 
   it('renders an em-dash decision chip when the payload carries no verdict', async () => {
     get.mockResolvedValue({
-      data: [entry({ seq: 900, event_type: 'LLMCall', payload: '{"model":"gpt-4o"}' })],
+      data: page([entry({ seq: 900, event_type: 'LLMCall', payload: '{"model":"gpt-4o"}' })]),
     })
     renderPage()
     const row = await screen.findByTestId('audit-row-900')
@@ -198,7 +203,7 @@ describe('AuditLogPage', () => {
 
   it('falls back to the raw event-type label for an unknown type', async () => {
     get.mockResolvedValue({
-      data: [entry({ seq: 901, event_type: 'MysteryEvent', payload: '{}' })],
+      data: page([entry({ seq: 901, event_type: 'MysteryEvent', payload: '{}' })]),
     })
     renderPage()
     const row = await screen.findByTestId('audit-row-901')
@@ -231,15 +236,15 @@ describe('AuditLogPage', () => {
   })
 
   it('shows the loading state before the query resolves', async () => {
-    let resolve: (v: { data: LogEntry[] }) => void = () => {}
+    let resolve: (v: { data: ReturnType<typeof page> }) => void = () => {}
     get.mockReturnValue(
-      new Promise<{ data: LogEntry[] }>((r) => {
+      new Promise<{ data: ReturnType<typeof page> }>((r) => {
         resolve = r
       }),
     )
     renderPage()
     expect(await screen.findByTestId('audit-loading')).toBeInTheDocument()
-    resolve({ data: ENTRIES })
+    resolve({ data: page(ENTRIES) })
     await screen.findByTestId('audit-table')
   })
 
