@@ -141,7 +141,8 @@ const FIXTURE_SILENCE: Silence = {
 
 describe('useAlertsQuery', () => {
   it('fetches /api/v1/alerts with filter query string and Bearer token', async () => {
-    nextResponse = { ok: true, status: 200, body: [FIXTURE_ALERT] }
+    // AAASM-4892: /alerts returns a paginated { items, total } object.
+    nextResponse = { ok: true, status: 200, body: { items: [FIXTURE_ALERT], page: 1, per_page: 50, total: 1 } }
     const { Wrapper } = wrapper()
     const filters = { ...DEFAULT_ALERT_FILTERS, severities: ['CRITICAL'] as const }
     const { result } = renderHook(() => useAlertsQuery(filters), { wrapper: Wrapper })

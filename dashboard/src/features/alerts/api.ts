@@ -78,10 +78,14 @@ export function useAlertsQuery(
 ): UseQueryResult<readonly Alert[], Error> {
   return useQuery({
     queryKey: [alertsQueryKeys.alerts, filters],
-    queryFn: () =>
-      alertsFetch<readonly Alert[]>(
+    // AAASM-4892: /alerts returns a paginated { items, total } object; read the
+    // items array (the custom fetch casts raw JSON, so this isn't caught by types).
+    queryFn: async (): Promise<readonly Alert[]> => {
+      const page = await alertsFetch<{ items?: readonly Alert[] }>(
         `${alertsEndpoints.list}${buildAlertsQueryString(filters)}`,
-      ),
+      )
+      return page?.items ?? []
+    },
     placeholderData: (prev) => prev,
   })
 }
