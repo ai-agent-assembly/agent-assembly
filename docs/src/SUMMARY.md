@@ -145,3 +145,4 @@
   - [0009 - Versioned Base-Image Tags & SDK Pinning](adr/0009-versioned-base-image-tags-and-sdk-pinning.md)
   - [0010 - Gateway Distribution for Self-Host & Examples](adr/0010-gateway-distribution-self-host-examples.md)
   - [0011 - Cross-Process Op-Control via NATS Subject (durable JetStream)](adr/0011-cross-process-op-control-nats-subject.md)
+  - [0012 - WebSocket & Browser Credential Handling](adr/0012-websocket-and-browser-credential-handling.md)
