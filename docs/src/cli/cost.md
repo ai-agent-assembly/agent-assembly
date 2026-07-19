@@ -31,13 +31,22 @@ aasm cost summary --period month --group-by agent
 ```
 
 ```text
-Cost Summary (month, 2026-06)
-  Total: $312.40 / $1,000.00  (31.2%)
+AGENT_ID   DAILY_SPEND   MONTHLY_SPEND
+a1b2c3…    $6.00         $180.10
+d4e5f6…    $4.41         $132.30
 
-  AGENT      MONTHLY SPEND
-  a1b2c3…    $180.10
-  d4e5f6…    $132.30
+COST SUMMARY (Monthly)
+──────────────────
+  Monthly spend: $312.40
+  Budget limit:  $1,000.00
+  Utilization:   31.2%
+  Date:          2026-06
 ```
+
+With `--group-by agent`, the per-agent table (always three columns:
+`AGENT_ID`, `DAILY_SPEND`, `MONTHLY_SPEND`) prints first, followed by the
+global summary. The spend and limit labels read `Daily` for `--period today`
+and `Monthly` for `--period month`.
 
 ---
 
@@ -52,9 +61,12 @@ aasm cost forecast
 ```
 
 ```text
-Cost Forecast (2026-06-09, day 9 of 30)
-  Current daily spend:      $12.50
-  Projected monthly spend:  $375.00
-  Monthly limit:            $1,000.00
-  Projected utilization:    37.5%
+COST FORECAST
+─────────────
+  Date:              2026-06-09
+  Day of month:      9/30
+  Current daily:     $12.50
+  Projected monthly: $375.00
+  Monthly limit:     $1,000.00
+  Projected util:    37.5%
 ```
