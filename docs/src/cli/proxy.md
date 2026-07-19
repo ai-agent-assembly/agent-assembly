@@ -24,7 +24,11 @@ aasm proxy <SUBCOMMAND> [OPTIONS]
 ## aasm proxy start
 
 Spawn `aa-proxy` in the background (or foreground with `--no-detach`). The
-binary is resolved from `$PATH`, then `~/.cargo/bin`, then `./target/release`.
+binary is resolved from `$PATH`, then `~/.cargo/bin` — trusted, absolute
+locations only. A cwd-relative `./target/release` fallback was deliberately
+removed as a security fix (AAASM-4020): resolving relative to the current
+working directory would let whoever controls where `aasm` runs substitute an
+attacker-planted `aa-proxy`.
 
 | Flag | Type | Default | Description |
 |---|---|---|---|

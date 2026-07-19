@@ -29,8 +29,20 @@ const API_KEY_HEX_LEN: usize = 32;
 const KEY_LOOKUP_HEX_LEN: usize = 16;
 
 /// An Agent Assembly API key in `aa_<32-hex-chars>` format.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is hand-written to redact the key material: a derived `Debug` would
+/// print the full plaintext credential, so this mirrors the redacting `Debug`
+/// impls on the repo's other secret-bearing types (`aa-proxy::Secret`,
+/// `aa-sdk-client::IpcCommand`) as defense-in-depth against accidental logging.
+#[derive(Clone)]
 pub struct ApiKey(String);
+
+impl std::fmt::Debug for ApiKey {
+    /// Redact the key material — never print the plaintext credential.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ApiKey(REDACTED)")
+    }
+}
 
 impl ApiKey {
     /// Parse and validate a raw API key string.
@@ -312,6 +324,22 @@ mod tests {
         let key = ApiKey::generate();
         let parsed = ApiKey::parse(key.as_str());
         assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn test_api_key_debug_redacts_plaintext() {
+        let key = ApiKey::generate();
+        let plaintext = key.as_str().to_string();
+        let rendered = format!("{key:?}");
+        assert!(
+            !rendered.contains(&plaintext),
+            "Debug output must not contain the plaintext credential"
+        );
+        // The hex portion alone must not leak either.
+        assert!(
+            !rendered.contains(&plaintext[3..]),
+            "Debug output must not contain the key's hex material"
+        );
     }
 
     #[test]

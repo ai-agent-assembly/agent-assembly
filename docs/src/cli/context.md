@@ -34,10 +34,10 @@ production *  https://api.example.com (key set)
 staging  https://staging.example.com
 ```
 
-The default context is marked with a trailing ` *`, and ` (key set)` is
-appended when a context has a stored API key. When no contexts are configured,
-`aasm context list` prints `No contexts configured. Use \`aasm context set\` to
-add one.` instead.
+One line per context — no header row. A ` *` marker follows the default
+context's name, and ` (key set)` follows the URL when an API key is stored for
+that context. When no contexts are configured, `aasm context list` prints
+`No contexts configured. Use \`aasm context set\` to add one.` instead.
 
 ---
 
