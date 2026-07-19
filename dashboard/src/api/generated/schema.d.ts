@@ -2916,6 +2916,56 @@ export interface components {
             verb: components["schemas"]["Verb"];
         };
         /**
+         * @description Paginated `GET /api/v1/agents` body (AAASM-4892).
+         *
+         *     A named wrapper (mirroring `PaginatedApprovalResponse`) so the OpenAPI schema
+         *     `$ref`s `AgentResponse` and matches the `{ items, total }` object the handler
+         *     actually serializes — not the bare array a generic `Vec<T>` annotation implied.
+         */
+        PaginatedAgentResponse: {
+            /** @description Agents in the current page. */
+            items: components["schemas"]["AgentResponse"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total agents visible to the caller across all pages.
+             */
+            total: number;
+        };
+        /**
+         * @description Paginated `GET /api/v1/alerts` body (AAASM-4892) — a named wrapper so the
+         *     OpenAPI schema `$ref`s `AlertResponse` and matches the `{ items, total }`
+         *     object the handler serializes, not a bare array.
+         */
+        PaginatedAlertResponse: {
+            /** @description Alerts in the current page. */
+            items: components["schemas"]["AlertResponse"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total alerts visible to the caller across all pages.
+             */
+            total: number;
+        };
+        /**
          * @description Paginated wire-format envelope for `GET /api/v1/approvals`.
          *
          *     Mirrors the JSON shape produced by [`PaginatedResponse<ApprovalResponse>`]
@@ -2948,221 +2998,50 @@ export interface components {
             total: number;
         };
         /**
-         * @description Wrapper for paginated list responses.
-         *
-         *     The generated OpenAPI schema must match this `{ items, page, per_page, total }`
-         *     shape — deriving `ToSchema` here (rather than annotating handlers `body =
-         *     Vec<T>`) is what keeps the spec honest for consumers that would otherwise
-         *     `.map` over a non-array body (AAASM-4892).
+         * @description Paginated `GET /api/v1/logs` body (AAASM-4892) — a named wrapper so the
+         *     OpenAPI schema `$ref`s `LogEntry` and matches the `{ items, total }` object
+         *     the handler serializes, not a bare array.
          */
-        PaginatedResponse_AgentResponse: {
-            /** @description Items in the current page. */
-            items: {
-                /** @description Currently active sessions for this agent. */
-                active_sessions: components["schemas"]["ActiveSessionResponse"][];
-                /** @description Agent framework (e.g. "langgraph", "crewai"). */
-                framework: string;
-                /** @description Hex-encoded agent UUID. */
-                id: string;
-                /** @description ISO 8601 timestamp of the most recent event. */
-                last_event?: string | null;
-                /** @description Governance layer this agent is assigned to (e.g. "advisory", "enforced"). */
-                layer?: string | null;
-                /** @description Arbitrary metadata key-value pairs. */
-                metadata: {
-                    [key: string]: string;
-                };
-                /** @description Human-readable agent name. */
-                name: string;
-                /**
-                 * Format: int32
-                 * @description OS process ID, if known.
-                 */
-                pid?: number | null;
-                /**
-                 * Format: int32
-                 * @description Number of policy violations recorded.
-                 */
-                policy_violations_count: number;
-                /** @description Most recent events emitted by this agent. */
-                recent_events: components["schemas"]["RecentEventResponse"][];
-                /** @description Most recent trace session IDs for this agent. */
-                recent_traces: components["schemas"]["RecentTraceResponse"][];
-                /**
-                 * Format: int32
-                 * @description Number of sessions handled.
-                 */
-                session_count: number;
-                /** @description Current runtime status. */
-                status: string;
-                /** @description Tools declared at registration. */
-                tool_names: string[];
-                /** @description Semver version string. */
-                version: string;
-            }[];
+        PaginatedLogResponse: {
+            /** @description Audit log entries in the current page. */
+            items: components["schemas"]["LogEntry"][];
             /**
              * Format: int32
-             * @description Current page number.
+             * @description 1-indexed page number echoed from the request.
              */
             page: number;
             /**
              * Format: int32
-             * @description Items per page.
+             * @description Items per page echoed from the request.
              */
             per_page: number;
             /**
              * Format: int64
-             * @description Total number of items across all pages.
+             * @description Total entries matching the filter across all pages.
              */
             total: number;
         };
         /**
-         * @description Wrapper for paginated list responses.
-         *
-         *     The generated OpenAPI schema must match this `{ items, page, per_page, total }`
-         *     shape — deriving `ToSchema` here (rather than annotating handlers `body =
-         *     Vec<T>`) is what keeps the spec honest for consumers that would otherwise
-         *     `.map` over a non-array body (AAASM-4892).
+         * @description Paginated `GET /api/v1/policies` body (AAASM-4892) — a named wrapper so the
+         *     OpenAPI schema `$ref`s `PolicyResponse` and matches the `{ items, total }`
+         *     object the handler serializes, not a bare array.
          */
-        PaginatedResponse_AlertResponse: {
-            /** @description Items in the current page. */
-            items: {
-                /** @description Agent ID that triggered the alert (if applicable). */
-                agent_id?: string | null;
-                /** @description Alert category (e.g. "budget", "secret_detected"). */
-                category: string;
-                /**
-                 * @description Primary detected credential kind for `secret_detected` alerts
-                 *     (e.g. `"AwsAccessKey"`). Omitted for budget alerts.
-                 */
-                detected_pattern_type?: string | null;
-                /** @description Unique alert identifier. */
-                id: string;
-                /** @description Human-readable alert message. */
-                message: string;
-                /**
-                 * @description `[REDACTED:<Kind>]` label for `secret_detected` alerts — never
-                 *     contains the raw secret. Omitted for budget alerts.
-                 */
-                redacted_value?: string | null;
-                /** @description Alert severity level (e.g. "warning", "critical"). */
-                severity: string;
-                /**
-                 * @description Lifecycle status — `"unresolved"` on capture, `"resolved"` once
-                 *     the alert has been acknowledged via `POST /alerts/:id/resolve`.
-                 */
-                status: string;
-                /**
-                 * @description Team attribution propagated from the originating request
-                 *     context. Omitted when no team was associated.
-                 */
-                team_id?: string | null;
-                /** @description ISO 8601 timestamp when the alert was raised. */
-                timestamp: string;
-                /**
-                 * @description ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
-                 *     while the alert is still in its initial captured state.
-                 */
-                updated_at?: string | null;
-            }[];
+        PaginatedPolicyResponse: {
+            /** @description Policy versions in the current page. */
+            items: components["schemas"]["PolicyResponse"][];
             /**
              * Format: int32
-             * @description Current page number.
+             * @description 1-indexed page number echoed from the request.
              */
             page: number;
             /**
              * Format: int32
-             * @description Items per page.
+             * @description Items per page echoed from the request.
              */
             per_page: number;
             /**
              * Format: int64
-             * @description Total number of items across all pages.
-             */
-            total: number;
-        };
-        /**
-         * @description Wrapper for paginated list responses.
-         *
-         *     The generated OpenAPI schema must match this `{ items, page, per_page, total }`
-         *     shape — deriving `ToSchema` here (rather than annotating handlers `body =
-         *     Vec<T>`) is what keeps the spec honest for consumers that would otherwise
-         *     `.map` over a non-array body (AAASM-4892).
-         */
-        PaginatedResponse_LogEntry: {
-            /** @description Items in the current page. */
-            items: {
-                /** @description Hex-encoded agent ID that produced this log entry. */
-                agent_id: string;
-                /** @description Type of audit event. */
-                event_type: string;
-                /** @description Pre-serialized JSON payload. */
-                payload: string;
-                /**
-                 * Format: int64
-                 * @description Monotonic sequence number within the session.
-                 */
-                seq: number;
-                /** @description Hex-encoded session ID for the agent run. */
-                session_id: string;
-                /** @description ISO 8601 timestamp of the event. */
-                timestamp: string;
-            }[];
-            /**
-             * Format: int32
-             * @description Current page number.
-             */
-            page: number;
-            /**
-             * Format: int32
-             * @description Items per page.
-             */
-            per_page: number;
-            /**
-             * Format: int64
-             * @description Total number of items across all pages.
-             */
-            total: number;
-        };
-        /**
-         * @description Wrapper for paginated list responses.
-         *
-         *     The generated OpenAPI schema must match this `{ items, page, per_page, total }`
-         *     shape — deriving `ToSchema` here (rather than annotating handlers `body =
-         *     Vec<T>`) is what keeps the spec honest for consumers that would otherwise
-         *     `.map` over a non-array body (AAASM-4892).
-         */
-        PaginatedResponse_PolicyResponse: {
-            /** @description Items in the current page. */
-            items: {
-                /** @description Whether this is the currently active policy. */
-                active: boolean;
-                /** @description Policy name from metadata. */
-                name: string;
-                /**
-                 * @description Raw YAML content of this policy version. Empty string when the
-                 *     underlying snapshot is not retrievable from the history store
-                 *     (e.g. a policy loaded at startup before any history entry exists).
-                 */
-                policy_yaml: string;
-                /** @description Number of rules in this policy version. */
-                rule_count: number;
-                /** @description Policy version string. */
-                version: string;
-            }[];
-            /**
-             * Format: int32
-             * @description Current page number.
-             */
-            page: number;
-            /**
-             * Format: int32
-             * @description Items per page.
-             */
-            per_page: number;
-            /**
-             * Format: int64
-             * @description Total number of items across all pages.
+             * @description Total policy versions across all pages.
              */
             total: number;
         };
@@ -4341,7 +4220,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PaginatedResponse_AgentResponse"];
+                    "application/json": components["schemas"]["PaginatedAgentResponse"];
                 };
             };
         };
@@ -4739,7 +4618,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PaginatedResponse_AlertResponse"];
+                    "application/json": components["schemas"]["PaginatedAlertResponse"];
                 };
             };
         };
@@ -6299,7 +6178,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PaginatedResponse_LogEntry"];
+                    "application/json": components["schemas"]["PaginatedLogResponse"];
                 };
             };
             /** @description Missing or invalid credentials */
@@ -6653,7 +6532,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PaginatedResponse_PolicyResponse"];
+                    "application/json": components["schemas"]["PaginatedPolicyResponse"];
                 };
             };
             /** @description Caller lacks admin scope */
