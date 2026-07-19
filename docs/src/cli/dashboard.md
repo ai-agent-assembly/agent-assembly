@@ -34,6 +34,16 @@ var → `--port` flag → `dashboard.port` in `~/.aa/config.yaml` (default
 Serve the embedded SPA at `http://127.0.0.1:<port>`. Blocks until Ctrl-C.
 Reverse-proxies `/api/*` to the configured gateway.
 
+> **Exposure caution.** The dashboard is designed for local / self-hosted /
+> operator-controlled use and binds loopback by default. Do not put it directly on
+> the public internet without a trusted authenticating layer (VPN, private network,
+> or an authenticated reverse proxy) in front. Browser session auth uses
+> `sessionStorage` + CSP (an accepted OSS trade-off, not hardened against
+> same-origin XSS), and WebSocket streams authenticate with short-lived single-use
+> tickets so no credential rides the URL. See
+> [`SECURITY.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/SECURITY.md)
+> and [ADR 0012](../adr/0012-websocket-and-browser-credential-handling.md).
+
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--port <PORT>` | integer | `3000` (config) | Port to listen on. Overrides config; also reads `AASM_DASHBOARD_PORT`. |
