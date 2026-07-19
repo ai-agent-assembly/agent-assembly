@@ -96,7 +96,11 @@ pub fn build_app_with_spa(state: AppState, spa_dist: Option<&std::path::Path>) -
         .layer(axum::Extension(state.key_store.clone()))
         .layer(axum::Extension(state.rate_limiter.clone()))
         .layer(axum::Extension(state.jwt_signer.clone()))
-        .layer(axum::Extension(state.jwt_verifier.clone()));
+        .layer(axum::Extension(state.jwt_verifier.clone()))
+        // AAASM-4861: single shared WebSocket-ticket store. Layered here (not on
+        // AppState) so the mint endpoint and both WS upgrade handlers observe the
+        // same entries; the store is in-process and single-node (see ADR 0012).
+        .layer(axum::Extension(crate::ws::ticket::WsTicketStore::new()));
 
     let app = app.layer(axum::Extension(state));
 

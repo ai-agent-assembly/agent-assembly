@@ -77,6 +77,10 @@ fn public_router() -> Router {
 /// [`require_authentication`]: crate::auth::gate::require_authentication
 fn protected_router() -> Router {
     Router::new()
+        // WebSocket ticket mint (AAASM-4861) — authenticated REST call the
+        // dashboard makes before each WS connect so it never puts a long-lived
+        // credential in the WS URL. Gated like every other protected route.
+        .route("/auth/ws-ticket", post(auth::issue_ws_ticket))
         // Secret Injection — tool dispatch (AAASM-1920)
         .route("/dispatch_tool", post(dispatch::dispatch_tool))
         // Agents
