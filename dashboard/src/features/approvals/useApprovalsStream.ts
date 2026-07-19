@@ -3,12 +3,23 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { Approval } from './api'
 import { expireApproval } from './useExpiredApprovals'
 import type { components } from '../../api/generated/schema'
-import { getToken } from '../../auth/tokenStorage'
+import { mintWsTicket, WsTicketError } from '../../auth/wsTicket'
 
 type GovernanceEvent = components['schemas']['GovernanceEvent']
 type ApprovalPayload = components['schemas']['ApprovalPayload']
 
 const MAX_BACKOFF_MS = 8000
+
+/** Default ticket mint — the real REST call. Overridable in tests. */
+const defaultMintTicket = (): Promise<string> => mintWsTicket('events')
+
+/** Options for {@link useApprovalsStream}. Both are test seams. */
+export interface UseApprovalsStreamOptions {
+  /** Mints the single-use WS ticket. Defaults to the real REST mint. */
+  mintTicket?: () => Promise<string>
+  /** WebSocket constructor. Defaults to the global `WebSocket`. */
+  webSocketCtor?: typeof WebSocket
+}
 
 /**
  * Prepend an incoming approval to the cached list, deduplicating by id.
@@ -23,20 +34,21 @@ function mergeIncomingApproval(
   return [incoming, ...prev]
 }
 
-function buildWsUrl(): string {
+function buildWsUrl(ticket: string): string {
   const base = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? ''
   const scheme = globalThis.location.protocol === 'https:' ? 'wss' : 'ws'
   const wsBase = base
     ? base.replace(/^https/, 'wss').replace(/^http/, 'ws')
     : `${scheme}://${globalThis.location.host}`
-  const token = getToken()
-  const query = ['types=approval', token ? `token=${encodeURIComponent(token)}` : '']
-    .filter(Boolean)
-    .join('&')
+  // AAASM-4861: a short-lived, single-use ticket rides the URL, never the JWT.
+  const query = ['types=approval', `ticket=${encodeURIComponent(ticket)}`].join('&')
   return `${wsBase}/api/v1/ws/events?${query}`
 }
 
-export function useApprovalsStream(): { connected: boolean } {
+export function useApprovalsStream({
+  mintTicket = defaultMintTicket,
+  webSocketCtor: WS = WebSocket,
+}: UseApprovalsStreamOptions = {}): { connected: boolean } {
   const queryClient = useQueryClient()
   const [connected, setConnected] = useState(false)
   const backoffRef = useRef(250)
@@ -87,9 +99,34 @@ export function useApprovalsStream(): { connected: boolean } {
   useEffect(() => {
     deadRef.current = false
 
-    function connect() {
+    // Retry on the exponential backoff — shared by a dropped socket and a
+    // transient mint failure.
+    function scheduleReconnect() {
       if (deadRef.current) return
-      const ws = new WebSocket(buildWsUrl())
+      const delay = backoffRef.current
+      backoffRef.current = Math.min(delay * 2, MAX_BACKOFF_MS)
+      timerRef.current = setTimeout(() => void connect(), delay)
+    }
+
+    // AAASM-4861: mint a fresh single-use ticket before every connect/reconnect,
+    // then open the socket with `?ticket=` instead of the JWT in the URL.
+    async function connect() {
+      if (deadRef.current) return
+
+      let ticket: string
+      try {
+        ticket = await mintTicket()
+      } catch (err) {
+        if (deadRef.current) return
+        setConnected(false)
+        // Auth failure is terminal; a transient failure retries on backoff.
+        if (err instanceof WsTicketError && err.kind === 'auth') return
+        scheduleReconnect()
+        return
+      }
+      if (deadRef.current) return
+
+      const ws = new WS(buildWsUrl(ticket))
       wsRef.current = ws
 
       ws.onopen = () => {
@@ -103,22 +140,20 @@ export function useApprovalsStream(): { connected: boolean } {
       ws.onclose = () => {
         setConnected(false)
         if (deadRef.current) return
-        const delay = backoffRef.current
-        backoffRef.current = Math.min(delay * 2, MAX_BACKOFF_MS)
-        timerRef.current = setTimeout(connect, delay)
+        scheduleReconnect()
       }
 
       ws.onerror = () => { ws.close() }
     }
 
-    connect()
+    void connect()
 
     return () => {
       deadRef.current = true
       if (timerRef.current) clearTimeout(timerRef.current)
       wsRef.current?.close()
     }
-  }, [handleMessage])
+  }, [handleMessage, mintTicket, WS])
 
   return { connected }
 }

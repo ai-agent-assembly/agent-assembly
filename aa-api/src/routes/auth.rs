@@ -11,6 +11,7 @@ use crate::auth::jwt::JwtSigner;
 use crate::auth::scope::Scope;
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
+use crate::ws::ticket::{WsTicketPurpose, WsTicketStore};
 
 /// JWT token lifetime in seconds (must match [`crate::auth::jwt::TOKEN_EXPIRY_SECS`]).
 const TOKEN_EXPIRY_SECS: u64 = 24 * 60 * 60;
@@ -97,4 +98,64 @@ pub async fn issue_token(
         expires_at: now + TOKEN_EXPIRY_SECS,
         scopes: token_scopes,
     }))
+}
+
+/// Request body for `POST /auth/ws-ticket` (AAASM-4861).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct WsTicketRequest {
+    /// Which WebSocket stream the ticket will open. A ticket minted for one
+    /// purpose is rejected by any other WS endpoint.
+    pub purpose: WsTicketPurpose,
+}
+
+/// Response body for `POST /auth/ws-ticket` (AAASM-4861).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WsTicketResponse {
+    /// The opaque, single-use ticket to present as `?ticket=` on the WS upgrade.
+    pub ticket: String,
+    /// Unix timestamp when the ticket expires. It is also invalidated the moment
+    /// it is used; whichever comes first.
+    pub expires_at: u64,
+    /// The stream this ticket may open (echoes the request).
+    pub purpose: WsTicketPurpose,
+}
+
+/// Mint a short-lived, single-use WebSocket ticket for the authenticated caller.
+///
+/// A browser cannot set an `Authorization` header on a WebSocket handshake, so
+/// the dashboard mints a ticket here (over an authenticated REST call) and
+/// presents it once as `?ticket=` on the upgrade, instead of putting a
+/// long-lived credential in the URL where infrastructure logs would capture it
+/// (AAASM-4861; see ADR 0012). The ticket is bound to this caller's identity,
+/// scopes, and tenant, is valid only for the requested stream, is atomically
+/// consumed on first use (replay-safe), is not accepted by any REST route, and
+/// is not refreshable — a reconnect mints a fresh one.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/ws-ticket",
+    request_body = WsTicketRequest,
+    responses(
+        (status = 200, description = "Ticket issued successfully", body = WsTicketResponse),
+        (status = 401, description = "Missing or invalid credentials", body = ProblemDetail),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "auth"
+)]
+pub async fn issue_ws_ticket(
+    caller: AuthenticatedCaller,
+    Extension(ticket_store): Extension<WsTicketStore>,
+    Json(body): Json<WsTicketRequest>,
+) -> Json<WsTicketResponse> {
+    let ticket = ticket_store.mint(&caller, body.purpose).await;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before Unix epoch")
+        .as_secs();
+
+    Json(WsTicketResponse {
+        ticket,
+        expires_at: now + ticket_store.ttl().as_secs(),
+        purpose: body.purpose,
+    })
 }

@@ -890,6 +890,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/ws-ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint a short-lived, single-use WebSocket ticket for the authenticated caller.
+         * @description A browser cannot set an `Authorization` header on a WebSocket handshake, so
+         *     the dashboard mints a ticket here (over an authenticated REST call) and
+         *     presents it once as `?ticket=` on the upgrade, instead of putting a
+         *     long-lived credential in the URL where infrastructure logs would capture it
+         *     (AAASM-4861; see ADR 0012). The ticket is bound to this caller's identity,
+         *     scopes, and tenant, is valid only for the requested stream, is atomically
+         *     consumed on first use (replay-safe), is not accepted by any REST route, and
+         *     is not refreshable — a reconnect mints a fresh one.
+         */
+        post: operations["issue_ws_ticket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/capability/matrix": {
         parameters: {
             query?: never;
@@ -3926,6 +3953,33 @@ export interface components {
              */
             window_secs: number;
         };
+        /**
+         * @description What a ticket authorizes. A ticket minted for one purpose is rejected by any
+         *     other WS endpoint, so a leaked live-ops ticket can't open the alert stream.
+         * @enum {string}
+         */
+        WsTicketPurpose: "events" | "alerts";
+        /** @description Request body for `POST /auth/ws-ticket` (AAASM-4861). */
+        WsTicketRequest: {
+            /**
+             * @description Which WebSocket stream the ticket will open. A ticket minted for one
+             *     purpose is rejected by any other WS endpoint.
+             */
+            purpose: components["schemas"]["WsTicketPurpose"];
+        };
+        /** @description Response body for `POST /auth/ws-ticket` (AAASM-4861). */
+        WsTicketResponse: {
+            /**
+             * Format: int64
+             * @description Unix timestamp when the ticket expires. It is also invalidated the moment
+             *     it is used; whichever comes first.
+             */
+            expires_at: number;
+            /** @description The stream this ticket may open (echoes the request). */
+            purpose: components["schemas"]["WsTicketPurpose"];
+            /** @description The opaque, single-use ticket to present as `?ticket=` on the WS upgrade. */
+            ticket: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -4909,6 +4963,14 @@ export interface operations {
                 severity?: string | null;
                 /** @description Restrict the stream to a single hex-encoded agent id. */
                 agent_id?: string | null;
+                /**
+                 * @description Short-lived, single-use WebSocket ticket (AAASM-4861). Browsers can't set
+                 *     an `Authorization` header on a WS handshake, so the dashboard mints a
+                 *     ticket via `POST /api/v1/auth/ws-ticket` and presents it here instead of
+                 *     putting a long-lived credential in the URL. Non-browser clients may
+                 *     instead send an `Authorization: Bearer` header and omit this.
+                 */
+                ticket?: string | null;
             };
             header?: never;
             path?: never;
@@ -5493,6 +5555,39 @@ export interface operations {
             };
             /** @description Requested scope exceeds caller grants */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    issue_ws_ticket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WsTicketRequest"];
+            };
+        };
+        responses: {
+            /** @description Ticket issued successfully */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WsTicketResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6756,6 +6851,14 @@ export interface operations {
                  *     The server keeps the last 1000 events in a circular buffer.
                  */
                 since?: number | null;
+                /**
+                 * @description Short-lived, single-use WebSocket ticket (AAASM-4861). Browsers can't set
+                 *     an `Authorization` header on a WS handshake, so the dashboard mints a
+                 *     ticket via `POST /api/v1/auth/ws-ticket` and presents it here instead of
+                 *     putting a long-lived credential in the URL. Non-browser clients may
+                 *     instead send an `Authorization: Bearer` header and omit this.
+                 */
+                ticket?: string | null;
             };
             header?: never;
             path?: never;

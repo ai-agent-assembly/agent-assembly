@@ -23,6 +23,12 @@ pub struct WsQueryParams {
     /// The server keeps the last 1000 events in a circular buffer.
     #[param(value_type = Option<u64>)]
     pub since: Option<EventId>,
+    /// Short-lived, single-use WebSocket ticket (AAASM-4861). Browsers can't set
+    /// an `Authorization` header on a WS handshake, so the dashboard mints a
+    /// ticket via `POST /api/v1/auth/ws-ticket` and presents it here instead of
+    /// putting a long-lived credential in the URL. Non-browser clients may
+    /// instead send an `Authorization: Bearer` header and omit this.
+    pub ticket: Option<String>,
 }
 
 impl WsQueryParams {

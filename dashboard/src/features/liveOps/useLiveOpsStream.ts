@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { components } from '../../api/generated/schema'
-import { getToken } from '../../auth/tokenStorage'
+import { mintWsTicket, WsTicketError } from '../../auth/wsTicket'
 import type { CallStackNode, CallStackNodeKind, LiveOperation, OperationStatus } from './types'
 import { OPERATION_STATUSES } from './types'
 
@@ -86,6 +86,8 @@ export interface UseLiveOpsStreamOptions {
   maxReconnectAttempts?: number
   /** Test seam — defaults to the global `WebSocket`. */
   webSocketCtor?: typeof WebSocket
+  /** Test seam — mints the single-use WS ticket. Defaults to the real REST mint. */
+  mintTicket?: () => Promise<string>
 }
 
 export interface UseLiveOpsStreamResult {
@@ -95,21 +97,20 @@ export interface UseLiveOpsStreamResult {
   reconnect: () => void
 }
 
-function buildWsUrl(): string {
+function buildWsUrl(ticket: string): string {
   const base = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? ''
   const scheme = globalThis.location.protocol === 'https:' ? 'wss' : 'ws'
   const wsBase = base
     ? base.replace(/^https/, 'wss').replace(/^http/, 'ws')
     : `${scheme}://${globalThis.location.host}`
-  const token = getToken()
-  const query = [
-    'types=violation,ops_change',
-    token ? `token=${encodeURIComponent(token)}` : '',
-  ]
-    .filter(Boolean)
-    .join('&')
+  // AAASM-4861: a short-lived, single-use ticket — never the long-lived JWT —
+  // rides the URL, so nothing that logs request URLs captures a live credential.
+  const query = ['types=violation,ops_change', `ticket=${encodeURIComponent(ticket)}`].join('&')
   return `${wsBase}/api/v1/ws/events?${query}`
 }
+
+/** Default ticket mint — the real REST call. Overridable in tests. */
+const defaultMintTicket = (): Promise<string> => mintWsTicket('events')
 
 function isAuditPayload(p: unknown): p is ViolationAuditPayload {
   return typeof p === 'object' && p !== null && (p as { kind?: unknown }).kind === 'audit'
@@ -206,6 +207,7 @@ export function useLiveOpsStream({
   maxBackoffMs = 8000,
   maxReconnectAttempts = 5,
   webSocketCtor: WS = WebSocket,
+  mintTicket = defaultMintTicket,
 }: UseLiveOpsStreamOptions = {}): UseLiveOpsStreamResult {
   const [ops, setOps] = useState<LiveOperation[]>([])
   const [status, setStatus] = useState<StreamStatus>('connecting')
@@ -240,10 +242,45 @@ export function useLiveOpsStream({
   useEffect(() => {
     deadRef.current = false
 
-    function connect() {
+    // Schedule a reconnect on the exponential backoff, giving up (→ 'error')
+    // after `maxReconnectAttempts`. Shared by a dropped socket AND a transient
+    // mint failure, so both are retried on the same schedule.
+    function scheduleReconnect() {
+      if (deadRef.current) return
+      attemptsRef.current += 1
+      if (attemptsRef.current > maxReconnectAttempts) {
+        setStatus('error')
+        return
+      }
+      const delay = Math.min(initialBackoffMs * 2 ** (attemptsRef.current - 1), maxBackoffMs)
+      setStatus('reconnecting')
+      timerRef.current = setTimeout(() => void connect(), delay)
+    }
+
+    // AAASM-4861: mint a fresh single-use ticket before *every* connect (and
+    // reconnect), then open the socket with `?ticket=`. The long-lived token
+    // never touches the URL.
+    async function connect() {
       if (deadRef.current) return
       setStatus(attemptsRef.current === 0 ? 'connecting' : 'reconnecting')
-      const ws = new WS(buildWsUrl())
+
+      let ticket: string
+      try {
+        ticket = await mintTicket()
+      } catch (err) {
+        if (deadRef.current) return
+        // An auth failure is terminal — the session is invalid, so spinning on
+        // reconnect would just re-fail. A transient failure retries on backoff.
+        if (err instanceof WsTicketError && err.kind === 'auth') {
+          setStatus('error')
+          return
+        }
+        scheduleReconnect()
+        return
+      }
+      if (deadRef.current) return
+
+      const ws = new WS(buildWsUrl(ticket))
       wsRef.current = ws
 
       ws.onopen = () => {
@@ -259,17 +296,7 @@ export function useLiveOpsStream({
 
       ws.onclose = () => {
         if (deadRef.current) return
-        attemptsRef.current += 1
-        if (attemptsRef.current > maxReconnectAttempts) {
-          setStatus('error')
-          return
-        }
-        const delay = Math.min(
-          initialBackoffMs * 2 ** (attemptsRef.current - 1),
-          maxBackoffMs,
-        )
-        setStatus('reconnecting')
-        timerRef.current = setTimeout(connect, delay)
+        scheduleReconnect()
       }
 
       ws.onerror = () => {
@@ -277,7 +304,7 @@ export function useLiveOpsStream({
       }
     }
 
-    connect()
+    void connect()
 
     return () => {
       deadRef.current = true
@@ -291,6 +318,7 @@ export function useLiveOpsStream({
     initialBackoffMs,
     maxBackoffMs,
     maxReconnectAttempts,
+    mintTicket,
   ])
 
   return { ops, status, reconnect }

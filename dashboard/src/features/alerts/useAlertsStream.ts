@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { mintWsTicket, WsTicketError } from '../../auth/wsTicket'
 import { alertsEndpoints } from './endpoints'
 import type { Alert, Silence } from './types'
 
@@ -19,12 +20,26 @@ export interface UseAlertsStreamHandlers {
 
 export type StreamStatus = 'connecting' | 'open' | 'closed'
 
+/** Options for {@link useAlertsStream}. Both are test seams. */
+export interface UseAlertsStreamOptions {
+  /** Mints the single-use WS ticket. Defaults to the real REST mint. */
+  mintTicket?: () => Promise<string>
+  /** WebSocket constructor. Defaults to the global `WebSocket`. */
+  webSocketCtor?: typeof WebSocket
+}
+
 const BASE_WS_URL = (() => {
   const apiBase = import.meta.env.VITE_API_BASE_URL ?? ''
   if (apiBase.startsWith('https://')) return apiBase.replace(/^https/, 'wss')
   if (apiBase.startsWith('http://')) return apiBase.replace(/^http/, 'ws')
   return apiBase
 })()
+
+/** Subprotocol the alerts upgrade must offer (server rejects the upgrade otherwise). */
+const ALERTS_SUBPROTOCOL = 'aaasm-alerts-v1'
+
+/** Default ticket mint — the real REST call. Overridable in tests. */
+const defaultMintTicket = (): Promise<string> => mintWsTicket('alerts')
 
 const INITIAL_BACKOFF_MS = 500
 const MAX_BACKOFF_MS = 30_000
@@ -38,7 +53,10 @@ const MAX_BACKOFF_MS = 30_000
  * can pass freshly-bound closures (e.g. `useQueryClient().setQueryData`)
  * without forcing the socket to reopen on every render.
  */
-export function useAlertsStream(handlers: UseAlertsStreamHandlers): StreamStatus {
+export function useAlertsStream(
+  handlers: UseAlertsStreamHandlers,
+  { mintTicket = defaultMintTicket, webSocketCtor: WS = WebSocket }: UseAlertsStreamOptions = {},
+): StreamStatus {
   const handlersRef = useRef(handlers)
   useEffect(() => {
     handlersRef.current = handlers
@@ -51,11 +69,29 @@ export function useAlertsStream(handlers: UseAlertsStreamHandlers): StreamStatus
     let backoff = INITIAL_BACKOFF_MS
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-    const connect = () => {
+    const connect = async () => {
       if (cancelled) return
       setStatus('connecting')
+
+      // AAASM-4861: mint a fresh single-use ticket before every connect/reconnect
+      // and present it as `?ticket=`; the JWT never enters the URL. The alerts
+      // upgrade also requires the `aaasm-alerts-v1` subprotocol.
+      let ticket: string
       try {
-        socket = new WebSocket(`${BASE_WS_URL}${alertsEndpoints.websocket}`)
+        ticket = await mintTicket()
+      } catch (err) {
+        if (cancelled) return
+        setStatus('closed')
+        // Auth failure is terminal; a transient failure retries on backoff.
+        if (err instanceof WsTicketError && err.kind === 'auth') return
+        scheduleReconnect()
+        return
+      }
+      if (cancelled) return
+
+      const url = `${BASE_WS_URL}${alertsEndpoints.websocket}?ticket=${encodeURIComponent(ticket)}`
+      try {
+        socket = new WS(url, ALERTS_SUBPROTOCOL)
       } catch {
         scheduleReconnect()
         return
@@ -104,18 +140,18 @@ export function useAlertsStream(handlers: UseAlertsStreamHandlers): StreamStatus
     const scheduleReconnect = () => {
       reconnectTimer = setTimeout(() => {
         backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
-        connect()
+        void connect()
       }, backoff)
     }
 
-    connect()
+    void connect()
 
     return () => {
       cancelled = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
       socket?.close()
     }
-  }, [])
+  }, [mintTicket, WS])
 
   return status
 }
