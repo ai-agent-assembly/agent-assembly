@@ -27,6 +27,12 @@ pub struct AlertsWsQueryParams {
     pub severity: Option<String>,
     /// Restrict the stream to a single hex-encoded agent id.
     pub agent_id: Option<String>,
+    /// Short-lived, single-use WebSocket ticket (AAASM-4861). Browsers can't set
+    /// an `Authorization` header on a WS handshake, so the dashboard mints a
+    /// ticket via `POST /api/v1/auth/ws-ticket` and presents it here instead of
+    /// putting a long-lived credential in the URL. Non-browser clients may
+    /// instead send an `Authorization: Bearer` header and omit this.
+    pub ticket: Option<String>,
 }
 
 /// Discriminator for the three [`AlertEvent`] variants. Carried in
@@ -243,6 +249,7 @@ mod tests {
             events: events.map(str::to_string),
             severity: severity.map(str::to_string),
             agent_id: agent_id.map(str::to_string),
+            ticket: None,
         }
     }
 
