@@ -111,29 +111,15 @@ fn private_egress_allowed() -> bool {
         .unwrap_or(false)
 }
 
-/// True when `ip` is an address an SSRF guard must refuse: loopback, RFC1918
-/// private, link-local (incl. the `169.254.169.254` cloud-metadata endpoint),
-/// IPv4 broadcast, the unspecified address, or — for IPv6 — loopback,
-/// unspecified, unique-local (`fc00::/7`), or link-local (`fe80::/10`).
-/// IPv4-mapped IPv6 addresses are unwrapped and re-checked against the v4 rules.
+/// True when `ip` is an address the webhook egress guard must refuse.
+///
+/// Delegates to the shared [`aa_core::net::is_blocked_ip`] so this guard and the
+/// proxy's CONNECT guard enforce one identical range set. The local copy used to
+/// miss CGNAT `100.64.0.0/10`, `0.0.0.0/8`, and the IPv6 transition prefixes
+/// (NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, IPv4-compatible `::/96`) that can
+/// embed an internal IPv4 such as `169.254.169.254` (AAASM-4859).
 fn ip_is_internal(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast()
-        }
-        IpAddr::V6(v6) => {
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return ip_is_internal(IpAddr::V4(mapped));
-            }
-            let octets = v6.octets();
-            v6.is_loopback()
-                || v6.is_unspecified()
-                // fc00::/7 unique-local
-                || (octets[0] & 0xfe) == 0xfc
-                // fe80::/10 link-local
-                || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
-        }
-    }
+    aa_core::net::is_blocked_ip(ip)
 }
 
 /// Reject an address that resolves into a disallowed internal range.
