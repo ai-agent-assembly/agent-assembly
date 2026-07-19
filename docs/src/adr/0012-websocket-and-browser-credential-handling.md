@@ -212,4 +212,4 @@ Re-open this ADR if any of the following change:
 | [AAASM-297](https://lightning-dust-mite.atlassian.net/browse/AAASM-297) | Approvals stream (related) |
 | [AAASM-3980](https://lightning-dust-mite.atlassian.net/browse/AAASM-3980) | Per-connection WebSocket tenant gating (related) |
 | [ADR 0008](0008-saas-host-routing-auth-cookie-boundaries.md) | SaaS cookie / host boundary (complements Decision §2) |
-| Implementation PRs | PR-A `#TBD` (this ADR + exposure docs, AAASM-4860); PR-B `#TBD` (WS-ticket code + tests, AAASM-4861) |
+| Implementation PRs | [#1582](https://github.com/ai-agent-assembly/agent-assembly/pull/1582) (this ADR + exposure docs, AAASM-4860); [#1583](https://github.com/ai-agent-assembly/agent-assembly/pull/1583) (WS-ticket code + tests, AAASM-4861) |
