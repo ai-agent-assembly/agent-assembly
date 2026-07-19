@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { WsTicketError } from '../../auth/wsTicket'
 import { MockWebSocket, resetMockWebSockets } from '../../test/mockWebSocket'
 import { useLiveOpsStream } from './useLiveOpsStream'
 
@@ -27,7 +28,14 @@ const opts = {
   maxBackoffMs: 1000,
   maxReconnectAttempts: 3,
   maxOps: 50,
+  mintTicket: () => Promise.resolve('wst_test'),
 }
+
+/** Flush the microtask created by `await mintTicket()` inside `connect()`. */
+const flushMint = () =>
+  act(async () => {
+    await Promise.resolve()
+  })
 
 describe('useLiveOpsStream', () => {
   beforeEach(() => {
@@ -39,22 +47,25 @@ describe('useLiveOpsStream', () => {
     vi.useRealTimers()
   })
 
-  it('connects on mount and exposes connecting status', () => {
+  it('connects on mount and exposes connecting status', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     expect(MockWebSocket.instances).toHaveLength(1)
     expect(result.current.status).toBe('connecting')
   })
 
-  it('transitions to connected on socket open', () => {
+  it('transitions to connected on socket open', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
     })
     expect(result.current.status).toBe('connected')
   })
 
-  it('appends violation events to the ops ring (most-recent-first)', () => {
+  it('appends violation events to the ops ring (most-recent-first)', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].emit(VIOLATION_EVENT)
@@ -69,8 +80,9 @@ describe('useLiveOpsStream', () => {
     })
   })
 
-  it('populates every LiveOperation field from the structured payload', () => {
+  it('populates every LiveOperation field from the structured payload', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].emit(VIOLATION_EVENT)
@@ -87,8 +99,9 @@ describe('useLiveOpsStream', () => {
     })
   })
 
-  it('falls back to safe defaults when the payload is missing op fields', () => {
+  it('falls back to safe defaults when the payload is missing op fields', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].emit({
@@ -105,8 +118,9 @@ describe('useLiveOpsStream', () => {
     })
   })
 
-  it('maps a wire call_stack into LiveOperation.callStack with camelCase fields', () => {
+  it('maps a wire call_stack into LiveOperation.callStack with camelCase fields', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].emit({
@@ -151,8 +165,9 @@ describe('useLiveOpsStream', () => {
     ])
   })
 
-  it('omits callStack when wire payload has no call_stack', () => {
+  it('omits callStack when wire payload has no call_stack', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].emit(VIOLATION_EVENT)
@@ -160,8 +175,9 @@ describe('useLiveOpsStream', () => {
     expect(result.current.ops[0].callStack).toBeUndefined()
   })
 
-  it('coerces an unknown status string to running', () => {
+  it('coerces an unknown status string to running', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].emit({
@@ -172,8 +188,9 @@ describe('useLiveOpsStream', () => {
     expect(result.current.ops[0]?.status).toBe('running')
   })
 
-  it('maps blocked / pending status values through unchanged', () => {
+  it('maps blocked / pending status values through unchanged', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].emit({
@@ -190,8 +207,9 @@ describe('useLiveOpsStream', () => {
     expect(result.current.ops.map((o) => o.status)).toEqual(['pending', 'blocked'])
   })
 
-  it('ignores non-violation event types', () => {
+  it('ignores non-violation event types', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].emit({ ...VIOLATION_EVENT, event_type: 'approval' })
@@ -199,8 +217,9 @@ describe('useLiveOpsStream', () => {
     expect(result.current.ops).toHaveLength(0)
   })
 
-  it('drops malformed frames without throwing', () => {
+  it('drops malformed frames without throwing', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].onmessage?.({ data: 'not json' })
@@ -208,8 +227,9 @@ describe('useLiveOpsStream', () => {
     expect(result.current.ops).toHaveLength(0)
   })
 
-  it('caps the ring at maxOps', () => {
+  it('caps the ring at maxOps', async () => {
     const { result } = renderHook(() => useLiveOpsStream({ ...opts, maxOps: 3 }))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       for (let i = 1; i <= 5; i++) {
@@ -219,8 +239,9 @@ describe('useLiveOpsStream', () => {
     expect(result.current.ops.map((o) => o.id)).toEqual(['5', '4', '3'])
   })
 
-  it('reconnects with exponential backoff after a close', () => {
+  it('reconnects with exponential backoff after a close', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
     })
@@ -240,6 +261,7 @@ describe('useLiveOpsStream', () => {
     act(() => {
       vi.advanceTimersByTime(1)
     })
+    await flushMint()
     expect(MockWebSocket.instances).toHaveLength(2)
 
     // Second close, second reconnect: 200 ms
@@ -253,41 +275,47 @@ describe('useLiveOpsStream', () => {
     act(() => {
       vi.advanceTimersByTime(1)
     })
+    await flushMint()
     expect(MockWebSocket.instances).toHaveLength(3)
   })
 
-  it('transitions to error after maxReconnectAttempts', () => {
+  it('transitions to error after maxReconnectAttempts', async () => {
     const { result } = renderHook(() =>
       useLiveOpsStream({ ...opts, maxReconnectAttempts: 2 }),
     )
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].serverClose()
     })
     act(() => {
       vi.advanceTimersByTime(100)
     })
+    await flushMint()
     act(() => {
       MockWebSocket.instances[1].serverClose()
     })
     act(() => {
       vi.advanceTimersByTime(200)
     })
+    await flushMint()
     act(() => {
       MockWebSocket.instances[2].serverClose()
     })
     expect(result.current.status).toBe('error')
   })
 
-  it('manual reconnect() restarts the connection from error', () => {
+  it('manual reconnect() restarts the connection from error', async () => {
     const { result } = renderHook(() =>
       useLiveOpsStream({ ...opts, maxReconnectAttempts: 1 }),
     )
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].serverClose()
     })
     act(() => {
       vi.advanceTimersByTime(100)
     })
+    await flushMint()
     act(() => {
       MockWebSocket.instances[1].serverClose()
     })
@@ -296,12 +324,14 @@ describe('useLiveOpsStream', () => {
     act(() => {
       result.current.reconnect()
     })
+    await flushMint()
     expect(MockWebSocket.instances.length).toBeGreaterThan(2)
     expect(result.current.status).not.toBe('error')
   })
 
-  it('closes the socket on unmount', () => {
+  it('closes the socket on unmount', async () => {
     const { unmount } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     const ws = MockWebSocket.instances[0]
     act(() => {
       ws.open()
@@ -310,21 +340,39 @@ describe('useLiveOpsStream', () => {
     expect(ws.readyState).toBe(MockWebSocket.CLOSED)
   })
 
-  it('appends ?token=… to the WS URL when aa_token is present in sessionStorage', () => {
-    const originalGet = Storage.prototype.getItem
-    Storage.prototype.getItem = function (key: string) {
-      return key === 'aa_token' ? 'jwt-abc' : originalGet.call(this, key)
-    }
-    try {
-      renderHook(() => useLiveOpsStream(opts))
-      expect(MockWebSocket.instances[0].url).toContain('types=violation')
-      expect(MockWebSocket.instances[0].url).toContain('token=jwt-abc')
-    } finally {
-      Storage.prototype.getItem = originalGet
-    }
+  it('opens with a ticket in the URL, not the JWT', async () => {
+    renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
+    expect(MockWebSocket.instances[0].url).toContain('ticket=wst_test')
+    expect(MockWebSocket.instances[0].url).not.toContain('token=')
   })
 
-  it('caps reconnect backoff at maxBackoffMs', () => {
+  it('reconnect mints a fresh ticket', async () => {
+    const mintTicket = vi.fn().mockResolvedValue('wst_test')
+    renderHook(() => useLiveOpsStream({ ...opts, mintTicket }))
+    await flushMint()
+    act(() => {
+      MockWebSocket.instances[0].serverClose()
+    })
+    act(() => {
+      vi.advanceTimersByTime(100)
+    })
+    await flushMint()
+    expect(mintTicket.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('mint auth-failure does not spin up a socket', async () => {
+    // Hoisted so the reference is stable across re-renders — an inline
+    // arrow here would be a fresh function every render, which sits in the
+    // reconnect effect's dependency array and would re-run `connect()` forever.
+    const mintTicket = () => Promise.reject(new WsTicketError('auth', 'nope'))
+    const { result } = renderHook(() => useLiveOpsStream({ ...opts, mintTicket }))
+    await flushMint()
+    expect(MockWebSocket.instances).toHaveLength(0)
+    expect(result.current.status).toBe('error')
+  })
+
+  it('caps reconnect backoff at maxBackoffMs', async () => {
     renderHook(() =>
       useLiveOpsStream({
         ...opts,
@@ -333,11 +381,13 @@ describe('useLiveOpsStream', () => {
         maxReconnectAttempts: 5,
       }),
     )
+    await flushMint()
     // 1st backoff: 100 ms (2^0 * 100)
     act(() => {
       MockWebSocket.instances[0].serverClose()
       vi.advanceTimersByTime(100)
     })
+    await flushMint()
     expect(MockWebSocket.instances).toHaveLength(2)
 
     // 2nd backoff: 200 ms (2^1 * 100) — still under cap
@@ -345,6 +395,7 @@ describe('useLiveOpsStream', () => {
       MockWebSocket.instances[1].serverClose()
       vi.advanceTimersByTime(200)
     })
+    await flushMint()
     expect(MockWebSocket.instances).toHaveLength(3)
 
     // 3rd backoff would be 400 ms (2^2 * 100) but is clamped to 250 ms.
@@ -358,6 +409,7 @@ describe('useLiveOpsStream', () => {
     act(() => {
       vi.advanceTimersByTime(1)
     })
+    await flushMint()
     expect(MockWebSocket.instances).toHaveLength(4)
   })
 
@@ -375,13 +427,15 @@ describe('useLiveOpsStream', () => {
     },
   }
 
-  it('subscribes to both violation and ops_change events in the WS URL', () => {
+  it('subscribes to both violation and ops_change events in the WS URL', async () => {
     renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     expect(MockWebSocket.instances[0].url).toContain('types=violation,ops_change')
   })
 
-  it('maps ops_change events into LiveOperation rows keyed by op_id', () => {
+  it('maps ops_change events into LiveOperation rows keyed by op_id', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].emit(OPS_CHANGE_EVENT)
@@ -395,8 +449,9 @@ describe('useLiveOpsStream', () => {
     })
   })
 
-  it('merges successive ops_change events for the same op_id into one row', () => {
+  it('merges successive ops_change events for the same op_id into one row', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       MockWebSocket.instances[0].emit(OPS_CHANGE_EVENT)
@@ -418,8 +473,9 @@ describe('useLiveOpsStream', () => {
     })
   })
 
-  it('translates gateway OpState values to dashboard OperationStatus', () => {
+  it('translates gateway OpState values to dashboard OperationStatus', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     const states: Array<{ state: string; expected: string }> = [
       { state: 'pending', expected: 'pending' },
       { state: 'running', expected: 'running' },
@@ -443,8 +499,9 @@ describe('useLiveOpsStream', () => {
     })
   })
 
-  it('preserves opType / resource learned from earlier violation event when merging', () => {
+  it('preserves opType / resource learned from earlier violation event when merging', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
     act(() => {
       MockWebSocket.instances[0].open()
       // First a violation event lands the row with rich metadata (it
@@ -467,14 +524,16 @@ describe('useLiveOpsStream', () => {
     })
   })
 
-  it('successful open resets the backoff counter so the next close starts at initialBackoffMs', () => {
+  it('successful open resets the backoff counter so the next close starts at initialBackoffMs', async () => {
     renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
 
     // Drive one backoff escalation: close → reconnect waits 100ms.
     act(() => {
       MockWebSocket.instances[0].serverClose()
       vi.advanceTimersByTime(100)
     })
+    await flushMint()
     expect(MockWebSocket.instances).toHaveLength(2)
 
     // Second close BEFORE the second socket has opened — backoff is now 200ms.
@@ -482,6 +541,7 @@ describe('useLiveOpsStream', () => {
       MockWebSocket.instances[1].serverClose()
       vi.advanceTimersByTime(200)
     })
+    await flushMint()
     expect(MockWebSocket.instances).toHaveLength(3)
 
     // Now let the third socket actually open — this should reset the counter.
@@ -500,6 +560,7 @@ describe('useLiveOpsStream', () => {
     act(() => {
       vi.advanceTimersByTime(1)
     })
+    await flushMint()
     expect(MockWebSocket.instances).toHaveLength(4)
   })
 })
