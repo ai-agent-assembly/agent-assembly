@@ -134,7 +134,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedResponse_AgentResponse'
+                $ref: '#/components/schemas/PaginatedAgentResponse'
   /api/v1/agents/{id}:
     get:
       tags:
@@ -499,7 +499,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedResponse_AlertResponse'
+                $ref: '#/components/schemas/PaginatedAlertResponse'
   /api/v1/alerts/destinations:
     get:
       tags:
@@ -2108,7 +2108,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedResponse_LogEntry'
+                $ref: '#/components/schemas/PaginatedLogResponse'
         '401':
           description: Missing or invalid credentials
   /api/v1/ops:
@@ -2445,7 +2445,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedResponse_PolicyResponse'
+                $ref: '#/components/schemas/PaginatedPolicyResponse'
         '403':
           description: Caller lacks admin scope
     post:
@@ -5120,6 +5120,72 @@ components:
         verb:
           $ref: '#/components/schemas/Verb'
           description: Verb within the cell that was changed.
+    PaginatedAgentResponse:
+      type: object
+      description: |-
+        Paginated `GET /api/v1/agents` body (AAASM-4892).
+
+        A named wrapper (mirroring `PaginatedApprovalResponse`) so the OpenAPI schema
+        `$ref`s `AgentResponse` and matches the `{ items, total }` object the handler
+        actually serializes — not the bare array a generic `Vec<T>` annotation implied.
+      required:
+      - items
+      - page
+      - per_page
+      - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentResponse'
+          description: Agents in the current page.
+        page:
+          type: integer
+          format: int32
+          description: 1-indexed page number echoed from the request.
+          minimum: 0
+        per_page:
+          type: integer
+          format: int32
+          description: Items per page echoed from the request.
+          minimum: 0
+        total:
+          type: integer
+          format: int64
+          description: Total agents visible to the caller across all pages.
+          minimum: 0
+    PaginatedAlertResponse:
+      type: object
+      description: |-
+        Paginated `GET /api/v1/alerts` body (AAASM-4892) — a named wrapper so the
+        OpenAPI schema `$ref`s `AlertResponse` and matches the `{ items, total }`
+        object the handler serializes, not a bare array.
+      required:
+      - items
+      - page
+      - per_page
+      - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertResponse'
+          description: Alerts in the current page.
+        page:
+          type: integer
+          format: int32
+          description: 1-indexed page number echoed from the request.
+          minimum: 0
+        per_page:
+          type: integer
+          format: int32
+          description: Items per page echoed from the request.
+          minimum: 0
+        total:
+          type: integer
+          format: int64
+          description: Total alerts visible to the caller across all pages.
+          minimum: 0
     PaginatedApprovalResponse:
       type: object
       description: |-
@@ -5160,15 +5226,12 @@ components:
           format: int64
           description: Total number of items across all pages (after filters).
           minimum: 0
-    PaginatedResponse_AgentResponse:
+    PaginatedLogResponse:
       type: object
       description: |-
-        Wrapper for paginated list responses.
-
-        The generated OpenAPI schema must match this `{ items, page, per_page, total }`
-        shape — deriving `ToSchema` here (rather than annotating handlers `body =
-        Vec<T>`) is what keeps the spec honest for consumers that would otherwise
-        `.map` over a non-array body (AAASM-4892).
+        Paginated `GET /api/v1/logs` body (AAASM-4892) — a named wrapper so the
+        OpenAPI schema `$ref`s `LogEntry` and matches the `{ items, total }` object
+        the handler serializes, not a bare array.
       required:
       - items
       - page
@@ -5178,116 +5241,29 @@ components:
         items:
           type: array
           items:
-            type: object
-            description: JSON representation of an agent returned by the API.
-            required:
-            - id
-            - name
-            - framework
-            - version
-            - status
-            - tool_names
-            - metadata
-            - session_count
-            - policy_violations_count
-            - active_sessions
-            - recent_events
-            - recent_traces
-            properties:
-              active_sessions:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ActiveSessionResponse'
-                description: Currently active sessions for this agent.
-              framework:
-                type: string
-                description: Agent framework (e.g. "langgraph", "crewai").
-              id:
-                type: string
-                description: Hex-encoded agent UUID.
-              last_event:
-                type:
-                - string
-                - 'null'
-                description: ISO 8601 timestamp of the most recent event.
-              layer:
-                type:
-                - string
-                - 'null'
-                description: Governance layer this agent is assigned to (e.g. "advisory", "enforced").
-              metadata:
-                type: object
-                description: Arbitrary metadata key-value pairs.
-                additionalProperties:
-                  type: string
-                propertyNames:
-                  type: string
-              name:
-                type: string
-                description: Human-readable agent name.
-              pid:
-                type:
-                - integer
-                - 'null'
-                format: int32
-                description: OS process ID, if known.
-                minimum: 0
-              policy_violations_count:
-                type: integer
-                format: int32
-                description: Number of policy violations recorded.
-                minimum: 0
-              recent_events:
-                type: array
-                items:
-                  $ref: '#/components/schemas/RecentEventResponse'
-                description: Most recent events emitted by this agent.
-              recent_traces:
-                type: array
-                items:
-                  $ref: '#/components/schemas/RecentTraceResponse'
-                description: Most recent trace session IDs for this agent.
-              session_count:
-                type: integer
-                format: int32
-                description: Number of sessions handled.
-                minimum: 0
-              status:
-                type: string
-                description: Current runtime status.
-              tool_names:
-                type: array
-                items:
-                  type: string
-                description: Tools declared at registration.
-              version:
-                type: string
-                description: Semver version string.
-          description: Items in the current page.
+            $ref: '#/components/schemas/LogEntry'
+          description: Audit log entries in the current page.
         page:
           type: integer
           format: int32
-          description: Current page number.
+          description: 1-indexed page number echoed from the request.
           minimum: 0
         per_page:
           type: integer
           format: int32
-          description: Items per page.
+          description: Items per page echoed from the request.
           minimum: 0
         total:
           type: integer
           format: int64
-          description: Total number of items across all pages.
+          description: Total entries matching the filter across all pages.
           minimum: 0
-    PaginatedResponse_AlertResponse:
+    PaginatedPolicyResponse:
       type: object
       description: |-
-        Wrapper for paginated list responses.
-
-        The generated OpenAPI schema must match this `{ items, page, per_page, total }`
-        shape — deriving `ToSchema` here (rather than annotating handlers `body =
-        Vec<T>`) is what keeps the spec honest for consumers that would otherwise
-        `.map` over a non-array body (AAASM-4892).
+        Paginated `GET /api/v1/policies` body (AAASM-4892) — a named wrapper so the
+        OpenAPI schema `$ref`s `PolicyResponse` and matches the `{ items, total }`
+        object the handler serializes, not a bare array.
       required:
       - items
       - page
@@ -5297,210 +5273,22 @@ components:
         items:
           type: array
           items:
-            type: object
-            description: JSON representation of a governance alert.
-            required:
-            - id
-            - severity
-            - category
-            - message
-            - timestamp
-            - status
-            properties:
-              agent_id:
-                type:
-                - string
-                - 'null'
-                description: Agent ID that triggered the alert (if applicable).
-              category:
-                type: string
-                description: Alert category (e.g. "budget", "secret_detected").
-              detected_pattern_type:
-                type:
-                - string
-                - 'null'
-                description: |-
-                  Primary detected credential kind for `secret_detected` alerts
-                  (e.g. `"AwsAccessKey"`). Omitted for budget alerts.
-              id:
-                type: string
-                description: Unique alert identifier.
-              message:
-                type: string
-                description: Human-readable alert message.
-              redacted_value:
-                type:
-                - string
-                - 'null'
-                description: |-
-                  `[REDACTED:<Kind>]` label for `secret_detected` alerts — never
-                  contains the raw secret. Omitted for budget alerts.
-              severity:
-                type: string
-                description: Alert severity level (e.g. "warning", "critical").
-              status:
-                type: string
-                description: |-
-                  Lifecycle status — `"unresolved"` on capture, `"resolved"` once
-                  the alert has been acknowledged via `POST /alerts/:id/resolve`.
-              team_id:
-                type:
-                - string
-                - 'null'
-                description: |-
-                  Team attribution propagated from the originating request
-                  context. Omitted when no team was associated.
-              timestamp:
-                type: string
-                description: ISO 8601 timestamp when the alert was raised.
-              updated_at:
-                type:
-                - string
-                - 'null'
-                description: |-
-                  ISO 8601 timestamp of the last mutation (e.g. resolve). `None`
-                  while the alert is still in its initial captured state.
-          description: Items in the current page.
+            $ref: '#/components/schemas/PolicyResponse'
+          description: Policy versions in the current page.
         page:
           type: integer
           format: int32
-          description: Current page number.
+          description: 1-indexed page number echoed from the request.
           minimum: 0
         per_page:
           type: integer
           format: int32
-          description: Items per page.
+          description: Items per page echoed from the request.
           minimum: 0
         total:
           type: integer
           format: int64
-          description: Total number of items across all pages.
-          minimum: 0
-    PaginatedResponse_LogEntry:
-      type: object
-      description: |-
-        Wrapper for paginated list responses.
-
-        The generated OpenAPI schema must match this `{ items, page, per_page, total }`
-        shape — deriving `ToSchema` here (rather than annotating handlers `body =
-        Vec<T>`) is what keeps the spec honest for consumers that would otherwise
-        `.map` over a non-array body (AAASM-4892).
-      required:
-      - items
-      - page
-      - per_page
-      - total
-      properties:
-        items:
-          type: array
-          items:
-            type: object
-            description: JSON representation of an audit log entry.
-            required:
-            - seq
-            - timestamp
-            - agent_id
-            - session_id
-            - event_type
-            - payload
-            properties:
-              agent_id:
-                type: string
-                description: Hex-encoded agent ID that produced this log entry.
-              event_type:
-                type: string
-                description: Type of audit event.
-              payload:
-                type: string
-                description: Pre-serialized JSON payload.
-              seq:
-                type: integer
-                format: int64
-                description: Monotonic sequence number within the session.
-                minimum: 0
-              session_id:
-                type: string
-                description: Hex-encoded session ID for the agent run.
-              timestamp:
-                type: string
-                description: ISO 8601 timestamp of the event.
-          description: Items in the current page.
-        page:
-          type: integer
-          format: int32
-          description: Current page number.
-          minimum: 0
-        per_page:
-          type: integer
-          format: int32
-          description: Items per page.
-          minimum: 0
-        total:
-          type: integer
-          format: int64
-          description: Total number of items across all pages.
-          minimum: 0
-    PaginatedResponse_PolicyResponse:
-      type: object
-      description: |-
-        Wrapper for paginated list responses.
-
-        The generated OpenAPI schema must match this `{ items, page, per_page, total }`
-        shape — deriving `ToSchema` here (rather than annotating handlers `body =
-        Vec<T>`) is what keeps the spec honest for consumers that would otherwise
-        `.map` over a non-array body (AAASM-4892).
-      required:
-      - items
-      - page
-      - per_page
-      - total
-      properties:
-        items:
-          type: array
-          items:
-            type: object
-            description: JSON representation of a governance policy version.
-            required:
-            - name
-            - version
-            - active
-            - rule_count
-            - policy_yaml
-            properties:
-              active:
-                type: boolean
-                description: Whether this is the currently active policy.
-              name:
-                type: string
-                description: Policy name from metadata.
-              policy_yaml:
-                type: string
-                description: |-
-                  Raw YAML content of this policy version. Empty string when the
-                  underlying snapshot is not retrievable from the history store
-                  (e.g. a policy loaded at startup before any history entry exists).
-              rule_count:
-                type: integer
-                description: Number of rules in this policy version.
-                minimum: 0
-              version:
-                type: string
-                description: Policy version string.
-          description: Items in the current page.
-        page:
-          type: integer
-          format: int32
-          description: Current page number.
-          minimum: 0
-        per_page:
-          type: integer
-          format: int32
-          description: Items per page.
-          minimum: 0
-        total:
-          type: integer
-          format: int64
-          description: Total number of items across all pages.
+          description: Total policy versions across all pages.
           minimum: 0
     PermissionSourceResponse:
       type: object
