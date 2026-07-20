@@ -196,6 +196,20 @@ impl CredentialKind {
         }
     }
 
+    /// Whether this kind is a PEM private-key block detected by its
+    /// `-----BEGIN … PRIVATE KEY-----` header.
+    ///
+    /// Used to extend the finding span through the block's `-----END …-----`
+    /// marker when the block ends in a base64 line too short for the
+    /// length-gated entropy pass, so that short trailing line of key material
+    /// cannot slip past redaction (ADR 0015 §2/§5.1, AAASM-4946).
+    fn is_pem_private_key(&self) -> bool {
+        matches!(
+            self,
+            Self::EcPrivateKey | Self::OpensshPrivateKey | Self::PgpPrivateKey | Self::PrivateKey | Self::RsaPrivateKey
+        )
+    }
+
     /// Relative confidence of this kind when two overlapping findings are
     /// coalesced into one span.
     ///
@@ -436,7 +450,21 @@ impl CredentialScanner {
         for mat in self.patterns.find_iter(text) {
             let kind = self.kinds[mat.pattern()].clone();
             let offset = mat.start();
-            let end = token_end(text, mat.end());
+            let mut end = token_end(text, mat.end());
+            // ADR 0015 §2/§5.1 (AAASM-4946): a PEM private-key block whose body
+            // is entropy-caught but ends in a base64 line too short for the
+            // run-length gate leaves that trailing line of key material in the
+            // clear. Extend the literal finding through the block's END marker
+            // so it subsumes the overlapping `GenericHighEntropy` body span and
+            // the short tail as one label. The trigger is narrow (see
+            // [`pem_short_tail_block_end`]) so the common-case PEM vectors —
+            // whose current spans are a documented, accepted residual — stay
+            // byte-identical.
+            if kind.is_pem_private_key() {
+                if let Some(block_end) = pem_short_tail_block_end(text, mat.end()) {
+                    end = end.max(block_end);
+                }
+            }
             findings.push(CredentialFinding::new(kind, offset, end));
         }
 
@@ -594,6 +622,62 @@ fn token_end(text: &str, from: usize) -> usize {
         .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';' | ')' | ']' | '}'))
         .map(|i| from + i)
         .unwrap_or(text.len())
+}
+
+/// Byte index just past the `-----END …-----` marker of the PEM private-key
+/// block whose header ended at `header_end`, **but only** when the block ends in
+/// a base64 line too short for the entropy pass to catch. Returns `None`
+/// otherwise, leaving the finding's header-only span untouched.
+///
+/// ADR 0015 §2/§5.1 (AAASM-4946). The literal detector matches only a PEM key's
+/// `-----BEGIN … PRIVATE KEY-----` header; the base64 body is covered by the
+/// entropy pass, which length-gates base64 runs at [`BASE64_RUN_MIN_LEN`]. A
+/// block laid out as long body line(s) plus a short final line therefore leaks
+/// that final line (real key material) — the residual the reverted AAASM-4936
+/// change tried, and mis-implemented, to close.
+///
+/// The trigger is deliberately narrow so it partitions cleanly against the
+/// existing conformance vectors, which must stay byte-identical: extend **only**
+/// when the block body contains a base64 run of length ≥ [`BASE64_RUN_MIN_LEN`]
+/// (so the entropy pass emits an overlapping `GenericHighEntropy` finding the
+/// extended literal span subsumes per §2) **and** its final base64 run is
+/// shorter than that gate (the uncovered tail). A block whose only body line is
+/// itself short/low-entropy (its body already in the clear as a documented,
+/// accepted residual) has no long run and is left unchanged; a fully
+/// entropy-covered block has no short tail and is likewise left unchanged.
+fn pem_short_tail_block_end(text: &str, header_end: usize) -> Option<usize> {
+    let end_rel = text[header_end..].find("-----END")?;
+    let end_marker_start = header_end + end_rel;
+
+    // Measure the longest and the final contiguous base64 run in the block body
+    // (everything between the header line and the END marker). `=` padding and
+    // newlines are run separators, so a `wJ8=` tail measures as a run of 3.
+    let mut max_run = 0usize;
+    let mut last_run = 0usize;
+    let mut cur = 0usize;
+    for &b in &text.as_bytes()[header_end..end_marker_start] {
+        if is_base64_char(b) {
+            cur += 1;
+        } else if cur > 0 {
+            max_run = max_run.max(cur);
+            last_run = cur;
+            cur = 0;
+        }
+    }
+    if cur > 0 {
+        max_run = max_run.max(cur);
+        last_run = cur;
+    }
+
+    if max_run < BASE64_RUN_MIN_LEN || last_run == 0 || last_run >= BASE64_RUN_MIN_LEN {
+        return None;
+    }
+
+    // Consume through the END marker's closing dashes so the whole block —
+    // including the short trailing line and the marker — is inside the span.
+    let after_end_keyword = end_marker_start + "-----END".len();
+    let closing = text[after_end_keyword..].find("-----")?;
+    Some(after_end_keyword + closing + "-----".len())
 }
 
 /// Returns `true` if `s` matches the SSN format `DDD-DD-DDDD` exactly.
@@ -1231,6 +1315,77 @@ mod tests {
         let redacted = result.redact(text);
         assert!(!redacted.contains("secret"), "raw secret must not leak: {redacted}");
         assert_eq!(redacted, "[REDACTED]");
+    }
+
+    // --- AAASM-4946: PEM literal span subsumes overlapping entropy + covers a
+    //     short trailing base64 line (ADR 0015 §2/§5.1) ---
+
+    /// A PEM private key laid out as a long (entropy-caught) body line plus a
+    /// short final base64 line must redact to a **single** `[REDACTED:<kind>]`
+    /// label covering the whole block: the extended literal span subsumes the
+    /// overlapping `GenericHighEntropy` body span, and the short tail — which the
+    /// length-gated entropy pass misses — cannot leak. This is the invariant the
+    /// reverted AAASM-4936 attempt violated by leaving a coexisting entropy label
+    /// and the END marker in the clear.
+    #[test]
+    fn pem_short_trailing_line_subsumed_into_single_label() {
+        let scanner = CredentialScanner::new();
+        let text = "key=-----BEGIN EC PRIVATE KEY-----\n\
+                    MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n\
+                    wJ8=\n\
+                    -----END EC PRIVATE KEY-----";
+        let redacted = scanner.scan(text).redact(text);
+        assert_eq!(
+            redacted, "key=[REDACTED:EcPrivateKey]",
+            "whole PEM block must collapse to one EcPrivateKey label: {redacted}"
+        );
+        assert!(
+            !redacted.contains("wJ8="),
+            "short trailing line must not leak: {redacted}"
+        );
+        assert!(
+            !redacted.contains("[REDACTED:GenericHighEntropy]"),
+            "the entropy span must be subsumed, not left coexisting: {redacted}"
+        );
+        assert!(
+            !redacted.contains("-----END"),
+            "END marker must fall inside the subsuming span: {redacted}"
+        );
+    }
+
+    /// The common PEM case — a body fully covered by the entropy pass with no
+    /// short trailing line — must keep its existing span: the literal header
+    /// label and a separate `GenericHighEntropy` body label, with the END marker
+    /// (non-secret) in the clear. Guards against regressing to the reverted
+    /// universal block extension, which collapsed this to one label.
+    #[test]
+    fn pem_fully_covered_body_is_not_extended() {
+        let scanner = CredentialScanner::new();
+        let text = "KEY=-----BEGIN EC PRIVATE KEY-----\n\
+                    MHQCAQEEIOaRgVBExLFbHznv7gHsepSPpLUFKr\n\
+                    -----END EC PRIVATE KEY-----";
+        let redacted = scanner.scan(text).redact(text);
+        assert_eq!(
+            redacted, "KEY=[REDACTED:EcPrivateKey]\n[REDACTED:GenericHighEntropy]\n-----END EC PRIVATE KEY-----",
+            "fully entropy-covered PEM block must keep its two-span behaviour: {redacted}"
+        );
+    }
+
+    /// A PEM block whose single body line is itself short/low-entropy (no long
+    /// entropy-caught run) has no overlapping entropy span to subsume; its body
+    /// in the clear is a documented, accepted residual. It must be left unchanged
+    /// so the trigger stays narrow and the existing conformance vectors
+    /// (`private_keys_openssh`, `private_keys_pgp`, `private_keys_generic`) stay
+    /// byte-identical.
+    #[test]
+    fn pem_single_short_body_line_is_not_extended() {
+        let scanner = CredentialScanner::new();
+        let text = "KEY=-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBGRkZGQBCACx\n-----END PGP PRIVATE KEY BLOCK-----";
+        let redacted = scanner.scan(text).redact(text);
+        assert_eq!(
+            redacted, "KEY=[REDACTED:PgpPrivateKey]\n\nlQOYBGRkZGQBCACx\n-----END PGP PRIVATE KEY BLOCK-----",
+            "single-short-line PEM block must keep its header-only span: {redacted}"
+        );
     }
 
     #[test]
