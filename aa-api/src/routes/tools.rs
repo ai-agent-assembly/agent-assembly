@@ -20,6 +20,15 @@ type ToolsList = Vec<ToolInfoSchema>;
 #[allow(dead_code)] // fields are only used by utoipa's macro for OpenAPI schema generation
 #[derive(ToSchema)]
 pub struct ToolInfoSchema {
+    // Mirrors `DevToolInfo::kind` (`aa_core::DevToolKind`, an externally-tagged
+    // enum). The four built-in unit variants (ClaudeCode/Codex/GitHubCopilot/
+    // WindsurfCascade) serialize as plain strings, so `String` is accurate for
+    // every adapter that ships today. `DevToolKind::Custom(name)` would instead
+    // serialize as an object (`{"Custom": "…"}`), which this `String` schema
+    // would not describe — but no out-of-tree/Custom adapter is exposed yet, so
+    // it is unreachable.
+    // TODO(AAASM-4937): when a Custom adapter ships, widen this to a oneOf (or a
+    // dedicated schema) so the OpenAPI contract stays accurate.
     kind: String,
     version: Option<String>,
     install_path: String,

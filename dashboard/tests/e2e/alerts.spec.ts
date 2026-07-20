@@ -38,8 +38,6 @@ const FIRING_ALERT = {
   destinationIds: ['dst-slack-ops'],
 }
 
-const SUPPRESSED_ALERT = { ...FIRING_ALERT, status: 'SUPPRESSED' }
-
 const RULE = {
   id: 'rule-001',
   name: 'Budget guardrail',
