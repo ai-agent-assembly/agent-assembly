@@ -20,6 +20,43 @@ update, and how. The mechanical backstop is
 which fails if the agent-assembly live install examples + compat-matrix row are
 not on `X`.
 
+> **Automated first pass — [`scripts/propagate_versions.py`](../../../scripts/propagate_versions.py)
+> (AAASM-4910 / ADR 0013).** Before working the checklist by hand, run the
+> propagation tool: it stamps **every hand-maintained agent-assembly-local
+> version-bearing site** from its source of truth (the `Cargo.toml`
+> `[workspace.package].version` core anchor + the `metadata/docs.yaml` mdBook /
+> mdbook-mermaid tool pins) in **one pass**, and ships a `--check` drift-gate that
+> reports staleness without writing:
+>
+> ```sh
+> python3 scripts/propagate_versions.py            # stamp all consumers from the SoT
+> python3 scripts/propagate_versions.py --check    # drift-gate: exit 1 if any is stale
+> ```
+>
+> **Consumers it maintains** (per ADR 0013 Appendix A, agent-assembly `[B]` sites):
+> - **Core-version tier** (from the `Cargo.toml` anchor):
+>   - `README.md` — the `AASM_VERSION=vX` quick-install snippet and the Project
+>     Status "latest `[vX]`" release link (both the label and the tag URL).
+>   - `docs/src/quick-start/installation.md` — the four live install examples:
+>     `AASM_VERSION=vX` pin, `VERSION=vX` manual download, `aasm <bare X>` sample
+>     output, and the `| cli | <bare X> |` version-table row.
+> - **Tool-pin tier** (from `metadata/docs.yaml`):
+>   - `.github/workflows/docs.yml` — the mdBook / mdbook-mermaid `--version` pins
+>     and the cache-key version segment.
+>   - `CONTRIBUTING.md` — the mdBook / mdbook-mermaid install commands.
+> - **Generated-snippet tier** — `docs/src/generated/*.md`, refreshed via
+>   `generate_docs_metadata.py` (its sanctioned writer, reused) so one command
+>   syncs everything.
+>
+> **What it deliberately does NOT touch** (still your manual job below): the
+> `docs/src/compatibility.md` matrix rows (per-tag rows stay literal — ADR 0013
+> forbids templating historical values; you still **add a new row**, Step 1.1);
+> the README Project Status **maturity banner** (channel word + "status as of"
+> date are per-release judgement, Step 1.3); the SDK version files / docs-site
+> pins (Step 3 — those live in other repos); and `docker/sdk-versions.json`
+> (Step 1.6). The tool changes the version *anchor* value; a channel promotion's
+> prose is still yours to write.
+
 > **This skill creates NO new release mechanics.** The docs **channel** cut
 > (latest / pre-release / stable labels, version dropdowns) is already fully
 > **release-workflow-driven** (AAASM-2741 / AAASM-2744). **Do NOT hand-edit
@@ -230,10 +267,15 @@ the AAASM-3695 class: the LlamaIndex example correctly pins `>=0.0.1b5` while on
 From the agent-assembly worktree:
 
 ```sh
-bash scripts/check-docs-versions.sh X     # e.g. v0.0.1-beta.3
+python3 scripts/propagate_versions.py --check   # ADR-0013 drift gate: every SoT-stamped consumer
+bash scripts/check-docs-versions.sh X           # e.g. v0.0.1-beta.3
 ```
 
-It must exit `0`. If it flags a ref, fix that file and re-run. The check is
+Both must exit `0`. `propagate_versions.py --check` covers the automated
+consumers (README + installation live examples, docs.yml / CONTRIBUTING tool
+pins, generated snippets); `check-docs-versions.sh` additionally asserts the
+compat-matrix row you added by hand. If either flags a ref, fix that file and
+re-run. The check is
 scoped to the **live install examples + the new compat-matrix row** — it
 deliberately does **not** flag changelog/history rows that legitimately name
 older versions.
@@ -255,6 +297,8 @@ you touched the script.
 
 ## Done when
 
+- `scripts/propagate_versions.py --check` exits 0 in agent-assembly (every
+  hand-maintained SoT-stamped consumer is on `X`).
 - `scripts/check-docs-versions.sh X` exits 0 in agent-assembly.
 - The **README Project Status maturity banner** names the channel `X` belongs to
   (maturity word + `v0.0.1-<channel>` series label + refreshed "status as of"
