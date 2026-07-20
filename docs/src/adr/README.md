@@ -20,3 +20,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0011](0011-cross-process-op-control-nats-subject.md) | Cross-Process Op-Control Delivery via a NATS Subject (durable JetStream) | Accepted |
 | [0012](0012-websocket-and-browser-credential-handling.md) | WebSocket & Browser Credential Handling (OSS vs SaaS) | Accepted |
 | [0013](0013-version-metadata-source-of-truth-and-drift-gate.md) | Version Metadata Source-of-Truth & Drift Gate | Proposed |
+| [0014](0014-canonical-metadata-registry-and-drift-gate.md) | Canonical Metadata Registry & Drift Gate | Proposed |
