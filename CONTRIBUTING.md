@@ -199,6 +199,14 @@ mdbook serve docs --open
 
 Mermaid diagrams use the `mdbook-mermaid` preprocessor, which is wired in `docs/book.toml`. The `Docs` GitHub Actions workflow runs `mdbook build docs` on every PR that touches `docs/**`, `README.md`, or `CONTRIBUTING.md` and fails the build on errors.
 
+## Version metadata: single source of truth & drift gate
+
+Per [ADR 0013](docs/src/adr/0013-version-metadata-source-of-truth-and-drift-gate.md), every version-bearing value in this repo has exactly one source of truth (SoT) and propagates one direction only — SoT → generator → checked-in consumer. Nothing outside a SoT (or its generated output) may carry a version literal.
+
+- **Anchors (the SoT):** the core/runtime version is `Cargo.toml [workspace.package].version`; the mdBook/tool pins live in `metadata/docs.yaml`. The mdBook install commands just above are *stamped from that SoT* — edit the SoT, not these lines.
+- **To change a version-bearing value:** edit the anchor, then run `python3 scripts/propagate_versions.py` (Python 3.11+) to restamp every consumer (README install/status lines, `docs/src/quick-start/installation.md`, the `Docs` workflow pins, these CONTRIBUTING commands, and the `docs/src/generated/` snippets). Commit the SoT edit and the regenerated files together.
+- **The gate:** the `Docs` workflow's `version-drift` job runs `python3 scripts/propagate_versions.py --check` on every PR/push touching a version-bearing path and **fails the build** if any consumer is stale (mirrors `examples`' `example-metadata-check.yml`). Never hand-edit a stamped line or restate a version literal in prose.
+
 ## Reporting Issues
 
 Use the GitHub issue templates:
