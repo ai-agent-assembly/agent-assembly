@@ -133,7 +133,7 @@ To add a new crate to the workspace:
 
 ## Developer Certificate of Origin (DCO)
 
-We ask that you sign off each commit under the [Developer Certificate of Origin v1.1](https://developercertificate.org/) — this licenses your contribution to the project under the [Apache License 2.0](LICENSE). Sign-off is **currently advisory** (see the note below), consistent with the org-wide [contribution guide](https://github.com/ai-agent-assembly/.github/blob/main/CONTRIBUTING.md).
+We ask that you sign off each commit under the [Developer Certificate of Origin v1.1](https://developercertificate.org/) — this licenses your contribution to the project under the [Apache License 2.0](LICENSE). Sign-off is **currently advisory** (see the note below), consistent with the org-wide [contribution guide](https://github.com/ai-agent-assembly/.github/blob/master/CONTRIBUTING.md).
 
 Sign off by adding a `Signed-off-by` trailer to each commit message:
 
