@@ -78,6 +78,19 @@ cargo install --locked --version {MDBOOK} mdbook
 cargo install --locked --version {MERMAID} mdbook-mermaid
 """
 
+# Compatibility matrix: a historical row (must be left literal) plus the row for the
+# CURRENT anchor. The gate value-checks only that a row exists whose first cell is
+# the anchor tag (AAASM-4921).
+COMPATIBILITY = f"""# Version Compatibility Matrix
+
+## Compatibility Matrix
+
+| `aa-runtime` | Python SDK | Node.js SDK | Go SDK | Protocol Version |
+|---|---|---|---|---|
+| v0.0.1-rc.5 | v0.0.1-rc.5 ✓ | v0.0.1-rc.5 ✓ | v0.0.1-rc.5 ✓ | protocol/v1 |
+| {CORE_TAG} | {CORE_TAG} ✓ | {CORE_TAG} ✓ | {CORE_TAG} ✓ | protocol/v1 |
+"""
+
 
 def build_fixture(root: Path) -> None:
     """Write a minimal but faithful consumer tree, already synced to the SoT."""
@@ -88,6 +101,7 @@ def build_fixture(root: Path) -> None:
     (root / "CONTRIBUTING.md").write_text(CONTRIBUTING)
     (root / "docs" / "src" / "quick-start").mkdir(parents=True)
     (root / "docs" / "src" / "quick-start" / "installation.md").write_text(INSTALLATION)
+    (root / "docs" / "src" / "compatibility.md").write_text(COMPATIBILITY)
     (root / "docs" / "src" / "generated").mkdir(parents=True)
     (root / ".github" / "workflows").mkdir(parents=True)
     (root / ".github" / "workflows" / "docs.yml").write_text(DOCS_YML)
@@ -168,6 +182,42 @@ class RoundTrip(unittest.TestCase):
                 before,
                 "VERSION cell width changed — grid-table borders misalign",
             )
+
+    def test_compat_current_row_value_check(self) -> None:
+        # AAASM-4921: the gate value-checks the CURRENT release's compatibility-matrix
+        # row. A wrong runtime value in that row (so no row matches the anchor) — the
+        # failure the old presence-only gate let through — must fail --check. The
+        # matrix is never written by the propagator (historical rows stay literal), so
+        # a write pass must NOT "fix" it.
+        compat_rel = "docs/src/compatibility.md"
+        tmp, root = self._fixture()
+        with tmp:
+            compat = root / compat_rel
+            # A synced fixture (current row present) passes.
+            self.assertEqual(pv.run(root, check=True), 0)
+
+            # Fat-finger the current row's runtime cell so no row carries the anchor.
+            good = f"| {CORE_TAG} | {CORE_TAG} ✓"
+            bad = f"| v0.0.1-rc.99 | {CORE_TAG} ✓"
+            compat.write_text(compat.read_text().replace(good, bad))
+            before = compat.read_text()
+
+            self.assertEqual(pv.run(root, check=True), 1)
+            # Write mode leaves the literal matrix untouched (no restore).
+            self.assertEqual(pv.run(root, check=False), 0)
+            self.assertEqual(compat.read_text(), before, "write mode edited the matrix")
+            self.assertEqual(pv.run(root, check=True), 1)
+
+    def test_compat_missing_row_fails_check(self) -> None:
+        # Anchor bumped but the matrix row never appended — the other failure the
+        # presence-only gate let through.
+        tmp, root = self._fixture()
+        with tmp:
+            compat = root / "docs" / "src" / "compatibility.md"
+            compat.write_text(
+                re.sub(rf"(?m)^\| {re.escape(CORE_TAG)} .*$", "", compat.read_text())
+            )
+            self.assertEqual(pv.run(root, check=True), 1)
 
     def test_missing_anchor_is_a_hard_error(self) -> None:
         # A renamed/removed consumer anchor must fail loudly (exit 2), never pass
