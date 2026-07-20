@@ -18,6 +18,7 @@ use aa_core::{
 use aa_devtool_codex::CodexAdapter;
 use aa_devtool_windsurf::WindsurfCascadeAdapter;
 
+use crate::commands::status::models::redact_database_url;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
@@ -367,10 +368,28 @@ fn load_policy() -> PolicyDocument {
     }
 }
 
-/// Mask a value when its key contains "TOKEN" or "KEY" (case-insensitive).
+/// Mask a credential-bearing env value before it is printed in the dry-run
+/// preview. `build_child_env` seeds the child environment from the operator's
+/// whole shell environment, so the preview would otherwise echo secrets
+/// (`AA_JWT_SECRET`, `DB_PASSWORD`, connection URLs, …) in cleartext.
+///
+/// Two masking strategies, by key name (case-insensitive):
+/// * keys naming a connection string (`*_URL` / `*_DSN`) keep their structure
+///   but have the password redacted via [`redact_database_url`], matching how
+///   `aasm status` displays a `database_url`;
+/// * keys whose name signals an opaque secret (token, key, password, secret,
+///   credential, auth) have the entire value replaced — the value has no
+///   structure worth preserving.
+///
+/// The denylist is intentionally broad and errs toward over-masking: a masked
+/// non-secret in a diagnostic preview is harmless, a leaked secret is not.
 fn mask_value(key: &str, value: &str) -> String {
     let upper = key.to_uppercase();
-    if upper.contains("TOKEN") || upper.contains("KEY") {
+    if upper.ends_with("_URL") || upper.ends_with("_DSN") {
+        return redact_database_url(value);
+    }
+    const SECRET_SUBSTRINGS: [&str; 7] = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PASS", "CREDENTIAL", "AUTH"];
+    if SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle)) {
         "***MASKED***".into()
     } else {
         value.to_string()
