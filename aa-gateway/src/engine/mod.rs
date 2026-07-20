@@ -991,7 +991,19 @@ impl PolicyEngine {
             )
         });
         let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> = pctx.as_ref().map(|c| c as _);
-        if crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), pctx_dyn) {
+        // ADR 0015 §4: `requires_approval_if` is a guard clause; a graph-context
+        // resolution failure fails closed (fires) and is recorded for audit.
+        let mut failures = Vec::new();
+        let fired = crate::policy::expr::evaluate_clause(
+            expr,
+            action,
+            Some(ctx.governance_level),
+            pctx_dyn,
+            crate::policy::expr::ClauseKind::RequireApproval,
+            &mut failures,
+        );
+        Self::emit_resolution_failures(&failures);
+        if fired {
             return Some(EvaluationResult {
                 decision: aa_core::PolicyResult::RequiresApproval {
                     timeout_secs: policy.approval_timeout_secs,
@@ -1002,6 +1014,25 @@ impl PolicyEngine {
             });
         }
         None
+    }
+
+    /// Emit audit evidence for every graph-context variable that failed to
+    /// resolve during evaluation (ADR 0015 §4 rule 5), so a decision made on
+    /// degraded context is never invisible to an operator.
+    ///
+    /// Emitted on the `audit` tracing target — the same log-based audit-visibility
+    /// path the engine uses for other audit-only side effects. The variable name
+    /// and fail-safe verdict are safe to log; the underlying error detail (which
+    /// could reference secret-adjacent state) is deliberately not surfaced here.
+    fn emit_resolution_failures(failures: &[crate::policy::expr::ResolutionFailure]) {
+        for f in failures {
+            tracing::warn!(
+                target: "audit",
+                variable = %f.variable,
+                fail_safe_action = %f.fail_safe_action(),
+                "graph-context resolution failure — policy clause failed closed"
+            );
+        }
     }
 
     /// Map a budget policy's `action_on_exceed` to the [`DenyAction`] the
@@ -1385,7 +1416,13 @@ impl PolicyEngine {
     ) -> PolicyDecision {
         let context_dependent = Self::cascade_has_live_context_approval(cascade);
         if context_dependent {
-            merge_decisions(cascade, ctx, action, pctx_dyn)
+            // ADR 0015 §4: surface any graph-context resolution failures for audit
+            // on the fresh-evaluation path (context-dependent verdicts are never
+            // cached, so this is the only place they can arise).
+            let mut failures = Vec::new();
+            let v = decision::merge_decisions_audited(cascade, ctx, action, pctx_dyn, &mut failures);
+            Self::emit_resolution_failures(&failures);
+            v
         } else if let Some(cached) = self.decision_cache.get(&cache_key) {
             cached
         } else {

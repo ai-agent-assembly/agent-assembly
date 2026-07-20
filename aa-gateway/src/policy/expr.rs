@@ -53,7 +53,7 @@
 
 use aa_core::{GovernanceAction, GovernanceLevel};
 
-use crate::policy::context::PolicyContext;
+use crate::policy::context::{ContextError, PolicyContext};
 
 use strsim;
 
@@ -428,6 +428,117 @@ fn field_value<'a>(field: &FieldRef, action: &'a GovernanceAction) -> &'a str {
 }
 
 // ---------------------------------------------------------------------------
+// Graph-context resolution fail-safety (ADR 0015 §4)
+// ---------------------------------------------------------------------------
+
+/// Clause polarity that determines the fail-safe direction when a graph-context
+/// variable cannot be *resolved* (ADR 0015 §4). The evaluator returns a plain
+/// "does this clause fire?" boolean, so the caller declares which kind of clause
+/// the expression drives:
+///
+/// * `Deny` / `RequireApproval` are **guard** clauses — a resolution failure
+///   makes the clause *fire* (fail closed): the action is denied / escalated.
+/// * `Allow` is a **permit** clause — a resolution failure makes the clause *not
+///   fire*: a failure can never be laundered into a grant.
+///
+/// Note this governs *resolution failures* (`Err`), not legitimate absence
+/// (`Ok(None)`), which keeps its historical null-as-no-match behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClauseKind {
+    /// A conditional `deny` clause.
+    Deny,
+    /// A `requires_approval_if` clause.
+    RequireApproval,
+    /// A conditional `allow` clause.
+    Allow,
+}
+
+impl ClauseKind {
+    /// Whether a *resolution failure* makes a clause of this kind fire. Guards
+    /// (`Deny`/`RequireApproval`) fail closed by firing; a conditional `Allow`
+    /// fails closed by NOT firing (never granting).
+    fn fail_safe_fires(self) -> bool {
+        matches!(self, ClauseKind::Deny | ClauseKind::RequireApproval)
+    }
+
+    /// The fail-safe action label recorded in audit evidence.
+    fn fail_safe_action(self) -> &'static str {
+        match self {
+            ClauseKind::Deny => "deny",
+            ClauseKind::RequireApproval => "require_approval",
+            ClauseKind::Allow => "no_grant",
+        }
+    }
+}
+
+/// Audit evidence for a single graph-context variable that failed to resolve
+/// during policy evaluation (ADR 0015 §4 rule 5). Identifies the unresolved
+/// variable, the clause polarity that referenced it, and — derived from that —
+/// the fail-safe action taken. Never carries the underlying error detail into a
+/// value that could leak secrets; only the variable name and verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionFailure {
+    /// Canonical name of the variable that could not be resolved (e.g.
+    /// `"team.active_agents"`).
+    pub variable: String,
+    /// The clause polarity that referenced the variable.
+    pub clause: ClauseKind,
+}
+
+impl ResolutionFailure {
+    /// The fail-safe action taken for this failure: `"deny"`,
+    /// `"require_approval"`, or `"no_grant"`.
+    pub fn fail_safe_action(&self) -> &'static str {
+        self.clause.fail_safe_action()
+    }
+}
+
+/// Per-evaluation fail-safe state threaded to the context-backed field handlers:
+/// the clause polarity plus the audit sink that collects every resolution
+/// failure. Uses a shared `RefCell` so it can be passed by `&` across the nested
+/// `any`/`all` closures without `&mut` aliasing.
+struct FailSafe<'a> {
+    clause: ClauseKind,
+    failures: &'a std::cell::RefCell<Vec<ResolutionFailure>>,
+}
+
+impl FailSafe<'_> {
+    /// Resolve a context getter into an optional value, or short-circuit with the
+    /// clause's fail-safe verdict on a resolution failure (ADR 0015 §4):
+    ///
+    /// * `policy_ctx == None` (whole context absent) → `Ok(None)`: the historical
+    ///   null-as-no-match path, byte-identical to pre-ADR behavior.
+    /// * getter `Ok(opt)` → `Ok(opt)`: a resolved value or a legitimate absence.
+    /// * getter `Err(_)` → record an audit failure for `var` and return
+    ///   `Err(fail_safe_fires)` — the verdict the caller returns directly.
+    fn resolve<'c, T>(
+        &self,
+        policy_ctx: Option<&'c dyn PolicyContext>,
+        var: &str,
+        getter: impl FnOnce(&'c dyn PolicyContext) -> Result<Option<T>, ContextError>,
+    ) -> Result<Option<T>, bool> {
+        match policy_ctx {
+            None => Ok(None),
+            Some(c) => match getter(c) {
+                Ok(opt) => Ok(opt),
+                Err(_) => Err(self.record(var)),
+            },
+        }
+    }
+
+    /// Record a resolution failure for `var` and return the clause's fail-safe
+    /// verdict (whether the clause fires). Used by handlers whose getter is not
+    /// `Result<Option<T>, _>` (e.g. `child_tools` → `Result<Vec<_>, _>`).
+    fn record(&self, var: &str) -> bool {
+        self.failures.borrow_mut().push(ResolutionFailure {
+            variable: var.to_string(),
+            clause: self.clause,
+        });
+        self.clause.fail_safe_fires()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Clause evaluation
 // ---------------------------------------------------------------------------
 
@@ -438,15 +549,16 @@ fn eval_clause_safe(
     action: &GovernanceAction,
     agent_level: Option<GovernanceLevel>,
     policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
 ) -> bool {
     // Each `eval_*` helper owns one field group and returns `Some(verdict)` when
     // it recognises `field`, or `None` to fall through to the next group. The
     // final string-field path is the catch-all. This dispatch chain preserves
     // the original evaluation order and per-group null-safety contracts exactly.
-    if let Some(v) = eval_numeric_ctx_field(field, op, literal, policy_ctx) {
+    if let Some(v) = eval_numeric_ctx_field(field, op, literal, policy_ctx, fs) {
         return v;
     }
-    if let Some(v) = eval_child_tool_field(field, op, literal, policy_ctx) {
+    if let Some(v) = eval_child_tool_field(field, op, literal, policy_ctx, fs) {
         return v;
     }
     if let Some(v) = eval_tool_result_field(field, op, literal, action) {
@@ -455,13 +567,13 @@ fn eval_clause_safe(
     if let Some(v) = eval_tool_arg_field(field, op, literal, action) {
         return v;
     }
-    if let Some(v) = eval_risk_tier_field(field, op, literal, policy_ctx) {
+    if let Some(v) = eval_risk_tier_field(field, op, literal, policy_ctx, fs) {
         return v;
     }
-    if let Some(v) = eval_agent_identity_field(field, op, literal, policy_ctx) {
+    if let Some(v) = eval_agent_identity_field(field, op, literal, policy_ctx, fs) {
         return v;
     }
-    if let Some(v) = eval_topology_flag_field(field, op, literal, policy_ctx) {
+    if let Some(v) = eval_topology_flag_field(field, op, literal, policy_ctx, fs) {
         return v;
     }
     if let Some(v) = eval_send_message_field(field, op, literal, action) {
@@ -484,26 +596,57 @@ fn eval_numeric_ctx_field(
     op: &OpKind,
     literal: &LiteralVal,
     policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
 ) -> Option<bool> {
+    // AAASM-4947 / ADR 0015 §4: a `resolve` `Err(fired)` is a *resolution
+    // failure* (the getter reported a backend/lookup error). The failure has
+    // been recorded for audit; return the clause's fail-safe verdict directly.
+    // `Ok(None)` (legitimate absence, or an absent context) falls through to the
+    // preserved numeric no-match handling below.
     let numeric_ctx_value: Option<f64> = match field {
-        FieldRef::AgentDepth => policy_ctx.and_then(|c| c.agent_depth()).map(|d| d as f64),
+        FieldRef::AgentDepth => match fs.resolve(policy_ctx, "agent.depth", |c| c.agent_depth()) {
+            Ok(o) => o.map(|d| d as f64),
+            Err(fired) => return Some(fired),
+        },
         FieldRef::TeamActiveAgents | FieldRef::TeamParallelAgents => {
-            policy_ctx.and_then(|c| c.team_active_agents()).map(|n| n as f64)
+            let var = if matches!(field, FieldRef::TeamParallelAgents) {
+                "team.parallel_agents"
+            } else {
+                "team.active_agents"
+            };
+            match fs.resolve(policy_ctx, var, |c| c.team_active_agents()) {
+                Ok(o) => o.map(|n| n as f64),
+                Err(fired) => return Some(fired),
+            }
         }
-        FieldRef::TeamBudgetRemaining => policy_ctx.and_then(|c| c.team_budget_remaining()),
-        FieldRef::AgentAge => policy_ctx.and_then(|c| c.agent_age_secs()).map(|a| a as f64),
-        FieldRef::AgentChildrenCount => policy_ctx.and_then(|c| c.agent_children_count()).map(|n| n as f64),
+        FieldRef::TeamBudgetRemaining => {
+            match fs.resolve(policy_ctx, "team.budget_remaining", |c| c.team_budget_remaining()) {
+                Ok(o) => o,
+                Err(fired) => return Some(fired),
+            }
+        }
+        FieldRef::AgentAge => match fs.resolve(policy_ctx, "agent.age", |c| c.agent_age_secs()) {
+            Ok(o) => o.map(|a| a as f64),
+            Err(fired) => return Some(fired),
+        },
+        FieldRef::AgentChildrenCount => {
+            match fs.resolve(policy_ctx, "agent.children_count", |c| c.agent_children_count()) {
+                Ok(o) => o.map(|n| n as f64),
+                Err(fired) => return Some(fired),
+            }
+        }
         _ => return None,
     };
     Some(match numeric_ctx_value {
         Some(lhs) => compare_numeric(lhs, op, literal),
         // AAASM-3995(b): this evaluator drives `requires_approval_if`, where a
         // `false` result means "no approval required". When a context field
-        // (agent.depth / team.*) cannot be resolved, silently returning `false`
-        // lets a sole-clause approval guard never fire — the action runs
-        // unguarded (fail-open). An unresolvable guard condition must fail
-        // CLOSED: fire the predicate (require approval), mirroring the
+        // (agent.depth / team.*) is legitimately absent, silently returning
+        // `false` let a sole-clause approval guard never fire — the action ran
+        // unguarded (fail-open). A legitimately-absent numeric guard condition
+        // fails CLOSED here: fire the predicate (require approval), mirroring the
         // fail-closed handling of unparseable ordered comparisons (AAASM-3893).
+        // (A resolution *failure* is handled above, per ADR 0015 §4.)
         None => true,
     })
 }
@@ -515,12 +658,20 @@ fn eval_child_tool_field(
     op: &OpKind,
     literal: &LiteralVal,
     policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
 ) -> Option<bool> {
     let FieldRef::ChildTool = field else {
         return None;
     };
     let tools = match policy_ctx {
-        Some(c) => c.child_tools(),
+        // ADR 0015 §4: a resolution failure fails closed (record + fail-safe
+        // verdict) instead of the historical fail-open no-match. `Ok` (including
+        // an empty child set — legitimate absence) keeps the null-as-no-match
+        // behavior below.
+        Some(c) => match c.child_tools() {
+            Ok(t) => t,
+            Err(_) => return Some(fs.record("child.tool")),
+        },
         None => return Some(false),
     };
     let rhs = match literal {
@@ -585,12 +736,20 @@ fn eval_risk_tier_field(
     op: &OpKind,
     literal: &LiteralVal,
     policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
 ) -> Option<bool> {
+    // ADR 0015 §4: `Err(fired)` is a resolution failure (recorded + fail-safe);
+    // `Ok(None)` (legitimate absence — no parent/child/tier) keeps the historical
+    // no-match (`false`).
     let tier = match field {
-        FieldRef::AgentRiskTier => policy_ctx.and_then(|c| c.agent_risk_tier()),
-        FieldRef::ParentRiskTier => policy_ctx.and_then(|c| c.parent_risk_tier()),
-        FieldRef::ChildRiskTier => policy_ctx.and_then(|c| c.child_risk_tier()),
+        FieldRef::AgentRiskTier => fs.resolve(policy_ctx, "agent.risk_tier", |c| c.agent_risk_tier()),
+        FieldRef::ParentRiskTier => fs.resolve(policy_ctx, "parent.risk_tier", |c| c.parent_risk_tier()),
+        FieldRef::ChildRiskTier => fs.resolve(policy_ctx, "child.risk_tier", |c| c.child_risk_tier()),
         _ => return None,
+    };
+    let tier = match tier {
+        Ok(o) => o,
+        Err(fired) => return Some(fired),
     };
     let (Some(lhs), LiteralVal::Tier(rhs)) = (tier, literal) else {
         return Some(false);
@@ -605,11 +764,19 @@ fn eval_agent_identity_field(
     op: &OpKind,
     literal: &LiteralVal,
     policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
 ) -> Option<bool> {
+    // ADR 0015 §4: `Err(fired)` is a resolution failure (recorded + fail-safe);
+    // `Ok(None)` (legitimate absence — root agent / no team) keeps the historical
+    // no-match (`false`).
     let val = match field {
-        FieldRef::AgentParentId => policy_ctx.and_then(|c| c.agent_parent_id()),
-        FieldRef::AgentTeamId => policy_ctx.and_then(|c| c.agent_team_id()),
+        FieldRef::AgentParentId => fs.resolve(policy_ctx, "agent.parent_agent_id", |c| c.agent_parent_id()),
+        FieldRef::AgentTeamId => fs.resolve(policy_ctx, "agent.team_id", |c| c.agent_team_id()),
         _ => return None,
+    };
+    let val = match val {
+        Ok(o) => o,
+        Err(fired) => return Some(fired),
     };
     let id = match val {
         Some(v) => v,
@@ -630,10 +797,19 @@ fn eval_topology_flag_field(
     op: &OpKind,
     literal: &LiteralVal,
     policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
 ) -> Option<bool> {
+    // ADR 0015 §4: `Err(fired)` is a resolution failure (recorded + fail-safe);
+    // `Ok(None)` (legitimate absence) keeps the historical no-match (`false`).
     let flag: Option<bool> = match field {
-        FieldRef::AgentIsRoot => policy_ctx.and_then(|c| c.agent_depth()).map(|d| d == 0),
-        FieldRef::AgentIsLeaf => policy_ctx.and_then(|c| c.agent_children_count()).map(|n| n == 0),
+        FieldRef::AgentIsRoot => match fs.resolve(policy_ctx, "agent.is_root", |c| c.agent_depth()) {
+            Ok(o) => o.map(|d| d == 0),
+            Err(fired) => return Some(fired),
+        },
+        FieldRef::AgentIsLeaf => match fs.resolve(policy_ctx, "agent.is_leaf", |c| c.agent_children_count()) {
+            Ok(o) => o.map(|n| n == 0),
+            Err(fired) => return Some(fired),
+        },
         _ => return None,
     };
     let lhs = match flag {
@@ -909,6 +1085,7 @@ fn eval_tokens(
     action: &GovernanceAction,
     agent_level: Option<GovernanceLevel>,
     policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
 ) -> bool {
     // Parse tokens into OR-groups of AND-connected clauses, then evaluate:
     // OR across groups, AND within each group. Any parse anomaly is fail-safe
@@ -926,7 +1103,7 @@ fn eval_tokens(
     or_groups.iter().any(|group| {
         group
             .iter()
-            .all(|c| eval_clause_safe(c.field, c.op, c.literal, action, agent_level, policy_ctx))
+            .all(|c| eval_clause_safe(c.field, c.op, c.literal, action, agent_level, policy_ctx, fs))
     })
 }
 
@@ -1193,17 +1370,59 @@ fn validate_level_word(word: &str) -> Result<(), String> {
 ///
 /// Returns `true` if the expression matches (approval required).
 /// Returns `true` on ANY parse/tokenization error (fail-safe).
+///
+/// Thin wrapper over [`evaluate_clause`] for the common `requires_approval_if`
+/// caller: fixes the clause polarity to [`ClauseKind::RequireApproval`] and
+/// discards the resolution-failure audit records. Use [`evaluate_clause`]
+/// directly when the caller needs the audit evidence or a different polarity.
 pub(crate) fn evaluate(
     expr: &str,
     action: &GovernanceAction,
     agent_level: Option<GovernanceLevel>,
     policy_ctx: Option<&dyn PolicyContext>,
 ) -> bool {
+    let mut failures = Vec::new();
+    evaluate_clause(
+        expr,
+        action,
+        agent_level,
+        policy_ctx,
+        ClauseKind::RequireApproval,
+        &mut failures,
+    )
+}
+
+/// Evaluate a flat boolean expression, applying the ADR 0015 §4 graph-context
+/// resolution fail-safety for the given clause polarity.
+///
+/// Behaves like [`evaluate`] for resolved / legitimately-absent variables, but
+/// additionally: on a graph-context **resolution failure** the referencing
+/// clause fails closed according to `clause` (a `Deny`/`RequireApproval` guard
+/// fires; a conditional `Allow` does not fire, so a failure can never grant),
+/// and every such failure is appended to `failures` as audit evidence.
+///
+/// Returns `true` when the expression matches (the clause fires); `true` on any
+/// parse/tokenization anomaly (fail-safe).
+pub fn evaluate_clause(
+    expr: &str,
+    action: &GovernanceAction,
+    agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
+    clause: ClauseKind,
+    failures: &mut Vec<ResolutionFailure>,
+) -> bool {
     let tokens = match tokenize(expr) {
         Some(t) if !t.is_empty() => t,
         _ => return true, // fail-safe
     };
-    eval_tokens(&tokens, action, agent_level, policy_ctx)
+    let sink = std::cell::RefCell::new(Vec::new());
+    let fs = FailSafe {
+        clause,
+        failures: &sink,
+    };
+    let fired = eval_tokens(&tokens, action, agent_level, policy_ctx, &fs);
+    failures.append(&mut sink.into_inner());
+    fired
 }
 
 /// AAASM-3995(c) — whether `expr` references any field whose value is resolved

@@ -43,26 +43,37 @@ impl<'a> ProductionPolicyContext<'a> {
 }
 
 impl<'a> PolicyContext for ProductionPolicyContext<'a> {
-    fn agent_depth(&self) -> Option<u32> {
-        self.registry.get(&self.agent_key).map(|r| r.depth)
+    // The in-memory [`AgentRegistry`] / [`BudgetTracker`] lookups cannot fail —
+    // an unknown agent/team is a legitimate `Ok(None)` (null-as-no-match), not a
+    // resolution failure. These methods therefore never return `Err`; the
+    // `Result` return type exists so a future backend-backed context (registry
+    // over a remote store) can surface a genuine lookup error as `Err`, which the
+    // evaluator then fails **closed** per ADR 0015 §4.
+    fn agent_depth(&self) -> Result<Option<u32>, ContextError> {
+        Ok(self.registry.get(&self.agent_key).map(|r| r.depth))
     }
 
-    fn team_active_agents(&self) -> Option<u64> {
-        let team_id = self.team_id.as_deref()?;
-        Some(self.registry.team_members(team_id).len() as u64)
+    fn team_active_agents(&self) -> Result<Option<u64>, ContextError> {
+        Ok(self
+            .team_id
+            .as_deref()
+            .map(|team_id| self.registry.team_members(team_id).len() as u64))
     }
 
-    fn team_budget_remaining(&self) -> Option<f64> {
-        let team_id = self.team_id.as_deref()?;
-        let state = self.budget.team_state(team_id)?;
-        let limit = self.budget.monthly_limit_usd()?;
-        let spent = state.monthly_spent_usd.unwrap_or(state.spent_usd);
-        let remaining = (limit - spent).max(rust_decimal::Decimal::ZERO);
-        remaining.to_f64()
+    fn team_budget_remaining(&self) -> Result<Option<f64>, ContextError> {
+        Ok((|| {
+            let team_id = self.team_id.as_deref()?;
+            let state = self.budget.team_state(team_id)?;
+            let limit = self.budget.monthly_limit_usd()?;
+            let spent = state.monthly_spent_usd.unwrap_or(state.spent_usd);
+            let remaining = (limit - spent).max(rust_decimal::Decimal::ZERO);
+            remaining.to_f64()
+        })())
     }
 
-    fn child_tools(&self) -> Vec<String> {
-        self.registry
+    fn child_tools(&self) -> Result<Vec<String>, ContextError> {
+        Ok(self
+            .registry
             .children_of(&self.agent_key)
             .into_iter()
             .flat_map(|key| {
@@ -71,42 +82,52 @@ impl<'a> PolicyContext for ProductionPolicyContext<'a> {
                     .map(|r| r.tool_names.clone())
                     .unwrap_or_default()
             })
-            .collect()
+            .collect())
     }
 
-    fn agent_risk_tier(&self) -> Option<aa_core::RiskTier> {
-        let record = self.registry.get(&self.agent_key)?;
-        aa_core::RiskTier::from_proto_i32(record.risk_tier)
+    fn agent_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError> {
+        Ok(self
+            .registry
+            .get(&self.agent_key)
+            .and_then(|record| aa_core::RiskTier::from_proto_i32(record.risk_tier)))
     }
 
-    fn parent_risk_tier(&self) -> Option<aa_core::RiskTier> {
-        let record = self.registry.get(&self.agent_key)?;
-        let parent_key = record.parent_key?;
-        let parent = self.registry.get(&parent_key)?;
-        aa_core::RiskTier::from_proto_i32(parent.risk_tier)
+    fn parent_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError> {
+        Ok((|| {
+            let record = self.registry.get(&self.agent_key)?;
+            let parent_key = record.parent_key?;
+            let parent = self.registry.get(&parent_key)?;
+            aa_core::RiskTier::from_proto_i32(parent.risk_tier)
+        })())
     }
 
-    fn child_risk_tier(&self) -> Option<aa_core::RiskTier> {
-        self.proposed_child_risk_tier
+    fn child_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError> {
+        Ok(self.proposed_child_risk_tier)
     }
 
-    fn agent_age_secs(&self) -> Option<u64> {
-        let record = self.registry.get(&self.agent_key)?;
-        let registered_unix = record.registered_at.timestamp() as u64;
-        Some(self.now_secs.saturating_sub(registered_unix))
+    fn agent_age_secs(&self) -> Result<Option<u64>, ContextError> {
+        Ok(self.registry.get(&self.agent_key).map(|record| {
+            let registered_unix = record.registered_at.timestamp() as u64;
+            self.now_secs.saturating_sub(registered_unix)
+        }))
     }
 
-    fn agent_parent_id(&self) -> Option<String> {
-        self.registry.get(&self.agent_key)?.parent_agent_id.clone()
+    fn agent_parent_id(&self) -> Result<Option<String>, ContextError> {
+        Ok(self
+            .registry
+            .get(&self.agent_key)
+            .and_then(|record| record.parent_agent_id.clone()))
     }
 
-    fn agent_team_id(&self) -> Option<String> {
-        self.team_id.clone()
+    fn agent_team_id(&self) -> Result<Option<String>, ContextError> {
+        Ok(self.team_id.clone())
     }
 
-    fn agent_children_count(&self) -> Option<u32> {
-        let record = self.registry.get(&self.agent_key)?;
-        Some(record.children.len() as u32)
+    fn agent_children_count(&self) -> Result<Option<u32>, ContextError> {
+        Ok(self
+            .registry
+            .get(&self.agent_key)
+            .map(|record| record.children.len() as u32))
     }
 }
 
@@ -211,23 +232,23 @@ mod production_context_tests {
         let budget = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC);
         let ctx = ProductionPolicyContext::new(&reg, &budget, PARENT, Some("eng".into()), (T0 + 500) as u64);
 
-        assert_eq!(ctx.agent_depth(), Some(0));
+        assert_eq!(ctx.agent_depth(), Ok(Some(0)));
         // Both agents share team "eng".
-        assert_eq!(ctx.team_active_agents(), Some(2));
+        assert_eq!(ctx.team_active_agents(), Ok(Some(2)));
         // Parent's sole child contributes its declared tools.
-        let mut tools = ctx.child_tools();
+        let mut tools = ctx.child_tools().unwrap();
         tools.sort();
         assert_eq!(tools, vec!["exec".to_string(), "write".to_string()]);
-        assert_eq!(ctx.agent_risk_tier(), Some(aa_core::RiskTier::High));
+        assert_eq!(ctx.agent_risk_tier(), Ok(Some(aa_core::RiskTier::High)));
         // A root has no parent, so parent_risk_tier is absent.
-        assert_eq!(ctx.parent_risk_tier(), None);
+        assert_eq!(ctx.parent_risk_tier(), Ok(None));
         // child_risk_tier is the proposed-spawn tier, unset on a plain context.
-        assert_eq!(ctx.child_risk_tier(), None);
+        assert_eq!(ctx.child_risk_tier(), Ok(None));
         // now_secs - registered_at = 500.
-        assert_eq!(ctx.agent_age_secs(), Some(500));
-        assert_eq!(ctx.agent_parent_id(), None);
-        assert_eq!(ctx.agent_team_id(), Some("eng".to_string()));
-        assert_eq!(ctx.agent_children_count(), Some(1));
+        assert_eq!(ctx.agent_age_secs(), Ok(Some(500)));
+        assert_eq!(ctx.agent_parent_id(), Ok(None));
+        assert_eq!(ctx.agent_team_id(), Ok(Some("eng".to_string())));
+        assert_eq!(ctx.agent_children_count(), Ok(Some(1)));
     }
 
     #[test]
@@ -236,13 +257,13 @@ mod production_context_tests {
         let budget = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC);
         let ctx = ProductionPolicyContext::new(&reg, &budget, CHILD, Some("eng".into()), (T0 + 10) as u64);
 
-        assert_eq!(ctx.agent_depth(), Some(1));
-        assert_eq!(ctx.agent_risk_tier(), Some(aa_core::RiskTier::Medium));
+        assert_eq!(ctx.agent_depth(), Ok(Some(1)));
+        assert_eq!(ctx.agent_risk_tier(), Ok(Some(aa_core::RiskTier::Medium)));
         // The child's parent is the High-tier root.
-        assert_eq!(ctx.parent_risk_tier(), Some(aa_core::RiskTier::High));
-        assert_eq!(ctx.agent_parent_id(), Some("parent-str".to_string()));
-        assert_eq!(ctx.agent_children_count(), Some(0));
-        assert_eq!(ctx.agent_age_secs(), Some(10));
+        assert_eq!(ctx.parent_risk_tier(), Ok(Some(aa_core::RiskTier::High)));
+        assert_eq!(ctx.agent_parent_id(), Ok(Some("parent-str".to_string())));
+        assert_eq!(ctx.agent_children_count(), Ok(Some(0)));
+        assert_eq!(ctx.agent_age_secs(), Ok(Some(10)));
     }
 
     #[test]
@@ -253,7 +274,7 @@ mod production_context_tests {
         budget.record_raw_spend(aa_core::AgentId::from_bytes(PARENT), Some("eng"), None, dec("30"));
 
         let ctx = ProductionPolicyContext::new(&reg, &budget, PARENT, Some("eng".into()), T0 as u64);
-        assert_eq!(ctx.team_budget_remaining(), Some(70.0));
+        assert_eq!(ctx.team_budget_remaining(), Ok(Some(70.0)));
     }
 
     #[test]
@@ -265,7 +286,7 @@ mod production_context_tests {
 
         let ctx = ProductionPolicyContext::new(&reg, &budget, PARENT, Some("eng".into()), T0 as u64);
         // `monthly_limit_usd()` is None → the whole getter short-circuits.
-        assert_eq!(ctx.team_budget_remaining(), None);
+        assert_eq!(ctx.team_budget_remaining(), Ok(None));
     }
 
     #[test]
@@ -277,17 +298,17 @@ mod production_context_tests {
         let budget = BudgetTracker::new(PricingTable::default_table(), None, Some(dec("100")), chrono_tz::UTC);
         let ctx = ProductionPolicyContext::new(&reg, &budget, [9u8; 16], None, T0 as u64);
 
-        assert_eq!(ctx.agent_depth(), None);
-        assert_eq!(ctx.agent_risk_tier(), None);
-        assert_eq!(ctx.parent_risk_tier(), None);
-        assert_eq!(ctx.agent_age_secs(), None);
-        assert_eq!(ctx.agent_parent_id(), None);
-        assert_eq!(ctx.agent_children_count(), None);
-        assert!(ctx.child_tools().is_empty());
+        assert_eq!(ctx.agent_depth(), Ok(None));
+        assert_eq!(ctx.agent_risk_tier(), Ok(None));
+        assert_eq!(ctx.parent_risk_tier(), Ok(None));
+        assert_eq!(ctx.agent_age_secs(), Ok(None));
+        assert_eq!(ctx.agent_parent_id(), Ok(None));
+        assert_eq!(ctx.agent_children_count(), Ok(None));
+        assert!(ctx.child_tools().unwrap().is_empty());
         // No team on the context → the team-scoped getters are all None.
-        assert_eq!(ctx.team_active_agents(), None);
-        assert_eq!(ctx.team_budget_remaining(), None);
-        assert_eq!(ctx.agent_team_id(), None);
+        assert_eq!(ctx.team_active_agents(), Ok(None));
+        assert_eq!(ctx.team_budget_remaining(), Ok(None));
+        assert_eq!(ctx.agent_team_id(), Ok(None));
     }
 
     #[test]
@@ -299,7 +320,7 @@ mod production_context_tests {
             .unwrap();
         let budget = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC);
         let ctx = ProductionPolicyContext::new(&reg, &budget, [7u8; 16], None, T0 as u64);
-        assert_eq!(ctx.agent_risk_tier(), None);
+        assert_eq!(ctx.agent_risk_tier(), Ok(None));
     }
 }
 
@@ -322,109 +343,139 @@ pub struct FakePolicyContext {
 
 #[cfg(test)]
 impl PolicyContext for FakePolicyContext {
-    fn agent_depth(&self) -> Option<u32> {
-        self.depth
+    fn agent_depth(&self) -> Result<Option<u32>, ContextError> {
+        Ok(self.depth)
     }
 
-    fn team_active_agents(&self) -> Option<u64> {
-        self.team_active
+    fn team_active_agents(&self) -> Result<Option<u64>, ContextError> {
+        Ok(self.team_active)
     }
 
-    fn team_budget_remaining(&self) -> Option<f64> {
-        self.team_budget
+    fn team_budget_remaining(&self) -> Result<Option<f64>, ContextError> {
+        Ok(self.team_budget)
     }
 
-    fn child_tools(&self) -> Vec<String> {
-        self.child_tools.clone()
+    fn child_tools(&self) -> Result<Vec<String>, ContextError> {
+        Ok(self.child_tools.clone())
     }
 
-    fn agent_risk_tier(&self) -> Option<aa_core::RiskTier> {
-        self.agent_risk_tier
+    fn agent_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError> {
+        Ok(self.agent_risk_tier)
     }
 
-    fn parent_risk_tier(&self) -> Option<aa_core::RiskTier> {
-        self.parent_risk_tier
+    fn parent_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError> {
+        Ok(self.parent_risk_tier)
     }
 
-    fn child_risk_tier(&self) -> Option<aa_core::RiskTier> {
-        self.child_risk_tier
+    fn child_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError> {
+        Ok(self.child_risk_tier)
     }
 
-    fn agent_age_secs(&self) -> Option<u64> {
-        self.agent_age_secs
+    fn agent_age_secs(&self) -> Result<Option<u64>, ContextError> {
+        Ok(self.agent_age_secs)
     }
 
-    fn agent_parent_id(&self) -> Option<String> {
-        self.agent_parent_id.clone()
+    fn agent_parent_id(&self) -> Result<Option<String>, ContextError> {
+        Ok(self.agent_parent_id.clone())
     }
 
-    fn agent_team_id(&self) -> Option<String> {
-        self.agent_team_id.clone()
+    fn agent_team_id(&self) -> Result<Option<String>, ContextError> {
+        Ok(self.agent_team_id.clone())
     }
 
-    fn agent_children_count(&self) -> Option<u32> {
-        self.agent_children_count
+    fn agent_children_count(&self) -> Result<Option<u32>, ContextError> {
+        Ok(self.agent_children_count)
     }
 }
+
+/// A graph-context variable could not be resolved because of a
+/// registry/backend/lookup error — as distinct from the variable being
+/// *legitimately absent* (which the getters express as `Ok(None)`).
+///
+/// ADR 0015 §4 requires the evaluator to tell these two causes apart: a
+/// legitimate absence is `null-as-no-match` (unchanged behavior), whereas a
+/// resolution failure fails **closed** — `deny` ⇒ deny, `requires_approval_if`
+/// ⇒ require approval, conditional `allow` ⇒ never grant — and emits audit
+/// evidence. This error type is the "failure" arm the getters return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextError {
+    /// Human-readable detail of what failed (which backend / lookup). Must never
+    /// contain secret material — it is surfaced in audit evidence.
+    pub detail: String,
+}
+
+impl ContextError {
+    /// Construct a resolution failure with a human-readable `detail`.
+    pub fn new(detail: impl Into<String>) -> Self {
+        Self { detail: detail.into() }
+    }
+}
+
+impl std::fmt::Display for ContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "graph-context resolution failure: {}", self.detail)
+    }
+}
+
+impl std::error::Error for ContextError {}
 
 /// Provides runtime values for graph-aware policy condition variables.
 ///
 /// Production code wires this to `AgentRegistry` and `BudgetTracker` via
-/// [`super::super::engine::ProductionPolicyContext`]. Unit tests inject a
-/// `FakePolicyContext` that returns canned values.
+/// [`ProductionPolicyContext`]. Unit tests inject a `FakePolicyContext` that
+/// returns canned values.
 ///
-/// # Null-safety semantics
+/// # Absence vs. resolution failure (ADR 0015 §4)
 ///
-/// Every getter returns `Option<T>`. When a variable cannot be resolved (the
-/// getter returns `None`), the expression clause that references it
-/// short-circuits to `false`. The effect on the overall policy decision is:
+/// Every getter returns `Result<Option<T>, ContextError>`, encoding **three**
+/// outcomes the evaluator treats differently:
 ///
-/// | Clause type          | Variable resolves `Some(_)` | Variable is `None`     |
-/// |----------------------|-----------------------------|------------------------|
-/// | `requires_approval_if` | fires when expression is `true` | **does not fire** |
-/// | `deny` condition     | denies when expression is `true` | **does not deny**  |
-/// | `allow`              | always allows               | always allows          |
+/// | Getter outcome | Meaning | Evaluator behavior |
+/// |----------------|---------|--------------------|
+/// | `Ok(Some(v))`  | resolved value | clause compares against `v` |
+/// | `Ok(None)`     | **legitimate absence** (no team, root agent, unknown-but-valid) | `null-as-no-match` — unchanged from prior behavior |
+/// | `Err(_)`       | **resolution failure** (backend/lookup error) | fails **closed** per clause polarity + emits audit evidence |
 ///
-/// In every case an unresolvable variable contributes **nothing** to the
-/// decision: it neither allows nor denies. A request that references an absent
-/// graph-variable is evaluated as if the condition clause were absent from the
-/// policy. This is sometimes called *null-as-no-match* or *fail-open on
-/// missing context*.
-///
-/// The fixture tests in `tests/graph_vars_fixture_test.rs` snapshot the
-/// `PolicyDecision` produced for each variable in both the null and non-null
-/// paths to guard against accidental semantics changes.
+/// The `Ok(None)` path is the historical *null-as-no-match* contract and is
+/// preserved byte-for-byte (its snapshots in `tests/graph_vars_fixture_test.rs`
+/// are frozen). The `Err(_)` path is the ADR 0015 §4 addition: a variable that
+/// *fails to resolve* must never silently no-match a `deny`/approval clause or
+/// be laundered into an `allow` grant. The in-memory production context never
+/// returns `Err` (its registry lookups cannot fail); the arm exists so a
+/// backend-backed context can surface a genuine outage and have it fail closed.
 pub trait PolicyContext: Send + Sync {
     /// Delegation depth of the current agent (0 = root).
-    fn agent_depth(&self) -> Option<u32>;
+    fn agent_depth(&self) -> Result<Option<u32>, ContextError>;
     /// Number of currently registered agents that belong to the current agent's
-    /// team. Returns `None` when the agent has no team.
-    fn team_active_agents(&self) -> Option<u64>;
-    /// Remaining monthly budget in USD for the current agent's team. Returns
-    /// `None` when the agent has no team, no budget entry, or no monthly limit
-    /// is configured.
-    fn team_budget_remaining(&self) -> Option<f64>;
+    /// team. `Ok(None)` when the agent has no team.
+    fn team_active_agents(&self) -> Result<Option<u64>, ContextError>;
+    /// Remaining monthly budget in USD for the current agent's team. `Ok(None)`
+    /// when the agent has no team, no budget entry, or no monthly limit is
+    /// configured.
+    fn team_budget_remaining(&self) -> Result<Option<f64>, ContextError>;
     /// Union of `tool_names` across all direct children of the current agent.
-    fn child_tools(&self) -> Vec<String>;
-    /// Risk tier of the current agent. Returns `None` when the agent is not
-    /// found in the registry or has an unspecified (0) risk tier.
-    fn agent_risk_tier(&self) -> Option<aa_core::RiskTier>;
-    /// Risk tier of the current agent's parent. Returns `None` when the agent
-    /// has no parent or the parent is not in the registry.
-    fn parent_risk_tier(&self) -> Option<aa_core::RiskTier>;
+    /// An agent with no children resolves to `Ok(vec![])` (legitimate absence);
+    /// `Err` is a lookup failure.
+    fn child_tools(&self) -> Result<Vec<String>, ContextError>;
+    /// Risk tier of the current agent. `Ok(None)` when the agent is not found in
+    /// the registry or has an unspecified (0) risk tier.
+    fn agent_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError>;
+    /// Risk tier of the current agent's parent. `Ok(None)` when the agent has no
+    /// parent or the parent is not in the registry.
+    fn parent_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError>;
     /// Proposed risk tier of the child agent being spawned, supplied in the
-    /// spawn action payload. Returns `None` when the evaluation is not for a
-    /// spawn action or no tier was specified.
-    fn child_risk_tier(&self) -> Option<aa_core::RiskTier>;
+    /// spawn action payload. `Ok(None)` when the evaluation is not for a spawn
+    /// action or no tier was specified.
+    fn child_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError>;
     /// Age of the current agent in seconds, computed as `now_secs - registered_at`.
-    /// Returns `None` when the agent is not found in the registry.
-    fn agent_age_secs(&self) -> Option<u64>;
-    /// Parent agent ID string of the current agent. Returns `None` when the agent
+    /// `Ok(None)` when the agent is not found in the registry.
+    fn agent_age_secs(&self) -> Result<Option<u64>, ContextError>;
+    /// Parent agent ID string of the current agent. `Ok(None)` when the agent
     /// has no parent (i.e. it is a root agent).
-    fn agent_parent_id(&self) -> Option<String>;
-    /// Team ID of the current agent. Returns `None` when the agent has no team.
-    fn agent_team_id(&self) -> Option<String>;
-    /// Number of direct children of the current agent. Returns `None` when the
-    /// agent is not found in the registry.
-    fn agent_children_count(&self) -> Option<u32>;
+    fn agent_parent_id(&self) -> Result<Option<String>, ContextError>;
+    /// Team ID of the current agent. `Ok(None)` when the agent has no team.
+    fn agent_team_id(&self) -> Result<Option<String>, ContextError>;
+    /// Number of direct children of the current agent. `Ok(None)` when the agent
+    /// is not found in the registry.
+    fn agent_children_count(&self) -> Result<Option<u32>, ContextError>;
 }

@@ -57,6 +57,7 @@ pub(crate) fn evaluate_single_doc(
     ctx: &aa_core::AgentContext,
     action: &aa_core::GovernanceAction,
     policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+    failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
 ) -> PolicyDecision {
     if let Some(d) = stage_network(doc, action) {
         return d;
@@ -67,7 +68,7 @@ pub(crate) fn evaluate_single_doc(
     if let Some(d) = stage_capability(doc, action) {
         return d;
     }
-    if let Some(d) = stage_approval(doc, ctx, action, policy_ctx) {
+    if let Some(d) = stage_approval(doc, ctx, action, policy_ctx, failures) {
         return d;
     }
 
@@ -228,6 +229,7 @@ fn stage_approval(
     ctx: &aa_core::AgentContext,
     action: &aa_core::GovernanceAction,
     policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+    failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
 ) -> Option<PolicyDecision> {
     match action {
         // AAASM-4164: fall back to the `"*"` wildcard entry (exact entry wins) so a
@@ -240,6 +242,7 @@ fn stage_approval(
                 ctx,
                 action,
                 policy_ctx,
+                failures,
             ) =>
         {
             Some(PolicyDecision::RequireApproval {
@@ -251,7 +254,7 @@ fn stage_approval(
         // expression evaluator resolves source/target team and channel ids from
         // the SendMessage action fields directly.
         aa_core::GovernanceAction::SendMessage { .. }
-            if approval_condition_met(doc.tools.get("message"), ctx, action, policy_ctx) =>
+            if approval_condition_met(doc.tools.get("message"), ctx, action, policy_ctx, failures) =>
         {
             Some(PolicyDecision::RequireApproval {
                 reason: "approval required: cross-team channel policy".into(),
@@ -264,16 +267,29 @@ fn stage_approval(
 
 /// Whether a tool/channel policy has a non-empty `requires_approval_if`
 /// expression that evaluates true for `action`.
+///
+/// `requires_approval_if` is a guard clause, so any graph-context resolution
+/// failure fails closed (fires) per ADR 0015 §4 and is appended to `failures`
+/// as audit evidence.
 fn approval_condition_met(
     tool_policy: Option<&crate::policy::document::ToolPolicy>,
     ctx: &aa_core::AgentContext,
     action: &aa_core::GovernanceAction,
     policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+    failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
 ) -> bool {
     let Some(expr) = tool_policy.and_then(|tp| tp.requires_approval_if.as_ref()) else {
         return false;
     };
-    !expr.is_empty() && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), policy_ctx)
+    !expr.is_empty()
+        && crate::policy::expr::evaluate_clause(
+            expr,
+            action,
+            Some(ctx.governance_level),
+            policy_ctx,
+            crate::policy::expr::ClauseKind::RequireApproval,
+            failures,
+        )
 }
 
 /// Merge a cascade of policy documents into a single `PolicyDecision` using
@@ -295,6 +311,26 @@ pub fn merge_decisions(
     action: &aa_core::GovernanceAction,
     policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
 ) -> PolicyDecision {
+    // Callers that do not consume the resolution-failure audit evidence discard
+    // it here; the engine uses [`merge_decisions_audited`] to surface it.
+    let mut failures = Vec::new();
+    merge_decisions_audited(cascade, ctx, action, policy_ctx, &mut failures)
+}
+
+/// Like [`merge_decisions`], but appends every graph-context **resolution
+/// failure** encountered during evaluation to `failures` (ADR 0015 §4 rule 5).
+///
+/// Each record identifies the unresolved variable, the clause that referenced
+/// it, and — via [`crate::policy::expr::ResolutionFailure::fail_safe_action`] —
+/// the fail-safe action taken. The engine drains this into the audit trail so a
+/// decision made on degraded context is never invisible to an operator.
+pub fn merge_decisions_audited(
+    cascade: &[Arc<PolicyDocument>],
+    ctx: &aa_core::AgentContext,
+    action: &aa_core::GovernanceAction,
+    policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+    failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
+) -> PolicyDecision {
     if cascade.is_empty() {
         return PolicyDecision::Deny {
             reason: "no policy — fail-closed".into(),
@@ -305,7 +341,7 @@ pub fn merge_decisions(
     let mut running = PolicyDecision::Allow;
 
     for doc in cascade {
-        let verdict = evaluate_single_doc(doc, ctx, action, policy_ctx);
+        let verdict = evaluate_single_doc(doc, ctx, action, policy_ctx, failures);
         match verdict {
             // Short-circuit: Deny always wins.
             PolicyDecision::Deny { .. } => return verdict,
@@ -382,7 +418,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Read,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(
             result,
             PolicyDecision::Deny {
@@ -401,7 +437,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Write,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(
             result,
             PolicyDecision::Deny {
@@ -420,7 +456,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Read,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(result, PolicyDecision::Allow);
     }
 
@@ -433,7 +469,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Write,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(result, PolicyDecision::Allow);
     }
 
@@ -445,7 +481,7 @@ mod tests {
             name: "bash".into(),
             args: "{}".into(),
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(
             result,
             PolicyDecision::Deny {
@@ -463,7 +499,7 @@ mod tests {
             name: "bash".into(),
             args: "{}".into(),
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(result, PolicyDecision::Allow);
     }
 
