@@ -12,6 +12,7 @@ Run: ``python3 scripts/test_propagate_versions.py``  (stdlib unittest, no deps).
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -138,6 +139,35 @@ class RoundTrip(unittest.TestCase):
                     self.assertIn(good, path.read_text())
                     self.assertNotIn(bad, path.read_text())
                     self.assertEqual(pv.run(root, check=True), 0)
+
+    def test_cli_table_cell_width_is_preserved(self) -> None:
+        # A shorter version must not shrink the fixed-width VERSION cell — the tool
+        # re-pads so the grid-table borders stay aligned. Regression for the review
+        # finding where beta.4 -> rc.6 left installation.md's table misaligned.
+        def version_cell_width(text: str) -> int:
+            m = re.search(r"(?m)^\| cli\s+\| (.*?)(?=\|)", text)
+            assert m is not None
+            return len(m.group(1))
+
+        tmp, root = self._fixture()
+        with tmp:
+            install = root / "docs" / "src" / "quick-start" / "installation.md"
+            # Author the cli row at a LONGER version, cell padded to a set width.
+            longer = "| cli       | 0.0.1-beta.4  | -           |"
+            install.write_text(
+                re.sub(r"(?m)^\| cli\b.*$", longer, install.read_text())
+            )
+            before = version_cell_width(install.read_text())
+
+            self.assertEqual(pv.run(root, check=False), 0)
+            after = install.read_text()
+            self.assertIn("0.0.1-rc.6", after)
+            self.assertNotIn("0.0.1-beta.4", after)
+            self.assertEqual(
+                version_cell_width(after),
+                before,
+                "VERSION cell width changed — grid-table borders misalign",
+            )
 
     def test_missing_anchor_is_a_hard_error(self) -> None:
         # A renamed/removed consumer anchor must fail loudly (exit 2), never pass

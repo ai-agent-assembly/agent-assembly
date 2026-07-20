@@ -186,8 +186,15 @@ def build_rules(ctx: Context) -> list[Rule]:
             (re.compile(r"(?m)^(VERSION=)(v\S+)()$"), const(tag)),
             # `aasm <bare ver>` --version sample output (line-anchored).
             (re.compile(r"(?m)^(aasm )(\d+\.\d+\.\d+\S*)()$"), const(ver)),
-            # `| cli       | <bare ver>  |` aasm-version table sample.
-            (re.compile(r"(?m)^(\| cli\s+\| )(\d+\.\d+\.\d+\S*)()"), const(ver)),
+            # `| cli       | <bare ver><pad> |` aasm-version table sample. Capture
+            # the version *and* its trailing padding up to the closing pipe, then
+            # re-pad the new version to the same cell width — otherwise a shorter
+            # version (e.g. rc.6 after beta.4) leaves the VERSION cell narrow and
+            # misaligns the fixed-width grid-table borders.
+            (
+                re.compile(r"(?m)^(\| cli\s+\| )(\d+\.\d+\.\d+\S*)( *)(?=\|)"),
+                lambda m: m.group(1) + ver.ljust(len(m.group(2)) + len(m.group(3))),
+            ),
         ],
     )
 
