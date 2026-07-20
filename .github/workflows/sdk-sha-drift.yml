@@ -2,8 +2,25 @@ name: SDK SHA drift detector
 
 # Nightly advisory check of the ADR 0003 cross-repo lockstep invariant: the three
 # language SDKs must pin the shared `agent-assembly` core crates to one consistent
-# git rev. On drift it opens (or updates) a tracking issue; it is non-blocking for
-# any product CI. Also runnable on demand via workflow_dispatch.
+# git rev. On drift it opens (or updates) a tracking issue AND fails its own run
+# (the final step `exit 1`s, so the nightly run goes red — it is not merely
+# issue-only). It stays non-blocking for any *product PR* CI.
+#
+# ADR 0013 Appendix B item 8 / AAASM-4921 asked whether this should become a
+# blocking check. Decision: it stays ADVISORY under ADR 0003, recorded here in-repo.
+# Rationale:
+#   * The invariant is CROSS-REPO — the drift lives in the SDK repos' native-shim
+#     `aa-*` git-rev pins (read here via the GitHub API), not in this repo. An
+#     agent-assembly PR neither introduces nor can fix that drift, so gating
+#     agent-assembly PR merges on it would false-block unrelated changes on a
+#     condition the author cannot resolve.
+#   * ADR 0003 governs the pin as an INDEPENDENT-cadence, bot-bumped invariant;
+#     the SDKs are realigned in their own repos on release, so a required per-PR
+#     gate here is the wrong enforcement point.
+# The signals that DO make drift loud — the tracking issue plus this run going red
+# — are the appropriate weight for a nightly cross-repo lockstep check.
+#
+# Also runnable on demand via workflow_dispatch.
 on:
   schedule:
     - cron: "17 6 * * *"
