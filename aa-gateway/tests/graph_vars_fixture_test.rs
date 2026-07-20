@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use aa_core::identity::{AgentId, SessionId};
 use aa_core::{AgentContext, GovernanceAction, GovernanceLevel};
-use aa_gateway::engine::decision::{merge_decisions, PolicyDecision};
+use aa_gateway::engine::decision::{merge_decisions, merge_decisions_audited, PolicyDecision};
 use aa_gateway::policy::validator::PolicyValidator;
+use aa_gateway::policy::{evaluate_clause, ClauseKind, ContextError, PolicyContext, ResolutionFailure};
 
 fn make_ctx() -> AgentContext {
     AgentContext {
@@ -202,4 +203,157 @@ fn snapshot_null_ctx_agent_depth_fixture_requires_approval() {
     let action = tool_action("deploy");
     let result = merge_decisions(&[doc], &ctx, &action, None);
     insta::assert_debug_snapshot!(result);
+}
+
+// ── ADR 0015 §4: resolution failure vs. legitimate absence (AAASM-4947) ───────
+//
+// These fixtures exercise the deterministic §4 table: a graph-context variable
+// that *fails to resolve* (registry/backend/lookup error, modelled here by
+// `FailingCtx`) fails **closed** according to the clause polarity, whereas a
+// *legitimate absence* keeps the historical null-as-no-match behavior (its
+// snapshots above stay byte-identical). Every resolution failure is recorded as
+// audit evidence; legitimate absence records nothing.
+
+/// A `PolicyContext` whose every getter reports a resolution failure — the
+/// backend/lookup-error case ADR 0015 §4 distinguishes from `Ok(None)`.
+struct FailingCtx;
+
+impl PolicyContext for FailingCtx {
+    fn agent_depth(&self) -> Result<Option<u32>, ContextError> {
+        Err(ContextError::new("registry unavailable"))
+    }
+    fn team_active_agents(&self) -> Result<Option<u64>, ContextError> {
+        Err(ContextError::new("registry unavailable"))
+    }
+    fn team_budget_remaining(&self) -> Result<Option<f64>, ContextError> {
+        Err(ContextError::new("budget backend unavailable"))
+    }
+    fn child_tools(&self) -> Result<Vec<String>, ContextError> {
+        Err(ContextError::new("registry unavailable"))
+    }
+    fn agent_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError> {
+        Err(ContextError::new("registry unavailable"))
+    }
+    fn parent_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError> {
+        Err(ContextError::new("registry unavailable"))
+    }
+    fn child_risk_tier(&self) -> Result<Option<aa_core::RiskTier>, ContextError> {
+        Err(ContextError::new("registry unavailable"))
+    }
+    fn agent_age_secs(&self) -> Result<Option<u64>, ContextError> {
+        Err(ContextError::new("registry unavailable"))
+    }
+    fn agent_parent_id(&self) -> Result<Option<String>, ContextError> {
+        Err(ContextError::new("registry unavailable"))
+    }
+    fn agent_team_id(&self) -> Result<Option<String>, ContextError> {
+        Err(ContextError::new("registry unavailable"))
+    }
+    fn agent_children_count(&self) -> Result<Option<u32>, ContextError> {
+        Err(ContextError::new("registry unavailable"))
+    }
+}
+
+// (1) Legitimate absence — no context object at all — is null-as-no-match and,
+// crucially, is NOT a resolution failure: it records zero audit evidence. This
+// is the invariant that separates "absent" from "failed" (and the frozen
+// snapshots above prove the decision itself is unchanged).
+#[test]
+fn legitimate_absence_is_not_a_resolution_failure() {
+    let action = tool_action("deploy");
+    let mut failures = Vec::new();
+    // Numeric legit-absence still fails closed (fires) as before AAASM-4947...
+    let fired = evaluate_clause(
+        "agent.depth >= 2",
+        &action,
+        None,
+        None,
+        ClauseKind::RequireApproval,
+        &mut failures,
+    );
+    assert!(fired, "legitimate absence of a numeric guard still fires (unchanged)");
+    // ...but it emits NO audit record, because nothing failed to resolve.
+    assert!(
+        failures.is_empty(),
+        "legitimate absence must not record a resolution failure"
+    );
+}
+
+// (2) Resolution failure + `deny` (conditional) ⇒ DENY (clause fires).
+#[test]
+fn resolution_failure_denies_for_deny_clause() {
+    let action = tool_action("deploy");
+    let mut failures = Vec::new();
+    let fired = evaluate_clause(
+        "agent.depth >= 2",
+        &action,
+        None,
+        Some(&FailingCtx),
+        ClauseKind::Deny,
+        &mut failures,
+    );
+    assert!(fired, "a deny clause must fire (deny) on resolution failure");
+    // (5) audit evidence for this failure.
+    assert_eq!(
+        failures,
+        vec![ResolutionFailure {
+            variable: "agent.depth".to_string(),
+            clause: ClauseKind::Deny,
+        }]
+    );
+    assert_eq!(failures[0].fail_safe_action(), "deny");
+}
+
+// (3) Resolution failure + `requires_approval_if` ⇒ REQUIRE APPROVAL, end-to-end
+// through the merge layer, with audit evidence surfaced.
+#[test]
+fn resolution_failure_requires_approval_end_to_end() {
+    // Fixture guard: `requires_approval_if: "team.active_agents > 10"`.
+    let doc = load_fixture("team_active_agents_allow.yaml");
+    let ctx = make_ctx();
+    let action = tool_action("spawn");
+    let mut failures = Vec::new();
+    let result = merge_decisions_audited(&[doc], &ctx, &action, Some(&FailingCtx), &mut failures);
+    assert!(
+        matches!(result, PolicyDecision::RequireApproval { .. }),
+        "resolution failure on an approval guard must escalate, got {result:?}"
+    );
+    // (5) audit evidence for this failure.
+    assert_eq!(
+        failures,
+        vec![ResolutionFailure {
+            variable: "team.active_agents".to_string(),
+            clause: ClauseKind::RequireApproval,
+        }]
+    );
+    assert_eq!(failures[0].fail_safe_action(), "require_approval");
+}
+
+// (4) Resolution failure + conditional `allow` ⇒ no match, MUST NEVER grant
+// (clause does NOT fire), with audit evidence.
+#[test]
+fn resolution_failure_never_grants_for_allow_clause() {
+    let action = tool_action("spawn");
+    let mut failures = Vec::new();
+    let fired = evaluate_clause(
+        "team.active_agents > 10",
+        &action,
+        None,
+        Some(&FailingCtx),
+        ClauseKind::Allow,
+        &mut failures,
+    );
+    assert!(
+        !fired,
+        "a conditional allow must NOT fire on resolution failure — a failure can never grant"
+    );
+    // (5) audit evidence: the failure is recorded even though the clause did not fire.
+    assert_eq!(
+        failures,
+        vec![ResolutionFailure {
+            variable: "team.active_agents".to_string(),
+            clause: ClauseKind::Allow,
+        }]
+    );
+    assert_eq!(failures[0].fail_safe_action(), "no_grant");
 }

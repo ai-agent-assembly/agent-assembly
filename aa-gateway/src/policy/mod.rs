@@ -25,8 +25,10 @@ pub mod rbac;
 pub mod scope;
 pub mod validator;
 
+pub use context::{ContextError, PolicyContext};
 pub use document::{ActiveHours, BudgetPolicy, DataPolicy, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolPolicy};
 pub use error::{PolicyParseError, ValidationError, ValidationWarning};
+pub use expr::{evaluate_clause, ClauseKind, ResolutionFailure};
 pub use network::{check_network_egress, EgressDecision};
 pub use rbac::{required_role_for, CallerRole, MutationKind, PolicyScopeKind};
 pub use scope::{OrgId, PolicyScope, TeamId};
