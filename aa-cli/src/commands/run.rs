@@ -1358,4 +1358,39 @@ mod tests {
             "NORMAL_VAR should be unmasked: {output}"
         );
     }
+
+    #[test]
+    fn dry_run_masks_secret_and_connection_url_env_vars() {
+        let handle = RegistrationHandle {
+            agent_id: "agent-xyz".into(),
+            registration_id: "reg-xyz".into(),
+            trace_id: "trace-xyz".into(),
+            session_id: "session-xyz".into(),
+            proxy_addr: None,
+            team_id: None,
+        };
+        let cmd = std::process::Command::new("mock-tool");
+        let mut env = HashMap::new();
+        env.insert("AA_JWT_SECRET".into(), "super-secret-signing-key".into());
+        env.insert("DATABASE_URL".into(), "postgresql://aasm:hunter2@db:5432/aasm".into());
+
+        let output = format_dry_run_output(&handle, "{}", &cmd, &env);
+
+        assert!(
+            !output.contains("super-secret-signing-key"),
+            "AA_JWT_SECRET value must not appear in cleartext: {output}"
+        );
+        assert!(
+            output.contains("AA_JWT_SECRET=***MASKED***"),
+            "AA_JWT_SECRET should be fully masked: {output}"
+        );
+        assert!(
+            !output.contains("hunter2"),
+            "DATABASE_URL password must not appear in cleartext: {output}"
+        );
+        assert!(
+            output.contains("DATABASE_URL=postgresql://aasm:***@db:5432/aasm"),
+            "DATABASE_URL password should be redacted while preserving structure: {output}"
+        );
+    }
 }
