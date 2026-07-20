@@ -106,6 +106,21 @@ impl CaStore {
             tokio::fs::read_to_string(&key_path).await,
         ) {
             (Ok(ca_cert_pem), Ok(ca_key_pem)) => {
+                // AAASM-4936 (L4): 0600 is enforced only at creation time, so a
+                // key written by an older build, restored from a backup, or
+                // copied in with loose perms would be served group/other-
+                // readable. Re-assert 0600 on every load so the private key can
+                // never be left world-readable across a proxy restart.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let key_path_clone = key_path.clone();
+                    tokio::task::spawn_blocking(move || {
+                        std::fs::set_permissions(&key_path_clone, std::fs::Permissions::from_mode(0o600))
+                    })
+                    .await
+                    .map_err(|e| ProxyError::Io(std::io::Error::other(e)))??;
+                }
                 return Ok(Self {
                     ca_dir: ca_dir.to_path_buf(),
                     ca_cert_pem,
@@ -264,6 +279,32 @@ mod tests {
         CaStore::load_or_create(dir.path()).await.unwrap();
         let perms = std::fs::metadata(dir.path().join("ca-key.pem")).unwrap().permissions();
         assert_eq!(perms.mode() & 0o777, 0o600, "ca-key.pem must be owner-read-write only");
+    }
+
+    /// AAASM-4936 (L4): perms are enforced only at creation, so a key that
+    /// already exists with loose perms (older build, restored backup, manual
+    /// copy) must be re-tightened to 0600 when it is loaded.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn load_or_create_reasserts_600_on_loose_existing_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        // First create a valid CA, then loosen the key perms to world-readable.
+        CaStore::load_or_create(dir.path()).await.unwrap();
+        let key_path = dir.path().join("ca-key.pem");
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+
+        // Loading the existing CA must re-tighten the key to 0600.
+        CaStore::load_or_create(dir.path()).await.unwrap();
+        assert_eq!(
+            std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "load must re-assert 0600 on an existing loose key"
+        );
     }
 
     #[tokio::test]
