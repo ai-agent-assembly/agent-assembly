@@ -2,7 +2,7 @@
 
 The pages in this guide explain *how* governance works. When you want to **run**
 it, the framework-specific, end-to-end examples live in the dedicated
-[`agent-assembly-examples`](https://github.com/ai-agent-assembly/examples)
+[`examples`](https://github.com/ai-agent-assembly/examples)
 repository rather than in this book — that keeps the runnable code versioned and
 testable on its own, while these pages stay focused on the concepts.
 
