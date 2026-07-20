@@ -58,10 +58,14 @@ pub async fn get_trace(
             .with_detail("This operation requires admin scope or a team scope".to_string()));
     }
 
-    let trace = state
-        .trace_store
-        .get_trace(&session_id)
-        .map_err(|e| ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(e.to_string()))?;
+    // AAASM-4936 (L3): log the underlying store error server-side, but return a
+    // generic 500 body — the internal error string may reveal storage paths or
+    // implementation detail and must not cross the API boundary to the caller.
+    let trace = state.trace_store.get_trace(&session_id).map_err(|e| {
+        tracing::error!(error = %e, session_id = %session_id, "failed to read session trace");
+        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+            .with_detail("Failed to retrieve session trace".to_string())
+    })?;
 
     // AAASM-3376 — the in-memory `TraceStore` is only populated by live span
     // recording; fall back to reconstructing the trace from the persisted audit
