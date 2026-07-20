@@ -372,7 +372,7 @@ jobs:
 
       # The propagator uses `tomllib` (Python 3.11+); pin 3.12 rather than rely
       # on the runner's default `python3`, which is not guaranteed to be ≥3.11.
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
