@@ -20,13 +20,6 @@ const APPROVAL = {
   team_id: null,
 }
 
-const POLICY = {
-  name: 'e2e-policy',
-  version: '1.0.0',
-  rule_count: 2,
-  active: true,
-}
-
 const AGENT = {
   id: 'agent-e2e-001',
   name: 'E2E Test Agent',
