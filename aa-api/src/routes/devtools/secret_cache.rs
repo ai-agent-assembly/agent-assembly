@@ -40,7 +40,16 @@ pub struct EnvVarResolver;
 
 impl SecretResolver for EnvVarResolver {
     fn resolve(&self, secret_ref: &str) -> Option<Vec<u8>> {
-        std::env::var(secret_ref).ok().map(String::into_bytes)
+        // AAASM-4897: an env var that is present but *empty* must resolve to
+        // `None`, not `Some(vec![])`. An empty HMAC key would otherwise be
+        // handed to `signature::verify`, and `Hmac::new_from_slice` accepts a
+        // zero-length key — so any attacker-computable HMAC-with-empty-key
+        // signature would verify, a fail-open. Filtering empties here makes the
+        // webhook fail *closed* (401) on a misconfigured/blank secret.
+        std::env::var(secret_ref)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(String::into_bytes)
     }
 }
 
@@ -159,6 +168,20 @@ mod tests {
         assert!(
             resolver.resolve("AA_SECRET_CACHE_DEFINITELY_UNSET").is_none(),
             "unset variable resolves to None"
+        );
+    }
+
+    #[test]
+    fn env_var_resolver_treats_empty_value_as_none() {
+        // AAASM-4897: a present-but-empty secret env var must fail closed. An
+        // empty key would otherwise verify an attacker-computable empty-key
+        // HMAC (fail-open). nextest isolates this env mutation per process.
+        let var = "AA_SECRET_CACHE_EMPTY_TEST_VAR";
+        std::env::set_var(var, "");
+        let resolver = EnvVarResolver;
+        assert!(
+            resolver.resolve(var).is_none(),
+            "empty secret env var must resolve to None (fail closed)"
         );
     }
 
