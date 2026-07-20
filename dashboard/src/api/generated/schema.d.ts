@@ -2442,10 +2442,10 @@ export interface components {
             /** @description Raw YAML content of the governance policy. */
             policy_yaml: string;
             /**
-             * @description Governance scope this policy targets (e.g. `"global"`, `"team:platform"`).
-             *
-             *     Used for RBAC authorization — the caller must hold the role required
-             *     to mutate policies at this scope. Defaults to `"global"` when absent.
+             * @description Optional client-declared governance scope (e.g. `"global"`,
+             *     `"team:platform"`). Advisory: authorization is derived from the policy
+             *     document's own declared scope, and a value that disagrees with the
+             *     document is rejected.
              */
             scope?: string | null;
         };
