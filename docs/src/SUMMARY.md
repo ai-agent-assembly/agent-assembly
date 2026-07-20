@@ -148,3 +148,4 @@
   - [0012 - WebSocket & Browser Credential Handling](adr/0012-websocket-and-browser-credential-handling.md)
   - [0013 - Version Metadata Source-of-Truth & Drift Gate](adr/0013-version-metadata-source-of-truth-and-drift-gate.md)
   - [0014 - Canonical Metadata Registry & Drift Gate](adr/0014-canonical-metadata-registry-and-drift-gate.md)
+  - [0015 - DLP Trust Boundary, Redaction Fail-Safety & Heuristic Detection Limits](adr/0015-dlp-trust-boundary-and-redaction-semantics.md)
