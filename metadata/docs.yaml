@@ -52,7 +52,7 @@ docs_url: "https://docs.agent-assembly.com/"
 
 # The one-line installer endpoint served by the official website (registry
 # `urls.installer`). `agent-assembly.com/install.sh` is the SOLE canonical
-# installer — AAASM-4931 retired the `tool.agent-assembly.dev` alternate. The
+# installer — AAASM-4931 retired the legacy hosted installer alternate. The
 # GitHub raw URL is the fallback for users who want to fetch the script directly.
 install_script_url: "https://agent-assembly.com/install.sh"
 install_script_url_raw: "https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh"
