@@ -19,6 +19,10 @@ on:
       - 'metadata/**'
       - 'scripts/generate_docs_metadata.py'
       - 'Cargo.toml'
+      # AAASM-4911: the version-drift gate below stamps README / installation.md
+      # / docs.yml pins / CONTRIBUTING.md from the SoT; a change to the gate
+      # script itself must re-run it (a dead trigger otherwise).
+      - 'scripts/propagate_versions.py'
   push:
     branches: [master]
     paths:
@@ -29,6 +33,7 @@ on:
       - 'metadata/**'
       - 'scripts/generate_docs_metadata.py'
       - 'Cargo.toml'
+      - 'scripts/propagate_versions.py'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
   # has *succeeded* for that tag. This guarantees we never publish docs for a
@@ -343,6 +348,33 @@ jobs:
 
       - name: Verify api-reference.md rustdoc command
         run: cargo doc --workspace --no-deps --exclude aa-ebpf
+
+  # AAASM-4911 (ADR 0013 rollout): the blocking version-drift gate. The `build`
+  # job above already fails on stale `docs/src/generated/` snippets, but that
+  # only covers the generated tier. `propagate_versions.py --check` extends the
+  # SoT → consumer contract to the hand-maintained literal tier the ADR audit
+  # flagged (README install/Project-Status lines, docs/src/quick-start/
+  # installation.md, this workflow's mdBook pins, CONTRIBUTING.md) plus a
+  # re-check of the snippet tier — so a version literal that drifts from the
+  # Cargo.toml / metadata/docs.yaml SoT fails the build instead of shipping.
+  # Kept as its own lightweight job (no Rust/mdBook toolchain) so the drift
+  # signal is fast and independent of the heavy book build.
+  version-drift:
+    name: Version-drift gate (propagate_versions --check)
+    # PR + master push only; a release-cut workflow_run rebuilds no sources.
+    if: github.event_name != 'workflow_run'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # The propagator uses `tomllib` (Python 3.11+); pin 3.12 rather than rely
+      # on the runner's default `python3`, which is not guaranteed to be ≥3.11.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Fail if any version-bearing site drifts from the SoT
+        run: python3 scripts/propagate_versions.py --check
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
