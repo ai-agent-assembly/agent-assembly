@@ -30,8 +30,18 @@
 # See docs/src/versioning.md for the SemVer rules that govern bumps.
 protocol_version: "protocol/v1"
 
+# Shared-metadata single-owner note (ADR 0014). The URL values below (`repo_url`,
+# `docs_url`, the `install_script_url*` set) are canonical org-shared metadata whose
+# single owner is the `.github` registry `metadata/org-profile.yaml` (`urls.*`,
+# generated to `metadata/generated/registry.json`); their *values* are decided by
+# ADR 0007/0008. This docs-scoped copy MUST match the registry — it is not an
+# independent source of truth. Genuinely docs-only values (e.g. `protocol_version`)
+# stay owned here. Full runtime derivation from the cross-repo registry is the
+# `.github` widen's job (AAASM-4914); this file is kept reconciled by value + the
+# metadata-drift lint (.ci/check-metadata-drift.sh).
+
 # Canonical GitHub repository URL used by installer instructions, edit-page
-# links, and cross-references from ADRs.
+# links, and cross-references from ADRs. Owner: registry `urls`/repo entry.
 repo_url: "https://github.com/ai-agent-assembly/agent-assembly"
 
 # Canonical published docs site. Served from the `docs.agent-assembly.com`
@@ -40,11 +50,13 @@ repo_url: "https://github.com/ai-agent-assembly/agent-assembly"
 # mirror the CDN pulls from and MUST NOT be surfaced to readers.
 docs_url: "https://docs.agent-assembly.com/"
 
-# The one-line installer endpoint served by the official website. The
-# `tool.agent-assembly.dev` host is a maintained alternate; the GitHub raw
-# URL is the fallback for users who want to fetch the script directly.
+# The one-line installer endpoint served by the official website (registry
+# `urls.installer`). The `tool.agent-assembly.dev` host is a maintained alternate
+# that serves the script at its HOST ROOT (a `custom_domain` route — ADR 0007;
+# registry `urls.installer_alt`), so the alt has NO `/install.sh` path. The GitHub
+# raw URL is the fallback for users who want to fetch the script directly.
 install_script_url: "https://agent-assembly.com/install.sh"
-install_script_url_alt: "https://tool.agent-assembly.dev/install.sh"
+install_script_url_alt: "https://tool.agent-assembly.dev"
 install_script_url_raw: "https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh"
 
 # mdBook / mdbook-mermaid toolchain pins — the SoT for the docs-build tool
