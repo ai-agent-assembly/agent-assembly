@@ -196,6 +196,17 @@ impl CredentialKind {
         }
     }
 
+    /// Whether this kind is a PEM private-key block detected by its
+    /// `-----BEGIN … PRIVATE KEY-----` header. Used to extend the finding span
+    /// through the block's `-----END …-----` marker so a short trailing base64
+    /// line cannot slip past the length-gated entropy pass (AAASM-4936).
+    fn is_pem_private_key(&self) -> bool {
+        matches!(
+            self,
+            Self::EcPrivateKey | Self::OpensshPrivateKey | Self::PgpPrivateKey | Self::PrivateKey | Self::RsaPrivateKey
+        )
+    }
+
     /// Relative confidence of this kind when two overlapping findings are
     /// coalesced into one span.
     ///
@@ -304,9 +315,17 @@ impl ScanResult {
     /// no region is ever partially redacted (which previously left raw secret
     /// fragments and mangled labels in the output). The merged spans are then
     /// spliced in reverse offset order so earlier byte positions remain valid
-    /// after each replacement. Spans whose boundaries do not fall on UTF-8
-    /// character boundaries are skipped rather than spliced, making the former
-    /// mid-codepoint panic structurally impossible.
+    /// after each replacement.
+    ///
+    /// A span whose bounds are out of range or do not fall on UTF-8 character
+    /// boundaries cannot be spliced without panicking, but it still marks a
+    /// region the scanner flagged as a secret. Rather than skip it — which would
+    /// emit that region's raw bytes and leak the secret (fail-open) — the whole
+    /// value is replaced with a single opaque redaction label (fail-closed).
+    /// This branch is unreachable for spans the scanner produces over `text`
+    /// (offsets are always valid char boundaries of the scanned text); it exists
+    /// so a caller that ever pairs mismatched spans with `text` cannot leak a
+    /// secret through this path.
     pub fn redact(&self, text: &str) -> String {
         let merged = coalesce_findings(&self.findings);
         let mut result = text.to_string();
@@ -318,6 +337,10 @@ impl ScanResult {
                 && result.is_char_boundary(span.end)
             {
                 result.replace_range(span.offset..span.end, &span.label);
+            } else {
+                // Fail closed: we cannot prove this flagged region has been
+                // removed, so never return the raw text with a secret intact.
+                return "[REDACTED]".to_string();
             }
         }
         result
@@ -424,7 +447,18 @@ impl CredentialScanner {
         for mat in self.patterns.find_iter(text) {
             let kind = self.kinds[mat.pattern()].clone();
             let offset = mat.start();
-            let end = token_end(text, mat.end());
+            let mut end = token_end(text, mat.end());
+            // AAASM-4936 (L2): the literal detector only matches a PEM key's
+            // `-----BEGIN … PRIVATE KEY-----` header line. The base64 body is
+            // normally caught by the entropy pass, but a short final base64 line
+            // (below the run-length gate) slips through and leaks key material.
+            // Extend the finding through the matching `-----END …-----` marker so
+            // the whole block — including any short trailing line — is redacted.
+            if kind.is_pem_private_key() {
+                if let Some(block_end) = pem_block_end(text, mat.end()) {
+                    end = end.max(block_end);
+                }
+            }
             findings.push(CredentialFinding::new(kind, offset, end));
         }
 
@@ -582,6 +616,19 @@ fn token_end(text: &str, from: usize) -> usize {
         .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';' | ')' | ']' | '}'))
         .map(|i| from + i)
         .unwrap_or(text.len())
+}
+
+/// Byte index just past the closing dashes of the `-----END …-----` marker that
+/// terminates the PEM block whose header ended at `from`, or `None` when no END
+/// marker follows (a truncated block — the entropy pass still covers the body
+/// lines that meet the run-length gate).
+fn pem_block_end(text: &str, from: usize) -> Option<usize> {
+    let end_rel = text[from..].find("-----END")?;
+    let after_end_keyword = from + end_rel + "-----END".len();
+    // The END line closes with `-----`; consume through it so the whole marker
+    // (and thus the whole block) is inside the redaction span.
+    let closing = text[after_end_keyword..].find("-----")?;
+    Some(after_end_keyword + closing + "-----".len())
 }
 
 /// Returns `true` if `s` matches the SSN format `DDD-DD-DDDD` exactly.
@@ -1190,6 +1237,63 @@ mod tests {
         let redacted = result.redact(text);
         assert!(!redacted.contains("xoxr-"));
         assert!(redacted.contains("[REDACTED:SlackRefreshToken]"));
+    }
+
+    /// AAASM-4936 (L2): a PEM private key whose final base64 line is shorter
+    /// than the entropy pass's run-length gate must still be fully redacted. The
+    /// literal detector only matches the BEGIN header, so before the block-end
+    /// extension the short trailing line (`wJ8=`) leaked. The whole block —
+    /// header through the END marker — must be covered.
+    #[test]
+    fn redacts_pem_private_key_with_short_final_line() {
+        let scanner = CredentialScanner::new();
+        let text = "-----BEGIN RSA PRIVATE KEY-----\n\
+                    MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n\
+                    wJ8=\n\
+                    -----END RSA PRIVATE KEY-----";
+        let result = scanner.scan(text);
+        let redacted = result.redact(text);
+        assert!(
+            !redacted.contains("wJ8="),
+            "short final base64 line must be redacted: {redacted}"
+        );
+        assert!(
+            !redacted.contains("MIIBOgIBAAJBAKj"),
+            "key body must be redacted: {redacted}"
+        );
+        assert!(
+            !redacted.contains("-----END RSA PRIVATE KEY-----"),
+            "END marker must fall inside the redaction span: {redacted}"
+        );
+    }
+
+    /// AAASM-4936 (L1): `redact` must fail closed when a finding's span cannot
+    /// be spliced. An out-of-range `end` previously hit the implicit skip and
+    /// returned the raw text with the flagged secret intact; it must instead
+    /// return an opaque redaction so no secret bytes escape.
+    #[test]
+    fn redact_fails_closed_on_out_of_bounds_span() {
+        let text = "the secret is hunter2";
+        let result = ScanResult {
+            findings: vec![CredentialFinding::from_regex_match(14, 999)],
+        };
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("hunter2"), "raw secret must not leak: {redacted}");
+        assert_eq!(redacted, "[REDACTED]");
+    }
+
+    /// AAASM-4936 (L1): a span whose bound lands mid-codepoint (not on a UTF-8
+    /// char boundary) must also fail closed rather than leave the secret raw.
+    #[test]
+    fn redact_fails_closed_on_non_char_boundary_span() {
+        // "é" occupies bytes 6..8; a span ending at byte 7 is mid-codepoint.
+        let text = "secretémore";
+        let result = ScanResult {
+            findings: vec![CredentialFinding::from_regex_match(0, 7)],
+        };
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("secret"), "raw secret must not leak: {redacted}");
+        assert_eq!(redacted, "[REDACTED]");
     }
 
     #[test]
