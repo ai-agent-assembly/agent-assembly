@@ -8,6 +8,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
+use aa_gateway::policy::PolicyValidator;
 
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
 use crate::auth::scope::{RequireRead, Scope};
@@ -147,22 +148,14 @@ pub struct CreatePolicyRequest {
     pub policy_yaml: String,
     /// Governance scope this policy targets (e.g. `"global"`, `"team:platform"`).
     ///
-    /// Used for RBAC authorization — the caller must hold the role required
-    /// to mutate policies at this scope. Defaults to `"global"` when absent.
+    /// Optional client-declared RBAC scope. **Advisory only** (AAASM-4933): the
+    /// authorization scope is derived from the policy *document's own* declared
+    /// scope, never this field. When present it must equal the document's scope
+    /// — a value that disagrees is rejected (`400`) rather than trusted, closing
+    /// the pre-fix path where a caller under-claimed a narrow scope (e.g.
+    /// `tool:x`) to satisfy a lower role while installing a global-effect policy.
     #[serde(default)]
     pub scope: Option<String>,
-}
-
-impl CreatePolicyRequest {
-    /// Parse `scope` into a [`PolicyScope`], defaulting to `Global`.
-    pub fn policy_scope(&self) -> Result<PolicyScope, String> {
-        match &self.scope {
-            None => Ok(PolicyScope::Global),
-            Some(s) => s
-                .parse()
-                .map_err(|e: aa_gateway::policy::error::PolicyParseError| e.to_string()),
-        }
-    }
 }
 
 /// `POST /api/v1/policies` — apply a new governance policy.
@@ -186,14 +179,63 @@ pub async fn create_policy(
     Extension(state): Extension<AppState>,
     Json(body): Json<CreatePolicyRequest>,
 ) -> Result<(StatusCode, Json<PolicyResponse>), PolicyCreateError> {
-    let scope = body.policy_scope().map_err(|e| {
+    // Parse the (advisory) client-declared scope for input validation only.
+    let requested_scope = body
+        .scope
+        .as_deref()
+        .map(str::parse::<PolicyScope>)
+        .transpose()
+        .map_err(|e: aa_gateway::policy::error::PolicyParseError| {
+            PolicyCreateError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid scope: {e}")),
+            )
+        })?;
+
+    // AAASM-4933: authorize against the policy DOCUMENT's own declared scope,
+    // never the client-asserted `body.scope`. Validate the YAML up front so the
+    // real scope is known before the RBAC gate. `apply_yaml` re-validates below;
+    // the duplication is deliberate — it keeps this security fix contained to the
+    // handler (no change to the engine's evaluate/install path) on a cold,
+    // low-frequency write endpoint.
+    let validated = PolicyValidator::from_yaml(&body.policy_yaml).map_err(|errs| {
         PolicyCreateError::BadRequest(
-            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid scope: {e}")),
+            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid policy: {errs:?}")),
         )
     })?;
+    let doc_scope = validated.document.scope;
 
+    // The client may annotate the request with a scope, but it must agree with
+    // the document — a divergent claim is rejected, not trusted. This is the
+    // pre-fix privilege-escalation vector: a Write/Developer caller declared
+    // `scope: tool:x` (Developer-authorized) while submitting a scope-less
+    // (global) policy, installing a global-effect policy with a Developer role.
+    if let Some(requested) = &requested_scope {
+        if requested != &doc_scope {
+            return Err(PolicyCreateError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!(
+                    "scope mismatch: request scope '{requested}' does not match policy document scope '{doc_scope}'"
+                )),
+            ));
+        }
+    }
+
+    // This endpoint hot-swaps the single GLOBAL primary policy slot (see
+    // `PolicyEngine::apply_yaml`), so it can only honor a Global-scoped document.
+    // A narrower declared scope would be silently globalised — installed for
+    // every agent — so it is rejected until scoped installation is wired into the
+    // `scope_index` cascade (AAASM-4933 follow-up).
+    if doc_scope != PolicyScope::Global {
+        return Err(PolicyCreateError::BadRequest(
+            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!(
+                "scoped policy installation is not supported via this endpoint; only global \
+                 policies may be applied (policy declared scope '{doc_scope}')"
+            )),
+        ));
+    }
+
+    // Gate on the document's true scope: a global install requires OrgAdmin.
     policy_auth
-        .check_mutation(&scope, MutationKind::Create)
+        .check_mutation(&doc_scope, MutationKind::Create)
         .map_err(PolicyCreateError::Forbidden)?;
 
     let meta = state

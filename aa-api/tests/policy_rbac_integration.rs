@@ -23,9 +23,30 @@ spec:
     daily_limit_usd: 1000.0
 "#;
 
-/// Build an authenticated POST /api/v1/policies request.
+/// A policy YAML that declares a non-global (`tool:`) scope in its `spec`.
+/// The create endpoint installs the single global primary policy slot, so it
+/// cannot honor a scoped document and must reject it (AAASM-4933).
+const TOOL_SCOPED_POLICY_YAML: &str = r#"
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: rbac-test-scoped-policy
+  version: "1.0.0"
+spec:
+  scope: tool:slack-mcp
+  budget:
+    daily_limit_usd: 1000.0
+"#;
+
+/// Build an authenticated POST /api/v1/policies request with `VALID_POLICY_YAML`
+/// (a scope-less, i.e. global, document) and an optional advisory `body.scope`.
 fn post_policy_request(token: &str, scope: Option<&str>) -> Request<Body> {
-    let mut body = serde_json::json!({ "policy_yaml": VALID_POLICY_YAML });
+    post_policy_request_yaml(token, scope, VALID_POLICY_YAML)
+}
+
+/// Variant that lets the caller supply the policy YAML body.
+fn post_policy_request_yaml(token: &str, scope: Option<&str>, yaml: &str) -> Request<Body> {
+    let mut body = serde_json::json!({ "policy_yaml": yaml });
     if let Some(s) = scope {
         body["scope"] = serde_json::Value::String(s.to_string());
     }
@@ -38,81 +59,121 @@ fn post_policy_request(token: &str, scope: Option<&str>) -> Request<Body> {
         .unwrap()
 }
 
-// ── Admin scope (→ OrgAdmin) — allowed at every scope level ─────────────────
+// The endpoint installs the single GLOBAL primary policy, so authorization is
+// derived from the policy document's own scope (global here), NOT the advisory
+// `body.scope`. Contract (AAASM-4933):
+//   - body.scope omitted or "global"  → gated by role (OrgAdmin installs; lower
+//     roles are 403).
+//   - body.scope a non-global scope   → 400, because it disagrees with the
+//     global document (the old privilege-escalation claim vector).
+
+// ── Admin (→ OrgAdmin) — installs the global policy; scope mismatch is 400 ──
 
 #[rstest]
-#[case(None)] // global (default)
-#[case(Some("global"))]
-#[case(Some("org:acme"))]
-#[case(Some("team:platform"))]
-#[case(Some("tool:slack-mcp"))]
+#[case(None, StatusCode::CREATED)] // global (default)
+#[case(Some("global"), StatusCode::CREATED)]
+#[case(Some("org:acme"), StatusCode::BAD_REQUEST)]
+#[case(Some("team:platform"), StatusCode::BAD_REQUEST)]
+#[case(Some("tool:slack-mcp"), StatusCode::BAD_REQUEST)]
 #[tokio::test]
-async fn admin_scope_allowed_at_all_policy_scopes(#[case] scope: Option<&str>) {
+async fn admin_installs_global_and_rejects_scope_mismatch(#[case] scope: Option<&str>, #[case] expected: StatusCode) {
     let (token, entry) = common::generate_test_api_key("admin-key", vec![Scope::Read, Scope::Write, Scope::Admin]);
     let app = common::test_app_with_auth(&[entry], 1000);
 
     let response = app.oneshot(post_policy_request(&token, scope)).await.unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::CREATED,
-        "OrgAdmin should be allowed for scope={scope:?}"
-    );
+    assert_eq!(response.status(), expected, "admin scope={scope:?}");
 }
 
-// ── Write scope (→ Developer) — allowed only at agent/tool scopes ────────────
+// ── Write (→ Developer) — may NEVER install the global policy ────────────────
+// A global body (None / "global") is a role denial (403); a scoped body is a
+// document mismatch (400). Either way the developer cannot create the policy —
+// this is the AAASM-4933 privilege-escalation fix.
 
 #[rstest]
-#[case(Some("tool:slack-mcp"))]
+#[case(None, StatusCode::FORBIDDEN)] // global (default) → role denied
+#[case(Some("global"), StatusCode::FORBIDDEN)]
+#[case(Some("org:acme"), StatusCode::BAD_REQUEST)] // mismatch vs global document
+#[case(Some("team:platform"), StatusCode::BAD_REQUEST)]
+#[case(Some("tool:slack-mcp"), StatusCode::BAD_REQUEST)]
 #[tokio::test]
-async fn write_scope_allowed_at_tool_scope(#[case] scope: Option<&str>) {
+async fn developer_cannot_install_global_policy(#[case] scope: Option<&str>, #[case] expected: StatusCode) {
     let (token, entry) = common::generate_test_api_key("dev-key", vec![Scope::Read, Scope::Write]);
     let app = common::test_app_with_auth(&[entry], 1000);
 
     let response = app.oneshot(post_policy_request(&token, scope)).await.unwrap();
-    assert_eq!(
+    assert_ne!(
         response.status(),
         StatusCode::CREATED,
-        "Developer should be allowed for scope={scope:?}"
+        "Developer must never install a global-effect policy (scope={scope:?})"
     );
+    assert_eq!(response.status(), expected, "developer scope={scope:?}");
 }
 
-#[rstest]
-#[case(None)] // global (default)
-#[case(Some("global"))]
-#[case(Some("org:acme"))]
-#[case(Some("team:platform"))]
+/// AAASM-4933 regression (the exact exploit): a Write/Developer caller submits a
+/// scope-less (global) policy but claims `body.scope: tool:slack-mcp` to satisfy
+/// the Developer role. Pre-fix this returned 201 and installed a global policy;
+/// it must now be rejected.
 #[tokio::test]
-async fn write_scope_denied_at_global_org_team_scopes(#[case] scope: Option<&str>) {
+async fn developer_cannot_launder_global_policy_via_tool_scope_claim() {
     let (token, entry) = common::generate_test_api_key("dev-key", vec![Scope::Read, Scope::Write]);
     let app = common::test_app_with_auth(&[entry], 1000);
 
-    let response = app.oneshot(post_policy_request(&token, scope)).await.unwrap();
+    let response = app
+        .oneshot(post_policy_request(&token, Some("tool:slack-mcp")))
+        .await
+        .unwrap();
+    assert_ne!(
+        response.status(),
+        StatusCode::CREATED,
+        "privilege escalation must be closed"
+    );
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// A document that itself declares a non-global scope cannot be installed via
+/// this endpoint (it would be silently globalised). Even an OrgAdmin is rejected
+/// with 400 until scoped installation is wired into the cascade.
+#[tokio::test]
+async fn scoped_document_yaml_is_rejected() {
+    let (token, entry) = common::generate_test_api_key("admin-key", vec![Scope::Read, Scope::Write, Scope::Admin]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(post_policy_request_yaml(
+            &token,
+            Some("tool:slack-mcp"),
+            TOOL_SCOPED_POLICY_YAML,
+        ))
+        .await
+        .unwrap();
     assert_eq!(
         response.status(),
-        StatusCode::FORBIDDEN,
-        "Developer should be denied for scope={scope:?}"
+        StatusCode::BAD_REQUEST,
+        "scoped install must be rejected"
     );
 }
 
-// ── Read scope (→ Viewer) — denied at all scopes ────────────────────────────
+// ── Read scope (→ Viewer) — denied everywhere ───────────────────────────────
+// Global body → role denial (403); scoped body → document mismatch (400).
 
 #[rstest]
-#[case(None)]
-#[case(Some("global"))]
-#[case(Some("org:acme"))]
-#[case(Some("team:platform"))]
-#[case(Some("tool:slack-mcp"))]
+#[case(None, StatusCode::FORBIDDEN)]
+#[case(Some("global"), StatusCode::FORBIDDEN)]
+#[case(Some("org:acme"), StatusCode::BAD_REQUEST)]
+#[case(Some("team:platform"), StatusCode::BAD_REQUEST)]
+#[case(Some("tool:slack-mcp"), StatusCode::BAD_REQUEST)]
 #[tokio::test]
-async fn read_scope_denied_at_all_policy_scopes(#[case] scope: Option<&str>) {
+async fn read_scope_never_creates_a_policy(#[case] scope: Option<&str>, #[case] expected: StatusCode) {
     let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
     let app = common::test_app_with_auth(&[entry], 1000);
 
     let response = app.oneshot(post_policy_request(&token, scope)).await.unwrap();
-    assert_eq!(
+    assert_ne!(
         response.status(),
-        StatusCode::FORBIDDEN,
-        "Viewer should be denied for scope={scope:?}"
+        StatusCode::CREATED,
+        "Viewer must never create (scope={scope:?})"
     );
+    assert_eq!(response.status(), expected, "viewer scope={scope:?}");
 }
 
 // ── No auth — unauthenticated request returns 401 ───────────────────────────
