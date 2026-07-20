@@ -46,3 +46,11 @@ docs_url: "https://docs.agent-assembly.com/"
 install_script_url: "https://agent-assembly.com/install.sh"
 install_script_url_alt: "https://tool.agent-assembly.dev/install.sh"
 install_script_url_raw: "https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh"
+
+# mdBook / mdbook-mermaid toolchain pins — the SoT for the docs-build tool
+# versions (ADR 0013). These were duplicated by hand in .github/workflows/docs.yml
+# AND CONTRIBUTING.md; scripts/propagate_versions.py now stamps both from here so
+# a bump is a one-line edit + regenerate, not a two-file hunt. These pin the docs
+# toolchain and are independent of the workspace/runtime version.
+mdbook_version: "0.5.2"
+mdbook_mermaid_version: "0.17.0"
