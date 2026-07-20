@@ -146,14 +146,18 @@ pub async fn list_policies(
 pub struct CreatePolicyRequest {
     /// Raw YAML content of the governance policy.
     pub policy_yaml: String,
-    /// Governance scope this policy targets (e.g. `"global"`, `"team:platform"`).
-    ///
-    /// Optional client-declared RBAC scope. **Advisory only** (AAASM-4933): the
-    /// authorization scope is derived from the policy *document's own* declared
-    /// scope, never this field. When present it must equal the document's scope
-    /// — a value that disagrees is rejected (`400`) rather than trusted, closing
-    /// the pre-fix path where a caller under-claimed a narrow scope (e.g.
-    /// `tool:x`) to satisfy a lower role while installing a global-effect policy.
+    /// Optional client-declared governance scope (e.g. `"global"`,
+    /// `"team:platform"`). Advisory: authorization is derived from the policy
+    /// document's own declared scope, and a value that disagrees with the
+    /// document is rejected.
+    //
+    // AAASM-4933: this field must NOT lower the RBAC gate. `create_policy`
+    // authorizes against the *validated document's* declared scope; a
+    // `body.scope` that disagrees is rejected (400), closing the pre-fix
+    // privilege-escalation path where a caller under-claimed a narrow scope
+    // (e.g. `tool:x`) to satisfy a lower role while installing a global-effect
+    // policy. The rationale is an inline `//` comment, not `///`, so it does not
+    // fold into the OpenAPI schema description (utoipa folds `///` into the spec).
     #[serde(default)]
     pub scope: Option<String>,
 }
