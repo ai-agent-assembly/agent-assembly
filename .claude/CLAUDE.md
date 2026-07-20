@@ -99,8 +99,10 @@ cargo doc --workspace --no-deps        # checked on push by hooks
 
 ## Project policy
 
-- **JIRA:** project AAASM; set **Component** (`customfield_10041`) to the repo
-  (`ai-agent-assembly/agent-assembly`); Team (`customfield_10001`) = Pioneer.
+- **JIRA:** project AAASM; set the native **Components** field to the repo
+  (`ai-agent-assembly/agent-assembly`) — it is the native `components` field, not
+  `customfield_10041` (which is null; per the `.github` registry `jira` section /
+  ADR 0014); Team (`customfield_10001`) = Pioneer.
   Epic → Story → Subtask (one Subtask ≈ one commit) + a `Verify …` subtask per Story.
 - **Self-hosted deployment is out of scope** product-wide — don't propose
   Helm/Terraform/air-gapped/migration work even if the spec mentions it.

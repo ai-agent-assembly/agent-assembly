@@ -23,6 +23,8 @@ on:
       # / docs.yml pins / CONTRIBUTING.md from the SoT; a change to the gate
       # script itself must re-run it (a dead trigger otherwise).
       - 'scripts/propagate_versions.py'
+      # AAASM-4922: the metadata-drift lint (ADR 0014); re-run it when it changes.
+      - '.ci/check-metadata-drift.sh'
   push:
     branches: [master]
     paths:
@@ -34,6 +36,7 @@ on:
       - 'scripts/generate_docs_metadata.py'
       - 'Cargo.toml'
       - 'scripts/propagate_versions.py'
+      - '.ci/check-metadata-drift.sh'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
   # has *succeeded* for that tag. This guarantees we never publish docs for a
@@ -375,6 +378,22 @@ jobs:
 
       - name: Fail if any version-bearing site drifts from the SoT
         run: python3 scripts/propagate_versions.py --check
+
+  # AAASM-4922 (ADR 0014 rollout): blocking hardcoded-value lint for registry-owned
+  # canonical metadata. The `.github` registry owns the governance-doc branch and
+  # the canonical URL set; this gate fails the build if one of those canonical
+  # literals drifts back into the tree (e.g. a `.github/blob/main` governance link,
+  # or a `/install.sh` path on the host-root `.dev` installer alt). Pure git/bash,
+  # no toolchain — kept fast and independent of the book build like version-drift.
+  metadata-drift:
+    name: Metadata-drift gate (check-metadata-drift.sh)
+    if: github.event_name != 'workflow_run'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Fail if a registry-owned canonical value drifts
+        run: bash .ci/check-metadata-drift.sh
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

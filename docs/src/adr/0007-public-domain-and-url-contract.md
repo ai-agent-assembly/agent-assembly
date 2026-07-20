@@ -1,8 +1,27 @@
 # ADR 0007: Public Domain & URL Contract
 
-**Status**: Proposed
+**Status**: Proposed (amended)
 **Date**: 2026-06
 **Ticket**: [AAASM-3652](https://lightning-dust-mite.atlassian.net/browse/AAASM-3652) (Epic [AAASM-3651](https://lightning-dust-mite.atlassian.net/browse/AAASM-3651))
+
+---
+
+## Amendment — AAASM-4931 (2026-07-20)
+
+The `tool.agent-assembly.dev` installer alternate is **retired**.
+`https://agent-assembly.com/install.sh` is now the **sole canonical installer**;
+there is no advertised `.dev` install alternate.
+
+This supersedes original decision **#2 ("`.dev` stays working")** and the
+"Alternate (kept working)" installer line below. The `.dev` host was only ever a
+`*_alt` metadata value and was never surfaced as an active install command
+(`profile/README.md` described it as "planned but not yet live"); advertising a
+not-live alternate added drift surface with no user benefit. The apex
+`agent-assembly.com/install.sh` was already the canonical, expected URL, so this
+amendment collapses the contract to that single installer.
+
+The original two-TLD rationale below (why `.dev` existed and was kept) is retained
+as **historical record** — it is superseded, not erased.
 
 ---
 
@@ -42,10 +61,13 @@ These framing decisions are inputs to this ADR, not open questions:
 
 1. **`.com` is primary.** `agent-assembly.com` is the primary public domain for the
    SaaS service and marketing.
-2. **`.dev` stays working.** The existing `tool.agent-assembly.dev` install host is
-   **kept** and continues to serve the installer; it is not retired.
+2. **`.dev` stays working.** *(Superseded by AAASM-4931 — the
+   `tool.agent-assembly.dev` installer alternate is retired; see the Amendment
+   above.)* Originally: the existing `tool.agent-assembly.dev` install host was
+   kept as a working installer alternate.
 3. **The canonical installer is `https://agent-assembly.com/install.sh`** — apex host,
-   `/install.sh` path. The `.dev` host remains a working alternate.
+   `/install.sh` path. Per the AAASM-4931 amendment this is now the **sole**
+   canonical installer, with no `.dev` alternate.
 
 ---
 
@@ -60,17 +82,17 @@ These framing decisions are inputs to this ADR, not open questions:
 | `docs.agent-assembly.com` | Canonical documentation host | mdBook/doc sites — see Epic [AAASM-3659](https://lightning-dust-mite.atlassian.net/browse/AAASM-3659) | Future (placeholder) |
 | `status.agent-assembly.com` | Status page | Hosted status provider | Future (placeholder) |
 | `<tenant>.agent-assembly.com` | Per-customer workspace | Tenant-scoped app served via the `*` wildcard | Future (placeholder) |
-| `tool.agent-assembly.dev` | Legacy installer host (kept) | `scripts/install-cli.sh` at the host root | Live (kept) |
+| `tool.agent-assembly.dev` | Legacy installer host | `scripts/install-cli.sh` at the host root | Retired (AAASM-4931) — no longer an advertised installer alternate |
 
 ### Installer URL contract
 
-- **Canonical:** `curl -fsSL https://agent-assembly.com/install.sh | sh`
-- **Alternate (kept working):** `curl -fsSL https://tool.agent-assembly.dev | sh`
-- Both resolve to the **same script** (`scripts/install-cli.sh`), served by the same
+- **Canonical (sole):** `curl -fsSL https://agent-assembly.com/install.sh | sh`
+- *(Superseded by AAASM-4931: the `tool.agent-assembly.dev` alternate is retired
+  and no longer advertised.)*
+- The canonical installer resolves to `scripts/install-cli.sh`, served by the
   Cloudflare Worker (`infra/install-endpoint/`). The apex is wired as a **path route**
   (`agent-assembly.com/install.sh*`), not a `custom_domain`, because the apex also
-  hosts the marketing site; the `.dev` host stays a `custom_domain` route. See
-  AAASM-3654.
+  hosts the marketing site. See AAASM-3654.
 
 ### How `docs.agent-assembly.com` (Epic AAASM-3659) fits
 
@@ -117,10 +139,11 @@ The content, doc-site tooling, and version-channel model under
 
 ## Decision
 
-Adopt the URL surface in the table above with **`.com` primary, `.dev` kept**, the
-**canonical installer at `agent-assembly.com/install.sh`** (apex path route) with
-**`tool.agent-assembly.dev` retained** as a working alternate, and
-**`docs.agent-assembly.com`** reserved here but owned by Epic AAASM-3659.
+Adopt the URL surface in the table above with **`.com` primary**, the
+**canonical installer at `agent-assembly.com/install.sh`** (apex path route) as the
+**sole** installer (**`tool.agent-assembly.dev` retired** per the AAASM-4931
+amendment above), and **`docs.agent-assembly.com`** reserved here but owned by Epic
+AAASM-3659.
 
 This decision is **Proposed** — it is the contract the rest of this epic builds
 against, pending owner ratification. No host is provisioned by adopting it; DNS and
@@ -136,8 +159,9 @@ deploys are owner-gated (AAASM-3653, AAASM-3654, AAASM-3658).
   (AAASM-3654), host routing/cookies (ADR 0008 / AAASM-3656), redirects
   (AAASM-3657), and the ops runbook (AAASM-3658) all reference, instead of each
   inventing its own host list.
-- The installer one-liner becomes `https://agent-assembly.com/install.sh` while every
-  existing `tool.agent-assembly.dev` reference keeps working.
+- The installer one-liner is `https://agent-assembly.com/install.sh` — the sole
+  canonical installer (the `tool.agent-assembly.dev` alternate is retired per the
+  AAASM-4931 amendment).
 
 ### What this blocks / defers
 
