@@ -41,40 +41,99 @@ pub fn caller_role_from_authenticated(caller: &AuthenticatedCaller) -> CallerRol
     }
 }
 
-/// Error returned when a caller lacks the required role to mutate a policy.
+/// Error returned when a caller may not mutate a policy.
+///
+/// Two independent reasons, both rendered as HTTP 403: the caller's role is
+/// below the requirement (`Role`), or the caller holds the role but is confined
+/// to a different tenant than the policy's scope (`TenantMismatch`, AAASM-4935).
 #[derive(Debug, Clone)]
-pub struct PolicyAuthorizationDenied {
-    /// The role the caller actually has.
-    pub actual_role: CallerRole,
-    /// The minimum role required for this operation.
-    pub required_role: CallerRole,
-    /// The scope kind of the policy being mutated.
-    pub scope_kind: PolicyScopeKind,
-    /// The kind of mutation being attempted.
-    pub mutation_kind: MutationKind,
+pub enum PolicyAuthorizationDenied {
+    /// The caller's role is below the minimum required for the scope/mutation.
+    Role {
+        /// The role the caller actually has.
+        actual_role: CallerRole,
+        /// The minimum role required for this operation.
+        required_role: CallerRole,
+        /// The scope kind of the policy being mutated.
+        scope_kind: PolicyScopeKind,
+        /// The kind of mutation being attempted.
+        mutation_kind: MutationKind,
+    },
+    /// The caller holds the required role but is scoped to a different tenant
+    /// than the policy (AAASM-4935). The role table alone is tenant-blind — an
+    /// OrgAdmin/TeamAdmin key satisfies the role requirement for *every*
+    /// org/team — so a key confined to one tenant must not mutate another
+    /// tenant's policy.
+    TenantMismatch {
+        /// The scope kind of the policy being mutated (`org` or `team`).
+        scope_kind: PolicyScopeKind,
+        /// The kind of mutation being attempted.
+        mutation_kind: MutationKind,
+        /// The org/team identity carried by the policy scope.
+        scope_tenant: String,
+        /// The caller's confined tenant identity for that dimension, if any.
+        caller_tenant: Option<String>,
+    },
 }
 
 impl std::fmt::Display for PolicyAuthorizationDenied {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "policy mutation denied: role '{}' is below required '{}' for {}/{} mutation",
-            self.actual_role, self.required_role, self.scope_kind, self.mutation_kind
-        )
+        match self {
+            Self::Role {
+                actual_role,
+                required_role,
+                scope_kind,
+                mutation_kind,
+            } => write!(
+                f,
+                "policy mutation denied: role '{actual_role}' is below required '{required_role}' \
+                 for {scope_kind}/{mutation_kind} mutation",
+            ),
+            Self::TenantMismatch {
+                scope_kind,
+                mutation_kind,
+                scope_tenant,
+                caller_tenant,
+            } => write!(
+                f,
+                "policy mutation denied: caller tenant '{}' may not perform {mutation_kind} on \
+                 {scope_kind}:'{scope_tenant}'",
+                caller_tenant.as_deref().unwrap_or("<none>"),
+            ),
+        }
     }
 }
 
 impl IntoResponse for PolicyAuthorizationDenied {
     fn into_response(self) -> Response {
-        tracing::warn!(
-            actual_role = %self.actual_role,
-            required_role = %self.required_role,
-            scope_kind = %self.scope_kind,
-            mutation_kind = %self.mutation_kind,
-            "policy_mutation_denied"
-            // TODO(AAASM-237): emit AuditEntry via audit_tx when the write
-            // channel is wired into AppState.
-        );
+        // TODO(AAASM-237): emit AuditEntry via audit_tx when the write channel
+        // is wired into AppState.
+        match &self {
+            Self::Role {
+                actual_role,
+                required_role,
+                scope_kind,
+                mutation_kind,
+            } => tracing::warn!(
+                actual_role = %actual_role,
+                required_role = %required_role,
+                scope_kind = %scope_kind,
+                mutation_kind = %mutation_kind,
+                "policy_mutation_denied"
+            ),
+            Self::TenantMismatch {
+                scope_kind,
+                mutation_kind,
+                scope_tenant,
+                caller_tenant,
+            } => tracing::warn!(
+                scope_kind = %scope_kind,
+                mutation_kind = %mutation_kind,
+                scope_tenant = %scope_tenant,
+                caller_tenant = caller_tenant.as_deref().unwrap_or("<none>"),
+                "policy_mutation_denied_tenant_mismatch"
+            ),
+        }
         ProblemDetail::from_status(StatusCode::FORBIDDEN)
             .with_detail(self.to_string())
             .into_response()
@@ -113,14 +172,50 @@ impl PolicyWriteAuth {
     /// `Err(PolicyAuthorizationDenied)` when it does not.
     pub fn check_mutation(&self, scope: &PolicyScope, mutation: MutationKind) -> Result<(), PolicyAuthorizationDenied> {
         let required = required_role_for(scope, mutation);
-        if self.role.satisfies(required) {
-            Ok(())
-        } else {
-            Err(PolicyAuthorizationDenied {
+        if !self.role.satisfies(required) {
+            return Err(PolicyAuthorizationDenied::Role {
                 actual_role: self.role,
                 required_role: required,
                 scope_kind: PolicyScopeKind::from(scope),
                 mutation_kind: mutation,
+            });
+        }
+        self.check_tenant_binding(scope, mutation)
+    }
+
+    /// Bind the caller's verified tenant to a scoped policy's org/team identity.
+    ///
+    /// AAASM-4935: [`required_role_for`] ranks only the *kind* of scope, so an
+    /// OrgAdmin/TeamAdmin key satisfies the role requirement for *every*
+    /// org/team — the check is tenant-blind. Without this step any Admin-scoped
+    /// key could mutate another tenant's policy. A scoped mutation therefore
+    /// additionally requires the caller's confined tenant to equal the scope's
+    /// own org (`Org`) or team (`Team`) id.
+    ///
+    /// The match is exact and fail-closed: a caller with no confined tenant for
+    /// the relevant dimension (e.g. a cross-tenant key with `org_id: None`)
+    /// cannot prove ownership and is denied. `Global`, `Agent`, and `Tool`
+    /// scopes carry no org/team identity, so there is nothing to bind against —
+    /// their role gate stands alone, unchanged (`Global` stays OrgAdmin-only).
+    fn check_tenant_binding(
+        &self,
+        scope: &PolicyScope,
+        mutation: MutationKind,
+    ) -> Result<(), PolicyAuthorizationDenied> {
+        let (scope_tenant, caller_tenant) = match scope {
+            PolicyScope::Org(org) => (org, self.caller.tenant.org_id.as_deref()),
+            PolicyScope::Team(team) => (team, self.caller.tenant.team_id.as_deref()),
+            PolicyScope::Global | PolicyScope::Agent(_) | PolicyScope::Tool(_) => return Ok(()),
+        };
+
+        if caller_tenant == Some(scope_tenant.as_str()) {
+            Ok(())
+        } else {
+            Err(PolicyAuthorizationDenied::TenantMismatch {
+                scope_kind: PolicyScopeKind::from(scope),
+                mutation_kind: mutation,
+                scope_tenant: scope_tenant.clone(),
+                caller_tenant: caller_tenant.map(str::to_owned),
             })
         }
     }
@@ -145,10 +240,21 @@ mod tests {
     use crate::auth::scope::Scope;
 
     fn caller_with_scopes(scopes: Vec<Scope>) -> AuthenticatedCaller {
+        caller_with_scopes_and_tenant(scopes, crate::auth::Tenant::default())
+    }
+
+    fn caller_with_scopes_and_tenant(scopes: Vec<Scope>, tenant: crate::auth::Tenant) -> AuthenticatedCaller {
         AuthenticatedCaller {
             key_id: "test".into(),
             scopes,
-            tenant: crate::auth::Tenant::default(),
+            tenant,
+        }
+    }
+
+    fn tenant(org_id: Option<&str>, team_id: Option<&str>) -> crate::auth::Tenant {
+        crate::auth::Tenant {
+            org_id: org_id.map(str::to_owned),
+            team_id: team_id.map(str::to_owned),
         }
     }
 
@@ -181,6 +287,13 @@ mod tests {
         }
     }
 
+    fn policy_write_auth_with_tenant(role: CallerRole, tenant: crate::auth::Tenant) -> PolicyWriteAuth {
+        PolicyWriteAuth {
+            caller: caller_with_scopes_and_tenant(vec![], tenant),
+            role,
+        }
+    }
+
     #[test]
     fn org_admin_may_create_global_policy() {
         let auth = policy_write_auth(CallerRole::OrgAdmin);
@@ -189,7 +302,8 @@ mod tests {
 
     #[test]
     fn org_admin_may_create_org_policy() {
-        let auth = policy_write_auth(CallerRole::OrgAdmin);
+        // AAASM-4935: an OrgAdmin may mutate a policy scoped to *their own* org.
+        let auth = policy_write_auth_with_tenant(CallerRole::OrgAdmin, tenant(Some("acme"), None));
         assert!(auth
             .check_mutation(&PolicyScope::Org("acme".into()), MutationKind::Create)
             .is_ok());
@@ -197,7 +311,8 @@ mod tests {
 
     #[test]
     fn team_admin_may_create_team_policy() {
-        let auth = policy_write_auth(CallerRole::TeamAdmin);
+        // AAASM-4935: a TeamAdmin may mutate a policy scoped to *their own* team.
+        let auth = policy_write_auth_with_tenant(CallerRole::TeamAdmin, tenant(None, Some("platform")));
         assert!(auth
             .check_mutation(&PolicyScope::Team("platform".into()), MutationKind::Create)
             .is_ok());
@@ -209,8 +324,16 @@ mod tests {
         let err = auth
             .check_mutation(&PolicyScope::Global, MutationKind::Create)
             .unwrap_err();
-        assert_eq!(err.required_role, CallerRole::OrgAdmin);
-        assert_eq!(err.actual_role, CallerRole::TeamAdmin);
+        let PolicyAuthorizationDenied::Role {
+            required_role,
+            actual_role,
+            ..
+        } = err
+        else {
+            panic!("expected a Role denial, got {err:?}");
+        };
+        assert_eq!(required_role, CallerRole::OrgAdmin);
+        assert_eq!(actual_role, CallerRole::TeamAdmin);
     }
 
     #[test]
@@ -227,9 +350,18 @@ mod tests {
         let err = auth
             .check_mutation(&PolicyScope::Team("x".into()), MutationKind::Update)
             .unwrap_err();
-        assert_eq!(err.required_role, CallerRole::TeamAdmin);
-        assert_eq!(err.scope_kind, PolicyScopeKind::Team);
-        assert_eq!(err.mutation_kind, MutationKind::Update);
+        let PolicyAuthorizationDenied::Role {
+            required_role,
+            scope_kind,
+            mutation_kind,
+            ..
+        } = err
+        else {
+            panic!("expected a Role denial, got {err:?}");
+        };
+        assert_eq!(required_role, CallerRole::TeamAdmin);
+        assert_eq!(scope_kind, PolicyScopeKind::Team);
+        assert_eq!(mutation_kind, MutationKind::Update);
     }
 
     #[test]
@@ -250,7 +382,7 @@ mod tests {
 
     #[test]
     fn denied_error_display_contains_roles_and_scope() {
-        let err = PolicyAuthorizationDenied {
+        let err = PolicyAuthorizationDenied::Role {
             actual_role: CallerRole::Developer,
             required_role: CallerRole::OrgAdmin,
             scope_kind: PolicyScopeKind::Global,
@@ -261,5 +393,84 @@ mod tests {
         assert!(msg.contains("org_admin"), "expected 'org_admin' in: {msg}");
         assert!(msg.contains("global"), "expected 'global' in: {msg}");
         assert!(msg.contains("delete"), "expected 'delete' in: {msg}");
+    }
+
+    // ── Tenant binding (AAASM-4935) ─────────────────────────────────────────
+    //
+    // `required_role_for` is tenant-blind: an OrgAdmin/TeamAdmin key satisfies
+    // the role for *every* org/team. These cases pin the additional binding
+    // that confines a scoped mutation to the caller's own tenant.
+
+    #[test]
+    fn org_admin_denied_for_other_org() {
+        // Holds OrgAdmin, but is confined to org "acme" and targets org "evil".
+        let auth = policy_write_auth_with_tenant(CallerRole::OrgAdmin, tenant(Some("acme"), None));
+        let err = auth
+            .check_mutation(&PolicyScope::Org("evil".into()), MutationKind::Update)
+            .unwrap_err();
+        let PolicyAuthorizationDenied::TenantMismatch {
+            scope_kind,
+            scope_tenant,
+            caller_tenant,
+            ..
+        } = err
+        else {
+            panic!("expected a TenantMismatch denial, got {err:?}");
+        };
+        assert_eq!(scope_kind, PolicyScopeKind::Org);
+        assert_eq!(scope_tenant, "evil");
+        assert_eq!(caller_tenant.as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn team_admin_denied_for_other_team() {
+        let auth = policy_write_auth_with_tenant(CallerRole::TeamAdmin, tenant(None, Some("platform")));
+        let err = auth
+            .check_mutation(&PolicyScope::Team("payments".into()), MutationKind::Delete)
+            .unwrap_err();
+        assert!(
+            matches!(err, PolicyAuthorizationDenied::TenantMismatch { .. }),
+            "expected TenantMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn org_admin_with_no_tenant_denied_for_org_scope() {
+        // Fail-closed: a caller with no confined org cannot prove ownership of
+        // org "acme", even though it holds OrgAdmin.
+        let auth = policy_write_auth(CallerRole::OrgAdmin);
+        let err = auth
+            .check_mutation(&PolicyScope::Org("acme".into()), MutationKind::Create)
+            .unwrap_err();
+        let PolicyAuthorizationDenied::TenantMismatch { caller_tenant, .. } = err else {
+            panic!("expected a TenantMismatch denial, got {err:?}");
+        };
+        assert_eq!(caller_tenant, None);
+    }
+
+    #[test]
+    fn org_admin_allowed_for_own_org() {
+        let auth = policy_write_auth_with_tenant(CallerRole::OrgAdmin, tenant(Some("acme"), None));
+        assert!(auth
+            .check_mutation(&PolicyScope::Org("acme".into()), MutationKind::Update)
+            .is_ok());
+    }
+
+    #[test]
+    fn global_scope_ignores_tenant() {
+        // Global carries no tenant identity — an OrgAdmin with no confined
+        // tenant still installs it (unchanged pre-AAASM-4935 behavior).
+        let auth = policy_write_auth(CallerRole::OrgAdmin);
+        assert!(auth.check_mutation(&PolicyScope::Global, MutationKind::Create).is_ok());
+    }
+
+    #[test]
+    fn tool_scope_ignores_tenant() {
+        // Tool scope carries no org/team identity, so tenant binding is a no-op;
+        // the Developer role gate alone applies.
+        let auth = policy_write_auth(CallerRole::Developer);
+        assert!(auth
+            .check_mutation(&PolicyScope::Tool("slack-mcp".into()), MutationKind::Create)
+            .is_ok());
     }
 }
