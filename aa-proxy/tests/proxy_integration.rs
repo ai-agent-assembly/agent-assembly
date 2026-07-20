@@ -206,6 +206,108 @@ async fn plain_http_request_to_denied_host_is_rejected_with_403() {
     );
 }
 
+/// Start a mock HTTP upstream that records *every* byte it receives on the first
+/// accepted connection, so a test can assert whether a second, pipelined request
+/// was relayed upstream. It responds once the request head is seen, then keeps
+/// reading (to capture any wrongly-forwarded follow-up) until the connection
+/// falls quiet, then closes.
+async fn start_recording_upstream() -> (SocketAddr, std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let received_task = std::sync::Arc::clone(&received);
+
+    tokio::spawn(async move {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 16384];
+        let mut responded = false;
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), stream.read(&mut buf)).await {
+                // EOF or read error: connection done.
+                Ok(Ok(0)) | Ok(Err(_)) => break,
+                Ok(Ok(n)) => {
+                    received_task.lock().unwrap().extend_from_slice(&buf[..n]);
+                    // Respond as soon as the request head is complete so the
+                    // proxy's response relay (and the client) can make progress.
+                    if !responded && received_task.lock().unwrap().windows(4).any(|w| w == b"\r\n\r\n") {
+                        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+                        let _ = stream.write_all(resp).await;
+                        responded = true;
+                    }
+                }
+                // Quiet period: no further bytes are coming — stop recording.
+                Err(_) => break,
+            }
+        }
+        let _ = stream.shutdown().await;
+    });
+
+    (addr, received)
+}
+
+#[tokio::test]
+async fn plain_http_second_keepalive_request_is_not_forwarded_uninspected() {
+    // AAASM-4934: the plain-HTTP path scans only the first request body. It must
+    // force `Connection: close` and relay a single request/response, so a second
+    // request pipelined on the same keep-alive connection can never reach
+    // upstream un-inspected. Before the fix, the bidirectional copy forwarded the
+    // pipelined request #2 (carrying a secret) straight upstream with no scan.
+    let dir = tempfile::TempDir::new().unwrap();
+    let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+    let config = test_config(dir.path());
+    let (proxy_addr, _handle) = start_proxy(config, ca).await;
+
+    let (upstream_addr, received) = start_recording_upstream().await;
+
+    // The secret rides in request #2, placed at the end of a large body so its
+    // bytes are NOT swallowed by the proxy's BufReader read-ahead on the buggy
+    // path — they sit in the socket and (pre-fix) get copied upstream verbatim.
+    const SECRET: &str = "SECOND-REQUEST-SECRET-sk-live-DEADBEEFCAFE";
+    let padding = "x".repeat(64 * 1024);
+    let body2 = format!("{padding}{SECRET}");
+
+    let req1 = format!(
+        "POST http://{upstream_addr}/one HTTP/1.1\r\nHost: {upstream_addr}\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\nHELLO"
+    );
+    let req2 = format!(
+        "POST http://{upstream_addr}/two HTTP/1.1\r\nHost: {upstream_addr}\r\nContent-Length: {}\r\n\r\n{}",
+        body2.len(),
+        body2
+    );
+
+    // Pipeline both requests in one write on a single connection.
+    let mut stream = TcpStream::connect(proxy_addr).await.unwrap();
+    stream.write_all(format!("{req1}{req2}").as_bytes()).await.unwrap();
+
+    // Read the (single) response the proxy relays for request #1.
+    let mut response = String::new();
+    let mut reader = BufReader::new(stream);
+    reader.read_line(&mut response).await.unwrap();
+    assert!(response.contains("200"), "expected 200 for request #1, got: {response}");
+
+    // Let the recording upstream reach its quiet-period cutoff.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+    let got = received.lock().unwrap().clone();
+    let got_str = String::from_utf8_lossy(&got);
+
+    // Request #1 must have been forwarded (proves the path still works)...
+    assert!(got_str.contains("HELLO"), "request #1 body should reach upstream");
+    // ...with `Connection: close` forced, not the client's `keep-alive`.
+    assert!(
+        got_str.contains("Connection: close"),
+        "forwarded request must force Connection: close, got head:\n{}",
+        got_str.get(..got_str.find("\r\n\r\n").unwrap_or(0)).unwrap_or("")
+    );
+    // The pipelined request #2's secret must NEVER reach upstream un-inspected.
+    assert!(
+        !got_str.contains(SECRET),
+        "request #2 secret was forwarded upstream un-inspected (keep-alive DLP bypass)"
+    );
+}
+
 #[tokio::test]
 async fn connect_to_llm_host_triggers_interception_without_crash() {
     // This test verifies that a CONNECT to a known LLM API host

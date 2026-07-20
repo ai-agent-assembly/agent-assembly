@@ -1201,9 +1201,10 @@ impl ProxyServer {
         }
 
         let content_length = plain_http_content_length(&headers)?;
-        // Only requests that carry a body are buffered+scanned. A bodyless
-        // request (GET, or a plain-HTTP upgrade) keeps the original full-duplex
-        // streaming copy below, so keep-alive / upgrade behaviour is unchanged.
+        // Only requests that carry a body are buffered+scanned; a bodyless
+        // request (GET) has nothing to scan. Either way the forward path below
+        // now forces `Connection: close` and relays only the upstream response,
+        // so exactly one request/response crosses this connection (AAASM-4934).
         let scanned_body: Option<Vec<u8>> = if content_length > 0 {
             let mut body = vec![0u8; content_length];
             reader.read_exact(&mut body).await?;
@@ -1260,33 +1261,44 @@ impl ProxyServer {
             None => self.connect_revalidated(&upstream_addr).await?,
         };
 
-        // Re-serialise and forward the original request.
+        // Re-serialise and forward the request, forcing `Connection: close`.
+        //
+        // AAASM-4934: the DLP scan above inspects only the *first* request on
+        // this connection. Historically the request was forwarded with the
+        // client's own headers (often `Connection: keep-alive`) and the exchange
+        // finished with a *bidirectional* copy — so a second request pipelined on
+        // the same keep-alive connection was relayed client→upstream with no
+        // scan, re-opening the exfiltration hole AAASM-4897 closed for request
+        // one. Mirror the MitM path (`serialize_http_request_with_auth`): drop
+        // any inbound `Connection` header and emit a single `Connection: close`,
+        // then relay only the upstream→client direction below. Together these
+        // enforce one inspected request/response per connection — a second,
+        // un-scanned request can never reach upstream.
         upstream.write_all(request_line.as_bytes()).await?;
         upstream.write_all(b"\r\n").await?;
         for h in &headers {
+            if h.to_ascii_lowercase().starts_with("connection:") {
+                continue;
+            }
             upstream.write_all(h.as_bytes()).await?;
         }
+        upstream.write_all(b"Connection: close\r\n").await?;
         upstream.write_all(b"\r\n").await?;
 
-        // Forward the buffered, DLP-scanned request body (AAASM-4897). When a
-        // body was scanned the client→upstream direction below only carries any
-        // pipelined trailing bytes; the response relay completes the exchange.
+        // Forward the buffered, DLP-scanned request body (AAASM-4897).
         if let Some(body) = scanned_body.as_deref() {
             upstream.write_all(body).await?;
         }
 
-        // Bidirectional copy between client and upstream.
-        let stream = reader.into_inner();
-        let (mut client_read, mut client_write) = tokio::io::split(stream);
-        let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
-
-        let c2u = tokio::io::copy(&mut client_read, &mut upstream_write);
-        let u2c = tokio::io::copy(&mut upstream_read, &mut client_write);
-
-        tokio::select! {
-            r = c2u => { r?; }
-            r = u2c => { r?; }
-        }
+        // AAASM-4934: relay only the upstream response back to the client, then
+        // tear the connection down — mirroring the MitM path's single-exchange
+        // relay. We never copy further client bytes upstream, so a second request
+        // pipelined on this connection cannot reach upstream un-inspected. The
+        // forced `Connection: close` makes upstream close after one response,
+        // bounding this copy.
+        let mut client_stream = reader.into_inner();
+        tokio::io::copy(&mut upstream, &mut client_stream).await?;
+        let _ = client_stream.shutdown().await;
 
         Ok(())
     }
@@ -1383,10 +1395,22 @@ fn plain_http_header_value(headers: &[String], name: &str) -> Option<String> {
 /// Parse and validate the plain-HTTP `Content-Length`. Absent → `0` (empty
 /// body). Rejects a length above [`MAX_BODY_LEN`] fail-closed so a buffered
 /// body cannot OOM the proxy (AAASM-4897, mirroring the MitM path's cap).
+///
+/// AAASM-4934: a header that is *present but unparseable* (`Content-Length: abc`,
+/// a negative, a duplicated/comma-joined value) fails closed rather than
+/// silently collapsing to `0`. The old `unwrap_or(0)` treated such a request as
+/// bodyless, so its actual body bytes skipped the DLP scan and were relayed
+/// upstream un-inspected — the same class of exfiltration hole this ticket
+/// closes for keep-alive. An absent header still legitimately means no body.
 fn plain_http_content_length(headers: &[String]) -> Result<usize, ProxyError> {
-    let content_length = plain_http_header_value(headers, "content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
+    let content_length = match plain_http_header_value(headers, "content-length") {
+        None => 0,
+        Some(v) => v.parse::<usize>().map_err(|_| {
+            ProxyError::Config(format!(
+                "plain-HTTP Content-Length {v:?} is not a valid length; refusing (fail-closed)"
+            ))
+        })?,
+    };
     if content_length > MAX_BODY_LEN {
         return Err(ProxyError::Config(format!(
             "plain-HTTP Content-Length {content_length} exceeds maximum {MAX_BODY_LEN}; refusing (fail-closed)"
@@ -1557,6 +1581,20 @@ mod tests {
         assert_eq!(canonical_host("evil.com."), "evil.com");
         assert_eq!(canonical_host("Evil.Com.:443"), "evil.com");
         assert_eq!(canonical_host("evil.com"), "evil.com");
+    }
+
+    #[test]
+    fn plain_http_content_length_fails_closed_on_unparseable_value() {
+        // AAASM-4934: an absent header means no body (Ok(0)), but a present but
+        // unparseable value must fail closed rather than collapse to 0 — a `0`
+        // would skip the DLP scan on the real body and relay it un-inspected.
+        assert_eq!(plain_http_content_length(&[]).unwrap(), 0);
+        assert_eq!(
+            plain_http_content_length(&["Content-Length: 5\r\n".to_string()]).unwrap(),
+            5
+        );
+        assert!(plain_http_content_length(&["Content-Length: abc\r\n".to_string()]).is_err());
+        assert!(plain_http_content_length(&["Content-Length: -1\r\n".to_string()]).is_err());
     }
 
     #[test]
