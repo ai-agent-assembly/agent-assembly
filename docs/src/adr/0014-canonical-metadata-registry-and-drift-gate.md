@@ -238,7 +238,7 @@ sanctioned generated block; otherwise a hand-copied literal.
 ### Canonical URLs (largest cluster)
 | Site | Metadata | Form |
 | --- | --- | --- |
-| `.github` `metadata/org-profile.yaml` + `profile/README.md` | docs site, arena docs, installer alias, curl installer | SoT / generated |
+| `.github` `metadata/org-profile.yaml` + `profile/README.md` | docs site, arena docs, curl installer (`agent-assembly.com/install.sh`, sole canonical — the `.dev` alt was retired in AAASM-4931) | SoT / generated |
 | `.github` `SUPPORT.md:5,20` | docs + marketing URLs | literal |
 | `agent-assembly/**` | installer `agent-assembly.com/install.sh` (×26), docs `docs.agent-assembly.com/` (×22, incl. per-SDK `…/stable/`), `app.agent-assembly.com/` | literal, high fan-out |
 | `docs/**` | `api.`/`app.` hosts, `agent-assembly.com/early-access`, per-SDK docs | literal |
