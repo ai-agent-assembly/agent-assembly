@@ -112,6 +112,13 @@ pub struct AppState {
     /// (AAASM-924). 5-minute TTL by default. Shared across requests so
     /// the resolver backend is hit at most once per TTL window per key.
     pub saas_secret_cache: Arc<crate::routes::devtools::secret_cache::SecretCache>,
+    /// Replay-dedup cache for the SaaS webhook handler (AAASM-4897). The
+    /// per-provider HMAC signs the body only — with no timestamp/nonce a
+    /// validly-signed webhook can be re-sent verbatim. Keyed by the
+    /// authenticated `(provider, event_id)`, this admits each event once
+    /// within a TTL window and rejects the replay with 409. Shared across
+    /// requests so every request observes the same seen-set.
+    pub saas_replay_cache: Arc<crate::routes::devtools::replay_cache::ReplayCache>,
     /// Alert-rule CRUD store (AAASM-1386).
     pub alert_rule_store: Arc<dyn AlertRuleStore>,
     /// Allow-set of destinations alert rules may target (AAASM-1386).
@@ -363,6 +370,7 @@ impl AppState {
             ))),
             audit_sender: None,
             saas_secret_cache: Arc::new(crate::routes::devtools::secret_cache::SecretCache::new()),
+            saas_replay_cache: Arc::new(crate::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(crate::alerts::rules::store::InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,

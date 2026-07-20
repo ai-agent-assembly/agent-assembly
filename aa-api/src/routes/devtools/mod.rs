@@ -21,7 +21,11 @@
 //!    provider-specific JSON into a single
 //!    [`aa_devtool_saas::event::SaasAuditEvent`]. Returns 400 on malformed JSON
 //!    or missing required field.
-//! 5. **Persist to audit pipeline** —
+//! 5. **Replay dedup** — [`replay_cache::ReplayCache`] admits each
+//!    authenticated `(provider, event_id)` once within its TTL. The HMAC
+//!    signs the body only (no timestamp/nonce), so a captured request can be
+//!    re-sent verbatim and re-verified; the dedup rejects the replay with 409.
+//! 6. **Persist to audit pipeline** —
 //!    [`audit_mapping::to_audit_entry`] builds an [`aa_core::AuditEntry`] tagged
 //!    with `Lineage::spawned_by_tool = "saas:<provider>"`, then
 //!    `try_send`s it onto [`crate::state::AppState::audit_sender`]. The send
@@ -36,9 +40,11 @@
 //! | 400 | Body failed provider-specific parse. |
 //! | 401 | Signature header missing, secret unresolved, or HMAC mismatch. |
 //! | 404 | `{provider}` not in `{claude-ai, chatgpt, cursor-cloud}`. |
+//! | 409 | Duplicate `event_id` — replay of an already-seen event. |
 //! | 503 | Audit pipeline disconnected or at capacity. |
 
 pub mod audit_mapping;
+pub mod replay_cache;
 pub mod secret_cache;
 
 use axum::body::Bytes;
@@ -89,7 +95,8 @@ fn secret_ref_for(provider_str: &str) -> String {
 /// 2. Resolve the HMAC secret via the cached resolver (401 if absent).
 /// 3. Verify the HMAC signature (401 on missing header or mismatch).
 /// 4. Decode the body into a [`SaasAuditEvent`] (400 on malformed body).
-/// 5. Push an [`AuditEntry`] onto the audit pipeline (503 on backpressure
+/// 5. Reject a replayed `event_id` via the dedup cache (409 on replay).
+/// 6. Push an [`AuditEntry`] onto the audit pipeline (503 on backpressure
 ///    or when no pipeline is connected).
 ///
 /// # Response codes
@@ -100,6 +107,7 @@ fn secret_ref_for(provider_str: &str) -> String {
 /// | `400 Bad Request` | Body failed to parse for this provider. |
 /// | `401 Unauthorized` | HMAC signature missing or invalid. |
 /// | `404 Not Found` | `{provider}` is not a known SaaS provider. |
+/// | `409 Conflict` | Replayed event — this `event_id` was already seen. |
 /// | `503 Service Unavailable` | Audit-pipeline queue is full or unconnected. |
 ///
 /// [`SaasAuditEvent`]: aa_devtool_saas::event::SaasAuditEvent
@@ -156,6 +164,20 @@ pub async fn saas_webhook(
         }
     };
 
+    // 4b. Replay defense (AAASM-4897): the per-provider HMAC signs the body
+    // only, so a captured, validly-signed webhook can be re-sent verbatim and
+    // re-verified. Admit each authenticated `(provider, event_id)` once within
+    // the dedup TTL; a repeat is a replay and is rejected with 409 before it
+    // can be enqueued (and thus double-audited).
+    if !state.saas_replay_cache.admit(&provider_str, &event.event_id).await {
+        return (
+            StatusCode::CONFLICT,
+            ProblemDetail::from_status(StatusCode::CONFLICT)
+                .with_detail("Duplicate event: replay of an already-processed event_id"),
+        )
+            .into_response();
+    }
+
     // 5. Push to the audit pipeline. Non-blocking — backpressure is 503.
     let Some(sender) = state.audit_sender.as_ref() else {
         return (
@@ -201,6 +223,51 @@ mod tests {
         .await
         .into_response();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn replayed_event_is_rejected_with_409() {
+        // AAASM-4897: the per-provider HMAC signs the body only, so a captured
+        // validly-signed webhook re-sent verbatim re-verifies. The first
+        // delivery is accepted (202); the byte-identical replay is rejected
+        // (409) by the event_id dedup before it can be double-audited.
+        use hmac::{Hmac, KeyInit, Mac};
+        use sha2::Sha256;
+
+        let secret = b"replay-test-secret";
+        std::env::set_var("AA_SAAS_CLAUDE_AI_HMAC_SECRET", "replay-test-secret");
+
+        let body = br#"{"event_id":"evt_replay_1","timestamp":"2026-05-20T08:30:00Z","actor":{"email":"a@example.com"},"action":{"tool":"bash"}}"#;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("key");
+        mac.update(body);
+        let sig = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let mut headers = HeaderMap::new();
+        headers.insert("anthropic-signature", sig.parse().unwrap());
+
+        // Wire an audit sender so the first (non-replayed) request reaches 202.
+        let mut state = AppState::local_in_memory().expect("state builds");
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        state.audit_sender = Some(tx);
+
+        let first = saas_webhook(
+            Path("claude-ai".to_string()),
+            headers.clone(),
+            Extension(state.clone()),
+            Bytes::from_static(body),
+        )
+        .await
+        .into_response();
+        assert_eq!(first.status(), StatusCode::ACCEPTED, "first delivery accepted");
+
+        let replay = saas_webhook(
+            Path("claude-ai".to_string()),
+            headers,
+            Extension(state),
+            Bytes::from_static(body),
+        )
+        .await
+        .into_response();
+        assert_eq!(replay.status(), StatusCode::CONFLICT, "byte-identical replay rejected");
     }
 
     #[tokio::test]
