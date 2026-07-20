@@ -45,9 +45,14 @@ everything):
 
 Deliberately NOT stamped (ADR-directed)
 ---------------------------------------
-* ``docs/src/compatibility.md`` matrix rows — per-tag rows stay **literal** (ADR
-  0013 "Explicitly forbidden designs": templating historical values). The matrix
-  grows by append-on-release; its row-presence gate is upgraded under AAASM-4911.
+* ``docs/src/compatibility.md`` matrix rows are never *written* here — per-tag rows
+  stay **literal** (ADR 0013 "Explicitly forbidden designs": templating historical
+  values). The matrix grows by append-on-release. ``--check`` mode does, however,
+  **value-check the current release's row** (AAASM-4921): the row for the core
+  anchor must exist with the anchor tag in its ``aa-runtime`` cell, so a bump that
+  forgets the row — or fat-fingers its runtime value — fails the gate instead of
+  slipping past the old presence-only ``.ci/check-compatibility-matrix.sh``. Only
+  the current row is validated; historical rows are left untouched.
 * ``aa-ebpf-probes/rust-toolchain.toml`` ``channel = "nightly"`` — a channel, not
   a version derived from any anchor; there is nothing to propagate.
 * The README Project Status maturity **banner** ("Release candidate — `v0.0.1-rc`
@@ -295,12 +300,50 @@ def sync_snippets(root: Path, check: bool) -> list[str]:
     return drift
 
 
+# The compatibility matrix (docs/src/compatibility.md) is append-on-release and its
+# per-tag rows are historical literals the propagator must never template (ADR 0013).
+# The row for the CURRENT release, however, is a value we CAN validate against the
+# anchor — and must, because the legacy presence-only gate
+# (.ci/check-compatibility-matrix.sh) passes as long as the file was touched at all,
+# so a missing or mis-typed current row shipped silently (AAASM-4921).
+COMPAT_MATRIX = "docs/src/compatibility.md"
+
+
+def check_compat_current_row(root: Path, ctx: Context) -> list[str]:
+    """Value-check the CURRENT release's row in the compatibility matrix.
+
+    Returns a drift list (empty == OK). The check is intentionally narrow: it
+    asserts exactly that a matrix row exists whose first (``aa-runtime``) cell is
+    the core anchor tag. That catches the two failures the old presence-only gate
+    let through — the current row missing entirely (anchor bumped, matrix not
+    appended) and the current row carrying the wrong runtime version (no row then
+    matches the anchor) — without templating any historical row. SDK cells are not
+    asserted against the anchor: SDKs version independently (ADR 0009).
+    """
+    path = root / COMPAT_MATRIX
+    if not path.is_file():
+        return [f"{COMPAT_MATRIX}: consumer file not found"]
+    # A table row whose first cell is exactly the anchor tag, e.g. `| v0.0.1-rc.6 |`.
+    row = re.compile(r"(?m)^\|\s*" + re.escape(ctx.core_tag) + r"\s*\|")
+    if row.search(path.read_text()):
+        return []
+    return [
+        f"{COMPAT_MATRIX}: no compatibility-matrix row for the current core anchor "
+        f"{ctx.core_tag} (append or fix the current row; historical rows stay literal)"
+    ]
+
+
 def run(root: Path, check: bool) -> int:
     ctx = resolve_context(root)
     rules = build_rules(ctx)
     lit_drift, errors = sync_literals(root, rules, check)
     snip_drift = sync_snippets(root, check)
     drift = lit_drift + snip_drift
+    # The compatibility matrix is validated, not stamped: the current-release row is
+    # value-checked in gate mode only (its historical rows are literal — nothing to
+    # write). A stale/missing current row is drift that fails --check.
+    if check:
+        drift = drift + check_compat_current_row(root, ctx)
 
     if errors:
         for err in errors:
