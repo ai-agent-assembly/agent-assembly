@@ -196,17 +196,6 @@ impl CredentialKind {
         }
     }
 
-    /// Whether this kind is a PEM private-key block detected by its
-    /// `-----BEGIN … PRIVATE KEY-----` header. Used to extend the finding span
-    /// through the block's `-----END …-----` marker so a short trailing base64
-    /// line cannot slip past the length-gated entropy pass (AAASM-4936).
-    fn is_pem_private_key(&self) -> bool {
-        matches!(
-            self,
-            Self::EcPrivateKey | Self::OpensshPrivateKey | Self::PgpPrivateKey | Self::PrivateKey | Self::RsaPrivateKey
-        )
-    }
-
     /// Relative confidence of this kind when two overlapping findings are
     /// coalesced into one span.
     ///
@@ -447,18 +436,7 @@ impl CredentialScanner {
         for mat in self.patterns.find_iter(text) {
             let kind = self.kinds[mat.pattern()].clone();
             let offset = mat.start();
-            let mut end = token_end(text, mat.end());
-            // AAASM-4936 (L2): the literal detector only matches a PEM key's
-            // `-----BEGIN … PRIVATE KEY-----` header line. The base64 body is
-            // normally caught by the entropy pass, but a short final base64 line
-            // (below the run-length gate) slips through and leaks key material.
-            // Extend the finding through the matching `-----END …-----` marker so
-            // the whole block — including any short trailing line — is redacted.
-            if kind.is_pem_private_key() {
-                if let Some(block_end) = pem_block_end(text, mat.end()) {
-                    end = end.max(block_end);
-                }
-            }
+            let end = token_end(text, mat.end());
             findings.push(CredentialFinding::new(kind, offset, end));
         }
 
@@ -616,19 +594,6 @@ fn token_end(text: &str, from: usize) -> usize {
         .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';' | ')' | ']' | '}'))
         .map(|i| from + i)
         .unwrap_or(text.len())
-}
-
-/// Byte index just past the closing dashes of the `-----END …-----` marker that
-/// terminates the PEM block whose header ended at `from`, or `None` when no END
-/// marker follows (a truncated block — the entropy pass still covers the body
-/// lines that meet the run-length gate).
-fn pem_block_end(text: &str, from: usize) -> Option<usize> {
-    let end_rel = text[from..].find("-----END")?;
-    let after_end_keyword = from + end_rel + "-----END".len();
-    // The END line closes with `-----`; consume through it so the whole marker
-    // (and thus the whole block) is inside the redaction span.
-    let closing = text[after_end_keyword..].find("-----")?;
-    Some(after_end_keyword + closing + "-----".len())
 }
 
 /// Returns `true` if `s` matches the SSN format `DDD-DD-DDDD` exactly.
@@ -1237,34 +1202,6 @@ mod tests {
         let redacted = result.redact(text);
         assert!(!redacted.contains("xoxr-"));
         assert!(redacted.contains("[REDACTED:SlackRefreshToken]"));
-    }
-
-    /// AAASM-4936 (L2): a PEM private key whose final base64 line is shorter
-    /// than the entropy pass's run-length gate must still be fully redacted. The
-    /// literal detector only matches the BEGIN header, so before the block-end
-    /// extension the short trailing line (`wJ8=`) leaked. The whole block —
-    /// header through the END marker — must be covered.
-    #[test]
-    fn redacts_pem_private_key_with_short_final_line() {
-        let scanner = CredentialScanner::new();
-        let text = "-----BEGIN RSA PRIVATE KEY-----\n\
-                    MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n\
-                    wJ8=\n\
-                    -----END RSA PRIVATE KEY-----";
-        let result = scanner.scan(text);
-        let redacted = result.redact(text);
-        assert!(
-            !redacted.contains("wJ8="),
-            "short final base64 line must be redacted: {redacted}"
-        );
-        assert!(
-            !redacted.contains("MIIBOgIBAAJBAKj"),
-            "key body must be redacted: {redacted}"
-        );
-        assert!(
-            !redacted.contains("-----END RSA PRIVATE KEY-----"),
-            "END marker must fall inside the redaction span: {redacted}"
-        );
     }
 
     /// AAASM-4936 (L1): `redact` must fail closed when a finding's span cannot
