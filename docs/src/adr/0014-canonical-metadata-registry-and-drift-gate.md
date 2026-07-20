@@ -89,7 +89,7 @@ branch (`blob/main/…` vs the actual `master`).
    - **Generation** — for artifacts that can host a bounded generated region or
      include a generated snippet (README badge/link tables, install channels,
      structured docs). Consumers embed a `BEGIN/END GENERATED` block or an
-     `{{#include generated/…}}` snippet; the literal is never hand-typed.
+     `\{{#include generated/…}}` snippet; the literal is never hand-typed.
      (This is the existing `org-profile.yaml`→`profile/README.md` and
      `docs.yaml`→`docs/src/generated/*` pattern.)
    - **Lint-flag-on-hardcoded-value** — for free prose and scattered deep-links where
@@ -224,7 +224,7 @@ sanctioned generated block; otherwise a hand-copied literal.
 ### Repo names + slugs
 | Site | Metadata | Form |
 | --- | --- | --- |
-| `.github` `metadata/org-profile.yaml` | every `slug` + `repo` "ai-agent-assembly/<name>" | **canonical SoT** |
+| `.github` `metadata/org-profile.yaml` | every `slug` + `repo` "ai-agent-assembly/`<name>`" | **canonical SoT** |
 | `.github` `profile/README.md` | repo names/badges | generated block (fine) EXCEPT prose |
 | `.github` `profile/README.md:29` | link text "**agent-assembly-examples**" → `/examples` | literal — **stale pre-rename name** (4902-deferred) |
 | `.github` `CLAUDE.md` / `AGENTS.md` / `README.md` | repo map tables | literal (fixed to current slugs in 4902) |
