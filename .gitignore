@@ -45,3 +45,6 @@ openapi/agent-assembly-brief/project/
 
 # Doc-versioning channel computation test cache (AAASM-2752)
 docs/ci/__pycache__/
+
+# Python bytecode cache from the scripts/ generators + their tests (AAASM-4910)
+scripts/__pycache__/
