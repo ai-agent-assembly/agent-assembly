@@ -94,24 +94,50 @@ the job of a **literal detector**, which is precise and testable. Tightening the
 entropy heuristic to chase an evasion is only acceptable when it does not raise the
 false-positive rate on the conformance corpus (see Validation).
 
-### 4. Graph-context evaluation: distinguish *legitimate absence* from *resolution failure*
+### 4. Graph-context evaluation: distinguish *legitimate absence* from *resolution failure*, deterministically
 
 Today every `PolicyContext` getter returns `Option<T>` and a `None` short-circuits
 the referencing clause to `false` (`deny` doesn't deny, `requires_approval_if`
 doesn't fire) — *null-as-no-match*, documented and snapshot-tested. This is **correct
 when absence is legitimate** (a team-less agent has no `team_active_agents`, so a
 team-scoped deny rightly does not apply to it). It is a **fail-open when the `None` is
-caused by a resolution error** (registry unavailable, lookup failure), because a deny
-rule then silently stops denying.
+caused by a resolution error** (registry unavailable, lookup/backend failure),
+because a deny rule then silently stops denying.
 
-Decision: **preserve null-as-no-match for legitimate absence, but a resolution
-*failure* MUST fail closed** for `deny` / `requires_approval_if` clauses (deny, or
-escalate to approval, per policy — not silently allow). This requires the context
-trait to distinguish the two causes (e.g. `Result<Option<T>, ContextError>` or a
-dedicated "unavailable" signal) rather than collapsing both into a bare `None`. The
-`allow` path is unaffected. Because this changes a documented, snapshot-tested
-invariant, it ships **only** after this ADR is Accepted, behind its own PR with new
-fixtures for both causes (see Consequences §3).
+**Decision.** The context layer MUST distinguish the two causes — `None`
+(legitimately absent) vs an explicit *resolution failure* — rather than collapsing
+both into a bare `None`. This requires the trait to carry the distinction (e.g.
+`Result<Option<T>, ContextError>`, or a dedicated "unavailable" signal), not
+`Option<T>` alone. Given the two causes, evaluation is **deterministic** per the
+following table; there is no configurable or per-call variability:
+
+| Clause | Value resolves `Some(_)` | **Legitimate absence** (`None`, valid) | **Resolution failure** |
+|---|---|---|---|
+| `deny` (conditional) | denies iff expression `true` | *no-match* — does **not** deny | **DENY** (fail-closed) |
+| `requires_approval_if` | fires iff expression `true` | *no-match* — does **not** fire | **REQUIRE APPROVAL** (fail-closed) |
+| `allow` (conditional) | grants iff expression `true` | *no-match* — condition does not grant | *no-match* — **MUST NEVER grant** on failure |
+
+Rules, stated so an implementer cannot guess wrong:
+
+1. **`deny` + resolution failure ⇒ deny.** A deny rule whose variable cannot be
+   resolved denies the action.
+2. **`requires_approval_if` + resolution failure ⇒ require approval.** The action is
+   escalated, not silently allowed.
+3. **`allow` + resolution failure ⇒ no match, and MUST NEVER grant access.** A
+   conditional allow whose variable cannot be resolved does not satisfy its condition;
+   failure can never be laundered into a grant. (Unconditional `allow` — one that
+   references no graph variable — is unaffected; there is nothing to resolve.)
+4. **Legitimate absence remains `null-as-no-match`** for every clause type, unchanged
+   from today's documented behavior.
+5. **Every resolution failure MUST be audit-visible.** The evaluation emits an audit
+   record identifying the unresolved variable, the clause it affected, and the
+   fail-safe action taken (deny / approval / no-grant), so a silently-degraded
+   decision is never invisible to an operator.
+
+Because this changes a documented, snapshot-tested invariant, it ships **only** after
+this ADR is Accepted, as its own PR (workstream §5.3) with fixtures covering all five
+paths — absence, failure, `deny`, `requires_approval_if`, and `allow` — plus the
+audit-evidence assertion.
 
 ### 5. Scope split for implementation (post-acceptance)
 
@@ -124,8 +150,17 @@ with focused regression **and** conformance tests:
    vector added).
 2. **Heuristic changes** — any threshold/detector tightening (entropy dilution, card
    spacing, SSN adjacent-digit), each gated on a documented false-positive analysis.
-3. **Graph-context behavior change** — the §4 fail-closed-on-failure semantics, with
-   fixtures for legitimate-absence (unchanged) vs resolution-failure (now closed).
+3. **Graph-context resolution-failure semantics** — distinguish legitimate absence
+   from lookup/resolution failure and implement the deterministic §4 table
+   (deny⇒deny, approval⇒approve, allow⇒never-grant), with audit evidence on every
+   failure. Migrate the `PolicyContext` implementations carefully (production wiring
+   + the test fakes), and add fixtures for all five paths — absence, failure, `deny`,
+   `requires_approval_if`, `allow`. Delivered as its own PR.
+
+Scope guard: workstream §5.2 (heuristics) MUST NOT lower entropy thresholds or widen
+the token window — entropy dilution is an accepted residual risk (see Accepted
+risks). Card-spacing and SSN-boundary tightening are **out of the initial split** and
+may be picked up later as separate, false-positive-tested hardening tasks.
 
 ---
 
@@ -158,6 +193,9 @@ with focused regression **and** conformance tests:
   evasion vector; add a precise literal detector instead.
 - **Do not** collapse "variable legitimately absent" and "variable failed to resolve"
   into the same silently-allowing `None` for `deny` / approval clauses.
+- **Do not** let a conditional `allow` grant access on a resolution failure, and
+  **do not** let any resolution failure degrade a decision *silently* — every failure
+  must emit audit evidence.
 - **Do not** change any committed conformance golden vector to make a detector change
   pass; a changed vector must be justified as a *better* redaction, reviewed on its
   own.
@@ -166,8 +204,11 @@ with focused regression **and** conformance tests:
 
 - **Operators / SaaS:** redaction behavior is unchanged for the common case; the
   graph-context change (§4) means a policy whose `deny`/approval clause references a
-  variable that *fails to resolve* will now deny/escalate instead of silently
-  allowing — a stricter, safer default that operators should be aware of.
+  variable that *fails to resolve* will now deny/escalate (and a conditional `allow`
+  will not grant) instead of silently allowing — a stricter, safer default. Every such
+  failure is now **audit-visible**, so operators can see when a decision was made on
+  degraded context (and fix the underlying resolution outage). Legitimate absence is
+  unchanged, so existing well-formed policies see no behavioral difference.
 - **SDK/CLI:** no surface change; the DLP layer is internal to the trusted core.
 - **Future contributors:** any detector or context change is now measured against a
   written contract (fail-closed redaction, literal-subsumes-heuristic, bounded
@@ -190,9 +231,11 @@ with focused regression **and** conformance tests:
   closed, and, where it touches detection output, a **conformance** vector.
 - Heuristic changes (§5.2) MUST include a false-positive check against the benign
   corpus (ordinary identifiers/text) demonstrating no new FPs.
-- The graph-context change (§5.3) MUST add fixtures for both `None` causes
-  (legitimate-absence → unchanged no-match; resolution-failure → fail-closed) in
-  `tests/graph_vars_fixture_test.rs`.
+- The graph-context change (§5.3) MUST add fixtures covering all five paths in
+  `tests/graph_vars_fixture_test.rs` — legitimate-absence (unchanged no-match) and
+  resolution-failure against each of `deny` (⇒ deny), `requires_approval_if` (⇒
+  approval), and conditional `allow` (⇒ no-grant) — **plus** an assertion that each
+  resolution failure emits the expected audit record.
 
 ## Reconsideration triggers
 
