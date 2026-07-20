@@ -187,6 +187,7 @@ spec:
         destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
         audit_sender: None,
         saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
+        saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
         alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
         destination_registry: Arc::new(DestinationRegistry::seeded()),
         retention_engine: None,
