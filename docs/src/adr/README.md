@@ -21,4 +21,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0012](0012-websocket-and-browser-credential-handling.md) | WebSocket & Browser Credential Handling (OSS vs SaaS) | Accepted |
 | [0013](0013-version-metadata-source-of-truth-and-drift-gate.md) | Version Metadata Source-of-Truth & Drift Gate | Proposed |
 | [0014](0014-canonical-metadata-registry-and-drift-gate.md) | Canonical Metadata Registry & Drift Gate | Proposed |
-| [0015](0015-dlp-trust-boundary-and-redaction-semantics.md) | DLP Trust Boundary, Redaction Fail-Safety & Heuristic Detection Limits | Proposed |
+| [0015](0015-dlp-trust-boundary-and-redaction-semantics.md) | DLP Trust Boundary, Redaction Fail-Safety & Heuristic Detection Limits | Accepted |

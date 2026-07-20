@@ -1,6 +1,6 @@
 # ADR 0015: DLP Trust Boundary, Redaction Fail-Safety & Heuristic Detection Limits
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-07
 **Ticket**: [AAASM-4945](https://lightning-dust-mite.atlassian.net/browse/AAASM-4945)
 
