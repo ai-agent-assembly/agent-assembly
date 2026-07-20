@@ -374,26 +374,34 @@ fn load_policy() -> PolicyDocument {
 /// (`AA_JWT_SECRET`, `DB_PASSWORD`, connection URLs, …) in cleartext.
 ///
 /// Two masking strategies, by key name (case-insensitive):
-/// * keys naming a connection string (`*_URL` / `*_DSN`) keep their structure
-///   but have the password redacted via [`redact_database_url`], matching how
-///   `aasm status` displays a `database_url`;
+/// * keys naming a connection string (`*_URL` / `*_DSN` / `*_URI`) keep their
+///   structure but have the password redacted via [`redact_database_url`],
+///   matching how `aasm status` displays a `database_url`. `*_URI` covers the
+///   common `MONGODB_URI` / `DATABASE_URI` / `REDIS_URI` / `AMQP_URI` shapes
+///   that carry `user:pass@host` userinfo (AAASM-4936, sibling of AAASM-4894);
 /// * keys whose name signals an opaque secret (token, key, password, secret,
 ///   credential, auth) have the entire value replaced — the value has no
 ///   structure worth preserving.
+///
+/// As a final fail-closed backstop, any value not caught by the rules above is
+/// still routed through [`redact_database_url`]: a value in an unrecognised key
+/// may itself be a `scheme://user:pass@host` connection string, and the
+/// redactor returns the value unchanged unless it finds userinfo credentials to
+/// strip — so ordinary values are untouched while an embedded credential is not
+/// printed verbatim.
 ///
 /// The denylist is intentionally broad and errs toward over-masking: a masked
 /// non-secret in a diagnostic preview is harmless, a leaked secret is not.
 fn mask_value(key: &str, value: &str) -> String {
     let upper = key.to_uppercase();
-    if upper.ends_with("_URL") || upper.ends_with("_DSN") {
+    if upper.ends_with("_URL") || upper.ends_with("_DSN") || upper.ends_with("_URI") {
         return redact_database_url(value);
     }
     const SECRET_SUBSTRINGS: [&str; 7] = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PASS", "CREDENTIAL", "AUTH"];
     if SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle)) {
-        "***MASKED***".into()
-    } else {
-        value.to_string()
+        return "***MASKED***".into();
     }
+    redact_database_url(value)
 }
 
 /// Build the structured dry-run output string.
@@ -1391,6 +1399,61 @@ mod tests {
         assert!(
             output.contains("DATABASE_URL=postgresql://aasm:***@db:5432/aasm"),
             "DATABASE_URL password should be redacted while preserving structure: {output}"
+        );
+    }
+
+    /// AAASM-4936 (sibling of AAASM-4894): `*_URI` connection strings —
+    /// `MONGODB_URI` / `REDIS_URI` / `AMQP_URI` / `DATABASE_URI` — carry
+    /// `user:pass@host` userinfo just like `*_URL`, but the previous denylist
+    /// only matched `_URL` / `_DSN`, so a `MONGODB_URI` password printed in the
+    /// clear in the dry-run preview. It must be redacted like a `_URL`.
+    #[test]
+    fn dry_run_redacts_uri_connection_strings() {
+        let handle = RegistrationHandle {
+            agent_id: "agent-xyz".into(),
+            registration_id: "reg-xyz".into(),
+            trace_id: "trace-xyz".into(),
+            session_id: "session-xyz".into(),
+            proxy_addr: None,
+            team_id: None,
+        };
+        let cmd = std::process::Command::new("mock-tool");
+        let mut env = HashMap::new();
+        env.insert("MONGODB_URI".into(), "mongodb://user:p4ss@host:27017/db".into());
+
+        let output = format_dry_run_output(&handle, "{}", &cmd, &env);
+
+        assert!(
+            !output.contains("p4ss"),
+            "MONGODB_URI password must not appear in cleartext: {output}"
+        );
+        assert!(
+            output.contains("MONGODB_URI=mongodb://user:***@host:27017/db"),
+            "MONGODB_URI password should be redacted while preserving structure: {output}"
+        );
+    }
+
+    /// The fail-closed backstop: a value carrying `user:pass@` userinfo must be
+    /// redacted even when its key name matches none of the connection-string
+    /// suffixes or secret substrings, since the value is itself a credential.
+    #[test]
+    fn mask_value_redacts_connection_string_in_unrecognised_key() {
+        let masked = mask_value("PRIMARY_BROKER", "amqp://svc:s3cr3t@rabbit:5672/vhost");
+        assert!(
+            !masked.contains("s3cr3t"),
+            "userinfo password must be redacted: {masked}"
+        );
+        assert_eq!(masked, "amqp://svc:***@rabbit:5672/vhost");
+    }
+
+    /// The backstop must not mangle an ordinary non-credential value: a plain
+    /// value with no `scheme://user:pass@` shape passes through untouched.
+    #[test]
+    fn mask_value_leaves_plain_value_unchanged() {
+        assert_eq!(mask_value("LOG_LEVEL", "debug"), "debug");
+        assert_eq!(
+            mask_value("ENDPOINT", "https://api.example.com/v1"),
+            "https://api.example.com/v1"
         );
     }
 }
