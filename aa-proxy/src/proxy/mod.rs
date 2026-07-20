@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, ServerConfig, SignatureScheme};
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex, OnceCell};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -30,7 +30,7 @@ use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecis
 use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
 use crate::proxy::http::{
     read_http_request, read_http_response, read_line_capped, serialize_http_request, serialize_http_request_with_auth,
-    serialize_http_response, HttpRequest, MAX_HEADER_BYTES, MAX_HEADER_COUNT, MAX_HEADER_LINE_LEN,
+    serialize_http_response, HttpRequest, MAX_BODY_LEN, MAX_HEADER_BYTES, MAX_HEADER_COUNT, MAX_HEADER_LINE_LEN,
 };
 use crate::tls::{CaStore, CertCache};
 
@@ -1180,6 +1180,70 @@ impl ProxyServer {
             return Ok(());
         }
 
+        // AAASM-4897: close the plain-HTTP DLP bypass. The HTTPS MitM path scans
+        // every request body through `intercept_request` (credential/DLP), but
+        // this plain-HTTP path historically raw-copied the body upstream
+        // un-inspected — so a steered agent could exfiltrate a secret over
+        // cleartext `http://` to any non-LLM host with zero inspection. Buffer
+        // the body (bounded by MAX_BODY_LEN) and run the same scan before
+        // forwarding, mirroring `handle_llm_mitm`.
+        //
+        // A `Transfer-Encoding: chunked` body is un-inspectable by this parser
+        // (the same gap the MitM path fails closed on), so refuse it rather than
+        // stream it past the scanner.
+        if headers.iter().any(|h| {
+            let l = h.to_ascii_lowercase();
+            l.starts_with("transfer-encoding:") && l.contains("chunked")
+        }) {
+            return Err(ProxyError::Config(
+                "plain-HTTP chunked request bodies are not inspectable; refusing (fail-closed)".into(),
+            ));
+        }
+
+        let content_length = plain_http_content_length(&headers)?;
+        // Only requests that carry a body are buffered+scanned. A bodyless
+        // request (GET, or a plain-HTTP upgrade) keeps the original full-duplex
+        // streaming copy below, so keep-alive / upgrade behaviour is unchanged.
+        let scanned_body: Option<Vec<u8>> = if content_length > 0 {
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body).await?;
+
+            let content_encoding = plain_http_header_value(&headers, "content-encoding");
+            let verdict =
+                self.interceptor
+                    .intercept_request(&body, content_encoding.as_deref(), self.config.credential_action);
+            if verdict.decision == VerdictDecision::Block {
+                tracing::info!(
+                    host = %deny_host,
+                    findings = verdict.findings.len(),
+                    "plain-HTTP credential_action=Block: refusing forward, returning 403",
+                );
+                self.interceptor.emit_policy_decision(deny_host, true).await;
+                let mut stream = reader.into_inner();
+                stream
+                    .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                    .await?;
+                let _ = stream.shutdown().await;
+                return Ok(());
+            }
+            match verdict.decision {
+                VerdictDecision::ForwardRedacted => {
+                    let redacted = verdict
+                        .redacted_body
+                        .as_deref()
+                        .expect("ForwardRedacted always carries redacted_body")
+                        .to_vec();
+                    // The redacted body length differs, so rewrite Content-Length
+                    // to keep the framing the upstream sees accurate.
+                    rewrite_plain_http_content_length(&mut headers, redacted.len());
+                    Some(redacted)
+                }
+                _ => Some(body),
+            }
+        } else {
+            None
+        };
+
         // Connect to upstream via plain TCP.
         let upstream_addr = if host.contains(':') {
             host.to_string()
@@ -1203,6 +1267,13 @@ impl ProxyServer {
             upstream.write_all(h.as_bytes()).await?;
         }
         upstream.write_all(b"\r\n").await?;
+
+        // Forward the buffered, DLP-scanned request body (AAASM-4897). When a
+        // body was scanned the client→upstream direction below only carries any
+        // pipelined trailing bytes; the response relay completes the exchange.
+        if let Some(body) = scanned_body.as_deref() {
+            upstream.write_all(body).await?;
+        }
 
         // Bidirectional copy between client and upstream.
         let stream = reader.into_inner();
@@ -1294,6 +1365,45 @@ fn parse_plain_http_host(target: &str, headers: &[String]) -> String {
                     .then(|| h["host:".len()..].trim().to_string())
             })
             .unwrap_or_default()
+    }
+}
+
+/// Find the value of a plain-HTTP header by name (case-insensitive) from the
+/// raw header lines captured in [`ProxyServer::handle_plain_http`]. Each line
+/// still carries its trailing CRLF, so the value is trimmed.
+fn plain_http_header_value(headers: &[String], name: &str) -> Option<String> {
+    let prefix = format!("{}:", name.to_ascii_lowercase());
+    headers.iter().find_map(|h| {
+        h.to_ascii_lowercase()
+            .starts_with(&prefix)
+            .then(|| h[prefix.len()..].trim().to_string())
+    })
+}
+
+/// Parse and validate the plain-HTTP `Content-Length`. Absent → `0` (empty
+/// body). Rejects a length above [`MAX_BODY_LEN`] fail-closed so a buffered
+/// body cannot OOM the proxy (AAASM-4897, mirroring the MitM path's cap).
+fn plain_http_content_length(headers: &[String]) -> Result<usize, ProxyError> {
+    let content_length = plain_http_header_value(headers, "content-length")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    if content_length > MAX_BODY_LEN {
+        return Err(ProxyError::Config(format!(
+            "plain-HTTP Content-Length {content_length} exceeds maximum {MAX_BODY_LEN}; refusing (fail-closed)"
+        )));
+    }
+    Ok(content_length)
+}
+
+/// Rewrite the `Content-Length` header line in place to `new_len` after a
+/// redacting DLP scan changed the body length (AAASM-4897). The CRLF is kept so
+/// the re-serialised head stays well-framed.
+fn rewrite_plain_http_content_length(headers: &mut [String], new_len: usize) {
+    for h in headers.iter_mut() {
+        if h.to_ascii_lowercase().starts_with("content-length:") {
+            *h = format!("Content-Length: {new_len}\r\n");
+            return;
+        }
     }
 }
 
@@ -1676,6 +1786,130 @@ mod tests {
         assert!(
             buf.contains("403"),
             "trailing-dot cleartext request to an LLM host must be refused with 403, got: {buf:?}"
+        );
+    }
+
+    async fn server_with_action(
+        action: crate::config::CredentialAction,
+        upstream_override: Option<std::net::SocketAddr>,
+    ) -> Arc<ProxyServer> {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let config = ProxyConfig {
+            bind_addr: ([127, 0, 0, 1], 0).into(),
+            ca_dir: dir.path().to_path_buf(),
+            cert_cache_capacity: 8,
+            llm_only: true,
+            mitm_hosts: Vec::new(),
+            denied_hosts: Vec::new(),
+            network_allowlist: Vec::new(),
+            skip_upstream_tls_verify: false,
+            credential_action: action,
+            upstream_override,
+            gateway_endpoint: None,
+            mcp_fail_open: false,
+            allow_private_connect_targets: false,
+        };
+        let (tx, _rx) = broadcast::channel(8);
+        ProxyServer::new(config, ca, tx)
+    }
+
+    #[tokio::test]
+    async fn plain_http_body_with_credential_is_blocked() {
+        // AAASM-4897: the plain-HTTP path now runs the same credential DLP as the
+        // HTTPS MitM path. A cleartext POST to a non-LLM host whose body carries
+        // a secret must be refused (403) under credential_action=Block, instead
+        // of being raw-copied upstream un-inspected.
+        let server = server_with_action(crate::config::CredentialAction::Block, None).await;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (server_stream, _) = listener.accept().await.unwrap();
+
+        // Synthetic OpenAI-style key the default scanner detects. Not real.
+        let body = "{\"token\":\"sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab\"}";
+        let req = format!(
+            "POST http://example.com/v1/ingest HTTP/1.1\r\nHost: example.com\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        client.write_all(req.as_bytes()).await.unwrap();
+
+        server
+            .handle_connection(server_stream)
+            .await
+            .expect("blocked request returns Ok after writing 403");
+
+        let mut buf = String::new();
+        client.read_to_string(&mut buf).await.unwrap();
+        assert!(
+            buf.contains("403"),
+            "plain-HTTP body carrying a credential must be refused with 403 (DLP now runs), got: {buf:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_http_body_with_credential_is_redacted_before_forward() {
+        // AAASM-4897: under the default RedactOnly action the plain-HTTP body is
+        // scanned and the secret redacted *before* it reaches upstream — the raw
+        // credential must never leave the host in cleartext.
+        use tokio::io::AsyncReadExt as _;
+
+        // Mock upstream: capture what the proxy forwards, then reply 200.
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (mut sock, _) = upstream.accept().await.unwrap();
+            let mut received = Vec::new();
+            let mut chunk = [0u8; 4096];
+            // Read until the whole small request has arrived (headers + body).
+            loop {
+                match tokio::time::timeout(std::time::Duration::from_millis(500), sock.read(&mut chunk)).await {
+                    Ok(Ok(0)) | Err(_) => break,
+                    Ok(Ok(n)) => {
+                        received.extend_from_slice(&chunk[..n]);
+                        if received.windows(4).any(|w| w == b"\r\n\r\n") && received.len() > 40 {
+                            break;
+                        }
+                    }
+                    Ok(Err(_)) => break,
+                }
+            }
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .await
+                .unwrap();
+            let _ = sock.shutdown().await;
+            received
+        });
+
+        let server = server_with_action(crate::config::CredentialAction::RedactOnly, Some(upstream_addr)).await;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (server_stream, _) = listener.accept().await.unwrap();
+
+        let secret = "sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab";
+        let body = format!("{{\"token\":\"{secret}\"}}");
+        let req = format!(
+            "POST http://example.com/v1/ingest HTTP/1.1\r\nHost: example.com\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        client.write_all(req.as_bytes()).await.unwrap();
+
+        server.handle_connection(server_stream).await.expect("forwarded ok");
+
+        let forwarded = upstream_task.await.unwrap();
+        let forwarded_str = String::from_utf8_lossy(&forwarded);
+        assert!(
+            !forwarded_str.contains(secret),
+            "raw secret must never reach upstream in cleartext, got: {forwarded_str:?}"
+        );
+        assert!(
+            forwarded_str.contains("[REDACTED:"),
+            "forwarded body must carry a redaction marker, got: {forwarded_str:?}"
         );
     }
 
