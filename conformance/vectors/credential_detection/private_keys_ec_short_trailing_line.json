@@ -1,0 +1,9 @@
+{
+  "description": "EC private key PEM with a short trailing base64 line — literal span subsumes the entropy body span and covers the whole block as one label (ADR 0015 §2/§5.1, AAASM-4946)",
+  "input_text": "key=-----BEGIN EC PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\nwJ8=\n-----END EC PRIVATE KEY-----",
+  "expected_findings": [
+    { "kind": "EcPrivateKey", "offset": 4 },
+    { "kind": "GenericHighEntropy", "offset": 35 }
+  ],
+  "expected_redacted": "key=[REDACTED:EcPrivateKey]"
+}
