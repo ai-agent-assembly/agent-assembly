@@ -304,9 +304,17 @@ impl ScanResult {
     /// no region is ever partially redacted (which previously left raw secret
     /// fragments and mangled labels in the output). The merged spans are then
     /// spliced in reverse offset order so earlier byte positions remain valid
-    /// after each replacement. Spans whose boundaries do not fall on UTF-8
-    /// character boundaries are skipped rather than spliced, making the former
-    /// mid-codepoint panic structurally impossible.
+    /// after each replacement.
+    ///
+    /// A span whose bounds are out of range or do not fall on UTF-8 character
+    /// boundaries cannot be spliced without panicking, but it still marks a
+    /// region the scanner flagged as a secret. Rather than skip it — which would
+    /// emit that region's raw bytes and leak the secret (fail-open) — the whole
+    /// value is replaced with a single opaque redaction label (fail-closed).
+    /// This branch is unreachable for spans the scanner produces over `text`
+    /// (offsets are always valid char boundaries of the scanned text); it exists
+    /// so a caller that ever pairs mismatched spans with `text` cannot leak a
+    /// secret through this path.
     pub fn redact(&self, text: &str) -> String {
         let merged = coalesce_findings(&self.findings);
         let mut result = text.to_string();
@@ -318,6 +326,10 @@ impl ScanResult {
                 && result.is_char_boundary(span.end)
             {
                 result.replace_range(span.offset..span.end, &span.label);
+            } else {
+                // Fail closed: we cannot prove this flagged region has been
+                // removed, so never return the raw text with a secret intact.
+                return "[REDACTED]".to_string();
             }
         }
         result
@@ -1190,6 +1202,35 @@ mod tests {
         let redacted = result.redact(text);
         assert!(!redacted.contains("xoxr-"));
         assert!(redacted.contains("[REDACTED:SlackRefreshToken]"));
+    }
+
+    /// AAASM-4936 (L1): `redact` must fail closed when a finding's span cannot
+    /// be spliced. An out-of-range `end` previously hit the implicit skip and
+    /// returned the raw text with the flagged secret intact; it must instead
+    /// return an opaque redaction so no secret bytes escape.
+    #[test]
+    fn redact_fails_closed_on_out_of_bounds_span() {
+        let text = "the secret is hunter2";
+        let result = ScanResult {
+            findings: vec![CredentialFinding::from_regex_match(14, 999)],
+        };
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("hunter2"), "raw secret must not leak: {redacted}");
+        assert_eq!(redacted, "[REDACTED]");
+    }
+
+    /// AAASM-4936 (L1): a span whose bound lands mid-codepoint (not on a UTF-8
+    /// char boundary) must also fail closed rather than leave the secret raw.
+    #[test]
+    fn redact_fails_closed_on_non_char_boundary_span() {
+        // "é" occupies bytes 6..8; a span ending at byte 7 is mid-codepoint.
+        let text = "secretémore";
+        let result = ScanResult {
+            findings: vec![CredentialFinding::from_regex_match(0, 7)],
+        };
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("secret"), "raw secret must not leak: {redacted}");
+        assert_eq!(redacted, "[REDACTED]");
     }
 
     #[test]

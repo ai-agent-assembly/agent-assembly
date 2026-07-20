@@ -198,8 +198,12 @@ async fn dispatch_wasm(
     let outcome = tokio::task::spawn_blocking(move || dispatch_wasm_tool(&tool_name, &args_bytes, &registry))
         .await
         .map_err(|e| {
+            // AAASM-4936 (L3): a JoinError carries the panic payload, which can
+            // expose internal state. Log it server-side and return a generic
+            // 500 body so the detail never crosses the API boundary.
+            tracing::error!(error = %e, "sandbox dispatch task panicked");
             ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
-                .with_detail(format!("sandbox dispatch task panicked: {e}"))
+                .with_detail("Internal error during tool dispatch".to_string())
         })?;
 
     let (result, audit_events) = match outcome {
