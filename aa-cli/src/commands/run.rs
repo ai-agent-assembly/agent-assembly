@@ -18,6 +18,7 @@ use aa_core::{
 use aa_devtool_codex::CodexAdapter;
 use aa_devtool_windsurf::WindsurfCascadeAdapter;
 
+use crate::commands::status::models::redact_database_url;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
 
@@ -367,10 +368,28 @@ fn load_policy() -> PolicyDocument {
     }
 }
 
-/// Mask a value when its key contains "TOKEN" or "KEY" (case-insensitive).
+/// Mask a credential-bearing env value before it is printed in the dry-run
+/// preview. `build_child_env` seeds the child environment from the operator's
+/// whole shell environment, so the preview would otherwise echo secrets
+/// (`AA_JWT_SECRET`, `DB_PASSWORD`, connection URLs, …) in cleartext.
+///
+/// Two masking strategies, by key name (case-insensitive):
+/// * keys naming a connection string (`*_URL` / `*_DSN`) keep their structure
+///   but have the password redacted via [`redact_database_url`], matching how
+///   `aasm status` displays a `database_url`;
+/// * keys whose name signals an opaque secret (token, key, password, secret,
+///   credential, auth) have the entire value replaced — the value has no
+///   structure worth preserving.
+///
+/// The denylist is intentionally broad and errs toward over-masking: a masked
+/// non-secret in a diagnostic preview is harmless, a leaked secret is not.
 fn mask_value(key: &str, value: &str) -> String {
     let upper = key.to_uppercase();
-    if upper.contains("TOKEN") || upper.contains("KEY") {
+    if upper.ends_with("_URL") || upper.ends_with("_DSN") {
+        return redact_database_url(value);
+    }
+    const SECRET_SUBSTRINGS: [&str; 7] = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PASS", "CREDENTIAL", "AUTH"];
+    if SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle)) {
         "***MASKED***".into()
     } else {
         value.to_string()
@@ -1337,6 +1356,41 @@ mod tests {
         assert!(
             output.contains("NORMAL_VAR=hello"),
             "NORMAL_VAR should be unmasked: {output}"
+        );
+    }
+
+    #[test]
+    fn dry_run_masks_secret_and_connection_url_env_vars() {
+        let handle = RegistrationHandle {
+            agent_id: "agent-xyz".into(),
+            registration_id: "reg-xyz".into(),
+            trace_id: "trace-xyz".into(),
+            session_id: "session-xyz".into(),
+            proxy_addr: None,
+            team_id: None,
+        };
+        let cmd = std::process::Command::new("mock-tool");
+        let mut env = HashMap::new();
+        env.insert("AA_JWT_SECRET".into(), "super-secret-signing-key".into());
+        env.insert("DATABASE_URL".into(), "postgresql://aasm:hunter2@db:5432/aasm".into());
+
+        let output = format_dry_run_output(&handle, "{}", &cmd, &env);
+
+        assert!(
+            !output.contains("super-secret-signing-key"),
+            "AA_JWT_SECRET value must not appear in cleartext: {output}"
+        );
+        assert!(
+            output.contains("AA_JWT_SECRET=***MASKED***"),
+            "AA_JWT_SECRET should be fully masked: {output}"
+        );
+        assert!(
+            !output.contains("hunter2"),
+            "DATABASE_URL password must not appear in cleartext: {output}"
+        );
+        assert!(
+            output.contains("DATABASE_URL=postgresql://aasm:***@db:5432/aasm"),
+            "DATABASE_URL password should be redacted while preserving structure: {output}"
         );
     }
 }
