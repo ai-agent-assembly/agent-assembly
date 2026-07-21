@@ -89,11 +89,14 @@ pub async fn list_policies(
             .with_detail("listing policy versions requires admin scope".to_string()));
     }
 
-    let all = state
-        .policy_history
-        .list(usize::MAX)
-        .await
-        .map_err(|e| ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("{e:?}")))?;
+    let all = state.policy_history.list(usize::MAX).await.map_err(|e| {
+        // AAASM-4950 (L3): log the underlying store error server-side, but return
+        // a generic 500 body — the internal error string may reveal storage paths
+        // or implementation detail and must not cross the API boundary.
+        tracing::error!(error = ?e, "failed to list policy history");
+        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+            .with_detail("Failed to list policy versions".to_string())
+    })?;
 
     // Without include_archived only the most-recent (active) version is visible.
     let visible: Vec<_> = if filter.include_archived {

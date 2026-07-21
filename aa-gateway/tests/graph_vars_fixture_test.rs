@@ -357,3 +357,48 @@ fn resolution_failure_never_grants_for_allow_clause() {
     );
     assert_eq!(failures[0].fail_safe_action(), "no_grant");
 }
+
+// AAASM-4950 / ADR 0015 §4 (forward-conformance): a tokenize/parse anomaly must
+// follow the SAME clause polarity as a resolution failure. Firing unconditionally
+// on an anomaly would GRANT a conditional `Allow` — the exact fail-open §4 forbids
+// ("allow + failure ⇒ never grant"). A guard (`Deny`/`RequireApproval`) still fires.
+#[test]
+fn parse_anomaly_never_grants_for_allow_clause() {
+    let action = tool_action("spawn");
+
+    // Both a tokenize anomaly (unknown char) and a structural anomaly (a bare
+    // field with no operator/literal) must never fire an `Allow` clause.
+    for bad_expr in ["not valid @@@ expr", "tool"] {
+        let mut failures = Vec::new();
+        let fired = evaluate_clause(bad_expr, &action, None, None, ClauseKind::Allow, &mut failures);
+        assert!(
+            !fired,
+            "a conditional allow must NOT fire on a parse anomaly ({bad_expr:?}) — an anomaly can never grant"
+        );
+        // A parse anomaly is not a graph-variable resolution failure, so it
+        // records no ResolutionFailure audit evidence.
+        assert!(
+            failures.is_empty(),
+            "a parse anomaly records no resolution-failure evidence"
+        );
+
+        // The guard polarities still fail closed by firing.
+        let mut deny_failures = Vec::new();
+        assert!(
+            evaluate_clause(bad_expr, &action, None, None, ClauseKind::Deny, &mut deny_failures),
+            "a deny clause must fire (deny) on a parse anomaly ({bad_expr:?})"
+        );
+        let mut approval_failures = Vec::new();
+        assert!(
+            evaluate_clause(
+                bad_expr,
+                &action,
+                None,
+                None,
+                ClauseKind::RequireApproval,
+                &mut approval_failures,
+            ),
+            "a requires_approval clause must fire on a parse anomaly ({bad_expr:?})"
+        );
+    }
+}

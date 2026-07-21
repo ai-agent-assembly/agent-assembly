@@ -267,7 +267,13 @@ pub async fn report_edge(
         })
         .await
         .map_err(|e| {
-            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+            // AAASM-4950 (L3): log the underlying store error server-side, but
+            // return a generic 500 body — the internal error string may reveal
+            // storage paths or implementation detail and must not cross the API
+            // boundary to the caller.
+            tracing::error!(error = %e, "failed to insert topology edge");
+            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+                .with_detail("Failed to record topology edge".to_string())
         })?;
 
     Ok((StatusCode::CREATED, Json(ReportEdgeResponse { id })))
@@ -357,7 +363,11 @@ pub async fn list_agent_edges(
         _ => state.edge_repo.list_outgoing(agent_id, edge_type, limit).await,
     }
     .map_err(|e| {
-        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+        // AAASM-4950 (L3): log server-side, return a generic 500 body so the
+        // internal store error never crosses the API boundary.
+        tracing::error!(error = %e, "failed to list agent edges");
+        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+            .with_detail("Failed to list topology edges".to_string())
     })?;
 
     // Apply optional `before` cursor (best-effort for in-memory store)
@@ -421,7 +431,11 @@ pub struct GraphResponse {
 /// error-mapping site instead of duplicating it.
 async fn list_outgoing_or_500(state: &AppState, node: AgentId) -> Result<Vec<Edge>, ProblemDetail> {
     state.edge_repo.list_outgoing(node, None, 1000).await.map_err(|e| {
-        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+        // AAASM-4950 (L3): log server-side, return a generic 500 body so the
+        // internal store error never crosses the API boundary.
+        tracing::error!(error = %e, "failed to list outgoing edges");
+        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+            .with_detail("Failed to list topology edges".to_string())
     })
 }
 
@@ -595,7 +609,11 @@ pub async fn list_topology_edges(
     let mut all_edges: Vec<Edge> = Vec::new();
     for &et in EdgeType::ALL {
         let batch = state.edge_repo.list_by_type(et, epoch, 1000).await.map_err(|e| {
-            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+            // AAASM-4950 (L3): log server-side, return a generic 500 body so the
+            // internal store error never crosses the API boundary.
+            tracing::error!(error = %e, "failed to list topology edges by type");
+            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+                .with_detail("Failed to list topology edges".to_string())
         })?;
         all_edges.extend(batch);
     }
