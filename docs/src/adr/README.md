@@ -22,3 +22,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0013](0013-version-metadata-source-of-truth-and-drift-gate.md) | Version Metadata Source-of-Truth & Drift Gate | Proposed |
 | [0014](0014-canonical-metadata-registry-and-drift-gate.md) | Canonical Metadata Registry & Drift Gate | Proposed |
 | [0015](0015-dlp-trust-boundary-and-redaction-semantics.md) | DLP Trust Boundary, Redaction Fail-Safety & Heuristic Detection Limits | Accepted |
+| [0016](0016-default-branch-master-to-main-migration.md) | Organization-wide Default Branch — `master` → `main` | Accepted |
