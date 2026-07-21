@@ -99,7 +99,7 @@ expected_base_for() {
   case "$1" in
     HOMEBREW_TAP_TOKEN)   echo main ;;    # migrated (AAASM-4957)
     NODE_SDK_BOT_TOKEN)   echo master ;;  # migrates under AAASM-4960
-    PYTHON_SDK_BOT_TOKEN) echo master ;;  # migrates under AAASM-4959
+    PYTHON_SDK_BOT_TOKEN) echo main ;;    # migrated (AAASM-4959)
     GO_SDK_BOT_TOKEN)     echo master ;;  # migrates under AAASM-4961
     *) echo "" ;;
   esac
