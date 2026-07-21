@@ -38,7 +38,7 @@ jobs:
     name: Validate SDK version pins
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       # docker/sdk-versions.json is the pin source of truth consumed by
       # docker.yml's per-language build (build-arg SDK_VERSION). Fail fast if it
       # is malformed or any language pin is missing/empty before the (much more
@@ -61,7 +61,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - id: set
         # Read the 9-image matrix from the shared manifest so CI and the local
         # runner never drift.
@@ -73,7 +73,7 @@ jobs:
     name: Build aa-runtime sidecar
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - name: Build aa-runtime image and export as artifact
@@ -103,7 +103,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prep.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       # Deliberately NO docker/setup-buildx-action here. That action installs a
       # `docker-container` driver builder and makes it the default; a container
       # builder resolves a Dockerfile `FROM` only against registries, so the
