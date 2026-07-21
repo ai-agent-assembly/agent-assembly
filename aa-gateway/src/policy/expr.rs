@@ -454,7 +454,8 @@ pub enum ClauseKind {
 }
 
 impl ClauseKind {
-    /// Whether a *resolution failure* makes a clause of this kind fire. Guards
+    /// Whether a fail-safe condition (a graph-context *resolution failure*, or a
+    /// tokenize/parse anomaly) makes a clause of this kind fire. Guards
     /// (`Deny`/`RequireApproval`) fail closed by firing; a conditional `Allow`
     /// fails closed by NOT firing (never granting).
     fn fail_safe_fires(self) -> bool {
@@ -1088,16 +1089,18 @@ fn eval_tokens(
     fs: &FailSafe,
 ) -> bool {
     // Parse tokens into OR-groups of AND-connected clauses, then evaluate:
-    // OR across groups, AND within each group. Any parse anomaly is fail-safe
-    // (returns `true` — the condition fires).
+    // OR across groups, AND within each group. A parse anomaly is fail-safe
+    // per the clause polarity (ADR 0015 §4): a `Deny`/`RequireApproval` guard
+    // fires, but a conditional `Allow` does NOT fire — an anomaly can never
+    // grant. `fs.clause.fail_safe_fires()` encodes that direction.
     let or_groups = match parse_or_groups(tokens) {
         Some(g) => g,
-        None => return true, // unexpected structure → fail-safe
+        None => return fs.clause.fail_safe_fires(), // unexpected structure → fail-safe
     };
 
     // If nothing was parsed, that's a fail-safe trigger (empty expr)
     if or_groups.is_empty() || or_groups.iter().all(|g| g.is_empty()) {
-        return true;
+        return fs.clause.fail_safe_fires();
     }
 
     or_groups.iter().any(|group| {
@@ -1401,8 +1404,10 @@ pub(crate) fn evaluate(
 /// fires; a conditional `Allow` does not fire, so a failure can never grant),
 /// and every such failure is appended to `failures` as audit evidence.
 ///
-/// Returns `true` when the expression matches (the clause fires); `true` on any
-/// parse/tokenization anomaly (fail-safe).
+/// Returns `true` when the expression matches (the clause fires). A
+/// parse/tokenization anomaly is fail-safe **per clause polarity** (ADR 0015
+/// §4): a `Deny`/`RequireApproval` guard fires (fail-closed), but a conditional
+/// `Allow` does **not** fire — an anomaly can never be laundered into a grant.
 pub fn evaluate_clause(
     expr: &str,
     action: &GovernanceAction,
@@ -1413,7 +1418,10 @@ pub fn evaluate_clause(
 ) -> bool {
     let tokens = match tokenize(expr) {
         Some(t) if !t.is_empty() => t,
-        _ => return true, // fail-safe
+        // AAASM-4950 / ADR 0015 §4: a tokenize anomaly follows the clause's
+        // fail-safe polarity. Firing unconditionally would GRANT on an `Allow`
+        // clause — the exact fail-open §4 forbids ("allow + failure ⇒ never grant").
+        _ => return clause.fail_safe_fires(),
     };
     let sink = std::cell::RefCell::new(Vec::new());
     let fs = FailSafe {
