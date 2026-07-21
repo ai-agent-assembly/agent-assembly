@@ -85,6 +85,41 @@ for b in $RELEASE_BINARIES; do
   esac
 done
 
+# 4. Downstream bot-PR base-branch drift (AAASM-4955 / AAASM-4957).
+#    release.yml opens a bot PR into each downstream repo (homebrew-tap + the
+#    three SDKs) via peter-evans/create-pull-request, each with a hardcoded
+#    `base:`. When a downstream repo's default branch is renamed (master → main),
+#    a stale `base:` here silently breaks that repo's release PR — the
+#    homebrew-tap migration hit exactly this. Pin each downstream's expected base
+#    to its CURRENT default branch; a mismatch in either direction fails the gate,
+#    so release.yml and this map must be updated together, in lockstep with each
+#    repo's migration.
+expected_base_for() {
+  # bot-token secret name -> that repo's current default branch
+  case "$1" in
+    HOMEBREW_TAP_TOKEN)   echo main ;;    # migrated (AAASM-4957)
+    NODE_SDK_BOT_TOKEN)   echo master ;;  # migrates under AAASM-4960
+    PYTHON_SDK_BOT_TOKEN) echo master ;;  # migrates under AAASM-4959
+    GO_SDK_BOT_TOKEN)     echo master ;;  # migrates under AAASM-4961
+    *) echo "" ;;
+  esac
+}
+
+# Pair each create-pull-request `base:` with the bot token most recently seen in
+# the same step (portable awk — no gawk match(s,re,arr)).
+while IFS="$(printf '\t')" read -r tok base; do
+  [ -n "${base:-}" ] || continue
+  exp="$(expected_base_for "$tok")"
+  if [ -z "$exp" ]; then
+    err "release.yml opens a bot PR (token '$tok') with base '$base' but check-release-completeness.sh has no expected-base mapping for it — add one so its target branch can't silently go stale (AAASM-4955)."
+  elif [ "$base" != "$exp" ]; then
+    err "downstream bot-PR base for '$tok' is '$base' but that repo's default branch is '$exp' — a release would open the PR against a non-existent branch. Update $RELEASE_YML 'base:' and this map together, in lockstep with the repo's master→main migration (AAASM-4955)."
+  fi
+done < <(awk '
+  /token: \$\{\{ secrets\./ { line=$0; sub(/.*secrets\./,"",line); sub(/[[:space:]]*\}\}.*/,"",line); tok=line }
+  /^[[:space:]]*base:[[:space:]]*[A-Za-z]/ { b=$0; sub(/^[[:space:]]*base:[[:space:]]*/,"",b); sub(/[[:space:]].*$/,"",b); print tok"\t"b }
+' "$RELEASE_YML")
+
 if [ "$fail" -ne 0 ]; then
   echo "release-artifact completeness gate: FAILED" >&2
   exit 1
