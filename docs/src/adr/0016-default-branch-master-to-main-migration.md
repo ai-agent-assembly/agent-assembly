@@ -1,6 +1,6 @@
 # ADR 0016: Organization-wide Default Branch — `master` → `main`
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-07
 **Ticket**: [AAASM-4955](https://lightning-dust-mite.atlassian.net/browse/AAASM-4955)
 
@@ -98,9 +98,11 @@ homebrew-tap (already `main`) + the three SDKs (still `master`) — each flips w
 - **Release/fan-out**: hardcoded `base:` in cross-repo `create-pull-request`;
   `repository_dispatch` branch targets; the release-train workflows.
 - **Deployment**: CD/deploy workflows keyed on `master` (e.g. `cloud`, `official-website`).
-- **Documentation**: `blob/master`/`commits/master`/`raw…/master` links + badges;
-  prefer `/blob/HEAD/` (default-branch-tracking) for cross-repo links so they survive a
-  future rename; skill/runbook prose naming a branch.
+- **Documentation**: `blob/master`/`commits/master` web links + badges on `github.com`
+  are redirect-covered (cosmetic), but **`raw.githubusercontent.com/…/master` does NOT
+  redirect** (404) — migrate those. Prefer the default-branch-tracking `HEAD` form
+  (`/blob/HEAD/`, `raw…/HEAD/`) for cross-repo links so they survive a future rename.
+  Update skill/runbook prose naming a branch.
 - **Local checkout**: `git branch -m master main; git fetch <remote>;
   git branch -u <remote>/main main; git remote set-head <remote> -a`.
 
@@ -112,21 +114,43 @@ In-flight PRs are auto-retargeted; note any that need a manual CI re-run (a `bra
 filter still on `master` won't fire until step 4 lands). Migrate a repo when no PR is
 mid-review where feasible.
 
-### 6. Legacy `master` — retain as redirect, do not delete (initially)
+### 6. Legacy `master` — a GitHub-managed redirect, not a retained branch
 
-Do **not** delete the old `master` branch at rename. GitHub keeps a `master`→`main`
-redirect for Git operations, which cushions un-updated clones and most hardcoded links
-during the transition. Delete `master` only **after** the per-repo reference sweep is
-verified complete for that repo (outbound + inbound). Retention window: until the
-repo's migration task is closed with its reference audit green.
+A GitHub branch rename does **not** leave `master` as a separate branch that is later
+deleted. The old name becomes a **GitHub-managed redirect for *supported* repository
+URLs only** (the web `blob`/`tree`/`commits`/`pull` paths, and `git clone`/`push` that
+resolve the default branch). There is no `master` branch to keep or remove.
+
+- **Do NOT recreate `master`** after the rename (that would re-introduce a real,
+  divergent branch and defeat the migration).
+- The redirect does **NOT** cover — these break and MUST be explicitly migrated:
+  - **`raw.githubusercontent.com/<repo>/master/…`** — raw content URLs do not follow
+    the rename (they 404). Use `raw.githubusercontent.com/<repo>/HEAD/…` or update to
+    `/main/`.
+  - **`git pull`/`git fetch` targeting `master`** — a command naming the `master`
+    ref/branch explicitly does not follow the rename (the ref is gone).
+  - **GitHub Actions refs such as `uses: <org>/<action>@master`** — an action pinned to
+    an `@master` ref does not follow the rename; the consuming workflow must update it.
+  - **CI branch filters, release/dispatch targets, `actions/checkout` refs, and
+    downstream PR-`base:` refs** — all must be explicitly repointed to `main`
+    (per §3–§4); the redirect does not fix workflow logic.
+- **Temporary compatibility `master` branch — narrow exception.** Recreating a
+  short-lived `master` is permitted **only** when a repo *publishes a GitHub Action that
+  external consumers reference via `@master`* (so removing the ref would break those
+  consumers before they migrate). Such a branch must be **separately approved,
+  documented (why it exists + which consumers), and time-bounded** (an explicit removal
+  date), and tracked to deletion. It is not a general transition cushion.
 
 ### 7. Rollback
 
-Reversible up to the point references are broadly rewritten:
-`gh api -X POST repos/<owner>/<repo>/branches/main/rename -f new_name=master` restores
-the default + protection + redirect; revert the reference-update PR(s). The
-point-of-no-return is when downstream consumers + external links have been repointed to
-`main` en masse — past that, roll *forward* (fix), don't roll back.
+Reversible up to the point references are broadly rewritten. Rolling back is itself
+**another rename** —
+`gh api -X POST repos/<owner>/<repo>/branches/main/rename -f new_name=master` — which
+moves the default + protection back and installs a fresh `main`→`master` redirect (it
+does *not* "restore" a retained branch, because none was kept); then revert the
+reference-update PR(s). The point-of-no-return is when downstream consumers + external
+links have been repointed to `main` en masse — past that, roll *forward* (fix), don't
+roll back.
 
 ### 8. Migration ordering & private-repository gates
 
@@ -146,8 +170,11 @@ point-of-no-return is when downstream consumers + external links have been repoi
 
 - A brief transitional window per repo where a `branches:`-filtered CI job doesn't fire
   until its filter PR merges — bounded, visible, and cushioned by the redirect.
-- Redirect-covered stale links (e.g. `.github` org-profile badges) remain cosmetically
-  wrong until swept — non-breaking, tracked per repo.
+- `github.com` web links redirect, so stale `blob/master`/`commits/master` badges
+  (e.g. `.github` org-profile) are cosmetically wrong but non-breaking until swept.
+  Note this does **not** extend to `raw.githubusercontent.com/…/master`, `git fetch
+  master`, or `@master` action refs — those are hard breakage and are migrated, not
+  deferred.
 
 ## Explicitly forbidden designs
 
@@ -155,7 +182,9 @@ point-of-no-return is when downstream consumers + external links have been repoi
   coupling is in consumers (the pilot's central lesson).
 - **Do not** flip a downstream `base:`/dispatch ref out of lockstep with the target's
   rename — a release/automation run in the gap breaks.
-- **Do not** delete `master` at rename time, before the reference sweep is verified.
+- **Do not** recreate `master` after a rename — except the narrow, separately-approved,
+  documented, time-bounded compatibility case for a repo that *publishes* a GitHub
+  Action consumed via `@master` (§6).
 - **Do not** migrate `agent-assembly` before the SDK/tap `base:` lockstep is done.
 - **Do not** start the private repos before this ADR is Accepted.
 
@@ -177,8 +206,12 @@ per-repo `CONTRIBUTING.md`/PR templates → `main`.
 
 Per migrated repo, evidence that: default = `main`; protection re-verified on `main`;
 outbound refs swept (`git grep master` clean of branch refs); inbound refs swept
-(org-wide grep for that repo's `blob/master`/`commits/master`/`raw…/master`/`base:`);
-CI fires on `main`; release/deploy paths validated; local checkout re-pointed. The
+(org-wide grep for that repo's `blob/master`/`commits/master`/`raw…/master`/`@master`/
+`base:`); the redirect-uncovered refs (`raw.githubusercontent…/master`, `git fetch
+master`, `@master` action refs) are explicitly migrated; CI fires on `main`;
+release/deploy paths validated; local checkout re-pointed; **no `master` branch was
+recreated** (and any narrow `@master`-published-Action compatibility branch is
+documented, time-bounded, and tracked to removal). The
 `check-release-completeness.sh` downstream-base guard stays green.
 
 ## Reconsideration triggers
