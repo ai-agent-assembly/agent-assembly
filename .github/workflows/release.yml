@@ -42,7 +42,7 @@ jobs:
             os: macos-14
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install protobuf compiler (Linux)
         if: runner.os == 'Linux'
@@ -519,7 +519,7 @@ jobs:
     environment: release-crates
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
@@ -651,7 +651,7 @@ jobs:
           echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap tap
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Renamed from homebrew-agent-assembly → homebrew-tap (AAASM-3950) so
           # Homebrew resolves the tap as ai-agent-assembly/tap. The old name still
@@ -779,7 +779,7 @@ jobs:
 
     steps:
       - name: Checkout node-sdk
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ai-agent-assembly/node-sdk
           token: ${{ secrets.NODE_SDK_BOT_TOKEN }}
@@ -886,7 +886,7 @@ jobs:
 
     steps:
       - name: Checkout python-sdk
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ai-agent-assembly/python-sdk
           token: ${{ secrets.PYTHON_SDK_BOT_TOKEN }}
@@ -987,7 +987,7 @@ jobs:
 
     steps:
       - name: Checkout go-sdk
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ai-agent-assembly/go-sdk
           token: ${{ secrets.GO_SDK_BOT_TOKEN }}
@@ -1146,7 +1146,7 @@ jobs:
     if: always() && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run check-release.sh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
