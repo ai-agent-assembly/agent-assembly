@@ -135,6 +135,25 @@
   color: var(--ink-2);
 }
 
+/* ── DSL / Rego preview ──────────────────────────────────── */
+
+/* Read-only projection of the draft. Rendered on a dark code panel via the
+   theme-invariant --term-* tokens (the hi-fi spec uses a fixed dark block in
+   both light and dark), so it reads as a code surface in either theme. */
+.editor__dsl {
+  margin: 0;
+  padding: 0.875rem 1rem;
+  background: var(--term-bg);
+  color: var(--term-text);
+  border: 1px solid var(--term-border);
+  border-radius: 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6875rem;
+  line-height: 1.6;
+  white-space: pre;
+  overflow: auto;
+}
+
 /* ── Section card (scope + rule cards) ───────────────────── */
 
 .editor__section {
