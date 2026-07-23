@@ -942,7 +942,7 @@ jobs:
           path: sdk
           token: ${{ secrets.PYTHON_SDK_BOT_TOKEN }}
           branch: bot/aa-ffi-pin-${{ github.ref_name }}
-          base: master
+          base: main
           delete-branch: true
           commit-message: "🤖 (aa-ffi-python): Bump aa-core/aa-proto/aa-sdk-client pin to ${{ github.ref_name }}"
           title: "🤖 (aa-ffi-python): Bump aa-core/aa-proto/aa-sdk-client pin to ${{ github.ref_name }}"
