@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PayloadModal } from './PayloadModal'
 import type { TraceEvent } from '../../features/trace/types'
 
@@ -23,13 +23,6 @@ const EVENT: TraceEvent = {
 }
 
 describe('PayloadModal', () => {
-  beforeEach(() => {
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
-    })
-  })
-
   afterEach(() => { vi.restoreAllMocks() })
 
   it('renders nothing when event is null', () => {
@@ -37,36 +30,25 @@ describe('PayloadModal', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('renders the pretty-printed JSON, header, Close button, and Copy button', () => {
+  it('renders the decision explainer body, the header verdict chip, and Close', () => {
     render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
 
     expect(screen.getByTestId('payload-modal')).toBeInTheDocument()
-    const json = screen.getByTestId('payload-modal-json')
-    expect(json.textContent).toContain('"action": "process_refund"')
-    expect(json.textContent).toContain('"amount": 250')
-
+    expect(screen.getByTestId('decision-explainer')).toBeInTheDocument()
+    expect(screen.getByTestId('layer-steps')).toBeInTheDocument()
+    expect(screen.getByTestId('decision-outcome-band')).toBeInTheDocument()
+    // redactedFields present → scrubbed verdict on the header chip.
+    expect(screen.getByTestId('verdict-chip')).toHaveAttribute('data-verdict', 'scrubbed')
     expect(screen.getByTestId('payload-modal-close')).toBeInTheDocument()
-    expect(screen.getByTestId('payload-modal-copy')).toHaveTextContent('Copy JSON')
   })
 
-  it('substitutes redacted fields with the sentinel string and marks the line', () => {
+  it('shows redacted values as █ blocks and never leaks the real value', () => {
     render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
 
-    const redactedRows = screen.getAllByTestId('redacted-field')
-    expect(redactedRows).toHaveLength(1)
-    expect(redactedRows[0]).toHaveTextContent('"user_id"')
-    expect(redactedRows[0]).toHaveTextContent('"<redacted: user_id>"')
-    // Real value (4521) must not leak into the rendered output for redacted fields.
-    expect(redactedRows[0].textContent).not.toContain('4521')
-  })
-
-  it('shows a Redacted-by-policy tooltip on hover over the lock icon', async () => {
-    render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
-
-    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
-    const lock = screen.getAllByTestId('redacted-field')[0].querySelector('.payload-modal__lock')!
-    await userEvent.hover(lock)
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Redacted by policy')
+    expect(screen.getByTestId('redaction-block').textContent).toMatch(/^█+$/)
+    expect(screen.getByTestId('redaction-preview-body').textContent).not.toContain('4521')
+    // Non-redacted values are still shown.
+    expect(screen.getByTestId('redaction-preview-body')).toHaveTextContent('process_refund')
   })
 
   it('closes on Escape and on backdrop click', async () => {
@@ -84,19 +66,8 @@ describe('PayloadModal', () => {
     const onClose = vi.fn()
     render(<PayloadModal event={EVENT} onClose={onClose} />)
 
-    await userEvent.click(screen.getByTestId('payload-modal-json'))
+    await userEvent.click(screen.getByTestId('payload-modal-body'))
     expect(onClose).not.toHaveBeenCalled()
-  })
-
-  it('copies the pretty-printed JSON to clipboard and shows "Copied" feedback', async () => {
-    render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
-
-    const button = screen.getByTestId('payload-modal-copy')
-    await userEvent.click(button)
-    expect(navigator.clipboard.writeText).toHaveBeenCalledOnce()
-    const written = vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]
-    expect(written).toContain('"action": "process_refund"')
-    expect(button).toHaveTextContent('Copied')
   })
 
   it('autofocuses the Close button when the modal opens', () => {
@@ -104,22 +75,14 @@ describe('PayloadModal', () => {
     expect(screen.getByTestId('payload-modal-close')).toHaveFocus()
   })
 
-  it('traps Tab focus inside the dialog (cycles from last → first and first → last)', async () => {
+  it('keeps focus trapped on the sole focusable (Close) when Tab is pressed', async () => {
     render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
     const close = screen.getByTestId('payload-modal-close')
-    const copy = screen.getByTestId('payload-modal-copy')
 
-    // Initial focus is on Close. Tab → Copy (the only other focusable in actions).
     expect(close).toHaveFocus()
     await userEvent.tab()
-    expect(copy).toHaveFocus()
-
-    // From last (Copy), Tab cycles back to first (Close).
-    await userEvent.tab()
     expect(close).toHaveFocus()
-
-    // Shift+Tab from first → last.
     await userEvent.tab({ shift: true })
-    expect(copy).toHaveFocus()
+    expect(close).toHaveFocus()
   })
 })

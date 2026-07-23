@@ -69,8 +69,7 @@
   gap: 0.5rem;
 }
 
-.payload-modal__close,
-.payload-modal__copy {
+.payload-modal__close {
   background: transparent;
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -80,35 +79,15 @@
   color: var(--ink-2);
 }
 
-.payload-modal__close:hover,
-.payload-modal__copy:hover {
+.payload-modal__close:hover {
   background: var(--paper-3);
 }
 
-.payload-modal__json {
+.payload-modal__body {
   margin: 0;
   padding: 1rem 1.25rem;
   overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
-  line-height: 1.5;
   color: var(--ink-2);
   background: var(--paper);
   border-radius: 0 0 8px 8px;
-  white-space: pre;
-}
-
-.payload-modal__redacted {
-  background: var(--warn-bg);
-  border-left: 3px solid var(--warn);
-  display: inline-block;
-  width: 100%;
-  padding-left: 0.25rem;
-}
-
-.payload-modal__lock {
-  display: inline-block;
-  font-size: 0.85em;
-  vertical-align: -1px;
-  cursor: help;
 }

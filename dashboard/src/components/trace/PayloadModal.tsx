@@ -1,41 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react'
 import type { TraceEvent } from '../../features/trace/types'
-import { Tooltip } from '../Tooltip'
+import { deriveVerdict } from '../../features/trace/decision'
+import { VerdictChip } from './VerdictChip'
+import { DecisionExplainer } from './DecisionExplainer'
 import './PayloadModal.css'
-
-// Provably linear: no `\s*`/`.*` overlap. The single greedy `(.*)` to end-of-line
-// absorbs any post-colon whitespace, so there is no overlapping-match region for
-// the engine to backtrack over. The render path reconstructs `"key": <sentinel>`
-// from scratch (it does not use the captured value's leading space) and the
-// trailing comma is derived in code below. See typescript:S5852.
-const REDACTED_LINE_RE = /^(\s*)"([^"]+)":(.*)$/
-
-function renderJsonLines(formatted: string, redactedSet: ReadonlySet<string>): ReactNode[] {
-  return formatted.split('\n').map((line, i) => {
-    const match = REDACTED_LINE_RE.exec(line)
-    if (match && redactedSet.has(match[2])) {
-      const [, indent, key, rawValue] = match
-      const trailing = rawValue.trimEnd().endsWith(',') ? ',' : ''
-      const sentinel = `"<redacted: ${key}>"`
-      return (
-        <span key={`${i}:${line}`} data-testid="redacted-field" className="payload-modal__redacted">
-          {indent}&quot;{key}&quot;:{' '}
-          <Tooltip content="Redacted by policy">
-            <span className="payload-modal__lock" aria-label={`${key} is redacted by policy`}>🔒</span>
-          </Tooltip>
-          {' '}{sentinel}{trailing}
-          {'\n'}
-        </span>
-      )
-    }
-    return (
-      <span key={`${i}:${line}`}>
-        {line}
-        {'\n'}
-      </span>
-    )
-  })
-}
 
 export interface PayloadModalProps {
   readonly event: TraceEvent | null
@@ -43,19 +11,19 @@ export interface PayloadModalProps {
 }
 
 /**
- * Modal that shows the full pretty-printed JSON payload of a single trace
- * event. Lazy-mounted: returns `null` until an event is selected so the
- * potentially-large `JSON.stringify(payload, null, 2)` only runs while the
- * modal is open.
+ * Decision-explainer modal for a single trace event (AAASM-5027).
  *
- * Builds on the scrim+dialog pattern from `features/capability/CellInspectDrawer`.
- * Esc handler, focus trap, and Copy JSON button land in subsequent commits.
+ * Replaces the former raw-JSON + 🔒 payload dump: the body now renders the
+ * hi-fi L0–L3 explainer (layer steps + outcome band + redaction-block preview)
+ * via `DecisionExplainer`, and the header carries the verdict chip. The
+ * scrim / Esc / backdrop-click / focus-trap shell is unchanged so the page's
+ * open-close wiring keeps working. Redacted values are never rendered — the
+ * preview shows `█` blocks — so there is no raw-value copy affordance.
  */
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 export function PayloadModal({ event, onClose }: PayloadModalProps) {
-  const [copied, setCopied] = useState(false)
   const dialogRef = useRef<HTMLDivElement>(null)
   const closeBtnRef = useRef<HTMLButtonElement>(null)
 
@@ -89,20 +57,9 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
     }
   }
 
-  const redactedSet = useMemo(
-    () => new Set(event?.redactedFields ?? []),
-    [event?.redactedFields],
-  )
+  const verdict = useMemo(() => (event ? deriveVerdict(event) : null), [event])
 
-  if (!event) return null
-
-  const formatted = JSON.stringify(event.payload, null, 2)
-  const jsonNodes = renderJsonLines(formatted, redactedSet)
-
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(formatted)
-    setCopied(true)
-  }
+  if (!event || !verdict) return null
 
   return (
     <div
@@ -117,49 +74,44 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
       }}
       role="button"
       tabIndex={-1}
-      aria-label="Close payload modal"
+      aria-label="Close decision explainer"
     >
       <div
         ref={dialogRef}
         className="payload-modal"
         role="dialog"
         aria-modal
-        aria-label="trace event payload"
+        aria-label="trace decision explainer"
         data-testid="payload-modal"
         onClick={e => e.stopPropagation()}
         onKeyDown={handleFocusTrap}
       >
         <header className="payload-modal__head">
           <div>
-            <div className="payload-modal__eyebrow">trace event payload</div>
+            <div className="payload-modal__eyebrow">trace decision explainer</div>
             <h2 className="payload-modal__title">
+              <VerdictChip verdict={verdict} />{' '}
               <code>{event.type}</code> · <span className="payload-modal__time">{event.timestamp}</span>
             </h2>
             <div className="payload-modal__subtitle">{event.agent} · {event.durationMs}&nbsp;ms</div>
           </div>
           <div className="payload-modal__actions">
             <button
-              type="button"
-              className="payload-modal__copy"
-              data-testid="payload-modal-copy"
-              onClick={() => void handleCopy()}
-            >
-              {copied ? 'Copied' : 'Copy JSON'}
-            </button>
-            <button
               ref={closeBtnRef}
               type="button"
               className="payload-modal__close"
               data-testid="payload-modal-close"
               onClick={onClose}
-              aria-label="Close payload modal"
+              aria-label="Close decision explainer"
             >
               ✕
             </button>
           </div>
         </header>
 
-        <pre className="payload-modal__json" data-testid="payload-modal-json">{jsonNodes}</pre>
+        <div className="payload-modal__body" data-testid="payload-modal-body">
+          <DecisionExplainer event={event} />
+        </div>
       </div>
     </div>
   )
