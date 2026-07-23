@@ -6,6 +6,8 @@ import { useApprovalsQuery } from '../features/approvals/api'
 import { usePoliciesQuery } from '../features/policies/api'
 import { useAlertsQuery } from '../features/alerts/api'
 import type { Alert, AlertFilters } from '../features/alerts/types'
+import { useEnforcementTimelineQuery } from '../features/overview/api'
+import { EnforcementTimeline } from '../components/overview/EnforcementTimeline'
 import { deriveOverviewKpis } from './OverviewPage.kpis'
 import { OverviewGuard } from './OverviewPage.guard'
 import './OverviewPage.css'
@@ -192,6 +194,7 @@ export function OverviewPage() {
   const approvalsQuery = useApprovalsQuery()
   const policiesQuery = usePoliciesQuery()
   const alertsQuery = useAlertsQuery(ALL_ALERTS)
+  const timelineQuery = useEnforcementTimelineQuery(windowSel)
 
   const fleet = useMemo(
     () => (agentsQuery.data ?? []).map(toFleetAgent),
@@ -438,6 +441,16 @@ export function OverviewPage() {
             ]}
             footer="Secrets are stripped before payloads reach external endpoints."
             onOpen={() => navigate('/scrub')}
+          />
+        </div>
+
+        {/* Enforcement timeline — windowed decision counts by verdict */}
+        <div className="overview-row-wide">
+          <EnforcementTimeline
+            window={windowSel}
+            data={timelineQuery.data}
+            isLoading={timelineQuery.isLoading}
+            isError={timelineQuery.isError}
           />
         </div>
 
