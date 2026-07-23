@@ -74,6 +74,21 @@ describe('Step3IssueIdentity', () => {
     expect(screen.getByTestId('onboarding-identity-did')).toHaveTextContent(identity.did)
   })
 
+  it('marks the glyph as spinning while the keypair derives, then done', () => {
+    render(<Step3IssueIdentity state={EMPTY_STATE} onIssued={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('onboarding-identity-generate'))
+    const glyph = screen.getByTestId('onboarding-identity-glyph')
+    expect(glyph).toHaveClass('is-spinning')
+    expect(glyph).not.toHaveClass('is-done')
+
+    act(() => {
+      vi.advanceTimersByTime(800)
+    })
+
+    expect(glyph).not.toHaveClass('is-spinning')
+    expect(glyph).toHaveClass('is-done')
+  })
+
   it('ignores a second generate click while spinning', () => {
     const onIssued = vi.fn()
     render(<Step3IssueIdentity state={EMPTY_STATE} onIssued={onIssued} />)

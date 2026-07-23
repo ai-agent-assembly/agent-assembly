@@ -49,4 +49,23 @@ describe('ScrubPage', () => {
     fireEvent.click(screen.getByTestId('scrub-detail-collapse'))
     expect(screen.getByTestId('scrub-detail')).toHaveAttribute('data-collapsed', 'true')
   })
+
+  it('renders the header action buttons and the covers / policy stat segments', () => {
+    render(<ScrubPage />)
+    expect(screen.getByTestId('scrub-add-pattern')).toBeInTheDocument()
+    expect(screen.getByTestId('scrub-export-config')).toBeInTheDocument()
+    expect(screen.getByTestId('scrub-stats-covers')).toHaveTextContent(
+      'http egress · gmail · slack',
+    )
+    expect(screen.getByTestId('scrub-stats-policy')).toHaveTextContent('P-100')
+  })
+
+  it('disabling the selected pattern from the detail row drops the enabled count', () => {
+    render(<ScrubPage />)
+    // OPENAI_KEY is selected and enabled by default.
+    fireEvent.click(screen.getByTestId('scrub-detail-disable'))
+    expect(screen.getByTestId('scrub-stats-enabled-count')).toHaveTextContent(
+      `${ENABLED - 1}/${TOTAL} patterns enabled`,
+    )
+  })
 })
