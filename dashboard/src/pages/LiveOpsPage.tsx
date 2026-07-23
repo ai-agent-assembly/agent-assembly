@@ -10,8 +10,14 @@ import { ApprovalPool } from '../features/liveOps/ApprovalPool'
 import { AutoScrollToggle } from '../features/liveOps/AutoScrollToggle'
 import { FilterBar, type FilterOption } from '../features/liveOps/FilterBar'
 import { OperationRow } from '../features/liveOps/OperationRow'
-import { PipelineCanvas } from '../features/liveOps/PipelineCanvas'
-import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
+import {
+  PipelineCanvas,
+  type PipelineCanvasCounters,
+} from '../features/liveOps/PipelineCanvas'
+import {
+  type StreamStatus,
+  useLiveOpsStream,
+} from '../features/liveOps/useLiveOpsStream'
 import {
   EMPTY_FILTERS,
   type LiveOpsFilters,
@@ -24,6 +30,51 @@ const OVERRIDE_VERB: Record<OperationOverride, string> = {
   pausing: 'pause',
   resuming: 'resume',
   terminating: 'terminate',
+}
+
+/** Zeroed counters shown before the pipeline emits its first readout. */
+const EMPTY_COUNTERS: PipelineCanvasCounters = {
+  rpm: 0,
+  allow: 0,
+  narrow: 0,
+  deny: 0,
+  scrub: 0,
+  approval: 0,
+}
+
+// Manual speed controls mirror the hi-fi (`design/v1/hi-fi/live-ops.jsx`):
+// intensity is a 0.5-step multiplier clamped to [0.5, 5] on the pipeline's
+// spawn cadence. 2 is the hi-fi's steady-state baseline.
+const INTENSITY_MIN = 0.5
+const INTENSITY_MAX = 5
+const INTENSITY_STEP = 0.5
+const INTENSITY_DEFAULT = 2
+
+interface StatePill {
+  label: string
+  /** Drives the colour token; `live` also animates the pulse dot. */
+  tone: 'live' | 'paused' | 'connecting' | 'reconnecting' | 'offline'
+  pulse: boolean
+}
+
+/**
+ * The header pill reflects, in precedence order, the operator's local pause
+ * (which halts the pipeline animation regardless of the wire) and then the
+ * live WS stream state. Only a connected, unpaused stream reads as `LIVE`
+ * with a pulsing dot; a dropped stream must never show a green "LIVE".
+ */
+function derivePill(paused: boolean, status: StreamStatus): StatePill {
+  if (paused) return { label: 'PAUSED', tone: 'paused', pulse: false }
+  switch (status) {
+    case 'connected':
+      return { label: 'LIVE', tone: 'live', pulse: true }
+    case 'connecting':
+      return { label: 'CONNECTING', tone: 'connecting', pulse: false }
+    case 'reconnecting':
+      return { label: 'RECONNECTING', tone: 'reconnecting', pulse: false }
+    case 'error':
+      return { label: 'OFFLINE', tone: 'offline', pulse: false }
+  }
 }
 
 /**
@@ -52,6 +103,9 @@ export function LiveOpsPage() {
   const [overrides, setOverrides] = useState<Map<string, OperationOverride>>(
     () => new Map(),
   )
+  const [paused, setPaused] = useState(false)
+  const [intensity, setIntensity] = useState(INTENSITY_DEFAULT)
+  const [counters, setCounters] = useState<PipelineCanvasCounters>(EMPTY_COUNTERS)
   const { toast } = useToast()
 
   const agentsQuery = useAgentsQuery()
@@ -136,14 +190,20 @@ export function LiveOpsPage() {
     [displayedOps, filters],
   )
 
-  // Scale the pipeline animation intensity with the size of the ops ring as
-  // a rough rate proxy: empty ring → near-idle background animation, full
-  // ring → 5× (matches the hi-fi's spawn-cadence ceiling). 15 was picked so
-  // a typical 30-op steady state lands around the hi-fi baseline of 2.
-  const pipelineIntensity = useMemo(
-    () => Math.max(0.5, Math.min(5, ops.length / 15)),
-    [ops.length],
-  )
+  const pill = derivePill(paused, status)
+  const activeAgents = agentsQuery.data?.length ?? 0
+
+  function handleSlower() {
+    setIntensity((i) => Math.max(INTENSITY_MIN, i - INTENSITY_STEP))
+  }
+
+  function handleFaster() {
+    setIntensity((i) => Math.min(INTENSITY_MAX, i + INTENSITY_STEP))
+  }
+
+  function handlePageOnCall() {
+    toast('Paging on-call — mock action')
+  }
 
   let streamBody
   if (status === 'error') {
@@ -173,11 +233,101 @@ export function LiveOpsPage() {
   return (
     <main className="live-page" data-testid="live-ops-page">
       <header className="live-page__header">
-        <h1 className="live-page__title">Live Operations</h1>
-        <p className="live-page__subtitle">
-          Real-time governance pipeline: traffic flow, event stream, and pending approvals.
-        </p>
+        <div className="live-page__header-lead">
+          <h1 className="live-page__title">
+            Live Operations
+            <span
+              className={`live-page__pill live-page__pill--${pill.tone}`}
+              data-testid="live-ops-state-pill"
+            >
+              {pill.pulse && (
+                <span className="live-page__pulse" aria-hidden="true" />
+              )}
+              {pill.label}
+            </span>
+          </h1>
+          <p className="live-page__subtitle">
+            Real-time governance pipeline: traffic flow, event stream, and pending approvals.
+          </p>
+        </div>
+        <div className="live-page__controls" data-testid="live-ops-controls">
+          <button
+            type="button"
+            className="live-page__btn"
+            onClick={handleSlower}
+            disabled={intensity <= INTENSITY_MIN}
+            data-testid="live-ops-slower"
+            aria-label="Slow down pipeline"
+          >
+            − slow
+          </button>
+          <button
+            type="button"
+            className="live-page__btn"
+            onClick={handleFaster}
+            disabled={intensity >= INTENSITY_MAX}
+            data-testid="live-ops-faster"
+            aria-label="Speed up pipeline"
+          >
+            + fast
+          </button>
+          <button
+            type="button"
+            className="live-page__btn"
+            onClick={() => setPaused((p) => !p)}
+            aria-pressed={paused}
+            data-testid="live-ops-pause"
+          >
+            {paused ? '▸ resume' : '⏸ pause'}
+          </button>
+          <button
+            type="button"
+            className="live-page__btn live-page__btn--danger"
+            onClick={handlePageOnCall}
+            data-testid="live-ops-page-oncall"
+          >
+            page on-call
+          </button>
+        </div>
       </header>
+
+      <div
+        className="live-page__stats"
+        data-testid="live-ops-counters"
+        aria-label="Live pipeline counters"
+      >
+        <span className="live-page__stat">
+          env: <b className="live-page__stat-strong">prod</b>
+        </span>
+        <span className="live-page__stat-divider" aria-hidden="true" />
+        <span className="live-page__stat">
+          <b className="live-page__stat-strong">{counters.rpm}</b> req/min
+        </span>
+        <span className="live-page__stat-divider" aria-hidden="true" />
+        <span className="live-page__stat live-page__stat--ok">
+          <span className="live-page__dot" aria-hidden="true" />
+          {counters.allow} allowed
+        </span>
+        <span className="live-page__stat live-page__stat--warn">
+          <span className="live-page__dot" aria-hidden="true" />
+          {counters.narrow} narrowed
+        </span>
+        <span className="live-page__stat live-page__stat--scrub">
+          <span className="live-page__dot" aria-hidden="true" />
+          {counters.scrub} scrubbed
+        </span>
+        <span className="live-page__stat live-page__stat--info">
+          <span className="live-page__dot" aria-hidden="true" />
+          {counters.approval} await
+        </span>
+        <span className="live-page__stat live-page__stat--danger">
+          <span className="live-page__dot" aria-hidden="true" />
+          {counters.deny} denied
+        </span>
+        <span className="live-page__stat live-page__stat--end">
+          intensity ×{intensity.toFixed(1)} · {activeAgents} active agents
+        </span>
+      </div>
 
       <div className="live-page__grid">
         <section
@@ -187,9 +337,26 @@ export function LiveOpsPage() {
         >
           <header className="live-page__pane-head">
             <h2 className="live-page__pane-title">▤ traffic pipeline</h2>
+            <div className="live-page__legend" data-testid="live-ops-legend">
+              <span className="live-page__chip live-page__chip--ok">● allow</span>
+              <span className="live-page__chip live-page__chip--warn">● narrow</span>
+              <span className="live-page__chip live-page__chip--info">
+                ● approval
+              </span>
+              <span className="live-page__chip live-page__chip--scrub">
+                ● scrub
+              </span>
+              <span className="live-page__chip live-page__chip--danger">
+                ● deny
+              </span>
+            </div>
           </header>
           <div className="live-page__pane-body live-page__pane-body--canvas">
-            <PipelineCanvas intensity={pipelineIntensity} />
+            <PipelineCanvas
+              paused={paused}
+              intensity={intensity}
+              onCounters={setCounters}
+            />
           </div>
         </section>
 

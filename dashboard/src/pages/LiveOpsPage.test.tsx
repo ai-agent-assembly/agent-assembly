@@ -31,6 +31,31 @@ vi.mock('../features/liveOps/actions', () => ({
   terminateOp: vi.fn().mockResolvedValue(undefined),
 }))
 
+// The real canvas cannot run in jsdom (no Canvas 2D API), so stub it with a
+// button that pushes a fixed counter readout back through `onCounters` on
+// demand — this is exactly the wire the page consumes into the stats strip.
+const COUNTERS_FIXTURE = {
+  rpm: 42,
+  allow: 5,
+  narrow: 3,
+  scrub: 1,
+  approval: 4,
+  deny: 2,
+}
+vi.mock('../features/liveOps/PipelineCanvas', () => ({
+  PipelineCanvas: ({
+    onCounters,
+  }: {
+    onCounters?: (c: typeof COUNTERS_FIXTURE) => void
+  }) => (
+    <button
+      type="button"
+      data-testid="emit-counters"
+      onClick={() => onCounters?.(COUNTERS_FIXTURE)}
+    />
+  ),
+}))
+
 const AGENTS = [
   {
     id: 'support-agent',
@@ -94,6 +119,66 @@ describe('LiveOpsPage', () => {
     expect(screen.getByTestId('live-ops-pipeline-zone')).toBeInTheDocument()
     expect(screen.getByTestId('live-ops-stream-zone')).toBeInTheDocument()
     expect(screen.getByTestId('live-ops-approvals-zone')).toBeInTheDocument()
+  })
+
+  // ── AAASM-5025: state pill, counters strip, legend, speed controls ─────
+
+  it('renders the counters strip from the pipeline onCounters readout', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<LiveOpsPage />)
+    const strip = screen.getByTestId('live-ops-counters')
+    // Starts zeroed before the pipeline emits.
+    expect(strip).toHaveTextContent('0 allowed')
+
+    await user.click(screen.getByTestId('emit-counters'))
+
+    expect(strip).toHaveTextContent('42 req/min')
+    expect(strip).toHaveTextContent('5 allowed')
+    expect(strip).toHaveTextContent('3 narrowed')
+    expect(strip).toHaveTextContent('1 scrubbed')
+    expect(strip).toHaveTextContent('4 await')
+    expect(strip).toHaveTextContent('2 denied')
+    // Active-agent count comes from the agents query fixture.
+    expect(strip).toHaveTextContent('1 active agents')
+  })
+
+  it('shows LIVE while connected and flips to PAUSED on pause', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<LiveOpsPage />)
+    const pill = screen.getByTestId('live-ops-state-pill')
+    expect(pill).toHaveTextContent('LIVE')
+
+    await user.click(screen.getByTestId('live-ops-pause'))
+    expect(pill).toHaveTextContent('PAUSED')
+    expect(screen.getByTestId('live-ops-pause')).toHaveTextContent('resume')
+  })
+
+  it('reflects a dropped stream as OFFLINE, never a green LIVE', () => {
+    mockStream({ status: 'error' })
+    renderWithProviders(<LiveOpsPage />)
+    expect(screen.getByTestId('live-ops-state-pill')).toHaveTextContent('OFFLINE')
+  })
+
+  it('steps the intensity readout with the slow / fast controls', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<LiveOpsPage />)
+    const strip = screen.getByTestId('live-ops-counters')
+    expect(strip).toHaveTextContent('intensity ×2.0')
+
+    await user.click(screen.getByTestId('live-ops-faster'))
+    expect(strip).toHaveTextContent('intensity ×2.5')
+
+    await user.click(screen.getByTestId('live-ops-slower'))
+    await user.click(screen.getByTestId('live-ops-slower'))
+    expect(strip).toHaveTextContent('intensity ×1.5')
+  })
+
+  it('renders the lane-fate legend chips', () => {
+    renderWithProviders(<LiveOpsPage />)
+    const legend = screen.getByTestId('live-ops-legend')
+    for (const fate of ['allow', 'narrow', 'approval', 'scrub', 'deny']) {
+      expect(legend).toHaveTextContent(fate)
+    }
   })
 
   it('mounts FilterBar and AutoScrollToggle inside the stream zone', () => {
