@@ -59,6 +59,32 @@ describe('buildAuditCsv', () => {
   it('produces only the header for an empty row set', () => {
     expect(buildAuditCsv([])).toBe('seq,timestamp,agent_id,event_type,decision,summary,session_id')
   })
+
+  it('leaves the decision column empty when the payload carries no verdict', () => {
+    const csv = buildAuditCsv([entry({ seq: 5, event_type: 'LLMCall', payload: '{"model":"gpt-4o"}' })])
+    const cells = csv.split('\r\n')[1].split(',')
+    // Column order: seq,timestamp,agent_id,event_type,decision,summary,session_id
+    expect(cells[4]).toBe('')
+  })
+
+  it('renders a null wire field as an empty cell rather than "null"', () => {
+    // The generated schema types every column as required, but the gateway can
+    // still send a null field on a malformed row — the CSV must degrade to an
+    // empty cell, not the literal string "null".
+    const sparse = [
+      {
+        seq: 6,
+        timestamp: '2026-05-11T14:02:11Z',
+        agent_id: 'agent-x',
+        event_type: 'LLMCall',
+        session_id: null,
+        payload: '{}',
+      } as unknown as LogEntry,
+    ]
+    const line = buildAuditCsv(sparse).split('\r\n')[1]
+    expect(line.endsWith(',')).toBe(true)
+    expect(line).not.toContain('null')
+  })
 })
 
 describe('buildComplianceReport', () => {
@@ -94,5 +120,19 @@ describe('buildComplianceReport', () => {
     expect(report).toContain('type=PolicyViolation')
     expect(report).toContain('agent=research-bot-04')
     expect(report).toContain('search=gmail')
+  })
+
+  it('states there are no verdicts when no row carries a decision', () => {
+    const noVerdict = [entry({ seq: 10, event_type: 'LLMCall', payload: '{"model":"gpt-4o"}' })]
+    const report = buildComplianceReport(noVerdict, ctx, now)
+    expect(report).toContain('## Decision verdicts')
+    expect(report).toContain('- (no explicit verdicts)')
+  })
+
+  it('reports an empty scope honestly when there are no rows', () => {
+    const report = buildComplianceReport([], ctx, now)
+    expect(report).toContain('Total events in report: 0')
+    expect(report).toContain('Agents covered: (none)')
+    expect(report).toContain('## Policy violations (0)')
   })
 })

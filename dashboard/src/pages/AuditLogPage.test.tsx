@@ -310,6 +310,46 @@ describe('AuditLogPage', () => {
     clickSpy.mockRestore()
   })
 
+  it('warns and skips the download when the CSV export has no rows in scope', async () => {
+    const createSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:audit')
+
+    renderPage()
+    await screen.findByTestId('audit-row-1048')
+
+    // Narrow the table to zero rows so the export short-circuits.
+    fireEvent.change(screen.getByTestId('audit-search'), {
+      target: { value: 'no-such-entry-xyz' },
+    })
+    await screen.findByTestId('audit-empty')
+
+    fireEvent.click(screen.getByTestId('audit-export-csv'))
+
+    expect(await screen.findByTestId('toast')).toHaveTextContent('No rows to export')
+    expect(createSpy).not.toHaveBeenCalled()
+
+    createSpy.mockRestore()
+  })
+
+  it('uses singular wording when exactly one row is exported', async () => {
+    const createSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:audit')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    renderPage()
+    await screen.findByTestId('audit-row-1048')
+
+    // ToolCall matches a single row (seq 1044).
+    fireEvent.click(screen.getByTestId('audit-type-btn-ToolCall'))
+    await waitFor(() => expect(screen.getByTestId('audit-count')).toHaveTextContent('1 / 3'))
+
+    fireEvent.click(screen.getByTestId('audit-export-csv'))
+
+    expect(await screen.findByTestId('toast')).toHaveTextContent('Exported 1 row to CSV')
+    expect(createSpy).toHaveBeenCalledTimes(1)
+
+    vi.restoreAllMocks()
+  })
+
   it('generates a compliance report via the header action', async () => {
     const createSpy = vi
       .spyOn(URL, 'createObjectURL')
