@@ -297,3 +297,96 @@ describe('TopologyGraph', () => {
     })
   })
 })
+
+describe('TopologyGraph — delegation badges & markers (AAASM-5033)', () => {
+  const ROOT_AND_CHILD: TopologyNode[] = [
+    { id: 'r', name: 'planner', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    { id: 'c', name: 'worker', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+  ]
+  const DELEGATION_EDGE: TopologyEdge[] = [{ source: 'r', target: 'c', kind: 'delegation' }]
+
+  function nodeByName(name: string): HTMLElement {
+    const match = screen
+      .getAllByTestId('topology-node')
+      .find(g => g.querySelector('.topology-node__name')?.textContent?.includes(name))
+    if (!match) throw new Error(`node ${name} not found`)
+    return match
+  }
+
+  it('marks the delegation root with a `root` badge and delegates with `L<depth>`', () => {
+    render(<TopologyGraph nodes={ROOT_AND_CHILD} edges={DELEGATION_EDGE} />)
+    const root = nodeByName('planner')
+    const child = nodeByName('worker')
+
+    expect(root).toHaveAttribute('data-root', 'true')
+    expect(root).toHaveAttribute('data-depth', '0')
+    expect(root.querySelector('[data-testid="topology-node-depth"]')?.textContent).toBe('root')
+
+    expect(child).not.toHaveAttribute('data-root')
+    expect(child).toHaveAttribute('data-depth', '1')
+    expect(child.querySelector('[data-testid="topology-node-depth"]')?.textContent).toBe('L1')
+  })
+
+  it('marks every node on a delegation cycle with data-in-cycle and a ⟳ glyph', () => {
+    const edges: TopologyEdge[] = [
+      { source: 'r', target: 'c', kind: 'delegation' },
+      { source: 'c', target: 'r', kind: 'delegation' },
+    ]
+    render(<TopologyGraph nodes={ROOT_AND_CHILD} edges={edges} />)
+    for (const name of ['planner', 'worker']) {
+      const g = nodeByName(name)
+      expect(g).toHaveAttribute('data-in-cycle', 'true')
+      expect(g.querySelector('[data-testid="topology-node-cycle"]')?.textContent).toBe('⟳')
+    }
+  })
+
+  it('renders no cycle marker for an acyclic graph', () => {
+    render(<TopologyGraph nodes={ROOT_AND_CHILD} edges={DELEGATION_EDGE} />)
+    expect(screen.queryByTestId('topology-node-cycle')).toBeNull()
+    expect(nodeByName('planner')).not.toHaveAttribute('data-in-cycle')
+  })
+
+  it('renders the enforcement-mode badge only when the node carries a mode', () => {
+    const nodes: TopologyNode[] = [
+      { id: 'r', name: 'planner', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10, mode: 'shadow' },
+      { id: 'c', name: 'worker', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    ]
+    render(<TopologyGraph nodes={nodes} edges={DELEGATION_EDGE} />)
+
+    const withMode = nodeByName('planner')
+    expect(withMode).toHaveAttribute('data-mode', 'shadow')
+    const badge = withMode.querySelector('[data-testid="topology-node-mode"]')
+    // Small (low-budget) card → colour-coded glyph only, no word.
+    expect(badge?.getAttribute('data-mode-label')).toBe('glyph')
+    expect(badge?.textContent).toContain('◐')
+    expect(badge).toHaveClass('topology-node__mode--shadow')
+
+    const noMode = nodeByName('worker')
+    expect(noMode).not.toHaveAttribute('data-mode')
+    expect(noMode.querySelector('[data-testid="topology-node-mode"]')).toBeNull()
+  })
+
+  it('spells out the mode next to the glyph on a wide (high-budget) card', () => {
+    const nodes: TopologyNode[] = [
+      { id: 'r', name: 'planner', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 9.5, budgetLimit: 10, mode: 'enforce' },
+    ]
+    render(<TopologyGraph nodes={nodes} edges={[]} />)
+    const badge = nodeByName('planner').querySelector('[data-testid="topology-node-mode"]')
+    expect(badge?.getAttribute('data-mode-label')).toBe('full')
+    expect(badge?.textContent).toContain('enforce')
+  })
+
+  it('flags a policy-flagged node with data-flagged and a ⚑ name prefix', () => {
+    const nodes: TopologyNode[] = [
+      { id: 'r', name: 'planner', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10, flagged: true },
+      { id: 'c', name: 'worker', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    ]
+    render(<TopologyGraph nodes={nodes} edges={DELEGATION_EDGE} />)
+
+    const flagged = nodeByName('planner')
+    expect(flagged).toHaveAttribute('data-flagged', 'true')
+    expect(flagged.querySelector('.topology-node__name')?.textContent).toContain('⚑')
+
+    expect(nodeByName('worker')).not.toHaveAttribute('data-flagged')
+  })
+})
