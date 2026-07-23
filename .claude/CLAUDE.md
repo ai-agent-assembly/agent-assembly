@@ -79,12 +79,12 @@ cargo doc --workspace --no-deps        # checked on push by hooks
   (`<type>` = feat/fix/refactor/test/docs/config/deps/remove/lint;
   e.g. `v0.0.1/AAASM-42/feat/add_agent_registry`).
 - **PR title:** `[<ticket>] <emoji> (<scope>): <summary>`; base branch **always
-  `master`**; body follows the repo PR template; ≥1 Pioneer-team approval.
+  `main`**; body follows the repo PR template; ≥1 Pioneer-team approval.
 
 ## Repo-specific gotchas
 
 - **Push remote is `remote`** (→ `ai-agent-assembly/agent-assembly`, canonical), not
-  `origin` (a personal fork). Scope changes against `remote/master`, which is often
+  `origin` (a personal fork). Scope changes against `remote/main`, which is often
   far ahead of a fork checkout.
 - **Pre-push runs `cargo doc` with no path glob**, so it fails on eBPF/macOS even for
   docs-only changes. For Markdown/`.claude`-only branches that can't satisfy it,
