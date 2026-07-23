@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useContext, useMemo, useState } from 'react'
+import { ToastContext } from '../components/ToastContext'
 import { PATTERNS, SAMPLE_PAYLOAD } from '../features/scrub/fixtures'
 import { PatternsLibrary } from '../features/scrub/PatternsLibrary'
 import { PatternDetail } from '../features/scrub/PatternDetail'
@@ -22,6 +23,10 @@ export function ScrubPage() {
 
   const selected = patterns.find((p) => p.id === selectedId) ?? patterns[0]
 
+  // Nullable so the page still renders (and these controls no-op) outside a
+  // ToastProvider — e.g. in isolated component tests.
+  const toast = useContext(ToastContext)?.toast
+
   const togglePattern = (id: string) =>
     setPatterns((prev) =>
       prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p)),
@@ -42,6 +47,24 @@ export function ScrubPage() {
             active · {totalHits} hits today.
           </p>
         </div>
+        <div className="scrub-head-actions">
+          <button
+            type="button"
+            className="scrub-head-btn"
+            data-testid="scrub-add-pattern"
+            onClick={() => toast?.('Add-pattern editor is coming soon', 'info')}
+          >
+            + add pattern
+          </button>
+          <button
+            type="button"
+            className="scrub-head-btn"
+            data-testid="scrub-export-config"
+            onClick={() => toast?.('Config export is coming soon', 'info')}
+          >
+            ⏏ export config
+          </button>
+        </div>
       </header>
 
       <div className="scrub-stats" role="status" aria-live="polite">
@@ -55,6 +78,13 @@ export function ScrubPage() {
         <span className="scrub-stats-divider" />
         <span data-testid="scrub-stats-enabled-count">
           {enabledCount}/{patterns.length} patterns enabled
+        </span>
+        <span className="scrub-stats-divider" />
+        <span data-testid="scrub-stats-covers">
+          covers: <strong>http egress · gmail · slack</strong>
+        </span>
+        <span className="scrub-stats-policy" data-testid="scrub-stats-policy">
+          policy: P-100 · default-allow with scrub
         </span>
       </div>
 
@@ -73,6 +103,17 @@ export function ScrubPage() {
               pattern={selected}
               collapsed={detailCollapsed}
               onToggleCollapsed={() => setDetailCollapsed((c) => !c)}
+              onEditRegex={() => toast?.(`Regex editor for ${selected.id} is coming soon`, 'info')}
+              onTestOnTraffic={() =>
+                toast?.(`Tested ${selected.id} against the last 24h of traffic`, 'info')
+              }
+              onDisable={() => {
+                togglePattern(selected.id)
+                toast?.(
+                  `${selected.id} ${selected.enabled ? 'disabled' : 'enabled'}`,
+                  selected.enabled ? 'error' : 'success',
+                )
+              }}
             />
           )}
           <PayloadDiff

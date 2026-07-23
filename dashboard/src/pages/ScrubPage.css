@@ -9,6 +9,32 @@
   padding: 22px 24px 18px;
   border-bottom: 1px solid var(--line);
   background: var(--paper-2);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.scrub-head-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.scrub-head-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scrub-head-btn:hover {
+  background: var(--paper-3);
 }
 
 .scrub-page-title {
@@ -65,6 +91,11 @@
   height: 14px;
   background: var(--line);
   display: inline-block;
+}
+
+.scrub-stats-policy {
+  margin-left: auto;
+  color: var(--ink-4);
 }
 
 .scrub-body {
