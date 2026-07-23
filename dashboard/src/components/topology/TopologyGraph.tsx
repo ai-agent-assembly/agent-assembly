@@ -26,6 +26,54 @@ const CLUSTER_PADDING = 18
 const TEAM_LABEL_HEIGHT = 36
 const TEAM_BUDGET_BAR_HEIGHT = 32
 
+/**
+ * Per-kind edge styling, mirroring the hi-fi reference edge config
+ * (`design/v1/hi-fi/topology.jsx` TOPO_EC). The design defines six relation
+ * kinds; the frontend data model (`features/topology/types.ts`) currently
+ * exposes only `delegation` and `call`, so exactly those two are styled here —
+ * `delegation` as the primary solid line, `call` as a lighter dashed line.
+ *
+ * `strokeWidth` is inlined; colour comes from CSS variables via the
+ * `.topology-edge--<kind>` class so edges re-theme in light/dark like the rest
+ * of the graph (the design's raw hex would not).
+ */
+const EDGE_STYLE: Record<TopologyEdge['kind'], { width: number; dash?: string }> = {
+  delegation: { width: 1.75 },
+  call: { width: 1.5, dash: '6 4' },
+}
+
+const EDGE_KINDS = Object.keys(EDGE_STYLE) as ReadonlyArray<TopologyEdge['kind']>
+
+interface EdgeGeometry {
+  readonly key: string
+  readonly kind: TopologyEdge['kind']
+  readonly crossTeam: boolean
+  readonly d: string
+}
+
+/**
+ * Point where the ray from a node centre toward `(towardX, towardY)` exits the
+ * node's rectangular card. Used so an edge starts/ends flush against the card
+ * border — the arrowhead then sits on the target card edge instead of being
+ * hidden underneath it.
+ */
+function rectBorderPoint(
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  towardX: number,
+  towardY: number,
+): { x: number; y: number } {
+  const dx = towardX - cx
+  const dy = towardY - cy
+  if (dx === 0 && dy === 0) return { x: cx, y: cy }
+  const scaleX = dx !== 0 ? w / 2 / Math.abs(dx) : Infinity
+  const scaleY = dy !== 0 ? h / 2 / Math.abs(dy) : Infinity
+  const scale = Math.min(scaleX, scaleY)
+  return { x: cx + dx * scale, y: cy + dy * scale }
+}
+
 interface PositionedNode extends SimulationNodeDatum {
   id: string
   source: TopologyNode
@@ -188,6 +236,53 @@ export function TopologyGraph({
     })
   }, [positions, teamLayout])
 
+  // Edge geometry derived from settled node positions. Intra-team edges are
+  // straight lines; cross-team edges bow out along a quadratic curve so they
+  // read as distinct long-range relationships rather than crossing clutter.
+  // Endpoints are trimmed to each card's border so arrowheads land on the
+  // target card edge. Drawn under the node cards (see render order below).
+  const edgeGeometries = useMemo<readonly EdgeGeometry[]>(() => {
+    const posById = new Map<string, PositionedNode>()
+    for (const p of positions) posById.set(p.id, p)
+
+    const geoms: EdgeGeometry[] = []
+    edges.forEach((edge, i) => {
+      const src = posById.get(String(edge.source))
+      const tgt = posById.get(String(edge.target))
+      if (!src || !tgt || src === tgt) return
+
+      const sDims = SIZE_VARIANT[bucketForRatio(src.source.budgetSpend, src.source.budgetLimit)]
+      const tDims = SIZE_VARIANT[bucketForRatio(tgt.source.budgetSpend, tgt.source.budgetLimit)]
+      const scx = src.x ?? width / 2
+      const scy = src.y ?? height / 2
+      const tcx = tgt.x ?? width / 2
+      const tcy = tgt.y ?? height / 2
+
+      const start = rectBorderPoint(scx, scy, sDims.w, sDims.h, tcx, tcy)
+      const end = rectBorderPoint(tcx, tcy, tDims.w, tDims.h, scx, scy)
+      const crossTeam = src.source.team !== tgt.source.team
+
+      let d: string
+      if (crossTeam) {
+        // Perpendicular offset at the midpoint gives the bowed control point.
+        const mx = (start.x + end.x) / 2
+        const my = (start.y + end.y) / 2
+        const vx = end.x - start.x
+        const vy = end.y - start.y
+        const len = Math.hypot(vx, vy) || 1
+        const off = Math.min(60, len * 0.25)
+        const ctrlX = mx + (-vy / len) * off
+        const ctrlY = my + (vx / len) * off
+        d = `M${start.x} ${start.y} Q${ctrlX} ${ctrlY} ${end.x} ${end.y}`
+      } else {
+        d = `M${start.x} ${start.y} L${end.x} ${end.y}`
+      }
+
+      geoms.push({ key: `${edge.source}->${edge.target}-${edge.kind}-${i}`, kind: edge.kind, crossTeam, d })
+    })
+    return geoms
+  }, [edges, positions, width, height])
+
   return (
     <svg
       className="topology-graph"
@@ -196,6 +291,29 @@ export function TopologyGraph({
       role="img"
       aria-label="Agent topology graph"
     >
+      {/* Per-kind arrowhead markers. Fill is set from the same CSS variable as
+          the matching edge stroke (via .topology-edge__arrow--<kind>) so the
+          head colour tracks the line in both themes. */}
+      <defs>
+        {EDGE_KINDS.map(kind => (
+          <marker
+            key={kind}
+            id={`topo-arrow-${kind}`}
+            markerWidth="8"
+            markerHeight="8"
+            refX="6.5"
+            refY="3"
+            orient="auto"
+            markerUnits="userSpaceOnUse"
+          >
+            <path
+              className={`topology-edge__arrow topology-edge__arrow--${kind}`}
+              d="M0 0 L0 6 L7 3 z"
+            />
+          </marker>
+        ))}
+      </defs>
+
       {/* Team clusters (drawn under nodes) */}
       {clusters.map(c => (
         <g
@@ -228,6 +346,23 @@ export function TopologyGraph({
             </div>
           </foreignObject>
         </g>
+      ))}
+
+      {/* Relationship edges — above the cluster fills, under the node cards so
+          nodes sit on top and arrowheads land on the target card border. */}
+      {edgeGeometries.map(e => (
+        <path
+          key={e.key}
+          className={`topology-edge topology-edge--${e.kind}`}
+          data-testid="topology-edge"
+          data-kind={e.kind}
+          data-cross-team={e.crossTeam ? 'true' : undefined}
+          d={e.d}
+          fill="none"
+          strokeWidth={EDGE_STYLE[e.kind].width}
+          strokeDasharray={EDGE_STYLE[e.kind].dash}
+          markerEnd={`url(#topo-arrow-${e.kind})`}
+        />
       ))}
 
       {positions.map(pos => {

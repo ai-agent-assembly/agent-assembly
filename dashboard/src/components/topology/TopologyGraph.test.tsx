@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { TopologyGraph } from './TopologyGraph'
-import type { TopologyNode } from '../../features/topology/types'
+import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
 
 const NODES: TopologyNode[] = [
   // ratio 0.1 → small
@@ -155,6 +155,65 @@ describe('TopologyGraph', () => {
       expect(labels).toHaveLength(2)
       const texts = labels.map(l => l.textContent).sort()
       expect(texts).toEqual(['analytics', 'support'])
+    })
+  })
+
+  // ── Relationship edges (AAASM-5019) ────────────────────────────────────────
+  // The graph must actually draw the edges between agents: one <path> per edge,
+  // styled per kind, with cross-team edges flagged so they render as curves.
+  describe('edges', () => {
+    const EDGE_NODES: TopologyNode[] = [
+      { id: 'p1', name: 'planner', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+      { id: 'w1', name: 'worker-1', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 2, budgetLimit: 10 },
+      { id: 'w2', name: 'worker-2', status: 'idle', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 3, budgetLimit: 10 },
+      { id: 'x1', name: 'x-caller', status: 'active', team: 'beta', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    ]
+    // 3 intra-team delegations + 1 cross-team call.
+    const EDGE_EDGES: TopologyEdge[] = [
+      { source: 'p1', target: 'w1', kind: 'delegation' },
+      { source: 'p1', target: 'w2', kind: 'delegation' },
+      { source: 'w1', target: 'w2', kind: 'call' },
+      { source: 'p1', target: 'x1', kind: 'call' },
+    ]
+
+    it('renders one <path data-testid="topology-edge"> per edge', () => {
+      render(<TopologyGraph nodes={EDGE_NODES} edges={EDGE_EDGES} />)
+      expect(screen.getAllByTestId('topology-edge')).toHaveLength(EDGE_EDGES.length)
+    })
+
+    it('mirrors each edge kind onto data-kind and a per-kind class', () => {
+      render(<TopologyGraph nodes={EDGE_NODES} edges={EDGE_EDGES} />)
+      const paths = screen.getAllByTestId('topology-edge')
+      const kinds = paths.map(p => p.getAttribute('data-kind'))
+      expect(kinds).toEqual(['delegation', 'delegation', 'call', 'call'])
+      // Per-kind styling hook is present so the CSS token can colour each line.
+      expect(paths[0]).toHaveClass('topology-edge--delegation')
+      expect(paths[2]).toHaveClass('topology-edge--call')
+    })
+
+    it('flags only cross-team edges and draws them as curves', () => {
+      render(<TopologyGraph nodes={EDGE_NODES} edges={EDGE_EDGES} />)
+      const paths = screen.getAllByTestId('topology-edge')
+      // p1→x1 (alpha→beta) is the only cross-team edge.
+      const cross = paths.filter(p => p.getAttribute('data-cross-team') === 'true')
+      expect(cross).toHaveLength(1)
+      // Cross-team edges bow out along a quadratic curve (command "Q");
+      // intra-team edges are straight lines (command "L").
+      expect(cross[0].getAttribute('d')).toContain('Q')
+      const intra = paths.filter(p => p.getAttribute('data-cross-team') !== 'true')
+      for (const p of intra) expect(p.getAttribute('d')).toContain('L')
+    })
+
+    it('attaches a per-kind arrowhead marker to each edge', () => {
+      render(<TopologyGraph nodes={EDGE_NODES} edges={EDGE_EDGES} />)
+      const paths = screen.getAllByTestId('topology-edge')
+      expect(paths[0]).toHaveAttribute('marker-end', 'url(#topo-arrow-delegation)')
+      expect(paths[2]).toHaveAttribute('marker-end', 'url(#topo-arrow-call)')
+    })
+
+    it('renders no edge paths when there are no edges', () => {
+      render(<TopologyGraph nodes={EDGE_NODES} edges={[]} />)
+      expect(screen.queryByTestId('topology-edge')).toBeNull()
     })
   })
 

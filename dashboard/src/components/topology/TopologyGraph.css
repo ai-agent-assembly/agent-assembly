@@ -73,6 +73,42 @@
   fill: var(--ink-3);
 }
 
+/* ── Relationship edges (AAASM-5019) ────────────────────────────
+   Mirrors design/v1/hi-fi/topology.jsx TOPO_EC. The data model exposes
+   two kinds; each maps to a token so lines re-theme in light/dark:
+     delegation → --ink-3  (primary solid line)
+     call       → --info   (secondary dashed line)
+   Arrowheads reuse the same token via fill so head + line match. */
+
+.topology-edge {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.topology-edge--delegation {
+  stroke: var(--ink-3);
+  opacity: 0.75;
+}
+
+.topology-edge--call {
+  stroke: var(--info);
+  opacity: 0.7;
+}
+
+/* Long-range cross-team relationships read slightly lighter so the curved
+   connectors don't dominate the intra-team structure. */
+.topology-edge[data-cross-team='true'] {
+  opacity: 0.55;
+}
+
+.topology-edge__arrow--delegation {
+  fill: var(--ink-3);
+}
+
+.topology-edge__arrow--call {
+  fill: var(--info);
+}
+
 /* ── Team clusters (AAASM-1339) ─────────────────────────────── */
 
 .topology-cluster__outline {
