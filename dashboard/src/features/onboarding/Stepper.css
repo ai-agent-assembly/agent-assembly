@@ -5,6 +5,8 @@
   background: var(--paper);
   border-bottom: 1px solid var(--line-2);
   overflow-x: auto;
+  /* Fixed chrome between header and the scrollable body — never shrink. */
+  flex-shrink: 0;
 }
 
 .onb-rail-step {
