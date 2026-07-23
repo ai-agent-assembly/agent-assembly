@@ -55,7 +55,7 @@ docs_url: "https://docs.agent-assembly.com/"
 # installer — AAASM-4931 retired the legacy hosted installer alternate. The
 # GitHub raw URL is the fallback for users who want to fetch the script directly.
 install_script_url: "https://agent-assembly.com/install.sh"
-install_script_url_raw: "https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh"
+install_script_url_raw: "https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/HEAD/scripts/install-cli.sh"
 
 # mdBook / mdbook-mermaid toolchain pins — the SoT for the docs-build tool
 # versions (ADR 0013). These were duplicated by hand in .github/workflows/docs.yml
