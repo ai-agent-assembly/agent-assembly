@@ -12,6 +12,7 @@ import {
   type SimulationNodeDatum,
 } from 'd3-force'
 import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
+import { computeHierarchy, detectDelegationCycles } from '../../features/topology/hierarchy'
 import { TeamBudgetBar } from './TeamBudgetBar'
 import { Tooltip } from '../Tooltip'
 import './TopologyGraph.css'
@@ -25,6 +26,27 @@ const SIZE_VARIANT: Record<'small' | 'medium' | 'large', { w: number; h: number 
 const CLUSTER_PADDING = 18
 const TEAM_LABEL_HEIGHT = 36
 const TEAM_BUDGET_BAR_HEIGHT = 32
+
+/**
+ * Vertical pull, in px per delegation level, that makes the layout
+ * depth-informed (AAASM-5033): a node's `teamY` target is offset downward by
+ * `depth * DEPTH_ROW_GAP` so roots settle above their delegates within each
+ * team cluster, giving a top-down tree feel. It is a soft force layered on top
+ * of team clustering + collision, not a rigid grid — the existing
+ * `forceCollide` still prevents overlap.
+ */
+const DEPTH_ROW_GAP = 62
+
+/**
+ * Leading glyph for the enforcement-mode badge, mirroring the hi-fi reference
+ * (`design/v1/hi-fi/topology.jsx`): filled dot = enforce, half dot = shadow,
+ * hollow dot = off. Colour is applied per-mode via CSS (see TopologyGraph.css).
+ */
+const MODE_GLYPH: Record<NonNullable<TopologyNode['mode']>, string> = {
+  enforce: '●',
+  shadow: '◐',
+  off: '○',
+}
 
 /**
  * Per-kind edge styling, mirroring the hi-fi reference edge config
@@ -164,6 +186,12 @@ export function TopologyGraph({
     return m
   }, [teamLayout])
 
+  // Delegation-tree analysis (AAASM-5033): per-node depth + root ids feed the
+  // depth-informed layout and the root/depth badges; cycle ids drive the cycle
+  // marker. All derived client-side from the edge data — no server round-trip.
+  const { depthById, rootIds } = useMemo(() => computeHierarchy(nodes, edges), [nodes, edges])
+  const cycleNodeIds = useMemo(() => detectDelegationCycles(edges), [edges])
+
   const simulation = useMemo<Simulation<PositionedNode, PositionedEdge>>(() => {
     const positioned: PositionedNode[] = nodes.map(n => ({ id: n.id, source: n }))
     const links: PositionedEdge[] = edges.map(e => ({ source: e.source, target: e.target, kind: e.kind }))
@@ -177,7 +205,11 @@ export function TopologyGraph({
       // so the two lines are excluded from coverage.
       /* v8 ignore start */
       .force('teamX', forceX<PositionedNode>(d => teamCenterById.get(d.source.team)?.cx ?? width / 2).strength(0.12))
-      .force('teamY', forceY<PositionedNode>(d => teamCenterById.get(d.source.team)?.cy ?? height / 2).strength(0.12))
+      // Depth-informed vertical target: team center shifted down by the node's
+      // delegation depth so roots sit above their delegates within the cluster.
+      .force('teamY', forceY<PositionedNode>(d =>
+        (teamCenterById.get(d.source.team)?.cy ?? height / 2) + (depthById.get(d.id) ?? 0) * DEPTH_ROW_GAP,
+      ).strength(0.12))
       /* v8 ignore stop */
       // Keep same-team cards from stacking: the teamX/teamY centers pull all
       // members to one point, so without a collision force they overlap. Size
@@ -378,6 +410,11 @@ export function TopologyGraph({
         const x = (pos.x ?? width / 2) - dims.w / 2
         const y = (pos.y ?? height / 2) - dims.h / 2
 
+        // Delegation-tree badges (AAASM-5033), all edge-derived client-side.
+        const depth = depthById.get(node.id) ?? 0
+        const isRoot = rootIds.has(node.id)
+        const inCycle = cycleNodeIds.has(node.id)
+
         const handleClick = onNodeClick ? () => onNodeClick(node) : undefined
         const handleKeyDown = onNodeClick
           ? (e: KeyboardEvent<SVGGElement>) => {
@@ -395,6 +432,11 @@ export function TopologyGraph({
             data-testid="topology-node"
             data-status={node.status}
             data-size-bucket={bucket}
+            data-depth={depth}
+            data-root={isRoot ? 'true' : undefined}
+            data-in-cycle={inCycle ? 'true' : undefined}
+            data-flagged={node.flagged ? 'true' : undefined}
+            data-mode={node.mode}
             transform={`translate(${x}, ${y})`}
             role={onNodeClick ? 'button' : undefined}
             tabIndex={onNodeClick ? 0 : undefined}
@@ -405,16 +447,56 @@ export function TopologyGraph({
             <rect className="topology-node__card" x={0} y={0} width={dims.w} height={dims.h} rx={4} />
             <rect className="topology-node__stripe" x={0} y={0} width={3} height={dims.h} rx={2} />
             <text className="topology-node__name" x={11} y={22}>
-              {truncate(node.name, 14)}
+              {node.flagged ? '⚑ ' : ''}{truncate(node.name, node.flagged ? 12 : 14)}
+            </text>
+            {/* Root / depth badge (top-right): roots read `root`, delegates `L<n>`. */}
+            <text
+              className={`topology-node__depth${isRoot ? ' topology-node__depth--root' : ''}`}
+              data-testid="topology-node-depth"
+              x={dims.w - 6}
+              y={12}
+              textAnchor="end"
+            >
+              {isRoot ? 'root' : `L${depth}`}
             </text>
             {node.framework && (
               <text className="topology-node__framework" x={11} y={35}>
                 {node.framework}
               </text>
             )}
+            {/* Enforcement-mode badge (right of the framework row), rendered
+                only when the node carries a mode — see types.ts / PR notes.
+                Narrow (small-bucket) cards have no room for the word beside the
+                framework text, so they show the colour-coded glyph alone; wider
+                cards show `<glyph> <mode>`. */}
+            {node.mode && (
+              <text
+                className={`topology-node__mode topology-node__mode--${node.mode}`}
+                data-testid="topology-node-mode"
+                data-mode-label={dims.w >= SIZE_VARIANT.medium.w ? 'full' : 'glyph'}
+                x={dims.w - 6}
+                y={35}
+                textAnchor="end"
+              >
+                {dims.w >= SIZE_VARIANT.medium.w ? `${MODE_GLYPH[node.mode]} ${node.mode}` : MODE_GLYPH[node.mode]}
+              </text>
+            )}
             <text className="topology-node__budget" x={11} y={dims.h - 8}>
               ${node.budgetSpend.toFixed(1)} / ${node.budgetLimit.toFixed(0)}
             </text>
+            {/* Cycle marker (bottom-right): the danger dashed card border is the
+                primary signal; this ⟳ glyph makes it unambiguous. */}
+            {inCycle && (
+              <text
+                className="topology-node__cycle"
+                data-testid="topology-node-cycle"
+                x={dims.w - 6}
+                y={dims.h - 6}
+                textAnchor="end"
+              >
+                ⟳
+              </text>
+            )}
           </g>
         )
       })}
