@@ -71,4 +71,50 @@ describe('PatternDetail', () => {
     )
     expect(screen.getByTestId('scrub-detail')).toHaveAttribute('data-collapsed', 'true')
   })
+
+  it('renders the edit / test / disable action row when expanded', () => {
+    render(
+      <PatternDetail
+        pattern={SAMPLE}
+        collapsed={false}
+        onToggleCollapsed={vi.fn()}
+      />,
+    )
+    expect(screen.getByTestId('scrub-detail-edit')).toBeInTheDocument()
+    expect(screen.getByTestId('scrub-detail-test')).toBeInTheDocument()
+    expect(screen.getByTestId('scrub-detail-disable')).toBeInTheDocument()
+  })
+
+  it('hides the action row when collapsed', () => {
+    render(
+      <PatternDetail
+        pattern={SAMPLE}
+        collapsed={true}
+        onToggleCollapsed={vi.fn()}
+      />,
+    )
+    expect(screen.queryByTestId('scrub-detail-actions')).toBeNull()
+  })
+
+  it('fires the action callbacks when the buttons are clicked', () => {
+    const onEditRegex = vi.fn()
+    const onTestOnTraffic = vi.fn()
+    const onDisable = vi.fn()
+    render(
+      <PatternDetail
+        pattern={SAMPLE}
+        collapsed={false}
+        onToggleCollapsed={vi.fn()}
+        onEditRegex={onEditRegex}
+        onTestOnTraffic={onTestOnTraffic}
+        onDisable={onDisable}
+      />,
+    )
+    fireEvent.click(screen.getByTestId('scrub-detail-edit'))
+    fireEvent.click(screen.getByTestId('scrub-detail-test'))
+    fireEvent.click(screen.getByTestId('scrub-detail-disable'))
+    expect(onEditRegex).toHaveBeenCalledTimes(1)
+    expect(onTestOnTraffic).toHaveBeenCalledTimes(1)
+    expect(onDisable).toHaveBeenCalledTimes(1)
+  })
 })

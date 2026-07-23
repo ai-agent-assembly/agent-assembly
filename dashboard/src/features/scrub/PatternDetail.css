@@ -97,3 +97,35 @@
   background: var(--scrub-bg);
   color: var(--scrub);
 }
+
+.scrub-detail-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.scrub-detail-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink-2);
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.scrub-detail-btn:hover {
+  background: var(--paper-3);
+  color: var(--ink);
+}
+
+.scrub-detail-btn--danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.scrub-detail-btn--danger:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
