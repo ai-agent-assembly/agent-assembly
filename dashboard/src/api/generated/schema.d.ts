@@ -1030,6 +1030,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/costs/budget-tree": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/costs/budget-tree` — org → team → agent budget inheritance tree.
+         * @description Joins the agent registry's team/lineage structure with the budget tracker's
+         *     per-tier spend so each node shows its configured limit, own spend, and the
+         *     subtree spend a parent's budget constrains. Tenant scope is the visible-agent
+         *     boundary ([`visible_agents`]): an admin sees the whole org; a tenant-scoped
+         *     caller sees only its team's subtree; an unscoped non-admin caller gets a
+         *     `null` root. Within the visible set, an agent is a team-level root when its
+         *     spawn parent is not itself visible, and its spawned sub-agents nest beneath
+         *     it (they inherit its budget line) — so every visible agent appears exactly
+         *     once. Read-only: no enforcement or budget-debit path is touched.
+         */
+        get: operations["get_budget_tree"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/costs/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/costs/history` — trailing daily spend series.
+         * @description Aggregates the budget tracker's per-agent daily spend history into a single
+         *     dense (zero-filled), oldest-first series over the last `days` days. The set
+         *     of agents summed is exactly the caller's visible set ([`visible_agents`]):
+         *     an admin gets the org-wide total, a tenant-scoped caller gets only its own
+         *     team's total, and an unscoped non-admin caller gets an all-zero series —
+         *     so the same endpoint serves every scope without leaking cross-tenant spend.
+         *     Read-only observability over data the tracker already holds; no enforcement
+         *     or budget-debit path is touched. The history is in-memory (see
+         *     `BudgetTracker::spend_history_totals_for`) and resets on gateway restart.
+         */
+        get: operations["get_cost_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dispatch_tool": {
         parameters: {
             query?: never;
@@ -2272,6 +2328,46 @@ export interface components {
             /** @description Total USD spent in the period (string-encoded Decimal). */
             spent_usd: string;
         };
+        /** @description One node in the budget-inheritance tree. */
+        BudgetTreeNode: {
+            /**
+             * @description Configured daily budget limit in USD for this node, if any (decimal
+             *     string). Agent nodes fall back to the global limit when they carry no
+             *     per-agent override, mirroring the enforcement path's resolution.
+             */
+            budget_limit_usd?: string | null;
+            children: components["schemas"]["BudgetTreeNode"][];
+            /**
+             * Format: int32
+             * @description Depth from the org root (org = 0, team = 1, agents from 2 and deeper).
+             */
+            depth: number;
+            /**
+             * @description Governance level for agent nodes (e.g. `L0Discover`), read from the
+             *     registry record; absent for org/team nodes.
+             */
+            governance_level?: string | null;
+            /** @description Stable node id: the org id, the team id, or the hex agent id. */
+            id: string;
+            /** @description Node tier: `org` | `team` | `agent`. */
+            kind: string;
+            /** @description Human-readable label: org/team id, or the agent's registered name. */
+            label: string;
+            /**
+             * @description Spend attributable to this node itself, excluding descendants (USD
+             *     string). Org and team nodes never spend directly, so this is `"0"`.
+             */
+            own_spend_usd: string;
+            /**
+             * @description Spend across this node and its entire subtree (USD string) — the figure a
+             *     parent's budget constrains.
+             */
+            subtree_spend_usd: string;
+        };
+        /** @description Response for `GET /api/v1/costs/budget-tree`. */
+        BudgetTreeResponse: {
+            root?: null | components["schemas"]["BudgetTreeNode"];
+        };
         /**
          * @description One node in the hierarchical call stack rendered beneath an
          *     expanded Live Ops row in the dashboard.
@@ -2427,6 +2523,26 @@ export interface components {
             label: string;
             /** @description Per-dimension spend segments within this bucket. */
             segments: components["schemas"]["CostSegment"][];
+        };
+        /** @description One calendar day of the spend-history series. */
+        CostHistoryPoint: {
+            /** @description Calendar date (YYYY-MM-DD, in the tracker's timezone) for this bucket. */
+            date: string;
+            /**
+             * @description Total spend recorded on this date in USD, serialized as a decimal string
+             *     so money precision is never lost to float rounding (mirrors `/costs`).
+             */
+            spend_usd: string;
+        };
+        /** @description Response for `GET /api/v1/costs/history`. */
+        CostHistoryResponse: {
+            /**
+             * Format: int32
+             * @description Number of days in the returned series (the resolved, clamped `days`).
+             */
+            days: number;
+            /** @description Daily spend buckets, oldest first, dense (zero-filled) across the window. */
+            points: components["schemas"]["CostHistoryPoint"][];
         };
         /** @description One stacked segment within a cost bucket (a single agent / team / model). */
         CostSegment: {
@@ -5953,6 +6069,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CostSummary"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_budget_tree: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Org → team → agent budget-inheritance tree */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetTreeResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_cost_history: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Trailing calendar days to return. Defaults to 7; clamped to 1..=90 so a
+                 *     single request can never ask for an unbounded series.
+                 */
+                days?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trailing daily spend history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostHistoryResponse"];
                 };
             };
             /** @description Missing or invalid credentials */
