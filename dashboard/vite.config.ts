@@ -1,7 +1,14 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import pkg from './package.json'
 
 export default defineConfig({
+  // Expose the dashboard's own version so the AppShell brand sub-line
+  // (AAASM-5021) can show a real build version rather than a hard-coded
+  // placeholder. package.json is the single source of truth for it.
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   // Emit relative asset paths so the embedded `aasm dashboard` server
   // (AAASM-1292) can mount the SPA at any sub-path without breaking
   // resource resolution.
