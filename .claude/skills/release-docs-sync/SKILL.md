@@ -104,7 +104,7 @@ not on `X`.
 
 ## Procedure
 
-Work in a worktree off fresh `remote/master` (see the project worktree rules).
+Work in a worktree off fresh `remote/main` (see the project worktree rules).
 Edit each file below, then run the verifier. Granular GitEmoji commits.
 
 ### Step 1 — agent-assembly `docs/` + README (the verifier covers these)

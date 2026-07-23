@@ -25,13 +25,13 @@ All of the following MUST hold before any step below runs. If any fails,
 stop and report — do not attempt to remediate from inside this skill.
 
 1. **Working tree clean** — `git status --porcelain` returns no output.
-2. **On `master`, up to date with `remote/master`** —
-   `git rev-parse --abbrev-ref HEAD` is `master`, and
-   `git rev-list --count remote/master..HEAD` and
-   `git rev-list --count HEAD..remote/master` both return `0`.
+2. **On `main`, up to date with `remote/main`** —
+   `git rev-parse --abbrev-ref HEAD` is `main`, and
+   `git rev-list --count remote/main..HEAD` and
+   `git rev-list --count HEAD..remote/main` both return `0`.
    (Run `git fetch remote` first.)
-3. **Most recent CI run on master is green** — query via
-   `gh run list --branch master --limit 1 --json conclusion,status`
+3. **Most recent CI run on main is green** — query via
+   `gh run list --branch main --limit 1 --json conclusion,status`
    and confirm `status=completed` and `conclusion=success`.
 4. **Target version provided** — the operator supplies `<X>` (e.g.
    `0.0.1-alpha.10`). The skill does not invent or bump version numbers.
@@ -116,7 +116,7 @@ git tag -a "v<X>" -m "Release v<X>
 See docs/release/v<X>.md for details."
 ```
 
-Do not push intermediate commits to master from inside this skill — the
+Do not push intermediate commits to main from inside this skill — the
 bump PR (RUNBOOK section 1) should already be merged before invocation.
 This skill's only push is the tag itself.
 

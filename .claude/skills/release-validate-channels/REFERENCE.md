@@ -255,7 +255,7 @@ the missing-package list.
 ```bash
 # agent-assembly main docs site
 gh run list --repo ai-agent-assembly/agent-assembly \
-  --workflow "Docs" --branch master --limit 1 \
+  --workflow "Docs" --branch main --limit 1 \
   --json status,conclusion,createdAt,url
 
 # python-sdk and node-sdk publish docs via GitHub Pages directly
