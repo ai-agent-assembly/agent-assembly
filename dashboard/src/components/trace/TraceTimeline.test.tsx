@@ -45,6 +45,17 @@ describe('TraceTimeline', () => {
     expect(rows[1]).toHaveAttribute('data-event-type', 'credential_leak')
   })
 
+  it('renders a compact verdict chip on each row derived from the event', () => {
+    render(<TraceTimeline events={MIXED_EVENTS} />)
+    const rows = screen.getAllByTestId('trace-event')
+    // policy_violation (no approval reason) → denied; credential_leak → denied;
+    // llm_call / tool_call → allowed.
+    expect(rows[0].querySelector('[data-testid="verdict-chip"]')).toHaveAttribute('data-verdict', 'denied')
+    expect(rows[1].querySelector('[data-testid="verdict-chip"]')).toHaveAttribute('data-verdict', 'denied')
+    expect(rows[2].querySelector('[data-testid="verdict-chip"]')).toHaveAttribute('data-verdict', 'allowed')
+    expect(rows[3].querySelector('[data-testid="verdict-chip"]')).toHaveAttribute('data-verdict', 'allowed')
+  })
+
   it('renders an empty <ol> when given no events', () => {
     render(<TraceTimeline events={[]} />)
     expect(screen.getByTestId('trace-timeline')).toBeInTheDocument()

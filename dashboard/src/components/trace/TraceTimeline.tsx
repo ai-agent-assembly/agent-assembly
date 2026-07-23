@@ -1,5 +1,7 @@
 import type React from 'react'
 import type { TraceEvent, TraceSeverity } from '../../features/trace/types'
+import { deriveVerdict } from '../../features/trace/decision'
+import { VerdictChip } from './VerdictChip'
 import { Tooltip } from '../Tooltip'
 import './TraceTimeline.css'
 
@@ -93,6 +95,7 @@ function TraceEventRow({ event, isLast, onSelectEvent }: TraceEventRowProps) {
       <div className="trace-event__body">
         <div className="trace-event__head">
           <span className="trace-event__label">{event.type}</span>
+          <VerdictChip verdict={deriveVerdict(event)} variant="compact" />
           <span className="trace-event__time">{formatTime(event.timestamp)}</span>
           <span className="trace-event__duration">{event.durationMs}&nbsp;ms</span>
         </div>

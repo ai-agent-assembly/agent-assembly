@@ -1,0 +1,21 @@
+/* ============================================================
+   VerdictChip — decision verdict pill (AAASM-5027)
+   Mirrors the hi-fi `.chip` pattern in design/v1/hi-fi/styles.css.
+   Colour + background + border come from inline design-token vars
+   (VERDICT_META) so both themes resolve without per-variant rules.
+   ============================================================ */
+
+.verdict-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  line-height: 1.4;
+}
