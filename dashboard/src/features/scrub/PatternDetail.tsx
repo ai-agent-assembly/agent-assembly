@@ -5,12 +5,19 @@ export interface PatternDetailProps {
   pattern: ScrubPattern
   collapsed: boolean
   onToggleCollapsed: () => void
+  /** Optional so the component renders standalone; the action row no-ops when absent. */
+  onEditRegex?: () => void
+  onTestOnTraffic?: () => void
+  onDisable?: () => void
 }
 
 export function PatternDetail({
   pattern,
   collapsed,
   onToggleCollapsed,
+  onEditRegex,
+  onTestOnTraffic,
+  onDisable,
 }: Readonly<PatternDetailProps>) {
   return (
     <section
@@ -72,6 +79,35 @@ export function PatternDetail({
               {pattern.replace}
             </code>
           </div>
+        </div>
+      )}
+
+      {!collapsed && (
+        <div className="scrub-detail-actions" data-testid="scrub-detail-actions">
+          <button
+            type="button"
+            className="scrub-detail-btn"
+            data-testid="scrub-detail-edit"
+            onClick={onEditRegex}
+          >
+            edit regex
+          </button>
+          <button
+            type="button"
+            className="scrub-detail-btn"
+            data-testid="scrub-detail-test"
+            onClick={onTestOnTraffic}
+          >
+            test on traffic
+          </button>
+          <button
+            type="button"
+            className="scrub-detail-btn scrub-detail-btn--danger"
+            data-testid="scrub-detail-disable"
+            onClick={onDisable}
+          >
+            disable
+          </button>
         </div>
       )}
     </section>
