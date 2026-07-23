@@ -53,6 +53,26 @@
   background: var(--paper-3);
 }
 
+.capability-btn--primary {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.capability-btn--primary:hover {
+  background: var(--ink-2);
+}
+
+.capability-tab-count {
+  font-size: 10px;
+  color: var(--ink-4);
+  font-weight: 400;
+}
+
+.capability-tab.is-active .capability-tab-count {
+  color: var(--ink-3);
+}
+
 .capability-tabs {
   display: flex;
   gap: 0;

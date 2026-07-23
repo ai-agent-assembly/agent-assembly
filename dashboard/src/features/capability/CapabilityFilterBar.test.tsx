@@ -40,6 +40,24 @@ describe('CapabilityFilterBar', () => {
     expect(screen.getByText('2 of 3 agents')).toBeInTheDocument()
   })
 
+  it('renders the five-swatch decision legend', () => {
+    render(
+      <CapabilityFilterBar
+        filters={EMPTY_FILTERS}
+        onChange={vi.fn()}
+        totalAgents={3}
+        visibleAgents={3}
+        agents={AGENTS}
+      />,
+    )
+    const legend = screen.getByRole('list', { name: 'decision legend' })
+    const items = legend.querySelectorAll('.cap-legend-item')
+    expect(items).toHaveLength(5)
+    for (const label of ['allow', 'narrow', 'approval', 'deny', 'n/a']) {
+      expect(screen.getByText(label)).toBeInTheDocument()
+    }
+  })
+
   it('builds deduped, sorted option lists for framework / owner / mode', () => {
     render(
       <CapabilityFilterBar

@@ -84,3 +84,51 @@
   letter-spacing: 1px;
   color: var(--ink-4);
 }
+
+.cap-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.cap-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.cap-legend-sw {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.cap-legend-sw--allow {
+  background: var(--paper-2);
+}
+
+.cap-legend-sw--narrow {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
+.cap-legend-sw--approval {
+  background: var(--info-bg);
+  border-color: var(--info);
+}
+
+.cap-legend-sw--deny {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+.cap-legend-sw--na {
+  background: var(--paper-3);
+}

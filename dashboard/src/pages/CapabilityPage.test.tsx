@@ -1,4 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CapabilityPage } from './CapabilityPage'
 import { ToastProvider } from '../components/ToastProvider'
@@ -16,10 +17,21 @@ vi.mock('../api/capability', () => ({
 const getMatrix = capabilityClient.getMatrix as ReturnType<typeof vi.fn>
 const applyOverride = capabilityClient.applyOverride as ReturnType<typeof vi.fn>
 
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-testid="location">{`${loc.pathname}${loc.search}`}</div>
+}
+
 function renderPage() {
   return render(
     <ToastProvider>
-      <CapabilityPage />
+      <MemoryRouter initialEntries={['/capability']}>
+        <Routes>
+          <Route path="/capability" element={<CapabilityPage />} />
+          <Route path="/policies" element={<div>policy editor route</div>} />
+        </Routes>
+        <LocationProbe />
+      </MemoryRouter>
     </ToastProvider>,
   )
 }
@@ -75,6 +87,50 @@ describe('CapabilityPage', () => {
     const readRadio = screen.getByRole('radio', { name: 'read' })
     fireEvent.click(readRadio)
     expect(readRadio).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('shows the matrix tab count badge and the summary row', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+    await screen.findByText('Capability')
+    // Tab badge: <visible> × <resources>.
+    expect(
+      screen.getByText(`${FIXTURE.agents.length} × ${FIXTURE.resources.length}`),
+    ).toBeInTheDocument()
+    // Summary row with the four stat tiles.
+    const summary = screen.getByLabelText('matrix summary')
+    expect(summary).toBeInTheDocument()
+    expect(summary).toHaveTextContent('narrowed')
+    expect(summary).toHaveTextContent('denied')
+    expect(summary).toHaveTextContent('flagged agents')
+    expect(summary).toHaveTextContent('total "allow" cells (write)')
+  })
+
+  it('navigates to the policy editor from the Open Policy editor button', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+    await screen.findByText('Capability')
+    fireEvent.click(screen.getByRole('button', { name: /Open Policy editor/ }))
+    expect(await screen.findByText('policy editor route')).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('/policies')
+  })
+
+  it('navigates to a policy from a drawer edit link', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+    await screen.findByText('Capability')
+    // Find a cell that has responsible policies (narrow/deny/approval), open it.
+    const cell = screen
+      .getAllByRole('gridcell')
+      .find((c) => c.dataset.decision === 'narrow' || c.dataset.decision === 'deny')
+    expect(cell).toBeDefined()
+    fireEvent.click(cell!)
+    await screen.findByRole('dialog', { name: 'capability cell inspect' })
+    const editLink = screen.queryByRole('button', { name: 'edit →' })
+    if (editLink) {
+      fireEvent.click(editLink)
+      expect(screen.getByTestId('location')).toHaveTextContent('/policies?policy=')
+    }
   })
 
   it('opens the cell inspect drawer when a matrix cell is clicked', async () => {

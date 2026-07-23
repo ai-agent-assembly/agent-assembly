@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { capabilityClient } from '../api/capability'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/ErrorState'
@@ -7,6 +8,7 @@ import { useToast } from '../components/Toast'
 import { BulkActionBar } from '../features/capability/BulkActionBar'
 import { CapabilityMatrixGrid, type CellSelection } from '../features/capability/CapabilityMatrixGrid'
 import { CapabilityFilterBar } from '../features/capability/CapabilityFilterBar'
+import { CapabilitySummary } from '../features/capability/CapabilitySummary'
 import { CellInspectDrawer } from '../features/capability/CellInspectDrawer'
 import { PerAgentTab } from '../features/capability/PerAgentTab'
 import { PerResourceTab } from '../features/capability/PerResourceTab'
@@ -32,6 +34,13 @@ export function CapabilityPage() {
   const [perResourceId, setPerResourceId] = useState<string | null>(null)
   const [perAgentId, setPerAgentId] = useState<string | null>(null)
   const { toast } = useToast()
+  const navigate = useNavigate()
+
+  // Route to the Policy editor. A policy id (from a per-policy edit link) is
+  // passed as a `?policy=` hint the editor can consume; without one we open the
+  // editor unfiltered.
+  const openPolicyEditor = (policyId?: string) =>
+    navigate(policyId ? `/policies?policy=${encodeURIComponent(policyId)}` : '/policies')
 
   const toggleSelect = (agentId: string) => {
     setSelected((prev) => {
@@ -135,6 +144,13 @@ export function CapabilityPage() {
           <button type="button" className="capability-btn">
             ↧ Export CSV
           </button>
+          <button
+            type="button"
+            className="capability-btn capability-btn--primary"
+            onClick={() => openPolicyEditor()}
+          >
+            ▸ Open Policy editor
+          </button>
         </div>
       </header>
 
@@ -144,7 +160,10 @@ export function CapabilityPage() {
           className={`capability-tab${tab === 'matrix' ? ' is-active' : ''}`}
           onClick={() => setTab('matrix')}
         >
-          Matrix
+          Matrix{' '}
+          <span className="capability-tab-count">
+            {visibleAgents.length} × {matrix.resources.length}
+          </span>
         </button>
         <button
           type="button"
@@ -212,6 +231,9 @@ export function CapabilityPage() {
             onToggleSelectAll={(next) => (next ? selectAllAgents() : clearSelectedAgents())}
           />
         )}
+        {tab === 'matrix' && matrix && (
+          <CapabilitySummary agents={visibleAgents} resources={matrix.resources} verb={verb} />
+        )}
         {tab === 'resource' && matrix && (
           <PerResourceTab
             resources={matrix.resources}
@@ -238,6 +260,7 @@ export function CapabilityPage() {
           policies={matrix.policies}
           sampleCalls={matrix.sampleCalls}
           onClose={() => setInspected(null)}
+          onOpenPolicy={openPolicyEditor}
         />
       )}
     </div>

@@ -132,4 +132,50 @@ describe('CellInspectDrawer', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
   })
+
+  it('renders the footer actions', () => {
+    render(
+      <CellInspectDrawer cell={CELL} policies={POLICIES} sampleCalls={CALLS} onClose={vi.fn()} />,
+    )
+    expect(screen.getByRole('button', { name: 'simulate change' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'narrow further…' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'open in Policy editor' })).toBeInTheDocument()
+  })
+
+  it('opens a specific policy from a per-policy edit link', () => {
+    const onOpenPolicy = vi.fn()
+    render(
+      <CellInspectDrawer
+        cell={CELL}
+        policies={POLICIES}
+        sampleCalls={CALLS}
+        onClose={vi.fn()}
+        onOpenPolicy={onOpenPolicy}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'edit →' }))
+    expect(onOpenPolicy).toHaveBeenCalledWith('pol-1')
+  })
+
+  it('opens the responsible policy from the footer editor action', () => {
+    const onOpenPolicy = vi.fn()
+    render(
+      <CellInspectDrawer
+        cell={CELL}
+        policies={POLICIES}
+        sampleCalls={CALLS}
+        onClose={vi.fn()}
+        onOpenPolicy={onOpenPolicy}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'open in Policy editor' }))
+    expect(onOpenPolicy).toHaveBeenCalledWith('pol-1')
+  })
+
+  it('does not render per-policy edit links without an onOpenPolicy handler', () => {
+    render(
+      <CellInspectDrawer cell={CELL} policies={POLICIES} sampleCalls={CALLS} onClose={vi.fn()} />,
+    )
+    expect(screen.queryByRole('button', { name: 'edit →' })).not.toBeInTheDocument()
+  })
 })

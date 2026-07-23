@@ -1,0 +1,45 @@
+.cap-summary {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 0 24px 20px;
+}
+
+.cap-summary-stat {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 10px 14px;
+  min-width: 160px;
+}
+
+.cap-summary-stat-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+}
+
+.cap-summary-stat-n {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.cap-summary-stat-n--neutral {
+  color: var(--ink);
+}
+
+.cap-summary-stat-n--warn {
+  color: var(--warn);
+}
+
+.cap-summary-stat-n--ok {
+  color: var(--ok);
+}
+
+.cap-summary-stat-n--danger {
+  color: var(--danger);
+}
