@@ -259,7 +259,39 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
     ).toBeInTheDocument()
   })
 
-  it('DSL toggle shows a "coming soon" toast and stays on the form view', async () => {
+  it('DSL toggle switches to a read-only Rego preview of the draft', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft({ id: 'pol-preview', name: 'preview-policy' })}
+        onSave={() => {}}
+        onClose={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    // Form view initially — no preview node.
+    expect(screen.queryByTestId('editor-dsl-preview')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('editor-view-dsl'))
+
+    const preview = screen.getByTestId('editor-dsl-preview')
+    expect(preview).toBeInTheDocument()
+    expect(preview).toHaveTextContent('policy "pol-preview" {')
+    expect(preview).toHaveTextContent('rule R1 {')
+    // The DSL tab is selected and the form sections are gone.
+    expect(screen.getByTestId('editor-view-dsl')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.queryByTestId('editor-rule-0')).not.toBeInTheDocument()
+
+    // Toggling back restores the form.
+    await user.click(screen.getByTestId('editor-view-form'))
+    expect(screen.getByTestId('editor-rule-0')).toBeInTheDocument()
+    expect(screen.queryByTestId('editor-dsl-preview')).not.toBeInTheDocument()
+  })
+
+  it('reflects live draft edits in the DSL preview', async () => {
     const user = userEvent.setup()
     render(
       <PolicyEditorOverlay
@@ -269,12 +301,33 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
       />,
       { wrapper: Wrapper },
     )
+    await user.click(screen.getByTestId('editor-rule-0-verb-write'))
     await user.click(screen.getByTestId('editor-view-dsl'))
-    expect(await screen.findByText(/Raw DSL view: coming soon/)).toBeInTheDocument()
-    expect(screen.getByTestId('editor-view-form')).toHaveAttribute(
-      'aria-selected',
-      'true',
+    expect(screen.getByTestId('editor-dsl-preview')).toHaveTextContent(
+      'verb in ["read", "write"]',
     )
+  })
+
+  it('shows a per-rule dirty-dot only for rules changed since open', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft({
+          rules: [defaultRule(), defaultRule()],
+        })}
+        onSave={() => {}}
+        onClose={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    // Clean on open: neither rule shows a dot.
+    expect(screen.queryByTestId('editor-rule-0-dirty-dot')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('editor-rule-1-dirty-dot')).not.toBeInTheDocument()
+
+    // Edit rule 0 only.
+    await user.click(screen.getByTestId('editor-rule-0-verb-write'))
+    expect(screen.getByTestId('editor-rule-0-dirty-dot')).toBeInTheDocument()
+    expect(screen.queryByTestId('editor-rule-1-dirty-dot')).not.toBeInTheDocument()
   })
 
   it('publishes onDirtyChange(true) when the draft becomes dirty', async () => {

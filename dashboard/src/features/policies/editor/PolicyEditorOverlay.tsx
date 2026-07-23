@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { useToast } from '../../../components/Toast'
 import { useDraft } from './useDraft'
 import { countBySeverity, validate } from './validation'
+import { dslFor } from './dslFor'
 import { RuleCard } from './RuleCard'
 import { ScopeRow } from './ScopeRow'
 import { ValidationPanel } from './ValidationPanel'
-import type { PolicyDraft } from './types'
+import type { PolicyDraft, RuleDraft } from './types'
 import './editor.css'
 
 interface PolicyEditorOverlayProps {
@@ -56,6 +57,15 @@ export function PolicyEditorOverlay({
   const { toast } = useToast()
   const [viewMode, setViewMode] = useState<'form' | 'dsl'>('form')
 
+  // Snapshot of each rule as it was at open time, keyed by its stable id, so
+  // an edited rule can show a per-rule dirty-dot. Rules added/duplicated after
+  // open have no snapshot and are treated as dirty by RuleCard.
+  const originalRuleById = useMemo(() => {
+    const map = new Map<string, RuleDraft>()
+    for (const rule of initialDraft.rules) map.set(rule.id, rule)
+    return map
+  }, [initialDraft])
+
   // Publish isDirty so the page-side container can wire Esc / backdrop /
   // Cancel through a "Discard unsaved changes?" prompt when needed.
   useEffect(() => {
@@ -83,11 +93,6 @@ export function PolicyEditorOverlay({
     toast('Simulate impact: coming soon.', 'info')
   }
 
-  const handleDslToggle = () => {
-    // The DSL/Rego preview view is out of scope for this PR.
-    toast('Raw DSL view: coming soon.', 'info')
-    setViewMode('form')
-  }
 
   let footerStatus: string
   if (isDirty) {
@@ -148,8 +153,12 @@ export function PolicyEditorOverlay({
             type="button"
             role="tab"
             aria-selected={viewMode === 'dsl'}
-            className="editor__view-btn"
-            onClick={handleDslToggle}
+            className={
+              viewMode === 'dsl'
+                ? 'editor__view-btn editor__view-btn--active'
+                : 'editor__view-btn'
+            }
+            onClick={() => setViewMode('dsl')}
             data-testid="editor-view-dsl"
           >
             DSL
@@ -158,42 +167,51 @@ export function PolicyEditorOverlay({
       </header>
 
       <div className="editor__body">
-        {draft.status === 'proposed' ? (
-          <div className="editor__callout" data-testid="editor-draft-callout">
-            <p className="editor__callout-title">⚠ draft policy</p>
-            <p className="editor__callout-body">
-              This policy is not yet deployed. Run simulate to preview impact
-              before promoting to active.
-            </p>
-          </div>
-        ) : null}
+        {viewMode === 'dsl' ? (
+          <pre className="editor__dsl" data-testid="editor-dsl-preview">
+            {dslFor(draft)}
+          </pre>
+        ) : (
+          <>
+            {draft.status === 'proposed' ? (
+              <div className="editor__callout" data-testid="editor-draft-callout">
+                <p className="editor__callout-title">⚠ draft policy</p>
+                <p className="editor__callout-body">
+                  This policy is not yet deployed. Run simulate to preview impact
+                  before promoting to active.
+                </p>
+              </div>
+            ) : null}
 
-        <ScopeRow
-          scope={draft.scope}
-          onScopeChange={(scope) => updateMeta({ scope })}
-        />
+            <ScopeRow
+              scope={draft.scope}
+              onScopeChange={(scope) => updateMeta({ scope })}
+            />
 
-        {draft.rules.map((rule, idx) => (
-          <RuleCard
-            key={rule.id}
-            index={idx}
-            rule={rule}
-            onChange={(patch) => updateRule(idx, patch)}
-            onDuplicate={() => duplicateRule(idx)}
-            onRemove={() => removeRule(idx)}
-          />
-        ))}
+            {draft.rules.map((rule, idx) => (
+              <RuleCard
+                key={rule.id}
+                index={idx}
+                rule={rule}
+                original={originalRuleById.get(rule.id)}
+                onChange={(patch) => updateRule(idx, patch)}
+                onDuplicate={() => duplicateRule(idx)}
+                onRemove={() => removeRule(idx)}
+              />
+            ))}
 
-        <button
-          type="button"
-          className="editor__add-rule"
-          data-testid="editor-add-rule"
-          onClick={addRule}
-        >
-          + add rule
-        </button>
+            <button
+              type="button"
+              className="editor__add-rule"
+              data-testid="editor-add-rule"
+              onClick={addRule}
+            >
+              + add rule
+            </button>
 
-        <ValidationPanel issues={issues} />
+            <ValidationPanel issues={issues} />
+          </>
+        )}
       </div>
 
       <footer className="editor__footer">
