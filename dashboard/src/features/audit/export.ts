@@ -81,7 +81,9 @@ export function buildComplianceReport(
     if (decision) decisionCounts[decision] = (decisionCounts[decision] ?? 0) + 1
     if (e.event_type === 'PolicyViolation') violations.push(e)
   }
-  const agents = Array.from(new Set(rows.map((e) => e.agent_id))).sort()
+  // Explicit comparator so the agent list is ordered locale-safely and stably
+  // rather than by raw UTF-16 code units (S2871).
+  const agents = Array.from(new Set(rows.map((e) => e.agent_id))).sort((a, b) => a.localeCompare(b))
 
   const lines: string[] = []
   lines.push('# Audit Compliance Report')
