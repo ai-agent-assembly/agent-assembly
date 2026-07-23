@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react'
 import {
   forceCenter,
+  forceCollide,
   forceLink,
   forceManyBody,
   forceSimulation,
@@ -122,8 +123,15 @@ export function TopologyGraph({
       .force('link', forceLink<PositionedNode, PositionedEdge>(links).id(d => d.id).distance(120))
       .force('charge', forceManyBody().strength(-220))
       .force('center', forceCenter(width / 2, height / 2).strength(0.05))
-      .force('teamX', forceX<PositionedNode>(d => teamCenterById.get(d.source.team)?.cx ?? width / 2).strength(0.18))
-      .force('teamY', forceY<PositionedNode>(d => teamCenterById.get(d.source.team)?.cy ?? height / 2).strength(0.18))
+      .force('teamX', forceX<PositionedNode>(d => teamCenterById.get(d.source.team)?.cx ?? width / 2).strength(0.12))
+      .force('teamY', forceY<PositionedNode>(d => teamCenterById.get(d.source.team)?.cy ?? height / 2).strength(0.12))
+      // Keep same-team cards from stacking: the teamX/teamY centers pull all
+      // members to one point, so without a collision force they overlap. Size
+      // the collision circle to the card's half-width (widest dimension) plus a
+      // gap so neither the card nor its inside-the-card labels visually clash.
+      .force('collide', forceCollide<PositionedNode>()
+        .radius(d => SIZE_VARIANT[bucketForRatio(d.source.budgetSpend, d.source.budgetLimit)].w / 2 + 10)
+        .strength(0.85))
       .stop()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identityKey, width, height, teamCenterById])
