@@ -123,8 +123,14 @@ export function TopologyGraph({
       .force('link', forceLink<PositionedNode, PositionedEdge>(links).id(d => d.id).distance(120))
       .force('charge', forceManyBody().strength(-220))
       .force('center', forceCenter(width / 2, height / 2).strength(0.05))
+      // `teamCenterById` is derived from the same `nodes` as the simulation's
+      // nodes, so every node's team is always present — the `?? width/2` /
+      // `?? height/2` fallbacks are unreachable defensive guards (dead branch),
+      // so the two lines are excluded from coverage.
+      /* v8 ignore start */
       .force('teamX', forceX<PositionedNode>(d => teamCenterById.get(d.source.team)?.cx ?? width / 2).strength(0.12))
       .force('teamY', forceY<PositionedNode>(d => teamCenterById.get(d.source.team)?.cy ?? height / 2).strength(0.12))
+      /* v8 ignore stop */
       // Keep same-team cards from stacking: the teamX/teamY centers pull all
       // members to one point, so without a collision force they overlap. Size
       // the collision circle to the card's half-width (widest dimension) plus a

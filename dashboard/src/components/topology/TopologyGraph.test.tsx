@@ -204,5 +204,37 @@ describe('TopologyGraph', () => {
         { timeout: 4000, interval: 100 },
       )
     })
+
+    // Large cards (high budget ratio → `large` size bucket) get a bigger
+    // collision radius, so the radius callback must scale the spacing with the
+    // card size — exercise it with the widest bucket and assert no overlap.
+    const LARGE_SAME_TEAM: TopologyNode[] = Array.from({ length: 6 }, (_, i) => ({
+      id: `l${i}`,
+      name: `big-${i}`,
+      status: 'active',
+      team: 'clustered',
+      owner: 'alice',
+      policyCount: 1,
+      budgetSpend: 9,
+      budgetLimit: 10,
+    }))
+
+    it('scales the collision radius so large cards also settle without overlap', async () => {
+      render(<TopologyGraph nodes={LARGE_SAME_TEAM} edges={[]} width={800} height={500} />)
+      await waitFor(
+        () => {
+          const cards = screen.getAllByTestId('topology-node')
+          // Confirm the fixture actually drives the `large` radius branch.
+          expect(cards[0].getAttribute('data-size-bucket')).toBe('large')
+          const rects = cards.map(cardRect)
+          for (let i = 0; i < rects.length; i++) {
+            for (let j = i + 1; j < rects.length; j++) {
+              expect(overlaps(rects[i], rects[j])).toBe(false)
+            }
+          }
+        },
+        { timeout: 4000, interval: 100 },
+      )
+    })
   })
 })
