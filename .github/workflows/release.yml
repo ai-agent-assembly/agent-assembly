@@ -740,8 +740,8 @@ jobs:
           path: tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           branch: bot/aasm-${{ steps.version.outputs.version }}
-          # AAASM-4955: homebrew-tap migrated master → main (AAASM-4957); the SDK
-          # bot-PR steps below stay `master` until their repos migrate. The
+          # AAASM-4955: every downstream repo (homebrew-tap + the three SDKs) has
+          # migrated master → main, so every bot-PR `base:` below is `main`. The
           # downstream-base check in scripts/check-release-completeness.sh guards
           # each of these against silently going stale.
           base: main

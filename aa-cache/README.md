@@ -5,7 +5,7 @@ Assembly storage traits.
 
 [![crates.io](https://img.shields.io/crates/v/aa-cache?logo=rust&label=crates.io)](https://crates.io/crates/aa-cache)
 [![docs.rs](https://img.shields.io/docsrs/aa-cache?logo=docsdotrs&label=docs.rs)](https://docs.rs/aa-cache)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/master/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/LICENSE)
 
 Wraps any storage backend behind an in-process `DashMap` with a configurable TTL
 and per-key stampede protection, so policy lookups on the tool-call critical path

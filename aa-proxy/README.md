@@ -4,7 +4,7 @@ Sidecar traffic interception proxy for Agent Assembly.
 
 [![crates.io](https://img.shields.io/crates/v/aa-proxy?logo=rust&label=crates.io)](https://crates.io/crates/aa-proxy)
 [![docs.rs](https://img.shields.io/docsrs/aa-proxy?logo=docsdotrs&label=docs.rs)](https://docs.rs/aa-proxy)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/master/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/LICENSE)
 
 Implements Layer 2 of the three-layer interception model: a sidecar proxy that
 sits alongside each AI agent process, intercepting outbound HTTPS traffic and

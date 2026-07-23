@@ -138,7 +138,7 @@ $ aasm version --output json
 The CLI config above is about *how the CLI connects*. The **gateway** itself
 reads a separate runtime config — `agent-assembly.toml` — that selects its
 persistence backends. A starter file ships at the repo root as
-[`agent-assembly.toml.example`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/agent-assembly.toml.example):
+[`agent-assembly.toml.example`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/agent-assembly.toml.example):
 
 ```toml
 # agent-assembly.toml — example runtime configuration

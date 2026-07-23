@@ -34,7 +34,7 @@ aasm start [OPTIONS]
 > self-hosted / operator-controlled use — **do not expose it directly to the
 > public internet** without a trusted authenticating layer (VPN, private network,
 > or an authenticated reverse proxy) in front. See
-> [`SECURITY.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/SECURITY.md)
+> [`SECURITY.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/SECURITY.md)
 > and [ADR 0012](../adr/0012-websocket-and-browser-credential-handling.md).
 
 ### Behavior

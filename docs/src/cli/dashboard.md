@@ -41,7 +41,7 @@ Reverse-proxies `/api/*` to the configured gateway.
 > `sessionStorage` + CSP (an accepted OSS trade-off, not hardened against
 > same-origin XSS), and WebSocket streams authenticate with short-lived single-use
 > tickets so no credential rides the URL. See
-> [`SECURITY.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/SECURITY.md)
+> [`SECURITY.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/SECURITY.md)
 > and [ADR 0012](../adr/0012-websocket-and-browser-credential-handling.md).
 
 | Flag | Type | Default | Description |

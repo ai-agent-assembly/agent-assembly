@@ -4,7 +4,7 @@ name: CodeQL
 # recorded ZERO CodeQL analyses (code-scanning/analyses -> 404, default-setup
 # not-configured). Code scanning only updates the repo's security tab when an
 # analysis is uploaded from a `push` to the default branch, so this workflow
-# triggers on push to master (not just pull_request) plus a weekly schedule.
+# triggers on push to main (not just pull_request) plus a weekly schedule.
 # Mirrors the known-good go-sdk codeql.yml, adapted for this Rust + TS/JS repo.
 
 on:
@@ -18,7 +18,7 @@ on:
       - "**/*.md"
       - "LICENSE"
     branches:
-      - master
+      - main
   schedule:
     - cron: "0 3 * * 1"
 

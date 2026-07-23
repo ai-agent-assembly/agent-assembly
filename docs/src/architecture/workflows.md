@@ -17,7 +17,7 @@ For component-level detail behind each box, see
 ## Policy evaluation
 
 When `aa-gateway` receives a `PolicyService.CheckAction` RPC, the policy engine
-under [`aa-gateway/src/policy/`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-gateway/src/policy)
+under [`aa-gateway/src/policy/`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-gateway/src/policy)
 walks parse → compile → scope cascade → budget → decision, then audits the
 result. The decision type (`engine/decision.rs`) is one of **Allow**, **Deny**,
 or **RequireApproval**.
@@ -65,7 +65,7 @@ Latency targets and current p99 measurements live in
 ## Agent registration
 
 Registration flows through `AgentLifecycleService.Register`
-([`aa-gateway/src/service/lifecycle_service.rs`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/aa-gateway/src/service/lifecycle_service.rs)),
+([`aa-gateway/src/service/lifecycle_service.rs`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/aa-gateway/src/service/lifecycle_service.rs)),
 which validates delegation depth and writes into the `DashMap`-backed
 `AgentRegistry`. Agents then keep their record live with periodic `Heartbeat`s.
 

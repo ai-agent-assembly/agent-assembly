@@ -10,7 +10,7 @@ permissions:
 # AAASM-4449 aa-api-server gap went undetected across every rc).
 on:
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       - "Cargo.toml"
       - "Cargo.lock"

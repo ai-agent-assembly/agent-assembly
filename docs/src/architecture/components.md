@@ -5,7 +5,7 @@ who it depends on. For the bird's-eye map and the dependency diagram, start with
 [System architecture](system-architecture.md).
 
 All paths link into the
-[`master` tree on GitHub](https://github.com/ai-agent-assembly/agent-assembly/tree/master).
+[`master` tree on GitHub](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD).
 
 ---
 
@@ -30,7 +30,7 @@ sub-modules are:
 | `server.rs` | Registers all seven services and serves over TCP (`serve_tcp`) or UDS (`serve_uds`). |
 
 **Key types:** `AgentRecord`, `AgentRegistry`, `AgentStatus`
-([`registry/store.rs`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/aa-gateway/src/registry/store.rs)).
+([`registry/store.rs`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/aa-gateway/src/registry/store.rs)).
 **Depends on:** `aa-core`, `aa-proto`, `aa-runtime`, `aa-storage`, `aa-cache`.
 **Serves:** gRPC on `127.0.0.1:50051`.
 

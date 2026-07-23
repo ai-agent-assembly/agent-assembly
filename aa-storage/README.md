@@ -4,7 +4,7 @@ Storage trait abstraction (pure interface) for the Agent Assembly persistence la
 
 [![crates.io](https://img.shields.io/crates/v/aa-storage?logo=rust&label=crates.io)](https://crates.io/crates/aa-storage)
 [![docs.rs](https://img.shields.io/docsrs/aa-storage?logo=docsdotrs&label=docs.rs)](https://docs.rs/aa-storage)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/master/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/LICENSE)
 
 A thin facade over `aa_core::storage` that re-exports the storage trait contract
 (`PolicyStore`, `AuditSink`, `SessionStore`, `CredentialStore`, `RateLimitCounter`,

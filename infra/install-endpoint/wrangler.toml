@@ -18,9 +18,12 @@ routes = [
 
 [vars]
 # Source repo + ref the install script is served from.
-#   SCRIPT_REF = "master"   → always serves the latest reviewed installer.
+#   SCRIPT_REF = "HEAD"     → always serves the latest reviewed installer from the
+#                             default branch (rename-safe: tracks the default branch
+#                             rather than a literal name, so a master→main rename
+#                             does not 404 the raw fetch — AAASM-4958).
 #   SCRIPT_REF = "v0.0.1"   → freeze the installer to a release tag (recommended
 #                             once releases are cut, so the served script is
 #                             immutable and auditable).
 SCRIPT_REPO = "ai-agent-assembly/agent-assembly"
-SCRIPT_REF = "master"
+SCRIPT_REF = "HEAD"

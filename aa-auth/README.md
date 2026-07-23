@@ -5,7 +5,7 @@ credential-token checks, and the fail-closed auth posture the gateway enforces.
 
 [![crates.io](https://img.shields.io/crates/v/aa-auth?logo=rust&label=crates.io)](https://crates.io/crates/aa-auth)
 [![docs.rs](https://img.shields.io/docsrs/aa-auth?logo=docsdotrs&label=docs.rs)](https://docs.rs/aa-auth)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/master/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/LICENSE)
 
 Owns the shared authentication types and verification logic so the gateway can
 guard privileged surfaces (e.g. `/admin/status`) without pulling the full

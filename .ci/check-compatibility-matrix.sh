@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-BASE="${GITHUB_BASE_REF:-master}"
+BASE="${GITHUB_BASE_REF:-main}"
 MERGE_BASE=$(git merge-base HEAD "origin/${BASE}")
 CHANGED=$(git diff --name-only "${MERGE_BASE}"...HEAD)
 

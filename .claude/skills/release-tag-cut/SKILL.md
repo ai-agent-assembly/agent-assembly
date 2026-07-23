@@ -1,12 +1,12 @@
 ---
 name: release-tag-cut
-description: Cut a coordinated agent-assembly release tag: bump every workspace Cargo version literal, regenerate Cargo.lock, create the annotated tag, and push it to trigger release.yml. Use when an operator is ready to cut a new pre-release agent-assembly tag (the current cadence is the 0.0.1-beta.N series; earlier cuts were 0.0.1-alpha.N) on a green master and wants the version bump, tag, release-notes, and downstream fan-out handled in the correct order.
+description: Cut a coordinated agent-assembly release tag: bump every workspace Cargo version literal, regenerate Cargo.lock, create the annotated tag, and push it to trigger release.yml. Use when an operator is ready to cut a new pre-release agent-assembly tag (the current cadence is the 0.0.1-beta.N series; earlier cuts were 0.0.1-alpha.N) on a green main and wants the version bump, tag, release-notes, and downstream fan-out handled in the correct order.
 ---
 
 # release-tag-cut
 
 Executable contract for cutting an agent-assembly release tag from a clean
-`master`. This SKILL.md is a lean overview; the per-step detail lives in
+`main`. This SKILL.md is a lean overview; the per-step detail lives in
 [REFERENCE.md](REFERENCE.md) and a concrete walk-through in
 [EXAMPLES.md](EXAMPLES.md). The canonical prose, recovery procedure, manual
 gates, and downstream channel matrix live in
@@ -55,10 +55,10 @@ Pick this skill when **all** of the following hold:
 - The operator has decided agent-assembly is ready for a new pre-release tag
   (current cadence: the beta series, e.g. cutting `0.0.1-beta.3` after
   `0.0.1-beta.2`; the same path served the earlier `0.0.1-alpha.N` cuts).
-- The most recent CI run on `master` is green.
+- The most recent CI run on `main` is green.
 - Draft release notes exist (or the operator is prepared to write them inline
   during step 5).
-- The working tree is clean and `master` is up to date with `remote/master`.
+- The working tree is clean and `main` is up to date with `remote/main`.
 
 The triggering operator phrasing is typically:
 
@@ -78,7 +78,7 @@ specific. Pick a different path in any of the following cases:
   review, not this autopilot path.
 - **Hotfix to an already-tagged release** — use the SDK-only path or a
   follow-up patch tag coordinated via the RUNBOOK; do not re-cut the same tag.
-- **Pre-conditions not met** — if `master` is dirty, behind `remote/master`,
+- **Pre-conditions not met** — if `main` is dirty, behind `remote/main`,
   or has a red CI run, stop and surface the gap to the operator.
 - **No PASS security sign-off for `<X>`** — if
   `docs/release/security-signoff/v<X>.md` is missing or its verdict is not
@@ -90,7 +90,7 @@ specific. Pick a different path in any of the following cases:
 After this skill ends (`git push remote v<X>`), agent-assembly's `release.yml` will publish the GitHub Release and fire two automation jobs:
 
 - `notify-downstream` — `repository_dispatch` so node-sdk and python-sdk know `aasm-*` binaries are downloadable (AAASM-2336).
-- `update-{node|python|go}-sdk-ffi-pin` — opens an auto-bump PR on each SDK that aligns the `aa-sdk-client` git-SHA pin on master with this tag's commit (AAASM-2883 + AAASM-3006).
+- `update-{node|python|go}-sdk-ffi-pin` — opens an auto-bump PR on each SDK that aligns the `aa-sdk-client` git-SHA pin on main with this tag's commit (AAASM-2883 + AAASM-3006).
 
 ### Operator rule for the SDK side (codified in each SDK's `sdk-only-release` skill — AAASM-3007)
 
@@ -129,8 +129,8 @@ remediate from inside this skill. Full detail in
 [REFERENCE.md → Pre-conditions](REFERENCE.md#pre-conditions).
 
 1. **Working tree clean** (`git status --porcelain` empty).
-2. **On `master`, in sync with `remote/master`** (fetch first; zero ahead/behind).
-3. **Most recent CI run on master is green** (`gh run list --branch master …`).
+2. **On `main`, in sync with `remote/main`** (fetch first; zero ahead/behind).
+3. **Most recent CI run on main is green** (`gh run list --branch main …`).
 4. **Target version `<X>` provided** — the skill does not invent or bump it.
 5. **Security sign-off PASS for `<X>`** — `docs/release/security-signoff/v<X>.md`
    exists and contains `Verdict: PASS` (stage 0, `/release-security-gate <X>`).

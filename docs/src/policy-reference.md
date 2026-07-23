@@ -543,7 +543,7 @@ These ship under `policy-examples/` and all pass `aasm policy validate`.
 ### Strict
 
 Deny all unknown tools, $5/day budget, block all sensitive data. See
-[`policy-examples/strict.yaml`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/policy-examples/strict.yaml).
+[`policy-examples/strict.yaml`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/policy-examples/strict.yaml).
 
 ```yaml
 apiVersion: agent-assembly/v1
@@ -602,7 +602,7 @@ spec:
 ### Balanced
 
 Allowlist common tools, $20/day budget, PII detection on (redact). See
-[`policy-examples/balanced.yaml`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/policy-examples/balanced.yaml).
+[`policy-examples/balanced.yaml`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/policy-examples/balanced.yaml).
 
 ```yaml
 apiVersion: agent-assembly/v1
@@ -666,7 +666,7 @@ spec:
 ### Audit-only
 
 Log everything, enforce nothing. See
-[`policy-examples/audit-only.yaml`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/policy-examples/audit-only.yaml).
+[`policy-examples/audit-only.yaml`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/policy-examples/audit-only.yaml).
 
 ```yaml
 apiVersion: agent-assembly/v1

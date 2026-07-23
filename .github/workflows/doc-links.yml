@@ -10,13 +10,13 @@ permissions:
 
 on:
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       - 'README.md'
       - 'scripts/check-doc-links.sh'
       - '.github/workflows/doc-links.yml'
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - 'README.md'
       - 'scripts/check-doc-links.sh'

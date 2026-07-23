@@ -2,7 +2,7 @@
 
 Agent Assembly is open source. You can **self-host it yourself** — stand the
 infrastructure up, run it, and maintain it — using the sample Docker Compose stack
-in [`examples/docker-compose/`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/examples/docker-compose).
+in [`examples/docker-compose/`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/examples/docker-compose).
 This page is the quick path for developers: it shows the **infrastructure
 architecture** (which containers exist, who each is for, and what each does), the
 exact configuration, and how to bring it up.
@@ -190,7 +190,7 @@ docker compose --profile proxy down
 tracked in AAASM-55). To run a real agent, replace its `image:` with your agent
 image, keep `AA_AGENT_ID` identical to `aa-runtime`, and keep the
 `aa-runtime-socket` volume mounted at `/tmp`. See the example's
-[README](https://github.com/ai-agent-assembly/agent-assembly/blob/master/examples/docker-compose/README.md)
+[README](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/examples/docker-compose/README.md)
 for details.
 
 ## When you want it fully managed

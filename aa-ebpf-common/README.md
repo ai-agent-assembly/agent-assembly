@@ -4,7 +4,7 @@ Shared `no_std` types between eBPF kernel probes and userspace loader.
 
 [![crates.io](https://img.shields.io/crates/v/aa-ebpf-common?logo=rust&label=crates.io)](https://crates.io/crates/aa-ebpf-common)
 [![docs.rs](https://img.shields.io/docsrs/aa-ebpf-common?logo=docsdotrs&label=docs.rs)](https://docs.rs/aa-ebpf-common)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/master/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/LICENSE)
 
 The shared event types for Layer 3 (eBPF) of the interception model. This `no_std`
 crate is compiled twice — for the host target by `aa-ebpf` (userspace consumer)

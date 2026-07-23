@@ -28,22 +28,22 @@ else
   fail "Working tree has uncommitted changes" "commit or stash before tagging"
 fi
 
-# 2. On master
+# 2. On main
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [ "$BRANCH" = "master" ]; then
-  pass "On master branch"
+if [ "$BRANCH" = "main" ]; then
+  pass "On main branch"
 else
-  fail "Not on master (current: $BRANCH)" "git checkout master"
+  fail "Not on main (current: $BRANCH)" "git checkout main"
 fi
 
-# 3. Local master up-to-date with remote/master
-git fetch remote master --quiet 2>/dev/null || true
-LOCAL="$(git rev-parse master 2>/dev/null || echo missing)"
-REMOTE="$(git rev-parse remote/master 2>/dev/null || echo missing)"
+# 3. Local main up-to-date with remote/main
+git fetch remote main --quiet 2>/dev/null || true
+LOCAL="$(git rev-parse main 2>/dev/null || echo missing)"
+REMOTE="$(git rev-parse remote/main 2>/dev/null || echo missing)"
 if [ "$LOCAL" = "$REMOTE" ] && [ "$LOCAL" != "missing" ]; then
-  pass "Local master matches remote/master"
+  pass "Local main matches remote/main"
 else
-  fail "Local master diverges from remote/master" "git pull --ff-only remote master"
+  fail "Local main diverges from remote/main" "git pull --ff-only remote main"
 fi
 
 # 4. Cargo.toml [workspace.package].version

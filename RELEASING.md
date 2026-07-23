@@ -1,7 +1,7 @@
 # Releasing `aasm`
 
 This document describes how to cut a release of the `aasm` binary.
-Releases are tagged from `master`; the release workflow handles binary
+Releases are tagged from `main`; the release workflow handles binary
 compilation, packaging, and GitHub Release publication automatically.
 
 ## Prerequisites
@@ -21,8 +21,8 @@ Run these steps locally before pushing the release tag. All checks must
 pass with a clean exit code.
 
 ```bash
-# 1. Ensure local master is up to date
-git fetch remote && git checkout master && git merge remote/master --ff-only
+# 1. Ensure local main is up to date
+git fetch remote && git checkout main && git merge remote/main --ff-only
 
 # 2. Build the dashboard — REQUIRED; aa-cli embeds dashboard/dist/
 cd dashboard
