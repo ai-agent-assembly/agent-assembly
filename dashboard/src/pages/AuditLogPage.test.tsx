@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { api } from '../api/client'
+import { ToastProvider } from '../components/ToastProvider'
 import { AuditLogPage } from './AuditLogPage'
 import type { LogEntry } from '../features/audit/logs'
 
@@ -65,9 +66,11 @@ function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/audit']}>
-        <AuditLogPage />
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter initialEntries={['/audit']}>
+          <AuditLogPage />
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>,
   )
 }
@@ -253,5 +256,104 @@ describe('AuditLogPage', () => {
     const row = await screen.findByTestId('audit-row-1044')
     const agentLink = within(row).getByTestId('audit-agent-link-1044')
     expect(agentLink).toHaveTextContent('support-triage')
+  })
+
+  it('filters by event type via the type-filter button row', async () => {
+    renderPage()
+    await screen.findByTestId('audit-row-1048')
+
+    fireEvent.click(screen.getByTestId('audit-type-btn-ToolCall'))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('audit-row-1048')).toBeNull()
+    })
+    expect(screen.getByTestId('audit-row-1044')).toBeInTheDocument()
+    expect(screen.queryByTestId('audit-row-1047')).toBeNull()
+    expect(screen.getByTestId('audit-count')).toHaveTextContent('1 / 3')
+    expect(screen.getByTestId('audit-type-btn-ToolCall')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('resets to all types via the "all" type-filter button', async () => {
+    renderPage()
+    await screen.findByTestId('audit-row-1048')
+
+    fireEvent.click(screen.getByTestId('audit-type-btn-ToolCall'))
+    await waitFor(() => expect(screen.queryByTestId('audit-row-1048')).toBeNull())
+
+    fireEvent.click(screen.getByTestId('audit-type-btn-all'))
+    await waitFor(() => {
+      expect(screen.getByTestId('audit-count')).toHaveTextContent('3 / 3')
+    })
+  })
+
+  it('exports the filtered rows to CSV via the header action', async () => {
+    const createSpy = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockReturnValue('blob:audit')
+    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+
+    renderPage()
+    await screen.findByTestId('audit-row-1048')
+
+    fireEvent.click(screen.getByTestId('audit-export-csv'))
+
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(clickSpy).toHaveBeenCalledTimes(1)
+    const blob = createSpy.mock.calls[0][0] as Blob
+    expect(blob.type).toContain('text/csv')
+
+    createSpy.mockRestore()
+    revokeSpy.mockRestore()
+    clickSpy.mockRestore()
+  })
+
+  it('generates a compliance report via the header action', async () => {
+    const createSpy = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockReturnValue('blob:report')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+
+    renderPage()
+    await screen.findByTestId('audit-row-1048')
+
+    fireEvent.click(screen.getByTestId('audit-compliance-report'))
+
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(clickSpy).toHaveBeenCalledTimes(1)
+
+    vi.restoreAllMocks()
+  })
+
+  it('shows the trace id in the expanded metadata when the payload carries one', async () => {
+    get.mockResolvedValue({
+      data: page([
+        entry({
+          seq: 902,
+          event_type: 'LLMCall',
+          payload: JSON.stringify({ decision: 'ALLOW', trace_id: 'trace-abc123' }),
+        }),
+      ]),
+    })
+    renderPage()
+    const row = await screen.findByTestId('audit-row-902')
+    fireEvent.click(row)
+
+    const detail = await screen.findByTestId('audit-detail-902')
+    expect(within(detail).getByTestId('audit-trace-902')).toHaveTextContent('trace-abc123')
+  })
+
+  it('renders an em-dash trace when the payload has no trace id', async () => {
+    renderPage()
+    const row = await screen.findByTestId('audit-row-1047')
+    fireEvent.click(row)
+
+    const trace = await screen.findByTestId('audit-trace-1047')
+    expect(trace).toHaveTextContent('—')
   })
 })
