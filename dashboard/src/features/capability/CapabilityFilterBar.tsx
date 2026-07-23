@@ -14,6 +14,18 @@ function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b))
 }
 
+/**
+ * Legend swatches, in the same visual order and colours the matrix cells use
+ * (see `CapabilityMatrixGrid.css`), so the bar reads as a key for the grid.
+ */
+const LEGEND: ReadonlyArray<{ decision: string; label: string }> = [
+  { decision: 'allow', label: 'allow' },
+  { decision: 'narrow', label: 'narrow' },
+  { decision: 'approval', label: 'approval' },
+  { decision: 'deny', label: 'deny' },
+  { decision: 'na', label: 'n/a' },
+]
+
 export function CapabilityFilterBar({
   filters,
   onChange,
@@ -105,6 +117,18 @@ export function CapabilityFilterBar({
       <span className="cap-filter-count">
         {visibleAgents} of {totalAgents} agents
       </span>
+
+      <ul className="cap-legend" aria-label="decision legend">
+        {LEGEND.map((item) => (
+          <li key={item.decision} className="cap-legend-item">
+            <span
+              className={`cap-legend-sw cap-legend-sw--${item.decision}`}
+              aria-hidden
+            />
+            {item.label}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
