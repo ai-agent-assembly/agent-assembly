@@ -1012,6 +1012,171 @@ pub async fn get_fleet_health(
     (StatusCode::OK, Json(FleetHealthResponse { agents }))
 }
 
+// ---------------------------------------------------------------------------
+// enforcement-timeline — windowed decision counts by verdict (AAASM-5031)
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /api/v1/overview/enforcement-timeline`.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+pub struct EnforcementTimelineParams {
+    /// Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+    /// `24h`; any unrecognised value also falls back to `24h`.
+    pub window: Option<String>,
+}
+
+/// One time bucket of the enforcement timeline: decision counts by verdict.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct EnforcementBucket {
+    /// Bucket-start timestamp, epoch milliseconds.
+    pub ts: i64,
+    /// Permitted decisions (`ToolCallIntercepted` = proto `Decision::ALLOW`).
+    pub allow: u64,
+    /// Held-for-approval decisions (`ApprovalRequested` = proto `Decision::PENDING`).
+    pub narrow: u64,
+    /// Blocked decisions (`PolicyViolation` = proto `Decision::DENY`).
+    pub deny: u64,
+    /// Credential/secret redactions (`CredentialLeakBlocked` = proto `Decision::REDACT`).
+    pub scrub: u64,
+}
+
+/// Response for `GET /api/v1/overview/enforcement-timeline`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnforcementTimelineResponse {
+    /// Echo of the resolved window preset (`1h` | `24h` | `7d` | `30d`).
+    pub window: String,
+    /// Width of each bucket in seconds (`window / 24`).
+    pub bucket_secs: i64,
+    /// Ordered buckets, oldest first — always [`SERIES_BUCKETS`] of them,
+    /// including empty buckets, so the timeline renders a continuous axis.
+    pub buckets: Vec<EnforcementBucket>,
+}
+
+/// The four verdict lanes the enforcement timeline tracks.
+enum Verdict {
+    Allow,
+    Narrow,
+    Deny,
+    Scrub,
+}
+
+/// Resolve a timeline window filter to `(canonical-label, seconds)`.
+///
+/// The dashboard offers `1h` / `24h` / `7d` / `30d`; any unrecognised or absent
+/// value falls back to the `24h` default the Overview header uses. Kept separate
+/// from [`window_secs_from_range`] because the timeline's preset set differs
+/// (it offers `1h`, not `90d`, and defaults to `24h` rather than `7d`).
+fn resolve_window(window: Option<&str>) -> (&'static str, u64) {
+    const HOUR: u64 = 3_600;
+    const DAY: u64 = 86_400;
+    match window {
+        Some("1h") => ("1h", HOUR),
+        Some("7d") => ("7d", 7 * DAY),
+        Some("30d") => ("30d", 30 * DAY),
+        _ => ("24h", DAY),
+    }
+}
+
+/// Map an audit event type onto the timeline verdict lane it contributes to, or
+/// `None` for event types the timeline does not track.
+///
+/// Mirrors the gateway write path `decision_to_event_type_from_response`
+/// (`aa-gateway/src/service/policy_service.rs`), which records each proto
+/// `Decision` as a distinct `AuditEventType`: `Allow→ToolCallIntercepted`,
+/// `Pending→ApprovalRequested`, `Deny→PolicyViolation`,
+/// `Redact→CredentialLeakBlocked`. So counting those four discriminants
+/// reconstructs the verdict distribution without a new data source.
+fn timeline_verdict(ev: AuditEventType) -> Option<Verdict> {
+    match ev {
+        AuditEventType::ToolCallIntercepted => Some(Verdict::Allow),
+        AuditEventType::ApprovalRequested => Some(Verdict::Narrow),
+        AuditEventType::PolicyViolation => Some(Verdict::Deny),
+        AuditEventType::CredentialLeakBlocked => Some(Verdict::Scrub),
+        _ => None,
+    }
+}
+
+/// Bucket `entries` into [`SERIES_BUCKETS`] equal slices across the half-open
+/// window `[since_ns, since_ns + window_ns)`, tallying each entry into its
+/// verdict lane. Always returns exactly [`SERIES_BUCKETS`] buckets (including
+/// empty ones). Entries older than `since_ns` are ignored; anything at or past
+/// the final slice is clamped into it.
+fn bucket_enforcement(entries: &[AuditEntry], since_ns: u64, window_ns: u64) -> Vec<EnforcementBucket> {
+    let bucket_ns = (window_ns / SERIES_BUCKETS as u64).max(1);
+    let mut buckets: Vec<EnforcementBucket> = (0..SERIES_BUCKETS)
+        .map(|i| EnforcementBucket {
+            ts: ((since_ns + i as u64 * bucket_ns) / 1_000_000) as i64,
+            allow: 0,
+            narrow: 0,
+            deny: 0,
+            scrub: 0,
+        })
+        .collect();
+
+    for e in entries {
+        let Some(verdict) = timeline_verdict(e.event_type()) else {
+            continue;
+        };
+        let t = e.timestamp_ns();
+        if t < since_ns {
+            continue;
+        }
+        let idx = (((t - since_ns) / bucket_ns) as usize).min(SERIES_BUCKETS - 1);
+        let bucket = &mut buckets[idx];
+        match verdict {
+            Verdict::Allow => bucket.allow += 1,
+            Verdict::Narrow => bucket.narrow += 1,
+            Verdict::Deny => bucket.deny += 1,
+            Verdict::Scrub => bucket.scrub += 1,
+        }
+    }
+
+    buckets
+}
+
+/// `GET /api/v1/overview/enforcement-timeline` — decision counts over time by verdict.
+///
+/// Buckets the requested window into [`SERIES_BUCKETS`] equal slices and counts
+/// audit-recorded enforcement decisions per slice into four verdict lanes —
+/// `allow` / `narrow` / `deny` / `scrub` — derived from the [`AuditEventType`]
+/// the gateway writes for each proto `Decision` (see [`timeline_verdict`]). This
+/// is read-only observability over the existing audit log: no enforcement
+/// semantics are touched and no new data source is introduced. Every bucket is
+/// emitted (including zeros) so the dashboard timeline renders a continuous
+/// axis. Confined to the caller's tenant.
+#[utoipa::path(
+    get,
+    path = "/api/v1/overview/enforcement-timeline",
+    params(EnforcementTimelineParams),
+    responses(
+        (status = 200, description = "Windowed enforcement decision counts by verdict", body = EnforcementTimelineResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_enforcement_timeline(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(params): Query<EnforcementTimelineParams>,
+) -> (StatusCode, Json<EnforcementTimelineResponse>) {
+    let (window_label, window_secs) = resolve_window(params.window.as_deref());
+    let now = now_ns();
+    let window_ns = window_secs.saturating_mul(1_000_000_000);
+    let since = now.saturating_sub(window_ns);
+
+    let entries = fetch_window_entries(&caller, &state, since).await;
+    let buckets = bucket_enforcement(&entries, since, window_ns);
+
+    (
+        StatusCode::OK,
+        Json(EnforcementTimelineResponse {
+            window: window_label.to_string(),
+            bucket_secs: (window_secs / SERIES_BUCKETS as u64) as i64,
+            buckets,
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
