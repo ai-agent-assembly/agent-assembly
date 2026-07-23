@@ -1,0 +1,65 @@
+/* ============================================================
+   RedactionPreview — █-block payload preview (AAASM-5027)
+   Ports the hi-fi `.trc-payload*` + `.trc-redact*` rules.
+   The dark terminal block is intentional in both themes (it is a
+   payload console, matching design/v1/hi-fi/styles.css).
+   ============================================================ */
+
+.redaction-preview__eyebrow {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-4);
+  margin-bottom: 6px;
+}
+
+.redaction-preview__kind {
+  color: var(--ink-5);
+}
+
+.redaction-preview__body {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  background: #0e0e0e;
+  color: #e6e1d4;
+  padding: 12px 14px;
+  border-radius: 3px;
+  overflow: auto;
+  max-height: 190px;
+}
+
+.redaction-preview__line {
+  white-space: pre;
+}
+
+.redaction-preview__block {
+  background: #5a5a5a;
+  color: transparent;
+  border-radius: 2px;
+  user-select: none;
+  letter-spacing: -2px;
+}
+
+.redaction-preview__tags {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.redaction-preview__tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--scrub);
+  padding: 2px 6px;
+  background: var(--scrub-bg);
+  border-radius: 2px;
+}
+
+.redaction-preview__tag--label {
+  font-weight: 700;
+  border: 1px solid var(--scrub);
+}
