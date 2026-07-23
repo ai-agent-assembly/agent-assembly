@@ -1,8 +1,18 @@
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, vi } from 'vitest'
+import type { ReactNode } from 'react'
 import { CANONICAL_ROUTES, ROUTE_GROUPS } from './routes'
 import { ComingSoon } from './pages/ComingSoon'
+
+// The AppShell now issues its own chrome queries (agents / policies / alerts
+// for the rail status + count badges, AAASM-5021), so it must render under a
+// QueryClient. Retry is disabled so the offline fetches fail fast.
+function withClient(node: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return <QueryClientProvider client={client}>{node}</QueryClientProvider>
+}
 
 // Mock the AppShell's external dependencies so the render test below can
 // mount it without auth / approvals network calls. Both mocks are scoped
@@ -78,9 +88,11 @@ describe('AppShell nav-icon rendering (AAASM-1373)', () => {
     // the real AppShell module is loaded.
     const { AppShell } = await import('./components/AppShell')
     render(
-      <MemoryRouter initialEntries={['/alerts']}>
-        <AppShell />
-      </MemoryRouter>,
+      withClient(
+        <MemoryRouter initialEntries={['/alerts']}>
+          <AppShell />
+        </MemoryRouter>,
+      ),
     )
 
     // The /alerts entry renders the bell glyph inside the dedicated span.
@@ -102,9 +114,11 @@ describe('AppShell analytics nav entry (AAASM-4158)', () => {
   it('renders an Analytics nav link that targets /analytics', async () => {
     const { AppShell } = await import('./components/AppShell')
     render(
-      <MemoryRouter initialEntries={['/overview']}>
-        <AppShell />
-      </MemoryRouter>,
+      withClient(
+        <MemoryRouter initialEntries={['/overview']}>
+          <AppShell />
+        </MemoryRouter>,
+      ),
     )
 
     const analyticsLink = screen.getByTestId('nav-link-analytics')
