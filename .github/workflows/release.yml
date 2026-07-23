@@ -847,7 +847,7 @@ jobs:
           path: sdk
           token: ${{ secrets.NODE_SDK_BOT_TOKEN }}
           branch: bot/aa-ffi-pin-${{ github.ref_name }}
-          base: master
+          base: main
           delete-branch: true
           commit-message: "🤖 (aa-ffi-node): Bump agent-assembly git pins to ${{ github.ref_name }}"
           title: "🤖 (aa-ffi-node): Bump agent-assembly git pins to ${{ github.ref_name }}"

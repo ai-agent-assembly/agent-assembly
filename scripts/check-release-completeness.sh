@@ -98,7 +98,7 @@ expected_base_for() {
   # bot-token secret name -> that repo's current default branch
   case "$1" in
     HOMEBREW_TAP_TOKEN)   echo main ;;    # migrated (AAASM-4957)
-    NODE_SDK_BOT_TOKEN)   echo master ;;  # migrates under AAASM-4960
+    NODE_SDK_BOT_TOKEN)   echo main ;;    # migrated (AAASM-4960)
     PYTHON_SDK_BOT_TOKEN) echo main ;;    # migrated (AAASM-4959)
     GO_SDK_BOT_TOKEN)     echo master ;;  # migrates under AAASM-4961
     *) echo "" ;;
