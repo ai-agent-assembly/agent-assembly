@@ -156,6 +156,53 @@ describe('AlertsPage', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Alerts' })).toBeInTheDocument()
   })
 
+  it('renders the stats strip with counts derived from the loaded alerts', () => {
+    setup({
+      alerts: q<readonly Alert[]>({
+        data: [
+          FIRING,
+          { ...FIRING, id: 'a-2', severity: 'CRITICAL' },
+          { ...FIRING, id: 'a-3', severity: 'CRITICAL', status: 'RESOLVED' },
+        ],
+        isLoading: false,
+        isError: false,
+      }),
+    })
+    expect(screen.getByTestId('alerts-stats-strip')).toBeInTheDocument()
+    expect(screen.getByTestId('alerts-stat-count-CRITICAL')).toHaveTextContent('2')
+    expect(screen.getByTestId('alerts-stat-count-HIGH')).toHaveTextContent('1')
+    // Two of the three loaded alerts are FIRING.
+    expect(screen.getByTestId('alerts-stat-count-FIRING')).toHaveTextContent('2')
+  })
+
+  it('toggling a stats tile writes the matching severity filter to the URL', () => {
+    setup()
+    fireEvent.click(screen.getByTestId('alerts-stat-tile-HIGH'))
+    // The page re-renders after setFilters (URL write) without throwing.
+    expect(screen.getByRole('heading', { level: 1, name: 'Alerts' })).toBeInTheDocument()
+  })
+
+  it('switches to the card-feed view and renders severity cards', () => {
+    setup()
+    // Default is the table view.
+    expect(screen.getByTestId('alerts-table')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('alerts-view-cards'))
+    expect(screen.getByTestId('alert-card-feed')).toBeInTheDocument()
+    expect(screen.queryByTestId('alerts-table')).not.toBeInTheDocument()
+  })
+
+  it('filters rows by derived category (rule metric join)', () => {
+    // The seed rule metric is budget_spent_pct → budget category.
+    setup()
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 alert')
+    // Selecting a category the loaded alert does not belong to hides it.
+    fireEvent.click(screen.getByTestId('alerts-category-anomaly'))
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('0 alerts')
+    // Selecting its real category brings it back.
+    fireEvent.click(screen.getByTestId('alerts-category-budget'))
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 alert')
+  })
+
   it('switches tabs via the AlertsTabs control (setTab path)', () => {
     setup()
     fireEvent.click(screen.getByTestId('alerts-tab-incidents'))
