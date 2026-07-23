@@ -5,10 +5,13 @@ import {
   AUDIT_EVENT_TYPES,
   auditEventHref,
   extractDecision,
+  extractTraceId,
   payloadSummary,
   useAuditLogQuery,
   type LogEntry,
 } from '../features/audit/logs'
+import { downloadAuditCsv, downloadComplianceReport } from '../features/audit/export'
+import { useToast } from '../components/Toast'
 import './AuditLogPage.css'
 
 /** Display metadata per event type — label + chip variant for the table. */
@@ -59,6 +62,7 @@ export function AuditLogPage() {
   const [q, setQ] = useState('')
   const [expanded, setExpanded] = useState<number | null>(null)
   const navigate = useNavigate()
+  const { toast } = useToast()
 
   // The type/agent filters are applied client-side so toggling them never
   // refetches; the server query stays broad and the stats strip can show live
@@ -99,6 +103,23 @@ export function AuditLogPage() {
       count: counts[key] ?? 0,
     })),
   ]
+
+  // Both header exports run over the currently-filtered rows (client-side —
+  // there is no server export/compliance endpoint), so what downloads always
+  // matches what the operator has narrowed the table to.
+  const handleExportCsv = () => {
+    if (filtered.length === 0) {
+      toast('No rows to export', 'info')
+      return
+    }
+    downloadAuditCsv(filtered)
+    toast(`Exported ${filtered.length} row${filtered.length === 1 ? '' : 's'} to CSV`, 'success')
+  }
+
+  const handleComplianceReport = () => {
+    downloadComplianceReport(filtered, { typeFilter, agentFilter, search: q })
+    toast(`Compliance report generated (${filtered.length} events)`, 'success')
+  }
 
   // Pick the body section with an explicit branch rather than a nested ternary
   // (error → loading → table), keeping the render tree readable.
@@ -236,6 +257,10 @@ export function AuditLogPage() {
                                 <span className="audit-kv__v">{e.timestamp}</span>
                                 <span className="audit-kv__k">session</span>
                                 <span className="audit-kv__v">{e.session_id}</span>
+                                <span className="audit-kv__k">trace</span>
+                                <span className="audit-kv__v" data-testid={`audit-trace-${e.seq}`}>
+                                  {extractTraceId(e.payload) ?? '—'}
+                                </span>
                                 <span className="audit-kv__k">decision</span>
                                 <span className="audit-kv__v">
                                   <span className={chipClass(dm.chip)}>{dm.label}</span>
@@ -275,6 +300,22 @@ export function AuditLogPage() {
           <Link to="/audit/violations" className="audit-btn">
             Violations heatmap →
           </Link>
+          <button
+            type="button"
+            className="audit-btn"
+            onClick={handleExportCsv}
+            data-testid="audit-export-csv"
+          >
+            ⏏ Export CSV
+          </button>
+          <button
+            type="button"
+            className="audit-btn audit-btn--primary"
+            onClick={handleComplianceReport}
+            data-testid="audit-compliance-report"
+          >
+            Compliance report →
+          </button>
         </div>
       </header>
 
@@ -333,6 +374,25 @@ export function AuditLogPage() {
             </option>
           ))}
         </select>
+        <span className="audit-divider" />
+        <span className="audit-filter-label">type</span>
+        <div className="audit-type-filters" data-testid="audit-type-filters">
+          {['all', ...AUDIT_EVENT_TYPES].map((v) => {
+            const active = typeFilter === v
+            return (
+              <button
+                type="button"
+                key={v}
+                className={`audit-type-btn${active ? ' audit-type-btn--active' : ''}`}
+                aria-pressed={active}
+                data-testid={`audit-type-btn-${v}`}
+                onClick={() => setTypeFilter(v)}
+              >
+                {v === 'all' ? 'all' : EVENT_META[v].label}
+              </button>
+            )
+          })}
+        </div>
         <span className="audit-count" data-testid="audit-count">
           {filtered.length} / {all.length}
         </span>

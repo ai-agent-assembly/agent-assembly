@@ -191,6 +191,41 @@
   background: var(--line);
 }
 
+/* ── Type filter button row ──────────────────────────────────────────── */
+.audit-type-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.audit-type-btn {
+  appearance: none;
+  height: 28px;
+  padding: 0 0.6rem;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: var(--paper-2);
+  color: var(--ink-2);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.7rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.audit-type-btn:hover {
+  background: var(--paper-3);
+}
+
+.audit-type-btn--active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper-2);
+}
+
+.audit-type-btn--active:hover {
+  background: var(--ink);
+}
+
 .audit-count {
   margin-left: auto;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
