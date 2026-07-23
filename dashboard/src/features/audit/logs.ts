@@ -78,6 +78,22 @@ export function extractDecision(payload: string): string | null {
 }
 
 /**
+ * Pull the distributed-trace id out of a `LogEntry.payload`. Like the policy
+ * decision, `trace_id` is carried inside the payload JSON rather than as a wire
+ * field — absence (or a malformed payload) means the row has no trace to link,
+ * so the detail view renders `—`.
+ */
+export function extractTraceId(payload: string): string | null {
+  try {
+    const p = JSON.parse(payload) as Record<string, unknown>
+    const t = p['trace_id']
+    return typeof t === 'string' && t.length > 0 ? t : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Build the human-readable one-line summary for a row from its event type and
  * payload. Ported from the hi-fi design (`design/v1/hi-fi/audit-log.jsx`);
  * tolerates malformed / partial payloads by falling back to a truncated dump.
