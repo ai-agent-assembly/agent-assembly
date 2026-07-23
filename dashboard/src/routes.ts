@@ -27,17 +27,24 @@ export interface CanonicalRoute {
    * visual regression hits the other entries.
    */
   icon?: string
+  /**
+   * Whether the nav entry carries the ★ marker (AAASM-5021). Mirrors the
+   * `star: true` flag on the hi-fi `ROUTES` in `design/v1/hi-fi/shell.jsx`,
+   * which highlights the three governance-authoring surfaces (Topology,
+   * Capability, Policy) as the operator's primary control points.
+   */
+  star?: boolean
 }
 
 export const CANONICAL_ROUTES: readonly CanonicalRoute[] = [
   { id: 'overview',   num: '01', label: 'Overview',         group: 'monitor', path: '/overview' },
   { id: 'fleet',      num: '02', label: 'Fleet',            group: 'monitor', path: '/agents' },
-  { id: 'topology',   num: '03', label: 'Topology',         group: 'monitor', path: '/topology' },
+  { id: 'topology',   num: '03', label: 'Topology',         group: 'monitor', path: '/topology', star: true },
   { id: 'live',       num: '04', label: 'Live Ops',         group: 'monitor', path: '/live' },
   { id: 'alerts',     num: '05', label: 'Alerts',           group: 'monitor', path: '/alerts', icon: '🔔' },
   { id: 'audit',      num: '06', label: 'Audit Log',        group: 'monitor', path: '/audit' },
-  { id: 'capability', num: '07', label: 'Capability',       group: 'control', path: '/capability' },
-  { id: 'policy',     num: '08', label: 'Policy',           group: 'control', path: '/policies' },
+  { id: 'capability', num: '07', label: 'Capability',       group: 'control', path: '/capability', star: true },
+  { id: 'policy',     num: '08', label: 'Policy',           group: 'control', path: '/policies', star: true },
   { id: 'scrub',      num: '09', label: 'Secret Scrubbing', group: 'control', path: '/scrub' },
   { id: 'costs',      num: '10', label: 'Cost & Budget',    group: 'manage',  path: '/costs' },
   { id: 'teams',      num: '11', label: 'Agent Groups',     group: 'manage',  path: '/teams' },
