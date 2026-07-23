@@ -1,6 +1,14 @@
 .appshell {
   display: flex;
   min-height: 100vh;
+
+  /* Shell chrome accents (AAASM-5021). Scoped here rather than in the shared
+     styles.css :root so the shell owns its own tokens; the nav rail is dark in
+     both light/dark themes, so these read correctly against it without a
+     per-theme override. --shell-nav-star mirrors the hi-fi ★ gold. */
+  --shell-nav-star: #facc15;
+  --shell-nav-dot-ok: #4ade80;
+  --shell-nav-dot-down: #f87171;
 }
 
 .appshell__nav {
@@ -14,12 +22,24 @@
 }
 
 .appshell__nav-brand {
-  font-size: 1rem;
-  font-weight: 700;
   padding: 0 1.25rem 1.25rem;
   border-bottom: 1px solid var(--shell-nav-border);
   margin-bottom: 0.5rem;
+}
+
+.appshell__nav-brand-title {
+  font-size: 1rem;
+  font-weight: 700;
   letter-spacing: 0.02em;
+}
+
+.appshell__nav-brand-sub {
+  margin-top: 0.25rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.625rem;
+  letter-spacing: 0.04em;
+  color: var(--shell-nav-text-muted);
+  opacity: 0.65;
 }
 
 .appshell__nav-section {
@@ -73,6 +93,56 @@
   font-weight: 600;
 }
 
+.appshell__nav-star {
+  /* ★ marker on the governance-authoring routes (AAASM-5021 / hi-fi shell). */
+  margin-left: 0.375rem;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--shell-nav-star);
+}
+
+.appshell__nav-badge {
+  /* Count chip floated to the trailing edge of the row (hi-fi .rail-badge). */
+  margin-left: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.0625rem 0.3125rem;
+  border-radius: 0.125rem;
+  background: var(--danger);
+  color: #fff;
+}
+
+.appshell__nav-foot {
+  /* Runtime + agent-count status line pinned to the bottom of the rail. */
+  margin-top: auto;
+  padding: 0.875rem 1.25rem;
+  border-top: 1px solid var(--shell-nav-border);
+  font-family: ui-monospace, monospace;
+  font-size: 0.625rem;
+  letter-spacing: 0.02em;
+  color: var(--shell-nav-text-muted);
+  opacity: 0.85;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.appshell__nav-foot-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 0.375rem;
+  vertical-align: middle;
+  background: var(--shell-nav-dot-ok);
+}
+
+.appshell__nav-foot-dot--down {
+  background: var(--shell-nav-dot-down);
+}
+
 .appshell__main {
   flex: 1;
   display: flex;
@@ -106,6 +176,52 @@
 .appshell__user {
   font-size: 0.8rem;
   color: var(--shell-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.appshell__crumbs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: var(--shell-text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.appshell__crumb {
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.appshell__crumb-sep {
+  color: var(--shell-text-dim);
+  opacity: 0.6;
+}
+
+.appshell__crumb--here {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.appshell__sync {
+  font-family: ui-monospace, monospace;
+  font-size: 0.6875rem;
+  color: var(--shell-text-muted);
+  white-space: nowrap;
+}
+
+/* On narrow viewports the hamburger takes the left slot; drop breadcrumbs and
+   the last-sync chip so the topbar controls stay reachable. */
+@media (max-width: 640px) {
+  .appshell__crumbs,
+  .appshell__sync {
+    display: none;
+  }
 }
 
 .appshell__logout {
