@@ -8,10 +8,12 @@ import * as agentsApi from '../features/agents/api'
 import * as approvalsApi from '../features/approvals/api'
 import * as policiesApi from '../features/policies/api'
 import * as alertsApi from '../features/alerts/api'
+import * as overviewApi from '../features/overview/api'
 import type { Agent } from '../features/agents/api'
 import type { Approval } from '../features/approvals/api'
 import type { Policy } from '../features/policies/api'
 import type { Alert } from '../features/alerts/types'
+import type { EnforcementTimeline } from '../features/overview/api'
 // Inlined at build time by Vite (`?raw`) so the theme-token guard needs no
 // node fs access — keeps the test runnable under the jsdom environment.
 import overviewCss from './OverviewPage.css?raw'
@@ -67,12 +69,14 @@ function setup({
   approvals = [],
   policies = [],
   alerts = [],
+  timeline = { window: '24h', bucketSecs: 3600, buckets: [] },
   agentsState = {},
 }: {
   agents?: Agent[]
   approvals?: Approval[]
   policies?: Policy[]
   alerts?: Alert[]
+  timeline?: EnforcementTimeline
   agentsState?: Record<string, unknown>
 } = {}) {
   const agentsPartial = { data: agents, isLoading: false, isError: false, ...agentsState }
@@ -85,6 +89,9 @@ function setup({
   )
   vi.spyOn(alertsApi, 'useAlertsQuery').mockReturnValue(
     mockQuery<readonly Alert[]>({ data: alerts }),
+  )
+  vi.spyOn(overviewApi, 'useEnforcementTimelineQuery').mockReturnValue(
+    mockQuery<EnforcementTimeline>({ data: timeline, isLoading: false, isError: false }),
   )
 }
 

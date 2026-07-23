@@ -2400,6 +2400,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/overview/enforcement-timeline:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/overview/enforcement-timeline` — decision counts over time by verdict.'
+      description: |-
+        Buckets the requested window into [`SERIES_BUCKETS`] equal slices and counts
+        audit-recorded enforcement decisions per slice into four verdict lanes —
+        `allow` / `narrow` / `deny` / `scrub` — derived from the [`AuditEventType`]
+        the gateway writes for each proto `Decision` (see [`timeline_verdict`]). This
+        is read-only observability over the existing audit log: no enforcement
+        semantics are touched and no new data source is introduced. Every bucket is
+        emitted (including zeros) so the dashboard timeline renders a continuous
+        axis. Confined to the caller's tenant.
+      operationId: get_enforcement_timeline
+      parameters:
+      - name: window
+        in: query
+        description: |-
+          Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+          `24h`; any unrecognised value also falls back to `24h`.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Windowed enforcement decision counts by verdict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnforcementTimelineResponse'
+        '401':
+          description: Missing or invalid credentials
   /api/v1/policies:
     get:
       tags:
@@ -4659,6 +4694,62 @@ components:
           items:
             $ref: '#/components/schemas/PermissionSourceResponse'
           description: Per-scope contribution, in cascade order (broadest → narrowest).
+    EnforcementBucket:
+      type: object
+      description: 'One time bucket of the enforcement timeline: decision counts by verdict.'
+      required:
+      - ts
+      - allow
+      - narrow
+      - deny
+      - scrub
+      properties:
+        allow:
+          type: integer
+          format: int64
+          description: Permitted decisions (`ToolCallIntercepted` = proto `Decision::ALLOW`).
+          minimum: 0
+        deny:
+          type: integer
+          format: int64
+          description: Blocked decisions (`PolicyViolation` = proto `Decision::DENY`).
+          minimum: 0
+        narrow:
+          type: integer
+          format: int64
+          description: Held-for-approval decisions (`ApprovalRequested` = proto `Decision::PENDING`).
+          minimum: 0
+        scrub:
+          type: integer
+          format: int64
+          description: Credential/secret redactions (`CredentialLeakBlocked` = proto `Decision::REDACT`).
+          minimum: 0
+        ts:
+          type: integer
+          format: int64
+          description: Bucket-start timestamp, epoch milliseconds.
+    EnforcementTimelineResponse:
+      type: object
+      description: Response for `GET /api/v1/overview/enforcement-timeline`.
+      required:
+      - window
+      - bucketSecs
+      - buckets
+      properties:
+        bucketSecs:
+          type: integer
+          format: int64
+          description: Width of each bucket in seconds (`window / 24`).
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnforcementBucket'
+          description: |-
+            Ordered buckets, oldest first — always [`SERIES_BUCKETS`] of them,
+            including empty buckets, so the timeline renders a continuous axis.
+        window:
+          type: string
+          description: Echo of the resolved window preset (`1h` | `24h` | `7d` | `30d`).
     EventPayload:
       oneOf:
       - $ref: '#/components/schemas/ViolationPayload'

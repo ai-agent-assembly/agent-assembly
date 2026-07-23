@@ -1330,6 +1330,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/overview/enforcement-timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/overview/enforcement-timeline` — decision counts over time by verdict.
+         * @description Buckets the requested window into [`SERIES_BUCKETS`] equal slices and counts
+         *     audit-recorded enforcement decisions per slice into four verdict lanes —
+         *     `allow` / `narrow` / `deny` / `scrub` — derived from the [`AuditEventType`]
+         *     the gateway writes for each proto `Decision` (see [`timeline_verdict`]). This
+         *     is read-only observability over the existing audit log: no enforcement
+         *     semantics are touched and no new data source is introduced. Every bucket is
+         *     emitted (including zeros) so the dashboard timeline renders a continuous
+         *     axis. Confined to the caller's tenant.
+         */
+        get: operations["get_enforcement_timeline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/policies": {
         parameters: {
             query?: never;
@@ -2612,6 +2639,49 @@ export interface components {
             deny: string[];
             /** @description Per-scope contribution, in cascade order (broadest → narrowest). */
             sources: components["schemas"]["PermissionSourceResponse"][];
+        };
+        /** @description One time bucket of the enforcement timeline: decision counts by verdict. */
+        EnforcementBucket: {
+            /**
+             * Format: int64
+             * @description Permitted decisions (`ToolCallIntercepted` = proto `Decision::ALLOW`).
+             */
+            allow: number;
+            /**
+             * Format: int64
+             * @description Blocked decisions (`PolicyViolation` = proto `Decision::DENY`).
+             */
+            deny: number;
+            /**
+             * Format: int64
+             * @description Held-for-approval decisions (`ApprovalRequested` = proto `Decision::PENDING`).
+             */
+            narrow: number;
+            /**
+             * Format: int64
+             * @description Credential/secret redactions (`CredentialLeakBlocked` = proto `Decision::REDACT`).
+             */
+            scrub: number;
+            /**
+             * Format: int64
+             * @description Bucket-start timestamp, epoch milliseconds.
+             */
+            ts: number;
+        };
+        /** @description Response for `GET /api/v1/overview/enforcement-timeline`. */
+        EnforcementTimelineResponse: {
+            /**
+             * Format: int64
+             * @description Width of each bucket in seconds (`window / 24`).
+             */
+            bucketSecs: number;
+            /**
+             * @description Ordered buckets, oldest first — always [`SERIES_BUCKETS`] of them,
+             *     including empty buckets, so the timeline renders a continuous axis.
+             */
+            buckets: components["schemas"]["EnforcementBucket"][];
+            /** @description Echo of the resolved window preset (`1h` | `24h` | `7d` | `30d`). */
+            window: string;
         };
         /**
          * @description Discriminated union of all possible `GovernanceEvent.payload` shapes.
@@ -6504,6 +6574,39 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ProblemDetail"];
                 };
+            };
+        };
+    };
+    get_enforcement_timeline: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+                 *     `24h`; any unrecognised value also falls back to `24h`.
+                 */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Windowed enforcement decision counts by verdict */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnforcementTimelineResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

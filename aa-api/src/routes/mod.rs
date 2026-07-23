@@ -186,6 +186,11 @@ fn protected_router() -> Router {
             get(analytics::get_policy_effectiveness),
         )
         .route("/analytics/fleet-health", get(analytics::get_fleet_health))
+        // Overview enforcement timeline: windowed decision counts (AAASM-5031)
+        .route(
+            "/overview/enforcement-timeline",
+            get(analytics::get_enforcement_timeline),
+        )
         // Deny-by-default auth gate over every protected route (AAASM-3125).
         .route_layer(axum::middleware::from_fn(crate::auth::gate::require_authentication))
 }
