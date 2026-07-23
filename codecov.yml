@@ -18,8 +18,8 @@
 # aa-sdk-client/…) on both dashboards.
 codecov:
   token: $CODECOV_TOKEN
-  branch: master
-  strict_yaml_branch: master
+  branch: main
+  strict_yaml_branch: main
 
 coverage:
   precision: 2
