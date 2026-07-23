@@ -1287,4 +1287,103 @@ mod tests {
         assert!(cap < usize::MAX, "analytics audit read must be bounded, not usize::MAX");
         assert_eq!(cap, 100_000);
     }
+
+    // --- enforcement-timeline (AAASM-5031) ---------------------------------
+
+    fn tl_entry(ts: u64, ev: AuditEventType) -> AuditEntry {
+        use aa_core::audit::Lineage;
+        use aa_core::{AgentId, SessionId};
+        AuditEntry::new_with_lineage(
+            0,
+            ts,
+            ev,
+            AgentId::from_bytes([0x11; 16]),
+            SessionId::from_bytes([0x22; 16]),
+            "{}".to_string(),
+            [0u8; 32],
+            Lineage::default(),
+        )
+    }
+
+    #[test]
+    fn resolve_window_presets_and_default() {
+        assert_eq!(resolve_window(Some("1h")), ("1h", 3_600));
+        assert_eq!(resolve_window(Some("24h")), ("24h", 86_400));
+        assert_eq!(resolve_window(Some("7d")), ("7d", 604_800));
+        assert_eq!(resolve_window(Some("30d")), ("30d", 2_592_000));
+        // Absent or unrecognised falls back to the 24h Overview default.
+        assert_eq!(resolve_window(None), ("24h", 86_400));
+        assert_eq!(resolve_window(Some("bogus")), ("24h", 86_400));
+    }
+
+    #[test]
+    fn timeline_verdict_maps_recorded_decision_event_types() {
+        assert!(matches!(
+            timeline_verdict(AuditEventType::ToolCallIntercepted),
+            Some(Verdict::Allow)
+        ));
+        assert!(matches!(
+            timeline_verdict(AuditEventType::ApprovalRequested),
+            Some(Verdict::Narrow)
+        ));
+        assert!(matches!(
+            timeline_verdict(AuditEventType::PolicyViolation),
+            Some(Verdict::Deny)
+        ));
+        assert!(matches!(
+            timeline_verdict(AuditEventType::CredentialLeakBlocked),
+            Some(Verdict::Scrub)
+        ));
+        // An event type outside the four verdict lanes contributes to none.
+        assert!(timeline_verdict(AuditEventType::ToolDispatched).is_none());
+    }
+
+    #[test]
+    fn bucket_enforcement_always_emits_full_bucket_count() {
+        let buckets = bucket_enforcement(&[], 0, 24 * 1_000_000_000);
+        assert_eq!(buckets.len(), SERIES_BUCKETS);
+        assert!(buckets
+            .iter()
+            .all(|b| b.allow == 0 && b.narrow == 0 && b.deny == 0 && b.scrub == 0));
+    }
+
+    #[test]
+    fn bucket_enforcement_tallies_each_verdict_into_its_slice() {
+        let bucket_ns: u64 = 1_000_000_000;
+        let window_ns: u64 = SERIES_BUCKETS as u64 * bucket_ns;
+        let entries = [
+            tl_entry(0, AuditEventType::ToolCallIntercepted), // bucket 0 allow
+            tl_entry(bucket_ns / 2, AuditEventType::ToolCallIntercepted), // bucket 0 allow
+            tl_entry(bucket_ns, AuditEventType::ApprovalRequested), // bucket 1 narrow
+            tl_entry(2 * bucket_ns, AuditEventType::PolicyViolation), // bucket 2 deny
+            tl_entry(3 * bucket_ns, AuditEventType::CredentialLeakBlocked), // bucket 3 scrub
+            tl_entry(5 * bucket_ns, AuditEventType::ToolDispatched), // untracked -> ignored
+        ];
+        let buckets = bucket_enforcement(&entries, 0, window_ns);
+        assert_eq!(buckets[0].allow, 2);
+        assert_eq!(buckets[1].narrow, 1);
+        assert_eq!(buckets[2].deny, 1);
+        assert_eq!(buckets[3].scrub, 1);
+        assert_eq!(
+            buckets[5].allow + buckets[5].narrow + buckets[5].deny + buckets[5].scrub,
+            0,
+            "untracked event type must not be counted"
+        );
+        // `ts` is the bucket-start timestamp in epoch milliseconds.
+        assert_eq!(buckets[0].ts, 0);
+        assert_eq!(buckets[1].ts, (bucket_ns / 1_000_000) as i64);
+    }
+
+    #[test]
+    fn bucket_enforcement_drops_pre_window_and_clamps_post_window() {
+        let bucket_ns: u64 = 1_000_000_000;
+        let window_ns: u64 = SERIES_BUCKETS as u64 * bucket_ns;
+        let since: u64 = bucket_ns;
+        let before = tl_entry(since - 1, AuditEventType::PolicyViolation);
+        let after = tl_entry(since + window_ns + 5, AuditEventType::PolicyViolation);
+        let buckets = bucket_enforcement(&[before, after], since, window_ns);
+        let total_deny: u64 = buckets.iter().map(|b| b.deny).sum();
+        assert_eq!(total_deny, 1, "pre-window entry dropped, post-window entry clamped in");
+        assert_eq!(buckets[SERIES_BUCKETS - 1].deny, 1);
+    }
 }
