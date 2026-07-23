@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { TopologyGraph } from './TopologyGraph'
@@ -155,6 +155,54 @@ describe('TopologyGraph', () => {
       expect(labels).toHaveLength(2)
       const texts = labels.map(l => l.textContent).sort()
       expect(texts).toEqual(['analytics', 'support'])
+    })
+  })
+
+  // ── Collision (AAASM-5018) ─────────────────────────────────────────────────
+  // The per-team forceX/forceY pull every same-team card toward one center, so
+  // without a collision force the cards stack on top of each other. Assert the
+  // simulation settles with no two same-team cards overlapping.
+  describe('collision', () => {
+    // Card dims by size bucket (mirrors SIZE_VARIANT in TopologyGraph.tsx).
+    const CARD = { small: { w: 76, h: 44 }, medium: { w: 96, h: 56 }, large: { w: 116, h: 68 } }
+
+    function cardRect(node: Element) {
+      const m = /translate\(([-\d.]+),\s*([-\d.]+)\)/.exec(node.getAttribute('transform') ?? '')
+      const x = Number(m?.[1] ?? 0)
+      const y = Number(m?.[2] ?? 0)
+      const bucket = node.getAttribute('data-size-bucket') as keyof typeof CARD
+      const { w, h } = CARD[bucket]
+      return { x, y, w, h }
+    }
+
+    function overlaps(a: ReturnType<typeof cardRect>, b: ReturnType<typeof cardRect>) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+    }
+
+    const SAME_TEAM: TopologyNode[] = Array.from({ length: 6 }, (_, i) => ({
+      id: `t${i}`,
+      name: `agent-${i}`,
+      status: 'active',
+      team: 'clustered',
+      owner: 'alice',
+      policyCount: 1,
+      budgetSpend: 1,
+      budgetLimit: 10,
+    }))
+
+    it('settles with no two same-team cards overlapping', async () => {
+      render(<TopologyGraph nodes={SAME_TEAM} edges={[]} width={800} height={500} />)
+      await waitFor(
+        () => {
+          const rects = screen.getAllByTestId('topology-node').map(cardRect)
+          for (let i = 0; i < rects.length; i++) {
+            for (let j = i + 1; j < rects.length; j++) {
+              expect(overlaps(rects[i], rects[j])).toBe(false)
+            }
+          }
+        },
+        { timeout: 4000, interval: 100 },
+      )
     })
   })
 })
