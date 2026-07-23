@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect } from 'vitest'
 import { ScrubPage } from './ScrubPage'
+import { ToastProvider } from '../components/ToastProvider'
 import { PATTERNS } from '../features/scrub/fixtures'
 
 const TOTAL = PATTERNS.length
@@ -67,5 +68,75 @@ describe('ScrubPage', () => {
     expect(screen.getByTestId('scrub-stats-enabled-count')).toHaveTextContent(
       `${ENABLED - 1}/${TOTAL} patterns enabled`,
     )
+  })
+
+  it('all "coming soon" affordances no-op (do not throw) without a ToastProvider', () => {
+    // Rendered without a provider, `toast` is null and every handler must take
+    // the optional-chaining short-circuit rather than crash the page.
+    render(<ScrubPage />)
+    fireEvent.click(screen.getByTestId('scrub-add-pattern'))
+    fireEvent.click(screen.getByTestId('scrub-export-config'))
+    fireEvent.click(screen.getByTestId('scrub-detail-edit'))
+    fireEvent.click(screen.getByTestId('scrub-detail-test'))
+    // No toast surface exists, and the page is still mounted.
+    expect(screen.queryByTestId('toast')).toBeNull()
+    expect(screen.getByTestId('scrub-page')).toBeInTheDocument()
+  })
+
+  describe('inside a ToastProvider', () => {
+    const renderWithToast = () =>
+      render(
+        <ToastProvider>
+          <ScrubPage />
+        </ToastProvider>,
+      )
+
+    it('the header affordances raise "coming soon" toasts', () => {
+      renderWithToast()
+      fireEvent.click(screen.getByTestId('scrub-add-pattern'))
+      expect(screen.getByText('Add-pattern editor is coming soon')).toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('scrub-export-config'))
+      expect(screen.getByText('Config export is coming soon')).toBeInTheDocument()
+    })
+
+    it('the detail edit / test affordances raise per-pattern toasts', () => {
+      renderWithToast()
+      // OPENAI_KEY is the default selection.
+      fireEvent.click(screen.getByTestId('scrub-detail-edit'))
+      expect(
+        screen.getByText('Regex editor for OPENAI_KEY is coming soon'),
+      ).toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('scrub-detail-test'))
+      expect(
+        screen.getByText('Tested OPENAI_KEY against the last 24h of traffic'),
+      ).toBeInTheDocument()
+    })
+
+    it('disabling then re-enabling the selected pattern toasts both directions', () => {
+      renderWithToast()
+      // First click: OPENAI_KEY is enabled -> "disabled" (error variant).
+      fireEvent.click(screen.getByTestId('scrub-detail-disable'))
+      const disabledToast = screen.getByText('OPENAI_KEY disabled')
+      expect(disabledToast).toBeInTheDocument()
+      expect(disabledToast.closest('[data-testid="toast"]')).toHaveAttribute(
+        'data-variant',
+        'error',
+      )
+      expect(screen.getByTestId('scrub-stats-enabled-count')).toHaveTextContent(
+        `${ENABLED - 1}/${TOTAL} patterns enabled`,
+      )
+
+      // Second click: now disabled -> "enabled" (success variant).
+      fireEvent.click(screen.getByTestId('scrub-detail-disable'))
+      const enabledToast = screen.getByText('OPENAI_KEY enabled')
+      expect(enabledToast).toBeInTheDocument()
+      expect(enabledToast.closest('[data-testid="toast"]')).toHaveAttribute(
+        'data-variant',
+        'success',
+      )
+      expect(screen.getByTestId('scrub-stats-enabled-count')).toHaveTextContent(
+        `${ENABLED}/${TOTAL} patterns enabled`,
+      )
+    })
   })
 })
