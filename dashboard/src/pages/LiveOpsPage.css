@@ -17,6 +17,15 @@
   padding: 16px 24px;
   background: var(--paper-2);
   border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.live-page__header-lead {
+  min-width: 0;
 }
 
 .live-page__title {
@@ -24,6 +33,250 @@
   font-size: 18px;
   font-weight: 600;
   color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ── LIVE / PAUSED state pill (AAASM-5025) ─────────────────── */
+
+.live-page__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--ink-3);
+  background: var(--paper);
+}
+
+.live-page__pill--live {
+  color: var(--ok);
+  border-color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.live-page__pill--paused {
+  color: var(--ink-3);
+  border-color: var(--line-2);
+  background: var(--paper-3);
+}
+
+.live-page__pill--connecting {
+  color: var(--info);
+  border-color: var(--info);
+  background: var(--info-bg);
+}
+
+.live-page__pill--reconnecting {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.live-page__pill--offline {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.live-page__pulse {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  animation: live-page-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes live-page-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(34, 89, 42, 0.4);
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 0 6px rgba(34, 89, 42, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-page__pulse {
+    animation: none;
+  }
+}
+
+/* ── Header speed controls (AAASM-5025) ────────────────────── */
+
+.live-page__controls {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.live-page__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.live-page__btn:hover:not(:disabled) {
+  background: var(--paper-3);
+  border-color: var(--line-3);
+}
+
+.live-page__btn:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.live-page__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.live-page__btn--danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.live-page__btn--danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+/* ── Counters / stats strip (AAASM-5025) ───────────────────── */
+
+.live-page__stats {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 24px;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+  flex-wrap: wrap;
+}
+
+.live-page__stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.live-page__stat-strong {
+  color: var(--ink);
+}
+
+.live-page__stat-divider {
+  width: 1px;
+  height: 12px;
+  background: var(--line-2);
+}
+
+.live-page__stat--end {
+  margin-left: auto;
+  color: var(--ink-4);
+}
+
+.live-page__stat--ok {
+  color: var(--ok);
+}
+
+.live-page__stat--warn {
+  color: var(--warn);
+}
+
+.live-page__stat--scrub {
+  color: var(--scrub);
+}
+
+.live-page__stat--info {
+  color: var(--info);
+}
+
+.live-page__stat--danger {
+  color: var(--danger);
+}
+
+.live-page__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ── Pipeline legend chips (AAASM-5025) ────────────────────── */
+
+.live-page__legend {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.live-page__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  background: var(--paper-2);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  color: var(--ink-2);
+}
+
+.live-page__chip--ok {
+  color: var(--ok);
+  border-color: var(--ok);
+  background: var(--ok-bg);
+}
+
+.live-page__chip--warn {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.live-page__chip--info {
+  color: var(--info);
+  border-color: var(--info);
+  background: var(--info-bg);
+}
+
+.live-page__chip--scrub {
+  color: var(--scrub);
+  border-color: var(--scrub);
+  background: var(--scrub-bg);
+}
+
+.live-page__chip--danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-bg);
 }
 
 .live-page__subtitle {
