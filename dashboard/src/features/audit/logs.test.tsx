@@ -5,6 +5,7 @@ import { api } from '../../api/client'
 import {
   auditEventHref,
   extractDecision,
+  extractTraceId,
   payloadSummary,
   useAuditLogQuery,
   type LogEntry,
@@ -44,6 +45,24 @@ describe('extractDecision', () => {
 
   it('returns null for a non-object JSON payload', () => {
     expect(extractDecision('"just-a-string"')).toBeNull()
+  })
+})
+
+describe('extractTraceId', () => {
+  it('reads a non-empty trace_id from the payload', () => {
+    expect(extractTraceId('{"trace_id":"trace-abc"}')).toBe('trace-abc')
+  })
+
+  it('returns null when trace_id is absent', () => {
+    expect(extractTraceId('{"model":"gpt-4o"}')).toBeNull()
+  })
+
+  it('returns null for an empty-string trace_id', () => {
+    expect(extractTraceId('{"trace_id":""}')).toBeNull()
+  })
+
+  it('returns null for malformed JSON', () => {
+    expect(extractTraceId('not-json')).toBeNull()
   })
 })
 
