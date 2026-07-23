@@ -244,6 +244,7 @@
 }
 
 .onb-id-glyph {
+  position: relative;
   width: 80px;
   height: 80px;
   border: 2px solid var(--line);
@@ -256,6 +257,27 @@
   font-family: 'JetBrains Mono', monospace;
   font-size: 32px;
   color: var(--ink-4);
+}
+
+/* While the keypair is being derived, a ring sweeps the glyph so the ~0.8s
+   wait reads as active work rather than a frozen UI. Pure decoration — gated
+   off under prefers-reduced-motion below. */
+.onb-id-glyph.is-spinning {
+  border-color: var(--accent, var(--ink));
+}
+
+.onb-id-glyph.is-spinning::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 2px solid transparent;
+  border-top-color: var(--accent, var(--ink));
+  border-radius: 999px;
+  animation: onb-id-spin 0.8s linear infinite;
+}
+
+@keyframes onb-id-spin {
+  to { transform: rotate(360deg); }
 }
 
 .onb-id-glyph.is-done {
@@ -496,7 +518,25 @@
 }
 
 .onb-enroll-pings-empty { color: var(--term-faint); padding: 4px 0; }
-.onb-enroll-ping { padding: 2px 0; }
+
+/* Each ping slides in as it lands so the stream reads as live traffic arriving
+   one call at a time, not a batch dump. Gated under prefers-reduced-motion. */
+.onb-enroll-ping {
+  padding: 2px 0;
+  animation: onb-ping-in 320ms ease;
+}
+
+@keyframes onb-ping-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
 .onb-ping-time { color: var(--term-key); }
 .onb-ping-action { color: var(--term-text); }
 .onb-ping-tag { color: var(--term-ok); }
+
+/* Honour users who ask for reduced motion: keep the states, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .onb-id-glyph.is-spinning::before { animation: none; }
+  .onb-enroll-ping { animation: none; }
+}

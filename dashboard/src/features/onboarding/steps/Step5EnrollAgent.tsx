@@ -16,11 +16,21 @@ interface Ping {
 
 type Phase = 'idle' | 'listening' | 'live'
 
-const COMPLETED_PINGS: Ping[] = [
-  { id: 3, time: '14:02:14', action: 'gmail.read', tag: 'allowed-by-baseline' },
-  { id: 2, time: '14:02:13', action: 'capability.list', tag: 'cached' },
+// Streamed in chronological order (oldest first); each is prepended as it lands
+// so the newest call sits on top — the resulting stack matches COMPLETED_PINGS.
+const PING_STREAM: Ping[] = [
   { id: 1, time: '14:02:11', action: 'phone-home (heartbeat)', tag: 'identity-verified' },
+  { id: 2, time: '14:02:13', action: 'capability.list', tag: 'cached' },
+  { id: 3, time: '14:02:14', action: 'gmail.read', tag: 'allowed-by-baseline' },
 ]
+
+// Final resting order for the already-enrolled (session-resume) case: no
+// streaming to replay, so show the full stack newest-first immediately.
+const COMPLETED_PINGS: Ping[] = [...PING_STREAM].reverse()
+
+// Gap between streamed pings so they read as live traffic arriving one call at
+// a time rather than a single batch dump.
+const PING_STAGGER_MS = 500
 
 export function Step5EnrollAgent({ state, onEnrolled }: Readonly<Step5EnrollAgentProps>) {
   const [phase, setPhase] = useState<Phase>(state.enrolled ? 'live' : 'idle')
@@ -31,8 +41,17 @@ export function Step5EnrollAgent({ state, onEnrolled }: Readonly<Step5EnrollAgen
     setPhase('listening')
     globalThis.setTimeout(() => {
       setPhase('live')
-      setPings(COMPLETED_PINGS)
       onEnrolled()
+      // The first authenticated call is what completes enrollment, so it lands
+      // immediately; the rest stream in one at a time, each prepended so the
+      // newest sits on top.
+      const [first, ...rest] = PING_STREAM
+      setPings([first])
+      rest.forEach((ping, i) => {
+        globalThis.setTimeout(() => {
+          setPings((cur) => [ping, ...cur])
+        }, (i + 1) * PING_STAGGER_MS)
+      })
     }, 800)
   }
 

@@ -59,10 +59,11 @@ export function Step3IssueIdentity({ state, onIssued }: Readonly<Step3IssueIdent
 
       <div className="onb-id-card">
         <div
-          className={`onb-id-glyph${phase === 'done' ? ' is-done' : ''}`}
+          className={`onb-id-glyph${phase === 'done' ? ' is-done' : ''}${phase === 'spinning' ? ' is-spinning' : ''}`}
+          data-testid="onboarding-identity-glyph"
           aria-hidden
         >
-          {phase === 'done' ? '✓' : '◯'}
+          {phase === 'done' ? '✓' : phase === 'spinning' ? '' : '◯'}
         </div>
 
         {phase === 'idle' && (
