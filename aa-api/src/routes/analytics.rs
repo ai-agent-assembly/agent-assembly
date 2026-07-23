@@ -21,18 +21,21 @@
 //! synthetic series. Those decisions are called out in each handler's doc
 //! comment.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use aa_core::audit::AuditEventType;
-use aa_core::AuditEntry;
+use aa_core::{AgentId, AuditEntry};
 use aa_gateway::{AgentRecord, AgentStatus};
+
+use crate::models::topology::format_id;
 
 use crate::auth::scope::{RequireRead, Scope};
 use crate::auth::AuthenticatedCaller;
@@ -1175,6 +1178,284 @@ pub async fn get_enforcement_timeline(
             buckets,
         }),
     )
+}
+
+// ---------------------------------------------------------------------------
+// costs/history — trailing daily spend series (AAASM-5032)
+// ---------------------------------------------------------------------------
+
+/// Default and maximum length of the cost-history window, in calendar days.
+const COST_HISTORY_DEFAULT_DAYS: u32 = 7;
+const COST_HISTORY_MAX_DAYS: u32 = 90;
+
+/// Query parameters for `GET /api/v1/costs/history`.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+pub struct CostHistoryParams {
+    /// Trailing calendar days to return. Defaults to 7; clamped to 1..=90 so a
+    /// single request can never ask for an unbounded series.
+    pub days: Option<u32>,
+}
+
+/// One calendar day of the spend-history series.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CostHistoryPoint {
+    /// Calendar date (YYYY-MM-DD, in the tracker's timezone) for this bucket.
+    pub date: String,
+    /// Total spend recorded on this date in USD, serialized as a decimal string
+    /// so money precision is never lost to float rounding (mirrors `/costs`).
+    pub spend_usd: String,
+}
+
+/// Response for `GET /api/v1/costs/history`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CostHistoryResponse {
+    /// Number of days in the returned series (the resolved, clamped `days`).
+    pub days: u32,
+    /// Daily spend buckets, oldest first, dense (zero-filled) across the window.
+    pub points: Vec<CostHistoryPoint>,
+}
+
+/// `GET /api/v1/costs/history` — trailing daily spend series.
+///
+/// Aggregates the budget tracker's per-agent daily spend history into a single
+/// dense (zero-filled), oldest-first series over the last `days` days. The set
+/// of agents summed is exactly the caller's visible set ([`visible_agents`]):
+/// an admin gets the org-wide total, a tenant-scoped caller gets only its own
+/// team's total, and an unscoped non-admin caller gets an all-zero series —
+/// so the same endpoint serves every scope without leaking cross-tenant spend.
+/// Read-only observability over data the tracker already holds; no enforcement
+/// or budget-debit path is touched. The history is in-memory (see
+/// `BudgetTracker::spend_history_totals_for`) and resets on gateway restart.
+#[utoipa::path(
+    get,
+    path = "/api/v1/costs/history",
+    params(CostHistoryParams),
+    responses(
+        (status = 200, description = "Trailing daily spend history", body = CostHistoryResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "costs"
+)]
+pub async fn get_cost_history(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(params): Query<CostHistoryParams>,
+) -> (StatusCode, Json<CostHistoryResponse>) {
+    let days = params
+        .days
+        .unwrap_or(COST_HISTORY_DEFAULT_DAYS)
+        .clamp(1, COST_HISTORY_MAX_DAYS);
+    let agent_ids: Vec<AgentId> = visible_agents(&caller, &state)
+        .into_iter()
+        .map(|r| AgentId::from_bytes(r.agent_id))
+        .collect();
+    let points = state
+        .budget_tracker
+        .spend_history_totals_for(&agent_ids, days)
+        .into_iter()
+        .map(|(date, spend)| CostHistoryPoint {
+            date: date.to_string(),
+            spend_usd: spend.to_string(),
+        })
+        .collect();
+
+    (StatusCode::OK, Json(CostHistoryResponse { days, points }))
+}
+
+// ---------------------------------------------------------------------------
+// costs/budget-tree — org → team → agent budget inheritance (AAASM-5032)
+// ---------------------------------------------------------------------------
+
+/// One node in the budget-inheritance tree.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BudgetTreeNode {
+    /// Stable node id: the org id, the team id, or the hex agent id.
+    pub id: String,
+    /// Human-readable label: org/team id, or the agent's registered name.
+    pub label: String,
+    /// Node tier: `org` | `team` | `agent`.
+    pub kind: String,
+    /// Depth from the org root (org = 0, team = 1, agents from 2 and deeper).
+    pub depth: u32,
+    /// Configured daily budget limit in USD for this node, if any (decimal
+    /// string). Agent nodes fall back to the global limit when they carry no
+    /// per-agent override, mirroring the enforcement path's resolution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_limit_usd: Option<String>,
+    /// Spend attributable to this node itself, excluding descendants (USD
+    /// string). Org and team nodes never spend directly, so this is `"0"`.
+    pub own_spend_usd: String,
+    /// Spend across this node and its entire subtree (USD string) — the figure a
+    /// parent's budget constrains.
+    pub subtree_spend_usd: String,
+    /// Governance level for agent nodes (e.g. `L0Discover`), read from the
+    /// registry record; absent for org/team nodes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub governance_level: Option<String>,
+    /// Child nodes: teams under the org, root agents under a team, spawned
+    /// sub-agents under an agent.
+    #[schema(schema_with = budget_tree_children_schema)]
+    pub children: Vec<BudgetTreeNode>,
+}
+
+/// Returns a schema for `Vec<BudgetTreeNode>` using a `$ref` to break the
+/// recursive cycle — without it utoipa's `ToSchema` derive recurses infinitely
+/// and overflows the stack (mirrors `models::topology::AgentTree`).
+fn budget_tree_children_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    use utoipa::openapi::schema::{ArrayBuilder, Ref};
+    ArrayBuilder::new()
+        .items(Ref::from_schema_name("BudgetTreeNode"))
+        .build()
+        .into()
+}
+
+/// Response for `GET /api/v1/costs/budget-tree`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BudgetTreeResponse {
+    /// Org root of the inheritance tree, or `null` when the caller can see no
+    /// tenant (an unscoped non-admin caller) so the client renders an empty state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<BudgetTreeNode>,
+}
+
+/// Build an agent node and, recursively, its spawned sub-agents.
+///
+/// Recursion is confined to the `visible` id set so the walk never crosses into
+/// another tenant's subtree — the same per-node boundary re-check the topology
+/// tree enforces (AAASM-4819). `own_spend` is the agent's own accrued spend;
+/// `subtree_spend` rolls in every visible descendant.
+fn build_agent_node(state: &AppState, record: &AgentRecord, depth: u32, visible: &HashSet<[u8; 16]>) -> BudgetTreeNode {
+    let agent_id = AgentId::from_bytes(record.agent_id);
+    let own_spend = state
+        .budget_tracker
+        .agent_state(&agent_id)
+        .map(|s| s.spent_usd)
+        .unwrap_or(Decimal::ZERO);
+    let descendants: Vec<[u8; 16]> = state
+        .agent_registry
+        .descendants_of(&record.agent_id)
+        .into_iter()
+        .filter(|d| visible.contains(d))
+        .collect();
+    let subtree_spend = state.budget_tracker.subtree_spend(&agent_id, &descendants).usd;
+    let budget_limit = state
+        .budget_tracker
+        .agent_daily_limit_usd(&agent_id)
+        .or_else(|| state.budget_tracker.daily_limit_usd());
+    let children: Vec<BudgetTreeNode> = state
+        .agent_registry
+        .children_of(&record.agent_id)
+        .into_iter()
+        .filter(|c| visible.contains(c))
+        .filter_map(|c| state.agent_registry.get(&c))
+        .map(|child| build_agent_node(state, &child, depth + 1, visible))
+        .collect();
+
+    BudgetTreeNode {
+        id: format_id(&record.agent_id),
+        label: record.name.clone(),
+        kind: "agent".to_string(),
+        depth,
+        budget_limit_usd: budget_limit.map(|d| d.to_string()),
+        own_spend_usd: own_spend.to_string(),
+        subtree_spend_usd: subtree_spend.to_string(),
+        governance_level: Some(format!("{:?}", record.governance_level)),
+        children,
+    }
+}
+
+/// `GET /api/v1/costs/budget-tree` — org → team → agent budget inheritance tree.
+///
+/// Joins the agent registry's team/lineage structure with the budget tracker's
+/// per-tier spend so each node shows its configured limit, own spend, and the
+/// subtree spend a parent's budget constrains. Tenant scope is the visible-agent
+/// boundary ([`visible_agents`]): an admin sees the whole org; a tenant-scoped
+/// caller sees only its team's subtree; an unscoped non-admin caller gets a
+/// `null` root. Within the visible set, an agent is a team-level root when its
+/// spawn parent is not itself visible, and its spawned sub-agents nest beneath
+/// it (they inherit its budget line) — so every visible agent appears exactly
+/// once. Read-only: no enforcement or budget-debit path is touched.
+#[utoipa::path(
+    get,
+    path = "/api/v1/costs/budget-tree",
+    responses(
+        (status = 200, description = "Org → team → agent budget-inheritance tree", body = BudgetTreeResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "costs"
+)]
+pub async fn get_budget_tree(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+) -> (StatusCode, Json<BudgetTreeResponse>) {
+    let records = visible_agents(&caller, &state);
+    if records.is_empty() {
+        return (StatusCode::OK, Json(BudgetTreeResponse { root: None }));
+    }
+    let visible: HashSet<[u8; 16]> = records.iter().map(|r| r.agent_id).collect();
+
+    // Team roots: visible agents whose spawn parent is not visible. Every other
+    // visible agent is reached by recursion from one of these, so the tree is a
+    // clean partition (no agent appears twice). Group roots by their own team.
+    let mut team_roots: BTreeMap<String, Vec<AgentRecord>> = BTreeMap::new();
+    for r in &records {
+        let is_root = match r.parent_key {
+            Some(parent) => !visible.contains(&parent),
+            None => true,
+        };
+        if is_root {
+            let team = r.team_id.clone().unwrap_or_else(|| "(no team)".to_string());
+            team_roots.entry(team).or_default().push(r.clone());
+        }
+    }
+
+    let team_nodes: Vec<BudgetTreeNode> = team_roots
+        .into_iter()
+        .map(|(team_id, roots)| {
+            let children: Vec<BudgetTreeNode> =
+                roots.iter().map(|r| build_agent_node(&state, r, 2, &visible)).collect();
+            let subtree: Decimal = children
+                .iter()
+                .filter_map(|c| c.subtree_spend_usd.parse::<Decimal>().ok())
+                .sum();
+            let budget_limit = state.budget_tracker.team_daily_limit_usd();
+            BudgetTreeNode {
+                id: team_id.clone(),
+                label: team_id,
+                kind: "team".to_string(),
+                depth: 1,
+                budget_limit_usd: budget_limit.map(|d| d.to_string()),
+                own_spend_usd: Decimal::ZERO.to_string(),
+                subtree_spend_usd: subtree.to_string(),
+                governance_level: None,
+                children,
+            }
+        })
+        .collect();
+
+    let org_subtree: Decimal = team_nodes
+        .iter()
+        .filter_map(|t| t.subtree_spend_usd.parse::<Decimal>().ok())
+        .sum();
+    let org_id = caller.tenant.org_id.clone().unwrap_or_else(|| "org".to_string());
+    let org_limit = state
+        .budget_tracker
+        .org_daily_limit_usd()
+        .or_else(|| state.budget_tracker.daily_limit_usd());
+
+    let root = BudgetTreeNode {
+        id: org_id.clone(),
+        label: org_id,
+        kind: "org".to_string(),
+        depth: 0,
+        budget_limit_usd: org_limit.map(|d| d.to_string()),
+        own_spend_usd: Decimal::ZERO.to_string(),
+        subtree_spend_usd: org_subtree.to_string(),
+        governance_level: None,
+        children: team_nodes,
+    };
+
+    (StatusCode::OK, Json(BudgetTreeResponse { root: Some(root) }))
 }
 
 #[cfg(test)]
