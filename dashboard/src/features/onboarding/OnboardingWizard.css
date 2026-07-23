@@ -13,7 +13,13 @@
 .onb-modal {
   width: 760px;
   max-width: 100%;
+  /* Cap to the viewport so the card never grows past the screen. The comfortable
+     minimum (previously supplied by a hard 320px floor on .onb-body) lives here
+     instead, wrapped in min() so it can never exceed the cap — a min-height taller
+     than max-height would win per CSS and reintroduce the footer-clipping this
+     fixes (AAASM-5030). */
   max-height: calc(100vh - 64px);
+  min-height: min(520px, calc(100vh - 64px));
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -31,6 +37,8 @@
   padding: 16px 22px;
   border-bottom: 1px solid var(--line-2);
   background: var(--paper-2);
+  /* Fixed chrome: never shrink, so the scrollable body absorbs all overflow. */
+  flex-shrink: 0;
 }
 
 .onb-head-left {
@@ -94,7 +102,11 @@
 .onb-body {
   padding: 28px 32px 24px;
   flex: 1;
-  min-height: 320px;
+  /* min-height:0 (not the browser default of `auto`, and not a fixed floor) lets
+     this flex child shrink below its content height so its own overflow-y:auto
+     scrolls, instead of forcing the modal's children past the max-height cap and
+     clipping the pinned footer via the modal's overflow:hidden (AAASM-5030). */
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -105,6 +117,8 @@
   padding: 14px 22px;
   border-top: 1px solid var(--line-2);
   background: var(--paper-2);
+  /* Pinned chrome: never shrink, always visible at the card bottom. */
+  flex-shrink: 0;
 }
 
 .onb-foot-meta {
