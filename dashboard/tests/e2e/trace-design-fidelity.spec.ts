@@ -99,7 +99,8 @@ const HIFI_TOKENS = {
 }
 
 async function injectToken(page: Page) {
-  await page.addInitScript(() => localStorage.setItem('aa_token', 'fidelity-token'))
+  // Token lives in sessionStorage (see src/auth/tokenStorage.ts, AAASM-4322).
+  await page.addInitScript(() => sessionStorage.setItem('aa_token', 'fidelity-token'))
 }
 
 async function mockApi(page: Page) {
@@ -229,9 +230,12 @@ test.describe('AAASM-1383 — Trace UI design fidelity', () => {
     const viewport = page.viewportSize()!
     expect(modalBox!.height).toBeLessThanOrEqual(viewport.height * 0.8 + 2)
 
-    // Redacted-line CSS contract: warn-bg + 3px warn left border
-    const redactedBg = await page.getByTestId('redacted-field').first().evaluate(el => getComputedStyle(el).backgroundColor)
-    expect(redactedBg).toBe(HIFI_TOKENS.warnBg)
+    // Decision-explainer contract (AAASM-5027): the redacted value renders as
+    // █ blocks in the payload preview, never the raw value.
+    const block = page.getByTestId('redaction-block').first()
+    await expect(block).toBeVisible()
+    await expect(block).toHaveText(/^█+$/)
+    await expect(page.getByTestId('redaction-preview-body')).not.toContainText('4521')
 
     await page.screenshot({ path: `${EVIDENCE_DIR}/03-payload-modal-proportions.png`, fullPage: true })
   })
