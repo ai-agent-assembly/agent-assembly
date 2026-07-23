@@ -4,6 +4,17 @@
 // from here or from the individual modules directly.
 export { AlertList } from './AlertList'
 export { AlertFilterBar } from './AlertFilterBar'
+export { AlertStatsStrip } from './AlertStatsStrip'
+export { AlertCardFeed } from './AlertCardFeed'
+export { AlertCategoryFilter, type CategoryFilterValue } from './AlertCategoryFilter'
+export {
+  deriveCategory,
+  indexRulesById,
+  categoryCounts,
+  ALERT_CATEGORIES,
+  CATEGORY_META,
+  type AlertCategory,
+} from './alertCategory'
 export { AlertsTabs, type AlertsTab } from './AlertsTabs'
 export { AlertDetailDrawer } from './AlertDetailDrawer'
 export { AlertDetailContent } from './AlertDetailContent'
