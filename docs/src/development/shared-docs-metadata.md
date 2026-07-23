@@ -16,7 +16,7 @@ existing one, without introducing docs drift.
 | Rendered snippets for pages to include | `docs/src/generated/*.md` | Checked in so `mdbook build docs` needs no Python at build time. |
 
 The generator that ties them together lives at
-[`scripts/generate_docs_metadata.py`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/scripts/generate_docs_metadata.py).
+[`scripts/generate_docs_metadata.py`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/scripts/generate_docs_metadata.py).
 
 ## How pages consume a snippet
 

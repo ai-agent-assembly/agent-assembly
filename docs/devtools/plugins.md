@@ -6,7 +6,7 @@ implementation is the in-repo sample at
 [`examples/aa-devtool-sample-myeditor/`][sample-crate] — copy and
 adapt.
 
-[sample-crate]: https://github.com/ai-agent-assembly/agent-assembly/tree/master/examples/aa-devtool-sample-myeditor
+[sample-crate]: https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/examples/aa-devtool-sample-myeditor
 
 ---
 
@@ -121,7 +121,7 @@ The sample's [`tests/contract.rs`][sample-tests] is the **reference
 test suite** every adapter should mirror. Adapt each test to your
 tool's specifics:
 
-[sample-tests]: https://github.com/ai-agent-assembly/agent-assembly/blob/master/examples/aa-devtool-sample-myeditor/tests/contract.rs
+[sample-tests]: https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/examples/aa-devtool-sample-myeditor/tests/contract.rs
 
 | Sample test | What it verifies | What you change |
 |---|---|---|

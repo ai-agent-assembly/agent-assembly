@@ -2,7 +2,7 @@
 
 This page is the short version of building, testing, and linting the workspace.
 The authoritative source is
-[`CONTRIBUTING.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/CONTRIBUTING.md)
+[`CONTRIBUTING.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/CONTRIBUTING.md)
 at the repo root; read it before opening a pull request.
 
 ## Prerequisites
@@ -13,7 +13,7 @@ at the repo root; read it before opening a pull request.
 - **Lefthook** — `brew install lefthook` (macOS) or see the
   [Lefthook install guide](https://github.com/evilmartians/lefthook/blob/master/docs/install.md).
   The hook configuration lives in
-  [`lefthook.toml`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/lefthook.toml).
+  [`lefthook.toml`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/lefthook.toml).
 
 ## Setup
 
@@ -59,7 +59,7 @@ The dev profile already builds dependencies at `opt-level = 1` with
 `line-tables-only` debuginfo, so warm rebuilds link faster while backtraces stay
 readable — no setup needed. A faster **linker** is opt-in: install it and
 uncomment the block for your platform in
-[`.cargo/config.toml`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/.cargo/config.toml)
+[`.cargo/config.toml`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/.cargo/config.toml)
 (mold + clang on Linux, lld via `brew install llvm` on macOS).
 
 ## Commit & branch conventions

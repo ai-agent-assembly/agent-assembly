@@ -26,7 +26,7 @@ eBPF interception is Linux-only.
 | Windows | ⚠️ via WSL2 | ⚠️ via WSL2 | ⚠️ via WSL2 |
 
 On macOS, governance is enforced through the **SDK** and **proxy** layers; the
-eBPF layer is unavailable. See [`aa-ebpf/README.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/aa-ebpf/README.md)
+eBPF layer is unavailable. See [`aa-ebpf/README.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/aa-ebpf/README.md)
 for kernel requirements.
 
 ## Installing the CLI only

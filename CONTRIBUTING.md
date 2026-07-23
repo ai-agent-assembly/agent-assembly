@@ -122,7 +122,7 @@ To add a new crate to the workspace:
 
 ## Pull Requests
 
-- Open a PR against `master`.
+- Open a PR against `main`.
 - Title format: `[<ticket>] <emoji> (<scope>): <summary>` — external contributors
   without Jira access may use a GitHub issue reference (e.g. `[#123]`) or `[N/A]`
   in place of the `AAASM-NN` ticket; the Jira field in the PR template is

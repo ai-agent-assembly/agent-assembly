@@ -20,10 +20,10 @@ brain, at least one interception layer (SDK shim, `aa-proxy` sidecar, or eBPF),
 and a policy. Pick the language you are integrating, or browse the cross-cutting
 scenarios:
 
-- **Node** — [examples-repo/node](https://github.com/ai-agent-assembly/examples/tree/master/node)
-- **Python** — [examples-repo/python](https://github.com/ai-agent-assembly/examples/tree/master/python)
-- **Go** — [examples-repo/go](https://github.com/ai-agent-assembly/examples/tree/master/go)
-- **Scenarios** (cross-cutting: approval-gates, audit-trace, budget-limits, policy-enforcement, sidecar-runtime) — [examples-repo/scenarios](https://github.com/ai-agent-assembly/examples/tree/master/scenarios)
+- **Node** — [examples-repo/node](https://github.com/ai-agent-assembly/examples/tree/HEAD/node)
+- **Python** — [examples-repo/python](https://github.com/ai-agent-assembly/examples/tree/HEAD/python)
+- **Go** — [examples-repo/go](https://github.com/ai-agent-assembly/examples/tree/HEAD/go)
+- **Scenarios** (cross-cutting: approval-gates, audit-trace, budget-limits, policy-enforcement, sidecar-runtime) — [examples-repo/scenarios](https://github.com/ai-agent-assembly/examples/tree/HEAD/scenarios)
 
 ## Per-SDK example docs
 

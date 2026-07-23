@@ -17,7 +17,7 @@ and wire protocol are not yet stable.
   GitHub Releases page for the exact publish date and per-tag notes.
 - **Per-tag notes:** the source-controlled release notes live under
   `docs/release/` (one file per tag, e.g. `docs/release/v0.0.1-beta.4.md`).
-- **Top-level changelog:** [`CHANGELOG.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/CHANGELOG.md).
+- **Top-level changelog:** [`CHANGELOG.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/CHANGELOG.md).
 
 ## Distribution channels
 
