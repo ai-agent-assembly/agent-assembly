@@ -5,7 +5,7 @@ permissions:
 
 on:
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       - "aa-devtool-claude-code/**"
       - "aa-proxy/**"
@@ -20,7 +20,7 @@ on:
       - "!**/*.webp"
       - "!**/*.ico"
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "aa-devtool-claude-code/**"
       - "aa-proxy/**"

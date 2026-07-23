@@ -1,6 +1,6 @@
 name: Docs
 
-# Least-privilege default for every job. The PR/master-push `build` and
+# Least-privilege default for every job. The PR/main-push `build` and
 # `verify-commands` jobs only read the repo; the elevated `pages: write` +
 # `id-token: write` scopes are granted to the `deploy` job alone (AAASM-3877).
 permissions:
@@ -8,7 +8,7 @@ permissions:
 
 on:
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       - 'docs/**'
       - 'README.md'
@@ -26,7 +26,7 @@ on:
       # AAASM-4922: the metadata-drift lint (ADR 0014); re-run it when it changes.
       - '.ci/check-metadata-drift.sh'
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - 'docs/**'
       - 'README.md'
@@ -50,7 +50,7 @@ jobs:
   build:
     name: Build mdBook
     runs-on: ubuntu-latest
-    # PR + master-push always build. A workflow_run only proceeds when the
+    # PR + main-push always build. A workflow_run only proceeds when the
     # upstream Release succeeded, was a TAG PUSH (not a pull_request / dispatch
     # dry-run — AAASM-3714; our branch names also start with 'v', so the
     # head_branch check alone is insufficient), and the tag looks like a release
@@ -66,7 +66,7 @@ jobs:
           # Full history so the last-changed preprocessor can read per-page
           # git dates; a shallow clone would collapse every page to one commit.
           fetch-depth: 0
-          # For a release cut, build the docs from the tagged commit, not master.
+          # For a release cut, build the docs from the tagged commit, not main.
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref }}
 
       - name: Install Rust toolchain
@@ -121,19 +121,19 @@ jobs:
       # The Pages site is laid out as per-version subpaths under `_site/`:
       #   _site/index.html      -> root redirect (stable -> pre-release -> latest)
       #   _site/versions.json   -> manifest read by the selector + warning banner
-      #   _site/latest/         -> live docs tracking master
+      #   _site/latest/         -> live docs tracking main
       #   _site/<vX.Y.Z[-pre]>/ -> frozen, immutable release snapshots
       #
       # versions.json describes moving CHANNELS that point at a concrete
       # subpath, plus immutable ARCHIVED concrete versions:
       #   { "channels": [ {id,title,target}, ... ],
       #     "archived": [ {id,title}, ... ] }
-      # Channels: latest (master), pre-release (newest vX.Y.Z-pre tag),
+      # Channels: latest (main), pre-release (newest vX.Y.Z-pre tag),
       #           stable (newest vX.Y.Z tag). Channel id classification:
       #   ^v\d+\.\d+\.\d+$    -> stable
       #   ^v\d+\.\d+\.\d+-.+  -> pre-release
       #
-      # On master push we publish into latest/. On a *successful* Release
+      # On main push we publish into latest/. On a *successful* Release
       # (workflow_run) we publish into <tag>/, archive it, and repoint the
       # stable or pre-release channel to it.
       - name: Resolve target version subpath
@@ -280,11 +280,11 @@ jobs:
           # 1b. Always materialise the `latest/` channel directory (AAASM-3733).
           #     `latest` is a guaranteed channel in versions.json and the root
           #     redirect's final fallback target, but it was only written on a
-          #     master-push cut (VERSION=latest). A release-only deploy (the only
+          #     main-push cut (VERSION=latest). A release-only deploy (the only
           #     kind this site has had) left `latest/` as a dangling target, so
           #     the documented entry point /latest/ 404'd. On a release cut the
           #     freshly built book is the newest live docs, so it is the correct
-          #     content for `latest/` too; on a master cut this is a no-op copy.
+          #     content for `latest/` too; on a main cut this is a no-op copy.
           if [ "$VERSION" != "latest" ]; then
             rm -rf "_site/latest"
             mkdir -p "_site/latest"
@@ -329,7 +329,7 @@ jobs:
 
   verify-commands:
     name: Verify documented commands (Linux)
-    # Only on PR / master push; a release cut re-verifies nothing new.
+    # Only on PR / main push; a release cut re-verifies nothing new.
     if: github.event_name != 'workflow_run'
     runs-on: ubuntu-latest
     steps:
@@ -364,7 +364,7 @@ jobs:
   # signal is fast and independent of the heavy book build.
   version-drift:
     name: Version-drift gate (propagate_versions --check)
-    # PR + master push only; a release-cut workflow_run rebuilds no sources.
+    # PR + main push only; a release-cut workflow_run rebuilds no sources.
     if: github.event_name != 'workflow_run'
     runs-on: ubuntu-latest
     steps:

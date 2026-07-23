@@ -20,7 +20,7 @@ permissions:
 
 on:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "aa-integration-tests/**"
       - "aa-api/**"
@@ -31,7 +31,7 @@ on:
       - "Cargo.lock"
       - ".github/workflows/integration-tests.yml"
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       - "aa-integration-tests/**"
       - "aa-api/**"

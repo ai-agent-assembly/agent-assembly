@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "Makefile"
       - "scripts/**"
@@ -19,7 +19,7 @@ on:
       - "!**/*.webp"
       - "!**/*.ico"
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       - "Makefile"
       - "scripts/**"

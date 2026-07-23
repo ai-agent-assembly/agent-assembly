@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "aa-*/**"
       - "proto/**"
@@ -28,7 +28,7 @@ on:
       - "!**/*.webp"
       - "!**/*.ico"
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       - "aa-*/**"
       - "proto/**"
@@ -53,7 +53,7 @@ on:
   # AAASM-3446: the per-PR / per-push path-filter above gates the slow eBPF
   # jobs (ebpf-build, e2e-ebpf-linux) to aa-ebpf*/** changes for cost control,
   # which means the Layer 3 (eBPF) / three-layer suite is normally SKIPPED on
-  # master. A weekly schedule + on-demand dispatch restores standing master
+  # main. A weekly schedule + on-demand dispatch restores standing main
   # coverage for the AAASM-1520/1522/1523 suites at ~1 run/week without
   # adding per-PR eBPF cost. The eBPF jobs' `if:` opt in to these events.
   schedule:
@@ -504,7 +504,7 @@ jobs:
           name: rust-coverage-lcov
           path: lcov.info
           # AAASM-3829: 14d (not 1d) so the AAASM-3197 cross-run backfill in the
-          # `sonar` job reliably finds this artifact when a Rust-less master push
+          # `sonar` job reliably finds this artifact when a Rust-less main push
           # (dashboard-only / dep bump) path-skips the `coverage` job — otherwise
           # the scan silently runs without Rust LCOV (dashboard-only, ~5k lines).
           retention-days: 14
@@ -744,7 +744,7 @@ jobs:
     needs: [changes]
     # AAASM-2580: per-PR/push, only run when aa-ebpf* (or this workflow) changed.
     # AAASM-3446: also run on the weekly schedule and on manual dispatch so the
-    # Layer 3 suite keeps standing master coverage despite the path-filter.
+    # Layer 3 suite keeps standing main coverage despite the path-filter.
     if: needs.changes.outputs.ebpf == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: eBPF probes build (Linux nightly)
     runs-on: ubuntu-latest
@@ -833,7 +833,7 @@ jobs:
     needs: [changes]
     # AAASM-2580: per-PR/push, only run when aa-ebpf* (or this workflow) changed.
     # AAASM-3446: also run on the weekly schedule and on manual dispatch so the
-    # Layer 3 e2e suite keeps standing master coverage despite the path-filter.
+    # Layer 3 e2e suite keeps standing main coverage despite the path-filter.
     if: needs.changes.outputs.ebpf == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     # AAASM-1520 / F116 ST-H — Layer 3 (eBPF) end-to-end interception suite.
     # Linux-only, runs as root for CAP_BPF + CAP_PERFMON; the test source is
@@ -1217,11 +1217,11 @@ jobs:
   # only when `coverage` succeeded and the TS download only when `dashboard-test`
   # succeeded. Runs in the pull_request context so PR decoration works (AAASM-2542).
   #
-  # AAASM-3197: SonarCloud treats every master-branch analysis as a FULL snapshot
+  # AAASM-3197: SonarCloud treats every main-branch analysis as a FULL snapshot
   # that REPLACES the project's coverage. A push that touches only one side (e.g.
   # dashboard-only → `coverage` skipped) would otherwise publish a partial report
   # that wipes the other side's coverage to 0. On pushes, whichever producer was
-  # skipped/failed is backfilled from the last successful master run so the
+  # skipped/failed is backfilled from the last successful main run so the
   # snapshot is always complete. PR analysis (new-code-only) is left unchanged.
   sonar:
     name: SonarCloud analysis
@@ -1229,7 +1229,7 @@ jobs:
     if: ${{ !cancelled() && needs.changes.result == 'success' && github.actor != 'dependabot[bot]' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'run-coverage') || needs.changes.outputs.dashboard == 'true') }}
     runs-on: ubuntu-latest
     # AAASM-3197: actions:read lets `gh run download` pull the last successful
-    # master LCOV when a coverage producer was skipped this run (see fallback
+    # main LCOV when a coverage producer was skipped this run (see fallback
     # steps below). contents:read mirrors the workflow default for checkout.
     permissions:
       contents: read
@@ -1257,25 +1257,25 @@ jobs:
         with:
           name: rust-coverage-lcov
           path: .
-      # AAASM-3197: master-branch analysis is a FULL snapshot — a partial report
+      # AAASM-3197: main-branch analysis is a FULL snapshot — a partial report
       # wipes the other side's coverage to 0. When the `coverage` job was skipped
       # or failed on a push (non-Rust change), backfill `lcov.info` from the most
-      # recent successful master CI run so the snapshot stays complete. PR runs are
+      # recent successful main CI run so the snapshot stays complete. PR runs are
       # new-code-decorated and intentionally left untouched.
-      - name: Backfill Rust coverage (LCOV) from last successful master run
+      - name: Backfill Rust coverage (LCOV) from last successful main run
         if: ${{ github.event_name == 'push' && needs.coverage.result != 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          run_id="$(gh run list --workflow ci.yml --branch master \
+          run_id="$(gh run list --workflow ci.yml --branch main \
             --status success --limit 1 --json databaseId \
             --jq '.[0].databaseId')"
           if [ -z "$run_id" ]; then
-            echo "::warning::No prior successful master CI run found; scanning without backfilled Rust LCOV."
+            echo "::warning::No prior successful main CI run found; scanning without backfilled Rust LCOV."
             exit 0
           fi
-          echo "Backfilling rust-coverage-lcov from master run ${run_id}."
+          echo "Backfilling rust-coverage-lcov from main run ${run_id}."
           gh run download "$run_id" --name rust-coverage-lcov --dir . \
             || echo "::warning::rust-coverage-lcov artifact unavailable on run ${run_id} (expired/absent); scanning without it."
       # ---- TypeScript coverage ---------------------------------------------
@@ -1287,7 +1287,7 @@ jobs:
       # billing-throttled scan), letting Sonar scan with 0.0% dashboard coverage.
       # This avoids re-running the dashboard tests on the common path (a dashboard
       # PR, where `dashboard-test` already ran) while still guaranteeing coverage
-      # on a Rust-only master push (where `dashboard-test` is path-skipped but the
+      # on a Rust-only main push (where `dashboard-test` is path-skipped but the
       # AAASM-3197 full-snapshot invariant still requires dashboard coverage).
       - name: Download TypeScript coverage (LCOV) from the Dashboard test job
         if: needs.dashboard-test.result == 'success'
