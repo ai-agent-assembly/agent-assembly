@@ -367,6 +367,39 @@ impl BudgetTracker {
         self.monthly_limit_usd
     }
 
+    /// Returns the per-team daily spend limit applied to each team, if set.
+    ///
+    /// This is the tracker-wide team envelope (the same cap applies to every
+    /// team), not a per-team override — it is read-only accounting metadata
+    /// exposed so the budget-tree observability surface (AAASM-5032) can show
+    /// each team node's configured limit without duplicating the private
+    /// enforcement path.
+    pub fn team_daily_limit_usd(&self) -> Option<Decimal> {
+        self.team_daily_limit_usd
+    }
+
+    /// Returns the per-org daily spend limit applied to each org, if set.
+    ///
+    /// Read-only companion to [`team_daily_limit_usd`](Self::team_daily_limit_usd)
+    /// at the org tier (AAASM-5032). `None` leaves the org node's limit unset,
+    /// in which case the tree falls back to the global daily limit.
+    pub fn org_daily_limit_usd(&self) -> Option<Decimal> {
+        self.org_daily_limit_usd
+    }
+
+    /// Returns the per-agent daily spend override for `agent_id`, if one was
+    /// configured via [`with_agent_limit`](Self::with_agent_limit).
+    ///
+    /// This exposes only the explicit per-agent override for the read-only
+    /// budget-tree surface (AAASM-5032); it does NOT apply the global/team/org
+    /// fallback that the private enforcement path
+    /// ([`resolve_limit`](Self::resolve_limit)) layers on — callers that want an
+    /// effective limit fall back to [`daily_limit_usd`](Self::daily_limit_usd)
+    /// themselves. Returns `None` when the agent has no override.
+    pub fn agent_daily_limit_usd(&self, agent_id: &AgentId) -> Option<Decimal> {
+        self.agent_limits.get(agent_id).and_then(|l| l.daily_usd)
+    }
+
     /// Borrow the tracker's [`PricingTable`].
     ///
     /// AAASM-3353 — lets the service layer price an LLM call from the same
@@ -1015,6 +1048,42 @@ impl BudgetTracker {
             .collect()
     }
 
+    /// Sum the last `days` calendar days of recorded daily spend across the
+    /// given `agent_ids`, in oldest-first order.
+    ///
+    /// Each entry is `(date, summed_spent_usd)` over exactly the same dense,
+    /// zero-filled date axis as [`agent_spend_history`](Self::agent_spend_history)
+    /// so callers get a gap-free series regardless of which agents recorded
+    /// spend on which day. `days = 0` (or an empty `agent_ids`) returns an
+    /// all-zero series of the requested length. Agents absent from the history
+    /// map simply contribute nothing.
+    ///
+    /// This powers the 7-day spend-history observability surface (AAASM-5032):
+    /// the caller passes the agent ids it is authorized to see (org-wide for an
+    /// admin, a single team's members for a tenant-scoped caller), so the same
+    /// aggregation serves every tenant scope without leaking cross-tenant spend.
+    /// In-memory only — like `agent_spend_history`, it does not survive restarts.
+    pub fn spend_history_totals_for(&self, agent_ids: &[AgentId], days: u32) -> Vec<(chrono::NaiveDate, Decimal)> {
+        if days == 0 {
+            return Vec::new();
+        }
+        let today = today_in_tz(self.timezone);
+        let start = today - chrono::Duration::days(i64::from(days) - 1);
+        let mut series: Vec<(chrono::NaiveDate, Decimal)> = (0..days)
+            .map(|d| (start + chrono::Duration::days(i64::from(d)), Decimal::ZERO))
+            .collect();
+        for agent_id in agent_ids {
+            if let Some(history) = self.spend_history.get(agent_id) {
+                for (date, amount) in series.iter_mut() {
+                    if let Some(day_spend) = history.get(date) {
+                        *amount += *day_spend;
+                    }
+                }
+            }
+        }
+        series
+    }
+
     /// Return a snapshot of the current global (all-agents combined) budget state.
     pub fn global_state(&self) -> BudgetState {
         self.global
@@ -1161,6 +1230,73 @@ mod tests {
         let aid = AgentId::from_bytes([0xAA; 16]);
         t.record_raw_spend(aid, None, None, Decimal::ONE);
         assert!(t.agent_spend_history(&aid, 0).is_empty());
+    }
+
+    #[test]
+    fn spend_history_totals_for_sums_across_agents_zero_filled() {
+        let t = new_tracker();
+        let a = agent(0x01);
+        let b = agent(0x02);
+        t.record_raw_spend(a, None, None, Decimal::new(250, 2)); // $2.50 today
+        t.record_raw_spend(b, None, None, Decimal::new(150, 2)); // $1.50 today
+
+        let series = t.spend_history_totals_for(&[a, b], 7);
+        assert_eq!(series.len(), 7, "dense series of one entry per requested day");
+        // Only today (the last entry) has spend; earlier days are zero-filled.
+        for (_, amount) in &series[..6] {
+            assert_eq!(*amount, Decimal::ZERO);
+        }
+        assert_eq!(series[6].1, Decimal::new(400, 2), "today sums both agents");
+        // Dates strictly ascending (oldest-first).
+        for win in series.windows(2) {
+            assert!(win[0].0 < win[1].0);
+        }
+    }
+
+    #[test]
+    fn spend_history_totals_for_ignores_unlisted_agents() {
+        let t = new_tracker();
+        let a = agent(0x01);
+        let b = agent(0x02);
+        t.record_raw_spend(a, None, None, Decimal::new(500, 2));
+        t.record_raw_spend(b, None, None, Decimal::new(999, 2));
+
+        // Only agent `a` is in scope, so `b`'s spend must not be counted.
+        let series = t.spend_history_totals_for(&[a], 1);
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].1, Decimal::new(500, 2));
+    }
+
+    #[test]
+    fn spend_history_totals_for_zero_days_or_no_agents_is_empty_or_zero() {
+        let t = new_tracker();
+        let a = agent(0x01);
+        t.record_raw_spend(a, None, None, Decimal::ONE);
+        assert!(t.spend_history_totals_for(&[a], 0).is_empty());
+        // No agents in scope → all-zero series of the requested length.
+        let series = t.spend_history_totals_for(&[], 3);
+        assert_eq!(series.len(), 3);
+        assert!(series.iter().all(|(_, amt)| *amt == Decimal::ZERO));
+    }
+
+    #[test]
+    fn agent_daily_limit_usd_returns_override_or_none() {
+        let a = agent(0x01);
+        let b = agent(0x02);
+        let t = new_tracker().with_agent_limit(a, Some(Decimal::new(2000, 2)), None);
+        assert_eq!(t.agent_daily_limit_usd(&a), Some(Decimal::new(2000, 2)));
+        assert_eq!(t.agent_daily_limit_usd(&b), None, "no override → None");
+    }
+
+    #[test]
+    fn team_and_org_daily_limit_getters_return_configured_values() {
+        let t = new_tracker()
+            .with_team_daily_limit(Decimal::new(5000, 2))
+            .with_org_daily_limit(Decimal::new(10000, 2));
+        assert_eq!(t.team_daily_limit_usd(), Some(Decimal::new(5000, 2)));
+        assert_eq!(t.org_daily_limit_usd(), Some(Decimal::new(10000, 2)));
+        assert_eq!(new_tracker().team_daily_limit_usd(), None);
+        assert_eq!(new_tracker().org_daily_limit_usd(), None);
     }
 
     #[test]
