@@ -164,3 +164,29 @@ async fn fleet_health_returns_agents_array() {
 async fn fleet_health_requires_authentication() {
     assert_requires_auth("/api/v1/analytics/fleet-health").await;
 }
+
+// --- enforcement-timeline (AAASM-5031) ------------------------------------
+
+#[tokio::test]
+async fn enforcement_timeline_returns_bucket_shape() {
+    let json = get_ok_json(common::test_app(), "/api/v1/overview/enforcement-timeline?window=24h").await;
+    assert_eq!(json["window"], "24h");
+    assert!(json["bucketSecs"].is_number(), "bucketSecs must be a number");
+    let buckets = json["buckets"].as_array().expect("buckets must be an array");
+    // Always a fixed 24-bucket grid (SERIES_BUCKETS), each carrying every lane.
+    assert_eq!(buckets.len(), 24, "the window is divided into 24 buckets");
+    for lane in ["ts", "allow", "narrow", "deny", "scrub"] {
+        assert!(buckets[0][lane].is_number(), "bucket must carry a numeric `{lane}`");
+    }
+}
+
+#[tokio::test]
+async fn enforcement_timeline_defaults_window_when_unrecognised() {
+    let json = get_ok_json(common::test_app(), "/api/v1/overview/enforcement-timeline?window=bogus").await;
+    assert_eq!(json["window"], "24h", "unrecognised window falls back to 24h");
+}
+
+#[tokio::test]
+async fn enforcement_timeline_requires_authentication() {
+    assert_requires_auth("/api/v1/overview/enforcement-timeline").await;
+}
