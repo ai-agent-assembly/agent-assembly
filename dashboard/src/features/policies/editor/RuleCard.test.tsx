@@ -108,6 +108,49 @@ describe('RuleCard', () => {
     expect(onRemove).toHaveBeenCalledTimes(1)
   })
 
+  it('hides the dirty-dot when the rule matches its original snapshot', () => {
+    const rule = ruleWith()
+    render(
+      <RuleCard
+        index={0}
+        rule={rule}
+        original={{ ...rule }}
+        onChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    )
+    expect(screen.queryByTestId('editor-rule-0-dirty-dot')).not.toBeInTheDocument()
+  })
+
+  it('shows the dirty-dot when the rule differs from its original snapshot', () => {
+    const rule = ruleWith({ verb: ['read', 'write'] })
+    render(
+      <RuleCard
+        index={0}
+        rule={rule}
+        original={{ ...rule, verb: ['read'] }}
+        onChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    )
+    expect(screen.getByTestId('editor-rule-0-dirty-dot')).toBeInTheDocument()
+  })
+
+  it('treats a rule with no original snapshot (newly added) as dirty', () => {
+    render(
+      <RuleCard
+        index={0}
+        rule={ruleWith()}
+        onChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    )
+    expect(screen.getByTestId('editor-rule-0-dirty-dot')).toBeInTheDocument()
+  })
+
   it('composes ConditionList, ActionPicker, SubClauses, and WindowSeverityRow', () => {
     render(
       <RuleCard
