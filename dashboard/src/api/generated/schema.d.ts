@@ -1231,6 +1231,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/iam/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/iam/roles` — the built-in RBAC roles and their capability grants.
+         * @description Read-only reflection of the gateway's policy-RBAC model
+         *     (`PolicyMutationRequiredRole`). Grants are derived server-side, not stored,
+         *     so the response is stable and requires no IAM state. Gated `RequireRead`
+         *     (deny-by-default): the authz model is not per-tenant secret — it is the same
+         *     data published in `docs/src/policy-rbac.md` — but still requires a valid
+         *     read-scoped caller.
+         */
+        get: operations["list_roles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/logs": {
         parameters: {
             query?: never;
@@ -3670,6 +3695,19 @@ export interface components {
             hot_rows: number;
             /** @description Timestamp (UTC) at which the run completed (ISO 8601). */
             ran_at: string;
+        };
+        /** @description One built-in RBAC role and the governance capabilities it grants. */
+        RoleCapabilitiesResponse: {
+            /**
+             * @description Capability grant strings derived from the policy-RBAC table. Read grants
+             *     (`read:policies` / `read:audit`) reflect each role's read authority;
+             *     `write:policies:<scope>` grants come straight from `required_role_for`.
+             */
+            capabilities: string[];
+            /** @description Human-readable summary of what the role may do. */
+            description: string;
+            /** @description Canonical role identifier, snake_case (e.g. `org_admin`). */
+            role: string;
         };
         /** @description One step in the routing history of an approval request. */
         RoutingHistoryEntry: {
@@ -6660,6 +6698,40 @@ export interface operations {
             };
             /** @description Source key is already revoked */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_roles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Built-in roles with derived capability grants, highest privilege first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleCapabilitiesResponse"][];
+                };
+            };
+            /** @description Caller is unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the read scope required to view IAM roles */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
