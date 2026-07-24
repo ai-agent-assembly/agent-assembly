@@ -840,8 +840,14 @@ pub async fn get_policy_effectiveness(
         } else if matches!(e.event_type(), AuditEventType::PolicyViolation) {
             day.0 += 1;
         } else {
-            match payload.get("decision").and_then(|v| v.as_str()) {
-                Some(d) if !d.eq_ignore_ascii_case("allow") => day.0 += 1,
+            // The gateway writes `decision` as the proto `Decision` enum's
+            // integer discriminant, not a string (AAASM-5035) — read it as an
+            // integer and compare against `Decision::Allow`, so a non-allow
+            // outcome is counted as a block instead of silently passing (the
+            // old `as_str()` reader never matched the emitted payload).
+            let allow = aa_proto::assembly::common::v1::Decision::Allow as i64;
+            match payload.get("decision").and_then(|v| v.as_i64()) {
+                Some(d) if d != allow => day.0 += 1,
                 _ => day.2 += 1,
             }
         }
