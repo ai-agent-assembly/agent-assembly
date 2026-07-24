@@ -93,6 +93,34 @@
   border-color: var(--ink);
 }
 
+/* Full-width P1 banner shown above the block when the enforcement runtime is
+   unreachable (ErrorState kind="live"). Ported from design/v1/hi-fi/states.jsx
+   `.runtime-down` — signals that policy changes have stopped propagating. */
+.runtime-down {
+  background: var(--danger-bg);
+  border-bottom: 1px solid var(--danger);
+  color: var(--danger);
+  padding: 8px 24px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.runtime-down .pulse {
+  width: 8px;
+  height: 8px;
+  background: var(--danger);
+  border-radius: 50%;
+  animation: pulse-red 1s ease-in-out infinite;
+}
+
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .sk {
   background: var(--paper-3);
   border-radius: 2px;
@@ -160,4 +188,15 @@
   gap: 16px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
+}
+
+/* Card placeholder used by the policy/live/scrub/agent loading scenes, whose
+   real pages are card-driven rather than tabular. Ported from the
+   design/v1/hi-fi/states.jsx `.sk-card` primitive. */
+.sk-card {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 16px;
+  height: 140px;
 }
