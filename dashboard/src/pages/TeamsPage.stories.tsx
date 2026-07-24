@@ -2,7 +2,8 @@ import type { Meta, StoryObj } from '@storybook/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TeamsPage } from './TeamsPage'
-import type { CostSummary, TopologyOverview } from '../features/teams/api'
+import type { CostSummary, TeamTopology, TopologyOverview } from '../features/teams/api'
+import type { BudgetTree } from '../features/costs/api'
 
 function makeOverview(teamCount: number): TopologyOverview {
   return {
@@ -32,6 +33,33 @@ function makeCosts(teamCount: number): CostSummary {
   }
 }
 
+function makeBudgetTree(teamCount: number): BudgetTree {
+  return {
+    root: {
+      id: 'org', label: 'acme-corp', kind: 'org', depth: 0, own_spend_usd: '0', subtree_spend_usd: '120', budget_limit_usd: '400',
+      children: Array.from({ length: teamCount }, (_, i) => ({
+        id: `team-${String(i).padStart(3, '0')}`,
+        label: `team-${String(i).padStart(3, '0')}`,
+        kind: 'team', depth: 1, own_spend_usd: '0',
+        subtree_spend_usd: (((i * 11) % 100)).toFixed(2),
+        budget_limit_usd: '100',
+        children: [],
+      })),
+    },
+  }
+}
+
+function makeTopology(teamId: string): TeamTopology {
+  return {
+    team_id: teamId,
+    agent_count: 2,
+    members: [
+      { id: `${teamId}-a1`, name: 'orchestrator', status: 'active', depth: 0, flagged: false, mode: 'enforce' },
+      { id: `${teamId}-a2`, name: 'worker-1', status: 'active', depth: 1, flagged: false, mode: 'shadow' },
+    ],
+  }
+}
+
 interface MockArgs {
   teamCount: number
 }
@@ -40,6 +68,12 @@ function MockedTeamsPage({ teamCount }: Readonly<MockArgs>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   client.setQueryData(['topology', 'overview'], makeOverview(teamCount))
   client.setQueryData(['costs', 'summary'], makeCosts(teamCount))
+  client.setQueryData(['costs', 'budget-tree'], makeBudgetTree(teamCount))
+  client.setQueryData(['approvals'], [])
+  for (let i = 0; i < teamCount; i++) {
+    const teamId = `team-${String(i).padStart(3, '0')}`
+    client.setQueryData(['topology', 'team', teamId], makeTopology(teamId))
+  }
   return (
     <QueryClientProvider client={client}>
       <MemoryRouter>
