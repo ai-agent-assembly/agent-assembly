@@ -1,7 +1,7 @@
 //! AAASM-1483 / F122 ST-B — Live-gateway HTTP integration tests for
 //! all `/api/v1/topology/*` endpoints.
 //!
-//! 13 tests, team scope `f122-topology-it`. All tests start a fresh
+//! 16 tests, team scope `f122-topology-it`. All tests start a fresh
 //! `TopologyTestEnv` (in-process axum server on a free port), seed state
 //! directly into the shared `Arc<AgentRegistry>`, and drive assertions via
 //! `reqwest` against the running server. No gateway mocking.
@@ -12,6 +12,7 @@
 //!  - Team (2)
 //!  - Lineage (2)
 //!  - Edges (2)
+//!  - Graph (3) — AAASM-5040 `GET /api/v1/topology`
 //!  - Caching (1)
 //!
 //! Lineage ordering convention: `GET /topology/lineage/{id}` returns ancestors
@@ -539,6 +540,141 @@ async fn topology_edges_filter_by_team_only_returns_in_team_edges() {
     assert_eq!(edges.len(), 1, "only the in-team edge should be returned");
     assert_eq!(edges[0]["source_agent_id"], hex(&IN1), "source should be IN1");
     assert_eq!(edges[0]["target_agent_id"], hex(&IN2), "target should be IN2");
+}
+
+// ---------------------------------------------------------------------------
+// Graph (AAASM-5040 — GET /api/v1/topology)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_graph_empty_registry_returns_empty_nodes_and_edges() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("{}/api/v1/topology", env.base_url());
+    let resp = reqwest::get(&url).await.expect("GET topology graph");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let body: serde_json::Value = resp.json().await.expect("graph JSON");
+    assert!(body["nodes"].as_array().unwrap().is_empty(), "nodes should be []");
+    assert!(body["edges"].as_array().unwrap().is_empty(), "edges should be []");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_graph_returns_nodes_with_badges_and_delegation_call_edges() {
+    // A → B (delegates_to), B → C (calls), A → C (messages, NOT graphed).
+    const A: [u8; 16] = [0x60; 16];
+    const B: [u8; 16] = [0x61; 16];
+    const C: [u8; 16] = [0x62; 16];
+
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    // B carries metadata.mode=shadow and enough violations to be flagged, so the
+    // node projection's live mode/flagged badges (AAASM-5036) can be asserted.
+    env.agent_registry
+        .register(root_agent(A, Some(TEAM)))
+        .expect("register A");
+    let mut b = root_agent(B, Some(TEAM));
+    b.metadata.insert("mode".to_string(), "shadow".to_string());
+    b.policy_violations_count = 50; // == FLAGGED_VIOLATION_THRESHOLD
+    env.agent_registry.register(b).expect("register B");
+    env.agent_registry
+        .register(root_agent(C, Some(TEAM)))
+        .expect("register C");
+
+    let client = Client::new();
+    let base = env.base_url();
+    for (src, tgt, et) in [(A, B, "delegates_to"), (B, C, "calls"), (A, C, "messages")] {
+        let resp = client
+            .post(format!("{base}/api/v1/topology/edges"))
+            .json(&serde_json::json!({
+                "source_agent_id": hex(&src),
+                "target_agent_id": hex(&tgt),
+                "edge_type": et
+            }))
+            .send()
+            .await
+            .expect("POST edge");
+        assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    }
+
+    let body: serde_json::Value = reqwest::get(format!("{base}/api/v1/topology"))
+        .await
+        .expect("GET topology graph")
+        .json()
+        .await
+        .expect("graph JSON");
+
+    // Nodes: all three registered agents, each carrying the badge fields.
+    let nodes = body["nodes"].as_array().expect("nodes array");
+    assert_eq!(nodes.len(), 3, "three registered agents => three nodes");
+    for n in nodes {
+        assert!(n["id"].is_string(), "node has id");
+        assert!(n["name"].is_string(), "node has name");
+        assert!(n["status"].is_string(), "node has status");
+        assert!(n["mode"].is_string(), "node carries the enforcement-mode badge");
+        assert!(n["flagged"].is_boolean(), "node carries the flagged badge");
+        assert!(
+            n.get("trust").is_some(),
+            "node carries the trust field (null placeholder)"
+        );
+    }
+    // B's live badges flow through from the registry record.
+    let node_b = nodes.iter().find(|n| n["id"] == hex(&B)).expect("node B present");
+    assert_eq!(node_b["mode"], "shadow", "B's mode badge reflects metadata.mode");
+    assert_eq!(node_b["flagged"], true, "B is flagged at the violation threshold");
+
+    // Edges: only delegation (delegates_to) + call (calls); messages excluded.
+    let edges = body["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), 2, "only the delegation + call edges are graphed");
+    let kinds: Vec<&str> = edges.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"delegation"), "delegates_to maps to kind=delegation");
+    assert!(kinds.contains(&"call"), "calls maps to kind=call");
+    assert!(!kinds.contains(&"messages"), "messages edges are not graphed");
+    for e in edges {
+        assert!(
+            e["source"].is_string() && e["target"].is_string(),
+            "edge has hex endpoints"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_graph_excludes_edges_to_unregistered_nodes() {
+    // A is registered; UNREG is not. An A → UNREG delegation edge must be
+    // dropped because UNREG is not a visible node — the graph never references
+    // a node the client wasn't given.
+    const A: [u8; 16] = [0x70; 16];
+    const UNREG: [u8; 16] = [0x71; 16];
+
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    env.agent_registry
+        .register(root_agent(A, Some(TEAM)))
+        .expect("register A");
+
+    let client = Client::new();
+    let base = env.base_url();
+    client
+        .post(format!("{base}/api/v1/topology/edges"))
+        .json(&serde_json::json!({
+            "source_agent_id": hex(&A),
+            "target_agent_id": hex(&UNREG),
+            "edge_type": "delegates_to"
+        }))
+        .send()
+        .await
+        .expect("POST edge");
+
+    let body: serde_json::Value = reqwest::get(format!("{base}/api/v1/topology"))
+        .await
+        .expect("GET topology graph")
+        .json()
+        .await
+        .expect("graph JSON");
+
+    assert_eq!(body["nodes"].as_array().unwrap().len(), 1, "only A is a node");
+    assert!(
+        body["edges"].as_array().unwrap().is_empty(),
+        "edge to the unregistered node is excluded"
+    );
 }
 
 // ---------------------------------------------------------------------------

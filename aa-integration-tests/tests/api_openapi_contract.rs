@@ -66,9 +66,10 @@ fn openapi_spec_loads_without_errors() {
     // AAASM-5031 added /api/v1/overview/enforcement-timeline (64); AAASM-5032 added
     // /api/v1/costs/history + /api/v1/costs/budget-tree, bringing it to 66.
     // AAASM-5037 added /api/v1/policies/simulate (dry-run), bringing it to 67.
+    // AAASM-5040 added /api/v1/topology (the dashboard node+edge graph), bringing it to 68.
     assert_eq!(
-        path_count, 67,
-        "openapi/v1.yaml must declare exactly 67 paths, found {path_count}"
+        path_count, 68,
+        "openapi/v1.yaml must declare exactly 68 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -157,6 +158,7 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/policies",
         "/api/v1/policies/active",
         "/api/v1/policies/simulate",
+        "/api/v1/topology",
         "/api/v1/topology/edges",
         "/api/v1/topology/lineage/{agent_id}",
         "/api/v1/topology/overview",
