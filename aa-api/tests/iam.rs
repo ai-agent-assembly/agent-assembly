@@ -256,3 +256,71 @@ async fn rotate_with_read_only_scope_is_forbidden() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
+
+// ── AAASM-5046 — role → capability grant listing ─────────────────────────────
+
+/// The role listing is read-only IAM state; an unauthenticated caller must be
+/// rejected (deny-by-default) when auth is enabled.
+#[tokio::test]
+async fn list_roles_unauthenticated_is_401() {
+    let app = common::test_app_with_auth(&[], 1000);
+    let resp = app.oneshot(get_request("/api/v1/iam/roles", None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Unlike the api-key listing, the role→capability model is not per-tenant
+/// secret, so a read-scoped caller is allowed (RequireRead, not RequireAdmin).
+#[tokio::test]
+async fn list_roles_allows_read_only_scope() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let resp = app
+        .oneshot(get_request("/api/v1/iam/roles", Some(&token)))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "a read-only caller must be able to view the role→capability model"
+    );
+}
+
+/// The body reflects the gateway's real policy-RBAC model: five roles, highest
+/// privilege first, with grants derived from the PolicyMutationRequiredRole
+/// table (not a fabricated richer catalogue).
+#[tokio::test]
+async fn list_roles_returns_five_roles_with_derived_grants() {
+    let app = common::test_app();
+
+    let resp = app.oneshot(get_request("/api/v1/iam/roles", None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let roles = json.as_array().expect("array of roles");
+
+    // Five canonical roles, highest → lowest privilege.
+    let names: Vec<&str> = roles.iter().map(|r| r["role"].as_str().unwrap()).collect();
+    assert_eq!(names, ["org_admin", "team_admin", "developer", "viewer", "auditor"]);
+
+    // Every entry carries a non-empty description + capability list.
+    for r in roles {
+        assert!(!r["description"].as_str().unwrap().is_empty());
+        assert!(!r["capabilities"].as_array().unwrap().is_empty());
+    }
+
+    // OrgAdmin can mutate every scope; Viewer is read-only; Auditor is audit-scoped.
+    let org_admin = &roles[0]["capabilities"];
+    assert!(org_admin
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c == "write:policies:global"));
+    assert!(org_admin.as_array().unwrap().iter().any(|c| c == "write:policies:tool"));
+
+    let viewer = roles[3]["capabilities"].as_array().unwrap();
+    assert_eq!(viewer, &[serde_json::json!("read:policies")]);
+
+    let auditor = roles[4]["capabilities"].as_array().unwrap();
+    assert_eq!(auditor, &[serde_json::json!("read:audit")]);
+}
