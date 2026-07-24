@@ -45,6 +45,17 @@
   stroke: var(--danger);
 }
 
+/* Live registry statuses (AAASM-5040): a suspended agent is an operator
+   intervention worth surfacing (amber); a deregistered agent is inactive
+   (grey, same as idle). */
+.topology-node[data-status='suspended'] .topology-node__stripe {
+  fill: var(--warn);
+}
+
+.topology-node[data-status='deregistered'] .topology-node__stripe {
+  fill: var(--ink-4);
+}
+
 .topology-node:hover .topology-node__card {
   stroke: var(--ink-2);
 }

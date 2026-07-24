@@ -84,6 +84,19 @@
   border-color: var(--danger);
 }
 
+/* Live registry statuses (AAASM-5040). */
+.node-detail-panel__status[data-status='suspended'] {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.node-detail-panel__status[data-status='deregistered'] {
+  background: var(--paper-3);
+  color: var(--ink-3);
+  border-color: var(--ink-4);
+}
+
 .node-detail-panel__close {
   background: transparent;
   border: 1px solid var(--line);

@@ -6,7 +6,17 @@
  * this file is the source of truth for the frontend.
  */
 
-export type TopologyStatus = 'active' | 'idle' | 'error'
+/**
+ * Node runtime status.
+ *
+ * The live `/api/v1/topology` endpoint (AAASM-5040) carries the agent
+ * registry's own runtime states verbatim — `active`, `suspended`,
+ * `deregistered` — so the node shows its true status rather than a lossy
+ * remap. `idle` / `error` are retained from the original fixture model
+ * (`design/v1/hi-fi/topology.jsx`) for backward compatibility; the status
+ * stripe CSS keys off every value.
+ */
+export type TopologyStatus = 'active' | 'idle' | 'error' | 'suspended' | 'deregistered'
 
 export type TopologyEdgeKind = 'delegation' | 'call'
 
