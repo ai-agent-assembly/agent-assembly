@@ -131,15 +131,3 @@ export function emptyDraft(): PolicyDraft {
     rules: [defaultRule()],
   }
 }
-
-/** Stub draft for the "edit existing policy" path until ST-5 wires real loading. */
-export function stubDraftFromIdentity(name: string, version: string): PolicyDraft {
-  return {
-    id: `pol-${name}`,
-    name,
-    scope: 'global',
-    version,
-    status: 'active',
-    rules: [defaultRule()],
-  }
-}
