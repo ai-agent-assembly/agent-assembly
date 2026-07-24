@@ -21,7 +21,7 @@ export function TeamBudgetCard({ budget, isLoading }: Readonly<TeamBudgetCardPro
         <div className="teams-card__empty" data-testid="team-budget-loading">Loading budget…</div>
       )}
 
-      {!isLoading && (budget == null || budget.limitUsd == null) && (
+      {!isLoading && budget?.limitUsd == null && (
         <div className="teams-card__empty" data-testid="team-budget-empty">
           {budget == null
             ? 'No budget data for this team.'
@@ -29,7 +29,7 @@ export function TeamBudgetCard({ budget, isLoading }: Readonly<TeamBudgetCardPro
         </div>
       )}
 
-      {!isLoading && budget != null && budget.limitUsd != null && (
+      {!isLoading && budget?.limitUsd != null && (
         <div className="teams-budget-grid" data-testid="team-budget-daily">
           <div>
             <div className="teams-budget-amount" style={{ color: budgetBucketColor(budget.bucket) }}>
