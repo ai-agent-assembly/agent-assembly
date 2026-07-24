@@ -131,10 +131,12 @@ export function CapabilityPage() {
     <div className="capability-page" data-testid="capability-page">
       <header className="capability-head">
         <div>
-          <h1 className="capability-title">Capability</h1>
+          <h1 className="capability-title">
+            Capability ★ <span className="capability-title-zh">能力縮限設定</span>
+          </h1>
           <p className="capability-sub">
-            What agents claim they can do — and what Assembly actually allows. Click any cell to see the
-            policy responsible and edit inline.
+            What agents <em>say</em> they can do — and what Assembly <em>actually</em> allows. Click
+            any cell to see the policy responsible and edit inline.
           </p>
         </div>
         <div className="capability-head-actions">
@@ -180,20 +182,22 @@ export function CapabilityPage() {
           Per-agent
         </button>
 
-        <div className="capability-verbs" role="radiogroup" aria-label="verb">
+        <div className="capability-verbs">
           <span className="capability-verbs-label">verb</span>
-          {VERBS.map((v) => (
-            <button
-              key={v}
-              type="button"
-              role="radio"
-              aria-checked={verb === v}
-              className={`capability-verb${verb === v ? ' is-active' : ''}`}
-              onClick={() => setVerb(v)}
-            >
-              {v}
-            </button>
-          ))}
+          <div className="capability-verb-seg" role="radiogroup" aria-label="verb">
+            {VERBS.map((v) => (
+              <button
+                key={v}
+                type="button"
+                role="radio"
+                aria-checked={verb === v}
+                className={`capability-verb${verb === v ? ' is-active' : ''}`}
+                onClick={() => setVerb(v)}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
         </div>
       </nav>
 

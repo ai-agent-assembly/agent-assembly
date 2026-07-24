@@ -82,6 +82,27 @@ export function CapabilityFilterBar({
         </select>
       </label>
 
+      {/* Field order mirrors design/v1: framework → owner → trust → mode, with
+          the trust filter emphasised (it is the primary lens for spotting
+          over-permissioned agents). The placeholder shows the "70" convention —
+          the trust threshold below which agents warrant review. */}
+      <label className="cap-filter-field cap-filter-field--em">
+        <span className="cap-filter-field-label">trust ≤</span>
+        <input
+          type="number"
+          min={0}
+          max={100}
+          step={5}
+          value={filters.trustMax ?? ''}
+          placeholder="70"
+          onChange={(e) => {
+            const v = e.target.value
+            onChange({ ...filters, trustMax: v === '' ? null : Number(v) })
+          }}
+          aria-label="filter by trust at most"
+        />
+      </label>
+
       <label className="cap-filter-field">
         <span className="cap-filter-field-label">mode</span>
         <select
@@ -95,23 +116,6 @@ export function CapabilityFilterBar({
             </option>
           ))}
         </select>
-      </label>
-
-      <label className="cap-filter-field cap-filter-field--em">
-        <span className="cap-filter-field-label">trust ≤</span>
-        <input
-          type="number"
-          min={0}
-          max={100}
-          step={5}
-          value={filters.trustMax ?? ''}
-          placeholder="—"
-          onChange={(e) => {
-            const v = e.target.value
-            onChange({ ...filters, trustMax: v === '' ? null : Number(v) })
-          }}
-          aria-label="filter by trust at most"
-        />
       </label>
 
       <span className="cap-filter-count">
