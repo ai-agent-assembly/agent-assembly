@@ -198,16 +198,19 @@
   gap: 0.3rem;
 }
 
+/* Type-filter pills use the shared sans `.btn.btn-sm` sizing (24px tall, 11px
+   body font) rather than a mono chip, so they read as controls — matching the
+   header buttons — not as data tokens like the table chips. */
 .audit-type-btn {
   appearance: none;
-  height: 28px;
-  padding: 0 0.6rem;
+  height: 24px;
+  padding: 0 0.5rem;
   border: 1px solid var(--line-2);
   border-radius: 3px;
   background: var(--paper-2);
   color: var(--ink-2);
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 0.7rem;
+  font-family: inherit;
+  font-size: 0.69rem;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -280,8 +283,11 @@
   background: var(--paper-3);
 }
 
+/* A violation row is tinted with a ~3% danger wash rather than the full
+   `--danger-bg` swatch — enough to scan a red band down the table without the
+   solid fill fighting the danger chip/summary that already carry the signal. */
 .audit-row--violation {
-  background: var(--danger-bg);
+  background: rgba(184, 41, 30, 0.03);
 }
 
 .audit-mono {
@@ -361,6 +367,8 @@
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 0.6rem;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
   background: var(--paper-3);
   color: var(--ink-2);
   border: 1px solid var(--line-2);
@@ -389,6 +397,15 @@
   background: var(--danger-bg);
   color: var(--danger);
   border-color: var(--danger);
+}
+
+/* Redaction/scrub verdict — carries the L3 scrub token (purple), distinct from
+   the amber `warn` used for file-op events, so a redacted payload never reads as
+   a mere warning. */
+.audit-chip--scrub {
+  background: var(--scrub-bg);
+  color: var(--scrub);
+  border-color: var(--scrub);
 }
 
 /* ── Expanded detail row ─────────────────────────────────────────────── */
@@ -435,18 +452,21 @@
   word-break: break-all;
 }
 
+/* Raw payload renders as a fixed dark "terminal" surface (per design/v1
+   `.trc-payload`): the literal #0e0e0e/#e6e1d4 are intentional — a governance
+   payload must read as verbatim machine output in BOTH themes, so it is one of
+   the few surfaces deliberately exempt from the theme-token invert rule. */
 .audit-payload {
   max-height: 130px;
   overflow: auto;
   margin: 0;
-  padding: 0.6rem 0.75rem;
+  padding: 0.75rem 0.9rem;
   border-radius: 3px;
-  background: var(--paper);
-  border: 1px solid var(--line-2);
+  background: #0e0e0e;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 0.68rem;
-  line-height: 1.4;
-  color: var(--ink-2);
+  line-height: 1.6;
+  color: #e6e1d4;
   white-space: pre-wrap;
   word-break: break-all;
 }

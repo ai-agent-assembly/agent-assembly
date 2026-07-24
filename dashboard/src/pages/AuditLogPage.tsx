@@ -29,7 +29,7 @@ const DECISION_META: Record<string, { chip: string; label: string }> = {
   ALLOW: { chip: 'ok', label: 'allow' },
   DENY: { chip: 'danger', label: 'deny' },
   PENDING: { chip: 'info', label: 'pending' },
-  REDACT: { chip: 'warn', label: 'redact' },
+  REDACT: { chip: 'scrub', label: 'redact' },
   APPROVE: { chip: 'ok', label: 'approved' },
 }
 
