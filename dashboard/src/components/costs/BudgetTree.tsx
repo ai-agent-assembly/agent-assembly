@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type KeyboardEvent } from 'react'
 import type { BudgetTree as BudgetTreeData, BudgetTreeNode } from '../../features/costs/api'
 import './BudgetTree.css'
 
@@ -24,6 +24,17 @@ function defaultExpanded(node: BudgetTreeNode, acc: Set<string> = new Set()): Se
 function caretGlyph(hasKids: boolean, open: boolean): string {
   if (!hasKids) return '·'
   return open ? '▾' : '▸'
+}
+
+/**
+ * Keyboard equivalent of clicking an expandable row: Enter/Space toggle it.
+ * `preventDefault` stops Space from scrolling the page while a row is focused.
+ */
+function toggleOnKey(event: KeyboardEvent<HTMLDivElement>, toggle: () => void): void {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    toggle()
+  }
 }
 
 interface RowMetrics {
@@ -93,6 +104,8 @@ interface RowProps {
  * One budget-tree row plus, when expanded, its children. Shows the node's own
  * spend, subtree spend, configured limit, a subtree-burn bar (own spend solid,
  * sub-agent spend as a lighter band), and its share of the parent's budget.
+ * Rendered as an ARIA `treeitem` — focusable and operable by mouse or keyboard
+ * (Enter/Space) — since org → team → agent is a tree, not a data table.
  * Colours are theme tokens so the row inverts with `data-theme`.
  */
 function BudgetRow({ node, parentLimit, expanded, onToggle }: RowProps) {
@@ -107,10 +120,14 @@ function BudgetRow({ node, parentLimit, expanded, onToggle }: RowProps) {
     <>
       <div
         className={`budget-tree__row${m.totalPct >= 85 ? ' budget-tree__row--critical' : ''}`}
-        role="row"
+        role="treeitem"
+        aria-level={node.depth + 1}
+        aria-expanded={hasKids ? open : undefined}
+        tabIndex={0}
         data-testid={`budget-node-${node.id}`}
         data-kind={node.kind}
         onClick={toggle}
+        onKeyDown={toggle ? event => toggleOnKey(event, toggle) : undefined}
         style={{ cursor: hasKids ? 'pointer' : 'default' }}
       >
         <div className="budget-tree__name" style={{ paddingLeft: `${node.depth * 18}px` }}>
@@ -202,8 +219,8 @@ export function BudgetTree({
     )
   } else {
     body = (
-      <div className="budget-tree__grid" role="table" data-testid="budget-tree-grid">
-        <div className="budget-tree__row budget-tree__row--head" role="row">
+      <div className="budget-tree__grid" role="tree" aria-label="Budget inheritance tree" data-testid="budget-tree-grid">
+        <div className="budget-tree__row budget-tree__row--head" role="presentation">
           <div className="budget-tree__name">Node</div>
           <div className="budget-tree__own">Own spend</div>
           <div className="budget-tree__subtree">Subtree</div>
