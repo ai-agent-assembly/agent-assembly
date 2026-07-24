@@ -2125,6 +2125,32 @@ paths:
           description: Unknown api key id
         '409':
           description: Source key is already revoked
+  /api/v1/iam/roles:
+    get:
+      tags:
+      - iam
+      summary: '`GET /api/v1/iam/roles` — the built-in RBAC roles and their capability grants.'
+      description: |-
+        Read-only reflection of the gateway's policy-RBAC model
+        (`PolicyMutationRequiredRole`). Grants are derived server-side, not stored,
+        so the response is stable and requires no IAM state. Gated `RequireRead`
+        (deny-by-default): the authz model is not per-tenant secret — it is the same
+        data published in `docs/src/policy-rbac.md` — but still requires a valid
+        read-scoped caller.
+      operationId: list_roles
+      responses:
+        '200':
+          description: Built-in roles with derived capability grants, highest privilege first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoleCapabilitiesResponse'
+        '401':
+          description: Caller is unauthenticated
+        '403':
+          description: Caller lacks the read scope required to view IAM roles
   /api/v1/logs:
     get:
       tags:
@@ -6192,6 +6218,28 @@ components:
         ran_at:
           type: string
           description: Timestamp (UTC) at which the run completed (ISO 8601).
+    RoleCapabilitiesResponse:
+      type: object
+      description: One built-in RBAC role and the governance capabilities it grants.
+      required:
+      - role
+      - description
+      - capabilities
+      properties:
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: |-
+            Capability grant strings derived from the policy-RBAC table. Read grants
+            (`read:policies` / `read:audit`) reflect each role's read authority;
+            `write:policies:<scope>` grants come straight from `required_role_for`.
+        description:
+          type: string
+          description: Human-readable summary of what the role may do.
+        role:
+          type: string
+          description: Canonical role identifier, snake_case (e.g. `org_admin`).
     RoutingHistoryEntry:
       type: object
       description: One step in the routing history of an approval request.

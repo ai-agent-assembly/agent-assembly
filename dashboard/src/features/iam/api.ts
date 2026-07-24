@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '../../api/client'
 import { ignorePromise } from '../../lib/ignorePromise'
 import { iamQueryKeys } from './queryKeys'
+import type { LiveRoleGrant } from './roleCapabilities'
 import type { InviteMemberInput, Member, MemberPage, UpdateMemberRoleInput } from './types'
 
 /**
@@ -37,6 +39,28 @@ export function useMembersQuery(page = 1, pageSize = DEFAULT_PAGE_SIZE) {
   return useQuery({
     queryKey: iamQueryKeys.membersPage(page, pageSize),
     queryFn: () => fetchMembersPage(page, pageSize),
+  })
+}
+
+/**
+ * Live role→capability grants from `GET /api/v1/iam/roles` (AAASM-5046).
+ *
+ * Unlike the members store above, this is a real gateway endpoint via the typed
+ * `openapi-fetch` client. The Identity → Roles cards use it as their grant
+ * source; when it is unavailable they fall back to the static built-in
+ * catalogue (see `RoleCapabilityCards`). React Query's default no-throw-on-error
+ * behaviour means an unreachable gateway simply leaves `data` undefined, which
+ * the caller treats as "no live grants".
+ */
+export function useRoleCapabilitiesQuery() {
+  return useQuery<LiveRoleGrant[]>({
+    queryKey: iamQueryKeys.roles(),
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/v1/iam/roles', {})
+      if (error) throw new Error('Failed to fetch role capabilities')
+      if (!data) throw new Error('Role capabilities response was empty')
+      return data
+    },
   })
 }
 

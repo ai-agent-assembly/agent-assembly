@@ -114,7 +114,8 @@ fn protected_router() -> Router {
         .route("/capability/override", get(capability::list_overrides).post(capability::apply_override))
         .route("/capability/override/{id}", delete(capability::revoke_override))
         // Identity & Access — API key management (dashboard) — AAASM-1397
-        .route("/iam/api-keys", get(iam::list_api_keys).post(iam::generate_api_key))
+        .route("/iam/roles", get(iam::list_roles))
+.route("/iam/api-keys", get(iam::list_api_keys).post(iam::generate_api_key))
         .route("/iam/api-keys/{id}/revoke", post(iam::revoke_api_key))
         .route("/iam/api-keys/{id}/rotate", post(iam::rotate_api_key))
         // Alerts

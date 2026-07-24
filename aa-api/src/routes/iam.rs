@@ -12,7 +12,7 @@ use aa_gateway::iam::{
     ApiKeyEntry, ApiKeyScope as GwApiKeyScope, ApiKeyStatus as GwApiKeyStatus, GeneratedApiKey as GwGeneratedApiKey,
     IamApiKeyStore, RecentActivityEntry,
 };
-use aa_gateway::policy::rbac::MutationKind;
+use aa_gateway::policy::rbac::{required_role_for, CallerRole, MutationKind};
 use aa_gateway::policy::scope::PolicyScope;
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
-use crate::auth::scope::RequireAdmin;
+use crate::auth::scope::{RequireAdmin, RequireRead};
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -164,7 +164,125 @@ pub struct GenerateApiKeyRequest {
     pub scopes: Vec<ApiKeyScopeResponse>,
 }
 
+// ── Role → capability grants (AAASM-5046) ──
+//
+// The dashboard's Identity → Roles tab (AAASM-5042) shipped role-capability
+// cards backed by a *static* front-end catalogue behind a flag banner, because
+// the gateway exposed no role→grant endpoint. This surfaces the real model.
+//
+// The authoritative role→capability data in the gateway is the
+// `PolicyMutationRequiredRole` table in `aa-gateway/src/policy/rbac.rs`: it
+// maps `(policy-scope, mutation) → minimum CallerRole`. There is deliberately
+// no richer per-capability catalogue on the server — the grants below are
+// *derived* from that table (exactly like `generate_policy_rbac_doc`), so this
+// endpoint reflects the coarse policy-RBAC model faithfully rather than
+// fabricating the design's richer catalogue.
+
+/// One built-in RBAC role and the governance capabilities it grants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RoleCapabilitiesResponse {
+    /// Canonical role identifier, snake_case (e.g. `org_admin`).
+    pub role: String,
+    /// Human-readable summary of what the role may do.
+    pub description: String,
+    /// Capability grant strings derived from the policy-RBAC table. Read grants
+    /// (`read:policies` / `read:audit`) reflect each role's read authority;
+    /// `write:policies:<scope>` grants come straight from `required_role_for`.
+    pub capabilities: Vec<String>,
+}
+
+/// The 5 canonical roles, highest → lowest privilege — the render order the
+/// dashboard cards expect.
+const ROLE_ORDER: [CallerRole; 5] = [
+    CallerRole::OrgAdmin,
+    CallerRole::TeamAdmin,
+    CallerRole::Developer,
+    CallerRole::Viewer,
+    CallerRole::Auditor,
+];
+
+/// Human-readable description per role, mirroring the role doc-comments in
+/// `aa-gateway/src/policy/rbac.rs` (the single source of truth for role intent).
+fn role_description(role: CallerRole) -> &'static str {
+    match role {
+        CallerRole::OrgAdmin => "Full policy mutation rights across all scopes.",
+        CallerRole::TeamAdmin => "Can mutate team-scoped policies and below (Agent, Tool).",
+        CallerRole::Developer => "Can mutate agent- and tool-scoped policies only.",
+        CallerRole::Viewer => "Read-only access — no writes permitted.",
+        CallerRole::Auditor => "Read-only audit access — no writes permitted.",
+    }
+}
+
+/// Derive the capability grant list for `role` from the policy-RBAC table.
+///
+/// The write grants are computed the same way `generate_policy_rbac_doc` builds
+/// `docs/src/policy-rbac.md`: for each policy scope, a role is granted
+/// `write:policies:<scope>` iff it satisfies the minimum role the table
+/// requires to mutate that scope. Read grants reflect the role's documented
+/// read authority (`Auditor` is audit-scoped; every other role has standard
+/// policy read). `MutationKind` does not change the required role, so any
+/// mutation kind is representative here.
+fn role_capabilities(role: CallerRole) -> Vec<String> {
+    let mut caps = Vec::new();
+
+    // Read authority: Auditor is audit-scoped; all others have standard read.
+    caps.push(match role {
+        CallerRole::Auditor => "read:audit".to_string(),
+        _ => "read:policies".to_string(),
+    });
+
+    // Representative PolicyScope per scope kind (labels match the wire scope).
+    let scopes: [(&str, PolicyScope); 5] = [
+        ("global", PolicyScope::Global),
+        ("org", PolicyScope::Org("*".into())),
+        ("team", PolicyScope::Team("*".into())),
+        (
+            "agent",
+            PolicyScope::Agent(aa_core::identity::AgentId::from_bytes([0u8; 16])),
+        ),
+        ("tool", PolicyScope::Tool("*".into())),
+    ];
+
+    for (label, scope) in scopes {
+        if role.satisfies(required_role_for(&scope, MutationKind::Update)) {
+            caps.push(format!("write:policies:{label}"));
+        }
+    }
+
+    caps
+}
+
 // ── Handlers ──
+
+/// `GET /api/v1/iam/roles` — the built-in RBAC roles and their capability grants.
+///
+/// Read-only reflection of the gateway's policy-RBAC model
+/// (`PolicyMutationRequiredRole`). Grants are derived server-side, not stored,
+/// so the response is stable and requires no IAM state. Gated `RequireRead`
+/// (deny-by-default): the authz model is not per-tenant secret — it is the same
+/// data published in `docs/src/policy-rbac.md` — but still requires a valid
+/// read-scoped caller.
+#[utoipa::path(
+    get,
+    path = "/api/v1/iam/roles",
+    responses(
+        (status = 200, description = "Built-in roles with derived capability grants, highest privilege first", body = [RoleCapabilitiesResponse]),
+        (status = 401, description = "Caller is unauthenticated"),
+        (status = 403, description = "Caller lacks the read scope required to view IAM roles")
+    ),
+    tag = "iam"
+)]
+pub async fn list_roles(RequireRead(_caller): RequireRead) -> (StatusCode, Json<Vec<RoleCapabilitiesResponse>>) {
+    let roles = ROLE_ORDER
+        .into_iter()
+        .map(|role| RoleCapabilitiesResponse {
+            role: role.to_string(),
+            description: role_description(role).to_string(),
+            capabilities: role_capabilities(role),
+        })
+        .collect();
+    (StatusCode::OK, Json(roles))
+}
 
 /// `GET /api/v1/iam/api-keys` — list every API key the IAM store knows.
 ///
@@ -459,5 +577,76 @@ mod tests {
             ApiKeyScopeResponse::from(GwApiKeyScope::Admin),
             ApiKeyScopeResponse::Admin
         );
+    }
+
+    // ── AAASM-5046 — role → capability grant derivation ──
+
+    #[test]
+    fn org_admin_grants_read_plus_every_write_scope() {
+        assert_eq!(
+            role_capabilities(CallerRole::OrgAdmin),
+            vec![
+                "read:policies",
+                "write:policies:global",
+                "write:policies:org",
+                "write:policies:team",
+                "write:policies:agent",
+                "write:policies:tool",
+            ]
+        );
+    }
+
+    #[test]
+    fn team_admin_grants_team_and_below_only() {
+        assert_eq!(
+            role_capabilities(CallerRole::TeamAdmin),
+            vec![
+                "read:policies",
+                "write:policies:team",
+                "write:policies:agent",
+                "write:policies:tool",
+            ]
+        );
+    }
+
+    #[test]
+    fn developer_grants_agent_and_tool_only() {
+        assert_eq!(
+            role_capabilities(CallerRole::Developer),
+            vec!["read:policies", "write:policies:agent", "write:policies:tool"]
+        );
+    }
+
+    #[test]
+    fn viewer_is_read_only_policies() {
+        assert_eq!(role_capabilities(CallerRole::Viewer), vec!["read:policies"]);
+    }
+
+    #[test]
+    fn auditor_is_read_only_audit() {
+        // Auditor is audit-scoped and may never mutate any policy.
+        assert_eq!(role_capabilities(CallerRole::Auditor), vec!["read:audit"]);
+    }
+
+    #[test]
+    fn read_only_roles_grant_no_write_capabilities() {
+        for role in [CallerRole::Viewer, CallerRole::Auditor] {
+            let caps = role_capabilities(role);
+            assert!(
+                !caps.iter().any(|c| c.starts_with("write:")),
+                "{role} must not grant any write capability, got {caps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_role_has_a_description_and_at_least_one_capability() {
+        for role in ROLE_ORDER {
+            assert!(!role_description(role).is_empty(), "{role} needs a description");
+            assert!(
+                !role_capabilities(role).is_empty(),
+                "{role} must grant at least its read capability"
+            );
+        }
     }
 }
