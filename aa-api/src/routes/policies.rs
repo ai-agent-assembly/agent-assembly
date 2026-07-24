@@ -1,14 +1,20 @@
 //! Policy management endpoints.
 
+use std::collections::BTreeMap;
+
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+use aa_core::identity::{AgentId, SessionId};
+use aa_core::time::Timestamp;
+use aa_core::{AgentContext, GovernanceAction};
 use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
 use aa_gateway::policy::PolicyValidator;
+use aa_gateway::service::convert::hash_to_16;
 
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
 use crate::auth::scope::{RequireRead, Scope};
@@ -341,6 +347,151 @@ pub async fn get_active_policy(
             active: true,
             rule_count: info.rule_count,
             policy_yaml,
+        }),
+    ))
+}
+
+/// Request body for `POST /api/v1/policies/simulate` (AAASM-5037).
+///
+/// Describes a hypothetical `(agent, tool, target)` request to evaluate against
+/// the active policy. No part of it is persisted — it is a pure what-if.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct SimulatePolicyRequest {
+    /// Identifier (id or name) of the hypothetical agent to evaluate as. Mapped
+    /// to the same internal `AgentId` a live request for this agent would use,
+    /// so a registered agent's org/team lineage is honored.
+    pub agent_id: String,
+    /// Tool or capability the agent would invoke (e.g. `"gmail.send"`, `"shell"`).
+    pub tool: String,
+    /// Optional target/resource of the action (e.g. a recipient, host, or path).
+    /// Folded into the simulated tool-call arguments so target-sensitive
+    /// predicates and credential/PII scanning apply.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Optional organization attribute used for policy-cascade lineage when the
+    /// agent is not resolvable from the registry.
+    #[serde(default)]
+    pub org_id: Option<String>,
+    /// Optional team attribute used for policy-cascade lineage when the agent is
+    /// not resolvable from the registry.
+    #[serde(default)]
+    pub team_id: Option<String>,
+}
+
+/// Response body for `POST /api/v1/policies/simulate` (AAASM-5037).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SimulatePolicyResponse {
+    /// Dry-run verdict: `"allow"`, `"narrow"`, `"approval"`, or `"deny"`.
+    pub verdict: String,
+    /// Label of the policy rule / reason that produced the verdict. `null` for a
+    /// clean allow with no matched narrowing or deny rule.
+    pub matched_rule: Option<String>,
+    /// Human-readable explanation of the verdict.
+    pub reason: String,
+    /// Whether the payload would be scrubbed before reaching the model because
+    /// credential/PII content was detected (drives the `"narrow"` verdict).
+    pub redacted: bool,
+}
+
+/// `POST /api/v1/policies/simulate` — dry-run a hypothetical request.
+///
+/// Evaluate a hypothetical `(agent, tool, target)` request against the active
+/// governance policy and return the verdict (allow / narrow / approval / deny),
+/// the matched rule/reason, and whether the payload would be scrubbed.
+///
+/// This is a pure, read-only what-if: it runs the policy engine in dry-run mode
+/// ([`aa_gateway::engine::PolicyEngine::simulate`]) with no state mutation, no
+/// budget debit, no audit write, and no enforcement side effect.
+#[utoipa::path(
+    post,
+    path = "/api/v1/policies/simulate",
+    request_body = SimulatePolicyRequest,
+    responses(
+        (status = 200, description = "Dry-run verdict for the hypothetical request", body = SimulatePolicyResponse),
+        (status = 403, description = "Caller lacks read scope")
+    ),
+    tag = "policies"
+)]
+pub async fn simulate_policy(
+    // AAASM-5037: simulation reveals policy behavior for a probe request, so
+    // require read scope. Unlike list/active (which additionally gate on Admin
+    // because they disclose the full cross-tenant policy YAML), this endpoint
+    // returns only a single verdict and mutates nothing, so plain Read suffices.
+    RequireRead(_caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Json(body): Json<SimulatePolicyRequest>,
+) -> Result<(StatusCode, Json<SimulatePolicyResponse>), ProblemDetail> {
+    // Build the hypothetical agent context, mirroring the gRPC request→core
+    // conversion (`aa_gateway::service::convert`) so a simulated request maps to
+    // the same AgentId a live request for this agent would — a registered
+    // agent's authoritative org/team lineage is then honored by the engine.
+    let agent_id = AgentId::from_bytes(hash_to_16(&body.agent_id));
+    let session_id = SessionId::from_bytes(hash_to_16("simulate"));
+
+    let mut metadata = BTreeMap::new();
+    if let Some(org) = body.org_id.as_deref().filter(|s| !s.is_empty()) {
+        metadata.insert("org_id".to_string(), org.to_string());
+    }
+    if let Some(team) = body.team_id.as_deref().filter(|s| !s.is_empty()) {
+        metadata.insert("team_id".to_string(), team.to_string());
+    }
+
+    let ctx = AgentContext {
+        agent_id,
+        session_id,
+        pid: 0,
+        started_at: Timestamp::from_nanos(0),
+        metadata,
+        governance_level: aa_core::GovernanceLevel::default(),
+        parent_agent_id: None,
+        team_id: None,
+        depth: 0,
+        delegation_reason: None,
+        spawned_by_tool: None,
+        root_agent_id: None,
+    };
+
+    // Encode the optional target into the tool-call args so target-sensitive
+    // policy predicates and the credential/PII scan see it.
+    let args = match body.target.as_deref().filter(|s| !s.is_empty()) {
+        Some(target) => serde_json::json!({ "target": target }).to_string(),
+        None => "{}".to_string(),
+    };
+    let action = GovernanceAction::ToolCall {
+        name: body.tool.clone(),
+        args,
+    };
+
+    // Dry-run: `simulate` runs the same pipeline as the live `evaluate` but on a
+    // throwaway engine, so no rate token is consumed, no cache is touched, no
+    // budget window is reset, and nothing is persisted.
+    let eval = state.policy_engine.simulate(&ctx, &action);
+
+    let redacted = !eval.credential_findings.is_empty();
+    let (verdict, matched_rule, reason) = match &eval.decision {
+        // Allowed, but the scanner would scrub sensitive content first — the
+        // request is narrowed rather than passed through verbatim.
+        aa_core::PolicyResult::Allow if redacted => (
+            "narrow",
+            Some("sensitive content scrubbed".to_string()),
+            "allowed after redacting sensitive content".to_string(),
+        ),
+        aa_core::PolicyResult::Allow => ("allow", None, "allowed by policy".to_string()),
+        aa_core::PolicyResult::Deny { reason } => ("deny", Some(reason.clone()), reason.clone()),
+        aa_core::PolicyResult::RequiresApproval { timeout_secs } => (
+            "approval",
+            Some("requires_approval".to_string()),
+            format!("human approval required (timeout {timeout_secs}s)"),
+        ),
+    };
+
+    Ok((
+        StatusCode::OK,
+        Json(SimulatePolicyResponse {
+            verdict: verdict.to_string(),
+            matched_rule,
+            reason,
+            redacted,
         }),
     ))
 }
