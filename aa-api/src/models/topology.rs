@@ -179,6 +179,54 @@ impl From<&AgentRecord> for AgentNode {
     }
 }
 
+/// One directed edge in the dashboard topology graph (AAASM-5040).
+///
+/// A slim projection of a stored [`aa_core::topology::Edge`] carrying only what
+/// the dashboard graph renders: the two hex-encoded endpoints and the relation
+/// `kind`. `kind` is one of the two kinds the graph models — `delegation`
+/// (from a `delegates_to` edge) or `call` (from a `calls` edge) — matching the
+/// frontend `TopologyEdge` 1:1 so the client consumes edges without remapping.
+///
+/// # Example JSON
+/// ```json
+/// { "source": "0102030405060708090a0b0c0d0e0f10", "target": "aabbccdd00112233aabbccdd00112233", "kind": "delegation" }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "source": "0102030405060708090a0b0c0d0e0f10",
+    "target": "aabbccdd00112233aabbccdd00112233",
+    "kind": "delegation"
+}))]
+pub struct TopologyGraphEdge {
+    /// Hex-encoded UUID of the source (delegating / calling) agent.
+    pub source: String,
+    /// Hex-encoded UUID of the target agent.
+    pub target: String,
+    /// Relation kind rendered by the graph: `delegation` or `call`.
+    pub kind: String,
+}
+
+/// The whole-fleet topology graph rendered by the dashboard Topology page
+/// (AAASM-5040): every agent visible to the caller as a node, plus the
+/// delegation / call edges between those nodes.
+///
+/// Nodes reuse the [`AgentNode`] projection (so the per-node enforcement-mode,
+/// flagged, and trust badges from AAASM-5036 are carried through), letting the
+/// dashboard render those badges from live registry data instead of a fixture.
+///
+/// # Example JSON
+/// ```json
+/// { "nodes": [], "edges": [] }
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({ "nodes": [], "edges": [] }))]
+pub struct TopologyGraphResponse {
+    /// All agents visible to the caller, one graph node each (sorted by id).
+    pub nodes: Vec<AgentNode>,
+    /// Delegation / call edges whose endpoints are both visible nodes.
+    pub edges: Vec<TopologyGraphEdge>,
+}
+
 /// Recursive tree node representing an agent and all its descendants.
 ///
 /// # Example JSON
@@ -614,6 +662,34 @@ mod tests {
                     team_id: Some("team-alpha".to_string()),
                 },
             ],
+        });
+    }
+
+    #[test]
+    fn topology_graph_edge_roundtrip() {
+        roundtrip(&TopologyGraphEdge {
+            source: "0102030405060708090a0b0c0d0e0f10".to_string(),
+            target: "aabbccdd00112233aabbccdd00112233".to_string(),
+            kind: "delegation".to_string(),
+        });
+    }
+
+    #[test]
+    fn topology_graph_response_roundtrip_and_default_is_empty() {
+        // Default is the deny-by-default / empty-registry shape the handler
+        // returns; it must serialize as two empty arrays.
+        let empty = TopologyGraphResponse::default();
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&empty).unwrap()).unwrap();
+        assert!(json["nodes"].as_array().unwrap().is_empty());
+        assert!(json["edges"].as_array().unwrap().is_empty());
+
+        roundtrip(&TopologyGraphResponse {
+            nodes: vec![make_agent_node()],
+            edges: vec![TopologyGraphEdge {
+                source: "aa".to_string(),
+                target: "bb".to_string(),
+                kind: "call".to_string(),
+            }],
         });
     }
 
