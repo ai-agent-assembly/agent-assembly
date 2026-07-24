@@ -4,11 +4,6 @@ import type { Member } from './types'
 import './RoleCapabilityCards.css'
 
 const ROLE_BADGE_TONE: Record<string, string> = {
-  Owner: 'iam-role-badge--owner',
-  Admin: 'iam-role-badge--admin',
-  Member: 'iam-role-badge--member',
-  Viewer: 'iam-role-badge--viewer',
-  // Gateway RBAC role ids (live path) — reuse the closest member-role tone.
   org_admin: 'iam-role-badge--owner',
   team_admin: 'iam-role-badge--admin',
   developer: 'iam-role-badge--member',

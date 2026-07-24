@@ -23,7 +23,7 @@ export function InviteMemberDialog({ open, onClose, onSubmit, isSubmitting }: Re
 
 function InviteMemberDialogBody({ onClose, onSubmit, isSubmitting }: Readonly<Omit<InviteMemberDialogProps, 'open'>>) {
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<Role>('Member')
+  const [role, setRole] = useState<Role>('developer')
   const [touched, setTouched] = useState(false)
   const emailId = useId()
   const roleId = useId()

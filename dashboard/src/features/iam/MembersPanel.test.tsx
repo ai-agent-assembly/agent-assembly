@@ -43,30 +43,30 @@ describe('isValidEmail', () => {
 
 describe('detectDangerousRoleChange', () => {
   const members: Member[] = [
-    { id: 'me', email: 'me@x', name: 'Me', role: 'Owner', status: 'active', last_active: null },
-    { id: 'b', email: 'b@x', name: 'B', role: 'Admin', status: 'active', last_active: null },
+    { id: 'me', email: 'me@x', name: 'Me', role: 'org_admin', status: 'active', last_active: null },
+    { id: 'b', email: 'b@x', name: 'B', role: 'team_admin', status: 'active', last_active: null },
   ]
 
   it('returns null for a safe change', () => {
     expect(
-      detectDangerousRoleChange(members[1], 'Member', { allMembers: members, currentUserId: 'me' }),
+      detectDangerousRoleChange(members[1], 'developer', { allMembers: members, currentUserId: 'me' }),
     ).toBeNull()
   })
 
   it('flags self-downgrade', () => {
-    const r = detectDangerousRoleChange(members[0], 'Admin', { allMembers: members, currentUserId: 'me' })
+    const r = detectDangerousRoleChange(members[0], 'team_admin', { allMembers: members, currentUserId: 'me' })
     expect(r?.reason).toBe('self')
   })
 
   it('flags last-Owner downgrade', () => {
-    const r = detectDangerousRoleChange(members[0], 'Admin', { allMembers: members, currentUserId: null })
+    const r = detectDangerousRoleChange(members[0], 'team_admin', { allMembers: members, currentUserId: null })
     expect(r?.reason).toBe('last-owner')
   })
 
-  it('does not flag downgrade when other Owners exist', () => {
+  it('does not flag downgrade when other org_admins exist', () => {
     const more = [...members, { ...members[0], id: 'c', email: 'c@x' }]
     expect(
-      detectDangerousRoleChange(more[0], 'Admin', { allMembers: more, currentUserId: null }),
+      detectDangerousRoleChange(more[0], 'team_admin', { allMembers: more, currentUserId: null }),
     ).toBeNull()
   })
 })
@@ -115,16 +115,16 @@ describe('MembersPanel — role change', () => {
     renderPanel()
     const row = await screen.findByTestId('member-row-me')
     const select = within(row).getByTestId('role-select-me') as HTMLSelectElement
-    await user.selectOptions(select, 'Admin')
+    await user.selectOptions(select, 'team_admin')
 
     expect(await screen.findByTestId('confirm-role-change')).toBeInTheDocument()
-    expect(screen.getByTestId('confirm-role-warning').textContent).toMatch(/own role|last Owner/i)
+    expect(screen.getByTestId('confirm-role-warning').textContent).toMatch(/own role|last Org Admin/i)
 
     await user.click(screen.getByTestId('confirm-role-cancel'))
     await waitFor(() =>
       expect(screen.queryByTestId('confirm-role-change')).not.toBeInTheDocument(),
     )
-    expect(_iamInternal.snapshot().find((m) => m.id === 'me')?.role).toBe('Owner')
+    expect(_iamInternal.snapshot().find((m) => m.id === 'me')?.role).toBe('org_admin')
   })
 
   it('rolls back optimistic role change when the mutation rejects (after confirm)', async () => {
@@ -133,15 +133,15 @@ describe('MembersPanel — role change', () => {
     renderPanel()
     const row = await screen.findByTestId('member-row-mbr-3')
     const select = within(row).getByTestId('role-select-mbr-3') as HTMLSelectElement
-    await user.selectOptions(select, 'Viewer')
+    await user.selectOptions(select, 'viewer')
 
-    // AAASM-1400 — the modal opens even for a safe Member → Viewer change.
+    // AAASM-1400 — the modal opens even for a safe developer → viewer change.
     expect(await screen.findByTestId('confirm-role-change')).toBeInTheDocument()
     await user.click(screen.getByTestId('confirm-role-confirm'))
 
     const toasts = await screen.findAllByTestId('toast')
     expect(toasts.some((t) => t.textContent?.includes('boom'))).toBe(true)
-    await waitFor(() => expect(select.value).toBe('Member'))
+    await waitFor(() => expect(select.value).toBe('developer'))
   })
 
   it('applies a safe role change after the always-confirm dialog (AAASM-1400)', async () => {
@@ -149,7 +149,7 @@ describe('MembersPanel — role change', () => {
     renderPanel()
     const row = await screen.findByTestId('member-row-mbr-3')
     const select = within(row).getByTestId('role-select-mbr-3') as HTMLSelectElement
-    await user.selectOptions(select, 'Admin')
+    await user.selectOptions(select, 'team_admin')
 
     // Modal opens with the neutral message (not the danger warning).
     expect(await screen.findByTestId('confirm-role-change')).toBeInTheDocument()
@@ -157,7 +157,7 @@ describe('MembersPanel — role change', () => {
     expect(screen.queryByTestId('confirm-role-warning')).not.toBeInTheDocument()
 
     await user.click(screen.getByTestId('confirm-role-confirm'))
-    await waitFor(() => expect(select.value).toBe('Admin'))
+    await waitFor(() => expect(select.value).toBe('team_admin'))
     await waitFor(() =>
       expect(screen.queryByTestId('confirm-role-change')).not.toBeInTheDocument(),
     )
@@ -168,7 +168,7 @@ describe('MembersPanel — role change', () => {
     renderPanel()
     const row = await screen.findByTestId('member-row-mbr-3')
     const select = within(row).getByTestId('role-select-mbr-3') as HTMLSelectElement
-    await user.selectOptions(select, 'Admin')
+    await user.selectOptions(select, 'team_admin')
 
     expect(await screen.findByTestId('confirm-role-change')).toBeInTheDocument()
     await user.click(screen.getByTestId('confirm-role-cancel'))
@@ -176,7 +176,7 @@ describe('MembersPanel — role change', () => {
       expect(screen.queryByTestId('confirm-role-change')).not.toBeInTheDocument(),
     )
     // Underlying store stays on the original role.
-    expect(_iamInternal.snapshot().find((m) => m.id === 'mbr-3')?.role).toBe('Member')
+    expect(_iamInternal.snapshot().find((m) => m.id === 'mbr-3')?.role).toBe('developer')
   })
 })
 

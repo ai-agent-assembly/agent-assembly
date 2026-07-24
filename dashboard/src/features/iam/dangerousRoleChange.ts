@@ -1,10 +1,11 @@
 import type { Member, Role } from './types'
 
 const ROLE_RANK: Record<Role, number> = {
-  Owner: 3,
-  Admin: 2,
-  Member: 1,
-  Viewer: 0,
+  org_admin: 4,
+  team_admin: 3,
+  developer: 2,
+  viewer: 1,
+  auditor: 0,
 }
 
 export interface DangerousRoleChange {
@@ -26,12 +27,12 @@ export function detectDangerousRoleChange(
     }
   }
 
-  if (member.role === 'Owner' && next !== 'Owner') {
-    const ownerCount = context.allMembers.filter((m) => m.role === 'Owner').length
+  if (member.role === 'org_admin' && next !== 'org_admin') {
+    const ownerCount = context.allMembers.filter((m) => m.role === 'org_admin').length
     if (ownerCount <= 1) {
       return {
         reason: 'last-owner',
-        message: 'This member is the last Owner. Downgrading them will leave the workspace without an Owner.',
+        message: 'This member is the last Org Admin. Downgrading them will leave the workspace without an org administrator.',
       }
     }
   }

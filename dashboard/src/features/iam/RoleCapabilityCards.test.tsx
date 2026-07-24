@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, it, expect, vi, type Mock } from 'vitest'
 import { RoleCapabilityCards, RoleCapabilityCard } from './RoleCapabilityCards'
@@ -68,14 +68,14 @@ describe('buildRoleCards — static fallback', () => {
 
   it('counts members and lists assignees per role', () => {
     const members: Member[] = [
-      { id: 'a', email: 'a@x.dev', name: 'Ann Owner', role: 'Owner', status: 'active', last_active: null },
-      { id: 'b', email: 'b@x.dev', name: 'Bo Viewer', role: 'Viewer', status: 'active', last_active: null },
-      { id: 'c', email: 'c@x.dev', name: 'Cy Viewer', role: 'Viewer', status: 'active', last_active: null },
+      { id: 'a', email: 'a@x.dev', name: 'Ann Owner', role: 'org_admin', status: 'active', last_active: null },
+      { id: 'b', email: 'b@x.dev', name: 'Bo Viewer', role: 'viewer', status: 'active', last_active: null },
+      { id: 'c', email: 'c@x.dev', name: 'Cy Viewer', role: 'viewer', status: 'active', last_active: null },
     ]
     const cards = buildRoleCards(members)
-    const owner = cards.find((c) => c.role === 'Owner')
-    const viewer = cards.find((c) => c.role === 'Viewer')
-    const admin = cards.find((c) => c.role === 'Admin')
+    const owner = cards.find((c) => c.role === 'org_admin')
+    const viewer = cards.find((c) => c.role === 'viewer')
+    const admin = cards.find((c) => c.role === 'team_admin')
     expect(owner?.memberCount).toBe(1)
     expect(viewer?.memberCount).toBe(2)
     expect(viewer?.assignees.map((m) => m.id)).toEqual(['b', 'c'])
@@ -85,9 +85,9 @@ describe('buildRoleCards — static fallback', () => {
 
   it('carries the catalogue capabilities and description for each role', () => {
     const cards = buildRoleCards([])
-    const owner = cards.find((c) => c.role === 'Owner')
-    expect(owner?.capabilities).toEqual(ROLE_CAPABILITY_CATALOGUE.Owner.capabilities)
-    expect(owner?.description).toBe(ROLE_CAPABILITY_CATALOGUE.Owner.description)
+    const owner = cards.find((c) => c.role === 'org_admin')
+    expect(owner?.capabilities).toEqual(ROLE_CAPABILITY_CATALOGUE.org_admin.capabilities)
+    expect(owner?.description).toBe(ROLE_CAPABILITY_CATALOGUE.org_admin.description)
   })
 })
 
@@ -102,17 +102,21 @@ describe('buildRoleCards — live grants', () => {
 
   it('joins members onto live roles by case-insensitive role name', () => {
     const members: Member[] = [
-      { id: 'd', email: 'd@x.dev', name: 'Dee Viewer', role: 'Viewer', status: 'active', last_active: null },
-      { id: 'o', email: 'o@x.dev', name: 'Ollie Owner', role: 'Owner', status: 'active', last_active: null },
+      { id: 'd', email: 'd@x.dev', name: 'Dee Viewer', role: 'viewer', status: 'active', last_active: null },
+      { id: 'o', email: 'o@x.dev', name: 'Ollie Owner', role: 'org_admin', status: 'active', last_active: null },
     ]
     const cards = buildRoleCards(members, LIVE_GRANTS)
+    // Member roles now share the gateway RBAC id vocabulary (AAASM-5068), so
+    // counts join cleanly onto the matching role cards.
     const viewer = cards.find((c) => c.role === 'viewer')
-    // 'Viewer' member matches the gateway 'viewer' role id case-insensitively.
     expect(viewer?.memberCount).toBe(1)
     expect(viewer?.assignees.map((m) => m.id)).toEqual(['d'])
-    // 'org_admin' has no same-named member — no fabricated crosswalk.
     const orgAdmin = cards.find((c) => c.role === 'org_admin')
-    expect(orgAdmin?.memberCount).toBe(0)
+    expect(orgAdmin?.memberCount).toBe(1)
+    expect(orgAdmin?.assignees.map((m) => m.id)).toEqual(['o'])
+    // A role with no same-id member stays at zero — no fabricated crosswalk.
+    const auditor = cards.find((c) => c.role === 'auditor')
+    expect(auditor?.memberCount).toBe(0)
   })
 
   it('falls back to the static catalogue when live grants are empty', () => {
@@ -131,7 +135,7 @@ describe('RoleCapabilityCards — static fallback (endpoint unavailable)', () =>
 
   it('renders capability chips from the catalogue', async () => {
     renderCards()
-    const ownerCaps = await screen.findByTestId('role-card-caps-Owner')
+    const ownerCaps = await screen.findByTestId('role-card-caps-org_admin')
     expect(within(ownerCaps).getByText('manage_policies:global')).toBeInTheDocument()
     expect(within(ownerCaps).getByText('approve:any')).toBeInTheDocument()
   })
@@ -143,19 +147,19 @@ describe('RoleCapabilityCards — static fallback (endpoint unavailable)', () =>
 
   it('shows live member assignments from the IAM store', async () => {
     renderCards()
-    // Seed data has Alice Owner assigned to the Owner role. Wait for the
+    // Seed data has Alice assigned to the org_admin role. Wait for the
     // async members query to resolve before asserting the derived count.
-    const ownerCard = await screen.findByTestId('role-card-Owner')
+    const ownerCard = await screen.findByTestId('role-card-org_admin')
     expect(await within(ownerCard).findByText('Alice')).toBeInTheDocument()
-    expect(within(ownerCard).getByTestId('role-card-count-Owner')).toHaveTextContent('1 member')
+    expect(within(ownerCard).getByTestId('role-card-count-org_admin')).toHaveTextContent('1 member')
   })
 
   it('renders the singular/plural member label correctly', async () => {
     renderCards()
-    // Seed has two Viewers (Dave, Eve) -> plural. Wait for the async load.
-    const viewerCard = await screen.findByTestId('role-card-Viewer')
+    // Seed has two viewers (Dave, Eve) -> plural. Wait for the async load.
+    const viewerCard = await screen.findByTestId('role-card-viewer')
     expect(await within(viewerCard).findByText('Dave')).toBeInTheDocument()
-    expect(within(viewerCard).getByTestId('role-card-count-Viewer')).toHaveTextContent('2 members')
+    expect(within(viewerCard).getByTestId('role-card-count-viewer')).toHaveTextContent('2 members')
   })
 })
 
@@ -173,16 +177,20 @@ describe('RoleCapabilityCards — live grants', () => {
 
   it('drops the grant flag banner when live grants are present', async () => {
     renderCards()
-    // Wait for a live card to confirm the fetch resolved before asserting absence.
-    await screen.findByTestId('role-card-org_admin')
-    expect(screen.queryByTestId('role-cards-grant-flag')).not.toBeInTheDocument()
+    // The static fallback and the live path share role-card testids (both now
+    // use the RBAC id vocabulary), so wait for the flag to clear — the one
+    // signal unique to the resolved live state.
+    await waitFor(() =>
+      expect(screen.queryByTestId('role-cards-grant-flag')).not.toBeInTheDocument(),
+    )
   })
 
   it('renders capability chips from the live grants', async () => {
     renderCards()
-    const orgAdminCaps = await screen.findByTestId('role-card-caps-org_admin')
-    expect(within(orgAdminCaps).getByText('write:policies:global')).toBeInTheDocument()
-    const auditorCaps = await screen.findByTestId('role-card-caps-auditor')
+    // `write:policies:global` is a live-only grant (absent from the static
+    // catalogue) — awaiting it confirms the fetch resolved and the tree is live.
+    expect(await screen.findByText('write:policies:global')).toBeInTheDocument()
+    const auditorCaps = screen.getByTestId('role-card-caps-auditor')
     expect(within(auditorCaps).getByText('read:audit')).toBeInTheDocument()
   })
 
@@ -197,7 +205,7 @@ describe('RoleCapabilityCards — live grants', () => {
 describe('RoleCapabilityCard — null-safe rendering', () => {
   it('shows placeholders when a card has no grants, no description, and no members', () => {
     const bareCard: RoleCard = {
-      role: 'Viewer',
+      role: 'viewer',
       description: null,
       capabilities: [],
       memberCount: 0,
@@ -205,10 +213,10 @@ describe('RoleCapabilityCard — null-safe rendering', () => {
     }
     render(<RoleCapabilityCard card={bareCard} />)
 
-    expect(screen.getByTestId('role-card-caps-empty-Viewer')).toBeInTheDocument()
+    expect(screen.getByTestId('role-card-caps-empty-viewer')).toBeInTheDocument()
     expect(screen.getByText(/no description available/i)).toBeInTheDocument()
     // No members -> no "assigned" section rendered.
     expect(screen.queryByText('assigned')).not.toBeInTheDocument()
-    expect(screen.getByTestId('role-card-count-Viewer')).toHaveTextContent('0 members')
+    expect(screen.getByTestId('role-card-count-viewer')).toHaveTextContent('0 members')
   })
 })

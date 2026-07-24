@@ -1,4 +1,8 @@
-export const ROLES = ['Owner', 'Admin', 'Member', 'Viewer'] as const
+// Member roles are the gateway's real policy-RBAC role ids, not a separate
+// "membership tier" vocabulary. Keeping them identical to the ids returned by
+// `GET /api/v1/iam/roles` is what lets the Roles-tab cards join member counts
+// onto each role (AAASM-5068 vocab-seam fix). Order = privilege, high → low.
+export const ROLES = ['org_admin', 'team_admin', 'developer', 'viewer', 'auditor'] as const
 export type Role = (typeof ROLES)[number]
 
 export const MEMBER_STATUSES = ['active', 'invited', 'suspended'] as const
@@ -11,6 +15,8 @@ export interface Member {
   role: Role
   status: MemberStatus
   last_active: string | null
+  /** Team ids this member belongs to; drives the members-table Teams column. */
+  teams?: readonly string[]
 }
 
 export interface MemberPage {

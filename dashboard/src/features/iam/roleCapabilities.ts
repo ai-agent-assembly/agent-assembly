@@ -19,7 +19,7 @@ export interface RoleCapabilityCatalogueEntry {
 }
 
 export const ROLE_CAPABILITY_CATALOGUE: Record<Role, RoleCapabilityCatalogueEntry> = {
-  Owner: {
+  org_admin: {
     description:
       'Full access — create / delete global policies, manage all teams and members, issue any token scope, approve any action.',
     capabilities: [
@@ -31,7 +31,7 @@ export const ROLE_CAPABILITY_CATALOGUE: Record<Role, RoleCapabilityCatalogueEntr
       'issue_tokens:any',
     ],
   },
-  Admin: {
+  team_admin: {
     description:
       'Manage policies and members scoped to assigned teams. Cannot touch global policies or other teams.',
     capabilities: [
@@ -42,15 +42,20 @@ export const ROLE_CAPABILITY_CATALOGUE: Record<Role, RoleCapabilityCatalogueEntr
       'issue_tokens:team',
     ],
   },
-  Member: {
+  developer: {
     description:
       'Approve / reject pending actions, suspend / resume agents within assigned teams. No policy or member management.',
     capabilities: ['approve:team', 'suspend_agent:team', 'resume_agent:team', 'view_logs:team'],
   },
-  Viewer: {
+  viewer: {
     description:
       'Read-only access to dashboards, logs, and topology. Cannot take any governance action.',
     capabilities: ['view_logs:all', 'view_topology', 'view_policies', 'view_costs'],
+  },
+  auditor: {
+    description:
+      'Read-only access to audit trails and compliance exports. Cannot take any governance action.',
+    capabilities: ['view:audit', 'export:audit'],
   },
 }
 
