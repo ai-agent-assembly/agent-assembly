@@ -41,7 +41,10 @@ const COPY: Record<EmptyStatePage, CopyEntry> = {
     tag: 'fleet · 0 results',
     title: 'No agents match current filters',
     msg: (
-      <>All filters can be cleared from the bar above. Or check that agents are still phoning home.</>
+      <>
+        All filters can be cleared from the bar above. Or check that agents are still phoning home — last
+        fleet sync <code>4s ago</code>.
+      </>
     ),
     cta: 'Clear filters',
     secondary: null,
@@ -63,7 +66,12 @@ const COPY: Record<EmptyStatePage, CopyEntry> = {
     icon: '✶',
     tag: 'patterns · awaiting input',
     title: 'No payload to scan',
-    msg: <>Paste a request body or LLM prompt into the editor on the left.</>,
+    msg: (
+      <>
+        Paste a request body or LLM prompt into the editor on the left. Patterns marked enabled will scan
+        and replace matches in real time.
+      </>
+    ),
     cta: null,
     secondary: null,
   },
@@ -74,7 +82,8 @@ const COPY: Record<EmptyStatePage, CopyEntry> = {
     msg: (
       <>
         The capability matrix renders once at least one agent has registered AND at least one resource
-        integration is connected. Connect a resource (Gmail, S3, GitHub, …) or onboard an agent.
+        integration is connected. Connect a resource (Gmail, S3, GitHub, …) or onboard an agent to populate
+        this view.
       </>
     ),
     cta: 'Connect resource',
@@ -98,7 +107,9 @@ const COPY: Record<EmptyStatePage, CopyEntry> = {
     title: 'Agent registered, no activity yet',
     msg: (
       <>
-        Identity issued and trust score initialized at <code>50</code>. Trust will adjust on first authenticated call.
+        Identity issued and trust score initialized at <code>50</code>. Trust will adjust on first
+        authenticated call. If the agent never phones home, check that <code>AGENT_ASSEMBLY_TOKEN</code> is
+        set in its runtime env.
       </>
     ),
     cta: 'Copy enrollment command',
