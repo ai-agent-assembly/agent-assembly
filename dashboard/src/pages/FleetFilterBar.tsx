@@ -1,14 +1,22 @@
+import type { ReactNode } from 'react'
 import type { FleetFilters } from '../features/agents/fleetFilters'
 
 interface FleetFilterBarProps {
   filters: FleetFilters
   frameworks: readonly string[]
   onChange: (next: FleetFilters) => void
+  /** Optional right-aligned slot (the bulk-action bar) rendered inline in the
+   *  filter row, per `design/v1/hi-fi/fleet.jsx` (marginLeft:auto). */
+  rightSlot?: ReactNode
 }
 
-const STATUS_OPTIONS = ['all', 'active', 'idle', 'suspended', 'error'] as const
+// Mirrors the real backend `AgentStatus` enum ("active" | "idle" | "suspended";
+// see api/generated/schema.d.ts). The design spec lists all/active/suspended;
+// `idle` is a genuine backend status so it is kept, while `error` — which is not
+// an AgentStatus value — is dropped (AAASM-5069).
+const STATUS_OPTIONS = ['all', 'active', 'idle', 'suspended'] as const
 
-export function FleetFilterBar({ filters, frameworks, onChange }: Readonly<FleetFilterBarProps>) {
+export function FleetFilterBar({ filters, frameworks, onChange, rightSlot }: Readonly<FleetFilterBarProps>) {
   const frameworkOpts = ['all', ...frameworks]
 
   return (
@@ -61,6 +69,8 @@ export function FleetFilterBar({ filters, frameworks, onChange }: Readonly<Fleet
         />
         <span>⚑ flagged only</span>
       </label>
+
+      {rightSlot}
     </div>
   )
 }

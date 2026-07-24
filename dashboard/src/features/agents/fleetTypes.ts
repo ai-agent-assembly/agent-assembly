@@ -35,6 +35,28 @@ export interface FleetAgent {
   readonly note: string | null
 }
 
+/**
+ * Humanize a `lastSeen` ISO 8601 timestamp into a compact relative label
+ * ("12s ago", "5m ago", "2h ago", "3d ago"), matching the hi-fi Fleet table in
+ * `design/v1/fleet.jsx` (AAASM-5069). The raw ISO stays in the view-model so the
+ * column still sorts chronologically; humanizing happens only at render.
+ *
+ * `null`/unparseable input yields `—`; timestamps in the future clamp to "now".
+ */
+export function formatLastSeen(iso: string | null, now: number = Date.now()): string {
+  if (!iso) return '—'
+  const then = new Date(iso).getTime()
+  if (Number.isNaN(then)) return iso
+  const secs = Math.max(0, Math.floor((now - then) / 1000))
+  if (secs < 60) return `${secs}s ago`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
 function parseMode(raw: string | undefined): FleetMode {
   if (raw && (MODE_VALUES as readonly string[]).includes(raw)) {
     return raw as FleetMode

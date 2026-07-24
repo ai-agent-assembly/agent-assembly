@@ -5,10 +5,11 @@ import type { Member, Role } from './types'
 import './MemberList.css'
 
 const ROLE_BADGE_TONE: Record<Role, string> = {
-  Owner: 'iam-role-badge--owner',
-  Admin: 'iam-role-badge--admin',
-  Member: 'iam-role-badge--member',
-  Viewer: 'iam-role-badge--viewer',
+  org_admin: 'iam-role-badge--owner',
+  team_admin: 'iam-role-badge--admin',
+  developer: 'iam-role-badge--member',
+  viewer: 'iam-role-badge--viewer',
+  auditor: 'iam-role-badge--viewer',
 }
 
 function Avatar({ name }: Readonly<{ name: string }>) {
@@ -22,6 +23,20 @@ function RoleBadge({ role }: Readonly<{ role: Role }>) {
 
 function StatusCell({ status }: Readonly<{ status: Member['status'] }>) {
   return <span className={`iam-status iam-status--${status}`}>{status}</span>
+}
+
+function TeamsCell({ teams }: Readonly<{ teams: Member['teams'] }>) {
+  const list = teams ?? []
+  if (list.length === 0) {
+    return <span className="iam-member-list__mono iam-teams-cell__empty">—</span>
+  }
+  return (
+    <div className="iam-teams-cell" data-testid="member-teams">
+      {list.map((t) => (
+        <span key={t} className="iam-team-chip">{t}</span>
+      ))}
+    </div>
+  )
 }
 
 function formatLastActive(value: string | null): string {
@@ -53,6 +68,7 @@ export function MemberList({ onBeforeRoleChange }: MemberListProps = {}) {
         <tr>
           <th>Member</th>
           <th>Role</th>
+          <th>Teams</th>
           <th>Last active</th>
           <th>Status</th>
         </tr>
@@ -60,12 +76,12 @@ export function MemberList({ onBeforeRoleChange }: MemberListProps = {}) {
       <tbody>
         {isLoading && (
           <tr data-testid="member-list-loading">
-            <td colSpan={4} className="iam-member-list__loading">Loading…</td>
+            <td colSpan={5} className="iam-member-list__loading">Loading…</td>
           </tr>
         )}
         {!isLoading && data?.items.length === 0 && (
           <tr data-testid="member-list-empty">
-            <td colSpan={4} className="iam-member-list__empty">No members yet.</td>
+            <td colSpan={5} className="iam-member-list__empty">No members yet.</td>
           </tr>
         )}
         {data?.items.map((m) => (
@@ -84,6 +100,9 @@ export function MemberList({ onBeforeRoleChange }: MemberListProps = {}) {
                 <RoleBadge role={m.role} />
                 <RoleSelect member={m} onBeforeChange={onBeforeRoleChange} />
               </div>
+            </td>
+            <td>
+              <TeamsCell teams={m.teams} />
             </td>
             <td className="iam-member-list__mono">{formatLastActive(m.last_active)}</td>
             <td><StatusCell status={m.status} /></td>

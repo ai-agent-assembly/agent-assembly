@@ -29,7 +29,7 @@
 .teams-list-pane__head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 0.5rem;
   padding: 0.75rem 0.875rem;
   border-bottom: 1px solid var(--surface-card-border);
 }
@@ -40,9 +40,24 @@
 }
 
 .teams-list-pane__count {
+  margin-left: auto;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.75rem;
   color: var(--text-muted);
+}
+
+.teams-list-pane__new {
+  appearance: none;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: inherit;
+  border: 1px solid var(--surface-card-border);
+  border-radius: 4px;
+  background: var(--surface-card);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  white-space: nowrap;
 }
 
 .teams-list-pane__scroll {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Agent } from './api'
-import { FLEET_FLAGGED_THRESHOLD, toFleetAgent } from './fleetTypes'
+import { FLEET_FLAGGED_THRESHOLD, formatLastSeen, toFleetAgent } from './fleetTypes'
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -67,5 +67,25 @@ describe('toFleetAgent', () => {
     expect(fa.trust).toBeNull()
     expect(fa.blocked24h).toBeNull()
     expect(fa.scrubbed24h).toBeNull()
+  })
+})
+
+describe('formatLastSeen', () => {
+  const now = Date.parse('2026-05-13T12:00:00Z')
+
+  it('renders an em-dash for null and the raw string for unparseable input', () => {
+    expect(formatLastSeen(null, now)).toBe('—')
+    expect(formatLastSeen('not-a-date', now)).toBe('not-a-date')
+  })
+
+  it('humanizes into the largest whole unit (s / m / h / d)', () => {
+    expect(formatLastSeen('2026-05-13T11:59:48Z', now)).toBe('12s ago')
+    expect(formatLastSeen('2026-05-13T11:55:00Z', now)).toBe('5m ago')
+    expect(formatLastSeen('2026-05-13T10:00:00Z', now)).toBe('2h ago')
+    expect(formatLastSeen('2026-05-10T12:00:00Z', now)).toBe('3d ago')
+  })
+
+  it('clamps future timestamps to "0s ago"', () => {
+    expect(formatLastSeen('2026-05-13T12:01:00Z', now)).toBe('0s ago')
   })
 })

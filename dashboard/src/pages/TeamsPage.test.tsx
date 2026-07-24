@@ -122,7 +122,7 @@ describe('TeamsPage (two-pane)', () => {
     setupMocks(makeOverview(2))
     render(<TeamsPage />, { wrapper: Wrapper })
     await waitFor(() => expect(screen.getAllByTestId('team-list-row')).toHaveLength(2))
-    expect(screen.getByTestId('team-list-count')).toHaveTextContent('2 teams')
+    expect(screen.getByTestId('team-list-count')).toHaveTextContent('2 groups')
   })
 
   it('defaults the detail pane to the first team and renders its three cards', async () => {

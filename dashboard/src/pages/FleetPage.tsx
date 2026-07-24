@@ -12,7 +12,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { useAgentsQuery, useActiveSessionsQuery } from '../features/agents/api'
 import { ActiveSessionsView } from './ActiveSessionsView'
-import { toFleetAgent, type FleetAgent } from '../features/agents/fleetTypes'
+import { toFleetAgent, formatLastSeen, type FleetAgent } from '../features/agents/fleetTypes'
 import {
   applyFleetFilters,
   fleetFiltersFromParams,
@@ -169,7 +169,7 @@ const baseColumns: ColumnDef<FleetAgent>[] = [
     header: 'Last seen',
     enableSorting: true,
     cell: (info) => (
-      <span className="fleet-table__last-seen">{info.getValue() ?? '—'}</span>
+      <span className="fleet-table__last-seen">{formatLastSeen(info.getValue())}</span>
     ),
   }),
   columnHelper.display({
@@ -204,7 +204,9 @@ export function FleetPage() {
   const { toast } = useToast()
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const { data: activeSessions } = useActiveSessionsQuery()
-  const [sorting, setSorting] = useState<SortingState>([])
+  // Default sort mirrors the hi-fi Fleet (sortKey='trust', sortDir='asc') so the
+  // least-trusted agents surface first (AAASM-5069).
+  const [sorting, setSorting] = useState<SortingState>([{ id: 'trust', desc: false }])
   const [view, setView] = useState<FleetView>('agents')
 
   const [searchParams, setSearchParams] = useSearchParams()
@@ -378,7 +380,7 @@ export function FleetPage() {
           onClick={() => setView('agents')}
           data-testid="fleet-tab-agents"
         >
-          Agents<span className="fleet-tabs__count">{filteredCount}</span>
+          Agents<span className="fleet-tabs__count" data-testid="fleet-tab-agents-count">{totalAgents}</span>
         </button>
         <button
           type="button"
@@ -406,55 +408,54 @@ export function FleetPage() {
           filters={filters}
           frameworks={frameworks}
           onChange={setFilters}
+          rightSlot={selected.size > 0 ? (
+            <div className="fleet-bulkbar" data-testid="fleet-bulkbar">
+              <span className="fleet-bulkbar__count" data-testid="fleet-bulkbar-count">
+                {selected.size} selected
+              </span>
+              <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+                <button
+                  type="button"
+                  className="fleet-bulkbar__btn"
+                  onClick={() => toast(`Switched ${selected.size} agents to shadow mode (mock)`, 'info')}
+                  disabled={!canWrite}
+                  title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+                  data-testid="fleet-bulkbar-shadow"
+                >
+                  → shadow mode
+                </button>
+                <button
+                  type="button"
+                  className="fleet-bulkbar__btn fleet-bulkbar__btn--danger"
+                  onClick={() => setShowBulkSuspendDialog(true)}
+                  disabled={bulkSuspendPending || bulkResumePending || !canWrite}
+                  title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+                  data-testid="fleet-bulkbar-suspend"
+                >
+                  ■ suspend
+                </button>
+                <button
+                  type="button"
+                  className="fleet-bulkbar__btn"
+                  onClick={() => ignorePromise(onClickBulkResume())}
+                  disabled={bulkSuspendPending || bulkResumePending || !canWrite}
+                  title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+                  data-testid="fleet-bulkbar-resume"
+                >
+                  {bulkResumePending ? 'Resuming…' : '▶ resume'}
+                </button>
+              </Tooltip>
+              <button
+                type="button"
+                className="fleet-bulkbar__btn fleet-bulkbar__btn--ghost"
+                onClick={() => setSelected(new Set())}
+                data-testid="fleet-bulkbar-clear"
+              >
+                clear
+              </button>
+            </div>
+          ) : undefined}
         />
-      )}
-
-      {view === 'agents' && selected.size > 0 && (
-        <div className="fleet-bulkbar" data-testid="fleet-bulkbar">
-          <span className="fleet-bulkbar__count" data-testid="fleet-bulkbar-count">
-            {selected.size} selected
-          </span>
-          <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
-            <button
-              type="button"
-              className="fleet-bulkbar__btn"
-              onClick={() => toast(`Switched ${selected.size} agents to shadow mode (mock)`, 'info')}
-              disabled={!canWrite}
-              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
-              data-testid="fleet-bulkbar-shadow"
-            >
-              → shadow mode
-            </button>
-            <button
-              type="button"
-              className="fleet-bulkbar__btn fleet-bulkbar__btn--danger"
-              onClick={() => setShowBulkSuspendDialog(true)}
-              disabled={bulkSuspendPending || bulkResumePending || !canWrite}
-              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
-              data-testid="fleet-bulkbar-suspend"
-            >
-              ■ suspend
-            </button>
-            <button
-              type="button"
-              className="fleet-bulkbar__btn"
-              onClick={() => ignorePromise(onClickBulkResume())}
-              disabled={bulkSuspendPending || bulkResumePending || !canWrite}
-              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
-              data-testid="fleet-bulkbar-resume"
-            >
-              {bulkResumePending ? 'Resuming…' : '▶ resume'}
-            </button>
-          </Tooltip>
-          <button
-            type="button"
-            className="fleet-bulkbar__btn fleet-bulkbar__btn--ghost"
-            onClick={() => setSelected(new Set())}
-            data-testid="fleet-bulkbar-clear"
-          >
-            clear
-          </button>
-        </div>
       )}
 
       {view === 'agents' && isError && (

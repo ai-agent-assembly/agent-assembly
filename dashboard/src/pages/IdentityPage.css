@@ -6,15 +6,33 @@
 
 .iam-page__header {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 1rem;
 }
 
+.iam-page__audit-link {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .iam-page__header h1 {
   margin: 0;
   font-size: 1.5rem;
+}
+
+.iam-page__sub {
+  margin: 0.35rem 0 0;
+  max-width: 46rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--shell-text-muted);
+}
+
+.iam-page__sub code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.8rem;
 }
 
 .iam-page__audit-link {
@@ -48,6 +66,23 @@
 }
 
 .iam-page__tab:hover {
+  color: var(--shell-text);
+}
+
+.iam-page__tab-count {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.4rem;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.4;
+  background: var(--shell-surface-muted);
+  border: 1px solid var(--shell-border-subtle);
+  color: var(--shell-text-muted);
+}
+
+.iam-page__tab--active .iam-page__tab-count {
   color: var(--shell-text);
 }
 

@@ -16,11 +16,11 @@ import type { InviteMemberInput, Member, MemberPage, UpdateMemberRoleInput } fro
  * endpoints exist — the public hook signatures will not change.
  */
 const SEED_MEMBERS: Member[] = [
-  { id: 'me', email: 'alice@agent-assembly.dev', name: 'Alice Owner', role: 'Owner', status: 'active', last_active: '2026-05-13T10:14:00Z' },
-  { id: 'mbr-2', email: 'bob@agent-assembly.dev', name: 'Bob Admin', role: 'Admin', status: 'active', last_active: '2026-05-12T22:01:00Z' },
-  { id: 'mbr-3', email: 'carol@agent-assembly.dev', name: 'Carol Member', role: 'Member', status: 'active', last_active: '2026-05-11T08:30:00Z' },
-  { id: 'mbr-4', email: 'dave@agent-assembly.dev', name: 'Dave Viewer', role: 'Viewer', status: 'active', last_active: null },
-  { id: 'mbr-5', email: 'eve@partner.example', name: 'Eve Partner', role: 'Viewer', status: 'invited', last_active: null },
+  { id: 'me', email: 'alice@agent-assembly.dev', name: 'Alice Owner', role: 'org_admin', status: 'active', last_active: '2026-05-13T10:14:00Z', teams: ['platform'] },
+  { id: 'mbr-2', email: 'bob@agent-assembly.dev', name: 'Bob Admin', role: 'team_admin', status: 'active', last_active: '2026-05-12T22:01:00Z', teams: ['platform', 'cx'] },
+  { id: 'mbr-3', email: 'carol@agent-assembly.dev', name: 'Carol Member', role: 'developer', status: 'active', last_active: '2026-05-11T08:30:00Z', teams: ['analytics'] },
+  { id: 'mbr-4', email: 'dave@agent-assembly.dev', name: 'Dave Viewer', role: 'viewer', status: 'active', last_active: null, teams: ['cx'] },
+  { id: 'mbr-5', email: 'eve@partner.example', name: 'Eve Partner', role: 'viewer', status: 'invited', last_active: null, teams: [] },
 ]
 
 const store: { members: Member[] } = { members: [...SEED_MEMBERS] }
@@ -87,6 +87,7 @@ function inviteMember(input: InviteMemberInput): Promise<Member> {
     role: input.role,
     status: 'invited',
     last_active: null,
+    teams: [],
   }
   store.members = [...store.members, created]
   return Promise.resolve(created)
