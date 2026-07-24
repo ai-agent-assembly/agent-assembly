@@ -149,6 +149,8 @@ fn protected_router() -> Router {
         // Tools
         .route("/tools", get(tools::list_tools))
         // Topology
+        // Whole-fleet node+edge graph for the dashboard Topology page (AAASM-5040).
+        .route("/topology", get(topology::get_topology_graph))
         .route("/topology/overview", get(topology::get_overview))
         .route("/topology/tree/{root_id}", get(topology::get_tree))
         .route("/topology/team/{team_id}", get(topology::get_team))
