@@ -14,15 +14,17 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
+use aa_core::identity::AgentId;
 use aa_core::topology::EdgeType;
 use aa_gateway::registry::{AgentRecord, AgentRegistry, AgentStatus};
+use rust_decimal::prelude::ToPrimitive;
 
 use crate::auth::scope::{RequireRead, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::models::topology::{agent_flagged, agent_mode, format_id, status_str};
 pub use crate::models::topology::{
-    AgentLineage, AgentNode, AgentTree, LineageStep, TeamSummary, TeamTopology, TopologyGraphEdge,
+    AgentLineage, AgentNode, AgentTree, LineageStep, NodeBudget, TeamSummary, TeamTopology, TopologyGraphEdge,
     TopologyGraphResponse, TopologyOverview, TopologyStats,
 };
 use crate::state::AppState;
@@ -750,6 +752,11 @@ pub async fn get_stats(
 /// end-to-end — plus the `delegation` and `call` edges between those nodes from
 /// the topology edge store.
 ///
+/// Unlike the sibling `/topology/*` routes, this handler additionally enriches
+/// each node's `owner` / `policy_count` / `budget` (AAASM-5045) from registry
+/// metadata, the policy-engine cascade, and the budget tracker respectively, so
+/// the dashboard node-detail panel renders real values rather than placeholders.
+///
 /// Tenant-scoped, `RequireRead`, deny-by-default exactly like the sibling
 /// `/topology/*` routes: a non-admin caller with no tenant scope receives an
 /// empty graph rather than a cross-tenant dump (AAASM-3483). An edge is emitted
@@ -785,7 +792,46 @@ pub async fn get_topology_graph(
         .collect();
 
     let visible_ids: HashSet<[u8; 16]> = records.iter().map(|r| r.agent_id).collect();
-    let mut nodes: Vec<AgentNode> = records.iter().map(AgentNode::from).collect();
+
+    // AAASM-5045 — enrich each node's owner / policy_count / budget from live
+    // registry, policy-engine, and budget-tracker state so the node-detail panel
+    // renders real values instead of neutral placeholders. `owner` is set by the
+    // `From<&AgentRecord>` impl (a pure metadata read); `policy_count` and
+    // `budget` need the two stores below, which only this whole-fleet handler
+    // reaches — the list / tree endpoints leave them `null`.
+    //
+    // Budget: snapshot once (not per node) and index today's per-agent spend by
+    // the same 32-char hex the node id uses, mirroring the `/api/v1/costs`
+    // per-agent breakdown that reads the identical tracker state.
+    let budget_snapshot = state.budget_tracker.snapshot();
+    let spend_by_id: HashMap<String, f64> = budget_snapshot
+        .per_agent
+        .iter()
+        .map(|e| (e.agent_id_hex.clone(), e.state.spent_usd.to_f64().unwrap_or(0.0)))
+        .collect();
+    // Effective daily limit = per-agent override, else the server-wide daily
+    // limit; `null` when neither is configured (the panel then shows the
+    // "no limit" placeholder rather than a misleading 0).
+    let global_daily_limit = state.budget_tracker.daily_limit_usd();
+
+    let mut nodes: Vec<AgentNode> = records
+        .iter()
+        .map(|r| {
+            let mut node = AgentNode::from(r);
+            let agent_id = AgentId::from_bytes(r.agent_id);
+            node.policy_count = Some(state.policy_engine.collect_cascade(&agent_id).len() as u32);
+            let limit_usd = state
+                .budget_tracker
+                .agent_daily_limit_usd(&agent_id)
+                .or(global_daily_limit)
+                .and_then(|d| d.to_f64());
+            node.budget = Some(NodeBudget {
+                spend_usd: spend_by_id.get(&node.id).copied().unwrap_or(0.0),
+                limit_usd,
+            });
+            node
+        })
+        .collect();
     nodes.sort_by(|a, b| a.id.cmp(&b.id));
 
     // Edges: the graph models exactly two relation kinds — `delegation`
