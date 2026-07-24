@@ -27,6 +27,10 @@
   box-shadow: 0 22px 70px rgba(0, 0, 0, 0.26);
 }
 
+.policy-simulate::backdrop {
+  background: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
 .policy-simulate__head {
   display: flex;
   align-items: flex-start;
@@ -226,7 +230,7 @@
   margin: 0;
   font-size: 0.8125rem;
   color: var(--ink);
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .policy-simulate__muted {
