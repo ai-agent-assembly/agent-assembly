@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import type { EnforcementBucket, EnforcementTimeline as EnforcementTimelineData } from '../../features/overview/api'
 import './EnforcementTimeline.css'
 
@@ -21,8 +22,8 @@ const LANES: readonly Lane[] = [
  * `MiniBar`). `max` is floored at 1 to avoid a divide-by-zero on an all-zero
  * lane.
  */
-function MiniBar({ values, color }: Readonly<{ values: number[]; color: string }>) {
-  const max = Math.max(1, ...values)
+function MiniBar({ bars, color }: Readonly<{ bars: readonly { ts: number; value: number }[]; color: string }>) {
+  const max = Math.max(1, ...bars.map((b) => b.value))
   const barW = 6
   const step = 8
   const height = 28
@@ -30,21 +31,27 @@ function MiniBar({ values, color }: Readonly<{ values: number[]; color: string }
   return (
     <svg
       className="etl-bar"
-      viewBox={`0 0 ${Math.max(1, values.length) * step} ${height}`}
+      viewBox={`0 0 ${Math.max(1, bars.length) * step} ${height}`}
       preserveAspectRatio="none"
       role="img"
       aria-hidden="true"
     >
-      {values.map((v, i) => {
-        const h = (v / max) * usable
-        return <rect key={i} x={i * step} y={height - h} width={barW} height={h} fill={color} />
+      {bars.map((bar, i) => {
+        const h = (bar.value / max) * usable
+        // Key on the bucket timestamp (unique + stable per bucket); the index still
+        // drives horizontal placement, but is not used as the React key.
+        return <rect key={bar.ts} x={i * step} y={height - h} width={barW} height={h} fill={color} />
       })}
     </svg>
   )
 }
 
-/** Evenly-spaced time-axis tick labels derived from the bucket timestamps. */
-function axisTicks(buckets: EnforcementBucket[], window: string): string[] {
+/**
+ * Evenly-spaced time-axis ticks derived from the bucket timestamps. Each entry
+ * carries a stable `key` — the fixed quartile slot (or `now`) — so React can key
+ * on it without the array index, which duplicate labels would otherwise force.
+ */
+function axisTicks(buckets: EnforcementBucket[], window: string): { key: string; label: string }[] {
   if (buckets.length === 0) return []
   const format = (ms: number) => {
     const d = new Date(ms)
@@ -53,7 +60,7 @@ function axisTicks(buckets: EnforcementBucket[], window: string): string[] {
       : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
   const idxs = [0, Math.floor(buckets.length / 4), Math.floor(buckets.length / 2), Math.floor((buckets.length * 3) / 4)]
-  return [...idxs.map((i) => format(buckets[i].ts)), 'now']
+  return [...idxs.map((i, slot) => ({ key: `q${slot}`, label: format(buckets[i].ts) })), { key: 'now', label: 'now' }]
 }
 
 /**
@@ -72,6 +79,47 @@ export function EnforcementTimeline({
   const buckets = data?.buckets ?? []
   const total = buckets.reduce((sum, b) => sum + b.allow + b.narrow + b.deny + b.scrub, 0)
 
+  // Pick the body with an explicit branch rather than a nested ternary
+  // (loading → error → empty → chart), keeping the render tree readable.
+  let body: ReactNode
+  if (isLoading) {
+    body = (
+      <p className="overview-empty-note" data-testid="overview-enforcement-timeline-loading">
+        Loading enforcement timeline…
+      </p>
+    )
+  } else if (isError) {
+    body = (
+      <p className="overview-empty-note" data-testid="overview-enforcement-timeline-error">
+        Enforcement timeline unavailable.
+      </p>
+    )
+  } else if (total === 0) {
+    body = (
+      <p className="overview-empty-note" data-testid="overview-enforcement-timeline-empty">
+        No enforcement decisions in this window.
+      </p>
+    )
+  } else {
+    body = (
+      <>
+        <div className="etl-grid" data-testid="overview-enforcement-timeline-chart">
+          {LANES.map((lane) => (
+            <div className="etl-row" key={lane.key}>
+              <div className="etl-row__label">{lane.key}</div>
+              <MiniBar bars={buckets.map((b) => ({ ts: b.ts, value: b[lane.key] }))} color={lane.color} />
+            </div>
+          ))}
+        </div>
+        <div className="etl-axis">
+          {axisTicks(buckets, window).map((tick) => (
+            <span key={tick.key}>{tick.label}</span>
+          ))}
+        </div>
+      </>
+    )
+  }
+
   return (
     <section className="overview-card enforcement-timeline" data-testid="overview-enforcement-timeline">
       <div className="etl-head">
@@ -84,35 +132,7 @@ export function EnforcementTimeline({
           ))}
         </div>
       </div>
-      {isLoading ? (
-        <p className="overview-empty-note" data-testid="overview-enforcement-timeline-loading">
-          Loading enforcement timeline…
-        </p>
-      ) : isError ? (
-        <p className="overview-empty-note" data-testid="overview-enforcement-timeline-error">
-          Enforcement timeline unavailable.
-        </p>
-      ) : total === 0 ? (
-        <p className="overview-empty-note" data-testid="overview-enforcement-timeline-empty">
-          No enforcement decisions in this window.
-        </p>
-      ) : (
-        <>
-          <div className="etl-grid" data-testid="overview-enforcement-timeline-chart">
-            {LANES.map((lane) => (
-              <div className="etl-row" key={lane.key}>
-                <div className="etl-row__label">{lane.key}</div>
-                <MiniBar values={buckets.map((b) => b[lane.key])} color={lane.color} />
-              </div>
-            ))}
-          </div>
-          <div className="etl-axis">
-            {axisTicks(buckets, window).map((tick, i) => (
-              <span key={i}>{tick}</span>
-            ))}
-          </div>
-        </>
-      )}
+      {body}
     </section>
   )
 }
