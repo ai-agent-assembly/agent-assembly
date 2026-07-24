@@ -5,6 +5,8 @@ import type { components } from '../../api/generated/schema'
 
 export type Policy = components['schemas']['PolicyResponse']
 export type CreatePolicyRequest = components['schemas']['CreatePolicyRequest']
+export type SimulatePolicyRequest = components['schemas']['SimulatePolicyRequest']
+export type SimulatePolicyResponse = components['schemas']['SimulatePolicyResponse']
 
 export function usePoliciesQuery() {
   return useQuery({
@@ -97,6 +99,22 @@ export function useCreatePolicy() {
     // version, rule_count, and active flag).
     onSettled: () => {
       ignorePromise(queryClient.invalidateQueries({ queryKey: ['policies'] }))
+    },
+  })
+}
+
+/**
+ * Dry-run a hypothetical `(agent, tool, target)` request against the active
+ * policy (AAASM-5037). Read-only what-if: the endpoint mutates no state, so
+ * this mutation touches no query cache — the caller renders the returned
+ * verdict directly.
+ */
+export function useSimulatePolicy() {
+  return useMutation<SimulatePolicyResponse, Error, SimulatePolicyRequest>({
+    mutationFn: async (body) => {
+      const { data, error } = await api.POST('/api/v1/policies/simulate', { body })
+      if (error || !data) throw new Error('Failed to simulate policy')
+      return data
     },
   })
 }
