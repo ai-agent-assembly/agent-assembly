@@ -1,11 +1,41 @@
 import { render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, beforeEach, describe, it, expect } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi, type Mock } from 'vitest'
 import { RoleCapabilityCards, RoleCapabilityCard } from './RoleCapabilityCards'
-import type { RoleCard } from './roleCapabilities'
+import type { LiveRoleGrant, RoleCard } from './roleCapabilities'
 import { buildRoleCards, ROLE_CAPABILITY_CATALOGUE } from './roleCapabilities'
 import { _iamInternal } from './api'
+import { api } from '../../api/client'
 import { ROLES, type Member } from './types'
+
+// Live grants as returned by GET /api/v1/iam/roles — the gateway's real
+// policy-RBAC model (AAASM-5046).
+const LIVE_GRANTS: LiveRoleGrant[] = [
+  {
+    role: 'org_admin',
+    description: 'Full policy mutation rights across all scopes.',
+    capabilities: [
+      'read:policies',
+      'write:policies:global',
+      'write:policies:org',
+      'write:policies:team',
+      'write:policies:agent',
+      'write:policies:tool',
+    ],
+  },
+  {
+    role: 'team_admin',
+    description: 'Can mutate team-scoped policies and below (Agent, Tool).',
+    capabilities: ['read:policies', 'write:policies:team', 'write:policies:agent', 'write:policies:tool'],
+  },
+  {
+    role: 'developer',
+    description: 'Can mutate agent- and tool-scoped policies only.',
+    capabilities: ['read:policies', 'write:policies:agent', 'write:policies:tool'],
+  },
+  { role: 'viewer', description: 'Read-only access — no writes permitted.', capabilities: ['read:policies'] },
+  { role: 'auditor', description: 'Read-only audit access — no writes permitted.', capabilities: ['read:audit'] },
+]
 
 function renderCards() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -16,14 +46,21 @@ function renderCards() {
   )
 }
 
+let get: Mock
+
 beforeEach(() => {
   _iamInternal.reset()
+  // Default: the roles endpoint is unreachable, so the cards fall back to the
+  // static catalogue. Live-path tests override this per case.
+  get = vi.spyOn(api, 'GET') as unknown as Mock
+  get.mockRejectedValue(new Error('no gateway'))
 })
 afterEach(() => {
   _iamInternal.reset()
+  vi.restoreAllMocks()
 })
 
-describe('buildRoleCards', () => {
+describe('buildRoleCards — static fallback', () => {
   it('emits one card per built-in role, in catalogue order', () => {
     const cards = buildRoleCards([])
     expect(cards.map((c) => c.role)).toEqual([...ROLES])
@@ -54,7 +91,37 @@ describe('buildRoleCards', () => {
   })
 })
 
-describe('RoleCapabilityCards', () => {
+describe('buildRoleCards — live grants', () => {
+  it('emits one card per live role, using the server grants', () => {
+    const cards = buildRoleCards([], LIVE_GRANTS)
+    expect(cards.map((c) => c.role)).toEqual(['org_admin', 'team_admin', 'developer', 'viewer', 'auditor'])
+    const orgAdmin = cards.find((c) => c.role === 'org_admin')
+    expect(orgAdmin?.capabilities).toEqual(LIVE_GRANTS[0].capabilities)
+    expect(orgAdmin?.description).toBe(LIVE_GRANTS[0].description)
+  })
+
+  it('joins members onto live roles by case-insensitive role name', () => {
+    const members: Member[] = [
+      { id: 'd', email: 'd@x.dev', name: 'Dee Viewer', role: 'Viewer', status: 'active', last_active: null },
+      { id: 'o', email: 'o@x.dev', name: 'Ollie Owner', role: 'Owner', status: 'active', last_active: null },
+    ]
+    const cards = buildRoleCards(members, LIVE_GRANTS)
+    const viewer = cards.find((c) => c.role === 'viewer')
+    // 'Viewer' member matches the gateway 'viewer' role id case-insensitively.
+    expect(viewer?.memberCount).toBe(1)
+    expect(viewer?.assignees.map((m) => m.id)).toEqual(['d'])
+    // 'org_admin' has no same-named member — no fabricated crosswalk.
+    const orgAdmin = cards.find((c) => c.role === 'org_admin')
+    expect(orgAdmin?.memberCount).toBe(0)
+  })
+
+  it('falls back to the static catalogue when live grants are empty', () => {
+    const cards = buildRoleCards([], [])
+    expect(cards.map((c) => c.role)).toEqual([...ROLES])
+  })
+})
+
+describe('RoleCapabilityCards — static fallback (endpoint unavailable)', () => {
   it('renders a card for every built-in role', async () => {
     renderCards()
     for (const role of ROLES) {
@@ -69,7 +136,7 @@ describe('RoleCapabilityCards', () => {
     expect(within(ownerCaps).getByText('approve:any')).toBeInTheDocument()
   })
 
-  it('always surfaces the backend-gated grant flag', async () => {
+  it('surfaces the backend-gated grant flag when no live grants are present', async () => {
     renderCards()
     expect(await screen.findByTestId('role-cards-grant-flag')).toBeInTheDocument()
   })
@@ -89,6 +156,41 @@ describe('RoleCapabilityCards', () => {
     const viewerCard = await screen.findByTestId('role-card-Viewer')
     expect(await within(viewerCard).findByText('Dave')).toBeInTheDocument()
     expect(within(viewerCard).getByTestId('role-card-count-Viewer')).toHaveTextContent('2 members')
+  })
+})
+
+describe('RoleCapabilityCards — live grants', () => {
+  beforeEach(() => {
+    get.mockResolvedValue({ data: LIVE_GRANTS })
+  })
+
+  it('renders a card for every live gateway role', async () => {
+    renderCards()
+    for (const grant of LIVE_GRANTS) {
+      expect(await screen.findByTestId(`role-card-${grant.role}`)).toBeInTheDocument()
+    }
+  })
+
+  it('drops the grant flag banner when live grants are present', async () => {
+    renderCards()
+    // Wait for a live card to confirm the fetch resolved before asserting absence.
+    await screen.findByTestId('role-card-org_admin')
+    expect(screen.queryByTestId('role-cards-grant-flag')).not.toBeInTheDocument()
+  })
+
+  it('renders capability chips from the live grants', async () => {
+    renderCards()
+    const orgAdminCaps = await screen.findByTestId('role-card-caps-org_admin')
+    expect(within(orgAdminCaps).getByText('write:policies:global')).toBeInTheDocument()
+    const auditorCaps = await screen.findByTestId('role-card-caps-auditor')
+    expect(within(auditorCaps).getByText('read:audit')).toBeInTheDocument()
+  })
+
+  it('joins seeded viewers onto the live viewer role', async () => {
+    renderCards()
+    const viewerCard = await screen.findByTestId('role-card-viewer')
+    expect(await within(viewerCard).findByText('Dave')).toBeInTheDocument()
+    expect(within(viewerCard).getByTestId('role-card-count-viewer')).toHaveTextContent('2 members')
   })
 })
 
