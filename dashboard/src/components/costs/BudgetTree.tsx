@@ -20,6 +20,68 @@ function defaultExpanded(node: BudgetTreeNode, acc: Set<string> = new Set()): Se
   return acc
 }
 
+/** Disclosure glyph for a row: a caret when it has children, a dot for a leaf. */
+function caretGlyph(hasKids: boolean, open: boolean): string {
+  if (!hasKids) return '·'
+  return open ? '▾' : '▸'
+}
+
+interface RowMetrics {
+  readonly limit: number
+  readonly own: number
+  readonly subtree: number
+  readonly totalPct: number
+  readonly ownPct: number
+  readonly childPct: number
+  readonly parentPct: number | null
+  readonly color: string
+}
+
+/**
+ * Derive the spend/limit percentages a row renders. A subtree burn is capped at
+ * 100%; the own-spend band never overflows the remaining track. `parentPct` is
+ * null at the root (no parent budget to consume a share of).
+ */
+function rowMetrics(node: BudgetTreeNode, parentLimit: number): RowMetrics {
+  const limit = num(node.budget_limit_usd)
+  const own = num(node.own_spend_usd)
+  const subtree = num(node.subtree_spend_usd)
+  const childSpend = Math.max(0, subtree - own)
+
+  const totalPct = limit > 0 ? Math.min(100, (subtree / limit) * 100) : 0
+  const ownPct = limit > 0 ? Math.min(100, (own / limit) * 100) : 0
+  const childPct = limit > 0 ? Math.min(100 - ownPct, (childSpend / limit) * 100) : 0
+  const parentPct = parentLimit > 0 ? Math.min(100, (subtree / parentLimit) * 100) : null
+
+  return { limit, own, subtree, totalPct, ownPct, childPct, parentPct, color: burnColor(totalPct) }
+}
+
+interface BurnMeterProps {
+  readonly totalPct: number
+  readonly ownPct: number
+  readonly childPct: number
+  readonly color: string
+  readonly showSub: boolean
+}
+
+/** Subtree-burn cell: total percent, an optional sub-agent share, and the bar. */
+function BurnMeter({ totalPct, ownPct, childPct, color, showSub }: BurnMeterProps) {
+  return (
+    <div className="budget-tree__burn">
+      <div className="budget-tree__burn-meta">
+        <span style={{ color, fontWeight: 600 }}>{totalPct.toFixed(1)}%</span>
+        {showSub && <span className="budget-tree__burn-sub">+{childPct.toFixed(0)}% sub-agents</span>}
+      </div>
+      <div className="budget-tree__burn-track">
+        <div className="budget-tree__burn-total" style={{ width: `${totalPct}%`, background: color }} />
+        {ownPct > 0 && (
+          <div className="budget-tree__burn-own" style={{ width: `${ownPct}%`, background: color }} />
+        )}
+      </div>
+    </div>
+  )
+}
+
 interface RowProps {
   readonly node: BudgetTreeNode
   readonly parentLimit: number
@@ -36,71 +98,55 @@ interface RowProps {
 function BudgetRow({ node, parentLimit, expanded, onToggle }: RowProps) {
   const hasKids = node.children.length > 0
   const open = expanded.has(node.id)
+  const m = rowMetrics(node, parentLimit)
 
-  const limit = num(node.budget_limit_usd)
-  const own = num(node.own_spend_usd)
-  const subtree = num(node.subtree_spend_usd)
-  const childSpend = Math.max(0, subtree - own)
-
-  const totalPct = limit > 0 ? Math.min(100, (subtree / limit) * 100) : 0
-  const ownPct = limit > 0 ? Math.min(100, (own / limit) * 100) : 0
-  const childPct = limit > 0 ? Math.min(100 - ownPct, (childSpend / limit) * 100) : 0
-  const parentPct = parentLimit > 0 ? Math.min(100, (subtree / parentLimit) * 100) : null
-  const color = burnColor(totalPct)
+  const toggle = hasKids ? () => onToggle(node.id) : undefined
+  const parentColor = m.parentPct != null && m.parentPct >= 70 ? { color: m.color } : undefined
 
   return (
     <>
       <div
-        className={`budget-tree__row${totalPct >= 85 ? ' budget-tree__row--critical' : ''}`}
+        className={`budget-tree__row${m.totalPct >= 85 ? ' budget-tree__row--critical' : ''}`}
         role="row"
         data-testid={`budget-node-${node.id}`}
         data-kind={node.kind}
-        onClick={hasKids ? () => onToggle(node.id) : undefined}
+        onClick={toggle}
         style={{ cursor: hasKids ? 'pointer' : 'default' }}
       >
         <div className="budget-tree__name" style={{ paddingLeft: `${node.depth * 18}px` }}>
           <span className="budget-tree__caret" aria-hidden="true">
-            {hasKids ? (open ? '▾' : '▸') : '·'}
+            {caretGlyph(hasKids, open)}
           </span>
           <span className={`budget-tree__kind budget-tree__kind--${node.kind}`}>{node.kind}</span>
           <span className="budget-tree__label" title={node.label}>
             {node.label}
           </span>
-          {node.governance_level && (
-            <span className="budget-tree__gov">{node.governance_level}</span>
-          )}
+          {node.governance_level && <span className="budget-tree__gov">{node.governance_level}</span>}
         </div>
 
-        <div className="budget-tree__own">{own > 0 ? `$${own.toFixed(2)}` : '—'}</div>
-        <div className="budget-tree__subtree" style={{ color }}>
-          ${subtree.toFixed(2)}
+        <div className="budget-tree__own">{m.own > 0 ? `$${m.own.toFixed(2)}` : '—'}</div>
+        <div className="budget-tree__subtree" style={{ color: m.color }}>
+          ${m.subtree.toFixed(2)}
         </div>
-        <div className="budget-tree__limit">{limit > 0 ? `$${limit.toFixed(0)}` : '—'}</div>
+        <div className="budget-tree__limit">{m.limit > 0 ? `$${m.limit.toFixed(0)}` : '—'}</div>
 
-        <div className="budget-tree__burn">
-          <div className="budget-tree__burn-meta">
-            <span style={{ color, fontWeight: 600 }}>{totalPct.toFixed(1)}%</span>
-            {hasKids && childPct > 1 && (
-              <span className="budget-tree__burn-sub">+{childPct.toFixed(0)}% sub-agents</span>
-            )}
-          </div>
-          <div className="budget-tree__burn-track">
-            <div className="budget-tree__burn-total" style={{ width: `${totalPct}%`, background: color }} />
-            {ownPct > 0 && (
-              <div className="budget-tree__burn-own" style={{ width: `${ownPct}%`, background: color }} />
-            )}
-          </div>
-        </div>
+        <BurnMeter
+          totalPct={m.totalPct}
+          ownPct={m.ownPct}
+          childPct={m.childPct}
+          color={m.color}
+          showSub={hasKids && m.childPct > 1}
+        />
 
-        <div className="budget-tree__parent" style={parentPct != null && parentPct >= 70 ? { color } : undefined}>
-          {parentPct != null ? `${parentPct.toFixed(0)}%` : '—'}
+        <div className="budget-tree__parent" style={parentColor}>
+          {m.parentPct != null ? `${m.parentPct.toFixed(0)}%` : '—'}
         </div>
       </div>
 
       {hasKids &&
         open &&
         node.children.map(child => (
-          <BudgetRow key={child.id} node={child} parentLimit={limit} expanded={expanded} onToggle={onToggle} />
+          <BudgetRow key={child.id} node={child} parentLimit={m.limit} expanded={expanded} onToggle={onToggle} />
         ))}
     </>
   )
