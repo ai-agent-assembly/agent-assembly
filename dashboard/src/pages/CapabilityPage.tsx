@@ -122,7 +122,11 @@ export function CapabilityPage() {
   if (matrix.agents.length === 0) {
     return (
       <div className="capability-page" data-testid="capability-page">
-        <EmptyState page="capability" />
+        <EmptyState
+          page="capability"
+          onCta={() => navigate('/onboarding')}
+          onSecondary={() => navigate('/onboarding')}
+        />
       </div>
     )
   }

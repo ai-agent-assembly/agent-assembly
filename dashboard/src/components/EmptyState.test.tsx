@@ -4,30 +4,36 @@ import { describe, expect, it, vi } from 'vitest'
 import { EmptyState } from './EmptyState'
 
 describe('EmptyState', () => {
-  describe('button suppression when handlers are absent', () => {
-    it('renders no buttons and no actions wrapper when neither handler is supplied', () => {
-      const { container } = render(<EmptyState page="live" />)
-      expect(screen.queryByRole('button')).toBeNull()
-      expect(container.querySelector('.state-actions')).toBeNull()
-    })
-
-    it('renders only the primary button when only onCta is supplied', () => {
-      render(<EmptyState page="live" onCta={() => {}} />)
+  describe('buttons render from copy, not handler presence', () => {
+    it('renders both copy-defined buttons even when no handlers are supplied', () => {
+      // Regression for AAASM-5061: pages that render EmptyState without
+      // passing handlers must still show the CTAs the copy defines.
+      render(<EmptyState page="live" />)
       const buttons = screen.getAllByRole('button')
-      expect(buttons).toHaveLength(1)
+      expect(buttons).toHaveLength(2)
       expect(buttons[0].textContent).toMatch(/Generate test traffic/)
+      expect(buttons[1].textContent).toMatch(/View 24h history/)
     })
 
-    it('renders only the secondary button when only onSecondary is supplied', () => {
-      render(<EmptyState page="live" onSecondary={() => {}} />)
+    it('renders both copy-defined buttons regardless of which handler is supplied', () => {
+      render(<EmptyState page="live" onCta={() => {}} />)
+      expect(screen.getAllByRole('button')).toHaveLength(2)
+    })
+
+    it('clicking a copy-defined button with no handler does not throw', async () => {
+      const user = userEvent.setup()
+      render(<EmptyState page="live" />)
+      await user.click(screen.getByRole('button', { name: /Generate test traffic/ }))
+      expect(screen.getByRole('button', { name: /Generate test traffic/ })).toBeInTheDocument()
+    })
+
+    it('renders only the primary button when copy defines no secondary', () => {
+      // The `fleet` COPY entry has a cta but secondary: null.
+      const { container } = render(<EmptyState page="fleet" />)
       const buttons = screen.getAllByRole('button')
       expect(buttons).toHaveLength(1)
-      expect(buttons[0].textContent).toMatch(/View 24h history/)
-    })
-
-    it('renders both buttons when both handlers are supplied', () => {
-      render(<EmptyState page="live" onCta={() => {}} onSecondary={() => {}} />)
-      expect(screen.getAllByRole('button')).toHaveLength(2)
+      expect(buttons[0].textContent).toMatch(/Clear filters/)
+      expect(container.querySelector('.state-actions')).not.toBeNull()
     })
   })
 
@@ -70,6 +76,18 @@ describe('EmptyState', () => {
       render(<EmptyState page="live" />)
       expect(screen.getByText(/No traffic in the last 60s/)).toBeInTheDocument()
       expect(screen.getByText(/runtime · idle/)).toBeInTheDocument()
+    })
+
+    it('keeps the restored trailing copy from the hi-fi spec', () => {
+      // Regression for AAASM-5062: these sentences were trimmed and restored.
+      const { rerender } = render(<EmptyState page="fleet" />)
+      expect(screen.getByText(/last\s+fleet sync/)).toBeInTheDocument()
+      rerender(<EmptyState page="capability" />)
+      expect(screen.getByText(/to populate\s+this view/)).toBeInTheDocument()
+      rerender(<EmptyState page="agent" />)
+      expect(screen.getByText(/AGENT_ASSEMBLY_TOKEN/)).toBeInTheDocument()
+      rerender(<EmptyState page="scrub" />)
+      expect(screen.getByText(/scan\s+and replace matches in real time/)).toBeInTheDocument()
     })
 
     it('exposes a `data-testid` keyed on the page slug', () => {

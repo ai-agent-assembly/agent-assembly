@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactElement } from 'react'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '../components/ToastProvider'
 import { useAgentsQuery } from '../features/agents/api'
@@ -10,7 +11,11 @@ import type { LiveOperation } from '../features/liveOps/types'
 import { LiveOpsPage } from './LiveOpsPage'
 
 function renderWithProviders(ui: ReactElement) {
-  return render(<ToastProvider>{ui}</ToastProvider>)
+  return render(
+    <MemoryRouter>
+      <ToastProvider>{ui}</ToastProvider>
+    </MemoryRouter>,
+  )
 }
 
 vi.mock('../features/agents/api', () => ({
@@ -250,9 +255,11 @@ describe('LiveOpsPage', () => {
     // New op streams in; rendered list stays frozen at 1, pill shows backlog.
     mockStream({ ops: [makeOp('op-2'), makeOp('op-1')] })
     rerender(
-      <ToastProvider>
-        <LiveOpsPage />
-      </ToastProvider>,
+      <MemoryRouter>
+        <ToastProvider>
+          <LiveOpsPage />
+        </ToastProvider>
+      </MemoryRouter>,
     )
     expect(screen.getAllByTestId('op-row')).toHaveLength(1)
     expect(screen.getByTestId('auto-scroll-flush')).toHaveTextContent(
@@ -295,9 +302,11 @@ describe('LiveOpsPage', () => {
     // (under the pre-1422 model `terminating` only cleared on `completing`).
     mockStream({ ops: [makeOp('op-1', { status: 'terminated' })] })
     rerender(
-      <ToastProvider>
-        <LiveOpsPage />
-      </ToastProvider>,
+      <MemoryRouter>
+        <ToastProvider>
+          <LiveOpsPage />
+        </ToastProvider>
+      </MemoryRouter>,
     )
     expect(screen.queryByTestId('op-row-override')).toBeNull()
   })

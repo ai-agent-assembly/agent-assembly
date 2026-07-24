@@ -51,6 +51,14 @@ export function ErrorState({ kind = 'generic', onRetry, onSecondary }: Readonly<
   const c = COPY[kind] ?? COPY.generic
   return (
     <div className="state-page" role="alert" data-testid={`error-state-${kind}`}>
+      {kind === 'live' && (
+        <div className="runtime-down" data-testid="runtime-down-banner">
+          <span className="pulse" aria-hidden />
+          <b>RUNTIME DISCONNECTED</b>
+          <span style={{ color: 'var(--ink-3)' }}>· last heartbeat 47s ago · auto-retry in 8s</span>
+          <span style={{ marginLeft: 'auto' }}>severity: P1</span>
+        </div>
+      )}
       <div className="state-block">
         <div className="state-icon state-icon--err" aria-hidden>
           {c.icon}
