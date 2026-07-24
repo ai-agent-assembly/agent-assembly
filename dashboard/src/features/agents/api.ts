@@ -11,6 +11,8 @@ export type BurnPeriod = '7d' | '30d'
 export type EffectivePermissions = components['schemas']['EffectivePermissionsResponse']
 export type PermissionSource = components['schemas']['PermissionSourceResponse']
 export type FleetActiveSession = components['schemas']['FleetActiveSessionResponse']
+export type AgentDecision = components['schemas']['AgentDecisionResponse']
+export type AgentDecisions = components['schemas']['AgentDecisionsResponse']
 
 export function useAgentsQuery() {
   return useQuery({
@@ -76,6 +78,28 @@ export function useAgentCapabilitiesQuery(id: string) {
       if (error) throw new Error('Failed to fetch agent capabilities')
       if (!data) throw new Error('Agent capabilities response was empty')
       return data
+    },
+    enabled: !!id,
+  })
+}
+
+/**
+ * Recent per-agent decision stream for the agent-detail Traffic tab (AAASM-5058).
+ *
+ * Reads `GET /api/v1/agents/{id}/decisions` — a read-only projection of the
+ * gateway's audit log, newest-first, one row per governance decision. The
+ * `latencyMs` column is always `null` today (no per-decision latency is
+ * recorded); the UI renders it as `—` rather than a fabricated number.
+ */
+export function useAgentDecisionsQuery(id: string, limit = 50) {
+  return useQuery<AgentDecision[]>({
+    queryKey: ['agents', id, 'decisions', limit],
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/v1/agents/{id}/decisions', {
+        params: { path: { id }, query: { limit } },
+      })
+      if (error) throw new Error('Failed to fetch agent decisions')
+      return data?.decisions ?? []
     },
     enabled: !!id,
   })

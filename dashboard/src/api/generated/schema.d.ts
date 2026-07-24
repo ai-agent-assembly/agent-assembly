@@ -140,6 +140,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{id}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/agents/:id/decisions` — recent per-agent decision stream.
+         * @description Read-only projection of the existing audit log: the agent's most recent
+         *     governance decisions, newest-first, one row per decision
+         *     (`design/v1/hi-fi/agent-detail.jsx` Traffic tab). Backs the agent-detail
+         *     Traffic tab's per-decision table beneath its aggregate summary (AAASM-5058).
+         *
+         *     Deny-by-default and tenant-scoped: [`authorize_agent_access`] confines the
+         *     caller to an agent in its own team (admin sees any; a caller with no team
+         *     scope is denied before any audit read), so the returned decisions never
+         *     cross a tenant boundary. Entries carrying no policy `decision` are skipped so
+         *     the stream is decisions only. No audit-write or enforcement path is touched.
+         */
+        get: operations["get_agent_decisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{id}/edges": {
         parameters: {
             query?: never;
@@ -1840,6 +1869,77 @@ export interface components {
             date: string;
             /** @description Total spend this month in USD for this agent (if monthly tracking is enabled). */
             monthly_spend_usd?: string | null;
+        };
+        /**
+         * @description One row of the agent's recent decision stream (AAASM-5058).
+         *
+         *     Backs the agent-detail Traffic tab's per-decision table
+         *     (`design/v1/hi-fi/agent-detail.jsx`), one row per governance decision the
+         *     gateway recorded for this agent. Every field is read straight from the
+         *     existing audit log — no enforcement or audit-write path is touched. Columns
+         *     the audit log has no source for are surfaced as `null` rather than
+         *     fabricated (see [`AgentDecisionResponse::latency_ms`]).
+         */
+        AgentDecisionResponse: {
+            /**
+             * Format: int64
+             * @description The policy `decision` as the proto [`Decision`](aa_proto::assembly::common::v1::Decision)
+             *     enum's **integer** discriminant, exactly as the gateway writes it (see
+             *     the AAASM-5035 note in `analytics::decision_is_error`): `1` = Allow,
+             *     `2` = Deny, `3` = Pending, `4` = Redact, `0` = Unspecified.
+             */
+            decision: number;
+            /**
+             * @description Lowercase label derived from `decision` (`allow` / `deny` / `pending` /
+             *     `redact` / `unspecified`) so the UI can map to its verdict styling
+             *     without re-deriving the enum. Derived, not a separate audit field.
+             */
+            decisionLabel: string;
+            /**
+             * Format: int64
+             * @description The design's `latency` column. **Always `null`: the audit log records no
+             *     per-decision latency today**, so it is surfaced nullable rather than
+             *     fabricated. Wired through so the column lands the day a latency source is
+             *     added, without another contract change.
+             */
+            latencyMs?: number | null;
+            /**
+             * @description The matched policy rule id (audit `policy_rule`, top-level or under
+             *     `detail`). The design's `policy` column. `null` when the decision
+             *     recorded no rule (e.g. a baseline allow with no matching rule).
+             */
+            matchedPolicy?: string | null;
+            /**
+             * @description The action's primary target derived from the audit `detail` (tool name,
+             *     file path, network host, process command, or LLM model). The design's
+             *     `resource` column. `null` when the detail carries no resolvable target.
+             */
+            resource?: string | null;
+            /**
+             * Format: int64
+             * @description Per-session monotonic sequence of the audit entry. Combined with
+             *     `sessionId` it uniquely identifies the row.
+             */
+            seq: number;
+            /**
+             * @description Hex-encoded id of the session the decision was recorded under. Lets the
+             *     UI link a row to its trace; not part of the visible design columns.
+             */
+            sessionId: string;
+            /** @description Decision timestamp as an RFC 3339 UTC string (audit `timestamp_ns`). */
+            timestamp: string;
+            /**
+             * @description The recorded action category (audit payload `action_type`, e.g.
+             *     `TOOL_CALL` / `FILE_OPERATION`). The design's `verb` column: the audit
+             *     log records the action *category*, not a fine-grained read/write verb,
+             *     so this is the closest recorded source. `null` when unrecorded.
+             */
+            verb?: string | null;
+        };
+        /** @description Recent per-agent decision stream (AAASM-5058). */
+        AgentDecisionsResponse: {
+            /** @description Decisions newest-first, capped to the request's `limit`. */
+            decisions: components["schemas"]["AgentDecisionResponse"][];
         };
         /** @description One agent's health sparkline. */
         AgentHealth: {
@@ -4900,6 +5000,63 @@ export interface operations {
             };
             /** @description Invalid agent ID format */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_decisions: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Maximum number of decision rows to return (newest-first). Defaults to
+                 *     [`DEFAULT_DECISIONS_LIMIT`], clamped to [`MAX_DECISIONS_LIMIT`].
+                 */
+                limit?: number | null;
+            };
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recent per-agent decisions, newest-first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDecisionsResponse"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks access to the agent's team */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

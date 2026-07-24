@@ -94,6 +94,37 @@
   color: var(--ink-4);
 }
 
+/* ── Decision stream (AAASM-5058) ─────────────────────────────── */
+
+/* Wide table scrolls inside its own container so the drawer body never gains a
+   horizontal scrollbar. */
+.adt-table-scroll {
+  overflow-x: auto;
+}
+
+.adt-verdict {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+.adt-ts {
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+
+.adt-resource {
+  color: var(--ink-2);
+}
+
+.adt-policy {
+  color: var(--ink-4);
+  font-size: 11px;
+}
+
 /* ── Traffic ──────────────────────────────────────────────────── */
 
 .adt-metric {
