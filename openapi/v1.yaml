@@ -1968,6 +1968,34 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/fleet/active-sessions:
+    get:
+      tags:
+      - agents
+      summary: |-
+        `GET /api/v1/fleet/active-sessions` — list currently-open agent sessions
+        across the whole fleet.
+      description: |-
+        Read-only observability surface for the dashboard Fleet → Active Sessions tab
+        (AAASM-5038). Flattens the `active_sessions` the registry already tracks on
+        each [`aa_gateway::registry::AgentRecord`] into one fleet-wide list, tagging
+        every session with its owning agent's id, name, and team. Purely derived from
+        existing registry state — it opens, mutates, and closes nothing, so it changes
+        neither session lifecycle nor enforcement.
+
+        Tenant-scoped exactly like [`list_agents`] (AAASM-3865): an admin sees every
+        agent's sessions; a team-scoped caller sees only its own team's; an agent with
+        no team is admin-only. Results are ordered newest-first by `started_at`.
+      operationId: list_active_sessions
+      responses:
+        '200':
+          description: Active agent sessions across the fleet
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FleetActiveSessionResponse'
   /api/v1/health:
     get:
       tags:
@@ -5055,6 +5083,45 @@ components:
       - approval
       - budget
       - ops_change
+    FleetActiveSessionResponse:
+      type: object
+      description: |-
+        A currently-open agent session in the fleet-wide active-sessions listing
+        (AAASM-5038).
+
+        Enriches the per-agent [`ActiveSessionResponse`] with the owning agent's
+        identity so the dashboard Fleet → Active Sessions tab can render one flat,
+        fleet-wide table without a second lookup. `actions_count` / `current_task`
+        from the design mock are deliberately omitted: the registry does not track
+        them per session, and this endpoint only surfaces state that already exists
+        (it must not invent a session store).
+      required:
+      - agent_id
+      - agent_name
+      - session_id
+      - started_at
+      - status
+      properties:
+        agent_id:
+          type: string
+          description: Hex-encoded UUID of the agent that owns the session.
+        agent_name:
+          type: string
+          description: Human-readable name of the owning agent.
+        session_id:
+          type: string
+          description: Hex-encoded session UUID.
+        started_at:
+          type: string
+          description: ISO 8601 timestamp when the session started.
+        status:
+          type: string
+          description: Current status of the session (e.g. "running", "idle").
+        team_id:
+          type:
+          - string
+          - 'null'
+          description: Team the owning agent belongs to, if any.
     FleetHealthResponse:
       type: object
       description: Response for `GET /api/v1/analytics/fleet-health`.
