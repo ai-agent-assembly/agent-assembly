@@ -65,7 +65,7 @@ chrono      = { workspace = true, default-features = false, features = ["clock"]
 chrono-tz   = { workspace = true }
 jsonschema  = "0.48"
 jsonwebtoken = { workspace = true }
-base64       = "0.22"
+base64       = "0.23"
 bytes        = { workspace = true }
 libc        = { workspace = true }
 moka        = { workspace = true, features = ["future"] }
