@@ -189,7 +189,7 @@ test.describe('AAASM-5032 — Costs history + budget-inheritance tree', () => {
       const tree = page.getByTestId('budget-tree')
       await expect(page.getByTestId('budget-tree-grid')).toBeVisible()
       // Expand a sub-agent so the nested inheritance is visible in the artifact.
-      await page.getByTestId('budget-node-research-bot-04').click()
+      await page.getByTestId('budget-toggle-research-bot-04').click()
       await expect(page.getByTestId('budget-node-etl-worker-01')).toBeVisible()
       await tree.scrollIntoViewIfNeeded()
       await tree.screenshot({ path: `verify/5032/budget-tree-${theme}.png` })

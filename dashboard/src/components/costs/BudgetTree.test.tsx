@@ -80,52 +80,61 @@ describe('BudgetTree', () => {
   it('expands and collapses a node with children on click', async () => {
     const user = userEvent.setup()
     render(<BudgetTree data={TREE} isLoading={false} isError={false} />)
-    const rootA = screen.getByTestId('budget-node-root-a')
 
-    // Expand: the sub-agent row appears.
-    await user.click(rootA)
+    // Expand: clicking the row's disclosure button reveals the sub-agent row.
+    await user.click(screen.getByTestId('budget-toggle-root-a'))
     expect(screen.getByTestId('budget-node-child-a')).toBeInTheDocument()
 
     // Collapse: it disappears again.
-    await user.click(rootA)
+    await user.click(screen.getByTestId('budget-toggle-root-a'))
     expect(screen.queryByTestId('budget-node-child-a')).not.toBeInTheDocument()
   })
 
   it('expands and collapses a node with children via the keyboard (Enter)', async () => {
     const user = userEvent.setup()
     render(<BudgetTree data={TREE} isLoading={false} isError={false} />)
-    const rootA = screen.getByTestId('budget-node-root-a')
 
-    // Focus the row, then Enter expands it — the sub-agent row appears.
-    rootA.focus()
+    // The disclosure is a native <button>, so focus + Enter expands it.
+    screen.getByTestId('budget-toggle-root-a').focus()
     await user.keyboard('{Enter}')
     expect(screen.getByTestId('budget-node-child-a')).toBeInTheDocument()
 
     // Enter again collapses it.
+    screen.getByTestId('budget-toggle-root-a').focus()
     await user.keyboard('{Enter}')
     expect(screen.queryByTestId('budget-node-child-a')).not.toBeInTheDocument()
   })
 
-  it('toggles a node with the Space key and exposes tree semantics', async () => {
+  it('toggles a node with the Space key and exposes disclosure semantics', async () => {
     const user = userEvent.setup()
     render(<BudgetTree data={TREE} isLoading={false} isError={false} />)
-    const rootA = screen.getByTestId('budget-node-root-a')
+    const toggle = screen.getByTestId('budget-toggle-root-a')
 
-    // Expandable rows are focusable treeitems that report their expanded state.
-    expect(rootA).toHaveAttribute('role', 'treeitem')
-    expect(rootA).toHaveAttribute('tabindex', '0')
-    expect(rootA).toHaveAttribute('aria-expanded', 'false')
+    // The disclosure is a native, focusable button reporting its expanded state.
+    expect(toggle.tagName).toBe('BUTTON')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
 
     // Space expands it.
-    rootA.focus()
+    toggle.focus()
     await user.keyboard(' ')
     expect(screen.getByTestId('budget-node-child-a')).toBeInTheDocument()
-    expect(rootA).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByTestId('budget-toggle-root-a')).toHaveAttribute('aria-expanded', 'true')
 
     // Space again collapses it.
+    screen.getByTestId('budget-toggle-root-a').focus()
     await user.keyboard(' ')
     expect(screen.queryByTestId('budget-node-child-a')).not.toBeInTheDocument()
-    expect(rootA).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByTestId('budget-toggle-root-a')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('renders leaf rows without a disclosure button', async () => {
+    const user = userEvent.setup()
+    render(<BudgetTree data={TREE} isLoading={false} isError={false} />)
+
+    // Expand root-a so its leaf child renders; the leaf has no toggle control.
+    await user.click(screen.getByTestId('budget-toggle-root-a'))
+    expect(screen.getByTestId('budget-node-child-a')).toBeInTheDocument()
+    expect(screen.queryByTestId('budget-toggle-child-a')).not.toBeInTheDocument()
   })
 
   it('shows the loading state', () => {
