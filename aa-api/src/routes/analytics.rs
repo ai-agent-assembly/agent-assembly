@@ -1797,4 +1797,100 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// End-to-end regression through `get_policy_effectiveness`: the non-dry-run
+    /// `blocks`-vs-`passes` split reads the audit `decision` field, which the
+    /// gateway writes as the proto `Decision` integer discriminant (AAASM-5035).
+    /// A non-`PolicyViolation` event carrying a non-allow decision (here a
+    /// `Redact`) must land in `blocks`; under the pre-fix string reader its
+    /// integer decision never matched and it was silently counted as a `pass`.
+    #[tokio::test]
+    async fn get_policy_effectiveness_classifies_blocks_from_integer_decision() {
+        use aa_core::audit::Lineage;
+        use aa_core::{AgentId, SessionId};
+        use aa_gateway::AuditReader;
+        use aa_proto::assembly::common::v1::Decision;
+        use std::sync::Arc;
+
+        // Audit entry shaped as the gateway writes it: a `policy_rule` string and
+        // an integer `decision`. `dry_run` is only emitted on shadow evaluations.
+        fn event(seq: u64, ts: u64, ev: AuditEventType, decision: Decision, dry_run: bool) -> AuditEntry {
+            let mut payload = serde_json::json!({
+                "action_type": "shell",
+                "decision": decision as i32,
+                "policy_rule": "rule-x",
+            });
+            if dry_run {
+                payload["dry_run"] = serde_json::Value::Bool(true);
+            }
+            AuditEntry::new_with_lineage(
+                seq,
+                ts,
+                ev,
+                AgentId::from_bytes([0xAB; 16]),
+                SessionId::from_bytes([0xEE; 16]),
+                payload.to_string(),
+                [0u8; 32],
+                Lineage::default(),
+            )
+        }
+
+        // Same UTC day so all three land in one `PolicyDay` bucket.
+        let now = now_ns();
+        let entries = [
+            // Allow, non-dry-run -> pass.
+            event(0, now, AuditEventType::ToolCallIntercepted, Decision::Allow, false),
+            // Redact, non-dry-run, NOT a PolicyViolation -> block *only* via the
+            // integer decision comparison (the crux of this regression).
+            event(1, now, AuditEventType::CredentialLeakBlocked, Decision::Redact, false),
+            // Dry-run -> warn, regardless of decision.
+            event(2, now, AuditEventType::ToolCallIntercepted, Decision::Allow, true),
+        ];
+
+        let dir = std::env::temp_dir().join(format!("aa-5035-policyeff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create audit dir");
+        let mut contents = String::new();
+        for e in &entries {
+            contents.push_str(&serde_json::to_string(e).unwrap());
+            contents.push('\n');
+        }
+        std::fs::write(dir.join("audit.jsonl"), contents).expect("write jsonl");
+
+        let mut state = AppState::local_in_memory().expect("state builds");
+        state.audit_reader = Arc::new(AuditReader::new(dir.clone()));
+
+        let caller = AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes: vec![Scope::Admin],
+            tenant: crate::auth::Tenant {
+                team_id: None,
+                org_id: None,
+            },
+        };
+
+        let (status, Json(resp)) = get_policy_effectiveness(
+            RequireRead(caller),
+            Extension(state),
+            Query(AnalyticsParams {
+                range: None,
+                agents: None,
+                teams: None,
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resp.rules.len(), 1, "single rule aggregated");
+        let rule = &resp.rules[0];
+        assert_eq!(rule.id, "rule-x");
+        assert_eq!(rule.days.len(), 1, "all events share one UTC day");
+        let day = &rule.days[0];
+        // block from the Redact decision, pass from the Allow, warn from dry-run.
+        // The pre-fix string reader would have yielded blocks=0, passes=2.
+        assert_eq!(day.blocks, 1, "non-allow decision counted as a block");
+        assert_eq!(day.passes, 1, "the allow decision counted as a pass");
+        assert_eq!(day.warns, 1, "the dry-run evaluation counted as a warn");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
