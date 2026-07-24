@@ -191,6 +191,9 @@ fn protected_router() -> Router {
             "/overview/enforcement-timeline",
             get(analytics::get_enforcement_timeline),
         )
+        // Cost observability: 7-day spend history + budget-inheritance tree (AAASM-5032)
+        .route("/costs/history", get(analytics::get_cost_history))
+        .route("/costs/budget-tree", get(analytics::get_budget_tree))
         // Deny-by-default auth gate over every protected route (AAASM-3125).
         .route_layer(axum::middleware::from_fn(crate::auth::gate::require_authentication))
 }

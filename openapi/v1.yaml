@@ -1852,6 +1852,69 @@ paths:
                 $ref: '#/components/schemas/CostSummary'
         '401':
           description: Missing or invalid credentials
+  /api/v1/costs/budget-tree:
+    get:
+      tags:
+      - costs
+      summary: '`GET /api/v1/costs/budget-tree` — org → team → agent budget inheritance tree.'
+      description: |-
+        Joins the agent registry's team/lineage structure with the budget tracker's
+        per-tier spend so each node shows its configured limit, own spend, and the
+        subtree spend a parent's budget constrains. Tenant scope is the visible-agent
+        boundary ([`visible_agents`]): an admin sees the whole org; a tenant-scoped
+        caller sees only its team's subtree; an unscoped non-admin caller gets a
+        `null` root. Within the visible set, an agent is a team-level root when its
+        spawn parent is not itself visible, and its spawned sub-agents nest beneath
+        it (they inherit its budget line) — so every visible agent appears exactly
+        once. Read-only: no enforcement or budget-debit path is touched.
+      operationId: get_budget_tree
+      responses:
+        '200':
+          description: Org → team → agent budget-inheritance tree
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetTreeResponse'
+        '401':
+          description: Missing or invalid credentials
+  /api/v1/costs/history:
+    get:
+      tags:
+      - costs
+      summary: '`GET /api/v1/costs/history` — trailing daily spend series.'
+      description: |-
+        Aggregates the budget tracker's per-agent daily spend history into a single
+        dense (zero-filled), oldest-first series over the last `days` days. The set
+        of agents summed is exactly the caller's visible set ([`visible_agents`]):
+        an admin gets the org-wide total, a tenant-scoped caller gets only its own
+        team's total, and an unscoped non-admin caller gets an all-zero series —
+        so the same endpoint serves every scope without leaking cross-tenant spend.
+        Read-only observability over data the tracker already holds; no enforcement
+        or budget-debit path is touched. The history is in-memory (see
+        `BudgetTracker::spend_history_totals_for`) and resets on gateway restart.
+      operationId: get_cost_history
+      parameters:
+      - name: days
+        in: query
+        description: |-
+          Trailing calendar days to return. Defaults to 7; clamped to 1..=90 so a
+          single request can never ask for an unbounded series.
+        required: false
+        schema:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          minimum: 0
+      responses:
+        '200':
+          description: Trailing daily spend history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostHistoryResponse'
+        '401':
+          description: Missing or invalid credentials
   /api/v1/dispatch_tool:
     post:
       tags:
@@ -4015,6 +4078,72 @@ components:
         spent_usd:
           type: string
           description: Total USD spent in the period (string-encoded Decimal).
+    BudgetTreeNode:
+      type: object
+      description: One node in the budget-inheritance tree.
+      required:
+      - id
+      - label
+      - kind
+      - depth
+      - own_spend_usd
+      - subtree_spend_usd
+      - children
+      properties:
+        budget_limit_usd:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Configured daily budget limit in USD for this node, if any (decimal
+            string). Agent nodes fall back to the global limit when they carry no
+            per-agent override, mirroring the enforcement path's resolution.
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/BudgetTreeNode'
+        depth:
+          type: integer
+          format: int32
+          description: Depth from the org root (org = 0, team = 1, agents from 2 and deeper).
+          minimum: 0
+        governance_level:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Governance level for agent nodes (e.g. `L0Discover`), read from the
+            registry record; absent for org/team nodes.
+        id:
+          type: string
+          description: 'Stable node id: the org id, the team id, or the hex agent id.'
+        kind:
+          type: string
+          description: 'Node tier: `org` | `team` | `agent`.'
+        label:
+          type: string
+          description: 'Human-readable label: org/team id, or the agent''s registered name.'
+        own_spend_usd:
+          type: string
+          description: |-
+            Spend attributable to this node itself, excluding descendants (USD
+            string). Org and team nodes never spend directly, so this is `"0"`.
+        subtree_spend_usd:
+          type: string
+          description: |-
+            Spend across this node and its entire subtree (USD string) — the figure a
+            parent's budget constrains.
+    BudgetTreeResponse:
+      type: object
+      description: Response for `GET /api/v1/costs/budget-tree`.
+      properties:
+        root:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/BudgetTreeNode'
+            description: |-
+              Org root of the inheritance tree, or `null` when the caller can see no
+              tenant (an unscoped non-admin caller) so the client renders an empty state.
     CallStackNode:
       type: object
       description: |-
@@ -4293,6 +4422,38 @@ components:
           items:
             $ref: '#/components/schemas/CostSegment'
           description: Per-dimension spend segments within this bucket.
+    CostHistoryPoint:
+      type: object
+      description: One calendar day of the spend-history series.
+      required:
+      - date
+      - spend_usd
+      properties:
+        date:
+          type: string
+          description: Calendar date (YYYY-MM-DD, in the tracker's timezone) for this bucket.
+        spend_usd:
+          type: string
+          description: |-
+            Total spend recorded on this date in USD, serialized as a decimal string
+            so money precision is never lost to float rounding (mirrors `/costs`).
+    CostHistoryResponse:
+      type: object
+      description: Response for `GET /api/v1/costs/history`.
+      required:
+      - days
+      - points
+      properties:
+        days:
+          type: integer
+          format: int32
+          description: Number of days in the returned series (the resolved, clamped `days`).
+          minimum: 0
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostHistoryPoint'
+          description: Daily spend buckets, oldest first, dense (zero-filled) across the window.
     CostSegment:
       type: object
       description: One stacked segment within a cost bucket (a single agent / team / model).

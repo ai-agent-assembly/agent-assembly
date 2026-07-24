@@ -10,6 +10,9 @@ import {
   type TeamListRow,
 } from '../features/teams/api'
 import { deriveCostKpis, type BudgetPeriod } from '../features/costs/costKpis'
+import { useCostHistoryQuery, useBudgetTreeQuery } from '../features/costs/api'
+import { HistoryChart } from '../components/costs/HistoryChart'
+import { BudgetTree } from '../components/costs/BudgetTree'
 import '../features/analytics/CostBreakdownPanel.css'
 import './CostsPage.css'
 
@@ -131,6 +134,9 @@ export function CostsPage() {
     [costsQuery.data, teamRows, period],
   )
 
+  const historyQuery = useCostHistoryQuery(7)
+  const budgetTreeQuery = useBudgetTreeQuery()
+
   const isLoading = costsQuery.isLoading || overviewQuery.isLoading
   const isError = costsQuery.isError
 
@@ -183,6 +189,12 @@ export function CostsPage() {
         />
       </div>
 
+      <HistoryChart
+        data={historyQuery.data}
+        isLoading={historyQuery.isLoading}
+        isError={historyQuery.isError}
+      />
+
       <section className="costs-section" data-testid="costs-team-budgets">
         <div className="costs-section__head">
           <h2 className="costs-section__title">Per-team budget</h2>
@@ -197,6 +209,18 @@ export function CostsPage() {
           isLoading={isLoading}
           teamRows={teamRows}
           onRetry={() => ignorePromise(costsQuery.refetch())}
+        />
+      </section>
+
+      <section className="costs-section" data-testid="costs-budget-tree">
+        <div className="costs-section__head">
+          <h2 className="costs-section__title">Budget inheritance</h2>
+          <span className="costs-section__hint">org → team → agent · subtree spend vs each level's limit</span>
+        </div>
+        <BudgetTree
+          data={budgetTreeQuery.data}
+          isLoading={budgetTreeQuery.isLoading}
+          isError={budgetTreeQuery.isError}
         />
       </section>
 
