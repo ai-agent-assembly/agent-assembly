@@ -2377,6 +2377,83 @@ mod tests {
     }
 
     #[test]
+    fn simulate_allows_permitted_tool() {
+        // AAASM-5037: the dry-run path returns the same verdict as `evaluate`.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "ls".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        assert_eq!(
+            engine.simulate(&ctx, &tool_call("ls", "")).decision,
+            PolicyResult::Allow
+        );
+    }
+
+    #[test]
+    fn simulate_denies_denied_tool() {
+        // AAASM-5037: a denied tool dry-runs to the same deny verdict + reason.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "ls".to_string(),
+            ToolPolicy {
+                allow: false,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        assert_eq!(
+            engine.simulate(&ctx, &tool_call("ls", "")).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            }
+        );
+    }
+
+    #[test]
+    fn simulate_does_not_consume_rate_limit_token() {
+        // AAASM-5037 core invariant: the dry-run must have NO state side effect.
+        // A rate-limited tool (limit_per_hour = 1) grants exactly one live token;
+        // simulating any number of times must consume none, leaving the live
+        // budget fully intact for the first real `evaluate`.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "ls".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: Some(1),
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("ls", "");
+
+        // Repeated simulation always allows and consumes nothing.
+        for _ in 0..5 {
+            assert_eq!(engine.simulate(&ctx, &action).decision, PolicyResult::Allow);
+        }
+
+        // The live token bucket is still full: the first real call allows...
+        assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+        // ...and only after that real consumption does the next real call deny.
+        assert_eq!(
+            engine.evaluate(&ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "rate limit exceeded".into()
+            }
+        );
+    }
+
+    #[test]
     fn tool_allow_passes_call() {
         let mut doc = empty_doc();
         doc.tools.insert(
