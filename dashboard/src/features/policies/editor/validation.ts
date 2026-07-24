@@ -12,9 +12,9 @@ import type { PolicyDraft, ValidationIssue } from './types'
 export function validate(draft: PolicyDraft): ValidationIssue[] {
   const issues: ValidationIssue[] = []
 
-  if (draft.name.trim().length === 0) {
-    issues.push({ severity: 'error', rule: '—', message: 'Policy name is required.' })
-  }
+  // Note: the design spec's `validate` (design/v1/hi-fi/policy-editor.jsx
+  // :384-407) has no policy-name check — name is not required client-side —
+  // so there is deliberately no "Policy name is required." error here.
 
   if (draft.rules.length === 0) {
     issues.push({
@@ -26,6 +26,11 @@ export function validate(draft: PolicyDraft): ValidationIssue[] {
 
   draft.rules.forEach((rule, idx) => {
     const label = `R${idx + 1}`
+
+    // A rule loaded read-only from an unparseable policy body has no editable
+    // fields to validate — skip it (it still counts toward rules.length so the
+    // "no rules" error doesn't fire against a real policy). See AAASM-5059.
+    if (rule.unknown) return
 
     if (rule.verb.length === 0) {
       issues.push({
@@ -53,24 +58,30 @@ export function validate(draft: PolicyDraft): ValidationIssue[] {
       }
     }
 
-    if (rule.action === 'approval') {
-      if (!rule.approver) {
+    // Approval intentionally has no approver-required error: the editor shows a
+    // default approver (SubClauses.DEFAULT_APPROVER) and serializeDraft
+    // materialises that same default into the saved YAML, so an approval rule
+    // is always valid. The old error was a false positive (AAASM-5060) — it
+    // fired despite the shown, saved default.
+
+    if (rule.action === 'scrub-then-allow') {
+      if (!rule.scrubFields || rule.scrubFields.length === 0) {
+        // Downgraded from error to warn per the design spec: a scrub with no
+        // fields is a full passthrough, not an invalid policy (AAASM-5060).
         issues.push({
-          severity: 'error',
+          severity: 'warn',
           rule: label,
-          message: 'Approval action requires an approver configuration.',
+          message: 'Scrub action with no fields — allows everything through unredacted.',
         })
       }
     }
 
-    if (rule.action === 'scrub-then-allow') {
-      if (!rule.scrubFields || rule.scrubFields.length === 0) {
-        issues.push({
-          severity: 'error',
-          rule: label,
-          message: 'Scrub action requires at least one scrub category.',
-        })
-      }
+    if (rule.action === 'deny' && (rule.exceptions?.length ?? 0) > 4) {
+      issues.push({
+        severity: 'info',
+        rule: label,
+        message: `${rule.exceptions?.length ?? 0} exceptions on a deny rule — consider narrow instead.`,
+      })
     }
   })
 
