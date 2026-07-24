@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import type { EnforcementBucket, EnforcementTimeline as EnforcementTimelineData } from '../../features/overview/api'
 import './EnforcementTimeline.css'
 
@@ -78,6 +79,47 @@ export function EnforcementTimeline({
   const buckets = data?.buckets ?? []
   const total = buckets.reduce((sum, b) => sum + b.allow + b.narrow + b.deny + b.scrub, 0)
 
+  // Pick the body with an explicit branch rather than a nested ternary
+  // (loading → error → empty → chart), keeping the render tree readable.
+  let body: ReactNode
+  if (isLoading) {
+    body = (
+      <p className="overview-empty-note" data-testid="overview-enforcement-timeline-loading">
+        Loading enforcement timeline…
+      </p>
+    )
+  } else if (isError) {
+    body = (
+      <p className="overview-empty-note" data-testid="overview-enforcement-timeline-error">
+        Enforcement timeline unavailable.
+      </p>
+    )
+  } else if (total === 0) {
+    body = (
+      <p className="overview-empty-note" data-testid="overview-enforcement-timeline-empty">
+        No enforcement decisions in this window.
+      </p>
+    )
+  } else {
+    body = (
+      <>
+        <div className="etl-grid" data-testid="overview-enforcement-timeline-chart">
+          {LANES.map((lane) => (
+            <div className="etl-row" key={lane.key}>
+              <div className="etl-row__label">{lane.key}</div>
+              <MiniBar bars={buckets.map((b) => ({ ts: b.ts, value: b[lane.key] }))} color={lane.color} />
+            </div>
+          ))}
+        </div>
+        <div className="etl-axis">
+          {axisTicks(buckets, window).map((tick) => (
+            <span key={tick.key}>{tick.label}</span>
+          ))}
+        </div>
+      </>
+    )
+  }
+
   return (
     <section className="overview-card enforcement-timeline" data-testid="overview-enforcement-timeline">
       <div className="etl-head">
@@ -90,35 +132,7 @@ export function EnforcementTimeline({
           ))}
         </div>
       </div>
-      {isLoading ? (
-        <p className="overview-empty-note" data-testid="overview-enforcement-timeline-loading">
-          Loading enforcement timeline…
-        </p>
-      ) : isError ? (
-        <p className="overview-empty-note" data-testid="overview-enforcement-timeline-error">
-          Enforcement timeline unavailable.
-        </p>
-      ) : total === 0 ? (
-        <p className="overview-empty-note" data-testid="overview-enforcement-timeline-empty">
-          No enforcement decisions in this window.
-        </p>
-      ) : (
-        <>
-          <div className="etl-grid" data-testid="overview-enforcement-timeline-chart">
-            {LANES.map((lane) => (
-              <div className="etl-row" key={lane.key}>
-                <div className="etl-row__label">{lane.key}</div>
-                <MiniBar bars={buckets.map((b) => ({ ts: b.ts, value: b[lane.key] }))} color={lane.color} />
-              </div>
-            ))}
-          </div>
-          <div className="etl-axis">
-            {axisTicks(buckets, window).map((tick) => (
-              <span key={tick.key}>{tick.label}</span>
-            ))}
-          </div>
-        </>
-      )}
+      {body}
     </section>
   )
 }
