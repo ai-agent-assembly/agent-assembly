@@ -8,7 +8,11 @@ import { AgentDetailPage } from './AgentDetailPage'
 import { ToastProvider } from '../components/ToastProvider'
 import * as agentsApi from '../features/agents/api'
 import * as agentsMutations from '../features/agents/mutations'
+import * as topologyApi from '../features/topology/api'
+import * as trafficApi from '../features/analytics/useAgentTrafficQuery'
+import * as agentPoliciesApi from '../features/capability/useAgentPolicies'
 import type { Agent, LogEntry } from '../features/agents/api'
+import type { Policy } from '../features/capability/types'
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -68,7 +72,38 @@ const MOCK_LOG: LogEntry = {
   timestamp: '2026-05-12T00:00:00Z',
 }
 
+// AAASM-5041: the Traffic / Policies / Lineage tabs now mount live components
+// backed by their own hooks. Mock them to stable empty data so tab-switching
+// tests don't fire real fetches; dedicated unit tests cover each tab's states.
+function mockTabHooks() {
+  vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
+    mockQuery<topologyApi.AgentLineage>({
+      data: { agent_id: 'abc123', ancestor_count: 1, ancestors: [{ id: 'abc123', name: 'alpha-agent', depth: 0 }] },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+  )
+  vi.spyOn(trafficApi, 'useAgentTrafficQuery').mockReturnValue(
+    mockQuery<trafficApi.AgentTraffic>({
+      data: { tools: [], totalActions: 0 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+  )
+  vi.spyOn(agentPoliciesApi, 'useAgentPoliciesQuery').mockReturnValue(
+    mockQuery<Policy[]>({
+      data: [],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+  )
+}
+
 function mockHappyPath() {
+  mockTabHooks()
   vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
     mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
   )
@@ -91,6 +126,7 @@ function mockHappyPath() {
 }
 
 function mockSuspendedAgent() {
+  mockTabHooks()
   vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
     mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
   )
@@ -213,13 +249,25 @@ describe('AgentDetailPage tab navigation', () => {
     expect(screen.queryByTestId('agent-detail-posture')).not.toBeInTheDocument()
   })
 
-  it('renders the other follow-up tabs each with their empty state', async () => {
+  it('mounts the live Traffic / Policies / Lineage tabs when selected', async () => {
     mockHappyPath()
     renderApp('/agents/abc123')
-    for (const id of ['traffic', 'policies', 'lineage', 'config'] as const) {
-      fireEvent.click(screen.getByTestId(`agent-detail-tab-${id}`))
-      expect(await screen.findByTestId(`ad-tab-empty-${id}`)).toBeInTheDocument()
-    }
+
+    fireEvent.click(screen.getByTestId('agent-detail-tab-traffic'))
+    expect(await screen.findByTestId('agent-traffic-tab')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('agent-detail-tab-policies'))
+    expect(await screen.findByTestId('agent-policies-tab')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('agent-detail-tab-lineage'))
+    expect(await screen.findByTestId('agent-lineage-tab')).toBeInTheDocument()
+  })
+
+  it('keeps the Config tab as a follow-up placeholder', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    fireEvent.click(screen.getByTestId('agent-detail-tab-config'))
+    expect(await screen.findByTestId('ad-tab-empty-config')).toBeInTheDocument()
   })
 })
 
