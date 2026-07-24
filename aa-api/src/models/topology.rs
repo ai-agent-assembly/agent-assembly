@@ -110,6 +110,31 @@ pub struct TeamSummary {
     pub root_agent_count: usize,
 }
 
+/// Per-agent daily budget projection for a topology node (AAASM-5045).
+///
+/// A slim read-only view of the gateway `BudgetTracker` state for one agent —
+/// the same source the `/api/v1/costs` per-agent
+/// breakdown reads. `spend_usd` is today's accrued spend (0 when the agent has
+/// no accrual yet); `limit_usd` is the agent's effective daily limit
+/// (per-agent override, else the server-wide daily limit) or `null` when no
+/// limit is configured. Emitted as `f64` (not the tracker's `Decimal`) because
+/// the dashboard budget bar renders numbers directly — the two decimals of a
+/// USD amount are well within `f64`'s exact range.
+///
+/// # Example JSON
+/// ```json
+/// { "spend_usd": 4.10, "limit_usd": 100.0 }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({ "spend_usd": 4.10, "limit_usd": 100.0 }))]
+pub struct NodeBudget {
+    /// Daily spend accrued for this agent today, in USD.
+    pub spend_usd: f64,
+    /// Effective daily budget limit in USD (per-agent override, else the
+    /// server-wide daily limit), or `null` when no limit is configured.
+    pub limit_usd: Option<f64>,
+}
+
 /// Minimal agent representation used in list and tree responses.
 ///
 /// # Example JSON
@@ -131,7 +156,10 @@ pub struct TeamSummary {
     "team_id": "team-alpha",
     "mode": "enforce",
     "flagged": false,
-    "trust": null
+    "trust": null,
+    "owner": "platform-team",
+    "policy_count": 3,
+    "budget": { "spend_usd": 4.10, "limit_usd": 100.0 }
 }))]
 pub struct AgentNode {
     /// Hex-encoded agent UUID.
@@ -161,6 +189,22 @@ pub struct AgentNode {
     /// present (not omitted) so the client renders an explicit "no data" state
     /// instead of inferring a misleading default.
     pub trust: Option<f64>,
+    /// Operator / engineer who owns this agent, read from the agent record's
+    /// `metadata["owner"]` (AAASM-5045). `null` when the registrant supplied no
+    /// owner tag — kept present (not omitted) so the node-detail panel renders an
+    /// explicit "no data" state rather than inferring a value.
+    pub owner: Option<String>,
+    /// Number of governance policies whose scope cascade applies to this agent
+    /// — `Global → Org → Team → Agent`, the same walk `PolicyEngine::evaluate`
+    /// uses (AAASM-5045). `null` when this projection is built without a
+    /// policy-engine lookup: only the whole-fleet graph endpoint
+    /// (`GET /api/v1/topology`) resolves it; the list / tree / team endpoints
+    /// leave it `null` rather than emitting a misleading `0`.
+    pub policy_count: Option<u32>,
+    /// Per-agent daily budget spend / limit (AAASM-5045), or `null` when this
+    /// projection is built without a budget-tracker lookup. Like `policy_count`,
+    /// only the graph endpoint resolves it; the other endpoints leave it `null`.
+    pub budget: Option<NodeBudget>,
 }
 
 impl From<&AgentRecord> for AgentNode {
@@ -175,6 +219,14 @@ impl From<&AgentRecord> for AgentNode {
             mode: agent_mode(r),
             flagged: agent_flagged(r),
             trust: None,
+            // `owner` is a pure record field (agent metadata), so it is resolved
+            // here and carried by every AgentNode consumer. `policy_count` /
+            // `budget` need the policy engine / budget tracker, which this
+            // record-only conversion can't reach — the graph handler enriches
+            // them; here they stay `null`.
+            owner: r.metadata.get("owner").cloned(),
+            policy_count: None,
+            budget: None,
         }
     }
 }
@@ -501,6 +553,9 @@ mod tests {
             mode: "enforce".to_string(),
             flagged: false,
             trust: None,
+            owner: None,
+            policy_count: None,
+            budget: None,
         }
     }
 
@@ -526,6 +581,32 @@ mod tests {
         assert!(json["trust"].is_null(), "trust must serialize as null");
         assert_eq!(json["mode"], "enforce");
         assert_eq!(json["flagged"], false);
+        // AAASM-5045 — owner / policy_count / budget follow the same "present
+        // null, never omitted" contract as trust so the client renders an
+        // explicit "no data" state instead of a misleading default.
+        for key in ["owner", "policy_count", "budget"] {
+            assert!(json.get(key).is_some(), "{key} key must be present");
+            assert!(json[key].is_null(), "{key} must serialize as null when unset");
+        }
+    }
+
+    #[test]
+    fn node_budget_roundtrip_and_null_limit() {
+        roundtrip(&NodeBudget {
+            spend_usd: 4.10,
+            limit_usd: Some(100.0),
+        });
+        let no_limit = NodeBudget {
+            spend_usd: 0.0,
+            limit_usd: None,
+        };
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&no_limit).unwrap()).unwrap();
+        assert_eq!(json["spend_usd"], 0.0);
+        assert!(json.get("limit_usd").is_some(), "limit_usd key must be present");
+        assert!(
+            json["limit_usd"].is_null(),
+            "limit_usd must serialize as null when unset"
+        );
     }
 
     #[test]
@@ -562,6 +643,19 @@ mod tests {
         assert_eq!(node.mode, "shadow");
         assert!(node.flagged);
         assert!(node.trust.is_none());
+        // AAASM-5045 — `owner` is a pure record field, resolved from metadata by
+        // the `From` impl; `policy_count` / `budget` need external stores the
+        // record-only conversion can't reach, so they stay `None` here.
+        assert!(node.owner.is_none());
+        assert!(node.policy_count.is_none());
+        assert!(node.budget.is_none());
+    }
+
+    #[test]
+    fn agent_node_from_record_reads_owner_metadata() {
+        let mut record = make_record();
+        record.metadata.insert("owner".to_string(), "platform-team".to_string());
+        assert_eq!(AgentNode::from(&record).owner.as_deref(), Some("platform-team"));
     }
 
     #[test]
