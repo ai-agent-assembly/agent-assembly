@@ -697,9 +697,16 @@ fn extract_tool_name(payload: &serde_json::Value) -> Option<String> {
 /// Whether an audit payload's policy `decision` represents a blocked/denied
 /// outcome (anything other than an explicit allow). A missing decision is
 /// treated as a success.
+///
+/// The gateway writes `decision` as the proto [`Decision`] enum's **integer**
+/// discriminant (see `record_audit` in `aa-gateway` and `build_payload` in
+/// `aa-runtime`), not a string — so this reads it as an integer and compares
+/// against `Decision::Allow` rather than a case-insensitive `"allow"` string,
+/// which never matched the emitted payload (AAASM-5035).
 fn decision_is_error(payload: &serde_json::Value) -> bool {
-    match payload.get("decision").and_then(|v| v.as_str()) {
-        Some(d) => !d.eq_ignore_ascii_case("allow"),
+    use aa_proto::assembly::common::v1::Decision;
+    match payload.get("decision").and_then(|v| v.as_i64()) {
+        Some(d) => d != Decision::Allow as i64,
         None => false,
     }
 }
