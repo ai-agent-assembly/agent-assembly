@@ -38,9 +38,9 @@ const TEAM: TeamTopology = {
   team_id: 'team-alpha',
   agent_count: 3,
   members: [
-    { id: '11111111111111111111111111111111', name: 'orchestrator', status: 'active', depth: 0, team_id: 'team-alpha' },
-    { id: '22222222222222222222222222222222', name: 'worker-1', status: 'active', depth: 1, team_id: 'team-alpha' },
-    { id: '33333333333333333333333333333333', name: 'worker-2', status: 'active', depth: 1, team_id: 'team-alpha' },
+    { id: '11111111111111111111111111111111', name: 'orchestrator', status: 'active', depth: 0, team_id: 'team-alpha', mode: 'enforce', flagged: false },
+    { id: '22222222222222222222222222222222', name: 'worker-1', status: 'active', depth: 1, team_id: 'team-alpha', mode: 'enforce', flagged: false },
+    { id: '33333333333333333333333333333333', name: 'worker-2', status: 'active', depth: 1, team_id: 'team-alpha', mode: 'enforce', flagged: false },
   ],
 }
 

@@ -8,11 +8,11 @@ const FIVE_MEMBER_TEAM: TeamTopology = {
   team_id: 'team-alpha',
   agent_count: 5,
   members: [
-    { id: '11111111111111111111111111111111', name: 'orchestrator', status: 'active', depth: 0, team_id: 'team-alpha' },
-    { id: '22222222222222222222222222222222', name: 'planner', status: 'active', depth: 1, team_id: 'team-alpha' },
-    { id: '33333333333333333333333333333333', name: 'researcher', status: 'suspended', depth: 1, team_id: 'team-alpha' },
-    { id: '44444444444444444444444444444444', name: 'writer', status: 'active', depth: 2, team_id: 'team-alpha' },
-    { id: '55555555555555555555555555555555', name: 'reviewer', status: 'active', depth: 2, team_id: 'team-alpha' },
+    { id: '11111111111111111111111111111111', name: 'orchestrator', status: 'active', depth: 0, team_id: 'team-alpha', mode: 'enforce', flagged: false },
+    { id: '22222222222222222222222222222222', name: 'planner', status: 'active', depth: 1, team_id: 'team-alpha', mode: 'enforce', flagged: false },
+    { id: '33333333333333333333333333333333', name: 'researcher', status: 'suspended', depth: 1, team_id: 'team-alpha', mode: 'enforce', flagged: false },
+    { id: '44444444444444444444444444444444', name: 'writer', status: 'active', depth: 2, team_id: 'team-alpha', mode: 'enforce', flagged: false },
+    { id: '55555555555555555555555555555555', name: 'reviewer', status: 'active', depth: 2, team_id: 'team-alpha', mode: 'enforce', flagged: false },
   ],
 }
 

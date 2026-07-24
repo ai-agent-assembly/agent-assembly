@@ -43,11 +43,11 @@ const FIVE_MEMBER_TEAM: TeamTopology = {
   team_id: 'team-alpha',
   agent_count: 5,
   members: [
-    { id: 'a'.repeat(32), name: 'orchestrator', status: 'active', depth: 0, team_id: 'team-alpha' },
-    { id: 'b'.repeat(32), name: 'worker-1', status: 'active', depth: 1, team_id: 'team-alpha' },
-    { id: 'c'.repeat(32), name: 'worker-2', status: 'suspended', depth: 1, team_id: 'team-alpha' },
-    { id: 'd'.repeat(32), name: 'worker-3', status: 'active', depth: 2, team_id: 'team-alpha' },
-    { id: 'e'.repeat(32), name: 'worker-4', status: 'active', depth: 2, team_id: 'team-alpha' },
+    { id: 'a'.repeat(32), name: 'orchestrator', status: 'active', depth: 0, team_id: 'team-alpha', mode: 'enforce', flagged: false },
+    { id: 'b'.repeat(32), name: 'worker-1', status: 'active', depth: 1, team_id: 'team-alpha', mode: 'enforce', flagged: false },
+    { id: 'c'.repeat(32), name: 'worker-2', status: 'suspended', depth: 1, team_id: 'team-alpha', mode: 'enforce', flagged: false },
+    { id: 'd'.repeat(32), name: 'worker-3', status: 'active', depth: 2, team_id: 'team-alpha', mode: 'enforce', flagged: false },
+    { id: 'e'.repeat(32), name: 'worker-4', status: 'active', depth: 2, team_id: 'team-alpha', mode: 'enforce', flagged: false },
   ],
 }
 
