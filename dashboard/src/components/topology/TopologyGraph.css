@@ -67,6 +67,67 @@
   fill: var(--ink-4);
 }
 
+/* ── Node badges & markers (AAASM-5033) ─────────────────────────
+   Root/depth, enforcement-mode, flagged, and delegation-cycle affordances.
+   All colours are tokens so every badge re-themes in light/dark, mirroring
+   design/v1/hi-fi/topology.jsx (which used raw hex). */
+
+/* Root / depth badge (top-right of the card). */
+.topology-node__depth {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  fill: var(--ink-4);
+}
+
+.topology-node__depth--root {
+  fill: var(--info);
+  font-weight: 700;
+}
+
+/* Enforcement-mode badge — dot glyph + label, coloured per mode. */
+.topology-node__mode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  fill: var(--ink-4);
+}
+
+.topology-node__mode--enforce {
+  fill: var(--ok);
+}
+
+.topology-node__mode--shadow {
+  fill: var(--warn);
+}
+
+.topology-node__mode--off {
+  fill: var(--ink-4);
+}
+
+/* Flagged agents: danger-tinted card + name (mirrors the Fleet danger row). */
+.topology-node[data-flagged='true'] .topology-node__card {
+  stroke: var(--danger);
+}
+
+.topology-node[data-flagged='true'] .topology-node__name {
+  fill: var(--danger);
+}
+
+/* Delegation cycle: dashed danger border is the primary marker; the ⟳ glyph
+   (bottom-right) confirms it. Placed after the flagged rule so a node that is
+   both flagged and on a cycle still shows the emphasised cycle border. */
+.topology-node[data-in-cycle='true'] .topology-node__card {
+  stroke: var(--danger);
+  stroke-width: 2;
+  stroke-dasharray: 4 2;
+}
+
+.topology-node__cycle {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  fill: var(--danger);
+}
+
 .topology-node__budget {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 8px;
