@@ -18,7 +18,7 @@ use aa_gateway::registry::{AgentRecord, AgentRegistry, AgentStatus};
 use crate::auth::scope::{RequireRead, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
-use crate::models::topology::{format_id, status_str};
+use crate::models::topology::{agent_flagged, agent_mode, format_id, status_str};
 pub use crate::models::topology::{
     AgentLineage, AgentNode, AgentTree, LineageStep, TeamSummary, TeamTopology, TopologyOverview, TopologyStats,
 };
@@ -195,6 +195,10 @@ fn build_tree(
     } else {
         vec![]
     };
+    // Derive the badge fields before moving the record's owned fields into the
+    // struct literal below (both helpers borrow `record`).
+    let mode = agent_mode(&record);
+    let flagged = agent_flagged(&record);
     Some(AgentTree {
         id: format_id(agent_id),
         name: record.name,
@@ -208,6 +212,11 @@ fn build_tree(
         } else {
             None
         },
+        mode,
+        flagged,
+        // No per-agent trust-analytics source exists yet; emit `null` (matches
+        // AgentNode / the Fleet page) rather than a misleading default.
+        trust: None,
         children,
     })
 }

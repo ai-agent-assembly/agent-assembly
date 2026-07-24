@@ -389,4 +389,38 @@ describe('TopologyGraph — delegation badges & markers (AAASM-5033)', () => {
 
     expect(nodeByName('worker')).not.toHaveAttribute('data-flagged')
   })
+
+  it('renders the trust badge only when the node carries a numeric trust score', () => {
+    const nodes: TopologyNode[] = [
+      { id: 'r', name: 'planner', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10, trust: 82 },
+      // trust: null is the server default (no analytics source yet) — badge hidden.
+      { id: 'c', name: 'worker', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10, trust: null },
+      // trust absent entirely — also hidden.
+      { id: 'g', name: 'gofer', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    ]
+    render(<TopologyGraph nodes={nodes} edges={DELEGATION_EDGE} />)
+
+    const withTrust = nodeByName('planner')
+    expect(withTrust).toHaveAttribute('data-trust', '82')
+    const badge = withTrust.querySelector('[data-testid="topology-node-trust"]')
+    expect(badge?.textContent).toContain('82')
+
+    const nullTrust = nodeByName('worker')
+    expect(nullTrust).not.toHaveAttribute('data-trust')
+    expect(nullTrust.querySelector('[data-testid="topology-node-trust"]')).toBeNull()
+
+    const noTrust = nodeByName('gofer')
+    expect(noTrust).not.toHaveAttribute('data-trust')
+    expect(noTrust.querySelector('[data-testid="topology-node-trust"]')).toBeNull()
+  })
+
+  it('renders the trust badge even when the score is zero (falsy but present)', () => {
+    const nodes: TopologyNode[] = [
+      { id: 'r', name: 'planner', status: 'active', team: 't', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10, trust: 0 },
+    ]
+    render(<TopologyGraph nodes={nodes} edges={[]} />)
+    const node = nodeByName('planner')
+    expect(node).toHaveAttribute('data-trust', '0')
+    expect(node.querySelector('[data-testid="topology-node-trust"]')?.textContent).toContain('0')
+  })
 })

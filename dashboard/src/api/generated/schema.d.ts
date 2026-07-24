@@ -1801,10 +1801,13 @@ export interface components {
          *     ```
          * @example {
          *       "depth": 1,
+         *       "flagged": false,
          *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "mode": "enforce",
          *       "name": "my-agent",
          *       "status": "active",
-         *       "team_id": "team-alpha"
+         *       "team_id": "team-alpha",
+         *       "trust": null
          *     }
          */
         AgentNode: {
@@ -1813,16 +1816,37 @@ export interface components {
              * @description Delegation depth — 0 for root agents.
              */
             depth: number;
+            /**
+             * @description Whether the agent is policy-flagged — `policy_violations_count` is at or
+             *     above [`FLAGGED_VIOLATION_THRESHOLD`]. Drives the danger-tinted node card
+             *     and ⚑ marker in the topology graph.
+             */
+            flagged: boolean;
             /** @description Governance level — included only when `show_budget=true`. */
             governance_level?: string | null;
             /** @description Hex-encoded agent UUID. */
             id: string;
+            /**
+             * @description Enforcement-mode badge: `enforce`, `shadow`, or `off`. Derived from the
+             *     agent record's `metadata["mode"]` (defaulting to `enforce`) so the
+             *     topology mode badge matches the Fleet page's mode chip for the same agent.
+             */
+            mode: string;
             /** @description Human-readable agent name. */
             name: string;
             /** @description Runtime status: `active`, `suspended`, or `deregistered`. */
             status: string;
             /** @description Team this agent belongs to, if any. */
             team_id?: string | null;
+            /**
+             * Format: double
+             * @description Trust score (0–100), or `null` when no trust-analytics source exists yet.
+             *     The registry does not compute a per-agent trust score today, so this is
+             *     currently always `null` — the same placeholder the Fleet page uses. Kept
+             *     present (not omitted) so the client renders an explicit "no data" state
+             *     instead of inferring a misleading default.
+             */
+            trust?: number | null;
         };
         /** @description JSON representation of an agent returned by the API. */
         AgentResponse: {
@@ -1893,11 +1917,14 @@ export interface components {
          *       "children": [],
          *       "delegation_reason": null,
          *       "depth": 0,
+         *       "flagged": false,
          *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "mode": "enforce",
          *       "name": "root-agent",
          *       "spawned_by_tool": null,
          *       "status": "active",
-         *       "team_id": "team-alpha"
+         *       "team_id": "team-alpha",
+         *       "trust": null
          *     }
          */
         AgentTree: {
@@ -1909,10 +1936,20 @@ export interface components {
              * @description Delegation depth — 0 for root agents.
              */
             depth: number;
+            /**
+             * @description Whether the agent is policy-flagged. Same derivation as
+             *     [`AgentNode::flagged`].
+             */
+            flagged: boolean;
             /** @description Governance level — included only when `show_budget=true`. */
             governance_level?: string | null;
             /** @description Hex-encoded agent UUID. */
             id: string;
+            /**
+             * @description Enforcement-mode badge: `enforce`, `shadow`, or `off`. Same
+             *     `metadata["mode"]` derivation as [`AgentNode::mode`].
+             */
+            mode: string;
             /** @description Human-readable agent name. */
             name: string;
             /** @description Tool that spawned this agent, if known. */
@@ -1921,6 +1958,12 @@ export interface components {
             status: string;
             /** @description Team this agent belongs to, if any. */
             team_id?: string | null;
+            /**
+             * Format: double
+             * @description Trust score (0–100), or `null` when no trust-analytics source exists yet.
+             *     Same placeholder as [`AgentNode::trust`].
+             */
+            trust?: number | null;
         };
         /**
          * @description Rich alert detail response used by `GET /api/v1/alerts/:id`.

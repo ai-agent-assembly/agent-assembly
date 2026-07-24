@@ -103,6 +103,14 @@
   fill: var(--ink-4);
 }
 
+/* Trust badge (top-left) — the agent's trust score. Only rendered when a real
+   trust value is present (currently always null server-side, AAASM-5036). */
+.topology-node__trust {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  fill: var(--info);
+}
+
 /* Flagged agents: danger-tinted card + name (mirrors the Fleet danger row). */
 .topology-node[data-flagged='true'] .topology-node__card {
   stroke: var(--danger);

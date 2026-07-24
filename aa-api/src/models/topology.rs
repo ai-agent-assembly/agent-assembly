@@ -27,6 +27,35 @@ pub(crate) fn status_str(status: &AgentStatus) -> &'static str {
     }
 }
 
+/// Policy-violation count at or above which a node is surfaced as "flagged"
+/// (danger-tinted card + ⚑ marker) in the topology graph.
+///
+/// Kept in lock-step with the dashboard Fleet page's `FLEET_FLAGGED_THRESHOLD`
+/// (`dashboard/src/features/agents/fleetTypes.ts`) so the topology node badge and
+/// the Fleet row light up on exactly the same agents — the two surfaces must not
+/// disagree about whether a given agent is flagged.
+pub(crate) const FLAGGED_VIOLATION_THRESHOLD: u32 = 50;
+
+/// Enforcement-mode badge value for a node — `enforce`, `shadow`, or `off`.
+///
+/// Read from the agent record's `metadata["mode"]`, mirroring the Fleet page's
+/// `parseMode` exactly: a recognised value is passed through, and anything else
+/// (including an absent key) falls back to `enforce`. Sourcing the badge from the
+/// same `metadata.mode` the Fleet chip uses keeps the two surfaces consistent
+/// rather than introducing a second, divergent notion of an agent's mode.
+pub(crate) fn agent_mode(record: &AgentRecord) -> String {
+    match record.metadata.get("mode").map(String::as_str) {
+        Some(m @ ("enforce" | "shadow" | "off")) => m.to_owned(),
+        _ => "enforce".to_owned(),
+    }
+}
+
+/// Whether an agent is policy-flagged for the topology view — the same
+/// derivation the Fleet page uses (`policy_violations_count >= threshold`).
+pub(crate) fn agent_flagged(record: &AgentRecord) -> bool {
+    record.policy_violations_count >= FLAGGED_VIOLATION_THRESHOLD
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -99,7 +128,10 @@ pub struct TeamSummary {
     "name": "my-agent",
     "depth": 1,
     "status": "active",
-    "team_id": "team-alpha"
+    "team_id": "team-alpha",
+    "mode": "enforce",
+    "flagged": false,
+    "trust": null
 }))]
 pub struct AgentNode {
     /// Hex-encoded agent UUID.
@@ -115,6 +147,20 @@ pub struct AgentNode {
     /// Governance level — included only when `show_budget=true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance_level: Option<String>,
+    /// Enforcement-mode badge: `enforce`, `shadow`, or `off`. Derived from the
+    /// agent record's `metadata["mode"]` (defaulting to `enforce`) so the
+    /// topology mode badge matches the Fleet page's mode chip for the same agent.
+    pub mode: String,
+    /// Whether the agent is policy-flagged — `policy_violations_count` is at or
+    /// above [`FLAGGED_VIOLATION_THRESHOLD`]. Drives the danger-tinted node card
+    /// and ⚑ marker in the topology graph.
+    pub flagged: bool,
+    /// Trust score (0–100), or `null` when no trust-analytics source exists yet.
+    /// The registry does not compute a per-agent trust score today, so this is
+    /// currently always `null` — the same placeholder the Fleet page uses. Kept
+    /// present (not omitted) so the client renders an explicit "no data" state
+    /// instead of inferring a misleading default.
+    pub trust: Option<f64>,
 }
 
 impl From<&AgentRecord> for AgentNode {
@@ -126,6 +172,9 @@ impl From<&AgentRecord> for AgentNode {
             status: status_str(&r.status).to_owned(),
             team_id: r.team_id.clone(),
             governance_level: None,
+            mode: agent_mode(r),
+            flagged: agent_flagged(r),
+            trust: None,
         }
     }
 }
@@ -154,6 +203,9 @@ impl From<&AgentRecord> for AgentNode {
     "team_id": "team-alpha",
     "delegation_reason": null,
     "spawned_by_tool": null,
+    "mode": "enforce",
+    "flagged": false,
+    "trust": null,
     "children": []
 }))]
 pub struct AgentTree {
@@ -174,6 +226,15 @@ pub struct AgentTree {
     /// Governance level — included only when `show_budget=true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance_level: Option<String>,
+    /// Enforcement-mode badge: `enforce`, `shadow`, or `off`. Same
+    /// `metadata["mode"]` derivation as [`AgentNode::mode`].
+    pub mode: String,
+    /// Whether the agent is policy-flagged. Same derivation as
+    /// [`AgentNode::flagged`].
+    pub flagged: bool,
+    /// Trust score (0–100), or `null` when no trust-analytics source exists yet.
+    /// Same placeholder as [`AgentNode::trust`].
+    pub trust: Option<f64>,
     /// Direct children of this agent in the delegation tree.
     #[schema(schema_with = agent_tree_children_schema)]
     pub children: Vec<AgentTree>,
@@ -342,6 +403,45 @@ mod tests {
         assert_eq!(*val, back);
     }
 
+    /// Minimal `AgentRecord` for exercising the badge-derivation helpers and the
+    /// `From<&AgentRecord>` impl. Only the fields the helpers read
+    /// (`metadata`, `policy_violations_count`) are meaningful here.
+    fn make_record() -> AgentRecord {
+        AgentRecord {
+            agent_id: [0x01; 16],
+            name: "agent-x".to_string(),
+            framework: "langgraph".to_string(),
+            version: "0.1.0".to_string(),
+            risk_tier: 1,
+            tool_names: vec![],
+            public_key: "test-pubkey".to_string(),
+            credential_token: "test-token".to_string(),
+            metadata: std::collections::BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: Vec::new(),
+            recent_events: std::collections::VecDeque::new(),
+            recent_traces: Vec::new(),
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: Some("team-alpha".to_string()),
+            org_id: None,
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some([0x01; 16]),
+            children: Vec::new(),
+            parent_key: None,
+            enforcement_mode: None,
+        }
+    }
+
     fn make_agent_node() -> AgentNode {
         AgentNode {
             id: "0102030405060708090a0b0c0d0e0f10".to_string(),
@@ -350,6 +450,9 @@ mod tests {
             status: "active".to_string(),
             team_id: Some("team-alpha".to_string()),
             governance_level: None,
+            mode: "enforce".to_string(),
+            flagged: false,
+            trust: None,
         }
     }
 
@@ -363,6 +466,54 @@ mod tests {
         let node = make_agent_node();
         let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&node).unwrap()).unwrap();
         assert!(json.get("governance_level").is_none());
+    }
+
+    #[test]
+    fn agent_node_emits_trust_null_not_omitted() {
+        // `trust` has no data source yet, but the client renders an explicit
+        // "no data" state — so `null` must be present, never omitted.
+        let node = make_agent_node();
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&node).unwrap()).unwrap();
+        assert!(json.get("trust").is_some(), "trust key must be present");
+        assert!(json["trust"].is_null(), "trust must serialize as null");
+        assert_eq!(json["mode"], "enforce");
+        assert_eq!(json["flagged"], false);
+    }
+
+    #[test]
+    fn agent_mode_reads_metadata_and_defaults_to_enforce() {
+        let mut record = make_record();
+        // Recognised values pass through.
+        for m in ["enforce", "shadow", "off"] {
+            record.metadata.insert("mode".to_string(), m.to_string());
+            assert_eq!(agent_mode(&record), m);
+        }
+        // Unrecognised value falls back to enforce (mirrors Fleet parseMode).
+        record.metadata.insert("mode".to_string(), "bogus".to_string());
+        assert_eq!(agent_mode(&record), "enforce");
+        // Absent key falls back to enforce.
+        record.metadata.remove("mode");
+        assert_eq!(agent_mode(&record), "enforce");
+    }
+
+    #[test]
+    fn agent_flagged_uses_violation_threshold() {
+        let mut record = make_record();
+        record.policy_violations_count = FLAGGED_VIOLATION_THRESHOLD - 1;
+        assert!(!agent_flagged(&record));
+        record.policy_violations_count = FLAGGED_VIOLATION_THRESHOLD;
+        assert!(agent_flagged(&record));
+    }
+
+    #[test]
+    fn agent_node_from_record_derives_badge_fields() {
+        let mut record = make_record();
+        record.metadata.insert("mode".to_string(), "shadow".to_string());
+        record.policy_violations_count = FLAGGED_VIOLATION_THRESHOLD + 5;
+        let node = AgentNode::from(&record);
+        assert_eq!(node.mode, "shadow");
+        assert!(node.flagged);
+        assert!(node.trust.is_none());
     }
 
     #[test]
@@ -400,6 +551,9 @@ mod tests {
             delegation_reason: Some("sub-task".to_string()),
             spawned_by_tool: None,
             governance_level: None,
+            mode: "shadow".to_string(),
+            flagged: true,
+            trust: None,
             children: vec![],
         };
         let root = AgentTree {
@@ -411,6 +565,9 @@ mod tests {
             delegation_reason: None,
             spawned_by_tool: None,
             governance_level: None,
+            mode: "enforce".to_string(),
+            flagged: false,
+            trust: None,
             children: vec![leaf],
         };
         roundtrip(&root);
