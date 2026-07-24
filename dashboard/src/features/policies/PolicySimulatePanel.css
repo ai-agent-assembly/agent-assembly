@@ -7,23 +7,17 @@
    themes light/dark with the rest of the dashboard.
    ============================================================ */
 
-.policy-simulate__backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1rem;
-  background: color-mix(in srgb, var(--ink) 55%, transparent);
-}
-
+/* Native <dialog> opened with showModal(): the browser renders it in the top
+   layer and centres it (UA `margin: auto` + inset), so no positioning wrapper
+   is needed — only the visual box and the ::backdrop dim are styled here. */
 .policy-simulate {
   width: 100%;
   max-width: 34rem;
   max-height: 92vh;
+  margin: auto;
   overflow-y: auto;
   background: var(--paper-2);
+  color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 1.25rem 1.375rem 1.5rem;

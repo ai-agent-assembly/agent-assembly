@@ -57,24 +57,25 @@ function VerdictResult({ result }: Readonly<{ result: SimulatePolicyResponse }>)
  * dismiss it; the agent + tool fields are required before a run.
  */
 export function PolicySimulatePanel({ open, onClose }: PolicySimulatePanelProps) {
+  const dialogRef = useRef<HTMLDialogElement>(null)
   const firstFieldRef = useRef<HTMLInputElement>(null)
   const [agentId, setAgentId] = useState('research-bot-04')
   const [tool, setTool] = useState('')
   const [target, setTarget] = useState('')
   const { mutate, data, error, isPending, reset } = useSimulatePolicy()
 
+  // Drive the native <dialog> as a true modal: showModal() puts it in the top
+  // layer and gives us the ::backdrop, focus-trap, and Esc-to-close for free.
+  // The methods are optional-chained because jsdom (the test env) does not
+  // implement showModal/close — there the element still mounts, which is all
+  // the unit tests assert on; real modal behavior is exercised in Playwright.
   useEffect(() => {
     if (!open) return
+    const dialog = dialogRef.current
+    dialog?.showModal?.()
     firstFieldRef.current?.focus()
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
-    document.addEventListener('keydown', handleKey)
-    return () => document.removeEventListener('keydown', handleKey)
-  }, [open, onClose])
+    return () => dialog?.close?.()
+  }, [open])
 
   // Clear any prior verdict each time the panel is reopened so a stale result
   // never flashes against a fresh request.
@@ -97,103 +98,106 @@ export function PolicySimulatePanel({ open, onClose }: PolicySimulatePanelProps)
   }
 
   return createPortal(
-    <div
-      className="policy-simulate__backdrop"
-      data-testid="policy-simulate-backdrop"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return
-        if (e.key !== 'Enter' && e.key !== ' ') return
+    <dialog
+      ref={dialogRef}
+      className="policy-simulate"
+      aria-label="Policy simulator"
+      data-testid="policy-simulate"
+      onCancel={(e) => {
+        // Esc triggers the dialog's native `cancel`; route it through the
+        // parent's dismiss handler (which unmounts us) instead of letting the
+        // browser close the element out from under React, so the parent stays
+        // the single owner of open/closed state.
         e.preventDefault()
         onClose()
       }}
-      role="button"
-      tabIndex={-1}
-      aria-label="Close simulator"
+      onClick={(e) => {
+        // A modal <dialog> centres its own box; the surrounding ::backdrop
+        // still reports clicks on the dialog element. Treat a click that lands
+        // outside the box's bounds as a backdrop dismiss, mirroring the prior
+        // click-outside behaviour without a non-semantic wrapper.
+        const box = e.currentTarget.getBoundingClientRect()
+        const outside =
+          e.clientX < box.left ||
+          e.clientX > box.right ||
+          e.clientY < box.top ||
+          e.clientY > box.bottom
+        if (outside) onClose()
+      }}
     >
-      <div
-        className="policy-simulate"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Policy simulator"
-        data-testid="policy-simulate"
-      >
-        <header className="policy-simulate__head">
-          <div>
-            <div className="policy-simulate__eyebrow">policy simulator</div>
-            <h2 className="policy-simulate__title">Dry-run a request</h2>
-          </div>
-          <button
-            type="button"
-            className="policy-simulate__close"
-            data-testid="policy-simulate-close"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            ✕
-          </button>
-        </header>
+      <header className="policy-simulate__head">
+        <div>
+          <div className="policy-simulate__eyebrow">policy simulator</div>
+          <h2 className="policy-simulate__title">Dry-run a request</h2>
+        </div>
+        <button
+          type="button"
+          className="policy-simulate__close"
+          data-testid="policy-simulate-close"
+          onClick={onClose}
+          aria-label="Close"
+        >
+          ✕
+        </button>
+      </header>
 
-        <p className="policy-simulate__lede">
-          Evaluate a hypothetical request against the active policy. Read-only —
-          nothing is enforced, recorded, or charged.
-        </p>
+      <p className="policy-simulate__lede">
+        Evaluate a hypothetical request against the active policy. Read-only —
+        nothing is enforced, recorded, or charged.
+      </p>
 
-        <form className="policy-simulate__form" onSubmit={handleSubmit}>
-          <label className="policy-simulate__field">
-            <span>agent</span>
-            <input
-              ref={firstFieldRef}
-              type="text"
-              className="policy-simulate__input"
-              data-testid="simulate-agent-input"
-              value={agentId}
-              onChange={(e) => setAgentId(e.target.value)}
-              placeholder="agent id or name"
-            />
-          </label>
-          <label className="policy-simulate__field">
-            <span>tool</span>
-            <input
-              type="text"
-              className="policy-simulate__input"
-              data-testid="simulate-tool-input"
-              value={tool}
-              onChange={(e) => setTool(e.target.value)}
-              placeholder="e.g. gmail_send, shell"
-            />
-          </label>
-          <label className="policy-simulate__field">
-            <span>target</span>
-            <input
-              type="text"
-              className="policy-simulate__input"
-              data-testid="simulate-target-input"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              placeholder="optional — recipient, host, or path"
-            />
-          </label>
-          <button
-            type="submit"
-            className="policy-simulate__run"
-            data-testid="simulate-run-btn"
-            disabled={!canRun}
-          >
-            {isPending ? 'Simulating…' : '▸ Run simulation'}
-          </button>
-        </form>
+      <form className="policy-simulate__form" onSubmit={handleSubmit}>
+        <label className="policy-simulate__field">
+          <span>agent</span>
+          <input
+            ref={firstFieldRef}
+            type="text"
+            className="policy-simulate__input"
+            data-testid="simulate-agent-input"
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            placeholder="agent id or name"
+          />
+        </label>
+        <label className="policy-simulate__field">
+          <span>tool</span>
+          <input
+            type="text"
+            className="policy-simulate__input"
+            data-testid="simulate-tool-input"
+            value={tool}
+            onChange={(e) => setTool(e.target.value)}
+            placeholder="e.g. gmail_send, shell"
+          />
+        </label>
+        <label className="policy-simulate__field">
+          <span>target</span>
+          <input
+            type="text"
+            className="policy-simulate__input"
+            data-testid="simulate-target-input"
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            placeholder="optional — recipient, host, or path"
+          />
+        </label>
+        <button
+          type="submit"
+          className="policy-simulate__run"
+          data-testid="simulate-run-btn"
+          disabled={!canRun}
+        >
+          {isPending ? 'Simulating…' : '▸ Run simulation'}
+        </button>
+      </form>
 
-        {error ? (
-          <div className="policy-simulate__error" data-testid="simulate-error" role="alert">
-            Simulation failed. Please try again.
-          </div>
-        ) : null}
-        {data ? <VerdictResult result={data} /> : null}
-      </div>
-    </div>,
+      {error ? (
+        <div className="policy-simulate__error" data-testid="simulate-error" role="alert">
+          Simulation failed. Please try again.
+        </div>
+      ) : null}
+      {data ? <VerdictResult result={data} /> : null}
+    </dialog>,
     document.body,
   )
 }
