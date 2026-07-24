@@ -52,7 +52,7 @@ describe('CapabilityPage', () => {
     renderPage()
     expect(screen.getByTestId('loading-state-capability')).toBeInTheDocument()
     resolve(FIXTURE)
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
   })
 
   it('renders the error state and retries on click', async () => {
@@ -62,7 +62,7 @@ describe('CapabilityPage', () => {
     // On retry, return a real matrix.
     getMatrix.mockResolvedValueOnce(FIXTURE)
     fireEvent.click(retry)
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
     expect(getMatrix).toHaveBeenCalledTimes(2)
   })
 
@@ -75,7 +75,7 @@ describe('CapabilityPage', () => {
   it('renders the matrix view with the header and switches tabs / verb', async () => {
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
     // Matrix tab active by default → filter bar present.
     expect(screen.getByRole('search')).toBeInTheDocument()
 
@@ -92,7 +92,7 @@ describe('CapabilityPage', () => {
   it('shows the matrix tab count badge and the summary row', async () => {
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
     // Tab badge: <visible> × <resources>.
     expect(
       screen.getByText(`${FIXTURE.agents.length} × ${FIXTURE.resources.length}`),
@@ -109,7 +109,7 @@ describe('CapabilityPage', () => {
   it('navigates to the policy editor from the Open Policy editor button', async () => {
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
     fireEvent.click(screen.getByRole('button', { name: /Open Policy editor/ }))
     expect(await screen.findByText('policy editor route')).toBeInTheDocument()
     expect(screen.getByTestId('location')).toHaveTextContent('/policies')
@@ -118,7 +118,7 @@ describe('CapabilityPage', () => {
   it('navigates to a policy from a drawer edit link', async () => {
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
     // Find a cell that has responsible policies (narrow/deny/approval), open it.
     const cell = screen
       .getAllByRole('gridcell')
@@ -136,7 +136,7 @@ describe('CapabilityPage', () => {
   it('opens the cell inspect drawer when a matrix cell is clicked', async () => {
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
     const interactiveCell = screen
       .getAllByRole('gridcell')
       .find((c) => c.dataset.decision !== 'na')
@@ -151,7 +151,7 @@ describe('CapabilityPage', () => {
     getMatrix.mockResolvedValue(FIXTURE)
     applyOverride.mockResolvedValueOnce({ updated: [] })
     renderPage()
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
 
     // Select all agents via the matrix select-all checkbox.
     fireEvent.click(screen.getByLabelText('select all agents'))
@@ -169,7 +169,7 @@ describe('CapabilityPage', () => {
     getMatrix.mockResolvedValue(FIXTURE)
     applyOverride.mockRejectedValueOnce(new Error('gateway said no'))
     renderPage()
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
     fireEvent.click(screen.getByLabelText('select all agents'))
     fireEvent.click(screen.getByRole('button', { name: 'Apply override' }))
     expect(await screen.findByText(/rollback: gateway said no/)).toBeInTheDocument()
@@ -178,7 +178,7 @@ describe('CapabilityPage', () => {
   it('clears the selection via the bulk Clear button', async () => {
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
     fireEvent.click(screen.getByLabelText('select all agents'))
     // BulkActionBar is visible while there is a selection.
     expect(screen.getByRole('region', { name: 'bulk override' })).toBeInTheDocument()
@@ -191,7 +191,7 @@ describe('CapabilityPage', () => {
   it('sorts the matrix when a column header is clicked', async () => {
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
     const header = screen.getAllByRole('columnheader')[1]
     fireEvent.click(header)
     // First click sets a descending sort on that resource column.
@@ -201,7 +201,7 @@ describe('CapabilityPage', () => {
   it('closes the cell inspect drawer', async () => {
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
-    await screen.findByText('Capability')
+    await screen.findByRole('heading', { name: /Capability/ })
     const cell = screen
       .getAllByRole('gridcell')
       .find((c) => c.dataset.decision !== 'na')!
