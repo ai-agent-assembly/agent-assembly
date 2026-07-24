@@ -1460,6 +1460,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/policies/simulate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/policies/simulate` — dry-run a hypothetical request.
+         * @description Evaluate a hypothetical `(agent, tool, target)` request against the active
+         *     governance policy and return the verdict (allow / narrow / approval / deny),
+         *     the matched rule/reason, and whether the payload would be scrubbed.
+         *
+         *     This is a pure, read-only what-if: it runs the policy engine in dry-run mode
+         *     ([`aa_gateway::engine::PolicyEngine::simulate`]) with no state mutation, no
+         *     budget debit, no audit write, and no enforcement side effect.
+         */
+        post: operations["simulate_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tools": {
         parameters: {
             query?: never;
@@ -3781,6 +3807,55 @@ export interface components {
             silence_id: string;
             /** @description ISO 8601 timestamp at which the silence took effect. */
             starts_at: string;
+        };
+        /**
+         * @description Request body for `POST /api/v1/policies/simulate` (AAASM-5037).
+         *
+         *     Describes a hypothetical `(agent, tool, target)` request to evaluate against
+         *     the active policy. No part of it is persisted — it is a pure what-if.
+         */
+        SimulatePolicyRequest: {
+            /**
+             * @description Identifier (id or name) of the hypothetical agent to evaluate as. Mapped
+             *     to the same internal `AgentId` a live request for this agent would use,
+             *     so a registered agent's org/team lineage is honored.
+             */
+            agent_id: string;
+            /**
+             * @description Optional organization attribute used for policy-cascade lineage when the
+             *     agent is not resolvable from the registry.
+             */
+            org_id?: string | null;
+            /**
+             * @description Optional target/resource of the action (e.g. a recipient, host, or path).
+             *     Folded into the simulated tool-call arguments so target-sensitive
+             *     predicates and credential/PII scanning apply.
+             */
+            target?: string | null;
+            /**
+             * @description Optional team attribute used for policy-cascade lineage when the agent is
+             *     not resolvable from the registry.
+             */
+            team_id?: string | null;
+            /** @description Tool or capability the agent would invoke (e.g. `"gmail.send"`, `"shell"`). */
+            tool: string;
+        };
+        /** @description Response body for `POST /api/v1/policies/simulate` (AAASM-5037). */
+        SimulatePolicyResponse: {
+            /**
+             * @description Label of the policy rule / reason that produced the verdict. `null` for a
+             *     clean allow with no matched narrowing or deny rule.
+             */
+            matched_rule?: string | null;
+            /** @description Human-readable explanation of the verdict. */
+            reason: string;
+            /**
+             * @description Whether the payload would be scrubbed before reaching the model because
+             *     credential/PII content was detected (drives the `"narrow"` verdict).
+             */
+            redacted: boolean;
+            /** @description Dry-run verdict: `"allow"`, `"narrow"`, `"approval"`, or `"deny"`. */
+            verdict: string;
         };
         /** @description Response for `GET /api/v1/agents/{id}/subtree-burn`. */
         SubtreeBurnResponse: {
@@ -6888,6 +6963,37 @@ export interface operations {
             };
             /** @description No active policy loaded */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    simulate_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SimulatePolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Dry-run verdict for the hypothetical request */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimulatePolicyResponse"];
+                };
+            };
+            /** @description Caller lacks read scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
