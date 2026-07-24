@@ -119,6 +119,9 @@ export function Step3IssueIdentity({ state, onIssued }: Readonly<Step3IssueIdent
                 <dd className="onb-id-val">{id.issuedAt}</dd>
               </div>
             </dl>
+            <div className="onb-id-hint" data-testid="onboarding-identity-key-hint">
+              private key stored in your <code>~/.aa/keys/</code> · do not commit
+            </div>
           </>
         )}
       </div>

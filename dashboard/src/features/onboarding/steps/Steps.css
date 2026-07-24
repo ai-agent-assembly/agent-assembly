@@ -361,6 +361,13 @@
   letter-spacing: 0.4px;
 }
 
+.onb-id-hint code {
+  background: var(--paper);
+  padding: 1px 4px;
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+}
+
 .onb-id-issued {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
