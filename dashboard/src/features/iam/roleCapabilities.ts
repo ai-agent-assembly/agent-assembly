@@ -56,7 +56,12 @@ export const ROLE_CAPABILITY_CATALOGUE: Record<Role, RoleCapabilityCatalogueEntr
 
 /** One role-capability card: role identity + its grants + who holds it. */
 export interface RoleCard {
-  role: Role
+  /**
+   * Role identifier. A built-in member `Role` in the static-fallback path, or
+   * a gateway RBAC role id (e.g. `org_admin`) in the live path — hence a
+   * widened `string` rather than the member-only `Role` union.
+   */
+  role: string
   /** Null when the catalogue has no entry for the role (null-safe render). */
   description: string | null
   capabilities: readonly string[]
@@ -65,12 +70,50 @@ export interface RoleCard {
 }
 
 /**
- * Fold the live member roster (real IAM data) together with the static grant
- * catalogue into one card per built-in role. Member count and assignees are
- * backed by `/iam` members; `description` / `capabilities` come from the
- * catalogue and are null-safe when absent.
+ * A live role→capability grant as returned by `GET /api/v1/iam/roles`
+ * (AAASM-5046). This is the gateway's real policy-RBAC model — roles
+ * (`org_admin`, `team_admin`, `developer`, `viewer`, `auditor`) and grants
+ * derived server-side from the PolicyMutationRequiredRole table. It is
+ * deliberately coarser than the static design catalogue above.
  */
-export function buildRoleCards(members: readonly Member[]): RoleCard[] {
+export interface LiveRoleGrant {
+  role: string
+  description: string
+  capabilities: readonly string[]
+}
+
+/**
+ * Fold the member roster together with capability grants into one card per
+ * role. This is the single seam the cards read from (AAASM-5042).
+ *
+ * When `liveGrants` is present and non-empty, cards reflect the **live**
+ * gateway role→capability model: one card per gateway role, grants from the
+ * server. Assignees are joined by a case-insensitive role-name match against
+ * the member roster — the gateway's authz-role vocabulary and the member
+ * assignment vocabulary are currently distinct, so only exact-name matches
+ * carry members (no fabricated crosswalk).
+ *
+ * When `liveGrants` is absent/empty (fetch unavailable), it falls back to the
+ * static built-in catalogue keyed by member `Role` — the documented defaults
+ * the flag banner explains.
+ */
+export function buildRoleCards(
+  members: readonly Member[],
+  liveGrants?: readonly LiveRoleGrant[] | null,
+): RoleCard[] {
+  if (liveGrants && liveGrants.length > 0) {
+    return liveGrants.map((grant) => {
+      const assignees = members.filter((m) => m.role.toLowerCase() === grant.role.toLowerCase())
+      return {
+        role: grant.role,
+        description: grant.description || null,
+        capabilities: grant.capabilities,
+        memberCount: assignees.length,
+        assignees,
+      }
+    })
+  }
+
   return ROLES.map((role) => {
     const entry = ROLE_CAPABILITY_CATALOGUE[role] ?? null
     const assignees = members.filter((m) => m.role === role)

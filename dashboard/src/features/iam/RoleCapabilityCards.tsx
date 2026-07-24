@@ -1,13 +1,24 @@
-import { useMembersQuery } from './api'
+import { useMembersQuery, useRoleCapabilitiesQuery } from './api'
 import { buildRoleCards, type RoleCard } from './roleCapabilities'
-import type { Member, Role } from './types'
+import type { Member } from './types'
 import './RoleCapabilityCards.css'
 
-const ROLE_BADGE_TONE: Record<Role, string> = {
+const ROLE_BADGE_TONE: Record<string, string> = {
   Owner: 'iam-role-badge--owner',
   Admin: 'iam-role-badge--admin',
   Member: 'iam-role-badge--member',
   Viewer: 'iam-role-badge--viewer',
+  // Gateway RBAC role ids (live path) — reuse the closest member-role tone.
+  org_admin: 'iam-role-badge--owner',
+  team_admin: 'iam-role-badge--admin',
+  developer: 'iam-role-badge--member',
+  viewer: 'iam-role-badge--viewer',
+  auditor: 'iam-role-badge--viewer',
+}
+
+/** Badge tone class for a role id, defaulting when the role is unrecognised. */
+function badgeTone(role: string): string {
+  return ROLE_BADGE_TONE[role] ?? 'iam-role-badge--viewer'
 }
 
 function firstName(name: string): string {
@@ -61,7 +72,7 @@ export function RoleCapabilityCard({ card }: Readonly<{ card: RoleCard }>) {
   return (
     <article className="role-card" data-testid={`role-card-${card.role}`}>
       <header className="role-card__header">
-        <span className={`iam-role-badge ${ROLE_BADGE_TONE[card.role]}`}>{card.role}</span>
+        <span className={`iam-role-badge ${badgeTone(card.role)}`}>{card.role}</span>
         <span className="role-card__count" data-testid={`role-card-count-${card.role}`}>
           {memberLabel}
         </span>
@@ -83,13 +94,22 @@ export function RoleCapabilityCard({ card }: Readonly<{ card: RoleCard }>) {
 
 /**
  * Grid of role-capability cards for the Identity → Roles tab
- * (design/v1/hi-fi/identity.jsx RolesTab). Member counts / assignees are live
- * IAM data; capability grants come from the static built-in catalogue — see
- * the flag banner and `roleCapabilities.ts` for why they are not yet live.
+ * (design/v1/hi-fi/identity.jsx RolesTab).
+ *
+ * Capability grants come from the live `GET /api/v1/iam/roles` endpoint
+ * (AAASM-5046) when it is reachable — in that case the cards reflect the
+ * gateway's real policy-RBAC roles and the flag banner is dropped. When the
+ * endpoint is empty or unavailable, the cards fall back to the static built-in
+ * catalogue and the banner is shown to flag that the grants are documented
+ * defaults, not live data. Member counts / assignees are always live IAM data.
  */
 export function RoleCapabilityCards() {
-  const { data, isLoading, isError } = useMembersQuery()
-  const cards = buildRoleCards(data?.items ?? [])
+  const { data: membersData, isLoading: membersLoading, isError: membersError } = useMembersQuery()
+  const { data: rolesData, isLoading: rolesLoading } = useRoleCapabilitiesQuery()
+
+  const liveGrants = rolesData ?? null
+  const hasLiveGrants = liveGrants !== null && liveGrants.length > 0
+  const cards = buildRoleCards(membersData?.items ?? [], liveGrants)
 
   return (
     <section className="role-cards" data-testid="role-capability-cards">
@@ -100,17 +120,19 @@ export function RoleCapabilityCards() {
         </p>
       </header>
 
-      <p className="role-cards__flag" data-testid="role-cards-grant-flag">
-        Capability grants shown are the documented built-in defaults. Live per-tenant grants
-        appear once the gateway exposes a role → capability endpoint.
-      </p>
+      {!hasLiveGrants && (
+        <p className="role-cards__flag" data-testid="role-cards-grant-flag">
+          Capability grants shown are the documented built-in defaults. Live per-tenant grants
+          appear once the gateway exposes a role → capability endpoint.
+        </p>
+      )}
 
-      {isError && (
+      {membersError && (
         <p className="role-cards__error" data-testid="role-cards-error">
           Member assignments could not be loaded; showing grants only.
         </p>
       )}
-      {isLoading && (
+      {(membersLoading || rolesLoading) && (
         <p className="role-cards__loading" data-testid="role-cards-loading">
           Loading role assignments…
         </p>
