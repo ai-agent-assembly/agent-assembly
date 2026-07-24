@@ -1,6 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
+import { api } from '../../api/client'
 import { getToken } from '../../auth/tokenStorage'
+import type { components } from '../../api/generated/schema'
 import type { TopologyGraph } from './types'
+
+/** Ancestor chain (root → agent) returned by `GET /api/v1/topology/lineage/{agent_id}`. */
+export type AgentLineage = components['schemas']['AgentLineage']
+/** One node in an {@link AgentLineage} chain. */
+export type LineageStep = components['schemas']['LineageStep']
 
 /**
  * Recent activity for a single topology node, surfaced in the node detail
@@ -67,6 +74,31 @@ export function useTopologyNodeRecentEvents(nodeId: string) {
       )
       if (!res.ok) throw new Error('Failed to fetch recent events')
       return (await res.json()) as readonly RecentEvent[]
+    },
+  })
+}
+
+/**
+ * Fetch the delegation ancestry for a single agent — the root agent at index 0
+ * through to the requested agent as the last element (AAASM-5041). Powers the
+ * agent-detail Lineage tab.
+ *
+ * Uses the typed `api.GET` client since `/api/v1/topology/lineage/{agent_id}`
+ * is in the OpenAPI schema. Disabled when `agentId` is empty so callers can
+ * pass an unresolved route param without conditional hook usage.
+ */
+export function useAgentLineageQuery(agentId: string) {
+  return useQuery<AgentLineage>({
+    queryKey: ['topology', 'lineage', agentId],
+    enabled: !!agentId,
+    staleTime: 5_000,
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/v1/topology/lineage/{agent_id}', {
+        params: { path: { agent_id: agentId } },
+      })
+      if (error) throw new Error('Failed to fetch agent lineage')
+      if (!data) throw new Error('Agent lineage response was empty')
+      return data
     },
   })
 }
