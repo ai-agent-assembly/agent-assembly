@@ -179,26 +179,35 @@
   color: var(--ink-3);
 }
 
+/* Decision cells carry no per-cell border — the 1px grid gap (`--line` showing
+   through) already separates every cell, so an extra coloured outline only
+   doubled the rule and fought the fill. Colour alone now encodes the verdict. */
 .cap-mx-cell--narrow {
   background: var(--warn-bg);
   color: var(--warn);
-  border: 1px solid var(--warn);
 }
 
 .cap-mx-cell--approval {
   background: var(--info-bg);
   color: var(--info);
-  border: 1px solid var(--info);
 }
 
 .cap-mx-cell--deny {
   background: var(--danger-bg);
   color: var(--danger);
-  border: 1px solid var(--danger);
 }
 
+/* n/a = the verb doesn't apply to this resource. A diagonal hatch (per design/v1
+   `.mx-cell-na`) reads as "inapplicable" at a glance, distinct from a flat empty
+   cell that could be mistaken for an un-loaded value. */
 .cap-mx-cell--na {
-  background: var(--paper-3);
+  background: repeating-linear-gradient(
+    45deg,
+    var(--paper-3),
+    var(--paper-3) 4px,
+    var(--paper-2) 4px,
+    var(--paper-2) 8px
+  );
   color: var(--ink-5);
 }
 

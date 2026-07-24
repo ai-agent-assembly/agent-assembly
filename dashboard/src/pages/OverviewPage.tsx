@@ -167,7 +167,14 @@ function alertDecision(severity: Alert['severity']): string {
 function shortTime(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  // 24-hour clock (hour12:false) to match the mono HH:MM:SS in the design and
+  // the rest of the governance UI — an operator log reads as 14:02:08, not 2:02 PM.
+  return d.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
 }
 
 /** One row in the "recent decisions" list. */
@@ -444,7 +451,9 @@ export function OverviewPage() {
           />
         </div>
 
-        {/* Enforcement timeline — windowed decision counts by verdict */}
+        {/* Enforcement timeline + recent decisions, side by side (timeline 1.6fr,
+            recent 1fr per .overview-row-wide). The fleet snapshot then spans the
+            full width in its own row below, matching design/v1's grouping. */}
         <div className="overview-row-wide">
           <EnforcementTimeline
             window={windowSel}
@@ -452,10 +461,7 @@ export function OverviewPage() {
             isLoading={timelineQuery.isLoading}
             isError={timelineQuery.isError}
           />
-        </div>
 
-        {/* Recent decisions + fleet snapshot */}
-        <div className="overview-row-wide">
           <section className="overview-card" data-testid="overview-recent">
             <div className="overview-recent__head">
               <div className="overview-card__label">◷ recent decisions</div>
@@ -473,38 +479,39 @@ export function OverviewPage() {
               recent.map((a) => <RecentDecisionRow key={a.id} alert={a} />)
             )}
           </section>
-
-          <section className="overview-card" data-testid="overview-snapshot">
-            <div className="overview-recent__head">
-              <div className="overview-card__label">▦ fleet snapshot · {total} agents</div>
-              <button
-                type="button"
-                className="overview-btn overview-btn--sm"
-                onClick={() => navigate('/agents')}
-              >
-                open Fleet →
-              </button>
-            </div>
-            <div className="overview-snapshot__grid">
-              <div>
-                <div className="overview-snapshot__num">{total}</div>
-                <div className="overview-snapshot__lbl">total agents</div>
-              </div>
-              <div>
-                <div className="overview-snapshot__num is-ok">{enforcing}</div>
-                <div className="overview-snapshot__lbl">enforcing</div>
-              </div>
-              <div>
-                <div className="overview-snapshot__num is-warn">{shadow}</div>
-                <div className="overview-snapshot__lbl">shadow mode</div>
-              </div>
-              <div>
-                <div className="overview-snapshot__num is-danger">{flagged}</div>
-                <div className="overview-snapshot__lbl">flagged</div>
-              </div>
-            </div>
-          </section>
         </div>
+
+        {/* Fleet snapshot — full-width row below the timeline + recent row */}
+        <section className="overview-card" data-testid="overview-snapshot">
+          <div className="overview-recent__head">
+            <div className="overview-card__label">▦ fleet snapshot · {total} agents</div>
+            <button
+              type="button"
+              className="overview-btn overview-btn--sm"
+              onClick={() => navigate('/agents')}
+            >
+              open Fleet →
+            </button>
+          </div>
+          <div className="overview-snapshot__grid">
+            <div>
+              <div className="overview-snapshot__num">{total}</div>
+              <div className="overview-snapshot__lbl">total agents</div>
+            </div>
+            <div>
+              <div className="overview-snapshot__num is-ok">{enforcing}</div>
+              <div className="overview-snapshot__lbl">enforcing</div>
+            </div>
+            <div>
+              <div className="overview-snapshot__num is-warn">{shadow}</div>
+              <div className="overview-snapshot__lbl">shadow mode</div>
+            </div>
+            <div>
+              <div className="overview-snapshot__num is-danger">{flagged}</div>
+              <div className="overview-snapshot__lbl">flagged</div>
+            </div>
+          </div>
+        </section>
       </div>
     </main>
   )

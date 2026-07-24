@@ -15,13 +15,23 @@
   gap: 24px;
 }
 
+/* Page title uses the Inter display size from design/v1 `.page-title`
+   (22px / -0.3px), not the mono body face — it is a heading, not a data label.
+   The ★ + Traditional-Chinese gloss `能力縮限設定` are part of the product's
+   bilingual page identity. */
 .capability-title {
   margin: 0;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 18px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 22px;
   font-weight: 700;
   color: var(--ink);
-  letter-spacing: -0.5px;
+  letter-spacing: -0.3px;
+}
+
+.capability-title-zh {
+  color: var(--ink-4);
+  font-weight: 400;
+  font-size: 14px;
 }
 
 .capability-sub {
@@ -31,6 +41,12 @@
   color: var(--ink-3);
   max-width: 640px;
   line-height: 1.5;
+}
+
+/* say / actually — the claimed-vs-effective contrast the page is built around. */
+.capability-sub em {
+  font-style: italic;
+  color: var(--ink-2);
 }
 
 .capability-head-actions {
@@ -63,14 +79,23 @@
   background: var(--ink-2);
 }
 
+/* Count renders as a filled pill (per design/v1 `.tab-count`) so the "N × 8"
+   dimension reads as a badge on the tab, inverting to solid ink on the active
+   tab. */
 .capability-tab-count {
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
-  color: var(--ink-4);
   font-weight: 400;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: var(--paper-3);
+  color: var(--ink-3);
 }
 
 .capability-tab.is-active .capability-tab-count {
-  color: var(--ink-3);
+  background: var(--ink);
+  color: var(--paper-2);
 }
 
 .capability-tabs {
@@ -111,7 +136,7 @@
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 8px 0;
 }
 
@@ -121,27 +146,44 @@
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--ink-4);
-  margin-right: 4px;
+}
+
+/* Verbs are a joined segmented control (per design/v1 `.verbs`): one bordered
+   group, hairline dividers between segments, no per-segment gap — so read/write/
+   delete/exec read as one mutually-exclusive selector, not four loose pills. */
+.capability-verb-seg {
+  display: flex;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  overflow: hidden;
+  width: fit-content;
 }
 
 .capability-verb {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  padding: 4px 10px;
-  border: 1px solid var(--line);
+  font-weight: 600;
+  padding: 4px 12px;
+  border: none;
+  border-right: 1px solid var(--line-2);
   background: var(--paper-2);
   color: var(--ink-3);
-  border-radius: 3px;
   cursor: pointer;
-  text-transform: lowercase;
+  user-select: none;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.capability-verb:last-child {
+  border-right: none;
 }
 
 .capability-verb:hover {
+  background: var(--paper-3);
   color: var(--ink);
 }
 
 .capability-verb.is-active {
   background: var(--ink);
-  color: var(--paper);
-  border-color: var(--ink);
+  color: var(--paper-2);
 }

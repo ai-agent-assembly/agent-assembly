@@ -24,7 +24,7 @@ const EVIDENCE_DIR = resolve(process.cwd(), 'docs/verification/aaasm-1392')
 // Hi-fi token RGB values from `design/v1/styles.css` and `dashboard/src/styles.css`.
 // Drift between the two source-of-truth files would cause these assertions to fail.
 const HIFI_TOKENS = {
-  paper3: 'rgb(235, 233, 226)', // #ebe9e2 — allow / na cell background
+  paper3: 'rgb(235, 233, 226)', // #ebe9e2 — allow cell background
   warnBg: 'rgb(245, 230, 196)', // #f5e6c4 — narrow cell background
   infoBg: 'rgb(214, 223, 238)', // #d6dfee — approval cell background
   dangerBg: 'rgb(246, 218, 214)', // #f6dad6 — deny cell background
@@ -71,7 +71,6 @@ function describeAtViewport(width: number, height: number) {
         ['.cap-mx-cell--narrow', HIFI_TOKENS.warnBg],
         ['.cap-mx-cell--approval', HIFI_TOKENS.infoBg],
         ['.cap-mx-cell--deny', HIFI_TOKENS.dangerBg],
-        ['.cap-mx-cell--na', HIFI_TOKENS.paper3],
       ]
       for (const [selector, expected] of expectations) {
         const locator = page.locator(selector).first()
@@ -80,6 +79,17 @@ function describeAtViewport(width: number, height: number) {
           (el) => getComputedStyle(el as Element).backgroundColor,
         )
         expect(bg, `${selector} background`).toBe(expected)
+      }
+
+      // n/a cells render as a diagonal hatch (repeating-linear-gradient per
+      // design/v1 `.mx-cell-na`), not a flat fill — so assert the gradient
+      // background-image rather than a solid background-color.
+      const naCell = page.locator('.cap-mx-cell--na').first()
+      if ((await naCell.count()) > 0) {
+        const image = await naCell.evaluate(
+          (el) => getComputedStyle(el as Element).backgroundImage,
+        )
+        expect(image, '.cap-mx-cell--na hatch').toContain('repeating-linear-gradient')
       }
 
       await page.screenshot({
