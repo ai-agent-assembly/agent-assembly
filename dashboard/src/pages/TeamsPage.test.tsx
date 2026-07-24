@@ -63,14 +63,14 @@ const APPROVALS: Approval[] = [
   { id: 'apr-1', action: 'net.egress', agent_id: 'a1', reason: 'external call', created_at: '2026-05-13T10:00:00Z', expires_at: '2026-05-13T10:05:00Z', status: 'pending', team_id: 'team-001', routing_status: { status: 'routed_to_team_admin', target_role: 'TeamAdmin', history: [] } },
 ]
 
-function topologyFor(teamId: string | undefined): TeamTopology {
+function topologyFor(teamId: string): TeamTopology {
   const members = teamId === 'team-000'
     ? [{ id: 'a1', name: 'orchestrator', status: 'active', depth: 0, flagged: false, mode: 'enforce' }]
     : [
         { id: 'b1', name: 'router', status: 'active', depth: 0, flagged: false, mode: 'enforce' },
         { id: 'b2', name: 'scraper', status: 'suspended', depth: 1, flagged: true, mode: 'shadow' },
       ]
-  return { team_id: teamId ?? '', agent_count: members.length, members }
+  return { team_id: teamId, agent_count: members.length, members }
 }
 
 function setupMocks(overview: TopologyOverview, costs: CostSummary | undefined = COSTS) {
