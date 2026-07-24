@@ -235,6 +235,60 @@ describe('PoliciesPage — overlay wiring', () => {
     expect(chips).toHaveTextContent('v1.0.0')
   })
 
+  it('loads a proposed policy\'s real rules, scope, status + draft callout (AAASM-5059)', async () => {
+    const user = userEvent.setup()
+    const PROPOSED_WITH_RULES: Policy = {
+      name: 'research-bot',
+      version: '0.3.0',
+      rule_count: 2,
+      active: false,
+      policy_yaml: [
+        'apiVersion: agent-assembly/v1',
+        'kind: Policy',
+        'metadata:',
+        '  name: research-bot',
+        '  scope: team:research',
+        '  version: 0.3.0',
+        'spec:',
+        '  rules:',
+        '    - id: R1-gmail-allow',
+        '      match:',
+        '        actions:',
+        '          - gmail:read',
+        '      effect: allow',
+        '      audit: true',
+        '    - id: R2-s3-approval',
+        '      match:',
+        '        actions:',
+        '          - s3:write',
+        '      effect: require_approval',
+        '      approval:',
+        '        timeout_seconds: 1800',
+        '        approvers:',
+        '          - security-oncall',
+        '      audit: true',
+        '',
+      ].join('\n'),
+    }
+    mockPolicies({ data: [PROPOSED_WITH_RULES], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('policy-row'))
+    await screen.findByTestId('policy-editor-overlay')
+
+    // Real status → draft callout shown, status chip "proposed".
+    expect(screen.getByTestId('editor-status-chip')).toHaveTextContent('proposed')
+    expect(screen.getByTestId('editor-draft-callout')).toBeInTheDocument()
+
+    // Real scope + rules, not a fabricated gmail/read/allow stub.
+    expect(screen.getByTestId('editor-scope-input')).toHaveValue('team:research')
+    expect(screen.getByTestId('editor-rule-0-resource')).toHaveValue('gmail')
+    expect(screen.getByTestId('editor-rule-1-resource')).toHaveValue('s3')
+
+    // The approval rule (R2) must not raise a false-positive error (AAASM-5060).
+    expect(screen.getByTestId('editor-validation-error-count')).toHaveTextContent('0 errors')
+    expect(screen.getByTestId('editor-save-btn')).not.toBeDisabled()
+  })
+
   it('closes the overlay when the editor Cancel button is clicked', async () => {
     const user = userEvent.setup()
     mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
@@ -269,7 +323,11 @@ describe('PoliciesPage — save flow', () => {
     render(<PoliciesPage />, { wrapper: Wrapper })
     await user.click(screen.getByTestId('new-policy-btn'))
     await screen.findByTestId('policy-editor-overlay')
-    // emptyDraft has name === '' → validation error → Save disabled
+    // A fresh draft is valid, so drive it into an error state: deselect the
+    // only verb on R1 → "Select at least one verb" → Save disabled. (Name is
+    // no longer required after AAASM-5060.)
+    expect(screen.getByTestId('editor-save-btn')).not.toBeDisabled()
+    await user.click(screen.getByTestId('editor-rule-0-verb-read'))
     expect(screen.getByTestId('editor-save-btn')).toBeDisabled()
     await user.click(screen.getByTestId('editor-save-btn'))
     expect(mutateAsync).not.toHaveBeenCalled()

@@ -29,6 +29,27 @@ export function RuleCard({ index, rule, original, onChange, onDuplicate, onRemov
   const isDeny = rule.action === 'deny'
   const isDirty = !original || JSON.stringify(rule) !== JSON.stringify(original)
 
+  // A rule whose body couldn't be recovered from the loaded policy YAML
+  // (AAASM-5059). Render it read-only and clearly flagged rather than
+  // pretending it is an editable default.
+  if (rule.unknown) {
+    return (
+      <section
+        className="editor__section editor__section--unknown"
+        data-testid={`editor-rule-${index}`}
+        aria-label={`rule ${index + 1}`}
+      >
+        <header className="editor__section-head">
+          <span className="editor__rule-num">R{index + 1}</span>
+        </header>
+        <p className="editor__unknown-rule" data-testid={`editor-rule-${index}-unknown`}>
+          Rule body unavailable — this policy was authored outside the visual
+          editor. Switch to the DSL view or inspect the source YAML to see it.
+        </p>
+      </section>
+    )
+  }
+
   const handleActionChange = (next: ActionKind) => {
     // When switching to "narrow", seed the path list from the resource's
     // default suggestions if the user hasn't typed anything yet.

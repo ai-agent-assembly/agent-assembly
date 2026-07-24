@@ -135,6 +135,20 @@
   color: var(--ink-2);
 }
 
+/* Read-only notice for a rule whose body couldn't be recovered from the
+   loaded policy YAML (AAASM-5059) — muted, non-interactive. */
+.editor__section--unknown {
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+.editor__unknown-rule {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.875rem;
+  font-style: italic;
+}
+
 /* ── DSL / Rego preview ──────────────────────────────────── */
 
 /* Read-only projection of the draft. Rendered on a dark code panel via the

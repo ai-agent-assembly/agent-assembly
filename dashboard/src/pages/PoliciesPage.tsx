@@ -14,7 +14,8 @@ import { Tooltip } from '../components/Tooltip'
 import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 import { PolicyEditorOverlay } from '../features/policies/editor/PolicyEditorOverlay'
 import { PolicySimulatePanel } from '../features/policies/PolicySimulatePanel'
-import { emptyDraft, stubDraftFromIdentity } from '../features/policies/editor/constants'
+import { emptyDraft } from '../features/policies/editor/constants'
+import { draftFromPolicy } from '../features/policies/editor/draftFromPolicy'
 import { serializeDraft } from '../features/policies/editor/serializeDraft'
 import type {
   PolicyDraft,
@@ -47,15 +48,11 @@ function PolicyEditorOverlayContainer({
   // Stable initial draft for the lifetime of this overlay open session.
   // Identity matters because useDraft references it for dirty tracking.
   const initialDraft = useMemo(() => {
-    if (
-      overlayProps.mode === 'edit' &&
-      overlayProps.name &&
-      overlayProps.version
-    ) {
-      return stubDraftFromIdentity(overlayProps.name, overlayProps.version)
+    if (overlayProps.mode === 'edit') {
+      return draftFromPolicy(overlayProps.policy)
     }
     return emptyDraft()
-  }, [overlayProps.mode, overlayProps.name, overlayProps.version])
+  }, [overlayProps])
 
   const handleDirtyChange = useCallback(
     (dirty: boolean) => {
@@ -388,8 +385,7 @@ export function PoliciesPage() {
   }
 
   const handleNew = () => openOverlay({ mode: 'new' })
-  const handleEdit = (policy: Policy) =>
-    openOverlay({ mode: 'edit', name: policy.name, version: policy.version })
+  const handleEdit = (policy: Policy) => openOverlay({ mode: 'edit', policy })
 
   return (
     <main className="policies-page" data-testid="policies-page">
