@@ -11,8 +11,14 @@ import { LoadingState } from '../LoadingState'
 import { ErrorState } from '../ErrorState'
 import './AgentDetailTabs.css'
 
+function nodeVariantClass(isRoot: boolean, isCurrent: boolean): string {
+  if (isCurrent) return ' adt-node--current'
+  if (isRoot) return ' adt-node--root'
+  return ''
+}
+
 function ChainNode({ step, isRoot, isCurrent }: Readonly<{ step: LineageStep; isRoot: boolean; isCurrent: boolean }>) {
-  const cls = isCurrent ? ' adt-node--current' : isRoot ? ' adt-node--root' : ''
+  const cls = nodeVariantClass(isRoot, isCurrent)
   return (
     <div className={`adt-node${cls}`} data-testid={`lineage-node-${step.id}`}>
       <div className="adt-node__depth">{step.depth}</div>
