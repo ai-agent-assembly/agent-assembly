@@ -89,6 +89,8 @@ fn protected_router() -> Router {
         .route("/agents/{id}/suspend", post(agents::suspend_agent))
         .route("/agents/{id}/resume", post(agents::resume_agent))
         .route("/agents/{id}/capabilities", get(agents::get_agent_capabilities))
+        // Recent per-agent decision stream for the agent-detail Traffic tab (AAASM-5058)
+        .route("/agents/{id}/decisions", get(agents::get_agent_decisions))
         .route("/agents/{id}/budget", get(agents::get_agent_budget))
         .route("/agents/{id}/subtree-burn", get(agents::get_agent_subtree_burn))
         // Fleet — read-only cross-agent aggregations for the dashboard Fleet page.

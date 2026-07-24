@@ -8,6 +8,7 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use aa_core::audit::AuditEntry;
 use aa_gateway::registry::{AgentStatus, OrphanMode};
 
 use crate::auth::scope::{RequireRead, RequireWrite, Scope};
@@ -980,6 +981,214 @@ pub async fn get_agent_subtree_burn(
     ))
 }
 
+/// One row of the agent's recent decision stream (AAASM-5058).
+///
+/// Backs the agent-detail Traffic tab's per-decision table
+/// (`design/v1/hi-fi/agent-detail.jsx`), one row per governance decision the
+/// gateway recorded for this agent. Every field is read straight from the
+/// existing audit log — no enforcement or audit-write path is touched. Columns
+/// the audit log has no source for are surfaced as `null` rather than
+/// fabricated (see [`AgentDecisionResponse::latency_ms`]).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDecisionResponse {
+    /// Decision timestamp as an RFC 3339 UTC string (audit `timestamp_ns`).
+    pub timestamp: String,
+    /// Hex-encoded id of the session the decision was recorded under. Lets the
+    /// UI link a row to its trace; not part of the visible design columns.
+    pub session_id: String,
+    /// Per-session monotonic sequence of the audit entry. Combined with
+    /// `sessionId` it uniquely identifies the row.
+    pub seq: u64,
+    /// The recorded action category (audit payload `action_type`, e.g.
+    /// `TOOL_CALL` / `FILE_OPERATION`). The design's `verb` column: the audit
+    /// log records the action *category*, not a fine-grained read/write verb,
+    /// so this is the closest recorded source. `null` when unrecorded.
+    pub verb: Option<String>,
+    /// The action's primary target derived from the audit `detail` (tool name,
+    /// file path, network host, process command, or LLM model). The design's
+    /// `resource` column. `null` when the detail carries no resolvable target.
+    pub resource: Option<String>,
+    /// The policy `decision` as the proto [`Decision`](aa_proto::assembly::common::v1::Decision)
+    /// enum's **integer** discriminant, exactly as the gateway writes it (see
+    /// the AAASM-5035 note in `analytics::decision_is_error`): `1` = Allow,
+    /// `2` = Deny, `3` = Pending, `4` = Redact, `0` = Unspecified.
+    pub decision: i64,
+    /// Lowercase label derived from `decision` (`allow` / `deny` / `pending` /
+    /// `redact` / `unspecified`) so the UI can map to its verdict styling
+    /// without re-deriving the enum. Derived, not a separate audit field.
+    pub decision_label: String,
+    /// The matched policy rule id (audit `policy_rule`, top-level or under
+    /// `detail`). The design's `policy` column. `null` when the decision
+    /// recorded no rule (e.g. a baseline allow with no matching rule).
+    pub matched_policy: Option<String>,
+    /// The design's `latency` column. **Always `null`: the audit log records no
+    /// per-decision latency today**, so it is surfaced nullable rather than
+    /// fabricated. Wired through so the column lands the day a latency source is
+    /// added, without another contract change.
+    pub latency_ms: Option<u64>,
+}
+
+/// Recent per-agent decision stream (AAASM-5058).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDecisionsResponse {
+    /// Decisions newest-first, capped to the request's `limit`.
+    pub decisions: Vec<AgentDecisionResponse>,
+}
+
+/// Query parameters for the recent-decisions endpoint.
+#[derive(Debug, Clone, Deserialize, ToSchema, utoipa::IntoParams)]
+pub struct AgentDecisionsParams {
+    /// Maximum number of decision rows to return (newest-first). Defaults to
+    /// [`DEFAULT_DECISIONS_LIMIT`], clamped to [`MAX_DECISIONS_LIMIT`].
+    pub limit: Option<usize>,
+}
+
+/// Default number of decision rows returned when `?limit` is omitted.
+const DEFAULT_DECISIONS_LIMIT: usize = 50;
+/// Upper bound on the `?limit` query parameter.
+const MAX_DECISIONS_LIMIT: usize = 500;
+/// Upper bound on audit entries scanned per request before filtering to
+/// decision-bearing rows. Bounds per-request work the way the analytics reads
+/// do (AAASM-4145); a caller that wants more history pages via `limit`.
+const MAX_DECISIONS_SCAN: usize = 10_000;
+
+/// Lowercase label for a [`Decision`](aa_proto::assembly::common::v1::Decision)
+/// discriminant, used for `decisionLabel`.
+fn decision_label(discriminant: i64) -> &'static str {
+    use aa_proto::assembly::common::v1::Decision;
+    match discriminant {
+        d if d == Decision::Allow as i64 => "allow",
+        d if d == Decision::Deny as i64 => "deny",
+        d if d == Decision::Pending as i64 => "pending",
+        d if d == Decision::Redact as i64 => "redact",
+        _ => "unspecified",
+    }
+}
+
+/// Extract the action's primary target from an audit `detail` object, by kind.
+/// Returns `None` when the detail carries no resolvable target.
+fn resource_from_detail(detail: &serde_json::Value) -> Option<String> {
+    let key = match detail.get("kind").and_then(|v| v.as_str())? {
+        "tool_call" => "tool_name",
+        "file_op" => "path",
+        "network_call" => "host",
+        "process_exec" => "command",
+        "llm_call" => "model",
+        "policy_violation" => "blocked_action",
+        "approval" => "approval_id",
+        _ => return None,
+    };
+    detail
+        .get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Build a decision row from an audit entry, or `None` when the entry carries
+/// no policy `decision` (i.e. it is not a governance decision — e.g. a session
+/// lifecycle event).
+fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
+    let payload: serde_json::Value = serde_json::from_str(entry.payload()).ok()?;
+    let decision = payload.get("decision").and_then(|v| v.as_i64())?;
+
+    let ts_secs = (entry.timestamp_ns() / 1_000_000_000) as i64;
+    let ts_nanos = (entry.timestamp_ns() % 1_000_000_000) as u32;
+    let timestamp = chrono::DateTime::from_timestamp(ts_secs, ts_nanos)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_default();
+
+    let verb = payload
+        .get("action_type")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let detail = payload.get("detail");
+    let resource = detail.and_then(resource_from_detail);
+
+    // `policy_rule` is written top-level on some paths and under `detail` on
+    // others (the violation summary); accept either, preferring the explicit
+    // top-level value.
+    let matched_policy = payload
+        .get("policy_rule")
+        .and_then(|v| v.as_str())
+        .or_else(|| detail.and_then(|d| d.get("policy_rule")).and_then(|v| v.as_str()))
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    Some(AgentDecisionResponse {
+        timestamp,
+        session_id: hex::encode(entry.session_id().as_bytes()),
+        seq: entry.seq(),
+        verb,
+        resource,
+        decision,
+        decision_label: decision_label(decision).to_string(),
+        matched_policy,
+        // No per-decision latency source exists in the audit log (AAASM-5058);
+        // report it honestly as absent rather than inventing a value.
+        latency_ms: None,
+    })
+}
+
+/// `GET /api/v1/agents/:id/decisions` — recent per-agent decision stream.
+///
+/// Read-only projection of the existing audit log: the agent's most recent
+/// governance decisions, newest-first, one row per decision
+/// (`design/v1/hi-fi/agent-detail.jsx` Traffic tab). Backs the agent-detail
+/// Traffic tab's per-decision table beneath its aggregate summary (AAASM-5058).
+///
+/// Deny-by-default and tenant-scoped: [`authorize_agent_access`] confines the
+/// caller to an agent in its own team (admin sees any; a caller with no team
+/// scope is denied before any audit read), so the returned decisions never
+/// cross a tenant boundary. Entries carrying no policy `decision` are skipped so
+/// the stream is decisions only. No audit-write or enforcement path is touched.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/decisions",
+    params(
+        ("id" = String, Path, description = "Hex-encoded agent UUID"),
+        AgentDecisionsParams,
+    ),
+    responses(
+        (status = 200, description = "Recent per-agent decisions, newest-first", body = AgentDecisionsResponse),
+        (status = 400, description = "Invalid agent ID format"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "Caller lacks access to the agent's team"),
+        (status = 404, description = "Agent not found"),
+    ),
+    tag = "agents"
+)]
+pub async fn get_agent_decisions(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<AgentDecisionsParams>,
+) -> Result<(StatusCode, Json<AgentDecisionsResponse>), ProblemDetail> {
+    let agent_id_bytes = parse_agent_id(&id)?;
+
+    // Read-scope + tenant ownership before exposing the agent's decision
+    // history — mirrors get_agent_capabilities / get_agent_subtree_burn.
+    authorize_agent_access(&caller, &state, &agent_id_bytes, &id)?;
+
+    let limit = params.limit.unwrap_or(DEFAULT_DECISIONS_LIMIT).min(MAX_DECISIONS_LIMIT);
+
+    // `list` returns the agent's entries newest-first (server-side agent
+    // filter); scan a bounded page, keep decision-bearing rows, take `limit`.
+    let (entries, _total) = state
+        .audit_reader
+        .list(MAX_DECISIONS_SCAN, 0, Some(&id), None, None)
+        .await
+        .unwrap_or_default();
+
+    let decisions: Vec<AgentDecisionResponse> = entries.iter().filter_map(entry_to_decision_row).take(limit).collect();
+
+    Ok((StatusCode::OK, Json(AgentDecisionsResponse { decisions })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,6 +1224,97 @@ mod tests {
         assert_eq!(json["agent_id"], "aabbccdd00112233");
         assert_eq!(json["previous_status"], "Suspended(Manual)");
         assert_eq!(json["new_status"], "Active");
+    }
+
+    // ── AAASM-5058: per-agent decision-row projection ──────────────────────
+
+    fn decision_entry(payload: &str) -> AuditEntry {
+        use aa_core::audit::AuditEventType;
+        use aa_core::SessionId;
+        AuditEntry::new(
+            7,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            aa_core::identity::AgentId::from_bytes([0xAB; 16]),
+            SessionId::from_bytes([0xEE; 16]),
+            payload.to_string(),
+            [0u8; 32],
+        )
+    }
+
+    #[test]
+    fn decision_label_maps_each_discriminant() {
+        assert_eq!(decision_label(1), "allow");
+        assert_eq!(decision_label(2), "deny");
+        assert_eq!(decision_label(3), "pending");
+        assert_eq!(decision_label(4), "redact");
+        assert_eq!(decision_label(0), "unspecified");
+        assert_eq!(decision_label(99), "unspecified");
+    }
+
+    #[test]
+    fn resource_from_detail_extracts_target_per_kind() {
+        let cases = [
+            (r#"{"kind":"tool_call","tool_name":"gmail.send"}"#, "gmail.send"),
+            (r#"{"kind":"file_op","path":"/etc/passwd"}"#, "/etc/passwd"),
+            (r#"{"kind":"network_call","host":"api.example.com"}"#, "api.example.com"),
+            (r#"{"kind":"process_exec","command":"rm -rf"}"#, "rm -rf"),
+            (r#"{"kind":"llm_call","model":"gpt-4"}"#, "gpt-4"),
+        ];
+        for (json, expected) in cases {
+            let detail: serde_json::Value = serde_json::from_str(json).unwrap();
+            assert_eq!(resource_from_detail(&detail).as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn resource_from_detail_none_when_no_target() {
+        let detail: serde_json::Value = serde_json::from_str(r#"{"kind":"approval"}"#).unwrap();
+        assert_eq!(resource_from_detail(&detail), None);
+        let unknown: serde_json::Value = serde_json::from_str(r#"{"kind":"mystery"}"#).unwrap();
+        assert_eq!(resource_from_detail(&unknown), None);
+    }
+
+    #[test]
+    fn entry_to_decision_row_maps_tool_call_fields() {
+        let entry = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":1,"detail":{"kind":"tool_call","tool_name":"pg.users"}}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("tool_call carries a decision");
+        assert_eq!(row.decision, 1);
+        assert_eq!(row.decision_label, "allow");
+        assert_eq!(row.verb.as_deref(), Some("TOOL_CALL"));
+        assert_eq!(row.resource.as_deref(), Some("pg.users"));
+        assert_eq!(row.matched_policy, None);
+        // No per-decision latency source exists — it must be reported as absent.
+        assert_eq!(row.latency_ms, None);
+        assert_eq!(row.seq, 7);
+        assert_eq!(row.session_id, "ee".repeat(16));
+    }
+
+    #[test]
+    fn entry_to_decision_row_skips_entry_without_decision() {
+        let entry = decision_entry(r#"{"action_type":"AGENT_SPAWN","detail":{"kind":"spawn"}}"#);
+        assert!(entry_to_decision_row(&entry).is_none());
+    }
+
+    #[test]
+    fn entry_to_decision_row_reads_policy_rule_from_detail_and_top_level() {
+        // Violation summary carries policy_rule under `detail`.
+        let nested = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":2,"detail":{"kind":"policy_violation","policy_rule":"P-066","blocked_action":"gmail.send"}}"#,
+        );
+        let row = entry_to_decision_row(&nested).unwrap();
+        assert_eq!(row.decision_label, "deny");
+        assert_eq!(row.matched_policy.as_deref(), Some("P-066"));
+        assert_eq!(row.resource.as_deref(), Some("gmail.send"));
+
+        // A top-level policy_rule wins over the detail one.
+        let top = decision_entry(r#"{"action_type":"TOOL_CALL","decision":1,"policy_rule":"P-001"}"#);
+        assert_eq!(
+            entry_to_decision_row(&top).unwrap().matched_policy.as_deref(),
+            Some("P-001")
+        );
     }
 
     #[test]
