@@ -1,0 +1,264 @@
+/* Shared styling for the agent-detail Traffic / Policies / Lineage tabs
+   (AAASM-5041). Token-driven so light/dark follow the app theme; mirrors the
+   card / mono conventions already in AgentDetailDrawer.css. */
+
+.adt-panel {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 16px;
+}
+
+.adt-panel + .adt-panel {
+  margin-top: 14px;
+}
+
+.adt-panel__title {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-4);
+  margin: 0 0 12px;
+}
+
+.adt-empty,
+.adt-caption {
+  font-size: 12px;
+  color: var(--ink-4);
+  line-height: 1.5;
+}
+
+.adt-caption {
+  margin: 10px 0 0;
+}
+
+/* ── Table (Policies) ─────────────────────────────────────────── */
+
+.adt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.adt-table th,
+.adt-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.adt-table th {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-3);
+}
+
+.adt-table td.adt-num {
+  text-align: right;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--ink-2);
+}
+
+.adt-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.adt-scope {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.adt-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border: 1px solid var(--line-2);
+  color: var(--ink-3);
+}
+
+.adt-status--active {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.adt-status--archived {
+  color: var(--ink-4);
+}
+
+/* ── Traffic ──────────────────────────────────────────────────── */
+
+.adt-metric {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.adt-metric__unit {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-4);
+  margin-top: 2px;
+}
+
+.adt-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.adt-bar__label {
+  width: 150px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adt-bar__track {
+  flex: 1;
+  height: 6px;
+  background: var(--paper-3);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.adt-bar__fill {
+  display: block;
+  height: 100%;
+}
+
+.adt-bar__value {
+  width: 92px;
+  text-align: right;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.adt-bar__err {
+  color: var(--ink-4);
+  font-weight: 400;
+}
+
+/* ── Lineage chain ────────────────────────────────────────────── */
+
+.adt-chain {
+  display: flex;
+  flex-direction: column;
+}
+
+.adt-chain__connector {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 15px;
+  height: 22px;
+}
+
+.adt-chain__connector-line {
+  width: 1px;
+  height: 100%;
+  background: var(--line-2);
+}
+
+.adt-chain__connector-label {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  color: var(--ink-4);
+}
+
+.adt-node {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+}
+
+.adt-node--root {
+  background: var(--paper-3);
+}
+
+.adt-node--current {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.adt-node__depth {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--paper-3);
+  border: 1px solid var(--line-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+
+/* The current node inverts to `--ink`; its foreground therefore uses `--paper`
+   (the theme's opposite of `--ink`) so contrast holds in both light and dark —
+   a hardcoded #fff goes invisible on the light-in-dark-mode `--ink` fill. */
+.adt-node--current .adt-node__depth {
+  background: transparent;
+  border-color: var(--paper);
+  color: var(--paper);
+}
+
+.adt-node__name {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.adt-node--current .adt-node__name {
+  color: var(--paper);
+}
+
+.adt-node__tag {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  color: var(--ink-4);
+  margin-left: 8px;
+  font-weight: 400;
+}
+
+.adt-node--current .adt-node__tag {
+  color: var(--paper);
+  opacity: 0.72;
+}
+
+.adt-node__meta {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  color: var(--ink-4);
+  margin-top: 2px;
+}
+
+.adt-node--current .adt-node__meta {
+  color: var(--paper);
+  opacity: 0.6;
+}

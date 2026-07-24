@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AgentRegistryList } from './AgentRegistryList'
 import { AgentPermissionsPanel } from './AgentPermissionsPanel'
 import { CustomRolePanel } from './CustomRolePanel'
+import { RoleCapabilityCards } from './RoleCapabilityCards'
 import type { Agent } from './types'
 import './RolesPermissionsPanel.css'
 
@@ -16,6 +17,8 @@ export function RolesPermissionsPanel() {
           Read-only view of the inheritance chain (team → role → policy) for each registered agent.
         </p>
       </header>
+
+      <RoleCapabilityCards />
 
       <div className="iam-roles-panel__layout">
         <div className="iam-roles-panel__list">
