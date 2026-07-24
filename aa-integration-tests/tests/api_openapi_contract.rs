@@ -65,9 +65,10 @@ fn openapi_spec_loads_without_errors() {
     // AAASM-4861 added the /api/v1/auth/ws-ticket mint endpoint, bringing it to 63.
     // AAASM-5031 added /api/v1/overview/enforcement-timeline (64); AAASM-5032 added
     // /api/v1/costs/history + /api/v1/costs/budget-tree, bringing it to 66.
+    // AAASM-5037 added /api/v1/policies/simulate (dry-run), bringing it to 67.
     assert_eq!(
-        path_count, 66,
-        "openapi/v1.yaml must declare exactly 66 paths, found {path_count}"
+        path_count, 67,
+        "openapi/v1.yaml must declare exactly 67 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -155,6 +156,7 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/overview/enforcement-timeline",
         "/api/v1/policies",
         "/api/v1/policies/active",
+        "/api/v1/policies/simulate",
         "/api/v1/topology/edges",
         "/api/v1/topology/lineage/{agent_id}",
         "/api/v1/topology/overview",
