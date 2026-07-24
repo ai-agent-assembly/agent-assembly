@@ -93,7 +93,7 @@ lefthook.toml @Chisanan232
 # lead, backing the mandatory 2-reviewer policy ("at least one with a
 # security background"). The @ai-agent-assembly/security team is the
 # security owner; the ≥2-approval + require-code-owner-review enforcement
-# itself is a server-side branch-protection setting on `master` (it cannot
+# itself is a server-side branch-protection setting on `main` (it cannot
 # be committed in this file — see verification-reports/AAASM-3565.md).
 #
 # Placed AFTER the catch-all and the broad Rust-root rules so last-match

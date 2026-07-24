@@ -81,4 +81,4 @@ release tag and re-deploy:
 SCRIPT_REF = "v0.0.1"
 ```
 
-`master` (the default) always serves the latest reviewed installer.
+`main` (the default) always serves the latest reviewed installer.

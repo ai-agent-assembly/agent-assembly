@@ -16,19 +16,19 @@ The bump PR sets the workspace version, refreshes path-dep version literals,
 adds the `CHANGELOG.md` section, and creates `docs/release/v<version>.md`.
 
 ```bash
-# in a feature worktree off master
+# in a feature worktree off main
 $EDITOR Cargo.toml                 # workspace.package.version
 $EDITOR aa-*/Cargo.toml            # all path-dep `version = "..."` literals
 $EDITOR CHANGELOG.md               # prepend ## [<version>] section
 $EDITOR docs/release/v<version>.md # release notes (copy structure from previous)
 ```
 
-Open the bump PR, wait for green CI, merge to master. **Then run the
-readiness check from a fresh master checkout:**
+Open the bump PR, wait for green CI, merge to main. **Then run the
+readiness check from a fresh main checkout:**
 
 ```bash
-git checkout master
-git pull --ff-only remote master
+git checkout main
+git pull --ff-only remote main
 bash scripts/release-readiness.sh <version>      # e.g. 0.0.1-alpha.5
 ```
 
@@ -143,7 +143,7 @@ re-trigger command. The workflow:
 
 1. Open a ticket describing the failure (link the failed workflow run).
 2. Open a fix PR against the affected repo (sources, not just CI config).
-3. Merge the fix to master.
+3. Merge the fix to main.
 4. Re-trigger the relevant workflow via `workflow_dispatch` with the
    `release_tag` input. Each `release-*.yml` accepts this for re-trigger.
 5. Re-run `check-release.sh v<version>` to verify.
