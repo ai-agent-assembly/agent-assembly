@@ -232,20 +232,19 @@
 
 /* ── Bulk action bar ────────────────────────────────────────── */
 
+/* Rendered inline inside `.fleet-filters` (AAASM-5069): pushed to the right of
+   the filter row via margin-left:auto, per the hi-fi Fleet layout. */
 .fleet-bulkbar {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 24px;
-  background: var(--paper-3);
-  border-bottom: 1px solid var(--line);
+  margin-left: auto;
 }
 
 .fleet-bulkbar__count {
   font-size: 11px;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   color: var(--ink-3);
-  margin-right: auto;
 }
 
 .fleet-bulkbar__btn {
