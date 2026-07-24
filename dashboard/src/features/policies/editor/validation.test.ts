@@ -13,9 +13,10 @@ describe('validate', () => {
     expect(issues.filter(i => i.severity === 'error')).toHaveLength(0)
   })
 
-  it('flags a missing policy name as a policy-level error', () => {
+  it('does not require a policy name (spec has no such check — AAASM-5060)', () => {
     const issues = validate(draftWith([defaultRule()], { name: '   ' }))
-    expect(issues).toContainEqual({ severity: 'error', rule: '—', message: 'Policy name is required.' })
+    expect(issues.some((i) => i.message === 'Policy name is required.')).toBe(false)
+    expect(issues.filter((i) => i.severity === 'error')).toHaveLength(0)
   })
 
   it('flags a policy with no rules', () => {
@@ -59,24 +60,47 @@ describe('validate', () => {
     expect(errors).toHaveLength(0)
   })
 
-  it('requires an approver config for an approval action', () => {
+  it('does not error on an approval action with no explicit approver (AAASM-5060)', () => {
+    // The editor shows a default approver and serializeDraft writes it into the
+    // saved YAML, so the old "requires an approver configuration" error was a
+    // false positive. An approval rule must validate clean.
     const rule = { ...defaultRule(), action: 'approval' as const }
     const issues = validate(draftWith([rule]))
-    expect(issues).toContainEqual({
-      severity: 'error',
-      rule: 'R1',
-      message: 'Approval action requires an approver configuration.',
-    })
+    expect(issues.some((i) => i.message.includes('approver'))).toBe(false)
+    expect(issues.filter((i) => i.severity === 'error')).toHaveLength(0)
   })
 
-  it('requires scrub categories for a scrub-then-allow action', () => {
+  it('warns (not errors) on a scrub-then-allow action with no fields (AAASM-5060)', () => {
     const rule = { ...defaultRule(), action: 'scrub-then-allow' as const, scrubFields: [] }
     const issues = validate(draftWith([rule]))
     expect(issues).toContainEqual({
-      severity: 'error',
+      severity: 'warn',
       rule: 'R1',
-      message: 'Scrub action requires at least one scrub category.',
+      message: 'Scrub action with no fields — allows everything through unredacted.',
     })
+    expect(issues.filter((i) => i.severity === 'error')).toHaveLength(0)
+  })
+
+  it('adds an info note when a deny rule has more than four exceptions (AAASM-5060)', () => {
+    const rule = {
+      ...defaultRule(),
+      action: 'deny' as const,
+      exceptions: ['a', 'b', 'c', 'd', 'e'],
+    }
+    const issues = validate(draftWith([rule]))
+    expect(issues).toContainEqual({
+      severity: 'info',
+      rule: 'R1',
+      message: '5 exceptions on a deny rule — consider narrow instead.',
+    })
+  })
+
+  it('skips validation for a rule whose body is unknown (AAASM-5059)', () => {
+    // An unknown rule has no verbs/condition but must not produce errors — it
+    // is a read-only placeholder for an unrecoverable policy body.
+    const rule = { ...defaultRule(), verb: [], condition: [], unknown: true }
+    const issues = validate(draftWith([rule]))
+    expect(issues).toHaveLength(0)
   })
 
   it('warns on a duplicate resource+verb pairing and points at the prior rule', () => {
