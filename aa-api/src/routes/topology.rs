@@ -4,15 +4,17 @@
 //! membership, ancestry lineage, and aggregate statistics — all backed by
 //! the in-memory `AgentRegistry`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
+use aa_core::topology::EdgeType;
 use aa_gateway::registry::{AgentRecord, AgentRegistry, AgentStatus};
 
 use crate::auth::scope::{RequireRead, Scope};
@@ -20,7 +22,8 @@ use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::models::topology::{agent_flagged, agent_mode, format_id, status_str};
 pub use crate::models::topology::{
-    AgentLineage, AgentNode, AgentTree, LineageStep, TeamSummary, TeamTopology, TopologyOverview, TopologyStats,
+    AgentLineage, AgentNode, AgentTree, LineageStep, TeamSummary, TeamTopology, TopologyGraphEdge,
+    TopologyGraphResponse, TopologyOverview, TopologyStats,
 };
 use crate::state::AppState;
 
@@ -736,6 +739,88 @@ pub async fn get_stats(
         .insert(cache_key, Arc::new(stats.clone()))
         .await;
     (StatusCode::OK, Json(stats))
+}
+
+/// `GET /api/v1/topology` — the node+edge graph rendered by the dashboard
+/// Topology page (AAASM-5040).
+///
+/// Returns every agent the caller's tenant may see as a graph node — reusing
+/// the same [`AgentNode`] projection as `/topology/overview`, so the per-node
+/// enforcement-mode / flagged / trust badges added in AAASM-5036 flow through
+/// end-to-end — plus the `delegation` and `call` edges between those nodes from
+/// the topology edge store.
+///
+/// Tenant-scoped, `RequireRead`, deny-by-default exactly like the sibling
+/// `/topology/*` routes: a non-admin caller with no tenant scope receives an
+/// empty graph rather than a cross-tenant dump (AAASM-3483). An edge is emitted
+/// only when BOTH of its endpoints are visible nodes, so the graph never leaks
+/// an out-of-tenant peer and never references a node the client didn't receive
+/// (mirrors the edges.rs BFS tenant boundary, AAASM-3825).
+#[utoipa::path(
+    get,
+    path = "/api/v1/topology",
+    responses(
+        (status = 200, description = "Agent topology graph (nodes + edges)", body = TopologyGraphResponse),
+        (status = 500, description = "Edge store error", body = ProblemDetail),
+    ),
+    tag = "topology"
+)]
+pub async fn get_topology_graph(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+) -> Result<(StatusCode, Json<TopologyGraphResponse>), ProblemDetail> {
+    // AAASM-3483 — a non-admin caller with no tenant scope receives an empty
+    // graph rather than a cross-tenant dump.
+    if caller_has_no_tenant_scope(&caller) {
+        return Ok((StatusCode::OK, Json(TopologyGraphResponse::default())));
+    }
+
+    // Nodes: reuse the AAASM-5036 `AgentNode` projection, tenant-filtered
+    // exactly like `get_overview` (team-tier scoping via `record_visible_to`).
+    let records: Vec<AgentRecord> = state
+        .agent_registry
+        .list()
+        .into_iter()
+        .filter(|r| record_visible_to(&caller, r))
+        .collect();
+
+    let visible_ids: HashSet<[u8; 16]> = records.iter().map(|r| r.agent_id).collect();
+    let mut nodes: Vec<AgentNode> = records.iter().map(AgentNode::from).collect();
+    nodes.sort_by(|a, b| a.id.cmp(&b.id));
+
+    // Edges: the graph models exactly two relation kinds — `delegation`
+    // (`delegates_to`) and `call` (`calls`) — so only those two edge types are
+    // gathered. The other stored kinds (reads/writes/approves/messages) are
+    // relationships the dashboard graph doesn't render. An edge is kept only
+    // when both endpoints are visible nodes, so it can never cross the tenant
+    // boundary or point at a node the client wasn't given.
+    let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_default();
+    let mut edges: Vec<TopologyGraphEdge> = Vec::new();
+    for &et in &[EdgeType::DelegatesTo, EdgeType::Calls] {
+        let batch = state.edge_repo.list_by_type(et, epoch, 1000).await.map_err(|e| {
+            // Mirror the edges.rs 500 mapping (AAASM-4950): log the underlying
+            // store error server-side, return a generic body.
+            tracing::error!(error = %e, "failed to list topology graph edges by type");
+            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+                .with_detail("Failed to list topology edges".to_string())
+        })?;
+        let kind = if matches!(et, EdgeType::DelegatesTo) {
+            "delegation"
+        } else {
+            "call"
+        };
+        for edge in batch {
+            if visible_ids.contains(edge.source.as_bytes()) && visible_ids.contains(edge.target.as_bytes()) {
+                edges.push(TopologyGraphEdge {
+                    source: format_id(edge.source.as_bytes()),
+                    target: format_id(edge.target.as_bytes()),
+                    kind: kind.to_owned(),
+                });
+            }
+        }
+    }
+
+    Ok((StatusCode::OK, Json(TopologyGraphResponse { nodes, edges })))
 }
 
 // ---------------------------------------------------------------------------

@@ -1508,6 +1508,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/topology": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/topology` — the node+edge graph rendered by the dashboard
+         *     Topology page (AAASM-5040).
+         * @description Returns every agent the caller's tenant may see as a graph node — reusing
+         *     the same [`AgentNode`] projection as `/topology/overview`, so the per-node
+         *     enforcement-mode / flagged / trust badges added in AAASM-5036 flow through
+         *     end-to-end — plus the `delegation` and `call` edges between those nodes from
+         *     the topology edge store.
+         *
+         *     Tenant-scoped, `RequireRead`, deny-by-default exactly like the sibling
+         *     `/topology/*` routes: a non-admin caller with no tenant scope receives an
+         *     empty graph rather than a cross-tenant dump (AAASM-3483). An edge is emitted
+         *     only when BOTH of its endpoints are visible nodes, so the graph never leaks
+         *     an out-of-tenant peer and never references a node the client didn't receive
+         *     (mirrors the edges.rs BFS tenant boundary, AAASM-3825).
+         */
+        get: operations["get_topology_graph"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/topology/edges": {
         parameters: {
             query?: never;
@@ -4056,6 +4088,57 @@ export interface components {
             count: number;
             /** @description Matching edges, sorted newest-first within each edge type. */
             edges: components["schemas"]["EdgeResponse"][];
+        };
+        /**
+         * @description One directed edge in the dashboard topology graph (AAASM-5040).
+         *
+         *     A slim projection of a stored [`aa_core::topology::Edge`] carrying only what
+         *     the dashboard graph renders: the two hex-encoded endpoints and the relation
+         *     `kind`. `kind` is one of the two kinds the graph models — `delegation`
+         *     (from a `delegates_to` edge) or `call` (from a `calls` edge) — matching the
+         *     frontend `TopologyEdge` 1:1 so the client consumes edges without remapping.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "source": "0102030405060708090a0b0c0d0e0f10", "target": "aabbccdd00112233aabbccdd00112233", "kind": "delegation" }
+         *     ```
+         * @example {
+         *       "kind": "delegation",
+         *       "source": "0102030405060708090a0b0c0d0e0f10",
+         *       "target": "aabbccdd00112233aabbccdd00112233"
+         *     }
+         */
+        TopologyGraphEdge: {
+            /** @description Relation kind rendered by the graph: `delegation` or `call`. */
+            kind: string;
+            /** @description Hex-encoded UUID of the source (delegating / calling) agent. */
+            source: string;
+            /** @description Hex-encoded UUID of the target agent. */
+            target: string;
+        };
+        /**
+         * @description The whole-fleet topology graph rendered by the dashboard Topology page
+         *     (AAASM-5040): every agent visible to the caller as a node, plus the
+         *     delegation / call edges between those nodes.
+         *
+         *     Nodes reuse the [`AgentNode`] projection (so the per-node enforcement-mode,
+         *     flagged, and trust badges from AAASM-5036 are carried through), letting the
+         *     dashboard render those badges from live registry data instead of a fixture.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "nodes": [], "edges": [] }
+         *     ```
+         * @example {
+         *       "edges": [],
+         *       "nodes": []
+         *     }
+         */
+        TopologyGraphResponse: {
+            /** @description Delegation / call edges whose endpoints are both visible nodes. */
+            edges: components["schemas"]["TopologyGraphEdge"][];
+            /** @description All agents visible to the caller, one graph node each (sorted by id). */
+            nodes: components["schemas"]["AgentNode"][];
         };
         /**
          * @description Overview of the entire agent topology across all teams.
@@ -7060,6 +7143,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ToolInfoSchema"][];
+                };
+            };
+        };
+    };
+    get_topology_graph: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent topology graph (nodes + edges) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyGraphResponse"];
+                };
+            };
+            /** @description Edge store error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
                 };
             };
         };

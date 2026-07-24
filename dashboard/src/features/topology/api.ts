@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { getToken } from '../../auth/tokenStorage'
 import type { components } from '../../api/generated/schema'
+import { mapTopologyGraph } from './mapGraph'
 import type { TopologyGraph } from './types'
 
 /** Ancestor chain (root → agent) returned by `GET /api/v1/topology/lineage/{agent_id}`. */
@@ -25,9 +26,13 @@ export interface RecentEvent {
 /**
  * Fetch the agent topology graph (nodes + edges) from the gateway.
  *
- * `/api/v1/topology` is not yet in the OpenAPI schema, so this hook hits
- * the path directly while reusing the `aa_token` bearer convention from
- * `api/client.ts`. Switch to `api.GET` once the endpoint is generated.
+ * Backed by the real read-only `GET /api/v1/topology` endpoint (AAASM-5040),
+ * which returns the `AgentNode` projection reused from `/topology/overview` —
+ * so the per-node enforcement-mode / flagged / trust badges (AAASM-5036) now
+ * render from live registry data. The response is mapped to the graph view
+ * model by [`mapTopologyGraph`]. The direct `fetch` (rather than the typed
+ * `api.GET` client) is kept so the bearer-token wiring stays identical to the
+ * sibling recent-events hook below, whose endpoint is still un-generated.
  *
  * `staleTime` is shorter than the trace hook (5s) because topology
  * reflects live agent state and benefits from periodic refresh.
@@ -44,7 +49,8 @@ export function useTopologyQuery() {
 
       const res = await fetch(`${base}/api/v1/topology`, { headers })
       if (!res.ok) throw new Error('Failed to fetch topology')
-      return (await res.json()) as TopologyGraph
+      const raw = (await res.json()) as components['schemas']['TopologyGraphResponse']
+      return mapTopologyGraph(raw)
     },
   })
 }
