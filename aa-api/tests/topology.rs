@@ -412,6 +412,63 @@ async fn topology_tree_returns_subtree_for_known_agent() {
     assert_eq!(json["name"], "root");
     assert_eq!(json["depth"], 0);
     assert_eq!(json["status"], "active");
+    // AAASM-5036 — every node carries the badge fields. Defaults: enforce mode,
+    // not flagged, no trust source yet (null, present-not-omitted).
+    assert_eq!(json["mode"], "enforce");
+    assert_eq!(json["flagged"], false);
+    assert!(json.get("trust").is_some() && json["trust"].is_null());
+    assert_eq!(json["children"][0]["mode"], "enforce");
+    assert!(json["children"][0]["trust"].is_null());
+}
+
+/// AAASM-5036 — the overview (AgentNode) and tree (AgentTree) responses both
+/// carry per-node `mode` (from `metadata["mode"]`), `flagged`
+/// (`policy_violations_count >= threshold`), and a nullable `trust`.
+#[tokio::test]
+async fn topology_response_carries_mode_flagged_trust() {
+    let state = common::test_state();
+    // Standalone root: shadow mode + enough violations to be flagged.
+    let mut root = make_agent(0x01, "shadow-root", 0, None, None);
+    root.metadata.insert("mode".to_string(), "shadow".to_string());
+    root.policy_violations_count = 50;
+    state.agent_registry.register(root).unwrap();
+
+    let app = aa_api::server::build_app(state);
+
+    // Overview → AgentNode in standalone_root_agents.
+    let overview = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/overview")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(overview.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let node = &json["standalone_root_agents"][0];
+    assert_eq!(node["mode"], "shadow");
+    assert_eq!(node["flagged"], true);
+    assert!(node.get("trust").is_some() && node["trust"].is_null());
+
+    // Tree → AgentTree root node carries the same fields.
+    let id = hex_id(0x01);
+    let tree = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/topology/tree/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(tree.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["mode"], "shadow");
+    assert_eq!(json["flagged"], true);
+    assert!(json["trust"].is_null());
 }
 
 #[tokio::test]
