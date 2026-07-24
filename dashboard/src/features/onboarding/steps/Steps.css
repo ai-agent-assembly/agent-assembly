@@ -307,6 +307,34 @@
   cursor: not-allowed;
 }
 
+/* Non-interactive status pill for the step-5 listener state: a paper-bg outline
+   with a pulsing green dot signalling the listener is live (design/v1/hi-fi/
+   onboarding.jsx `.onb-id-action-btn.live`). Motion is gated below under
+   prefers-reduced-motion. */
+.onb-id-action-btn.live {
+  background: var(--paper);
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  pointer-events: none;
+}
+
+.onb-id-action-btn.live::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--ok);
+  margin-right: 7px;
+  animation: onb-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes onb-pulse {
+  0%,
+  100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 .onb-id-out {
   margin-top: 20px;
   padding: 14px 16px;
@@ -539,4 +567,5 @@
 @media (prefers-reduced-motion: reduce) {
   .onb-id-glyph.is-spinning::before { animation: none; }
   .onb-enroll-ping { animation: none; }
+  .onb-id-action-btn.live::before { animation: none; }
 }
