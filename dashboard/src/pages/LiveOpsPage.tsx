@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useToast } from '../components/Toast'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/states'
@@ -107,6 +108,7 @@ export function LiveOpsPage() {
   const [intensity, setIntensity] = useState(INTENSITY_DEFAULT)
   const [counters, setCounters] = useState<PipelineCanvasCounters>(EMPTY_COUNTERS)
   const { toast } = useToast()
+  const navigate = useNavigate()
 
   const agentsQuery = useAgentsQuery()
   const teamsQuery = useTeamsQuery()
@@ -216,7 +218,13 @@ export function LiveOpsPage() {
       />
     )
   } else if (status === 'connected' && ops.length === 0) {
-    streamBody = <EmptyState page="live" />
+    streamBody = (
+      <EmptyState
+        page="live"
+        onCta={() => navigate('/onboarding')}
+        onSecondary={() => navigate('/analytics')}
+      />
+    )
   } else {
     streamBody = filteredOps.map((op) => (
       <OperationRow
