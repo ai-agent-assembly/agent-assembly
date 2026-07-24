@@ -200,3 +200,28 @@
   padding: 16px;
   height: 140px;
 }
+
+/* Scene grids for the split-pane loading skeletons. Each mirrors the column
+   layout of its real page so the swap-in feels stable. Heights subtract the
+   app-shell chrome (header + any toolbar) so the scene fills the viewport,
+   matching design/v1/hi-fi/states.jsx (SkPolicy / SkLive / SkScrub). */
+.sk-scene {
+  display: grid;
+  gap: 1px;
+  background: var(--line);
+}
+
+.sk-policy {
+  grid-template-columns: 1fr 1fr;
+  height: calc(100vh - 56px - 41px);
+}
+
+.sk-live {
+  grid-template-columns: 1.55fr 1fr 1fr;
+  height: calc(100vh - 56px - 50px - 80px);
+}
+
+.sk-scrub {
+  grid-template-columns: 280px 1fr;
+  height: calc(100vh - 56px - 50px);
+}
