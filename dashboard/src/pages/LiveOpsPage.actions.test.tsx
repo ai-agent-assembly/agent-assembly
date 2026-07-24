@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '../components/ToastProvider'
 import { useAgentsQuery } from '../features/agents/api'
@@ -41,9 +42,11 @@ function mockStream(ops: LiveOperation[]) {
 
 function renderPage() {
   return render(
-    <ToastProvider>
-      <LiveOpsPage />
-    </ToastProvider>,
+    <MemoryRouter>
+      <ToastProvider>
+        <LiveOpsPage />
+      </ToastProvider>
+    </MemoryRouter>,
   )
 }
 
@@ -83,9 +86,11 @@ describe('LiveOpsPage row actions', () => {
 
     mockStream([makeOp('op-1', { status: 'blocked' })])
     rerender(
-      <ToastProvider>
-        <LiveOpsPage />
-      </ToastProvider>,
+      <MemoryRouter>
+        <ToastProvider>
+          <LiveOpsPage />
+        </ToastProvider>
+      </MemoryRouter>,
     )
 
     await waitFor(() => {
