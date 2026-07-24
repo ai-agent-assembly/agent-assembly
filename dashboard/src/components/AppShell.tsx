@@ -241,6 +241,9 @@ export function AppShell() {
           </nav>
           <div className="appshell__user">
             <LastSyncStatus updatedAt={agents.dataUpdatedAt} />
+            {/* Dot delimiter between the sync clock and the approvals bell,
+                per the hi-fi topbar (design/v1/hi-fi/shell.jsx). */}
+            <span className="appshell__topbar-sep" aria-hidden="true">·</span>
             <ApprovalsBellButton />
             <span data-testid="appshell-user">{subject ?? ''}</span>
             <ThemeToggle />
