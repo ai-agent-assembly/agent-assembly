@@ -69,9 +69,11 @@ fn openapi_spec_loads_without_errors() {
     // AAASM-5040 added /api/v1/topology (the dashboard node+edge graph), bringing it to 68.
     // AAASM-5038 added /api/v1/fleet/active-sessions (fleet-wide open sessions), bringing it to 69.
     // AAASM-5046 added /api/v1/iam/roles (role->capability grant mapping), bringing it to 70.
+    // AAASM-5058 added /api/v1/agents/{id}/decisions (recent per-agent decision stream),
+    // bringing it to 71.
     assert_eq!(
-        path_count, 70,
-        "openapi/v1.yaml must declare exactly 70 paths, found {path_count}"
+        path_count, 71,
+        "openapi/v1.yaml must declare exactly 71 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -115,6 +117,7 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/agents/{id}",
         "/api/v1/agents/{id}/budget",
         "/api/v1/agents/{id}/capabilities",
+        "/api/v1/agents/{id}/decisions",
         "/api/v1/agents/{id}/edges",
         "/api/v1/agents/{id}/graph",
         "/api/v1/agents/{id}/resume",
