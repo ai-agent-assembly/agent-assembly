@@ -3,12 +3,16 @@
  *
  * Per-agent traffic aggregate assembled from the fleet analytics endpoints
  * (`useAgentTrafficQuery`): a 24h action total plus a per-tool call-volume
- * breakdown coloured by error rate. See the hook's note on why the design's
- * per-decision stream is out of scope (no per-agent endpoint today).
+ * breakdown coloured by error rate.
+ *
+ * AAASM-5058 adds the design's per-decision row table beneath the aggregate
+ * (`AgentDecisionStream`), now that a read-only per-agent decision endpoint
+ * exists (`GET /api/v1/agents/{id}/decisions`).
  */
 import { ignorePromise } from '../../lib/ignorePromise'
 import { useAgentTrafficQuery } from '../../features/analytics/useAgentTrafficQuery'
 import { sortToolsByCallsDesc, errorRateColor } from '../../features/analytics/toolUsageUtils'
+import { AgentDecisionStream } from './AgentDecisionStream'
 import { LoadingState } from '../LoadingState'
 import { ErrorState } from '../ErrorState'
 import './AgentDetailTabs.css'
@@ -76,9 +80,11 @@ export function AgentTrafficTab({ agentId }: Readonly<{ agentId: string }>) {
           </div>
         )}
         <p className="adt-caption">
-          Aggregate view. The live per-decision stream (latency, matched policy) is on the Live Ops page.
+          Aggregate view over the last 24h. The per-decision stream is below.
         </p>
       </div>
+
+      <AgentDecisionStream agentId={agentId} />
     </section>
   )
 }

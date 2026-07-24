@@ -207,6 +207,60 @@ async fn agent_budget_cross_tenant_read_is_403() {
     );
 }
 
+// AAASM-5058 — the per-agent decision stream reads the audit log, so it carries
+// the same tenant guard as its agent-detail siblings.
+#[tokio::test]
+async fn agent_decisions_tenant_caller_can_read_own_team_agent() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xA5, "alpha")).unwrap();
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/decisions", hex_id(0xA5));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a team-scoped caller may read its own team's agent decisions"
+    );
+}
+
+#[tokio::test]
+async fn agent_decisions_cross_tenant_read_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xB5, "beta")).unwrap();
+    let app = aa_api::build_app(state);
+
+    // Caller scoped to "alpha" must not read a "beta" agent's decision stream.
+    let token = common::generate_test_jwt_for_team("u", &[Scope::Read], "alpha");
+    let uri = format!("/api/v1/agents/{}/decisions", hex_id(0xB5));
+    let response = app.oneshot(bearer(&uri, &token)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant decision-stream read is denied"
+    );
+}
+
+#[tokio::test]
+async fn agent_decisions_without_credential_is_401() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    state.agent_registry.register(agent_with_team(0xC5, "alpha")).unwrap();
+    let app = aa_api::build_app(state);
+
+    // The deny-by-default gate rejects the read before any handler logic runs.
+    let uri = format!("/api/v1/agents/{}/decisions", hex_id(0xC5));
+    let response = app
+        .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "an unauthenticated decision-stream read is denied by the auth gate"
+    );
+}
+
 // AAASM-3790 — the `GET /agents/{id}` read path was missing the
 // `authorize_agent_access` gate its delete/suspend siblings already had.
 #[tokio::test]

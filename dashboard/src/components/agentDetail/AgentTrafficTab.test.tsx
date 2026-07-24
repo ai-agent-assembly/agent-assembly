@@ -5,6 +5,12 @@ import { AgentTrafficTab } from './AgentTrafficTab'
 import * as trafficApi from '../../features/analytics/useAgentTrafficQuery'
 import type { AgentTraffic } from '../../features/analytics/useAgentTrafficQuery'
 
+// The per-decision stream (AAASM-5058) has its own query + tests; stub it here
+// so these cases stay focused on the aggregate summary without a QueryClient.
+vi.mock('./AgentDecisionStream', () => ({
+  AgentDecisionStream: () => <div data-testid="agent-decisions-stub" />,
+}))
+
 function mockQuery<T>(partial: Partial<UseQueryResult<T, Error>>): UseQueryResult<T, Error> {
   return partial as unknown as UseQueryResult<T, Error>
 }

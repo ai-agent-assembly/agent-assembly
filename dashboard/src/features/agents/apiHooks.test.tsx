@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import { api } from '../../api/client'
 import {
   useAgentCapabilitiesQuery,
+  useAgentDecisionsQuery,
   useAgentEventsQuery,
   useAgentQuery,
   useAgentSubtreeBurnQuery,
@@ -126,6 +127,47 @@ describe('useAgentCapabilitiesQuery', () => {
     const { result } = renderHook(() => useAgentCapabilitiesQuery('a1'), { wrapper: makeWrapper() })
     await waitFor(() => expect(result.current.isError).toBe(true))
     expect(result.current.error?.message).toBe('Failed to fetch agent capabilities')
+  })
+})
+
+describe('useAgentDecisionsQuery', () => {
+  it('requests the decision stream with the default limit and returns rows', async () => {
+    get.mockResolvedValue({ data: { decisions: [{ seq: 1 }] } } satisfies FetchResult)
+    const { result } = renderHook(() => useAgentDecisionsQuery('a1'), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual([{ seq: 1 }])
+    expect(get).toHaveBeenCalledWith('/api/v1/agents/{id}/decisions', {
+      params: { path: { id: 'a1' }, query: { limit: 50 } },
+    })
+  })
+
+  it('passes an explicit limit through to the endpoint', async () => {
+    get.mockResolvedValue({ data: { decisions: [] } } satisfies FetchResult)
+    const { result } = renderHook(() => useAgentDecisionsQuery('a1', 10), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(get).toHaveBeenCalledWith('/api/v1/agents/{id}/decisions', {
+      params: { path: { id: 'a1' }, query: { limit: 10 } },
+    })
+  })
+
+  it('falls back to an empty array when the response body is nullish', async () => {
+    get.mockResolvedValue({ data: undefined } satisfies FetchResult)
+    const { result } = renderHook(() => useAgentDecisionsQuery('a1'), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual([])
+  })
+
+  it('is disabled when the id is empty', () => {
+    const { result } = renderHook(() => useAgentDecisionsQuery(''), { wrapper: makeWrapper() })
+    expect(result.current.fetchStatus).toBe('idle')
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it('throws on failure', async () => {
+    get.mockResolvedValue({ error: { message: 'boom' } } satisfies FetchResult)
+    const { result } = renderHook(() => useAgentDecisionsQuery('a1'), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.error?.message).toBe('Failed to fetch agent decisions')
   })
 })
 
