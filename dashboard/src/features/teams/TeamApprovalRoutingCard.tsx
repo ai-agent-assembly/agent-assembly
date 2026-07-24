@@ -4,7 +4,7 @@ import type { Approval } from '../approvals/api'
 function routingLabel(approval: Approval): string {
   const info = approval.routing_status
   if (info?.target_role) return `→ ${info.target_role}`
-  if (info?.status) return info.status.replace(/_/g, ' ')
+  if (info?.status) return info.status.replaceAll('_', ' ')
   return 'unrouted'
 }
 
