@@ -190,6 +190,31 @@ pub struct ActiveSessionResponse {
     pub status: String,
 }
 
+/// A currently-open agent session in the fleet-wide active-sessions listing
+/// (AAASM-5038).
+///
+/// Enriches the per-agent [`ActiveSessionResponse`] with the owning agent's
+/// identity so the dashboard Fleet → Active Sessions tab can render one flat,
+/// fleet-wide table without a second lookup. `actions_count` / `current_task`
+/// from the design mock are deliberately omitted: the registry does not track
+/// them per session, and this endpoint only surfaces state that already exists
+/// (it must not invent a session store).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct FleetActiveSessionResponse {
+    /// Hex-encoded UUID of the agent that owns the session.
+    pub agent_id: String,
+    /// Human-readable name of the owning agent.
+    pub agent_name: String,
+    /// Team the owning agent belongs to, if any.
+    pub team_id: Option<String>,
+    /// Hex-encoded session UUID.
+    pub session_id: String,
+    /// ISO 8601 timestamp when the session started.
+    pub started_at: String,
+    /// Current status of the session (e.g. "running", "idle").
+    pub status: String,
+}
+
 /// Summary of a recent event in the API response.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RecentEventResponse {
@@ -311,6 +336,65 @@ pub async fn list_agents(
             total,
         }),
     )
+}
+
+/// `GET /api/v1/fleet/active-sessions` — list currently-open agent sessions
+/// across the whole fleet.
+///
+/// Read-only observability surface for the dashboard Fleet → Active Sessions tab
+/// (AAASM-5038). Flattens the `active_sessions` the registry already tracks on
+/// each [`aa_gateway::registry::AgentRecord`] into one fleet-wide list, tagging
+/// every session with its owning agent's id, name, and team. Purely derived from
+/// existing registry state — it opens, mutates, and closes nothing, so it changes
+/// neither session lifecycle nor enforcement.
+///
+/// Tenant-scoped exactly like [`list_agents`] (AAASM-3865): an admin sees every
+/// agent's sessions; a team-scoped caller sees only its own team's; an agent with
+/// no team is admin-only. Results are ordered newest-first by `started_at`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/fleet/active-sessions",
+    responses(
+        (status = 200, description = "Active agent sessions across the fleet", body = Vec<FleetActiveSessionResponse>)
+    ),
+    tag = "agents"
+)]
+pub async fn list_active_sessions(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+) -> impl IntoResponse {
+    // Same tenant confinement as `list_agents` (AAASM-3865): filter the agents a
+    // caller may see BEFORE flattening their sessions, so a team-scoped key can
+    // never enumerate another tenant's open sessions.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let mut sessions: Vec<FleetActiveSessionResponse> = state
+        .agent_registry
+        .list()
+        .into_iter()
+        .filter(|r| match r.team_id.as_deref() {
+            Some(team) => caller.can_access_team(team),
+            None => is_admin,
+        })
+        .flat_map(|r| {
+            let agent_id = r.agent_id.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            let agent_name = r.name.clone();
+            let team_id = r.team_id.clone();
+            r.active_sessions.into_iter().map(move |s| FleetActiveSessionResponse {
+                agent_id: agent_id.clone(),
+                agent_name: agent_name.clone(),
+                team_id: team_id.clone(),
+                session_id: s.session_id,
+                started_at: s.started_at.to_rfc3339(),
+                status: s.status,
+            })
+        })
+        .collect();
+
+    // Newest-first: the dashboard surfaces the most recently started sessions at
+    // the top. RFC 3339 UTC timestamps sort lexicographically by instant.
+    sessions.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+
+    (StatusCode::OK, Json(sessions))
 }
 
 /// `GET /api/v1/agents/:id` — inspect a specific agent by ID.

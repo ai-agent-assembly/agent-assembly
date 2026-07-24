@@ -10,7 +10,8 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { useAgentsQuery } from '../features/agents/api'
+import { useAgentsQuery, useActiveSessionsQuery } from '../features/agents/api'
+import { ActiveSessionsView } from './ActiveSessionsView'
 import { toFleetAgent, type FleetAgent } from '../features/agents/fleetTypes'
 import {
   applyFleetFilters,
@@ -202,6 +203,7 @@ export function FleetPage() {
   const navigate = useNavigate()
   const { toast } = useToast()
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
+  const { data: activeSessions } = useActiveSessionsQuery()
   const [sorting, setSorting] = useState<SortingState>([])
   const [view, setView] = useState<FleetView>('agents')
 
@@ -387,18 +389,17 @@ export function FleetPage() {
           data-testid="fleet-tab-sessions"
         >
           Active Sessions
+          {' '}
+          <span
+            className={`fleet-tabs__count${view !== 'sessions' ? ' fleet-tabs__count--live' : ''}`}
+            data-testid="fleet-tab-sessions-count"
+          >
+            {activeSessions?.length ?? 0}
+          </span>
         </button>
       </div>
 
-      {view === 'sessions' && (
-        <div className="fleet-empty" data-testid="fleet-sessions-empty">
-          <p className="fleet-empty__title">Active sessions view</p>
-          <p className="fleet-empty__body">
-            Wired in a follow-up sub-task. Tracking continues per agent on the Agent
-            Detail drawer (AAASM-1052).
-          </p>
-        </div>
-      )}
+      {view === 'sessions' && <ActiveSessionsView />}
 
       {view === 'agents' && (
         <FleetFilterBar

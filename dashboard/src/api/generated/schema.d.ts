@@ -1108,6 +1108,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/fleet/active-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/fleet/active-sessions` — list currently-open agent sessions
+         *     across the whole fleet.
+         * @description Read-only observability surface for the dashboard Fleet → Active Sessions tab
+         *     (AAASM-5038). Flattens the `active_sessions` the registry already tracks on
+         *     each [`aa_gateway::registry::AgentRecord`] into one fleet-wide list, tagging
+         *     every session with its owning agent's id, name, and team. Purely derived from
+         *     existing registry state — it opens, mutates, and closes nothing, so it changes
+         *     neither session lifecycle nor enforcement.
+         *
+         *     Tenant-scoped exactly like [`list_agents`] (AAASM-3865): an admin sees every
+         *     agent's sessions; a team-scoped caller sees only its own team's; an agent with
+         *     no team is admin-only. Results are ordered newest-first by `started_at`.
+         */
+        get: operations["list_active_sessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health": {
         parameters: {
             query?: never;
@@ -2918,6 +2948,31 @@ export interface components {
          * @enum {string}
          */
         EventType: "violation" | "approval" | "budget" | "ops_change";
+        /**
+         * @description A currently-open agent session in the fleet-wide active-sessions listing
+         *     (AAASM-5038).
+         *
+         *     Enriches the per-agent [`ActiveSessionResponse`] with the owning agent's
+         *     identity so the dashboard Fleet → Active Sessions tab can render one flat,
+         *     fleet-wide table without a second lookup. `actions_count` / `current_task`
+         *     from the design mock are deliberately omitted: the registry does not track
+         *     them per session, and this endpoint only surfaces state that already exists
+         *     (it must not invent a session store).
+         */
+        FleetActiveSessionResponse: {
+            /** @description Hex-encoded UUID of the agent that owns the session. */
+            agent_id: string;
+            /** @description Human-readable name of the owning agent. */
+            agent_name: string;
+            /** @description Hex-encoded session UUID. */
+            session_id: string;
+            /** @description ISO 8601 timestamp when the session started. */
+            started_at: string;
+            /** @description Current status of the session (e.g. "running", "idle"). */
+            status: string;
+            /** @description Team the owning agent belongs to, if any. */
+            team_id?: string | null;
+        };
         /** @description Response for `GET /api/v1/analytics/fleet-health`. */
         FleetHealthResponse: {
             /** @description One entry per agent the caller may see. */
@@ -6406,6 +6461,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    list_active_sessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active agent sessions across the fleet */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetActiveSessionResponse"][];
                 };
             };
         };

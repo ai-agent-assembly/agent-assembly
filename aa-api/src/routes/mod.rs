@@ -91,6 +91,9 @@ fn protected_router() -> Router {
         .route("/agents/{id}/capabilities", get(agents::get_agent_capabilities))
         .route("/agents/{id}/budget", get(agents::get_agent_budget))
         .route("/agents/{id}/subtree-burn", get(agents::get_agent_subtree_burn))
+        // Fleet — read-only cross-agent aggregations for the dashboard Fleet page.
+        // Currently-open agent sessions across the whole fleet (AAASM-5038).
+        .route("/fleet/active-sessions", get(agents::list_active_sessions))
         // Logs
         .route("/logs", get(logs::list_logs))
         // Traces
