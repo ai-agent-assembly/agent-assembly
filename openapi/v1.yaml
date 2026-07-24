@@ -2590,6 +2590,35 @@ paths:
           description: Caller lacks admin scope
         '404':
           description: No active policy loaded
+  /api/v1/policies/simulate:
+    post:
+      tags:
+      - policies
+      summary: '`POST /api/v1/policies/simulate` — dry-run a hypothetical request.'
+      description: |-
+        Evaluate a hypothetical `(agent, tool, target)` request against the active
+        governance policy and return the verdict (allow / narrow / approval / deny),
+        the matched rule/reason, and whether the payload would be scrubbed.
+
+        This is a pure, read-only what-if: it runs the policy engine in dry-run mode
+        ([`aa_gateway::engine::PolicyEngine::simulate`]) with no state mutation, no
+        budget debit, no audit write, and no enforcement side effect.
+      operationId: simulate_policy
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulatePolicyRequest'
+        required: true
+      responses:
+        '200':
+          description: Dry-run verdict for the hypothetical request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulatePolicyResponse'
+        '403':
+          description: Caller lacks read scope
   /api/v1/tools:
     get:
       tags:
@@ -6407,6 +6436,74 @@ components:
         starts_at:
           type: string
           description: ISO 8601 timestamp at which the silence took effect.
+    SimulatePolicyRequest:
+      type: object
+      description: |-
+        Request body for `POST /api/v1/policies/simulate` (AAASM-5037).
+
+        Describes a hypothetical `(agent, tool, target)` request to evaluate against
+        the active policy. No part of it is persisted — it is a pure what-if.
+      required:
+      - agent_id
+      - tool
+      properties:
+        agent_id:
+          type: string
+          description: |-
+            Identifier (id or name) of the hypothetical agent to evaluate as. Mapped
+            to the same internal `AgentId` a live request for this agent would use,
+            so a registered agent's org/team lineage is honored.
+        org_id:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Optional organization attribute used for policy-cascade lineage when the
+            agent is not resolvable from the registry.
+        target:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Optional target/resource of the action (e.g. a recipient, host, or path).
+            Folded into the simulated tool-call arguments so target-sensitive
+            predicates and credential/PII scanning apply.
+        team_id:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Optional team attribute used for policy-cascade lineage when the agent is
+            not resolvable from the registry.
+        tool:
+          type: string
+          description: Tool or capability the agent would invoke (e.g. `"gmail.send"`, `"shell"`).
+    SimulatePolicyResponse:
+      type: object
+      description: Response body for `POST /api/v1/policies/simulate` (AAASM-5037).
+      required:
+      - verdict
+      - reason
+      - redacted
+      properties:
+        matched_rule:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Label of the policy rule / reason that produced the verdict. `null` for a
+            clean allow with no matched narrowing or deny rule.
+        reason:
+          type: string
+          description: Human-readable explanation of the verdict.
+        redacted:
+          type: boolean
+          description: |-
+            Whether the payload would be scrubbed before reaching the model because
+            credential/PII content was detected (drives the `"narrow"` verdict).
+        verdict:
+          type: string
+          description: 'Dry-run verdict: `"allow"`, `"narrow"`, `"approval"`, or `"deny"`.'
     SubtreeBurnResponse:
       type: object
       description: Response for `GET /api/v1/agents/{id}/subtree-burn`.
