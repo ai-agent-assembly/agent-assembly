@@ -1554,6 +1554,11 @@ export interface paths {
          *     end-to-end — plus the `delegation` and `call` edges between those nodes from
          *     the topology edge store.
          *
+         *     Unlike the sibling `/topology/*` routes, this handler additionally enriches
+         *     each node's `owner` / `policy_count` / `budget` (AAASM-5045) from registry
+         *     metadata, the policy-engine cascade, and the budget tracker respectively, so
+         *     the dashboard node-detail panel renders real values rather than placeholders.
+         *
          *     Tenant-scoped, `RequireRead`, deny-by-default exactly like the sibling
          *     `/topology/*` routes: a non-admin caller with no tenant scope receives an
          *     empty graph rather than a cross-tenant dump (AAASM-3483). An edge is emitted
@@ -1888,17 +1893,24 @@ export interface components {
          *     }
          *     ```
          * @example {
+         *       "budget": {
+         *         "limit_usd": 100,
+         *         "spend_usd": 4.1
+         *       },
          *       "depth": 1,
          *       "flagged": false,
          *       "id": "0102030405060708090a0b0c0d0e0f10",
          *       "mode": "enforce",
          *       "name": "my-agent",
+         *       "owner": "platform-team",
+         *       "policy_count": 3,
          *       "status": "active",
          *       "team_id": "team-alpha",
          *       "trust": null
          *     }
          */
         AgentNode: {
+            budget?: null | components["schemas"]["NodeBudget"];
             /**
              * Format: int32
              * @description Delegation depth — 0 for root agents.
@@ -1922,6 +1934,23 @@ export interface components {
             mode: string;
             /** @description Human-readable agent name. */
             name: string;
+            /**
+             * @description Operator / engineer who owns this agent, read from the agent record's
+             *     `metadata["owner"]` (AAASM-5045). `null` when the registrant supplied no
+             *     owner tag — kept present (not omitted) so the node-detail panel renders an
+             *     explicit "no data" state rather than inferring a value.
+             */
+            owner?: string | null;
+            /**
+             * Format: int32
+             * @description Number of governance policies whose scope cascade applies to this agent
+             *     — `Global → Org → Team → Agent`, the same walk `PolicyEngine::evaluate`
+             *     uses (AAASM-5045). `null` when this projection is built without a
+             *     policy-engine lookup: only the whole-fleet graph endpoint
+             *     (`GET /api/v1/topology`) resolves it; the list / tree / team endpoints
+             *     leave it `null` rather than emitting a misleading `0`.
+             */
+            policy_count?: number | null;
             /** @description Runtime status: `active`, `suspended`, or `deregistered`. */
             status: string;
             /** @description Team this agent belongs to, if any. */
@@ -3140,6 +3169,40 @@ export interface components {
             session_id: string;
             /** @description ISO 8601 timestamp of the event. */
             timestamp: string;
+        };
+        /**
+         * @description Per-agent daily budget projection for a topology node (AAASM-5045).
+         *
+         *     A slim read-only view of the [`aa_gateway::budget::tracker::BudgetTracker`]
+         *     state for one agent — the same source the `/api/v1/costs` per-agent
+         *     breakdown reads. `spend_usd` is today's accrued spend (0 when the agent has
+         *     no accrual yet); `limit_usd` is the agent's effective daily limit
+         *     (per-agent override, else the server-wide daily limit) or `null` when no
+         *     limit is configured. Emitted as `f64` (not the tracker's `Decimal`) because
+         *     the dashboard budget bar renders numbers directly — the two decimals of a
+         *     USD amount are well within `f64`'s exact range.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "spend_usd": 4.10, "limit_usd": 100.0 }
+         *     ```
+         * @example {
+         *       "limit_usd": 100,
+         *       "spend_usd": 4.1
+         *     }
+         */
+        NodeBudget: {
+            /**
+             * Format: double
+             * @description Effective daily budget limit in USD (per-agent override, else the
+             *     server-wide daily limit), or `null` when no limit is configured.
+             */
+            limit_usd?: number | null;
+            /**
+             * Format: double
+             * @description Daily spend accrued for this agent today, in USD.
+             */
+            spend_usd: number;
         };
         /**
          * @description Acknowledgement returned by the per-op lifecycle endpoints.

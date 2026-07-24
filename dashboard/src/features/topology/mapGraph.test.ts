@@ -29,9 +29,25 @@ describe('mapTopologyGraph', () => {
     expect(nodes[1]).toMatchObject({ status: 'deregistered', team: '' })
   })
 
-  it('defaults owner / policyCount / budget to neutral placeholders', () => {
+  it('defaults owner / policyCount / budget to neutral placeholders when absent', () => {
     const { nodes } = mapTopologyGraph({ nodes: [node()], edges: [] })
     expect(nodes[0]).toMatchObject({ owner: '', policyCount: 0, budgetSpend: 0, budgetLimit: 0 })
+  })
+
+  it('carries live owner / policy_count / budget through to the view model (AAASM-5045)', () => {
+    const { nodes } = mapTopologyGraph({
+      nodes: [node({ owner: 'platform-team', policy_count: 3, budget: { spend_usd: 4.1, limit_usd: 100 } })],
+      edges: [],
+    })
+    expect(nodes[0]).toMatchObject({ owner: 'platform-team', policyCount: 3, budgetSpend: 4.1, budgetLimit: 100 })
+  })
+
+  it('keeps the budget-limit placeholder when the limit is null (no misleading ratio)', () => {
+    const { nodes } = mapTopologyGraph({
+      nodes: [node({ owner: null, policy_count: 0, budget: { spend_usd: 2.5, limit_usd: null } })],
+      edges: [],
+    })
+    expect(nodes[0]).toMatchObject({ owner: '', budgetSpend: 2.5, budgetLimit: 0 })
   })
 
   it('drops an unrecognised mode to undefined so the badge stays hidden', () => {

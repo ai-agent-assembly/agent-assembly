@@ -6,11 +6,12 @@ import type { TopologyEdge, TopologyGraph, TopologyMode, TopologyNode, TopologyS
  * view model the graph and node-detail panel render.
  *
  * The endpoint reuses the `/topology/overview` `AgentNode` projection, so it
- * carries the enforcement-mode / flagged / trust badges (AAASM-5036) live — but
- * that projection has no per-agent owner, applied-policy count, or budget on the
- * registry path, so those view-model fields fall back to neutral placeholders
- * here (mirroring how the Fleet page defaults `trust` / `blocked24h` to `null`).
- * Enriching them from a budget / policy source is deliberate follow-up work.
+ * carries the enforcement-mode / flagged / trust badges (AAASM-5036) live, and
+ * the graph endpoint now additionally enriches each node's `owner`,
+ * `policy_count`, and `budget` (AAASM-5045) from registry metadata, the
+ * policy-engine cascade, and the budget tracker. Those map straight onto the
+ * view model here; each stays null-safe — a `null`/absent field falls back to
+ * the same neutral placeholder the panel showed before (empty owner, 0 counts).
  *
  * A pure function — no fetch, no React — so it is unit-testable on its own.
  */
@@ -40,11 +41,12 @@ function mapNode(n: ApiNode): TopologyNode {
     name: n.name,
     status: toStatus(n.status),
     team: n.team_id ?? '',
-    // No source on the AgentNode projection — neutral placeholders (see module doc).
-    owner: '',
-    policyCount: 0,
-    budgetSpend: 0,
-    budgetLimit: 0,
+    // Live values enriched by the graph endpoint (AAASM-5045); null-safe — an
+    // absent field keeps the prior neutral placeholder (see module doc).
+    owner: n.owner ?? '',
+    policyCount: n.policy_count ?? 0,
+    budgetSpend: n.budget?.spend_usd ?? 0,
+    budgetLimit: n.budget?.limit_usd ?? 0,
     // Live badges (AAASM-5036).
     mode: toMode(n.mode),
     flagged: n.flagged,
