@@ -1,0 +1,337 @@
+/* Two-pane Teams view (AAASM-5044): team list on the left, selected-team
+   detail cards on the right. All colours come from theme tokens so the layout
+   tracks light/dark without per-mode overrides. */
+
+.teams-two-pane {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 1px;
+  background: var(--surface-card-border);
+  height: calc(100vh - 56px);
+  min-height: 480px;
+}
+
+@media (max-width: 720px) {
+  .teams-two-pane {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+}
+
+/* ── Left: team list ─────────────────────────────────────────────────────── */
+.teams-list-pane {
+  background: var(--surface-card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.teams-list-pane__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0.875rem;
+  border-bottom: 1px solid var(--surface-card-border);
+}
+
+.teams-list-pane__title {
+  font-weight: 700;
+  font-size: 0.9375rem;
+}
+
+.teams-list-pane__count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.teams-list-pane__scroll {
+  flex: 1;
+  overflow: auto;
+}
+
+.teams-list-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--surface-card);
+  border: none;
+  border-bottom: 1px solid var(--surface-card-border);
+  border-left: 3px solid transparent;
+  padding: 0.625rem 0.875rem;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.teams-list-row:hover {
+  background: var(--surface-hover-bg);
+}
+
+.teams-list-row.is-active {
+  background: var(--surface-hover-bg);
+  border-left-color: var(--accent);
+}
+
+.teams-list-row__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
+}
+
+.teams-list-row__name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.teams-list-row.is-active .teams-list-row__name {
+  font-weight: 700;
+}
+
+.teams-list-row__agents {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.teams-mini-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-hover-bg);
+  overflow: hidden;
+}
+
+.teams-mini-bar__fill {
+  height: 100%;
+  border-radius: 2px;
+}
+
+.teams-mini-bar__label {
+  margin-top: 0.1875rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+}
+
+/* ── Right: detail pane ──────────────────────────────────────────────────── */
+.teams-detail-pane {
+  background: var(--surface-card);
+  overflow: auto;
+  padding: 1.25rem 1.375rem;
+}
+
+.teams-detail-empty {
+  color: var(--text-muted);
+  padding: 2rem;
+  text-align: center;
+}
+
+.teams-detail-header {
+  margin-bottom: 1.125rem;
+}
+
+.teams-detail-header__eyebrow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  margin-bottom: 0.25rem;
+}
+
+.teams-detail-header__name {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem;
+}
+
+.teams-detail-header__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  align-items: center;
+}
+
+.teams-detail-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.teams-card {
+  background: var(--surface-card);
+  border: 1px solid var(--surface-card-border);
+  border-radius: 6px;
+  padding: 0.875rem 1rem;
+}
+
+.teams-card__title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+}
+
+.teams-card__empty {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* Budget card */
+.teams-budget-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.875rem;
+}
+
+.teams-budget-amount {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-bottom: 0.375rem;
+}
+
+.teams-budget-amount__limit {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.teams-budget-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-hover-bg);
+  overflow: hidden;
+}
+
+.teams-budget-track__fill {
+  height: 100%;
+  border-radius: 3px;
+}
+
+.teams-budget-pct {
+  margin-top: 0.25rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+}
+
+/* Chip / badge */
+.teams-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6875rem;
+  background: var(--badge-neutral-bg);
+  color: var(--badge-neutral-text);
+}
+
+.teams-chip.is-danger {
+  background: var(--status-danger-bg);
+  color: var(--status-danger-text-strong);
+}
+
+.teams-chip.is-warn {
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+}
+
+.teams-chip.is-ok {
+  background: var(--status-success-bg);
+  color: var(--status-success-text-strong);
+}
+
+/* Approval routing card */
+.teams-approval-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px dashed var(--surface-card-border);
+}
+
+.teams-approval-row:last-child {
+  border-bottom: none;
+}
+
+.teams-approval-row__action {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.teams-approval-row__reason {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.125rem;
+}
+
+.teams-flag-note {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 4px;
+  background: var(--surface-subtle-bg);
+  border: 1px dashed var(--surface-card-border);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* Members card */
+.teams-member-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.4375rem 0;
+  border-bottom: 1px dashed var(--surface-card-border);
+}
+
+.teams-member-row:last-child {
+  border-bottom: none;
+}
+
+.teams-member-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--surface-hover-bg);
+  border: 1px solid var(--surface-card-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.teams-member-row__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.teams-member-row__name {
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.teams-member-row__meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  margin-left: 0.5rem;
+}
+
+.teams-detail-fulllink {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+}
