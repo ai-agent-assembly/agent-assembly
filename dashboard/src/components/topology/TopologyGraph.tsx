@@ -437,6 +437,7 @@ export function TopologyGraph({
             data-in-cycle={inCycle ? 'true' : undefined}
             data-flagged={node.flagged ? 'true' : undefined}
             data-mode={node.mode}
+            data-trust={node.trust != null ? String(node.trust) : undefined}
             transform={`translate(${x}, ${y})`}
             role={onNodeClick ? 'button' : undefined}
             tabIndex={onNodeClick ? 0 : undefined}
@@ -484,6 +485,21 @@ export function TopologyGraph({
             <text className="topology-node__budget" x={11} y={dims.h - 8}>
               ${node.budgetSpend.toFixed(1)} / ${node.budgetLimit.toFixed(0)}
             </text>
+            {/* Trust badge (top-left): the agent's trust score. Rendered only
+                when `trust` is a number — the topology API carries the field but
+                currently always sends `null` (no trust-analytics source yet), so
+                this stays hidden until real data lands (AAASM-5036). */}
+            {node.trust != null && (
+              <text
+                className="topology-node__trust"
+                data-testid="topology-node-trust"
+                x={6}
+                y={12}
+                textAnchor="start"
+              >
+                ◈ {node.trust}
+              </text>
+            )}
             {/* Cycle marker (bottom-right): the danger dashed card border is the
                 primary signal; this ⟳ glyph makes it unambiguous. */}
             {inCycle && (
