@@ -2,36 +2,22 @@ import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useTopologyNodeRecentEvents, useTopologyQuery, type RecentEvent } from './api'
-import type { TopologyGraph } from './types'
+import { mapTopologyGraph } from './mapGraph'
+import type { components } from '../../api/generated/schema'
 
-const MOCK_GRAPH: TopologyGraph = {
+// The wire shape the real `GET /api/v1/topology` endpoint returns (AAASM-5040):
+// the `AgentNode` projection carrying live mode/flagged/trust badges, plus slim
+// {source,target,kind} edges.
+const API_GRAPH: components['schemas']['TopologyGraphResponse'] = {
   nodes: [
-    {
-      id: 'agent-1',
-      name: 'support-agent',
-      status: 'active',
-      team: 'support',
-      owner: 'alice',
-      policyCount: 3,
-      budgetSpend: 4.1,
-      budgetLimit: 10,
-      framework: 'langgraph',
-    },
-    {
-      id: 'agent-2',
-      name: 'data-analyst',
-      status: 'idle',
-      team: 'analytics',
-      owner: 'carol',
-      policyCount: 1,
-      budgetSpend: 0,
-      budgetLimit: 5,
-    },
+    { id: 'agent-1', name: 'support-agent', depth: 0, status: 'active', team_id: 'support', mode: 'shadow', flagged: true, trust: null },
+    { id: 'agent-2', name: 'data-analyst', depth: 1, status: 'suspended', team_id: 'analytics', mode: 'enforce', flagged: false, trust: null },
   ],
-  edges: [
-    { source: 'agent-1', target: 'agent-2', kind: 'delegation' },
-  ],
+  edges: [{ source: 'agent-1', target: 'agent-2', kind: 'delegation' }],
 }
+
+// What the hook returns after mapping the wire shape onto the view model.
+const EXPECTED_GRAPH = mapTopologyGraph(API_GRAPH)
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -48,17 +34,20 @@ describe('useTopologyQuery', () => {
     sessionStorage.clear()
   })
 
-  it('returns nodes + edges from a successful fetch and forwards the bearer token', async () => {
+  it('maps the endpoint response to the view model and forwards the bearer token', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify(MOCK_GRAPH), { status: 200 }),
+      new Response(JSON.stringify(API_GRAPH), { status: 200 }),
     )
 
     const { result } = renderHook(() => useTopologyQuery(), { wrapper })
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data).toEqual(MOCK_GRAPH)
+    expect(result.current.data).toEqual(EXPECTED_GRAPH)
     expect(result.current.data?.nodes).toHaveLength(2)
     expect(result.current.data?.edges).toHaveLength(1)
+    // Live badges flow through from the AgentNode projection (AAASM-5036).
+    expect(result.current.data?.nodes[0].mode).toBe('shadow')
+    expect(result.current.data?.nodes[0].flagged).toBe(true)
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining('/api/v1/topology'),
       expect.objectContaining({
@@ -77,7 +66,7 @@ describe('useTopologyQuery', () => {
   })
 
   it('returns an empty graph shape without crashing', async () => {
-    const empty: TopologyGraph = { nodes: [], edges: [] }
+    const empty: components['schemas']['TopologyGraphResponse'] = { nodes: [], edges: [] }
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify(empty), { status: 200 }),
     )
