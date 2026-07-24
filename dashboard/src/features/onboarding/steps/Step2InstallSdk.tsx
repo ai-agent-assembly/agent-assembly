@@ -107,7 +107,7 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
         <span className="onb-term-meta-label">verify connection</span>
         <button
           type="button"
-          className="onb-pkg-tab is-active"
+          className="onb-btn"
           data-testid="onboarding-install-verify"
           onClick={handleRun}
           disabled={phase === 'running'}
