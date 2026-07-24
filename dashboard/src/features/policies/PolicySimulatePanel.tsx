@@ -77,6 +77,28 @@ export function PolicySimulatePanel({ open, onClose }: PolicySimulatePanelProps)
     return () => dialog?.close?.()
   }, [open])
 
+  // Backdrop dismiss: a modal <dialog> reports backdrop clicks on the element
+  // itself, so a click landing outside the box's bounds means the backdrop was
+  // hit. Attached imperatively rather than via a React `onClick` prop because a
+  // <dialog> is a non-interactive element — a JSX listener on it trips jsx-a11y
+  // (S6847/S1082); the keyboard dismiss path is the native Esc/`cancel` below.
+  useEffect(() => {
+    if (!open) return
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const onBackdrop = (e: MouseEvent) => {
+      const box = dialog.getBoundingClientRect()
+      const outside =
+        e.clientX < box.left ||
+        e.clientX > box.right ||
+        e.clientY < box.top ||
+        e.clientY > box.bottom
+      if (outside) onClose()
+    }
+    dialog.addEventListener('click', onBackdrop)
+    return () => dialog.removeEventListener('click', onBackdrop)
+  }, [open, onClose])
+
   // Clear any prior verdict each time the panel is reopened so a stale result
   // never flashes against a fresh request.
   useEffect(() => {
@@ -110,19 +132,6 @@ export function PolicySimulatePanel({ open, onClose }: PolicySimulatePanelProps)
         // the single owner of open/closed state.
         e.preventDefault()
         onClose()
-      }}
-      onClick={(e) => {
-        // A modal <dialog> centres its own box; the surrounding ::backdrop
-        // still reports clicks on the dialog element. Treat a click that lands
-        // outside the box's bounds as a backdrop dismiss, mirroring the prior
-        // click-outside behaviour without a non-semantic wrapper.
-        const box = e.currentTarget.getBoundingClientRect()
-        const outside =
-          e.clientX < box.left ||
-          e.clientX > box.right ||
-          e.clientY < box.top ||
-          e.clientY > box.bottom
-        if (outside) onClose()
       }}
     >
       <header className="policy-simulate__head">
