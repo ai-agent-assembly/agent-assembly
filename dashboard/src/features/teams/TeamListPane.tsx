@@ -31,10 +31,19 @@ export function TeamListPane({ rows, selectedId, onSelect, isLoading, isError }:
   return (
     <div className="teams-list-pane" data-testid="team-list-pane">
       <div className="teams-list-pane__head">
-        <span className="teams-list-pane__title">Teams</span>
+        <span className="teams-list-pane__title">Agent Groups</span>
         <span className="teams-list-pane__count" data-testid="team-list-count">
-          {rows.length} team{rows.length === 1 ? '' : 's'}
+          {rows.length} group{rows.length === 1 ? '' : 's'}
         </span>
+        <button
+          type="button"
+          className="teams-list-pane__new"
+          data-testid="team-list-new"
+          disabled
+          title="Creating agent groups is available in Agent Assembly Cloud"
+        >
+          + New
+        </button>
       </div>
 
       <div className="teams-list-pane__scroll">

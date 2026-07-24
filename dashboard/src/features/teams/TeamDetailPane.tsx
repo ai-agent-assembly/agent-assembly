@@ -51,7 +51,7 @@ export function TeamDetailPane({ teamId }: Readonly<TeamDetailPaneProps>) {
         <h2 className="teams-detail-header__name">{teamId}</h2>
         <div className="teams-detail-header__chips">
           <span className="teams-chip" data-testid="team-detail-agent-count">
-            {members.length} member{members.length === 1 ? '' : 's'}
+            {members.length} agent{members.length === 1 ? '' : 's'}
           </span>
           {suspendedCount > 0 && (
             <span className="teams-chip is-warn">{suspendedCount} suspended</span>

@@ -14,8 +14,8 @@ interface TeamBudgetCardProps {
  */
 export function TeamBudgetCard({ budget, isLoading }: Readonly<TeamBudgetCardProps>) {
   return (
-    <section className="teams-card" data-testid="team-budget-card" aria-label="Budget usage">
-      <div className="teams-card__title">Budget usage</div>
+    <section className="teams-card" data-testid="team-budget-card" aria-label="Budget">
+      <div className="teams-card__title">Budget</div>
 
       {isLoading && (
         <div className="teams-card__empty" data-testid="team-budget-loading">Loading budget…</div>
