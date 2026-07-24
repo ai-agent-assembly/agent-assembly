@@ -91,6 +91,43 @@ describe('BudgetTree', () => {
     expect(screen.queryByTestId('budget-node-child-a')).not.toBeInTheDocument()
   })
 
+  it('expands and collapses a node with children via the keyboard (Enter)', async () => {
+    const user = userEvent.setup()
+    render(<BudgetTree data={TREE} isLoading={false} isError={false} />)
+    const rootA = screen.getByTestId('budget-node-root-a')
+
+    // Focus the row, then Enter expands it — the sub-agent row appears.
+    rootA.focus()
+    await user.keyboard('{Enter}')
+    expect(screen.getByTestId('budget-node-child-a')).toBeInTheDocument()
+
+    // Enter again collapses it.
+    await user.keyboard('{Enter}')
+    expect(screen.queryByTestId('budget-node-child-a')).not.toBeInTheDocument()
+  })
+
+  it('toggles a node with the Space key and exposes tree semantics', async () => {
+    const user = userEvent.setup()
+    render(<BudgetTree data={TREE} isLoading={false} isError={false} />)
+    const rootA = screen.getByTestId('budget-node-root-a')
+
+    // Expandable rows are focusable treeitems that report their expanded state.
+    expect(rootA).toHaveAttribute('role', 'treeitem')
+    expect(rootA).toHaveAttribute('tabindex', '0')
+    expect(rootA).toHaveAttribute('aria-expanded', 'false')
+
+    // Space expands it.
+    rootA.focus()
+    await user.keyboard(' ')
+    expect(screen.getByTestId('budget-node-child-a')).toBeInTheDocument()
+    expect(rootA).toHaveAttribute('aria-expanded', 'true')
+
+    // Space again collapses it.
+    await user.keyboard(' ')
+    expect(screen.queryByTestId('budget-node-child-a')).not.toBeInTheDocument()
+    expect(rootA).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('shows the loading state', () => {
     render(<BudgetTree data={undefined} isLoading={true} isError={false} />)
     expect(screen.getByTestId('budget-tree-loading')).toBeInTheDocument()
