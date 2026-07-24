@@ -55,6 +55,24 @@
   min-width: 0;
 }
 
+/* Expandable rows expose their label as a native <button> for free keyboard
+   operability; strip the button chrome so it reads as the row it replaces. */
+.budget-tree__name--toggle {
+  font: inherit;
+  background: none;
+  border: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.budget-tree__name--toggle:focus-visible {
+  outline: 2px solid var(--accent, var(--scrub));
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
 .budget-tree__caret {
   width: 12px;
   flex-shrink: 0;

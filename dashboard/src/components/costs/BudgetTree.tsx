@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent } from 'react'
+import { useState } from 'react'
 import type { BudgetTree as BudgetTreeData, BudgetTreeNode } from '../../features/costs/api'
 import './BudgetTree.css'
 
@@ -24,17 +24,6 @@ function defaultExpanded(node: BudgetTreeNode, acc: Set<string> = new Set()): Se
 function caretGlyph(hasKids: boolean, open: boolean): string {
   if (!hasKids) return '·'
   return open ? '▾' : '▸'
-}
-
-/**
- * Keyboard equivalent of clicking an expandable row: Enter/Space toggle it.
- * `preventDefault` stops Space from scrolling the page while a row is focused.
- */
-function toggleOnKey(event: KeyboardEvent<HTMLDivElement>, toggle: () => void): void {
-  if (event.key === 'Enter' || event.key === ' ') {
-    event.preventDefault()
-    toggle()
-  }
 }
 
 interface RowMetrics {
@@ -93,6 +82,82 @@ function BurnMeter({ totalPct, ownPct, childPct, color, showSub }: BurnMeterProp
   )
 }
 
+interface NameCellProps {
+  readonly node: BudgetTreeNode
+  readonly hasKids: boolean
+  readonly open: boolean
+  readonly onToggle: (id: string) => void
+}
+
+/**
+ * The node's label column. Expandable nodes wrap it in a native `<button>` —
+ * focusable and Enter/Space-operable for free, so no ARIA role or key handler is
+ * needed; leaf nodes render inert. Org → team → agent nests via depth padding.
+ */
+function NameCell({ node, hasKids, open, onToggle }: NameCellProps) {
+  const style = { paddingLeft: `${node.depth * 18}px` }
+  const inner = (
+    <>
+      <span className="budget-tree__caret" aria-hidden="true">
+        {caretGlyph(hasKids, open)}
+      </span>
+      <span className={`budget-tree__kind budget-tree__kind--${node.kind}`}>{node.kind}</span>
+      <span className="budget-tree__label" title={node.label}>
+        {node.label}
+      </span>
+      {node.governance_level && <span className="budget-tree__gov">{node.governance_level}</span>}
+    </>
+  )
+
+  if (!hasKids) {
+    return (
+      <div className="budget-tree__name" style={style}>
+        {inner}
+      </div>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      className="budget-tree__name budget-tree__name--toggle"
+      style={style}
+      aria-expanded={open}
+      aria-label={`${open ? 'Collapse' : 'Expand'} ${node.label}`}
+      data-testid={`budget-toggle-${node.id}`}
+      onClick={() => onToggle(node.id)}
+    >
+      {inner}
+    </button>
+  )
+}
+
+/** The numeric columns of a row: own / subtree / limit, the burn meter, %-parent. */
+function BudgetCells({ node, m }: { readonly node: BudgetTreeNode; readonly m: RowMetrics }) {
+  const parentColor = m.parentPct != null && m.parentPct >= 70 ? { color: m.color } : undefined
+  return (
+    <>
+      <div className="budget-tree__own">{m.own > 0 ? `$${m.own.toFixed(2)}` : '—'}</div>
+      <div className="budget-tree__subtree" style={{ color: m.color }}>
+        ${m.subtree.toFixed(2)}
+      </div>
+      <div className="budget-tree__limit">{m.limit > 0 ? `$${m.limit.toFixed(0)}` : '—'}</div>
+
+      <BurnMeter
+        totalPct={m.totalPct}
+        ownPct={m.ownPct}
+        childPct={m.childPct}
+        color={m.color}
+        showSub={node.children.length > 0 && m.childPct > 1}
+      />
+
+      <div className="budget-tree__parent" style={parentColor}>
+        {m.parentPct != null ? `${m.parentPct.toFixed(0)}%` : '—'}
+      </div>
+    </>
+  )
+}
+
 interface RowProps {
   readonly node: BudgetTreeNode
   readonly parentLimit: number
@@ -103,61 +168,23 @@ interface RowProps {
 /**
  * One budget-tree row plus, when expanded, its children. Shows the node's own
  * spend, subtree spend, configured limit, a subtree-burn bar (own spend solid,
- * sub-agent spend as a lighter band), and its share of the parent's budget.
- * Rendered as an ARIA `treeitem` — focusable and operable by mouse or keyboard
- * (Enter/Space) — since org → team → agent is a tree, not a data table.
- * Colours are theme tokens so the row inverts with `data-theme`.
+ * sub-agent spend as a lighter band), and its share of the parent's budget. The
+ * expand control is the label `<button>` (see NameCell); the row itself is inert.
  */
 function BudgetRow({ node, parentLimit, expanded, onToggle }: RowProps) {
   const hasKids = node.children.length > 0
   const open = expanded.has(node.id)
   const m = rowMetrics(node, parentLimit)
 
-  const toggle = hasKids ? () => onToggle(node.id) : undefined
-  const parentColor = m.parentPct != null && m.parentPct >= 70 ? { color: m.color } : undefined
-
   return (
     <>
       <div
         className={`budget-tree__row${m.totalPct >= 85 ? ' budget-tree__row--critical' : ''}`}
-        role="treeitem"
-        aria-level={node.depth + 1}
-        aria-expanded={hasKids ? open : undefined}
-        tabIndex={0}
         data-testid={`budget-node-${node.id}`}
         data-kind={node.kind}
-        onClick={toggle}
-        onKeyDown={toggle ? event => toggleOnKey(event, toggle) : undefined}
-        style={{ cursor: hasKids ? 'pointer' : 'default' }}
       >
-        <div className="budget-tree__name" style={{ paddingLeft: `${node.depth * 18}px` }}>
-          <span className="budget-tree__caret" aria-hidden="true">
-            {caretGlyph(hasKids, open)}
-          </span>
-          <span className={`budget-tree__kind budget-tree__kind--${node.kind}`}>{node.kind}</span>
-          <span className="budget-tree__label" title={node.label}>
-            {node.label}
-          </span>
-          {node.governance_level && <span className="budget-tree__gov">{node.governance_level}</span>}
-        </div>
-
-        <div className="budget-tree__own">{m.own > 0 ? `$${m.own.toFixed(2)}` : '—'}</div>
-        <div className="budget-tree__subtree" style={{ color: m.color }}>
-          ${m.subtree.toFixed(2)}
-        </div>
-        <div className="budget-tree__limit">{m.limit > 0 ? `$${m.limit.toFixed(0)}` : '—'}</div>
-
-        <BurnMeter
-          totalPct={m.totalPct}
-          ownPct={m.ownPct}
-          childPct={m.childPct}
-          color={m.color}
-          showSub={hasKids && m.childPct > 1}
-        />
-
-        <div className="budget-tree__parent" style={parentColor}>
-          {m.parentPct != null ? `${m.parentPct.toFixed(0)}%` : '—'}
-        </div>
+        <NameCell node={node} hasKids={hasKids} open={open} onToggle={onToggle} />
+        <BudgetCells node={node} m={m} />
       </div>
 
       {hasKids &&
@@ -219,8 +246,8 @@ export function BudgetTree({
     )
   } else {
     body = (
-      <div className="budget-tree__grid" role="tree" aria-label="Budget inheritance tree" data-testid="budget-tree-grid">
-        <div className="budget-tree__row budget-tree__row--head" role="presentation">
+      <div className="budget-tree__grid" data-testid="budget-tree-grid">
+        <div className="budget-tree__row budget-tree__row--head">
           <div className="budget-tree__name">Node</div>
           <div className="budget-tree__own">Own spend</div>
           <div className="budget-tree__subtree">Subtree</div>
