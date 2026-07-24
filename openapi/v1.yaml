@@ -5428,8 +5428,8 @@ components:
       description: |-
         Per-agent daily budget projection for a topology node (AAASM-5045).
 
-        A slim read-only view of the [`aa_gateway::budget::tracker::BudgetTracker`]
-        state for one agent — the same source the `/api/v1/costs` per-agent
+        A slim read-only view of the gateway `BudgetTracker` state for one agent —
+        the same source the `/api/v1/costs` per-agent
         breakdown reads. `spend_usd` is today's accrued spend (0 when the agent has
         no accrual yet); `limit_usd` is the agent's effective daily limit
         (per-agent override, else the server-wide daily limit) or `null` when no
