@@ -456,3 +456,82 @@
 }
 
 .fleet-table__action:hover { background: var(--paper-3); }
+
+/* ── Active Sessions tab ────────────────────────────────────── */
+
+/* Live count badge on the (inactive) Active Sessions tab — mirrors the
+   ok-coloured pill in design/v1/hi-fi/fleet.jsx. */
+.fleet-tabs__count--live {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border: 1px solid var(--ok);
+}
+
+.fleet-tabs__tab--active .fleet-tabs__count--live {
+  background: var(--ink);
+  color: var(--paper-2);
+  border-color: var(--ink);
+}
+
+.fleet-session__id {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.fleet-session__agent {
+  display: block;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.fleet-session__agent:hover { text-decoration-style: solid; }
+
+.fleet-session__team {
+  display: block;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  color: var(--ink-4);
+  margin-top: 1px;
+}
+
+.fleet-session__running {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.fleet-session__pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 0 var(--ok);
+  animation: fleet-session-pulse 1.8s ease-out infinite;
+}
+
+@keyframes fleet-session-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 5px color-mix(in srgb, var(--ok) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 0%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fleet-session__pulse { animation: none; }
+}
+
+.fleet-session__inspect {
+  font-size: 11px;
+  color: var(--ink-3);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.fleet-session__inspect:hover { color: var(--ink); }

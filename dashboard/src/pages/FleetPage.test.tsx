@@ -1,13 +1,13 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, it, expect, afterEach, vi, type Mock } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { FleetPage } from './FleetPage'
 import { ToastProvider } from '../components/ToastProvider'
 import * as agentsApi from '../features/agents/api'
 import * as client from '../api/client'
-import type { Agent } from '../features/agents/api'
+import type { Agent, FleetActiveSession } from '../features/agents/api'
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -59,6 +59,15 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
   }
 }
 
+// FleetPage reads the active-session count for the tab badge on every render;
+// default it to empty so agent-focused tests don't hit a real fetch. Tests that
+// exercise the sessions tab re-spy this with their own data.
+beforeEach(() => {
+  vi.spyOn(agentsApi, 'useActiveSessionsQuery').mockReturnValue(
+    mockQuery<FleetActiveSession[]>({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
+  )
+})
+
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('FleetPage chrome', () => {
@@ -84,7 +93,7 @@ describe('FleetPage chrome', () => {
     )
     renderFleet()
     fireEvent.click(screen.getByTestId('fleet-tab-sessions'))
-    expect(await screen.findByTestId('fleet-sessions-empty')).toBeInTheDocument()
+    expect(await screen.findByTestId('sessions-empty')).toBeInTheDocument()
     expect(screen.queryByTestId('agents-table')).not.toBeInTheDocument()
   })
 })
