@@ -849,6 +849,69 @@ impl PolicyEngine {
         self.evaluate_with_cascade(cascade, ctx, action)
     }
 
+    /// Dry-run a hypothetical governance action, returning the verdict the live
+    /// policy would produce **without any state change or enforcement side
+    /// effect** (AAASM-5037).
+    ///
+    /// This is the pure "what-if" behind the dashboard's Policy Simulate panel
+    /// and `POST /api/v1/policies/simulate`. It runs the *same* decision
+    /// pipeline as [`Self::evaluate`] against the live policy document,
+    /// cascade, and registry (all read-only), but evaluates through an
+    /// ephemeral engine ([`Self::ephemeral_for_simulation`]) that owns
+    /// throwaway rate-limit, decision-cache, and budget state. As a result a
+    /// simulate call:
+    ///
+    /// - consumes **no** rate-limit token — [`Self::evaluate`] decrements a
+    ///   shared token bucket on a rate-limited tool; the dry-run's bucket is
+    ///   fresh and discarded, so repeated simulation can never exhaust an
+    ///   agent's real rate budget;
+    /// - pollutes **no** decision cache — the cascade path caches merged
+    ///   verdicts; the dry-run's cache is fresh and discarded;
+    /// - never resets or debits the live budget window — the budget check
+    ///   mutates a per-agent window on rollover, so the dry-run runs against a
+    ///   fresh, zero-spend tracker instead of the live one;
+    /// - writes no audit entry and applies no enforcement — this method only
+    ///   *returns* a verdict; the caller performs no side effect from it.
+    ///
+    /// Because the throwaway budget tracker starts at zero recorded spend, a
+    /// simulate verdict reflects the policy **rules** for the (agent, tool,
+    /// target) triple, not live budget-exhaustion state — an intentional
+    /// trade-off that keeps the dry-run free of shared-state mutation.
+    pub fn simulate(&self, ctx: &aa_core::AgentContext, action: &aa_core::GovernanceAction) -> EvaluationResult {
+        self.ephemeral_for_simulation().evaluate(ctx, action)
+    }
+
+    /// Build a throwaway [`PolicyEngine`] for a single dry-run evaluation
+    /// (see [`Self::simulate`]).
+    ///
+    /// Shares this engine's live `policy`, `cascade`, and `registry` via `Arc`
+    /// (read-only during evaluation) so the dry-run sees exactly the rules a
+    /// real request would, while giving it its own empty `rate_state`,
+    /// `decision_cache`, and a fresh zero-spend `budget` so nothing it does can
+    /// touch the live engine's mutable state. No filesystem watcher or
+    /// invalidation hub is attached — the ephemeral engine is dropped after one
+    /// evaluation.
+    fn ephemeral_for_simulation(&self) -> PolicyEngine {
+        PolicyEngine {
+            policy: Arc::new(ArcSwap::new(self.policy.load_full())),
+            scanner: aa_security::CredentialScanner::new(),
+            rate_state: DashMap::new(),
+            budget: Arc::new(BudgetTracker::new(
+                crate::budget::PricingTable::default_table(),
+                None,
+                None,
+                chrono_tz::UTC,
+            )),
+            cascade: Arc::new(ArcSwap::new(self.cascade.load_full())),
+            _cascade_watcher: None,
+            _watcher: None,
+            registry: self.registry.clone(),
+            policy_epoch: self.policy_epoch.clone(),
+            invalidation_hub: None,
+            decision_cache: DecisionCache::new(1),
+        }
+    }
+
     /// Stage 1 of [`Self::evaluate_primary`]: deny when the current time is
     /// outside the policy's active-hours window. `None` when in-window or no
     /// schedule is configured.
@@ -2309,6 +2372,83 @@ mod tests {
             engine.evaluate(&ctx, &action).decision,
             PolicyResult::Deny {
                 reason: "tool denied by policy".into()
+            }
+        );
+    }
+
+    #[test]
+    fn simulate_allows_permitted_tool() {
+        // AAASM-5037: the dry-run path returns the same verdict as `evaluate`.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "ls".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        assert_eq!(
+            engine.simulate(&ctx, &tool_call("ls", "")).decision,
+            PolicyResult::Allow
+        );
+    }
+
+    #[test]
+    fn simulate_denies_denied_tool() {
+        // AAASM-5037: a denied tool dry-runs to the same deny verdict + reason.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "ls".to_string(),
+            ToolPolicy {
+                allow: false,
+                limit_per_hour: None,
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        assert_eq!(
+            engine.simulate(&ctx, &tool_call("ls", "")).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            }
+        );
+    }
+
+    #[test]
+    fn simulate_does_not_consume_rate_limit_token() {
+        // AAASM-5037 core invariant: the dry-run must have NO state side effect.
+        // A rate-limited tool (limit_per_hour = 1) grants exactly one live token;
+        // simulating any number of times must consume none, leaving the live
+        // budget fully intact for the first real `evaluate`.
+        let mut doc = empty_doc();
+        doc.tools.insert(
+            "ls".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: Some(1),
+                requires_approval_if: None,
+            },
+        );
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("ls", "");
+
+        // Repeated simulation always allows and consumes nothing.
+        for _ in 0..5 {
+            assert_eq!(engine.simulate(&ctx, &action).decision, PolicyResult::Allow);
+        }
+
+        // The live token bucket is still full: the first real call allows...
+        assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+        // ...and only after that real consumption does the next real call deny.
+        assert_eq!(
+            engine.evaluate(&ctx, &action).decision,
+            PolicyResult::Deny {
+                reason: "rate limit exceeded".into()
             }
         );
     }

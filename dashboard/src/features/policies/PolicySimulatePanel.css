@@ -1,0 +1,238 @@
+/* ============================================================
+   Policy Simulate panel (AAASM-5037)
+   ============================================================
+
+   Portal modal that dry-runs a hypothetical request against the
+   active policy and renders the verdict. Design tokens only, so it
+   themes light/dark with the rest of the dashboard.
+   ============================================================ */
+
+/* Native <dialog> opened with showModal(): the browser renders it in the top
+   layer and centres it (UA `margin: auto` + inset), so no positioning wrapper
+   is needed — only the visual box and the ::backdrop dim are styled here. */
+.policy-simulate {
+  width: 100%;
+  max-width: 34rem;
+  max-height: 92vh;
+  margin: auto;
+  overflow-y: auto;
+  background: var(--paper-2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.25rem 1.375rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.26);
+}
+
+.policy-simulate::backdrop {
+  background: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.policy-simulate__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.policy-simulate__eyebrow {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+
+.policy-simulate__title {
+  margin: 0.125rem 0 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.policy-simulate__close {
+  border: 1px solid var(--line);
+  background: var(--paper-2);
+  color: var(--ink-3);
+  border-radius: 6px;
+  width: 1.75rem;
+  height: 1.75rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.policy-simulate__close:hover {
+  background: var(--paper-3, var(--paper-2));
+  color: var(--ink);
+}
+
+.policy-simulate__lede {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+
+.policy-simulate__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.policy-simulate__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.policy-simulate__field > span {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+
+.policy-simulate__input {
+  padding: 0.5rem 0.625rem;
+  font-size: 0.875rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.policy-simulate__input:focus {
+  outline: 2px solid var(--accent, var(--info));
+  outline-offset: 1px;
+}
+
+.policy-simulate__run {
+  align-self: flex-start;
+  margin-top: 0.125rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--on-accent, #fff);
+  background: var(--accent, var(--info));
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.policy-simulate__run:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.policy-simulate__error {
+  padding: 0.625rem 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+}
+
+/* ── Verdict result ─────────────────────────────────────────── */
+
+.policy-simulate__result {
+  border-top: 1px solid var(--line);
+  padding-top: 0.875rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.policy-simulate__verdict-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.policy-simulate__verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.policy-simulate__dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.policy-simulate__verdict--allow {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+.policy-simulate__verdict--narrow {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.policy-simulate__verdict--approval {
+  color: var(--info);
+  background: var(--info-bg);
+  border-color: color-mix(in srgb, var(--info) 45%, transparent);
+}
+
+.policy-simulate__verdict--deny {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.policy-simulate__verdict--na {
+  color: var(--ink-3);
+  background: var(--paper);
+  border-color: var(--line);
+}
+
+.policy-simulate__redacted {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6875rem;
+  color: var(--scrub);
+  background: var(--scrub-bg);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+}
+
+.policy-simulate__detail {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 0.9rem;
+}
+
+.policy-simulate__detail dt {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+
+.policy-simulate__detail dd {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--ink);
+  overflow-wrap: break-word;
+}
+
+.policy-simulate__muted {
+  color: var(--ink-4);
+}

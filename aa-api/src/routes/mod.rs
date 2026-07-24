@@ -98,6 +98,7 @@ fn protected_router() -> Router {
         // Policies
         .route("/policies", get(policies::list_policies).post(policies::create_policy))
         .route("/policies/active", get(policies::get_active_policy))
+        .route("/policies/simulate", post(policies::simulate_policy))
         // Approvals
         .route("/approvals", get(approvals::list_approvals))
         .route("/approvals/{id}", get(approvals::get_approval))

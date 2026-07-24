@@ -13,6 +13,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { Tooltip } from '../components/Tooltip'
 import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 import { PolicyEditorOverlay } from '../features/policies/editor/PolicyEditorOverlay'
+import { PolicySimulatePanel } from '../features/policies/PolicySimulatePanel'
 import { emptyDraft, stubDraftFromIdentity } from '../features/policies/editor/constants'
 import { serializeDraft } from '../features/policies/editor/serializeDraft'
 import type {
@@ -315,6 +316,7 @@ export function PoliciesPage() {
   const { toast } = useToast()
   const { mutateAsync: createPolicy, isPending: enablingLive } = useCreatePolicy()
   const [enableLiveOpen, setEnableLiveOpen] = useState(false)
+  const [simulateOpen, setSimulateOpen] = useState(false)
   const { canWrite } = usePermissions()
 
   // Observe-mode policies detected by parsing each policy_yaml client-side.
@@ -398,18 +400,28 @@ export function PoliciesPage() {
             Visual builder for narrowing rules — open one to edit.
           </p>
         </div>
-        <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+        <div className="policies-page__head-actions">
           <button
             type="button"
-            className="policies-page__new-btn"
-            data-testid="new-policy-btn"
-            onClick={handleNew}
-            disabled={!canWrite}
-            title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+            className="policies-page__simulate-btn"
+            data-testid="open-simulate-btn"
+            onClick={() => setSimulateOpen(true)}
           >
-            + new policy
+            ▸ Simulate
           </button>
-        </Tooltip>
+          <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+            <button
+              type="button"
+              className="policies-page__new-btn"
+              data-testid="new-policy-btn"
+              onClick={handleNew}
+              disabled={!canWrite}
+              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+            >
+              + new policy
+            </button>
+          </Tooltip>
+        </div>
       </header>
 
       {showSandboxBanner ? (
@@ -457,6 +469,8 @@ export function PoliciesPage() {
         onConfirm={confirmEnableLive}
         submitting={enablingLive}
       />
+
+      <PolicySimulatePanel open={simulateOpen} onClose={() => setSimulateOpen(false)} />
     </main>
   )
 }

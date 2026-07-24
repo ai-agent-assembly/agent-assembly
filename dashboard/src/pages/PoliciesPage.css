@@ -29,6 +29,33 @@
   gap: 0.25rem;
 }
 
+.policies-page__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.policies-page__simulate-btn {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.policies-page__simulate-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.policies-page__simulate-btn:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 1px;
+}
+
 .policies-page__title {
   margin: 0;
   font-size: 1.5rem;
