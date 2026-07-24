@@ -91,4 +91,60 @@ describe('AgentDecisionStream', () => {
     // No fabricated millisecond value.
     expect(within(row).queryByText(/\d+ms/)).not.toBeInTheDocument()
   })
+
+  it('renders a millisecond latency when the audit event recorded one', () => {
+    vi.spyOn(agentsApi, 'useAgentDecisionsQuery').mockReturnValue(
+      mockQuery<AgentDecision[]>({
+        data: [decision({ latencyMs: 42 })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    render(<AgentDecisionStream agentId="a1" />)
+    const row = screen.getByTestId('agent-decision-row')
+    expect(within(row).getByTestId('agent-decision-latency')).toHaveTextContent('42ms')
+  })
+
+  it('renders an em dash for a null verb and a null resource', () => {
+    vi.spyOn(agentsApi, 'useAgentDecisionsQuery').mockReturnValue(
+      mockQuery<AgentDecision[]>({
+        data: [decision({ verb: null, resource: null })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    render(<AgentDecisionStream agentId="a1" />)
+    const cells = within(screen.getByTestId('agent-decision-row')).getAllByText('—')
+    // Both the verb and resource cells fall back to the em dash.
+    expect(cells.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('renders an unknown decision label with neutral styling rather than a guessed verdict colour', () => {
+    vi.spyOn(agentsApi, 'useAgentDecisionsQuery').mockReturnValue(
+      mockQuery<AgentDecision[]>({
+        data: [decision({ decision: 0, decisionLabel: 'unspecified' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    render(<AgentDecisionStream agentId="a1" />)
+    const verdict = within(screen.getByTestId('agent-decision-row')).getByText(/unspecified/)
+    expect(verdict).toHaveStyle({ color: 'var(--ink-3)' })
+  })
+
+  it('falls back to the raw timestamp when it is not a valid date', () => {
+    vi.spyOn(agentsApi, 'useAgentDecisionsQuery').mockReturnValue(
+      mockQuery<AgentDecision[]>({
+        data: [decision({ timestamp: 'not-a-date' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    render(<AgentDecisionStream agentId="a1" />)
+    expect(within(screen.getByTestId('agent-decision-row')).getByText('not-a-date')).toBeInTheDocument()
+  })
 })
