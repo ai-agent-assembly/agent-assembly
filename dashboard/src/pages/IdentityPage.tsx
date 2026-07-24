@@ -3,6 +3,9 @@ import { MembersPanel } from '../features/iam/MembersPanel'
 import { ServiceIdentitiesPanel } from '../features/iam/ServiceIdentitiesPanel'
 import { RolesPermissionsPanel } from '../features/iam/RolesPermissionsPanel'
 import { AccessLogPanel } from '../features/iam/AccessLogPanel'
+import { useMembersQuery, useRoleCapabilitiesQuery } from '../features/iam/api'
+import { useApiKeysQuery } from '../features/iam/apiKeys'
+import { ROLES } from '../features/iam/types'
 import { IAM_DEFAULT_TAB, IAM_TAB_KEYS, IAM_TAB_LABELS, parseIamTab, type IamTabKey } from '../features/iam/tabs'
 import './IdentityPage.css'
 
@@ -25,9 +28,30 @@ function ActiveTabContent({ tab }: Readonly<{ tab: IamTabKey }>) {
   return <TabPlaceholder tab={tab} />
 }
 
+/**
+ * Per-tab count badges (AAASM-5068), mirroring the hi-fi `tab-count` in
+ * `design/v1/hi-fi/identity.jsx`. Counts come from the same queries the panels
+ * already use, so no extra backend surface. Only collection-shaped tabs carry a
+ * count; the Access Log is a filtered, paginated stream (no meaningful total),
+ * so it is intentionally left uncounted — `undefined` renders no badge.
+ */
+function useIamTabCounts(): Record<IamTabKey, number | undefined> {
+  const members = useMembersQuery()
+  const apiKeys = useApiKeysQuery()
+  const roles = useRoleCapabilitiesQuery()
+  return {
+    'members': members.data?.total,
+    'services': apiKeys.data?.length,
+    // Live gateway roles when reachable, else the built-in catalogue size.
+    'roles': roles.data?.length ?? ROLES.length,
+    'access-log': undefined,
+  }
+}
+
 export function IdentityPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const activeTab = parseIamTab(searchParams)
+  const tabCounts = useIamTabCounts()
 
   const selectTab = (tab: IamTabKey) => {
     const next = new URLSearchParams(searchParams)
@@ -42,7 +66,13 @@ export function IdentityPage() {
   return (
     <main className="iam-page" data-testid="identity-page">
       <header className="iam-page__header">
-        <h1>Identity &amp; Access</h1>
+        <div className="iam-page__heading">
+          <h1>Members &amp; Access</h1>
+          <p className="iam-page__sub" data-testid="iam-page-sub">
+            Human operators, RBAC role assignments, and service-identity token management.
+            Role scopes mirror the policy <code>scope:</code> hierarchy (global / team / agent).
+          </p>
+        </div>
         <Link
           to="/audit"
           className="iam-page__audit-link"
@@ -53,19 +83,27 @@ export function IdentityPage() {
       </header>
 
       <div className="iam-page__tabs" role="tablist" data-testid="iam-tabs">
-        {IAM_TAB_KEYS.map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === tab}
-            data-testid={`iam-tab-${tab}`}
-            className={`iam-page__tab${activeTab === tab ? ' iam-page__tab--active' : ''}`}
-            onClick={() => selectTab(tab)}
-          >
-            {IAM_TAB_LABELS[tab]}
-          </button>
-        ))}
+        {IAM_TAB_KEYS.map((tab) => {
+          const count = tabCounts[tab]
+          return (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab}
+              data-testid={`iam-tab-${tab}`}
+              className={`iam-page__tab${activeTab === tab ? ' iam-page__tab--active' : ''}`}
+              onClick={() => selectTab(tab)}
+            >
+              {IAM_TAB_LABELS[tab]}
+              {count !== undefined && (
+                <span className="iam-page__tab-count" data-testid={`iam-tab-count-${tab}`}>
+                  {count}
+                </span>
+              )}
+            </button>
+          )
+        })}
       </div>
 
       <ActiveTabContent tab={activeTab} />
