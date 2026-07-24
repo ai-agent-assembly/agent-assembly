@@ -12,6 +12,9 @@ import { ModeChip } from '../components/fleet/ModeChip'
 import { useToast } from '../components/Toast'
 import { LoadingState } from '../components/LoadingState'
 import { InheritedPermissionsPanel } from '../components/InheritedPermissionsPanel'
+import { AgentTrafficTab } from '../components/agentDetail/AgentTrafficTab'
+import { AgentPoliciesTab } from '../components/agentDetail/AgentPoliciesTab'
+import { AgentLineageTab } from '../components/agentDetail/AgentLineageTab'
 // AAASM-1055 "how to approach": "Lazy-load the chart component so the agent
 // detail page does not pay its bundle cost up front" (recharts is large).
 const SubtreeBurnChart = lazy(() =>
@@ -451,24 +454,9 @@ export function AgentDetailPage() {
               )}
 
               {tab === 'capability' && <InheritedPermissionsPanel agentId={agent.id} />}
-              {tab === 'traffic' && (
-                <TabEmpty
-                  title="Traffic"
-                  body="Recent-decisions stream for this agent is on the Live Ops page. Inline view lands in a follow-up sub-task."
-                />
-              )}
-              {tab === 'policies' && (
-                <TabEmpty
-                  title="Policies"
-                  body="Per-agent policy assignments will reuse the Policies page tagging engine. Inline view lands in a follow-up sub-task."
-                />
-              )}
-              {tab === 'lineage' && (
-                <TabEmpty
-                  title="Lineage"
-                  body="Delegation chain visualisation depends on the Topology graph (AAASM-95). Inline view lands in a follow-up sub-task."
-                />
-              )}
+              {tab === 'traffic' && <AgentTrafficTab agentId={agent.id} />}
+              {tab === 'policies' && <AgentPoliciesTab agentId={agent.id} agentName={agent.name} />}
+              {tab === 'lineage' && <AgentLineageTab agentId={agent.id} />}
               {tab === 'config' && (
                 <TabEmpty
                   title="Config"
