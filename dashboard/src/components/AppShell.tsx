@@ -152,7 +152,12 @@ export function AppShell() {
         }}
       >
         <div className="appshell__nav-brand">
-          <div className="appshell__nav-brand-title">Agent Assembly</div>
+          <div className="appshell__nav-brand-title">
+            {/* Leading brand mark from the hi-fi shell (design/v1/hi-fi/shell.jsx
+                `▣ Agent Assembly`); aria-hidden so it isn't read as "black
+                square" ahead of the product name. */}
+            <span className="appshell__nav-brand-mark" aria-hidden="true">▣</span> Agent Assembly
+          </div>
           <div className="appshell__nav-brand-sub" data-testid="appshell-brand-sub">
             {ENV_LABEL} · v{__APP_VERSION__}
           </div>
