@@ -389,6 +389,7 @@ export function FleetPage() {
           data-testid="fleet-tab-sessions"
         >
           Active Sessions
+          {' '}
           <span
             className={`fleet-tabs__count${view !== 'sessions' ? ' fleet-tabs__count--live' : ''}`}
             data-testid="fleet-tab-sessions-count"
