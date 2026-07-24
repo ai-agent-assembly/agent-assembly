@@ -102,6 +102,36 @@ describe('PolicySimulatePanel', () => {
     expect(screen.getByTestId('simulate-reason')).toHaveTextContent('tool denied by policy')
   })
 
+  it('renders an approval verdict with its matched rule and reason', async () => {
+    const user = userEvent.setup()
+    post.mockResolvedValue({
+      data: {
+        verdict: 'approval',
+        matched_rule: 'requires human approval',
+        reason: 'tool requires approval before execution',
+        redacted: false,
+      } satisfies SimulatePolicyResponse,
+    })
+    renderPanel()
+    await user.clear(screen.getByTestId('simulate-agent-input'))
+    await user.type(screen.getByTestId('simulate-agent-input'), 'finance-bot-01')
+    await user.type(screen.getByTestId('simulate-tool-input'), 'wire_transfer')
+    await user.click(screen.getByTestId('simulate-run-btn'))
+
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/api/v1/policies/simulate', {
+        body: { agent_id: 'finance-bot-01', tool: 'wire_transfer', target: undefined },
+      }),
+    )
+    const verdict = await screen.findByTestId('simulate-verdict')
+    expect(verdict).toHaveAttribute('data-verdict', 'approval')
+    expect(verdict).toHaveClass('policy-simulate__verdict--approval')
+    expect(screen.getByTestId('simulate-matched-rule')).toHaveTextContent('requires human approval')
+    expect(screen.getByTestId('simulate-reason')).toHaveTextContent(
+      'tool requires approval before execution',
+    )
+  })
+
   it('renders a narrow verdict and the scrubbed indicator when redacted', async () => {
     const user = userEvent.setup()
     post.mockResolvedValue({
