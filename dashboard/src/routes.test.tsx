@@ -70,20 +70,22 @@ describe('CANONICAL_ROUTES config', () => {
     ])
   })
 
-  it('alerts route ships a bell icon (AAASM-1373)', () => {
+  it('leaves the alerts route without a nav glyph (AAASM-5066)', () => {
+    // The hi-fi shell (design/v1/hi-fi/shell.jsx) ships no glyph on Alerts; the
+    // 🔔 added by AAASM-1373 was design drift and is removed in the chrome polish.
     const alerts = CANONICAL_ROUTES.find((r) => r.id === 'alerts')
     expect(alerts).toBeDefined()
-    expect(alerts!.icon).toBe('🔔')
+    expect(alerts!.icon).toBeUndefined()
   })
 
-  it('only alerts has an icon today — the other 11 routes leave icon undefined', () => {
+  it('no canonical route ships a nav icon today', () => {
     const withIcon = CANONICAL_ROUTES.filter((r) => r.icon !== undefined).map((r) => r.id)
-    expect(withIcon).toEqual(['alerts'])
+    expect(withIcon).toEqual([])
   })
 })
 
-describe('AppShell nav-icon rendering (AAASM-1373)', () => {
-  it('renders the bell icon for /alerts and nothing for the other 11 routes', async () => {
+describe('AppShell nav-icon rendering (AAASM-5066)', () => {
+  it('renders no nav-icon glyph for any route', async () => {
     // Import lazily so the vi.mock hoisting at file scope is honoured before
     // the real AppShell module is loaded.
     const { AppShell } = await import('./components/AppShell')
@@ -95,16 +97,9 @@ describe('AppShell nav-icon rendering (AAASM-1373)', () => {
       ),
     )
 
-    // The /alerts entry renders the bell glyph inside the dedicated span.
-    const alertsIcon = screen.getByTestId('nav-icon-alerts')
-    expect(alertsIcon).toBeInTheDocument()
-    expect(alertsIcon.textContent).toBe('🔔')
-    expect(alertsIcon).toHaveAttribute('aria-hidden', 'true')
-
-    // No other route ships an icon today — the other 11 nav-icon-* testids
-    // must not appear in the document.
+    // No route ships a glyph after the chrome polish removed the drifted 🔔,
+    // so none of the nav-icon-* testids appear in the document.
     for (const route of CANONICAL_ROUTES) {
-      if (route.id === 'alerts') continue
       expect(screen.queryByTestId(`nav-icon-${route.id}`)).toBeNull()
     }
   })

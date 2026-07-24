@@ -215,11 +215,18 @@
   white-space: nowrap;
 }
 
+.appshell__topbar-sep {
+  color: var(--shell-text-dim);
+  opacity: 0.6;
+}
+
 /* On narrow viewports the hamburger takes the left slot; drop breadcrumbs and
-   the last-sync chip so the topbar controls stay reachable. */
+   the last-sync chip (and its trailing dot) so the topbar controls stay
+   reachable. */
 @media (max-width: 640px) {
   .appshell__crumbs,
-  .appshell__sync {
+  .appshell__sync,
+  .appshell__topbar-sep {
     display: none;
   }
 }

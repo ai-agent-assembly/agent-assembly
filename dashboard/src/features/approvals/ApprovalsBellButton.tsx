@@ -26,7 +26,7 @@ export function ApprovalsBellButton() {
         fontSize: '0.75rem',
       }}
     >
-      <span aria-hidden>▣</span>
+      <span aria-hidden>⚑</span>
       <span>approvals</span>
       {hasPending && (
         <span

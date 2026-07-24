@@ -89,7 +89,7 @@ export function Step5EnrollAgent({ state, onEnrolled }: Readonly<Step5EnrollAgen
         {phase === 'idle' && (
           <button
             type="button"
-            className="onb-pkg-tab is-active"
+            className="onb-btn"
             data-testid="onboarding-enroll-start"
             onClick={handleStart}
           >
@@ -97,12 +97,12 @@ export function Step5EnrollAgent({ state, onEnrolled }: Readonly<Step5EnrollAgen
           </button>
         )}
         {phase === 'listening' && (
-          <span className="onb-term-meta-label" data-testid="onboarding-enroll-listening">
+          <span className="onb-id-action-btn live" data-testid="onboarding-enroll-listening">
             listening…
           </span>
         )}
         {phase === 'live' && (
-          <span className="onb-term-meta-label" data-testid="onboarding-enroll-connected">
+          <span className="onb-id-action-btn live" data-testid="onboarding-enroll-connected">
             connected
           </span>
         )}
