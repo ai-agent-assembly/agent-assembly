@@ -3187,12 +3187,20 @@ components:
       - name
       - depth
       - status
+      - mode
+      - flagged
       properties:
         depth:
           type: integer
           format: int32
           description: Delegation depth — 0 for root agents.
           minimum: 0
+        flagged:
+          type: boolean
+          description: |-
+            Whether the agent is policy-flagged — `policy_violations_count` is at or
+            above [`FLAGGED_VIOLATION_THRESHOLD`]. Drives the danger-tinted node card
+            and ⚑ marker in the topology graph.
         governance_level:
           type:
           - string
@@ -3201,6 +3209,12 @@ components:
         id:
           type: string
           description: Hex-encoded agent UUID.
+        mode:
+          type: string
+          description: |-
+            Enforcement-mode badge: `enforce`, `shadow`, or `off`. Derived from the
+            agent record's `metadata["mode"]` (defaulting to `enforce`) so the
+            topology mode badge matches the Fleet page's mode chip for the same agent.
         name:
           type: string
           description: Human-readable agent name.
@@ -3212,12 +3226,26 @@ components:
           - string
           - 'null'
           description: Team this agent belongs to, if any.
+        trust:
+          type:
+          - number
+          - 'null'
+          format: double
+          description: |-
+            Trust score (0–100), or `null` when no trust-analytics source exists yet.
+            The registry does not compute a per-agent trust score today, so this is
+            currently always `null` — the same placeholder the Fleet page uses. Kept
+            present (not omitted) so the client renders an explicit "no data" state
+            instead of inferring a misleading default.
       example:
         depth: 1
+        flagged: false
         id: 0102030405060708090a0b0c0d0e0f10
+        mode: enforce
         name: my-agent
         status: active
         team_id: team-alpha
+        trust: null
     AgentResponse:
       type: object
       description: JSON representation of an agent returned by the API.
@@ -3334,6 +3362,8 @@ components:
       - name
       - depth
       - status
+      - mode
+      - flagged
       - children
       properties:
         children:
@@ -3350,6 +3380,11 @@ components:
           format: int32
           description: Delegation depth — 0 for root agents.
           minimum: 0
+        flagged:
+          type: boolean
+          description: |-
+            Whether the agent is policy-flagged. Same derivation as
+            [`AgentNode::flagged`].
         governance_level:
           type:
           - string
@@ -3358,6 +3393,11 @@ components:
         id:
           type: string
           description: Hex-encoded agent UUID.
+        mode:
+          type: string
+          description: |-
+            Enforcement-mode badge: `enforce`, `shadow`, or `off`. Same
+            `metadata["mode"]` derivation as [`AgentNode::mode`].
         name:
           type: string
           description: Human-readable agent name.
@@ -3374,15 +3414,26 @@ components:
           - string
           - 'null'
           description: Team this agent belongs to, if any.
+        trust:
+          type:
+          - number
+          - 'null'
+          format: double
+          description: |-
+            Trust score (0–100), or `null` when no trust-analytics source exists yet.
+            Same placeholder as [`AgentNode::trust`].
       example:
         children: []
         delegation_reason: null
         depth: 0
+        flagged: false
         id: 0102030405060708090a0b0c0d0e0f10
+        mode: enforce
         name: root-agent
         spawned_by_tool: null
         status: active
         team_id: team-alpha
+        trust: null
     AlertDetailResponse:
       type: object
       description: |-
