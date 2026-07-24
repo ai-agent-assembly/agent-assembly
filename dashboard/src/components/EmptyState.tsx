@@ -136,14 +136,14 @@ export function EmptyState({ page = 'overview', onCta, onSecondary }: Readonly<E
         <div className="state-tag">{c.tag}</div>
         <div className="state-title">{c.title}</div>
         <div className="state-msg">{c.msg}</div>
-        {((c.cta && onCta) || (c.secondary && onSecondary)) && (
+        {(c.cta || c.secondary) && (
           <div className="state-actions">
-            {c.cta && onCta && (
+            {c.cta && (
               <button type="button" className="state-btn state-btn--primary" onClick={onCta}>
                 ▸ {c.cta}
               </button>
             )}
-            {c.secondary && onSecondary && (
+            {c.secondary && (
               <button type="button" className="state-btn" onClick={onSecondary}>
                 {c.secondary}
               </button>
