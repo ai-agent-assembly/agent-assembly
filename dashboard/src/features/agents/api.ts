@@ -10,6 +10,7 @@ export type ChildSpend = components['schemas']['ChildSpendResponse']
 export type BurnPeriod = '7d' | '30d'
 export type EffectivePermissions = components['schemas']['EffectivePermissionsResponse']
 export type PermissionSource = components['schemas']['PermissionSourceResponse']
+export type FleetActiveSession = components['schemas']['FleetActiveSessionResponse']
 
 export function useAgentsQuery() {
   return useQuery({
@@ -21,6 +22,17 @@ export function useAgentsQuery() {
       if (error) throw new Error('Failed to fetch agents')
       // AAASM-4892: /agents and /logs return a paginated { items, total } object.
       return data?.items ?? []
+    },
+  })
+}
+
+export function useActiveSessionsQuery() {
+  return useQuery<FleetActiveSession[]>({
+    queryKey: ['fleet', 'active-sessions'],
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/v1/fleet/active-sessions')
+      if (error) throw new Error('Failed to fetch active sessions')
+      return data ?? []
     },
   })
 }
