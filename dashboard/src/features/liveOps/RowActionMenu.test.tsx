@@ -19,6 +19,7 @@ function op(status: OperationStatus = 'running'): LiveOperation {
 function setup(overrides?: {
   status?: OperationStatus
   override?: OperationOverride
+  onHaltAgent?: () => void
 }) {
   const onPause = vi.fn()
   const onResume = vi.fn()
@@ -30,6 +31,7 @@ function setup(overrides?: {
       onPause={onPause}
       onResume={onResume}
       onTerminate={onTerminate}
+      onHaltAgent={overrides?.onHaltAgent}
     />,
   )
   return { onPause, onResume, onTerminate, user: userEvent.setup() }
@@ -115,6 +117,32 @@ describe('RowActionMenu', () => {
     await user.click(screen.getByTestId('confirm-dialog-cancel'))
     expect(onTerminate).not.toHaveBeenCalled()
     expect(screen.queryByTestId('confirm-dialog')).toBeNull()
+  })
+
+  it('omits the Halt agent item when no handler is supplied', async () => {
+    const { user } = setup({ status: 'running' })
+    await user.click(screen.getByTestId('row-action-trigger'))
+    expect(screen.queryByTestId('row-action-halt-agent')).toBeNull()
+  })
+
+  it('renders Halt agent when a handler is supplied and confirms before firing', async () => {
+    const onHaltAgent = vi.fn()
+    const { user } = setup({ status: 'running', onHaltAgent })
+    await user.click(screen.getByTestId('row-action-trigger'))
+    await user.click(screen.getByTestId('row-action-halt-agent'))
+    // Opens a confirm dialog rather than firing directly.
+    expect(onHaltAgent).not.toHaveBeenCalled()
+    expect(screen.getByTestId('confirm-dialog')).toBeInTheDocument()
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+    expect(onHaltAgent).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('confirm-dialog')).toBeNull()
+  })
+
+  it('disables Halt agent while an override is in flight', async () => {
+    const onHaltAgent = vi.fn()
+    const { user } = setup({ status: 'running', override: 'pausing', onHaltAgent })
+    await user.click(screen.getByTestId('row-action-trigger'))
+    expect(screen.getByTestId('row-action-halt-agent')).toBeDisabled()
   })
 
   it('Escape closes the menu', async () => {

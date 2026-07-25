@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { pauseOp, resumeOp, terminateOp } from './actions'
+import { haltAgent, haltGlobal, pauseOp, resumeOp, terminateOp } from './actions'
 
 const fetchSpy = vi.fn()
 const originalFetch = globalThis.fetch
@@ -109,5 +109,26 @@ describe('liveOps/actions', () => {
     for (const [, init] of fetchSpy.mock.calls) {
       expect(init.headers['Content-Type']).toBe('application/json')
     }
+  })
+
+  it('haltAgent POSTs to /api/v1/ops/:id/halt-agent', async () => {
+    fetchSpy.mockResolvedValue(okResponse())
+    await haltAgent('op-123')
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/v1/ops/op-123/halt-agent')
+    expect(init?.method).toBe('POST')
+  })
+
+  it('haltGlobal POSTs to the fleet-wide /api/v1/ops/global/halt endpoint', async () => {
+    fetchSpy.mockResolvedValue(okResponse())
+    await haltGlobal()
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/v1/ops/global/halt')
+    expect(init?.method).toBe('POST')
+  })
+
+  it('haltGlobal rejects with status code on failure', async () => {
+    fetchSpy.mockResolvedValue(errResponse(503, 'unavailable'))
+    await expect(haltGlobal()).rejects.toThrow(/503/)
   })
 })

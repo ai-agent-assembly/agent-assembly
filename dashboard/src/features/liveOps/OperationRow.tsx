@@ -17,6 +17,8 @@ interface OperationRowProps {
   onPause?: () => void
   onResume?: () => void
   onTerminate?: () => void
+  /** Optional agent-wide halt; forwarded to the row action menu when set. */
+  onHaltAgent?: () => void
 }
 
 const STATUS_LABEL: Record<OperationStatus, string> = {
@@ -62,6 +64,7 @@ export function OperationRow({
   onPause,
   onResume,
   onTerminate,
+  onHaltAgent,
 }: Readonly<OperationRowProps>) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const treeId = useId()
@@ -115,6 +118,7 @@ export function OperationRow({
             onPause={onPause}
             onResume={onResume}
             onTerminate={onTerminate}
+            onHaltAgent={onHaltAgent}
           />
         )}
       </div>

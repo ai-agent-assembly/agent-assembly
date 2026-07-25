@@ -56,12 +56,19 @@
 
 .approval-pool__item {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 4px 8px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
   background: var(--paper-2);
   border: 1px solid var(--line-2);
   border-radius: 3px;
+}
+
+.approval-pool__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
 }
 
 .approval-pool__agent {

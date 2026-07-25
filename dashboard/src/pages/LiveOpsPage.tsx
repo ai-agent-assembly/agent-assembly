@@ -1,14 +1,22 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useToast } from '../components/Toast'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/states'
 import { useAgentsQuery } from '../features/agents/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
-import { pauseOp, resumeOp, terminateOp } from '../features/liveOps/actions'
+import {
+  haltAgent,
+  haltGlobal,
+  pauseOp,
+  resumeOp,
+  terminateOp,
+} from '../features/liveOps/actions'
 import { applyFilters } from '../features/liveOps/applyFilters'
 import { ApprovalPool } from '../features/liveOps/ApprovalPool'
 import { AutoScrollToggle } from '../features/liveOps/AutoScrollToggle'
+import { CastleMoat } from '../features/liveOps/CastleMoat'
 import { FilterBar, type FilterOption } from '../features/liveOps/FilterBar'
 import { OperationRow } from '../features/liveOps/OperationRow'
 import {
@@ -107,6 +115,10 @@ export function LiveOpsPage() {
   const [paused, setPaused] = useState(false)
   const [intensity, setIntensity] = useState(INTENSITY_DEFAULT)
   const [counters, setCounters] = useState<PipelineCanvasCounters>(EMPTY_COUNTERS)
+  const [confirmingHaltAll, setConfirmingHaltAll] = useState(false)
+  // Which visualization the pipeline pane shows: the left-to-right traffic
+  // pipeline (default) or the concentric castle-moat view of the same sim.
+  const [view, setView] = useState<'pipeline' | 'moat'>('pipeline')
   const { toast } = useToast()
   const navigate = useNavigate()
 
@@ -207,6 +219,31 @@ export function LiveOpsPage() {
     toast('Paging on-call — mock action')
   }
 
+  // Halt the agent owning `opId` — fleet-scoped for one agent. Unlike
+  // pause/resume/terminate this is not a single-op lifecycle transition, so it
+  // takes no optimistic row override; the WS stream reflects the agent's ops
+  // settling on their own.
+  async function handleHaltAgent(opId: string) {
+    try {
+      await haltAgent(opId)
+      toast(`Halting agent for op ${opId}`)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'unknown error'
+      toast(`Failed to halt agent for op ${opId}: ${detail}`, 'error')
+    }
+  }
+
+  async function handleHaltAll() {
+    setConfirmingHaltAll(false)
+    try {
+      await haltGlobal()
+      toast('Halt-all issued — every agent operation is stopping', 'error')
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'unknown error'
+      toast(`Failed to halt all ops: ${detail}`, 'error')
+    }
+  }
+
   let streamBody
   if (status === 'error') {
     streamBody = (
@@ -234,6 +271,7 @@ export function LiveOpsPage() {
         onPause={() => runAction(op.id, 'pausing', pauseOp)}
         onResume={() => runAction(op.id, 'resuming', resumeOp)}
         onTerminate={() => runAction(op.id, 'terminating', terminateOp)}
+        onHaltAgent={() => handleHaltAgent(op.id)}
       />
     ))
   }
@@ -335,6 +373,14 @@ export function LiveOpsPage() {
         <span className="live-page__stat live-page__stat--end">
           intensity ×{intensity.toFixed(1)} · {activeAgents} active agents
         </span>
+        <button
+          type="button"
+          className="live-page__halt-all"
+          onClick={() => setConfirmingHaltAll(true)}
+          data-testid="live-ops-halt-all"
+        >
+          ⏹ halt all
+        </button>
       </div>
 
       <div className="live-page__grid">
@@ -344,9 +390,37 @@ export function LiveOpsPage() {
           data-testid="live-ops-pipeline-zone"
         >
           <header className="live-page__pane-head">
-            <h2 className="live-page__pane-title">▤ traffic pipeline</h2>
+            <div className="live-page__pane-lead">
+              <h2 className="live-page__pane-title">
+                {view === 'pipeline' ? '▤ traffic pipeline' : '◎ castle moat'}
+              </h2>
+              <fieldset
+                className="live-page__view-toggle"
+                aria-label="Pipeline visualization"
+                data-testid="live-ops-view-toggle"
+              >
+                <button
+                  type="button"
+                  className={`live-page__view-btn${view === 'pipeline' ? ' live-page__view-btn--active' : ''}`}
+                  aria-pressed={view === 'pipeline'}
+                  onClick={() => setView('pipeline')}
+                  data-testid="live-ops-view-pipeline"
+                >
+                  ▤ pipeline
+                </button>
+                <button
+                  type="button"
+                  className={`live-page__view-btn${view === 'moat' ? ' live-page__view-btn--active' : ''}`}
+                  aria-pressed={view === 'moat'}
+                  onClick={() => setView('moat')}
+                  data-testid="live-ops-view-moat"
+                >
+                  ◎ castle moat
+                </button>
+              </fieldset>
+            </div>
             <div className="live-page__legend" data-testid="live-ops-legend">
-              <span className="live-page__chip live-page__chip--ok">● allow</span>
+              <span className="live-page__chip">● allow</span>
               <span className="live-page__chip live-page__chip--warn">● narrow</span>
               <span className="live-page__chip live-page__chip--info">
                 ● approval
@@ -360,11 +434,15 @@ export function LiveOpsPage() {
             </div>
           </header>
           <div className="live-page__pane-body live-page__pane-body--canvas">
-            <PipelineCanvas
-              paused={paused}
-              intensity={intensity}
-              onCounters={setCounters}
-            />
+            {view === 'pipeline' ? (
+              <PipelineCanvas
+                paused={paused}
+                intensity={intensity}
+                onCounters={setCounters}
+              />
+            ) : (
+              <CastleMoat paused={paused} intensity={intensity} />
+            )}
           </div>
         </section>
 
@@ -397,7 +475,10 @@ export function LiveOpsPage() {
               Reconnecting…
             </output>
           )}
-          <div className="live-page__pane-body live-page__pane-body--stream">
+          <div
+            className="live-page__pane-body live-page__pane-body--stream live-page__pane-body--terminal"
+            data-testid="live-ops-stream-feed"
+          >
             {streamBody}
           </div>
         </section>
@@ -411,10 +492,30 @@ export function LiveOpsPage() {
             <h2 className="live-page__pane-title">⚑ approval queue</h2>
           </header>
           <div className="live-page__pane-body">
-            <ApprovalPool ops={ops} />
+            <ApprovalPool
+              ops={ops}
+              onError={(action, detail) =>
+                toast(`Failed to ${action} approval: ${detail}`, 'error')
+              }
+            />
           </div>
         </section>
       </div>
+
+      <ConfirmDialog
+        open={confirmingHaltAll}
+        title="Halt all operations?"
+        body={
+          <p>
+            This trips the fleet-wide kill switch: every in-flight operation
+            across all agents stops at once. Use only for an active incident.
+          </p>
+        }
+        confirmLabel="Halt all"
+        confirmVariant="danger"
+        onConfirm={handleHaltAll}
+        onCancel={() => setConfirmingHaltAll(false)}
+      />
     </main>
   )
 }

@@ -10,6 +10,12 @@ interface RowActionMenuProps {
   onPause: () => void
   onResume: () => void
   onTerminate: () => void
+  /**
+   * Halt the agent owning this op (fleet-scoped kill for one agent). Optional:
+   * the item only renders when a handler is supplied, so surfaces that only
+   * expose per-op lifecycle actions stay unchanged.
+   */
+  onHaltAgent?: () => void
 }
 
 /**
@@ -27,9 +33,11 @@ export function RowActionMenu({
   onPause,
   onResume,
   onTerminate,
+  onHaltAgent,
 }: Readonly<RowActionMenuProps>) {
   const [open, setOpen] = useState(false)
   const [confirmingTerminate, setConfirmingTerminate] = useState(false)
+  const [confirmingHalt, setConfirmingHalt] = useState(false)
   const menuId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -73,6 +81,16 @@ export function RowActionMenu({
   function handleConfirmTerminate() {
     setConfirmingTerminate(false)
     onTerminate()
+  }
+
+  function handleHaltAgentClick() {
+    setOpen(false)
+    setConfirmingHalt(true)
+  }
+
+  function handleConfirmHalt() {
+    setConfirmingHalt(false)
+    onHaltAgent?.()
   }
 
   return (
@@ -133,6 +151,20 @@ export function RowActionMenu({
               Terminate
             </button>
           </li>
+          {onHaltAgent && (
+            <li role="none">
+              <button
+                type="button"
+                role="menuitem"
+                className="row-actions__item row-actions__item--danger"
+                disabled={override !== undefined}
+                data-testid="row-action-halt-agent"
+                onClick={handleHaltAgentClick}
+              >
+                Halt agent
+              </button>
+            </li>
+          )}
         </ul>
       )}
       <ConfirmDialog
@@ -148,6 +180,21 @@ export function RowActionMenu({
         confirmVariant="danger"
         onConfirm={handleConfirmTerminate}
         onCancel={() => setConfirmingTerminate(false)}
+      />
+      <ConfirmDialog
+        open={confirmingHalt}
+        title="Halt this agent?"
+        body={
+          <p>
+            This stops every in-flight operation for{' '}
+            <b>{op.agent}</b>, not just this one. The agent will need to be
+            resumed before it can act again.
+          </p>
+        }
+        confirmLabel="Halt agent"
+        confirmVariant="danger"
+        onConfirm={handleConfirmHalt}
+        onCancel={() => setConfirmingHalt(false)}
       />
     </div>
   )

@@ -152,13 +152,16 @@
   cursor: not-allowed;
 }
 
+/* Page-on-call reads as the header's primary incident action, so it gets a
+   solid danger fill rather than the outline treatment of the speed controls. */
 .live-page__btn--danger {
   border-color: var(--danger);
-  color: var(--danger);
+  background: var(--danger);
+  color: var(--paper-2);
 }
 
 .live-page__btn--danger:hover:not(:disabled) {
-  background: var(--danger-bg);
+  filter: brightness(1.08);
   border-color: var(--danger);
 }
 
@@ -227,6 +230,38 @@
   background: currentColor;
 }
 
+/* ── Fleet-wide halt control (AAASM-5074) ──────────────────────
+   Lives at the right edge of the global counters bar. Solid danger
+   fill so the kill switch reads as distinct from the outline speed
+   controls in the header. */
+
+.live-page__halt-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--danger);
+  border-radius: 3px;
+  background: var(--danger);
+  color: var(--paper-2);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.live-page__halt-all:hover {
+  filter: brightness(1.08);
+}
+
+.live-page__halt-all:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
 /* ── Pipeline legend chips (AAASM-5025) ────────────────────── */
 
 .live-page__legend {
@@ -249,11 +284,9 @@
   color: var(--ink-2);
 }
 
-.live-page__chip--ok {
-  color: var(--ok);
-  border-color: var(--ok);
-  background: var(--ok-bg);
-}
+/* "allow" reads as the neutral baseline in the legend (per hi-fi), so it keeps
+   the default chip treatment — no green tint — while the exceptional fates
+   (narrow/approval/scrub/deny) carry the coloured chips. */
 
 .live-page__chip--warn {
   color: var(--warn);
@@ -329,6 +362,58 @@
   color: var(--ink-3);
 }
 
+/* ── Pipeline / castle-moat view toggle (AAASM-5074) ───────────
+   Segmented control mirroring the hi-fi: two flush buttons, the
+   active one filled with the ink token. */
+
+.live-page__pane-lead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.live-page__view-toggle {
+  display: inline-flex;
+  /* Rendered as a <fieldset> for the semantic group role; neutralize the
+     element's default margin/padding/min-inline-size so it lays out like the
+     bare inline-flex toggle it visually is. */
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.live-page__view-btn {
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.live-page__view-btn + .live-page__view-btn {
+  border-left: 1px solid var(--line-2);
+}
+
+.live-page__view-btn--active {
+  background: var(--ink);
+  color: var(--paper-2);
+}
+
+.live-page__view-btn:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: -2px;
+}
+
 .live-page__pane-body {
   flex: 1;
   overflow: auto;
@@ -348,6 +433,89 @@
 
 .live-page__pane-body--stream {
   padding: 0;
+}
+
+/* ── Dark-terminal decision feed (AAASM-5074) ──────────────────
+   Reskins the event-stream body toward the hi-fi's `tail -f` terminal:
+   an always-dark surface (the --term-* tokens are theme-invariant by
+   design) with a monospace decision feed of ts · decision · agent ·
+   verb · resource. The per-line "decision" token is coloured only for
+   the three states the wire actually carries (running / blocked /
+   pending); completing and terminated fold to a muted neutral. The
+   5-way verdict palette (allow/narrow/scrub/approval/deny) is
+   backend-blocked (AAASM-5089) and deliberately NOT fabricated here. */
+
+.live-page__pane-body--terminal {
+  background: var(--term-bg);
+  color: var(--term-text);
+}
+
+.live-page__pane-body--terminal .op-row {
+  border-bottom-color: var(--term-border);
+  color: var(--term-text);
+}
+
+.live-page__pane-body--terminal .op-row__main:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.live-page__pane-body--terminal .op-row__chevron,
+.live-page__pane-body--terminal .op-row__op-type,
+.live-page__pane-body--terminal .op-row__started-at,
+.live-page__pane-body--terminal .op-row__latency,
+.live-page__pane-body--terminal .op-row__override {
+  color: var(--term-faint);
+}
+
+.live-page__pane-body--terminal .op-row__agent {
+  color: var(--term-cmd);
+}
+
+/* Decision token: flat, borderless, colour-coded by the 3 wire states. */
+.live-page__pane-body--terminal .op-row__chip {
+  background: transparent;
+  border: none;
+  padding: 0 4px 0 0;
+  color: var(--term-faint);
+}
+
+.live-page__pane-body--terminal .op-row__chip--running {
+  color: var(--term-ok);
+}
+
+.live-page__pane-body--terminal .op-row__chip--pending {
+  color: var(--warn);
+}
+
+.live-page__pane-body--terminal .op-row__chip--blocked {
+  color: var(--danger);
+}
+
+/* completing / terminated are not decisions — keep them muted-neutral so no
+   extra verdict colour is implied. */
+.live-page__pane-body--terminal .op-row__chip--completing,
+.live-page__pane-body--terminal .op-row__chip--terminated {
+  color: var(--term-faint);
+}
+
+.live-page__pane-body--terminal .op-row__resource {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--term-border);
+  color: var(--term-key);
+}
+
+.live-page__pane-body--terminal .row-actions__trigger {
+  color: var(--term-faint);
+}
+
+/* Call-stack tree keeps its dark-on-dark legibility. */
+.live-page__pane-body--terminal .op-row__tree {
+  background: rgba(255, 255, 255, 0.03);
+  border-top-color: var(--term-border);
+}
+
+.live-page__pane-body--terminal .op-row__tree-label {
+  color: var(--term-out);
 }
 
 .live-page__reconnecting {

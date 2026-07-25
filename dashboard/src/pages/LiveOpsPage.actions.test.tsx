@@ -17,6 +17,8 @@ vi.mock('../features/liveOps/actions', () => ({
   pauseOp: vi.fn(),
   resumeOp: vi.fn(),
   terminateOp: vi.fn(),
+  haltAgent: vi.fn(),
+  haltGlobal: vi.fn(),
 }))
 
 function makeOp(id: string, overrides: Partial<LiveOperation> = {}): LiveOperation {
@@ -61,6 +63,8 @@ describe('LiveOpsPage row actions', () => {
     vi.mocked(actions.pauseOp).mockReset()
     vi.mocked(actions.resumeOp).mockReset()
     vi.mocked(actions.terminateOp).mockReset()
+    vi.mocked(actions.haltAgent).mockReset()
+    vi.mocked(actions.haltGlobal).mockReset()
   })
 
   afterEach(() => {
@@ -152,5 +156,53 @@ describe('LiveOpsPage row actions', () => {
       'data-override',
       'resuming',
     )
+  })
+
+  it('halt-agent fires through the confirmation dialog', async () => {
+    const user = userEvent.setup()
+    vi.mocked(actions.haltAgent).mockResolvedValue()
+    mockStream([makeOp('op-1', { status: 'running' })])
+    renderPage()
+
+    await user.click(screen.getByTestId('row-action-trigger'))
+    await user.click(screen.getByTestId('row-action-halt-agent'))
+    expect(actions.haltAgent).not.toHaveBeenCalled()
+
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+    await waitFor(() => {
+      expect(actions.haltAgent).toHaveBeenCalledWith('op-1')
+    })
+  })
+
+  it('global halt-all confirms then calls haltGlobal', async () => {
+    const user = userEvent.setup()
+    vi.mocked(actions.haltGlobal).mockResolvedValue()
+    mockStream([makeOp('op-1', { status: 'running' })])
+    renderPage()
+
+    await user.click(screen.getByTestId('live-ops-halt-all'))
+    expect(actions.haltGlobal).not.toHaveBeenCalled()
+
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+    await waitFor(() => {
+      expect(actions.haltGlobal).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('surfaces a toast when haltGlobal rejects', async () => {
+    const user = userEvent.setup()
+    vi.mocked(actions.haltGlobal).mockRejectedValue(new Error('gateway 503'))
+    mockStream([makeOp('op-1', { status: 'running' })])
+    renderPage()
+
+    await user.click(screen.getByTestId('live-ops-halt-all'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
+    await waitFor(() => {
+      const toast = screen.getByTestId('toast')
+      expect(toast).toHaveTextContent(/Failed to halt all ops/i)
+      expect(toast).toHaveTextContent(/gateway 503/)
+      expect(toast).toHaveAttribute('data-variant', 'error')
+    })
   })
 })
