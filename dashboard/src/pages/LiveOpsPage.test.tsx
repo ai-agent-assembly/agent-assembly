@@ -34,6 +34,8 @@ vi.mock('../features/liveOps/actions', () => ({
   pauseOp: vi.fn().mockResolvedValue(undefined),
   resumeOp: vi.fn().mockResolvedValue(undefined),
   terminateOp: vi.fn().mockResolvedValue(undefined),
+  haltAgent: vi.fn().mockResolvedValue(undefined),
+  haltGlobal: vi.fn().mockResolvedValue(undefined),
 }))
 
 // The real canvas cannot run in jsdom (no Canvas 2D API), so stub it with a

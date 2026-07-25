@@ -227,6 +227,38 @@
   background: currentColor;
 }
 
+/* ── Fleet-wide halt control (AAASM-5074) ──────────────────────
+   Lives at the right edge of the global counters bar. Solid danger
+   fill so the kill switch reads as distinct from the outline speed
+   controls in the header. */
+
+.live-page__halt-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--danger);
+  border-radius: 3px;
+  background: var(--danger);
+  color: var(--paper-2);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.live-page__halt-all:hover {
+  filter: brightness(1.08);
+}
+
+.live-page__halt-all:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
 /* ── Pipeline legend chips (AAASM-5025) ────────────────────── */
 
 .live-page__legend {

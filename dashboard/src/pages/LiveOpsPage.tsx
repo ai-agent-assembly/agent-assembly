@@ -1,11 +1,18 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useToast } from '../components/Toast'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/states'
 import { useAgentsQuery } from '../features/agents/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
-import { pauseOp, resumeOp, terminateOp } from '../features/liveOps/actions'
+import {
+  haltAgent,
+  haltGlobal,
+  pauseOp,
+  resumeOp,
+  terminateOp,
+} from '../features/liveOps/actions'
 import { applyFilters } from '../features/liveOps/applyFilters'
 import { ApprovalPool } from '../features/liveOps/ApprovalPool'
 import { AutoScrollToggle } from '../features/liveOps/AutoScrollToggle'
@@ -107,6 +114,7 @@ export function LiveOpsPage() {
   const [paused, setPaused] = useState(false)
   const [intensity, setIntensity] = useState(INTENSITY_DEFAULT)
   const [counters, setCounters] = useState<PipelineCanvasCounters>(EMPTY_COUNTERS)
+  const [confirmingHaltAll, setConfirmingHaltAll] = useState(false)
   const { toast } = useToast()
   const navigate = useNavigate()
 
@@ -207,6 +215,31 @@ export function LiveOpsPage() {
     toast('Paging on-call — mock action')
   }
 
+  // Halt the agent owning `opId` — fleet-scoped for one agent. Unlike
+  // pause/resume/terminate this is not a single-op lifecycle transition, so it
+  // takes no optimistic row override; the WS stream reflects the agent's ops
+  // settling on their own.
+  async function handleHaltAgent(opId: string) {
+    try {
+      await haltAgent(opId)
+      toast(`Halting agent for op ${opId}`)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'unknown error'
+      toast(`Failed to halt agent for op ${opId}: ${detail}`, 'error')
+    }
+  }
+
+  async function handleHaltAll() {
+    setConfirmingHaltAll(false)
+    try {
+      await haltGlobal()
+      toast('Halt-all issued — every agent operation is stopping', 'error')
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'unknown error'
+      toast(`Failed to halt all ops: ${detail}`, 'error')
+    }
+  }
+
   let streamBody
   if (status === 'error') {
     streamBody = (
@@ -234,6 +267,7 @@ export function LiveOpsPage() {
         onPause={() => runAction(op.id, 'pausing', pauseOp)}
         onResume={() => runAction(op.id, 'resuming', resumeOp)}
         onTerminate={() => runAction(op.id, 'terminating', terminateOp)}
+        onHaltAgent={() => handleHaltAgent(op.id)}
       />
     ))
   }
@@ -335,6 +369,14 @@ export function LiveOpsPage() {
         <span className="live-page__stat live-page__stat--end">
           intensity ×{intensity.toFixed(1)} · {activeAgents} active agents
         </span>
+        <button
+          type="button"
+          className="live-page__halt-all"
+          onClick={() => setConfirmingHaltAll(true)}
+          data-testid="live-ops-halt-all"
+        >
+          ⏹ halt all
+        </button>
       </div>
 
       <div className="live-page__grid">
@@ -415,6 +457,21 @@ export function LiveOpsPage() {
           </div>
         </section>
       </div>
+
+      <ConfirmDialog
+        open={confirmingHaltAll}
+        title="Halt all operations?"
+        body={
+          <p>
+            This trips the fleet-wide kill switch: every in-flight operation
+            across all agents stops at once. Use only for an active incident.
+          </p>
+        }
+        confirmLabel="Halt all"
+        confirmVariant="danger"
+        onConfirm={handleHaltAll}
+        onCancel={() => setConfirmingHaltAll(false)}
+      />
     </main>
   )
 }
