@@ -205,6 +205,7 @@ export function CostsPage() {
 
   const isLoading = costsQuery.isLoading || overviewQuery.isLoading
   const isError = costsQuery.isError
+  const utilisationLimitPeriod = period === 'daily' ? 'daily' : 'monthly'
 
   return (
     <div className="costs-page" data-testid="costs-page">
@@ -245,7 +246,7 @@ export function CostsPage() {
           sub={
             kpis.limit == null
               ? 'no budget limit set'
-              : `${period === 'daily' ? 'daily' : 'monthly'} · of ${usd(kpis.limit)} limit`
+              : `${utilisationLimitPeriod} · of ${usd(kpis.limit)} limit`
           }
           valueClass={utilisationClass(kpis.utilisationPct)}
         />
