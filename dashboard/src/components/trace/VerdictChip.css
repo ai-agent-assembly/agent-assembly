@@ -19,3 +19,10 @@
   white-space: nowrap;
   line-height: 1.4;
 }
+
+/* Ratified square corners (design-parity AAASM-5075) — mirrors the hi-fi
+   `.chip` 2px radius. Opt-in via `shape="square"`; pill remains the default so
+   existing callers are unaffected. */
+.verdict-chip--square {
+  border-radius: 2px;
+}
