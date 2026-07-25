@@ -1,4 +1,22 @@
 /* global React */
+/*
+ * ─── SUPERSESSION NOTE — Costs (AAASM-5076 / AAASM-5077, ratified 2026-07-25) ───────
+ * The shipped implementation (dashboard/src/) is AUTHORITATIVE over this mock for the
+ * ratified items below. The prior mock behavior is NO LONGER the required
+ * implementation target. See ADR 0017
+ * (docs/src/adr/0017-dashboard-design-parity-ratified-evolutions.md).
+ *
+ * Ratified (shipped authoritative; additive supersets kept over the mock):
+ *   • Budget-utilisation + Blocked-by-budget KPIs — shipped adds them alongside the
+ *     spec KPIs; kept.
+ *   • 7-day HistoryChart + Budget-inheritance tree — ported faithfully; ratified as-is.
+ *   • CostBreakdownPanel — shipped's panel is a SUPERSET of this mock's per-agent cost
+ *     table, kept alongside the spec KPIs; the mock table is no longer the target.
+ *
+ * NOT superseded: the FE-parity spec sections in this file remain the reference for
+ * in-flight FE work — do not delete them.
+ * ──────────────────────────────────────────────────────────────────────────────────
+ */
 const { useState: useCostSt } = React;
 
 /* ============================================================
