@@ -476,7 +476,10 @@ export function LiveOpsPage() {
               Reconnecting…
             </output>
           )}
-          <div className="live-page__pane-body live-page__pane-body--stream">
+          <div
+            className="live-page__pane-body live-page__pane-body--stream live-page__pane-body--terminal"
+            data-testid="live-ops-stream-feed"
+          >
             {streamBody}
           </div>
         </section>

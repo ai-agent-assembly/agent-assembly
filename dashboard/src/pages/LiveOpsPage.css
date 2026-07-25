@@ -428,6 +428,89 @@
   padding: 0;
 }
 
+/* ── Dark-terminal decision feed (AAASM-5074) ──────────────────
+   Reskins the event-stream body toward the hi-fi's `tail -f` terminal:
+   an always-dark surface (the --term-* tokens are theme-invariant by
+   design) with a monospace decision feed of ts · decision · agent ·
+   verb · resource. The per-line "decision" token is coloured only for
+   the three states the wire actually carries (running / blocked /
+   pending); completing and terminated fold to a muted neutral. The
+   5-way verdict palette (allow/narrow/scrub/approval/deny) is
+   backend-blocked (AAASM-5089) and deliberately NOT fabricated here. */
+
+.live-page__pane-body--terminal {
+  background: var(--term-bg);
+  color: var(--term-text);
+}
+
+.live-page__pane-body--terminal .op-row {
+  border-bottom-color: var(--term-border);
+  color: var(--term-text);
+}
+
+.live-page__pane-body--terminal .op-row__main:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.live-page__pane-body--terminal .op-row__chevron,
+.live-page__pane-body--terminal .op-row__op-type,
+.live-page__pane-body--terminal .op-row__started-at,
+.live-page__pane-body--terminal .op-row__latency,
+.live-page__pane-body--terminal .op-row__override {
+  color: var(--term-faint);
+}
+
+.live-page__pane-body--terminal .op-row__agent {
+  color: var(--term-cmd);
+}
+
+/* Decision token: flat, borderless, colour-coded by the 3 wire states. */
+.live-page__pane-body--terminal .op-row__chip {
+  background: transparent;
+  border: none;
+  padding: 0 4px 0 0;
+  color: var(--term-faint);
+}
+
+.live-page__pane-body--terminal .op-row__chip--running {
+  color: var(--term-ok);
+}
+
+.live-page__pane-body--terminal .op-row__chip--pending {
+  color: var(--warn);
+}
+
+.live-page__pane-body--terminal .op-row__chip--blocked {
+  color: var(--danger);
+}
+
+/* completing / terminated are not decisions — keep them muted-neutral so no
+   extra verdict colour is implied. */
+.live-page__pane-body--terminal .op-row__chip--completing,
+.live-page__pane-body--terminal .op-row__chip--terminated {
+  color: var(--term-faint);
+}
+
+.live-page__pane-body--terminal .op-row__resource {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--term-border);
+  color: var(--term-key);
+}
+
+.live-page__pane-body--terminal .row-actions__trigger {
+  color: var(--term-faint);
+}
+
+/* Call-stack tree keeps its dark-on-dark legibility. */
+.live-page__pane-body--terminal .op-row__tree {
+  background: rgba(255, 255, 255, 0.03);
+  border-top-color: var(--term-border);
+}
+
+.live-page__pane-body--terminal .op-row__tree-label {
+  color: var(--term-out);
+}
+
 .live-page__reconnecting {
   flex-shrink: 0;
   padding: 4px 14px;
