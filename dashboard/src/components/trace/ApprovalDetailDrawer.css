@@ -120,7 +120,7 @@
 .approval-detail__kv-v {
   margin: 0;
   color: var(--ink);
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .approval-detail__kv-v code {
