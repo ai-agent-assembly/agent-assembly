@@ -39,7 +39,8 @@ export function TeamsPage() {
   // the team fallback.
   const orphanPicked = picked === ORPHAN_ID
   const pickedExists = picked != null && rows.some(r => r.team_id === picked)
-  const selected = orphanPicked ? undefined : pickedExists ? picked : rows[0]?.team_id
+  const selectedTeam = pickedExists ? picked : rows[0]?.team_id
+  const selected = orphanPicked ? undefined : selectedTeam
 
   const isError = overviewQuery.isError
 
