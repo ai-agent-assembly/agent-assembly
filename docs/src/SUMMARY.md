@@ -150,3 +150,4 @@
   - [0014 - Canonical Metadata Registry & Drift Gate](adr/0014-canonical-metadata-registry-and-drift-gate.md)
   - [0015 - DLP Trust Boundary, Redaction Fail-Safety & Heuristic Detection Limits](adr/0015-dlp-trust-boundary-and-redaction-semantics.md)
   - [0016 - Organization-wide Default Branch — master → main](adr/0016-default-branch-master-to-main-migration.md)
+  - [0017 - Dashboard Design-Parity — Ratified Evolutions](adr/0017-dashboard-design-parity-ratified-evolutions.md)
