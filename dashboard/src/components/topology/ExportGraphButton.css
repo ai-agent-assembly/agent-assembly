@@ -1,0 +1,53 @@
+/* ExportGraphButton (AAASM-5071) — export-graph split control. */
+
+.topo-export {
+  position: relative;
+}
+
+.topo-export__btn {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper-2);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.topo-export__btn:hover {
+  background: var(--paper-3);
+}
+
+.topo-export__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 9rem;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper-2);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+
+.topo-export__item {
+  text-align: left;
+  padding: 0.4rem 0.7rem;
+  border: none;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.topo-export__item:hover {
+  background: var(--paper-3);
+}
+
+.topo-export__item + .topo-export__item {
+  border-top: 1px solid var(--line);
+}
