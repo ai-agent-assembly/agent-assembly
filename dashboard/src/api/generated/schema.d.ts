@@ -1929,12 +1929,21 @@ export interface components {
             /** @description Decision timestamp as an RFC 3339 UTC string (audit `timestamp_ns`). */
             timestamp: string;
             /**
+             * @description Distributed-trace id linking this decision to its session trace
+             *     (`/api/v1/traces/...`). **Always `null` today**: the audit log records no
+             *     per-decision trace id, so it is surfaced nullable rather than fabricated.
+             *     Populated once trace-id propagation lands on the runtime — the
+             *     ADR-0018-gated follow-up (ADR 0018 / AAASM-5086 follow-up).
+             */
+            traceId?: string | null;
+            /**
              * @description The recorded action category (audit payload `action_type`, e.g.
              *     `TOOL_CALL` / `FILE_OPERATION`). The design's `verb` column: the audit
              *     log records the action *category*, not a fine-grained read/write verb,
              *     so this is the closest recorded source. `null` when unrecorded.
              */
             verb?: string | null;
+            verdict?: null | components["schemas"]["RuntimeVerdict"];
         };
         /** @description Recent per-agent decision stream (AAASM-5058). */
         AgentDecisionsResponse: {
@@ -3956,6 +3965,16 @@ export interface components {
              */
             dry_run?: boolean;
         };
+        /**
+         * @description The canonical 5-way runtime verdict for a single enforced action.
+         *
+         *     Wire form is lowercase (`"allow"`, `"narrow"`, `"scrub"`, `"pending"`,
+         *     `"deny"`) to match the dashboard's verdict styling keys. The variants are
+         *     ordered least-to-most restrictive; do not reorder for wire stability, but the
+         *     order carries no serialized meaning (each variant serializes by name).
+         * @enum {string}
+         */
+        RuntimeVerdict: "allow" | "narrow" | "scrub" | "pending" | "deny";
         /**
          * @description A representative call sample shown alongside the matrix to explain the
          *     effect of the current (and any proposed) policy.

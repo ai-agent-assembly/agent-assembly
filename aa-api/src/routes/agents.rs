@@ -14,6 +14,7 @@ use aa_gateway::registry::{AgentStatus, OrphanMode};
 use crate::auth::scope::{RequireRead, RequireWrite, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
+use crate::models::verdict::RuntimeVerdict;
 use crate::pagination::PaginationParams;
 use crate::state::AppState;
 
@@ -1018,6 +1019,22 @@ pub struct AgentDecisionResponse {
     /// `redact` / `unspecified`) so the UI can map to its verdict styling
     /// without re-deriving the enum. Derived, not a separate audit field.
     pub decision_label: String,
+    /// The canonical 5-way runtime verdict (`allow` / `narrow` / `scrub` /
+    /// `pending` / `deny`, AAASM-5086) for this action — the vocabulary the
+    /// dashboard renders. Distinct from `decision`/`decisionLabel`, which are the
+    /// coarse proto enforcement outcome: a proto `deny` cannot tell a full block
+    /// from a scoped `narrow`, nor a proto `allow` from a `scrub`. **Always
+    /// `null` today**: deriving the verdict requires capturing it at decision
+    /// time on the enforcement hot path, which is the ADR-0018-gated follow-up
+    /// (populated once decision-capture lands — ADR 0018 / AAASM-5086 follow-up).
+    /// Wired through now so the column lands without another contract change.
+    pub verdict: Option<RuntimeVerdict>,
+    /// Distributed-trace id linking this decision to its session trace
+    /// (`/api/v1/traces/...`). **Always `null` today**: the audit log records no
+    /// per-decision trace id, so it is surfaced nullable rather than fabricated.
+    /// Populated once trace-id propagation lands on the runtime — the
+    /// ADR-0018-gated follow-up (ADR 0018 / AAASM-5086 follow-up).
+    pub trace_id: Option<String>,
     /// The matched policy rule id (audit `policy_rule`, top-level or under
     /// `detail`). The design's `policy` column. `null` when the decision
     /// recorded no rule (e.g. a baseline allow with no matching rule).
@@ -1127,10 +1144,19 @@ fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
         resource,
         decision,
         decision_label: decision_label(decision).to_string(),
+        // The 5-way runtime verdict is not captured at decision time yet;
+        // deriving it is the ADR-0018-gated hot-path follow-up. Surface null
+        // rather than lossily mapping the coarse proto `decision` onto it.
+        // populated once decision-capture lands (ADR 0018 / AAASM-5086 follow-up)
+        verdict: None,
         matched_policy,
         // No per-decision latency source exists in the audit log (AAASM-5058);
         // report it honestly as absent rather than inventing a value.
         latency_ms: None,
+        // No per-decision trace id is recorded on the audit write path yet;
+        // trace-id propagation is the ADR-0018-gated hot-path follow-up.
+        // populated once decision-capture lands (ADR 0018 / AAASM-5086 follow-up)
+        trace_id: None,
     })
 }
 
@@ -1288,6 +1314,10 @@ mod tests {
         assert_eq!(row.matched_policy, None);
         // No per-decision latency source exists — it must be reported as absent.
         assert_eq!(row.latency_ms, None);
+        // The verdict + trace id are frozen in the schema but not yet captured
+        // at decision time (ADR-0018 hot-path follow-up); they must read null.
+        assert_eq!(row.verdict, None);
+        assert_eq!(row.trace_id, None);
         assert_eq!(row.seq, 7);
         assert_eq!(row.session_id, "ee".repeat(16));
     }
