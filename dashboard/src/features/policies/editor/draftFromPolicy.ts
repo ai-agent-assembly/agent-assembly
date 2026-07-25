@@ -14,6 +14,7 @@
 
 import { parseDocument } from 'yaml'
 import type { components } from '../../../api/generated/schema'
+import { scopeFromMetadata } from '../policyYamlHelpers'
 import { RES_OPTS, VERB_OPTS, nextRuleId } from './constants'
 import type {
   ActionKind,
@@ -125,15 +126,6 @@ function ruleFromYaml(raw: unknown): RuleDraft {
   return rule
 }
 
-function scopeFromDoc(doc: Record<string, unknown> | null): string {
-  const meta = doc?.['metadata']
-  if (typeof meta === 'object' && meta !== null) {
-    const scope = (meta as Record<string, unknown>)['scope']
-    if (typeof scope === 'string' && scope.trim().length > 0) return scope.trim()
-  }
-  return 'global'
-}
-
 /**
  * Build an editable draft from the real policy the list already holds. Status
  * reflects `policy.active` (so a proposed policy shows the draft callout and a
@@ -173,7 +165,7 @@ export function draftFromPolicy(policy: PolicyResponse): PolicyDraft {
   return {
     id: `pol-${policy.name}`,
     name: policy.name,
-    scope: scopeFromDoc(doc),
+    scope: scopeFromMetadata(doc),
     version: policy.version,
     status: policy.active ? 'active' : 'proposed',
     rules,
