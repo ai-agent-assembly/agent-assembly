@@ -7,6 +7,7 @@ pub mod event_type;
 pub mod retention;
 pub mod topology;
 pub mod trace;
+pub mod verdict;
 pub mod ws_payloads;
 
 pub use alert_ws_payloads::AlertWsFrame;
