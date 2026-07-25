@@ -18,7 +18,10 @@ import { expect, test, type Page } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
-const EVIDENCE_DIR = resolve(process.cwd(), 'verify/parity-liveops')
+const EVIDENCE_DIR = resolve(
+  process.cwd(),
+  process.env.AAASM5074_OUT ?? 'verify/parity-liveops',
+)
 const THEME_KEY = 'aa-dashboard-theme'
 type Theme = 'light' | 'dark'
 
