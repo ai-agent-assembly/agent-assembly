@@ -1977,4 +1977,128 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // --- agent-enforcement (AAASM-5084) ------------------------------------
+
+    /// Build an audit entry stamped with an org so tenant scoping can be
+    /// exercised. `agent` is the raw id bytes; `org` tags the entry's tenant.
+    fn ae_entry(seq: u64, ts: u64, ev: AuditEventType, agent: [u8; 16], org: Option<&str>) -> AuditEntry {
+        use aa_core::audit::Lineage;
+        use aa_core::SessionId;
+        AuditEntry::new_with_lineage(
+            seq,
+            ts,
+            ev,
+            AgentId::from_bytes(agent),
+            SessionId::from_bytes([0x22; 16]),
+            "{}".to_string(),
+            [0u8; 32],
+            Lineage {
+                org_id: org.map(|s| s.to_string()),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Seed a temp audit dir with `entries` and return an `AppState` reading it.
+    async fn state_with_audit(entries: &[AuditEntry], tag: &str) -> (AppState, std::path::PathBuf) {
+        use aa_gateway::AuditReader;
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("aa-5084-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create audit dir");
+        let mut contents = String::new();
+        for e in entries {
+            contents.push_str(&serde_json::to_string(e).unwrap());
+            contents.push('\n');
+        }
+        std::fs::write(dir.join("audit.jsonl"), contents).expect("write jsonl");
+        let mut state = AppState::local_in_memory().expect("state builds");
+        state.audit_reader = Arc::new(AuditReader::new(dir.clone()));
+        (state, dir)
+    }
+
+    fn caller(scopes: Vec<Scope>, org: Option<&str>) -> AuthenticatedCaller {
+        AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes,
+            tenant: crate::auth::Tenant {
+                team_id: None,
+                org_id: org.map(|s| s.to_string()),
+            },
+        }
+    }
+
+    /// Blocked (`PolicyViolation`) and scrubbed (`CredentialLeakBlocked`) events
+    /// tally onto the right per-agent lane; unrelated event types and events
+    /// outside the window are ignored; agents with neither are omitted.
+    #[tokio::test]
+    async fn get_agent_enforcement_counts_blocked_and_scrubbed_in_window() {
+        let now = now_ns();
+        let a1 = [0xA1; 16];
+        let a2 = [0xA2; 16];
+        // Older than a 24h window (must be dropped).
+        let stale = now.saturating_sub(48 * 3_600 * 1_000_000_000);
+        let entries = [
+            ae_entry(0, now, AuditEventType::PolicyViolation, a1, None),
+            ae_entry(1, now, AuditEventType::PolicyViolation, a1, None),
+            ae_entry(2, now, AuditEventType::CredentialLeakBlocked, a1, None),
+            ae_entry(3, now, AuditEventType::CredentialLeakBlocked, a2, None),
+            // Untracked event type -> ignored (no agent row emitted for a3).
+            ae_entry(4, now, AuditEventType::ToolDispatched, [0xA3; 16], None),
+            // In-window agent but stale timestamp -> dropped by the window reader.
+            ae_entry(5, stale, AuditEventType::PolicyViolation, a2, None),
+        ];
+        let (state, dir) = state_with_audit(&entries, "window").await;
+
+        let (status, Json(rows)) = get_agent_enforcement(
+            RequireRead(caller(vec![Scope::Admin], None)),
+            Extension(state),
+            Query(AgentEnforcementParams {
+                window: Some("24h".to_string()),
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(rows.len(), 2, "only agents with a blocked/scrubbed event appear");
+        let a1_row = rows.iter().find(|r| r.agent_id == format_id(&a1)).expect("a1 present");
+        assert_eq!(a1_row.blocked, 2, "two PolicyViolation events -> blocked=2");
+        assert_eq!(a1_row.scrubbed, 1, "one CredentialLeakBlocked event -> scrubbed=1");
+        let a2_row = rows.iter().find(|r| r.agent_id == format_id(&a2)).expect("a2 present");
+        assert_eq!(a2_row.blocked, 0, "a2's only in-window event is a scrub");
+        assert_eq!(a2_row.scrubbed, 1, "the stale PolicyViolation is outside the window");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A tenant-scoped (non-admin) caller only sees enforcement counts for its
+    /// own org — another org's audit entries never contribute.
+    #[tokio::test]
+    async fn get_agent_enforcement_is_tenant_scoped() {
+        let now = now_ns();
+        let mine = [0xB1; 16];
+        let theirs = [0xB2; 16];
+        let entries = [
+            ae_entry(0, now, AuditEventType::PolicyViolation, mine, Some("acme")),
+            ae_entry(1, now, AuditEventType::CredentialLeakBlocked, mine, Some("acme")),
+            ae_entry(2, now, AuditEventType::PolicyViolation, theirs, Some("other")),
+        ];
+        let (state, dir) = state_with_audit(&entries, "tenant").await;
+
+        let (status, Json(rows)) = get_agent_enforcement(
+            RequireRead(caller(vec![Scope::Read], Some("acme"))),
+            Extension(state),
+            Query(AgentEnforcementParams { window: None }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(rows.len(), 1, "only the caller's own org contributes");
+        let row = &rows[0];
+        assert_eq!(row.agent_id, format_id(&mine));
+        assert_eq!(row.blocked, 1);
+        assert_eq!(row.scrubbed, 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
