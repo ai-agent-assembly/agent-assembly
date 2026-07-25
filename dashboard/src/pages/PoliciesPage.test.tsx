@@ -177,6 +177,29 @@ describe('PoliciesPage — list states', () => {
     expect(screen.getByText(/2 rules/)).toBeInTheDocument()
   })
 
+  it('renders a scope chip per row, read from policy_yaml (default "global")', () => {
+    const SCOPED_POLICY: Policy = {
+      name: 'research-narrowing',
+      version: '0.3.0',
+      rule_count: 1,
+      active: false,
+      policy_yaml: 'metadata:\n  name: research-narrowing\n  scope: agent:research-bot-04\nrules: []\n',
+    }
+    // ACTIVE_POLICY's YAML declares no scope → falls back to "global".
+    mockPolicies({
+      data: [ACTIVE_POLICY, SCOPED_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    const chips = screen.getAllByTestId('policy-row-scope')
+    expect(chips.map((c) => c.textContent)).toEqual([
+      'scope: global',
+      'scope: agent:research-bot-04',
+    ])
+  })
+
   it('shows the empty state with a "+ new policy" action when there are no policies', () => {
     mockPolicies({ data: [], isLoading: false, isError: false, refetch: vi.fn() })
     render(<PoliciesPage />, { wrapper: Wrapper })
