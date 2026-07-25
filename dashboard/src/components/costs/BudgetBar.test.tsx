@@ -17,14 +17,14 @@ describe('BudgetBar', () => {
   it('clamps an over-budget bar to 100% rather than overflowing', () => {
     render(<BudgetBar used={210} limit={100} label="daily" />)
     const bar = screen.getByTestId('costs-budget-bar')
-    expect(bar.getAttribute('aria-valuenow')).toBe('100')
+    expect(bar.getAttribute('aria-label')).toBe('daily 100%')
     expect(bar.dataset.thresholdBucket).toBe('danger')
   })
 
   it('renders an empty ok track when no limit is configured', () => {
     render(<BudgetBar used={42} limit={null} label="daily" />)
     const bar = screen.getByTestId('costs-budget-bar')
-    expect(bar.getAttribute('aria-valuenow')).toBe('0')
+    expect(bar.getAttribute('aria-label')).toBe('daily 0%')
     expect(bar.dataset.thresholdBucket).toBe('ok')
   })
 })

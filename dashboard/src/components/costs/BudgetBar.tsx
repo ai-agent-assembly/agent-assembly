@@ -30,10 +30,6 @@ export function BudgetBar({ used, limit, label }: BudgetBarProps) {
       className="costs-budget-bar"
       data-testid="costs-budget-bar"
       data-threshold-bucket={bucket}
-      role="progressbar"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={Math.round(pct)}
       aria-label={`${label} ${Math.round(pct)}%`}
     >
       <div
