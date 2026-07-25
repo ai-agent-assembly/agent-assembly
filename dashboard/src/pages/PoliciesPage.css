@@ -185,12 +185,31 @@
   outline-offset: 2px;
 }
 
+.policies-list__row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
 .policies-list__row-name {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   font-size: 0.9375rem;
   font-weight: 600;
+}
+
+/* Scope line under the policy name — mirrors the hi-fi `policy-item-scope`
+   treatment (monospace, muted). Read from policy_yaml; falls back to
+   "global" when the policy declares no scope. */
+.policies-list__row-scope {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .policies-list__row-meta {
