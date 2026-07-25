@@ -1,0 +1,27 @@
+/*
+ * Mini budget-burn bar for the Costs KPI cards (design/v1/hi-fi/costs.jsx).
+ * Colours are theme tokens only so the bar inverts under
+ * :root[data-theme="dark"] — never hardcode hex here.
+ */
+
+.costs-budget-bar {
+  height: 4px;
+  background: var(--paper-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.costs-budget-bar__fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  background: var(--ok);
+}
+
+.costs-budget-bar__fill[data-threshold-bucket='warn'] {
+  background: var(--warn);
+}
+
+.costs-budget-bar__fill[data-threshold-bucket='danger'] {
+  background: var(--danger);
+}

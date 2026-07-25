@@ -9,6 +9,18 @@ import type { CostSummary, TeamListRow } from '../teams/api'
  */
 export type BudgetPeriod = 'daily' | 'monthly'
 
+/**
+ * Org spend against its configured limit for one budget period, plus the
+ * derived burn percentage. Backs a Daily / Monthly KPI card and its mini
+ * budget bar. `limit`/`pct` are `null` when no limit is configured (the OSS
+ * API omits the field), so the card degrades to "no limit" rather than NaN.
+ */
+export interface PeriodSpend {
+  readonly spend: number | null
+  readonly limit: number | null
+  readonly pct: number | null
+}
+
 export interface CostKpis {
   /** Total org spend for the active period, in USD. `null` when unavailable. */
   readonly totalSpend: number | null
@@ -23,6 +35,14 @@ export interface CostKpis {
    * (≥ 95%) — the teams a budget enforcer would be blocking right now.
    */
   readonly blockedByBudget: number
+  /** Daily spend vs the configured daily limit (period-independent — always daily). */
+  readonly daily: PeriodSpend
+  /** Monthly spend vs the configured monthly limit (period-independent — always monthly). */
+  readonly monthly: PeriodSpend
+  /** Number of agents with a per-agent cost row today. */
+  readonly agentsTracked: number
+  /** Number of teams with a per-team cost row today (the "across N teams" figure). */
+  readonly teamsTracked: number
 }
 
 function parseUsd(value: string | null | undefined): number | null {
@@ -42,6 +62,17 @@ function topConsumer(
     if (best == null || spend > best.spend) best = { agentId: entry.agent_id, spend }
   }
   return best
+}
+
+/** Spend/limit/burn-% for one period, from its raw string-encoded USD figures. */
+function periodSpend(
+  spendRaw: string | null | undefined,
+  limitRaw: string | null | undefined,
+): PeriodSpend {
+  const spend = parseUsd(spendRaw)
+  const limit = parseUsd(limitRaw)
+  const pct = spend != null && limit != null && limit > 0 ? (spend / limit) * 100 : null
+  return { spend, limit, pct }
 }
 
 /**
@@ -72,5 +103,9 @@ export function deriveCostKpis(
     utilisationPct,
     topConsumer: topConsumer(costs, period),
     blockedByBudget,
+    daily: periodSpend(costs?.daily_spend_usd, costs?.daily_limit_usd),
+    monthly: periodSpend(costs?.monthly_spend_usd, costs?.monthly_limit_usd),
+    agentsTracked: costs?.per_agent?.length ?? 0,
+    teamsTracked: costs?.per_team?.length ?? 0,
   }
 }

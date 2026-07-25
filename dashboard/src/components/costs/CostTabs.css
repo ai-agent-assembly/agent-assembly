@@ -1,0 +1,49 @@
+/*
+ * Costs page tab bar (design/v1/hi-fi/costs.jsx `.tabs`). Theme tokens only.
+ */
+
+.costs-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  padding: 0 24px;
+}
+
+.costs-tab {
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--ink-3);
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+}
+
+.costs-tab:hover {
+  color: var(--ink);
+}
+
+.costs-tab--active {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+  font-weight: 600;
+}
+
+.costs-tab__count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  margin-left: 6px;
+  padding: 1px 5px;
+  background: var(--paper-3);
+  border-radius: 2px;
+  color: var(--ink-3);
+}
+
+.costs-tab--active .costs-tab__count {
+  background: var(--ink);
+  color: var(--paper-2);
+}

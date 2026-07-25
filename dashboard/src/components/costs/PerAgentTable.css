@@ -1,0 +1,117 @@
+/*
+ * Per-agent cost table (design/v1/hi-fi/costs.jsx Per-agent tab). Theme tokens
+ * only so it inverts under dark mode.
+ */
+
+.costs-agent-table__scroll {
+  overflow-x: auto;
+}
+
+.costs-agent-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.costs-agent-table thead th {
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line-2);
+  padding: 8px 24px;
+  text-align: left;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.costs-agent-table tbody td {
+  padding: 8px 24px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.costs-agent-table tbody tr:hover {
+  background: var(--paper-3);
+}
+
+.costs-agent-table__id {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.costs-agent-table__team {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  border-radius: 2px;
+  color: var(--ink-2);
+}
+
+.costs-agent-table__daily {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.costs-agent-table__amount {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 700;
+  min-width: 56px;
+  color: var(--ink-3);
+}
+
+.costs-agent-table__amount[data-share-bucket='warm'] {
+  color: var(--warn);
+}
+
+.costs-agent-table__amount[data-share-bucket='hot'] {
+  color: var(--danger);
+}
+
+.costs-agent-table__share {
+  display: inline-block;
+  width: 80px;
+  height: 3px;
+  background: var(--paper-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.costs-agent-table__share-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--ink-3);
+}
+
+.costs-agent-table__share-fill[data-share-bucket='warm'] {
+  background: var(--warn);
+}
+
+.costs-agent-table__share-fill[data-share-bucket='hot'] {
+  background: var(--danger);
+}
+
+.costs-agent-table__monthly {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.costs-agent-table__empty {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--ink-4);
+  padding: 16px 24px;
+}
