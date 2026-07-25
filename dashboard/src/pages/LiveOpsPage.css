@@ -361,6 +361,52 @@
   color: var(--ink-3);
 }
 
+/* ── Pipeline / castle-moat view toggle (AAASM-5074) ───────────
+   Segmented control mirroring the hi-fi: two flush buttons, the
+   active one filled with the ink token. */
+
+.live-page__pane-lead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.live-page__view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.live-page__view-btn {
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.live-page__view-btn + .live-page__view-btn {
+  border-left: 1px solid var(--line-2);
+}
+
+.live-page__view-btn--active {
+  background: var(--ink);
+  color: var(--paper-2);
+}
+
+.live-page__view-btn:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: -2px;
+}
+
 .live-page__pane-body {
   flex: 1;
   overflow: auto;

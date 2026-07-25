@@ -16,6 +16,7 @@ import {
 import { applyFilters } from '../features/liveOps/applyFilters'
 import { ApprovalPool } from '../features/liveOps/ApprovalPool'
 import { AutoScrollToggle } from '../features/liveOps/AutoScrollToggle'
+import { CastleMoat } from '../features/liveOps/CastleMoat'
 import { FilterBar, type FilterOption } from '../features/liveOps/FilterBar'
 import { OperationRow } from '../features/liveOps/OperationRow'
 import {
@@ -115,6 +116,9 @@ export function LiveOpsPage() {
   const [intensity, setIntensity] = useState(INTENSITY_DEFAULT)
   const [counters, setCounters] = useState<PipelineCanvasCounters>(EMPTY_COUNTERS)
   const [confirmingHaltAll, setConfirmingHaltAll] = useState(false)
+  // Which visualization the pipeline pane shows: the left-to-right traffic
+  // pipeline (default) or the concentric castle-moat view of the same sim.
+  const [view, setView] = useState<'pipeline' | 'moat'>('pipeline')
   const { toast } = useToast()
   const navigate = useNavigate()
 
@@ -386,7 +390,36 @@ export function LiveOpsPage() {
           data-testid="live-ops-pipeline-zone"
         >
           <header className="live-page__pane-head">
-            <h2 className="live-page__pane-title">▤ traffic pipeline</h2>
+            <div className="live-page__pane-lead">
+              <h2 className="live-page__pane-title">
+                {view === 'pipeline' ? '▤ traffic pipeline' : '◎ castle moat'}
+              </h2>
+              <div
+                className="live-page__view-toggle"
+                role="group"
+                aria-label="Pipeline visualization"
+                data-testid="live-ops-view-toggle"
+              >
+                <button
+                  type="button"
+                  className={`live-page__view-btn${view === 'pipeline' ? ' live-page__view-btn--active' : ''}`}
+                  aria-pressed={view === 'pipeline'}
+                  onClick={() => setView('pipeline')}
+                  data-testid="live-ops-view-pipeline"
+                >
+                  ▤ pipeline
+                </button>
+                <button
+                  type="button"
+                  className={`live-page__view-btn${view === 'moat' ? ' live-page__view-btn--active' : ''}`}
+                  aria-pressed={view === 'moat'}
+                  onClick={() => setView('moat')}
+                  data-testid="live-ops-view-moat"
+                >
+                  ◎ castle moat
+                </button>
+              </div>
+            </div>
             <div className="live-page__legend" data-testid="live-ops-legend">
               <span className="live-page__chip live-page__chip--ok">● allow</span>
               <span className="live-page__chip live-page__chip--warn">● narrow</span>
@@ -402,11 +435,15 @@ export function LiveOpsPage() {
             </div>
           </header>
           <div className="live-page__pane-body live-page__pane-body--canvas">
-            <PipelineCanvas
-              paused={paused}
-              intensity={intensity}
-              onCounters={setCounters}
-            />
+            {view === 'pipeline' ? (
+              <PipelineCanvas
+                paused={paused}
+                intensity={intensity}
+                onCounters={setCounters}
+              />
+            ) : (
+              <CastleMoat paused={paused} intensity={intensity} />
+            )}
           </div>
         </section>
 

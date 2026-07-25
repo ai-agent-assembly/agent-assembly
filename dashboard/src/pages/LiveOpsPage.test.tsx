@@ -180,6 +180,28 @@ describe('LiveOpsPage', () => {
     expect(strip).toHaveTextContent('intensity ×1.5')
   })
 
+  it('toggles between the pipeline and castle-moat visualizations', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<LiveOpsPage />)
+    // Pipeline is the default view.
+    expect(screen.getByTestId('emit-counters')).toBeInTheDocument()
+    expect(screen.queryByTestId('castle-moat')).toBeNull()
+    expect(
+      screen.getByRole('heading', { name: /traffic pipeline/i }),
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('live-ops-view-moat'))
+    expect(screen.getByTestId('castle-moat')).toBeInTheDocument()
+    expect(screen.queryByTestId('emit-counters')).toBeNull()
+    expect(
+      screen.getByRole('heading', { name: /castle moat/i }),
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('live-ops-view-pipeline'))
+    expect(screen.getByTestId('emit-counters')).toBeInTheDocument()
+    expect(screen.queryByTestId('castle-moat')).toBeNull()
+  })
+
   it('renders the lane-fate legend chips', () => {
     renderWithProviders(<LiveOpsPage />)
     const legend = screen.getByTestId('live-ops-legend')
