@@ -362,7 +362,7 @@ impl AppState {
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(std::time::Duration::from_secs(10))
                 .build(),
-            capability_store: crate::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: crate::routes::capability::CapabilityStore::new(),
             iam_api_key_store: crate::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(crate::destinations::store::InMemoryDestinationStore::new(Arc::new(

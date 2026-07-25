@@ -22,6 +22,62 @@ fn post_override_request(body: serde_json::Value, token: Option<&str>) -> Reques
     builder.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()
 }
 
+/// Stable ids of the agents these tests register and target.
+const TARGET_ID: &str = "01010101010101010101010101010101";
+const OTHER_ID: &str = "02020202020202020202020202020202";
+
+/// A registered agent for the capability projection to return. The matrix is
+/// projected from the registry now, so a test that overrides a cell has to
+/// register the agent whose cell it is overriding.
+fn registered_agent(id_byte: u8, name: &str) -> aa_gateway::registry::AgentRecord {
+    aa_gateway::registry::AgentRecord {
+        agent_id: [id_byte; 16],
+        name: name.to_string(),
+        framework: "crewai".to_string(),
+        version: "0.1.0".to_string(),
+        risk_tier: 1,
+        tool_names: vec!["pg".to_string()],
+        public_key: "pk".to_string(),
+        credential_token: "tok".to_string(),
+        metadata: std::collections::BTreeMap::new(),
+        registered_at: chrono::Utc::now(),
+        last_heartbeat: chrono::Utc::now(),
+        status: aa_gateway::registry::AgentStatus::Active,
+        pid: None,
+        session_count: 0,
+        last_event: None,
+        policy_violations_count: 0,
+        active_sessions: Vec::new(),
+        recent_events: std::collections::VecDeque::new(),
+        recent_traces: Vec::new(),
+        layer: None,
+        governance_level: aa_core::GovernanceLevel::default(),
+        parent_agent_id: None,
+        team_id: Some("cx-tools".to_string()),
+        org_id: None,
+        depth: 0,
+        delegation_reason: None,
+        spawned_by_tool: None,
+        root_agent_id: Some([id_byte; 16]),
+        children: Vec::new(),
+        parent_key: None,
+        enforcement_mode: None,
+    }
+}
+
+/// App with the target agent registered, so the matrix projects one row.
+fn app_with_target() -> axum::Router {
+    common::test_app_with_agents(vec![registered_agent(0x01, "support-triage")])
+}
+
+/// App with two registered agents, for tests that need to tell rows apart.
+fn app_with_two_agents() -> axum::Router {
+    common::test_app_with_agents(vec![
+        registered_agent(0x01, "support-triage"),
+        registered_agent(0x02, "research-bot-04"),
+    ])
+}
+
 // ── AAASM-3846 — function-level authz on the read + revoke gates ─────────────
 
 /// `GET /capability/matrix` previously served sensitive policy state with no
@@ -129,7 +185,7 @@ async fn get_matrix_admin_scope_is_allowed() {
 
 #[tokio::test]
 async fn get_matrix_returns_200_with_dashboard_shape() {
-    let app = common::test_app();
+    let app = app_with_target();
 
     let response = app
         .oneshot(
@@ -159,25 +215,26 @@ async fn get_matrix_returns_200_with_dashboard_shape() {
         "snake_case sample_calls must not appear"
     );
 
-    // Seed contract: 8 resources covering every group.
-    assert_eq!(json["resources"].as_array().unwrap().len(), 8);
-
-    // Seed contract: every agent has a cell for every resource, and the
-    // cell carries decisions for all four verbs.
+    // The three fixed capability families are always columns.
     let resource_ids: Vec<&str> = json["resources"]
         .as_array()
         .unwrap()
         .iter()
         .map(|r| r["id"].as_str().unwrap())
         .collect();
-    assert!(!resource_ids.is_empty());
+    for expected in ["filesystem", "terminal", "network_outbound"] {
+        assert!(resource_ids.contains(&expected), "{expected} must be a column");
+    }
 
+    // Every projected agent carries a cell per system family, each with all
+    // four verb decisions.
     let agents = json["agents"].as_array().unwrap();
-    assert!(!agents.is_empty(), "seed must include at least one agent");
+    assert_eq!(agents.len(), 1, "the one registered agent is projected");
+    let resource_ids = ["filesystem", "terminal", "network_outbound"];
     for agent in agents {
         // CapabilityAgent uses camelCase `lastSeen`.
         assert!(agent["lastSeen"].is_string(), "agent {} missing lastSeen", agent["id"]);
-        for rid in &resource_ids {
+        for rid in resource_ids {
             let cell = &agent["caps"][rid];
             assert!(
                 cell.is_object(),
@@ -197,12 +254,12 @@ async fn get_matrix_returns_200_with_dashboard_shape() {
 
 #[tokio::test]
 async fn apply_override_returns_only_updated_rows() {
-    let app = common::test_app(); // auth off → caller is OrgAdmin, RBAC pass
+    let app = app_with_target(); // auth off → caller is OrgAdmin, RBAC pass
 
     let response = app
         .oneshot(post_override_request(
             json!({
-                "agentIds": ["support-triage"],
+                "agentIds": [TARGET_ID],
                 "resourceId": "pg",
                 "verb": "write",
                 "decision": "deny"
@@ -218,7 +275,7 @@ async fn apply_override_returns_only_updated_rows() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let updated = json["updated"].as_array().unwrap();
     assert_eq!(updated.len(), 1, "only one row should change");
-    assert_eq!(updated[0]["id"], "support-triage");
+    assert_eq!(updated[0]["id"], TARGET_ID);
     assert_eq!(
         updated[0]["caps"]["pg"]["write"], "deny",
         "the targeted cell must reflect the new decision"
@@ -233,7 +290,7 @@ async fn apply_override_rejects_viewer_scope_with_403() {
     let response = app
         .oneshot(post_override_request(
             json!({
-                "agentIds": ["support-triage"],
+                "agentIds": [TARGET_ID],
                 "resourceId": "pg",
                 "verb": "write",
                 "decision": "deny"
@@ -329,12 +386,12 @@ async fn list_overrides_returns_200_with_empty_list_initially() {
 
 #[tokio::test]
 async fn list_overrides_reflects_applied_override() {
-    let app = common::test_app();
+    let app = app_with_target();
     // Apply one override first.
     app.clone()
         .oneshot(post_override_request(
             json!({
-                "agentIds": ["support-triage"],
+                "agentIds": [TARGET_ID],
                 "resourceId": "pg",
                 "verb": "read",
                 "decision": "deny"
@@ -354,42 +411,42 @@ async fn list_overrides_reflects_applied_override() {
 
 #[tokio::test]
 async fn list_overrides_with_agent_id_filter_returns_matching_entries() {
-    let app = common::test_app();
+    let app = app_with_two_agents();
     // Apply overrides for two different agents.
     app.clone()
         .oneshot(post_override_request(
-            json!({"agentIds": ["support-triage"], "resourceId": "gmail", "verb": "read", "decision": "deny"}),
+            json!({"agentIds": [TARGET_ID], "resourceId": "pg", "verb": "read", "decision": "deny"}),
             None,
         ))
         .await
         .unwrap();
     app.clone()
         .oneshot(post_override_request(
-            json!({"agentIds": ["research-bot-04"], "resourceId": "slack", "verb": "write", "decision": "deny"}),
+            json!({"agentIds": [OTHER_ID], "resourceId": "pg", "verb": "write", "decision": "deny"}),
             None,
         ))
         .await
         .unwrap();
 
-    let (status, body) = oneshot_get(app, "/api/v1/capability/override?agent_id=support-triage").await;
+    let (status, body) = oneshot_get(app, &format!("/api/v1/capability/override?agent_id={TARGET_ID}")).await;
     assert_eq!(status, StatusCode::OK);
     let items = body.as_array().unwrap();
-    // Only the support-triage override should be visible.
+    // Only the override naming the target agent should be visible.
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["agentIds"].as_array().unwrap()[0], "support-triage");
+    assert_eq!(items[0]["agentIds"].as_array().unwrap()[0], TARGET_ID);
 }
 
 // ── revoke_override ──────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn revoke_override_returns_204_and_removes_entry() {
-    let app = common::test_app();
+    let app = app_with_target();
 
     // Apply an override and grab its id.
     let apply_resp = app
         .clone()
         .oneshot(post_override_request(
-            json!({"agentIds": ["support-triage"], "resourceId": "pg", "verb": "write", "decision": "deny"}),
+            json!({"agentIds": [TARGET_ID], "resourceId": "pg", "verb": "write", "decision": "deny"}),
             None,
         ))
         .await
@@ -414,10 +471,10 @@ async fn revoke_override_returns_404_for_unknown_id() {
 
 #[tokio::test]
 async fn apply_override_with_verb_delete() {
-    let app = common::test_app();
+    let app = app_with_target();
     let resp = app
         .oneshot(post_override_request(
-            json!({"agentIds": ["support-triage"], "resourceId": "pg", "verb": "delete", "decision": "deny"}),
+            json!({"agentIds": [TARGET_ID], "resourceId": "pg", "verb": "delete", "decision": "deny"}),
             None,
         ))
         .await
@@ -430,10 +487,10 @@ async fn apply_override_with_verb_delete() {
 
 #[tokio::test]
 async fn apply_override_with_verb_exec() {
-    let app = common::test_app();
+    let app = app_with_target();
     let resp = app
         .oneshot(post_override_request(
-            json!({"agentIds": ["support-triage"], "resourceId": "pg", "verb": "exec", "decision": "deny"}),
+            json!({"agentIds": [TARGET_ID], "resourceId": "pg", "verb": "exec", "decision": "deny"}),
             None,
         ))
         .await
@@ -446,11 +503,11 @@ async fn apply_override_with_verb_exec() {
 
 #[tokio::test]
 async fn apply_override_with_ttl_returns_201() {
-    let app = common::test_app();
+    let app = app_with_target();
     let resp = app
         .oneshot(post_override_request(
             json!({
-                "agentIds": ["support-triage"],
+                "agentIds": [TARGET_ID],
                 "resourceId": "pg",
                 "verb": "write",
                 "decision": "deny",
@@ -468,27 +525,29 @@ async fn apply_override_with_ttl_returns_201() {
 
 #[tokio::test]
 async fn get_matrix_with_team_id_filter_returns_matching_agent_only() {
-    let (status, body) = oneshot_get(common::test_app(), "/api/v1/capability/matrix?team_id=support-triage").await;
+    let (status, body) = oneshot_get(
+        app_with_target(),
+        &format!("/api/v1/capability/matrix?team_id={TARGET_ID}"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let agents = body["agents"].as_array().unwrap();
-    // All returned agents should have id == "support-triage".
-    for a in agents {
-        assert_eq!(a["id"], "support-triage");
-    }
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0]["id"], TARGET_ID);
 }
 
 #[tokio::test]
 async fn get_matrix_with_tool_filter_returns_single_resource_column() {
-    let (status, body) = oneshot_get(common::test_app(), "/api/v1/capability/matrix?tool=gmail").await;
+    let (status, body) = oneshot_get(app_with_target(), "/api/v1/capability/matrix?tool=filesystem").await;
     assert_eq!(status, StatusCode::OK);
-    // The resources list should only contain "gmail".
     let resources = body["resources"].as_array().unwrap();
-    assert!(resources.iter().all(|r| r["id"] == "gmail"));
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0]["id"], "filesystem");
 }
 
 #[tokio::test]
 async fn get_matrix_with_effective_only_excludes_all_na_cells() {
-    let (status, body) = oneshot_get(common::test_app(), "/api/v1/capability/matrix?effective_only=true").await;
+    let (status, body) = oneshot_get(app_with_target(), "/api/v1/capability/matrix?effective_only=true").await;
     assert_eq!(status, StatusCode::OK);
     // Every remaining cell must have at least one non-"na" decision.
     let agents = body["agents"].as_array().unwrap();
@@ -505,55 +564,36 @@ async fn get_matrix_with_effective_only_excludes_all_na_cells() {
     }
 }
 
-// ── TTL auto-revert (covers the spawned revert task) ──────────────────────────
+// ── TTL auto-expiry (covers the spawned deactivation task) ───────────────────
 
 #[tokio::test]
-async fn apply_override_with_short_ttl_auto_reverts_cell() {
+async fn override_with_short_ttl_deactivates_itself() {
     use aa_api::models::capability::{Decision, Verb};
     use aa_api::routes::capability::CapabilityStore;
     use std::sync::Arc;
 
-    let store = CapabilityStore::new_seeded();
+    let store = CapabilityStore::new();
+    let id = Arc::clone(&store)
+        .record_override(&aa_api::models::capability::CapabilityOverrideRequest {
+            agent_ids: vec!["agent-a".to_string()],
+            resource_id: "filesystem".to_string(),
+            verb: Verb::Write,
+            decision: Decision::Deny,
+            ttl_seconds: Some(1),
+        })
+        .await;
 
-    // Capture the original decision for support-triage / pg / write.
-    let before = store.snapshot().await;
-    let original = before
-        .agents
-        .iter()
-        .find(|a| a.id == "support-triage")
-        .and_then(|a| a.caps.get("pg"))
-        .map(|c| c.write)
-        .expect("seed must include support-triage/pg");
+    let during = store.list_overrides(None).await;
+    assert_eq!(during.len(), 1);
+    assert!(during[0].active, "the override is live before its TTL elapses");
+    assert_eq!(during[0].id, id);
 
-    let req = aa_api::models::capability::CapabilityOverrideRequest {
-        agent_ids: vec!["support-triage".to_string()],
-        resource_id: "pg".to_string(),
-        verb: Verb::Write,
-        decision: Decision::Deny,
-        ttl_seconds: Some(1),
-    };
-    let (_id, _updated) = Arc::clone(&store).apply_override(&req).await.unwrap();
-
-    // Immediately after applying, the cell reflects the override.
-    let during = store.snapshot().await;
-    let during_write = during
-        .agents
-        .iter()
-        .find(|a| a.id == "support-triage")
-        .and_then(|a| a.caps.get("pg"))
-        .map(|c| c.write)
-        .unwrap();
-    assert_eq!(during_write, Decision::Deny);
-
-    // After the TTL elapses the spawned task reverts the cell to its original value.
+    // After the TTL the spawned task deactivates the entry, so it stops being
+    // replayed over the projection and the base decision resurfaces.
     tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
-    let after = store.snapshot().await;
-    let after_write = after
-        .agents
-        .iter()
-        .find(|a| a.id == "support-triage")
-        .and_then(|a| a.caps.get("pg"))
-        .map(|c| c.write)
-        .unwrap();
-    assert_eq!(after_write, original, "TTL expiry must restore the original decision");
+    let after = store.list_overrides(None).await;
+    assert!(
+        !after[0].active,
+        "TTL expiry must deactivate the override so the projected value wins again"
+    );
 }
