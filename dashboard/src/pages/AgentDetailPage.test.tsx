@@ -11,8 +11,46 @@ import * as agentsMutations from '../features/agents/mutations'
 import * as topologyApi from '../features/topology/api'
 import * as trafficApi from '../features/analytics/useAgentTrafficQuery'
 import * as agentPoliciesApi from '../features/capability/useAgentPolicies'
+import { capabilityClient } from '../api/capability'
 import type { Agent, LogEntry } from '../features/agents/api'
-import type { Policy } from '../features/capability/types'
+import type { CapabilityMatrix, Policy } from '../features/capability/types'
+
+// AAASM-5073: the Overview capability panel and the Capability tab both read
+// GET /api/v1/capability/matrix (via capabilityClient) scoped to this agent.
+// Keyed by the mock agent's id so the scoped-matrix hook resolves a row.
+const MATRIX_FIXTURE = {
+  resources: [{ id: 'pg', name: 'Postgres', group: 'data', paths: ['pg.public.*'] }],
+  policies: [
+    {
+      id: 'P-066',
+      name: 'narrow research-bot writes',
+      version: '3',
+      scope: 'tag:research',
+      status: 'proposed',
+      hits24h: 128,
+      affects: ['abc123'],
+      rules: [{ resource: 'pg', verb: ['write'], action: 'narrow', condition: '' }],
+    },
+  ],
+  sampleCalls: [],
+  agents: [
+    {
+      id: 'abc123',
+      name: 'alpha-agent',
+      framework: 'langgraph',
+      owner: 'alice',
+      trust: 72,
+      mode: 'enforce',
+      status: 'active',
+      lastSeen: '2m ago',
+      caps: { pg: { read: 'allow', write: 'deny', delete: 'na', exec: 'na', flag: true } },
+    },
+  ],
+} as unknown as CapabilityMatrix
+
+function mockCapabilityMatrix() {
+  vi.spyOn(capabilityClient, 'getMatrix').mockResolvedValue(MATRIX_FIXTURE)
+}
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -76,6 +114,7 @@ const MOCK_LOG: LogEntry = {
 // backed by their own hooks. Mock them to stable empty data so tab-switching
 // tests don't fire real fetches; dedicated unit tests cover each tab's states.
 function mockTabHooks() {
+  mockCapabilityMatrix()
   vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
     mockQuery<topologyApi.AgentLineage>({
       data: { agent_id: 'abc123', ancestor_count: 1, ancestors: [{ id: 'abc123', name: 'alpha-agent', depth: 0 }] },
@@ -186,6 +225,7 @@ describe('AgentDetailPage deep link', () => {
     vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
       mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
     )
+    mockCapabilityMatrix()
     renderApp('/agents/abc123')
     expect(await screen.findByTestId('agent-detail-did')).toHaveTextContent('did:agent:agent-assembly:abc123')
   })
@@ -229,23 +269,27 @@ describe('AgentDetailPage close behavior', () => {
 })
 
 describe('AgentDetailPage tab navigation', () => {
-  it('starts on the Overview tab with posture and recent-events panels', async () => {
+  it('starts on the Overview tab with posture, capability, and recent-events panels', async () => {
     mockHappyPath()
     renderApp('/agents/abc123')
     expect(await screen.findByTestId('agent-detail-posture')).toBeInTheDocument()
     expect(screen.getByTestId('agent-events')).toBeInTheDocument()
+    // AAASM-5073: Overview now carries a 3rd panel — the agent-scoped
+    // capability matrix — alongside (not replacing) the burn-chart + events.
+    expect(screen.getByTestId('agent-overview-capability')).toBeInTheDocument()
+    expect(await screen.findByTestId('agent-overview-capability-matrix')).toBeInTheDocument()
     expect(screen.getByTestId('agent-detail-tab-overview')).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('switches to the InheritedPermissionsPanel when the Capability tab is selected', async () => {
-    // AAASM-1053: Capability tab no longer renders the TabEmpty placeholder;
-    // it mounts the live InheritedPermissionsPanel. With mockHappyPath's
-    // empty cascade the panel renders its no-cascade-contribution empty
-    // state.
+  it('renders the agent-scoped capability matrix when the Capability tab is selected', async () => {
+    // AAASM-5073: Capability tab replaces InheritedPermissionsPanel with the
+    // agent-scoped resource×verb matrix (cascade provenance folded into the
+    // inspect drawer).
     mockHappyPath()
     renderApp('/agents/abc123')
     fireEvent.click(await screen.findByTestId('agent-detail-tab-capability'))
-    expect(await screen.findByTestId('inherited-permissions-empty')).toBeInTheDocument()
+    expect(await screen.findByTestId('agent-capability-tab')).toBeInTheDocument()
+    expect(await screen.findByTestId('agent-capability-tab-matrix')).toBeInTheDocument()
     expect(screen.queryByTestId('agent-detail-posture')).not.toBeInTheDocument()
   })
 
@@ -263,11 +307,17 @@ describe('AgentDetailPage tab navigation', () => {
     expect(await screen.findByTestId('agent-lineage-tab')).toBeInTheDocument()
   })
 
-  it('keeps the Config tab as a follow-up placeholder', async () => {
+  it('renders the FE-derived Config YAML with backend-only keys marked pending', async () => {
+    // AAASM-5073: Config tab is no longer a placeholder — it renders YAML from
+    // the fields the dashboard has, marking keys that need the backend config
+    // endpoint (AAASM-5098) as pending rather than fabricating values.
     mockHappyPath()
     renderApp('/agents/abc123')
     fireEvent.click(screen.getByTestId('agent-detail-tab-config'))
-    expect(await screen.findByTestId('ad-tab-empty-config')).toBeInTheDocument()
+    const yaml = await screen.findByTestId('agent-config-yaml')
+    expect(yaml).toHaveTextContent('did:agent:alice:abc123')
+    expect(yaml).toHaveTextContent('framework: langgraph')
+    expect(screen.getAllByTestId('agent-config-pending-line').length).toBeGreaterThan(0)
   })
 })
 
@@ -332,6 +382,7 @@ describe('AgentDetailPage drawer head action buttons', () => {
     vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
       mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
     )
+    mockCapabilityMatrix()
     renderApp('/agents/abc123')
     await screen.findByTestId('agent-detail')
     expect(screen.getByTestId('agent-detail-trace')).toBeInTheDocument()
@@ -369,6 +420,7 @@ describe('AgentDetailPage — sandbox events toggle + amber badge', () => {
   }
 
   function mockWithMixedEvents() {
+    mockCapabilityMatrix()
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
       mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
     )
@@ -423,6 +475,7 @@ describe('AgentDetailPage — sandbox events toggle + amber badge', () => {
         isError: false,
       }),
     )
+    mockCapabilityMatrix()
 
     renderApp('/agents/abc123')
     await screen.findByTestId('agent-events')
