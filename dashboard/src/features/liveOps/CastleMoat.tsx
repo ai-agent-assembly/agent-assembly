@@ -64,9 +64,26 @@ function colorVarForFate(fate: Fate): string {
   }
 }
 
+/**
+ * Small deterministic PRNG (mulberry32). The moat animation only needs
+ * plausible jitter for arrow angles and fate weighting, not cryptographic
+ * randomness, so a seeded generator keeps the motion reproducible and avoids
+ * `Math.random()` (flagged as insecure by static analysis) for what is purely
+ * decorative sequencing.
+ */
+function mulberry32(seed: number): () => number {
+  let state = seed
+  return () => {
+    state = (state + 0x6d2b79f5) | 0
+    let t = Math.imul(state ^ (state >>> 15), 1 | state)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
 /** Weighted fate + the ring index it is stopped at, matching the hi-fi. */
-function pickArrow(): { fate: Fate; stopRing: number } {
-  const r = Math.random()
+function pickArrow(rand: () => number): { fate: Fate; stopRing: number } {
+  const r = rand()
   if (r < 0.45) return { fate: 'allow', stopRing: 0 }
   if (r < 0.65) return { fate: 'narrow', stopRing: 2 }
   if (r < 0.78) return { fate: 'scrub', stopRing: 2 }
@@ -108,6 +125,8 @@ export function CastleMoat({
     const arrows: Arrow[] = []
     let lastSpawn = 0
     let rafId: number | null = null
+    let nextArrowId = 0
+    const rand = mulberry32(0x5eeded)
 
     function resize() {
       if (!canvas || !ctx) return
@@ -169,11 +188,11 @@ export function CastleMoat({
       const cx = sizeW / 2
       const cy = sizeH / 2
       const unit = Math.min(sizeW, sizeH)
-      const angle = Math.random() * Math.PI * 2
+      const angle = rand() * Math.PI * 2
       const startR = unit * 0.49
-      const { fate, stopRing } = pickArrow()
+      const { fate, stopRing } = pickArrow(rand)
       arrows.push({
-        id: Math.random(),
+        id: (nextArrowId += 1),
         startX: cx + Math.cos(angle) * startR,
         startY: cy + Math.sin(angle) * startR,
         angle,
