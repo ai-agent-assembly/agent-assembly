@@ -375,6 +375,12 @@
 
 .live-page__view-toggle {
   display: inline-flex;
+  /* Rendered as a <fieldset> for the semantic group role; neutralize the
+     element's default margin/padding/min-inline-size so it lays out like the
+     bare inline-flex toggle it visually is. */
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
   border: 1px solid var(--line-2);
   border-radius: 2px;
   overflow: hidden;

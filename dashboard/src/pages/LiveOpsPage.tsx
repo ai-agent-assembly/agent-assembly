@@ -394,9 +394,8 @@ export function LiveOpsPage() {
               <h2 className="live-page__pane-title">
                 {view === 'pipeline' ? '▤ traffic pipeline' : '◎ castle moat'}
               </h2>
-              <div
+              <fieldset
                 className="live-page__view-toggle"
-                role="group"
                 aria-label="Pipeline visualization"
                 data-testid="live-ops-view-toggle"
               >
@@ -418,7 +417,7 @@ export function LiveOpsPage() {
                 >
                   ◎ castle moat
                 </button>
-              </div>
+              </fieldset>
             </div>
             <div className="live-page__legend" data-testid="live-ops-legend">
               <span className="live-page__chip">● allow</span>
