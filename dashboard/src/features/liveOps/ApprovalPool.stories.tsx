@@ -1,7 +1,12 @@
 import type { Meta, StoryObj } from '@storybook/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { ApprovalPool } from './ApprovalPool'
 import type { LiveOperation } from './types'
+
+// The inline ApprovalActions primitive uses react-query mutations, so the
+// pool needs a QueryClient in scope to render its pending cards.
+const storyClient = new QueryClient()
 
 function pendingOp(id: string, agent: string, opType: string, resource: string): LiveOperation {
   return {
@@ -47,11 +52,13 @@ const meta: Meta<typeof ApprovalPool> = {
   component: ApprovalPool,
   decorators: [
     (Story) => (
-      <MemoryRouter>
-        <div style={{ width: 320, padding: 16, background: 'var(--paper)' }}>
-          <Story />
-        </div>
-      </MemoryRouter>
+      <QueryClientProvider client={storyClient}>
+        <MemoryRouter>
+          <div style={{ width: 320, padding: 16, background: 'var(--paper)' }}>
+            <Story />
+          </div>
+        </MemoryRouter>
+      </QueryClientProvider>
     ),
   ],
 }

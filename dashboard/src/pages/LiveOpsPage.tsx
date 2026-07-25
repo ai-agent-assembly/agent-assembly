@@ -453,7 +453,12 @@ export function LiveOpsPage() {
             <h2 className="live-page__pane-title">⚑ approval queue</h2>
           </header>
           <div className="live-page__pane-body">
-            <ApprovalPool ops={ops} />
+            <ApprovalPool
+              ops={ops}
+              onError={(action, detail) =>
+                toast(`Failed to ${action} approval: ${detail}`, 'error')
+              }
+            />
           </div>
         </section>
       </div>
