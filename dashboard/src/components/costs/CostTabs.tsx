@@ -24,8 +24,11 @@ const TABS: ReadonlyArray<{ value: CostTab; label: string }> = [
  * hierarchy, not a flat row set.
  */
 export function CostTabs({ value, onChange, agentCount, teamCount }: CostTabsProps) {
-  const countFor = (tab: CostTab): number | null =>
-    tab === 'agents' ? agentCount : tab === 'teams' ? teamCount : null
+  const countFor = (tab: CostTab): number | null => {
+    if (tab === 'agents') return agentCount
+    if (tab === 'teams') return teamCount
+    return null
+  }
 
   return (
     <div className="costs-tabs" role="tablist" data-testid="costs-tabs">
