@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAgentsQuery } from '../features/agents/api'
+import { useAgentsQuery, useAgentEnforcementQuery } from '../features/agents/api'
 import { toFleetAgent } from '../features/agents/fleetTypes'
 import { useApprovalsQuery } from '../features/approvals/api'
 import { usePoliciesQuery } from '../features/policies/api'
@@ -202,10 +202,11 @@ export function OverviewPage() {
   const policiesQuery = usePoliciesQuery()
   const alertsQuery = useAlertsQuery(ALL_ALERTS)
   const timelineQuery = useEnforcementTimelineQuery(windowSel)
+  const enforcementQuery = useAgentEnforcementQuery(windowSel)
 
   const fleet = useMemo(
-    () => (agentsQuery.data ?? []).map(toFleetAgent),
-    [agentsQuery.data],
+    () => (agentsQuery.data ?? []).map((a) => toFleetAgent(a, enforcementQuery.data)),
+    [agentsQuery.data, enforcementQuery.data],
   )
 
   const isLoading = agentsQuery.isLoading

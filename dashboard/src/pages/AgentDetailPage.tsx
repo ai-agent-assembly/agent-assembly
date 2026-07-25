@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { useAgentQuery, useAgentEventsQuery, type Agent } from '../features/agents/api'
+import { useAgentQuery, useAgentEventsQuery, useAgentEnforcementQuery, type Agent } from '../features/agents/api'
 import { extractSandboxInfo } from '../features/audit/api'
 import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
 import { toFleetAgent } from '../features/agents/fleetTypes'
@@ -74,7 +74,8 @@ function TrustGauge({ score }: Readonly<{ score: number | null }>) {
 }
 
 function IdentityStrip({ agent }: Readonly<{ agent: Agent }>) {
-  const fleetAgent = useMemo(() => toFleetAgent(agent), [agent])
+  const { data: enforcement } = useAgentEnforcementQuery('24h')
+  const fleetAgent = useMemo(() => toFleetAgent(agent, enforcement), [agent, enforcement])
   const ownerSlug = fleetAgent.owner ?? 'agent-assembly'
 
   return (

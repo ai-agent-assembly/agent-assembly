@@ -10,7 +10,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { useAgentsQuery, useActiveSessionsQuery } from '../features/agents/api'
+import { useAgentsQuery, useActiveSessionsQuery, useAgentEnforcementQuery } from '../features/agents/api'
 import { ActiveSessionsView } from './ActiveSessionsView'
 import { toFleetAgent, formatLastSeen, type FleetAgent } from '../features/agents/fleetTypes'
 import {
@@ -204,6 +204,7 @@ export function FleetPage() {
   const { toast } = useToast()
   const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
   const { data: activeSessions } = useActiveSessionsQuery()
+  const { data: enforcement } = useAgentEnforcementQuery('24h')
   // Default sort mirrors the hi-fi Fleet (sortKey='trust', sortDir='asc') so the
   // least-trusted agents surface first (AAASM-5069).
   const [sorting, setSorting] = useState<SortingState>([{ id: 'trust', desc: false }])
@@ -221,7 +222,10 @@ export function FleetPage() {
     [setSearchParams],
   )
 
-  const fleetAgents = useMemo(() => (agents ?? []).map(toFleetAgent), [agents])
+  const fleetAgents = useMemo(
+    () => (agents ?? []).map((a) => toFleetAgent(a, enforcement)),
+    [agents, enforcement],
+  )
   const frameworks = useMemo(() => frameworkOptions(fleetAgents), [fleetAgents])
   const filteredFleet = useMemo(
     () => applyFleetFilters(fleetAgents, filters),
