@@ -86,28 +86,24 @@ export function AgentCapabilityInspectDrawer({
   const respPolicies = policiesFor(policies, agent.id, resource.id, verb)
 
   return (
-    <div
-      className="cap-drawer-scrim"
-      onClick={onClose}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return
-        if (e.key !== 'Enter' && e.key !== ' ') return
-        e.preventDefault()
-        onClose()
-      }}
-      role="button"
-      tabIndex={-1}
-      aria-label="Close cell inspector"
-      data-testid="agent-capability-inspect-scrim"
-    >
-      <aside
+    <div className="cap-drawer-scrim" data-testid="agent-capability-inspect-scrim">
+      {/* Native <button> backdrop: a real interactive element carries click +
+          keyboard dismissal natively, so the scrim wrapper stays inert (no ARIA
+          "button" role, no listeners on a non-interactive element) and the panel
+          needs no stop-propagation guard — clicks land on the panel or the
+          backdrop, never both. */}
+      <button
+        type="button"
+        className="cap-drawer-backdrop"
+        aria-label="Close cell inspector"
+        onClick={onClose}
+      />
+      <dialog
+        open
         className="cap-drawer"
-        role="dialog"
-        aria-modal
+        aria-modal="true"
         aria-label="agent capability cell inspect"
         data-testid="agent-capability-inspect-drawer"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
       >
         <header className="cap-drawer-head">
           <div>
@@ -189,7 +185,7 @@ export function AgentCapabilityInspectDrawer({
             )}
           </section>
         </div>
-      </aside>
+      </dialog>
     </div>
   )
 }
