@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { sizeCanvasToParent } from './canvasStage'
 import './CastleMoat.css'
 
 /**
@@ -130,18 +131,9 @@ export function CastleMoat({
 
     function resize() {
       if (!canvas || !ctx) return
-      const dpr = window.devicePixelRatio || 1
-      const parent = canvas.parentElement
-      const rect = parent
-        ? parent.getBoundingClientRect()
-        : canvas.getBoundingClientRect()
-      sizeW = Math.max(rect.width || MIN_WIDTH, MIN_WIDTH)
-      sizeH = Math.max(rect.height || MIN_HEIGHT, MIN_HEIGHT)
-      canvas.width = sizeW * dpr
-      canvas.height = sizeH * dpr
-      canvas.style.width = `${sizeW}px`
-      canvas.style.height = `${sizeH}px`
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      const size = sizeCanvasToParent(canvas, ctx, MIN_WIDTH, MIN_HEIGHT)
+      sizeW = size.width
+      sizeH = size.height
     }
 
     function drawRings() {
