@@ -1,0 +1,30 @@
+/*
+ * Daily-burn callout banners for the Costs page (design/v1/hi-fi/costs.jsx
+ * `.callout`). Theme tokens only so danger/warn invert under dark mode.
+ */
+
+.costs-callout {
+  margin: 12px 24px 0;
+  padding: 10px 14px;
+  border-left: 3px solid var(--warn);
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.costs-callout--danger {
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.costs-callout__title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
