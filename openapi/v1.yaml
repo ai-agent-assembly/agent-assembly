@@ -1099,6 +1099,47 @@ paths:
                 $ref: '#/components/schemas/ActionVolumeResponse'
         '401':
           description: Missing or invalid credentials
+  /api/v1/analytics/agent-enforcement:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/agent-enforcement` — per-agent blocked + scrubbed counts.'
+      description: |-
+        Aggregates the existing audit log over the requested window, grouping by
+        agent id and counting the two enforcement outcomes the Fleet page surfaces:
+        `blocked` = `PolicyViolation` events, `scrubbed` = `CredentialLeakBlocked`
+        events. This is the same audit event-type → verdict mapping the enforcement
+        timeline uses ([`timeline_verdict`], AAASM-5031): read-only observability
+        over data the API already holds — no enforcement or audit-write path is
+        touched, and no value is fabricated. Only agents that recorded at least one
+        blocked or scrubbed decision appear (an agent with neither is omitted, so the
+        dashboard renders `—` rather than a synthetic zero). Confined to the caller's
+        tenant via [`fetch_window_entries`], matching the other audit-derived
+        analytics routes (tool-usage, policy-effectiveness).
+      operationId: get_agent_enforcement
+      parameters:
+      - name: window
+        in: query
+        description: |-
+          Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+          `24h` — the window the Fleet "/24h" columns and Agent-Detail tiles show;
+          any unrecognised value also falls back to `24h`.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Per-agent blocked + scrubbed decision counts over the window
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AgentEnforcementCounts'
+        '401':
+          description: Missing or invalid credentials
   /api/v1/analytics/approvals:
     get:
       tags:
@@ -3356,6 +3397,33 @@ components:
           items:
             $ref: '#/components/schemas/AgentDecisionResponse'
           description: Decisions newest-first, capped to the request's `limit`.
+    AgentEnforcementCounts:
+      type: object
+      description: One agent's blocked + scrubbed decision counts over the requested window.
+      required:
+      - agent_id
+      - blocked
+      - scrubbed
+      properties:
+        agent_id:
+          type: string
+          description: |-
+            Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+            uses, so the dashboard can join these counts directly onto its fleet rows.
+        blocked:
+          type: integer
+          format: int64
+          description: |-
+            Blocked decisions in the window: `PolicyViolation` audit events (the
+            gateway records proto `Decision::DENY` as this event type).
+          minimum: 0
+        scrubbed:
+          type: integer
+          format: int64
+          description: |-
+            Scrubbed decisions in the window: `CredentialLeakBlocked` audit events
+            (the gateway records proto `Decision::REDACT` as this event type).
+          minimum: 0
     AgentHealth:
       type: object
       description: One agent's health sparkline.
