@@ -1029,6 +1029,90 @@ pub async fn get_fleet_health(
 }
 
 // ---------------------------------------------------------------------------
+// agent-enforcement — per-agent blocked + scrubbed counts (AAASM-5084)
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /api/v1/analytics/agent-enforcement`.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+pub struct AgentEnforcementParams {
+    /// Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+    /// `24h` — the window the Fleet "/24h" columns and Agent-Detail tiles show;
+    /// any unrecognised value also falls back to `24h`.
+    pub window: Option<String>,
+}
+
+/// One agent's blocked + scrubbed decision counts over the requested window.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AgentEnforcementCounts {
+    /// Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+    /// uses, so the dashboard can join these counts directly onto its fleet rows.
+    pub agent_id: String,
+    /// Blocked decisions in the window: `PolicyViolation` audit events (the
+    /// gateway records proto `Decision::DENY` as this event type).
+    pub blocked: u64,
+    /// Scrubbed decisions in the window: `CredentialLeakBlocked` audit events
+    /// (the gateway records proto `Decision::REDACT` as this event type).
+    pub scrubbed: u64,
+}
+
+/// `GET /api/v1/analytics/agent-enforcement` — per-agent blocked + scrubbed counts.
+///
+/// Aggregates the existing audit log over the requested window, grouping by
+/// agent id and counting the two enforcement outcomes the Fleet page surfaces:
+/// `blocked` = `PolicyViolation` events, `scrubbed` = `CredentialLeakBlocked`
+/// events. This is the same audit event-type → verdict mapping the enforcement
+/// timeline uses ([`timeline_verdict`], AAASM-5031): read-only observability
+/// over data the API already holds — no enforcement or audit-write path is
+/// touched, and no value is fabricated. Only agents that recorded at least one
+/// blocked or scrubbed decision appear (an agent with neither is omitted, so the
+/// dashboard renders `—` rather than a synthetic zero). Confined to the caller's
+/// tenant via [`fetch_window_entries`], matching the other audit-derived
+/// analytics routes (tool-usage, policy-effectiveness).
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/agent-enforcement",
+    params(AgentEnforcementParams),
+    responses(
+        (status = 200, description = "Per-agent blocked + scrubbed decision counts over the window", body = Vec<AgentEnforcementCounts>),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_agent_enforcement(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(params): Query<AgentEnforcementParams>,
+) -> (StatusCode, Json<Vec<AgentEnforcementCounts>>) {
+    let (_, window_secs) = resolve_window(params.window.as_deref());
+    let now = now_ns();
+    let since = now.saturating_sub(window_secs.saturating_mul(1_000_000_000));
+
+    let entries = fetch_window_entries(&caller, &state, since).await;
+
+    // agent id bytes -> (blocked, scrubbed). BTreeMap keeps the output ordered by
+    // agent id so the response is deterministic across requests.
+    let mut by_agent: BTreeMap<[u8; 16], (u64, u64)> = BTreeMap::new();
+    for e in &entries {
+        match e.event_type() {
+            AuditEventType::PolicyViolation => by_agent.entry(*e.agent_id().as_bytes()).or_insert((0, 0)).0 += 1,
+            AuditEventType::CredentialLeakBlocked => by_agent.entry(*e.agent_id().as_bytes()).or_insert((0, 0)).1 += 1,
+            _ => continue,
+        }
+    }
+
+    let agents: Vec<AgentEnforcementCounts> = by_agent
+        .into_iter()
+        .map(|(bytes, (blocked, scrubbed))| AgentEnforcementCounts {
+            agent_id: format_id(&bytes),
+            blocked,
+            scrubbed,
+        })
+        .collect();
+
+    (StatusCode::OK, Json(agents))
+}
+
+// ---------------------------------------------------------------------------
 // enforcement-timeline — windowed decision counts by verdict (AAASM-5031)
 // ---------------------------------------------------------------------------
 
