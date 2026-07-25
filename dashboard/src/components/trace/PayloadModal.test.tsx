@@ -39,6 +39,8 @@ describe('PayloadModal', () => {
     expect(screen.getByTestId('decision-outcome-band')).toBeInTheDocument()
     // redactedFields present → scrubbed verdict on the header chip.
     expect(screen.getByTestId('verdict-chip')).toHaveAttribute('data-verdict', 'scrubbed')
+    // Ratified square corners for the Trace surface (AAASM-5075).
+    expect(screen.getByTestId('verdict-chip')).toHaveAttribute('data-shape', 'square')
     expect(screen.getByTestId('payload-modal-close')).toBeInTheDocument()
   })
 
