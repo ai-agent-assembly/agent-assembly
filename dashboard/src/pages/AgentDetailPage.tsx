@@ -11,10 +11,12 @@ import { StatusChip } from '../components/fleet/StatusChip'
 import { ModeChip } from '../components/fleet/ModeChip'
 import { useToast } from '../components/Toast'
 import { LoadingState } from '../components/LoadingState'
-import { InheritedPermissionsPanel } from '../components/InheritedPermissionsPanel'
 import { AgentTrafficTab } from '../components/agentDetail/AgentTrafficTab'
 import { AgentPoliciesTab } from '../components/agentDetail/AgentPoliciesTab'
 import { AgentLineageTab } from '../components/agentDetail/AgentLineageTab'
+import { AgentCapabilityTab } from '../components/agentDetail/AgentCapabilityTab'
+import { AgentCapabilityOverviewPanel } from '../components/agentDetail/AgentCapabilityOverviewPanel'
+import { AgentConfigTab } from '../components/agentDetail/AgentConfigTab'
 // AAASM-1055 "how to approach": "Lazy-load the chart component so the agent
 // detail page does not pay its bundle cost up front" (recharts is large).
 const SubtreeBurnChart = lazy(() =>
@@ -135,15 +137,6 @@ const TABS: ReadonlyArray<{ id: AgentDetailTab; label: string }> = [
   { id: 'lineage',    label: 'Lineage' },
   { id: 'config',     label: 'Config' },
 ]
-
-function TabEmpty({ title, body }: Readonly<{ title: string; body: string }>) {
-  return (
-    <div className="ad-tab-empty" data-testid={`ad-tab-empty-${title.toLowerCase()}`}>
-      <p className="ad-tab-empty__title">{title}</p>
-      <p className="ad-tab-empty__body">{body}</p>
-    </div>
-  )
-}
 
 interface MiniBarProps {
   label: string
@@ -379,6 +372,14 @@ export function AgentDetailPage() {
                     </div>
                   </section>
 
+                  <section
+                    className="ad-card ad-card--span-2"
+                    data-testid="agent-overview-capability"
+                  >
+                    <h2 className="ad-card__title">capability snapshot · click any cell to inspect</h2>
+                    <AgentCapabilityOverviewPanel agentId={agent.id} agentName={agent.name} />
+                  </section>
+
                   <section className="ad-card ad-card--span-2" data-testid="agent-subtree-burn">
                     <Suspense fallback={<LoadingState page="generic" />}>
                       <SubtreeBurnChart agentId={agent.id} />
@@ -453,16 +454,13 @@ export function AgentDetailPage() {
                 </div>
               )}
 
-              {tab === 'capability' && <InheritedPermissionsPanel agentId={agent.id} />}
+              {tab === 'capability' && (
+                <AgentCapabilityTab agentId={agent.id} agentName={agent.name} />
+              )}
               {tab === 'traffic' && <AgentTrafficTab agentId={agent.id} />}
               {tab === 'policies' && <AgentPoliciesTab agentId={agent.id} agentName={agent.name} />}
               {tab === 'lineage' && <AgentLineageTab agentId={agent.id} />}
-              {tab === 'config' && (
-                <TabEmpty
-                  title="Config"
-                  body="Read-only YAML view of the agent's current enforcement config. Inline view lands in a follow-up sub-task."
-                />
-              )}
+              {tab === 'config' && <AgentConfigTab agent={agent} />}
             </div>
           </>
         )}
