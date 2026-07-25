@@ -31,4 +31,19 @@ describe('VerdictChip', () => {
     // Guards against dropping a verdict from VERDICT_META.
     expect(ALL).toHaveLength(5)
   })
+
+  it('defaults to the pill shape so existing callers are unchanged', () => {
+    render(<VerdictChip verdict="allowed" />)
+    const chip = screen.getByTestId('verdict-chip')
+    expect(chip).toHaveAttribute('data-shape', 'pill')
+    expect(chip).toHaveClass('verdict-chip')
+    expect(chip).not.toHaveClass('verdict-chip--square')
+  })
+
+  it('adds the square modifier class when shape="square"', () => {
+    render(<VerdictChip verdict="denied" shape="square" />)
+    const chip = screen.getByTestId('verdict-chip')
+    expect(chip).toHaveAttribute('data-shape', 'square')
+    expect(chip).toHaveClass('verdict-chip--square')
+  })
 })
