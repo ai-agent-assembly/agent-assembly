@@ -5,8 +5,9 @@ import type { UseQueryResult } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NodeDetailPanel } from './NodeDetailPanel'
 import * as topologyApi from '../../features/topology/api'
-import type { RecentEvent } from '../../features/topology/api'
-import type { TopologyNode } from '../../features/topology/types'
+import * as agentMutations from '../../features/agents/mutations'
+import type { AgentLineage, RecentEvent } from '../../features/topology/api'
+import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
 
 const NODE: TopologyNode = {
   id: 'agent-001',
@@ -177,5 +178,126 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByTestId('node-detail-apply-policy')).toBeInTheDocument()
     expect(screen.getByTestId('node-detail-shadow-mode')).toBeInTheDocument()
     expect(screen.getByTestId('node-detail-suspend')).toBeInTheDocument()
+  })
+})
+
+// ── Lineage / cross-team / suspend-resume (AAASM-5071) ───────────────────────
+describe('NodeDetailPanel — lineage, cross-team, suspend/resume', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  function mockLineage(partial: Partial<UseQueryResult<AgentLineage, Error>>): UseQueryResult<AgentLineage, Error> {
+    return partial as unknown as UseQueryResult<AgentLineage, Error>
+  }
+
+  function stubBaseQueries() {
+    vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+      mockRecent({ data: [], isLoading: false, isError: false }),
+    )
+  }
+
+  function renderWith(node: TopologyNode, extra: Partial<Parameters<typeof NodeDetailPanel>[0]> = {}) {
+    return render(
+      <QueryClientProvider client={makeClient()}>
+        <NodeDetailPanel node={node} onClose={vi.fn()} onViewTrace={vi.fn()} {...extra} />
+      </QueryClientProvider>,
+    )
+  }
+
+  it('renders the delegation lineage chain from the lineage query', () => {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
+      mockLineage({
+        data: {
+          agent_id: 'agent-001',
+          ancestor_count: 2,
+          ancestors: [
+            { id: 'root-1', name: 'orchestrator', depth: 0 },
+            { id: 'agent-001', name: 'support-agent', depth: 1 },
+          ],
+        },
+        isLoading: false,
+        isError: false,
+      }),
+    )
+    renderWith(NODE)
+    const steps = screen.getAllByTestId('node-detail-lineage-step')
+    expect(steps).toHaveLength(2)
+    expect(steps[0]).toHaveTextContent('orchestrator')
+    expect(steps[1]).toHaveTextContent('support-agent')
+    expect(steps[1]).toHaveTextContent('← here')
+  })
+
+  it('shows the root-only lineage hint for a single-node chain', () => {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
+      mockLineage({
+        data: { agent_id: 'agent-001', ancestor_count: 1, ancestors: [{ id: 'agent-001', name: 'support-agent', depth: 0 }] },
+        isLoading: false,
+        isError: false,
+      }),
+    )
+    renderWith(NODE)
+    expect(screen.getByTestId('node-detail-lineage-root')).toBeInTheDocument()
+    expect(screen.queryByTestId('node-detail-lineage-chain')).toBeNull()
+  })
+
+  it('lists cross-team edges to peers on other teams', () => {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(mockLineage({ data: undefined, isLoading: false, isError: false }))
+    const nodes: TopologyNode[] = [
+      NODE,
+      { id: 'peer-x', name: 'x-caller', status: 'active', team: 'growth', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+      { id: 'peer-same', name: 'same-team', status: 'active', team: 'support', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    ]
+    const edges: TopologyEdge[] = [
+      { source: 'agent-001', target: 'peer-x', kind: 'call' }, // cross-team
+      { source: 'agent-001', target: 'peer-same', kind: 'delegation' }, // same team — excluded
+    ]
+    renderWith(NODE, { nodes, edges })
+    const rows = screen.getAllByTestId('node-detail-crossteam-edge')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveTextContent('x-caller')
+    expect(rows[0]).toHaveTextContent('(growth)')
+  })
+
+  it('opens the reason dialog and suspends an active agent', async () => {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(mockLineage({ data: undefined, isLoading: false, isError: false }))
+    const suspend = vi.fn((_v, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.())
+    vi.spyOn(agentMutations, 'useSuspendAgent').mockReturnValue(
+      { mutate: suspend, isPending: false, isError: false } as unknown as ReturnType<typeof agentMutations.useSuspendAgent>,
+    )
+    const onAgentMutated = vi.fn()
+    renderWith(NODE, { onAgentMutated })
+
+    await userEvent.click(screen.getByTestId('node-detail-suspend'))
+    expect(screen.getByTestId('suspend-dialog')).toBeInTheDocument()
+    await userEvent.type(screen.getByTestId('suspend-dialog-input'), 'over budget')
+    await userEvent.click(screen.getByTestId('suspend-dialog-confirm'))
+
+    expect(suspend).toHaveBeenCalledWith(
+      { id: 'agent-001', reason: 'over budget' },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    )
+    expect(onAgentMutated).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumes a suspended agent without a reason dialog', async () => {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(mockLineage({ data: undefined, isLoading: false, isError: false }))
+    const resume = vi.fn((_v, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.())
+    vi.spyOn(agentMutations, 'useResumeAgent').mockReturnValue(
+      { mutate: resume, isPending: false, isError: false } as unknown as ReturnType<typeof agentMutations.useResumeAgent>,
+    )
+    const onAgentMutated = vi.fn()
+    const suspendedNode: TopologyNode = { ...NODE, status: 'suspended' }
+    renderWith(suspendedNode, { onAgentMutated })
+
+    const btn = screen.getByTestId('node-detail-suspend')
+    expect(btn).toHaveTextContent('Resume agent')
+    await userEvent.click(btn)
+    expect(resume).toHaveBeenCalledWith({ id: 'agent-001' }, expect.objectContaining({ onSuccess: expect.any(Function) }))
+    expect(screen.queryByTestId('suspend-dialog')).toBeNull()
+    expect(onAgentMutated).toHaveBeenCalledTimes(1)
   })
 })

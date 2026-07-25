@@ -1,0 +1,63 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  buildGraphJson,
+  exportGraphJson,
+  serializeGraphSvg,
+  triggerDownload,
+} from './exportGraph'
+import type { TopologyEdge, TopologyNode } from './types'
+
+const NODES: TopologyNode[] = [
+  { id: 'a', name: 'a', status: 'active', team: 't', owner: 'o', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+]
+const EDGES: TopologyEdge[] = [{ source: 'a', target: 'a', kind: 'delegation' }]
+
+describe('buildGraphJson', () => {
+  it('serialises nodes + edges as pretty-printed JSON that round-trips', () => {
+    const json = buildGraphJson(NODES, EDGES)
+    expect(json).toContain('\n  ') // pretty-printed (2-space indent)
+    expect(JSON.parse(json)).toEqual({ nodes: NODES, edges: EDGES })
+  })
+})
+
+describe('serializeGraphSvg', () => {
+  it('stamps the SVG namespace + XML prolog on a detached clone', () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+    svg.appendChild(rect)
+    const out = serializeGraphSvg(svg)
+    expect(out.startsWith('<?xml')).toBe(true)
+    expect(out).toContain('xmlns="http://www.w3.org/2000/svg"')
+    expect(out).toContain('<rect')
+  })
+})
+
+describe('triggerDownload', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('creates an object URL, clicks a transient anchor, then revokes the URL', () => {
+    const createUrl = vi.fn(() => 'blob:mock')
+    const revokeUrl = vi.fn()
+    // jsdom does not implement the object-URL API — stub it for this test.
+    vi.stubGlobal('URL', { ...URL, createObjectURL: createUrl, revokeObjectURL: revokeUrl })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    triggerDownload('graph.json', 'application/json', '{}')
+
+    expect(createUrl).toHaveBeenCalledTimes(1)
+    expect(click).toHaveBeenCalledTimes(1)
+    expect(revokeUrl).toHaveBeenCalledWith('blob:mock')
+    // Anchor is removed from the DOM after the click.
+    expect(document.querySelector('a[download]')).toBeNull()
+    vi.unstubAllGlobals()
+  })
+
+  it('exportGraphJson downloads the built JSON', () => {
+    const createUrl = vi.fn(() => 'blob:mock')
+    vi.stubGlobal('URL', { ...URL, createObjectURL: createUrl, revokeObjectURL: vi.fn() })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    exportGraphJson(NODES, EDGES)
+    expect(createUrl).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+})

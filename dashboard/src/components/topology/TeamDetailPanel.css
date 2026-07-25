@@ -1,0 +1,148 @@
+/* ============================================================
+   TeamDetailPanel (AAASM-5071)
+   Right-side, read-only summary for a selected team cluster.
+   Mirrors design/v1/hi-fi/topology.jsx TopoTeamPanel structure;
+   tokens only, so it re-themes in light/dark.
+   ============================================================ */
+
+.team-detail-panel {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  color: var(--ink);
+  font-size: 0.875rem;
+  overflow-y: auto;
+}
+
+.team-detail-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.75rem;
+}
+
+.team-detail-panel__eyebrow {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-4);
+}
+
+.team-detail-panel__title {
+  margin: 0.125rem 0 0;
+  font-size: 1rem;
+  font-weight: 700;
+  overflow-wrap: break-word;
+}
+
+.team-detail-panel__sub {
+  margin-top: 0.25rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  color: var(--ink-4);
+}
+
+.team-detail-panel__close {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0.125rem 0.4rem;
+  color: var(--ink-2);
+}
+
+.team-detail-panel__close:hover {
+  background: var(--paper-3);
+}
+
+.team-detail-panel__note {
+  background: var(--info-bg);
+  border: 1px solid var(--info);
+  border-radius: 3px;
+  padding: 0.45rem 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  color: var(--info);
+}
+
+.team-detail-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.team-detail-panel__section-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-4);
+}
+
+.team-detail-panel__members {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.team-detail-panel__members li + li {
+  border-top: 1px solid var(--line);
+}
+
+.team-detail-panel__member-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  background: transparent;
+  border: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  color: var(--ink);
+  cursor: default;
+}
+
+button.team-detail-panel__member-btn {
+  cursor: pointer;
+}
+
+button.team-detail-panel__member-btn:hover {
+  background: var(--paper-3);
+}
+
+.team-detail-panel__member-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-detail-panel__member-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.team-detail-panel__member-depth {
+  color: var(--ink-4);
+}
+
+.team-detail-panel__crossteam {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}

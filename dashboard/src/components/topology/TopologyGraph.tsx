@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import {
   forceCenter,
   forceCollide,
@@ -114,12 +114,39 @@ interface TeamLayoutEntry {
   readonly memberCount: number
 }
 
+/** Zoom bounds + step, mirroring the hi-fi reference (`TopoCanvas`). */
+const ZOOM_MIN = 0.25
+const ZOOM_MAX = 2.5
+const ZOOM_BUTTON_STEP = 1.2
+const ZOOM_WHEEL_IN = 1.09
+const ZOOM_WHEEL_OUT = 0.91
+/** Pointer travel (px) past which a mousedown→up is a pan, not a click. */
+const PAN_CLICK_THRESHOLD = 4
+
+const clampZoom = (z: number): number => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z))
+
 export interface TopologyGraphProps {
   readonly nodes: readonly TopologyNode[]
   readonly edges: readonly TopologyEdge[]
   readonly width?: number
   readonly height?: number
   readonly onNodeClick?: (node: TopologyNode) => void
+  /**
+   * Which edge kinds to draw. When omitted, every kind renders (back-compat).
+   * The sidebar edge-type checkboxes drive this so operators can declutter the
+   * mesh (AAASM-5071).
+   */
+  readonly visibleKinds?: ReadonlySet<TopologyEdge['kind']>
+  /** Draw cross-team (curved) edges. Defaults to `true`. */
+  readonly showCrossTeam?: boolean
+  /** Team whose cluster is highlighted (from the team panel selection). */
+  readonly selectedTeam?: string | null
+  /** Node whose card is highlighted (from the node panel selection). */
+  readonly selectedNodeId?: string | null
+  /** Fired when a team cluster is clicked (opens the team panel). */
+  readonly onTeamClick?: (team: string) => void
+  /** Fired when empty canvas is clicked (clears any open panel). */
+  readonly onBackgroundClick?: () => void
 }
 
 /**
@@ -138,6 +165,12 @@ export function TopologyGraph({
   width = 800,
   height = 500,
   onNodeClick,
+  visibleKinds,
+  showCrossTeam = true,
+  selectedTeam,
+  selectedNodeId,
+  onTeamClick,
+  onBackgroundClick,
 }: TopologyGraphProps) {
   // Stable identity key — restart the sim only when the *set* of node/edge
   // ids changes, not on every parent re-render.
@@ -285,9 +318,13 @@ export function TopologyGraph({
 
     const geoms: EdgeGeometry[] = []
     edges.forEach((edge, i) => {
+      // Sidebar edge-type filter: skip kinds the operator has hidden.
+      if (visibleKinds && !visibleKinds.has(edge.kind)) return
       const src = posById.get(String(edge.source))
       const tgt = posById.get(String(edge.target))
       if (!src || !tgt || src === tgt) return
+      // Cross-team toggle: hide long-range curves when disabled.
+      if (!showCrossTeam && src.source.team !== tgt.source.team) return
 
       const sDims = SIZE_VARIANT[bucketForRatio(src.source.budgetSpend, src.source.budgetLimit)]
       const tDims = SIZE_VARIANT[bucketForRatio(tgt.source.budgetSpend, tgt.source.budgetLimit)]
@@ -319,15 +356,80 @@ export function TopologyGraph({
       geoms.push({ key: `${edge.source}->${edge.target}-${edge.kind}-${i}`, kind: edge.kind, crossTeam, d })
     })
     return geoms
-  }, [edges, positions, width, height])
+  }, [edges, positions, width, height, visibleKinds, showCrossTeam])
+
+  // ── Pan + zoom (AAASM-5071) ────────────────────────────────────────────────
+  // Wheel zooms, drag pans, and the overlay buttons step/reset — the same
+  // scheme as the hi-fi reference (`TopoCanvas`). The transform lives on a
+  // wrapper <g>, so each node's own `translate(x,y)` (which layout + tests read)
+  // is untouched. A React `onWheel` would have to be passive; we attach a
+  // non-passive listener via ref so `preventDefault()` stops the page scrolling.
+  const svgRef = useRef<SVGSVGElement>(null)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1)
+  const [dragging, setDragging] = useState(false)
+  const dragRef = useRef<{ mx: number; my: number; px: number; py: number; moved: boolean } | null>(null)
+
+  useEffect(() => {
+    const el = svgRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      setZoom(z => clampZoom(z * (e.deltaY > 0 ? ZOOM_WHEEL_OUT : ZOOM_WHEEL_IN)))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  const handleMouseDown = (e: ReactMouseEvent<SVGSVGElement>) => {
+    // Grabbing a node starts a selection, not a pan.
+    if ((e.target as Element).closest('[data-testid="topology-node"]')) return
+    setDragging(true)
+    dragRef.current = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y, moved: false }
+  }
+  const handleMouseMove = (e: ReactMouseEvent<SVGSVGElement>) => {
+    const d = dragRef.current
+    if (!dragging || !d) return
+    const dx = e.clientX - d.mx
+    const dy = e.clientY - d.my
+    if (Math.abs(dx) > PAN_CLICK_THRESHOLD || Math.abs(dy) > PAN_CLICK_THRESHOLD) d.moved = true
+    setPan({ x: d.px + dx, y: d.py + dy })
+  }
+  const endDrag = () => setDragging(false)
+
+  // A cluster/background click that concludes a pan-drag must not also select.
+  const consumePanClick = (): boolean => {
+    const moved = dragRef.current?.moved ?? false
+    dragRef.current = null
+    return moved
+  }
+
+  const handleBackgroundClick = (e: ReactMouseEvent<SVGSVGElement>) => {
+    if (consumePanClick()) return
+    const target = e.target as Element
+    if (target.closest('[data-testid="topology-node"]') || target.closest('[data-testid="team-cluster"]')) return
+    onBackgroundClick?.()
+  }
+
+  const zoomIn = useCallback(() => setZoom(z => clampZoom(+(z * ZOOM_BUTTON_STEP).toFixed(2))), [])
+  const zoomOut = useCallback(() => setZoom(z => clampZoom(+(z / ZOOM_BUTTON_STEP).toFixed(2))), [])
+  const resetView = useCallback(() => { setPan({ x: 0, y: 0 }); setZoom(1) }, [])
 
   return (
+    <div className="topology-graph-wrap" data-testid="topology-graph-wrap">
     <svg
+      ref={svgRef}
       className="topology-graph"
       data-testid="topology-graph"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
       aria-label="Agent topology graph"
+      style={{ cursor: dragging ? 'grabbing' : 'grab', touchAction: 'none' }}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={endDrag}
+      onMouseLeave={endDrag}
+      onClick={handleBackgroundClick}
     >
       {/* Per-kind arrowhead markers. Fill is set from the same CSS variable as
           the matching edge stroke (via .topology-edge__arrow--<kind>) so the
@@ -352,6 +454,13 @@ export function TopologyGraph({
         ))}
       </defs>
 
+      {/* Pan/zoom viewport — the transform lives here, not on the nodes, so the
+          per-node translate the layout + tests rely on stays intact. */}
+      <g
+        className="topology-graph__viewport"
+        data-testid="topology-graph-viewport"
+        transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}
+      >
       {/* Team clusters (drawn under nodes) */}
       {clusters.map(c => (
         <g
@@ -359,6 +468,15 @@ export function TopologyGraph({
           className="topology-cluster"
           data-testid="team-cluster"
           data-team={c.team}
+          data-selected={selectedTeam === c.team ? 'true' : undefined}
+          role={onTeamClick ? 'button' : undefined}
+          tabIndex={onTeamClick ? 0 : undefined}
+          aria-label={onTeamClick ? `Inspect team ${c.team}` : undefined}
+          style={onTeamClick ? { cursor: 'pointer' } : undefined}
+          onClick={onTeamClick ? (e) => { e.stopPropagation(); if (!consumePanClick()) onTeamClick(c.team) } : undefined}
+          onKeyDown={onTeamClick ? (e: KeyboardEvent<SVGGElement>) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onTeamClick(c.team) }
+          } : undefined}
         >
           <rect
             className="topology-cluster__outline"
@@ -432,6 +550,7 @@ export function TopologyGraph({
             data-testid="topology-node"
             data-status={node.status}
             data-size-bucket={bucket}
+            data-selected={selectedNodeId === node.id ? 'true' : undefined}
             data-depth={depth}
             data-root={isRoot ? 'true' : undefined}
             data-in-cycle={inCycle ? 'true' : undefined}
@@ -516,7 +635,17 @@ export function TopologyGraph({
           </g>
         )
       })}
+      </g>
     </svg>
+
+    {/* Zoom controls (bottom-right overlay), mirroring the hi-fi reference. */}
+    <div className="topology-graph__controls" data-testid="topology-zoom-controls">
+      <button type="button" className="topology-graph__zoom-btn" data-testid="topology-zoom-in" aria-label="Zoom in" onClick={zoomIn}>＋</button>
+      <button type="button" className="topology-graph__zoom-btn" data-testid="topology-zoom-out" aria-label="Zoom out" onClick={zoomOut}>－</button>
+      <button type="button" className="topology-graph__zoom-btn" data-testid="topology-zoom-reset" aria-label="Reset view" onClick={resetView}>⤢</button>
+      <div className="topology-graph__zoom-readout" data-testid="topology-zoom-readout">{Math.round(zoom * 100)}%</div>
+    </div>
+    </div>
   )
 }
 

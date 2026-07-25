@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { UseQueryResult } from '@tanstack/react-query'
@@ -120,5 +120,43 @@ describe('TopologyPage', () => {
     await userEvent.click(screen.getByTestId('node-detail-close'))
     expect(screen.queryByTestId('node-detail-panel')).not.toBeInTheDocument()
     expect(screen.getByTestId('topology-panel-empty')).toBeInTheDocument()
+  })
+
+  it('renders the control sidebar with stats and the export button', () => {
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: GRAPH, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+    expect(screen.getByTestId('topology-sidebar')).toBeInTheDocument()
+    // 2 active agents (a1, a3), 1 cross-team edge (support→analytics).
+    expect(screen.getByTestId('topology-stat-active')).toHaveTextContent('2 active')
+    expect(screen.getByTestId('topology-stat-crossteam')).toHaveTextContent('1 cross-team')
+    expect(screen.getByTestId('topology-export-button')).toBeInTheDocument()
+  })
+
+  it('opens the TeamDetailPanel when a team cluster is clicked', async () => {
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: GRAPH, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+    const supportCluster = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === 'support')!
+    await userEvent.click(supportCluster)
+    expect(screen.getByTestId('team-detail-panel')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('support')
+  })
+
+  it('filters the graph to a single team via the sidebar team list', async () => {
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: GRAPH, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+    expect(screen.getAllByTestId('topology-node')).toHaveLength(3)
+    const analytics = screen.getAllByTestId('team-filter-item').find(i => i.dataset.team === 'analytics')!
+    await userEvent.click(analytics)
+    expect(analytics).toHaveAttribute('data-active', 'true')
+    // Only the single analytics agent remains on the canvas (force sim re-ticks
+    // on the new node set, so let it settle).
+    await waitFor(() => expect(screen.getAllByTestId('topology-node')).toHaveLength(1))
+    expect(screen.getByTestId('topology-node')).toHaveTextContent('analyst')
   })
 })

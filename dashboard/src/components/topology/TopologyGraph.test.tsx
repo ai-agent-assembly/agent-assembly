@@ -424,3 +424,68 @@ describe('TopologyGraph — delegation badges & markers (AAASM-5033)', () => {
     expect(node.querySelector('[data-testid="topology-node-trust"]')?.textContent).toContain('0')
   })
 })
+
+// ── Pan / zoom + filtering + selection (AAASM-5071) ──────────────────────────
+describe('TopologyGraph — pan/zoom, edge filter, team select', () => {
+  const NODES4: TopologyNode[] = [
+    { id: 'p1', name: 'planner', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    { id: 'w1', name: 'worker-1', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 2, budgetLimit: 10 },
+    { id: 'x1', name: 'x-caller', status: 'active', team: 'beta', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+  ]
+  const EDGES3: TopologyEdge[] = [
+    { source: 'p1', target: 'w1', kind: 'delegation' },
+    { source: 'w1', target: 'p1', kind: 'call' },
+    { source: 'p1', target: 'x1', kind: 'call' }, // cross-team
+  ]
+
+  it('renders zoom controls with a 100% readout by default', () => {
+    render(<TopologyGraph nodes={NODES4} edges={EDGES3} />)
+    expect(screen.getByTestId('topology-zoom-controls')).toBeInTheDocument()
+    expect(screen.getByTestId('topology-zoom-readout')).toHaveTextContent('100%')
+  })
+
+  it('zoom-in / zoom-out / reset update the readout and viewport scale', async () => {
+    render(<TopologyGraph nodes={NODES4} edges={EDGES3} />)
+    const viewport = screen.getByTestId('topology-graph-viewport')
+    expect(viewport.getAttribute('transform')).toContain('scale(1)')
+
+    await userEvent.click(screen.getByTestId('topology-zoom-in'))
+    expect(screen.getByTestId('topology-zoom-readout')).toHaveTextContent('120%')
+    expect(viewport.getAttribute('transform')).toContain('scale(1.2)')
+
+    await userEvent.click(screen.getByTestId('topology-zoom-reset'))
+    expect(screen.getByTestId('topology-zoom-readout')).toHaveTextContent('100%')
+    expect(viewport.getAttribute('transform')).toBe('translate(0 0) scale(1)')
+
+    await userEvent.click(screen.getByTestId('topology-zoom-out'))
+    expect(screen.getByTestId('topology-zoom-readout')).toHaveTextContent('83%')
+  })
+
+  it('hides edge kinds not in visibleKinds', () => {
+    render(<TopologyGraph nodes={NODES4} edges={EDGES3} visibleKinds={new Set(['delegation'])} />)
+    const kinds = screen.getAllByTestId('topology-edge').map(p => p.getAttribute('data-kind'))
+    expect(kinds).toEqual(['delegation'])
+  })
+
+  it('hides cross-team edges when showCrossTeam is false', () => {
+    render(<TopologyGraph nodes={NODES4} edges={EDGES3} showCrossTeam={false} />)
+    const cross = screen.getAllByTestId('topology-edge').filter(p => p.getAttribute('data-cross-team') === 'true')
+    expect(cross).toHaveLength(0)
+  })
+
+  it('fires onTeamClick with the team when a cluster is clicked', async () => {
+    const onTeamClick = vi.fn()
+    render(<TopologyGraph nodes={NODES4} edges={EDGES3} onTeamClick={onTeamClick} />)
+    const alpha = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === 'alpha')!
+    await userEvent.click(alpha)
+    expect(onTeamClick).toHaveBeenCalledWith('alpha')
+  })
+
+  it('marks the selected team + node with data-selected', () => {
+    render(<TopologyGraph nodes={NODES4} edges={EDGES3} selectedTeam="beta" selectedNodeId="p1" />)
+    const beta = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === 'beta')!
+    expect(beta).toHaveAttribute('data-selected', 'true')
+    const planner = screen.getAllByTestId('topology-node').find(g => g.querySelector('.topology-node__name')?.textContent?.includes('planner'))!
+    expect(planner).toHaveAttribute('data-selected', 'true')
+  })
+})
