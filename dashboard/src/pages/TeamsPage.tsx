@@ -7,7 +7,12 @@ import {
 } from '../features/teams/api'
 import { TeamListPane } from '../features/teams/TeamListPane'
 import { TeamDetailPane } from '../features/teams/TeamDetailPane'
+import { TeamOrphanDetail } from '../features/teams/TeamOrphanDetail'
 import './TeamsPage.css'
+
+// Sentinel selection id for the "unclaimed" orphan section — distinct from any
+// real team_id so it can share the single selection state with team rows.
+const ORPHAN_ID = '__orphan__'
 
 /**
  * Teams page — two-pane view (AAASM-5044, per `design/v1/hi-fi/teams.jsx`):
@@ -25,12 +30,17 @@ export function TeamsPage() {
     () => joinTeamRows(overviewQuery.data, costsQuery.data),
     [overviewQuery.data, costsQuery.data],
   )
+  const orphans = overviewQuery.data?.standalone_root_agents ?? []
 
   // Derive the effective selection rather than syncing it into state from an
   // effect: default to the first team until the operator picks one, and fall
   // back to the default if the picked team drops out of the (refetched) list.
+  // The orphan section is a valid pick and never drops out, so it short-circuits
+  // the team fallback.
+  const orphanPicked = picked === ORPHAN_ID
   const pickedExists = picked != null && rows.some(r => r.team_id === picked)
-  const selected = pickedExists ? picked : rows[0]?.team_id
+  const selectedTeam = pickedExists ? picked : rows[0]?.team_id
+  const selected = orphanPicked ? undefined : selectedTeam
 
   const isError = overviewQuery.isError
 
@@ -53,8 +63,11 @@ export function TeamsPage() {
           onSelect={setPicked}
           isLoading={overviewQuery.isLoading}
           isError={isError}
+          orphanCount={orphans.length}
+          isOrphanSelected={orphanPicked}
+          onSelectOrphan={() => setPicked(ORPHAN_ID)}
         />
-        <TeamDetailPane teamId={selected} />
+        {orphanPicked ? <TeamOrphanDetail orphans={orphans} /> : <TeamDetailPane teamId={selected} />}
       </div>
     </main>
   )

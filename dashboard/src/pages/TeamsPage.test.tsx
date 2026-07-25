@@ -25,10 +25,10 @@ function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   )
 }
 
-function makeOverview(teamCount: number): TopologyOverview {
+function makeOverview(teamCount: number, orphans: TopologyOverview['standalone_root_agents'] = []): TopologyOverview {
   return {
     root_agent_count: teamCount,
-    standalone_root_agents: [],
+    standalone_root_agents: orphans,
     team_count: teamCount,
     total_agent_count: teamCount * 3,
     teams: Array.from({ length: teamCount }, (_, i) => ({
@@ -38,6 +38,11 @@ function makeOverview(teamCount: number): TopologyOverview {
     })),
   }
 }
+
+const ORPHANS: TopologyOverview['standalone_root_agents'] = [
+  { id: 'o1', name: 'lonely-scraper', status: 'active', depth: 0, flagged: false, mode: 'off' },
+  { id: 'o2', name: 'rogue-bot', status: 'active', depth: 0, flagged: true, mode: 'off' },
+]
 
 const COSTS: CostSummary = {
   date: '2026-05-13',
@@ -151,5 +156,29 @@ describe('TeamsPage (two-pane)', () => {
     expect(screen.getByTestId('team-members-card')).toHaveTextContent('Members (2)')
     expect(screen.getByTestId('team-approval-routing')).toHaveTextContent('→ TeamAdmin')
     expect(screen.getByTestId('team-open-full-detail')).toHaveAttribute('href', '/teams/team-001')
+  })
+
+  it('renders the unclaimed orphan section with a count chip', async () => {
+    setupMocks(makeOverview(2, ORPHANS))
+    render(<TeamsPage />, { wrapper: Wrapper })
+    await screen.findByTestId('team-list-orphan-section')
+    expect(screen.getByTestId('team-list-orphan-count')).toHaveTextContent('2')
+  })
+
+  it('selecting the orphan section shows the no-governance callout and orphan agents', async () => {
+    const user = userEvent.setup()
+    setupMocks(makeOverview(2, ORPHANS))
+    render(<TeamsPage />, { wrapper: Wrapper })
+    // Defaults to the first team detail, not the orphan view.
+    await waitFor(() => expect(screen.getByTestId('team-detail-header')).toHaveTextContent('team-000'))
+
+    await user.click(screen.getByTestId('team-list-orphan-row'))
+
+    await screen.findByTestId('orphan-detail-callout')
+    expect(screen.getByTestId('orphan-detail-callout')).toHaveTextContent('No governance applied')
+    expect(screen.getByTestId('orphan-detail-agent-count')).toHaveTextContent('2 agents')
+    expect(screen.getAllByTestId('orphan-agent-row')).toHaveLength(2)
+    // The team detail pane is replaced by the orphan view.
+    expect(screen.queryByTestId('team-detail-pane')).not.toBeInTheDocument()
   })
 })
