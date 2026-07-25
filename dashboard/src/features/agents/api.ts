@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import type { components } from '../../api/generated/schema'
+import type { AgentEnforcementLookup } from './fleetTypes'
 
 export type Agent = components['schemas']['AgentResponse']
 export type LogEntry = components['schemas']['LogEntry']
@@ -24,6 +25,32 @@ export function useAgentsQuery() {
       if (error) throw new Error('Failed to fetch agents')
       // AAASM-4892: /agents and /logs return a paginated { items, total } object.
       return data?.items ?? []
+    },
+  })
+}
+
+/** Window presets accepted by `GET /api/v1/analytics/agent-enforcement`. */
+export type EnforcementWindow = '1h' | '24h' | '7d' | '30d'
+
+/**
+ * Per-agent blocked + scrubbed counts for the Fleet columns and Agent-Detail
+ * tiles (AAASM-5084). Folds the endpoint's array into a lookup keyed by agent
+ * id so callers can join it onto fleet rows in O(1); agents with no
+ * blocked/scrubbed decisions in the window are simply absent (rendered as `—`).
+ */
+export function useAgentEnforcementQuery(window: EnforcementWindow = '24h') {
+  return useQuery<AgentEnforcementLookup>({
+    queryKey: ['analytics', 'agent-enforcement', window],
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/v1/analytics/agent-enforcement', {
+        params: { query: { window } },
+      })
+      if (error) throw new Error('Failed to fetch agent enforcement metrics')
+      const lookup: Record<string, { blocked: number; scrubbed: number }> = {}
+      for (const row of data ?? []) {
+        lookup[row.agent_id] = { blocked: row.blocked, scrubbed: row.scrubbed }
+      }
+      return lookup
     },
   })
 }

@@ -5,6 +5,7 @@ import { api } from '../../api/client'
 import {
   useAgentCapabilitiesQuery,
   useAgentDecisionsQuery,
+  useAgentEnforcementQuery,
   useAgentEventsQuery,
   useAgentQuery,
   useAgentSubtreeBurnQuery,
@@ -55,6 +56,49 @@ describe('useAgentsQuery', () => {
     const { result } = renderHook(() => useAgentsQuery(), { wrapper: makeWrapper() })
     await waitFor(() => expect(result.current.isError).toBe(true))
     expect(result.current.error?.message).toBe('Failed to fetch agents')
+  })
+})
+
+describe('useAgentEnforcementQuery', () => {
+  it('defaults to the 24h window and folds rows into a lookup keyed by agent id', async () => {
+    get.mockResolvedValue({
+      data: [
+        { agent_id: 'a1', blocked: 3, scrubbed: 1 },
+        { agent_id: 'a2', blocked: 0, scrubbed: 5 },
+      ],
+    } satisfies FetchResult)
+    const { result } = renderHook(() => useAgentEnforcementQuery(), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual({
+      a1: { blocked: 3, scrubbed: 1 },
+      a2: { blocked: 0, scrubbed: 5 },
+    })
+    expect(get).toHaveBeenCalledWith('/api/v1/analytics/agent-enforcement', {
+      params: { query: { window: '24h' } },
+    })
+  })
+
+  it('passes an explicit window through to the endpoint', async () => {
+    get.mockResolvedValue({ data: [] } satisfies FetchResult)
+    const { result } = renderHook(() => useAgentEnforcementQuery('7d'), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(get).toHaveBeenCalledWith('/api/v1/analytics/agent-enforcement', {
+      params: { query: { window: '7d' } },
+    })
+  })
+
+  it('returns an empty lookup when the response body is nullish', async () => {
+    get.mockResolvedValue({ data: undefined } satisfies FetchResult)
+    const { result } = renderHook(() => useAgentEnforcementQuery(), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual({})
+  })
+
+  it('throws on failure', async () => {
+    get.mockResolvedValue({ error: { message: 'boom' } } satisfies FetchResult)
+    const { result } = renderHook(() => useAgentEnforcementQuery(), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.error?.message).toBe('Failed to fetch agent enforcement metrics')
   })
 })
 

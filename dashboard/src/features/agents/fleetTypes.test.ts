@@ -64,7 +64,26 @@ describe('toFleetAgent', () => {
 
   it('leaves unwired analytics metrics as null so tables render an em-dash', () => {
     const fa = toFleetAgent(makeAgent())
+    // trust has no backing endpoint yet; blocked/scrubbed are null without a lookup.
     expect(fa.trust).toBeNull()
+    expect(fa.blocked24h).toBeNull()
+    expect(fa.scrubbed24h).toBeNull()
+  })
+
+  it('fills blocked24h / scrubbed24h from the enforcement lookup when present', () => {
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), {
+      'id-1': { blocked: 7, scrubbed: 3 },
+    })
+    expect(fa.blocked24h).toBe(7)
+    expect(fa.scrubbed24h).toBe(3)
+  })
+
+  it('leaves blocked24h / scrubbed24h null when the agent is absent from the lookup', () => {
+    // An agent with no blocked/scrubbed decisions in the window is omitted from
+    // the endpoint response, so it must render `—`, not a fabricated 0.
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), {
+      'other-agent': { blocked: 2, scrubbed: 1 },
+    })
     expect(fa.blocked24h).toBeNull()
     expect(fa.scrubbed24h).toBeNull()
   })
