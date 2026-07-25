@@ -256,3 +256,73 @@
 .node-detail-panel__action--danger:hover {
   background: var(--danger-bg);
 }
+
+.node-detail-panel__action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Lineage (AAASM-5071) ──────────────────────────────────── */
+
+.node-detail-panel__lineage {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  line-height: 1.9;
+}
+
+.node-detail-panel__lineage-step {
+  color: var(--ink-3);
+}
+
+.node-detail-panel__lineage-step--current {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.node-detail-panel__lineage-tag {
+  margin-left: 0.4rem;
+  font-size: 0.62rem;
+  color: var(--ink-5);
+}
+
+/* ── Cross-team edges (AAASM-5071) ─────────────────────────── */
+
+.node-detail-panel__crossteam {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.node-detail-panel__crossteam-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+}
+
+.node-detail-panel__crossteam-kind {
+  font-weight: 700;
+  color: var(--info);
+}
+
+.node-detail-panel__crossteam-arrow {
+  color: var(--ink-4);
+}
+
+.node-detail-panel__crossteam-peer {
+  color: var(--ink-2);
+}
+
+.node-detail-panel__crossteam-team {
+  color: var(--ink-5);
+}
