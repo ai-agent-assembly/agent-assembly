@@ -8,6 +8,9 @@ interface TeamListPaneProps {
   onSelect: (teamId: string) => void
   isLoading: boolean
   isError: boolean
+  orphanCount: number
+  isOrphanSelected: boolean
+  onSelectOrphan: () => void
 }
 
 function MiniBudgetBar({ pct }: Readonly<{ pct: number }>) {
@@ -27,7 +30,16 @@ function MiniBudgetBar({ pct }: Readonly<{ pct: number }>) {
  * already-joined topology + cost rollup (`joinTeamRows`), so each carries its
  * agent count and daily burn-against-org-limit for the mini budget bar.
  */
-export function TeamListPane({ rows, selectedId, onSelect, isLoading, isError }: Readonly<TeamListPaneProps>) {
+export function TeamListPane({
+  rows,
+  selectedId,
+  onSelect,
+  isLoading,
+  isError,
+  orphanCount,
+  isOrphanSelected,
+  onSelectOrphan,
+}: Readonly<TeamListPaneProps>) {
   return (
     <div className="teams-list-pane" data-testid="team-list-pane">
       <div className="teams-list-pane__head">
@@ -82,6 +94,29 @@ export function TeamListPane({ rows, selectedId, onSelect, isLoading, isError }:
             {row.burn_pct != null && <MiniBudgetBar pct={row.burn_pct} />}
           </button>
         ))}
+
+        {!isLoading && !isError && (
+          <div className="teams-list-orphan" data-testid="team-list-orphan-section">
+            <div className="teams-list-orphan__label">unclaimed</div>
+            <button
+              type="button"
+              className={`teams-list-row teams-list-orphan__row${isOrphanSelected ? ' is-active' : ''}`}
+              data-testid="team-list-orphan-row"
+              aria-current={isOrphanSelected}
+              onClick={onSelectOrphan}
+            >
+              <div className="teams-list-row__top">
+                <span className="teams-list-row__name">orphan agents</span>
+                <span
+                  className={`teams-chip${orphanCount > 0 ? ' is-warn' : ''}`}
+                  data-testid="team-list-orphan-count"
+                >
+                  {orphanCount}
+                </span>
+              </div>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
