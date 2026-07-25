@@ -1,0 +1,78 @@
+/* Full-bleed click/keyboard target sitting behind the panel inside the scrim.
+   The scrim (.cap-drawer-scrim, shared) paints the dim; this button is invisible
+   and only exists to dismiss on backdrop interaction without an ARIA role. */
+.cap-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: default;
+}
+
+/* The panel is a native <dialog open> (semantic dialog, no ARIA role) rendered
+   as a flex child of the scrim. Neutralise the UA <dialog> box model so it lays
+   out identically to the shared aside-based drawer: right-anchored full-height
+   panel, only the left border kept, stacked above the backdrop button. */
+dialog.cap-drawer {
+  position: relative;
+  inset: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--line);
+  max-width: none;
+  max-height: none;
+  color: inherit;
+  z-index: 1;
+}
+
+.aci-prov {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aci-prov-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.aci-prov-cap {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.aci-prov-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aci-prov-chip {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 2px;
+  border: 1px solid var(--line-2);
+  color: var(--ink-3);
+}
+
+.aci-prov-chip--allow {
+  background: var(--paper-2);
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.aci-prov-chip--deny {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger);
+}
