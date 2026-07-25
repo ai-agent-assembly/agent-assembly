@@ -1,4 +1,24 @@
 /* global React */
+/*
+ * ─── SUPERSESSION NOTE — Trace (AAASM-5075 / AAASM-5077, ratified 2026-07-25) ───────
+ * The shipped implementation (dashboard/src/) is AUTHORITATIVE over this mock for the
+ * ratified items below. The prior mock behavior is NO LONGER the required
+ * implementation target. See ADR 0017
+ * (docs/src/adr/0017-dashboard-design-parity-ratified-evolutions.md).
+ *
+ * Ratified (shipped authoritative; the mock behavior noted is superseded):
+ *   • Container — shipped uses a single generic `TraceDrawer` shell; this mock's
+ *     per-variant `ApprovalDetailDrawer` is superseded.
+ *   • Redaction — shipped renders a GENERIC `RedactionPreview` block; this mock's
+ *     semantic per-type redaction templates are superseded (per-type templates would
+ *     FABRICATE data the backend does not emit — the generic block is more truthful).
+ *   • LayerSteps — shipped's `LayerSteps` renderer handles all 7 layer states;
+ *     complete-by-design once per-state data lands.
+ *
+ * NOT superseded: the FE-parity spec sections in this file remain the reference for
+ * in-flight FE work — do not delete them.
+ * ──────────────────────────────────────────────────────────────────────────────────
+ */
 const {
   useState:  useTST,
   useEffect: useTEF,
