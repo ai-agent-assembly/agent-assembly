@@ -131,6 +131,32 @@
   color: var(--text-muted);
 }
 
+/* Unclaimed / orphan-agents section — pinned below the named team rows and
+   tinted so it reads as distinct from governed groups. */
+.teams-list-orphan {
+  border-top: 1px solid var(--surface-card-border);
+  background: var(--surface-subtle-bg);
+}
+
+.teams-list-orphan__label {
+  padding: 0.5rem 0.875rem 0.25rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.625rem;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.teams-list-orphan__row {
+  background: transparent;
+  border-bottom: none;
+}
+
+.teams-list-orphan__row.is-active {
+  background: var(--surface-hover-bg);
+  border-left-color: var(--status-danger-solid);
+}
+
 /* ── Right: detail pane ──────────────────────────────────────────────────── */
 .teams-detail-pane {
   background: var(--surface-card);
@@ -349,4 +375,23 @@
 .teams-detail-fulllink {
   margin-top: 0.5rem;
   font-size: 0.8125rem;
+}
+
+/* No-governance callout for the orphan detail view. */
+.teams-callout {
+  border-radius: 6px;
+  padding: 0.875rem 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.teams-callout.is-danger {
+  background: var(--status-danger-bg);
+  color: var(--status-danger-text-strong);
+  border: 1px solid var(--status-danger-solid);
+}
+
+.teams-callout__title {
+  font-weight: 700;
+  margin-bottom: 0.375rem;
 }
