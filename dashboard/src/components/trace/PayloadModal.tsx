@@ -90,7 +90,7 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
           <div>
             <div className="payload-modal__eyebrow">trace decision explainer</div>
             <h2 className="payload-modal__title">
-              <VerdictChip verdict={verdict} />{' '}
+              <VerdictChip verdict={verdict} shape="square" />{' '}
               <code>{event.type}</code> · <span className="payload-modal__time">{event.timestamp}</span>
             </h2>
             <div className="payload-modal__subtitle">{event.agent} · {event.durationMs}&nbsp;ms</div>

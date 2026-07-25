@@ -1,0 +1,135 @@
+/* ============================================================
+   ApprovalDetailDrawer — Trace approval-review variant (AAASM-5075)
+
+   Structural layout only; the foundation `Drawer` supplies the scrim +
+   right-anchored panel (`.drawer-panel`). All colors via design tokens
+   in src/styles.css so both themes resolve without per-variant rules.
+   Mirrors the hi-fi `trace.jsx` ApprovalDetailDrawer head / SLA / KV /
+   footer regions, restricted to the fields the API actually emits.
+   ============================================================ */
+
+.approval-detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.approval-detail__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.9rem 1.15rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.approval-detail__head-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.approval-detail__title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.approval-detail__id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.approval-detail__summary {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-detail__close {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0.125rem 0.4rem;
+  color: var(--ink-2);
+}
+
+.approval-detail__close:hover {
+  background: var(--paper-3);
+}
+
+.approval-detail__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  background: var(--paper);
+}
+
+.approval-detail__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.approval-detail__section-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-4);
+  margin-bottom: 0.5rem;
+}
+
+.approval-detail__section-head .approval-detail__section-title {
+  margin-bottom: 0;
+}
+
+.approval-detail__kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  row-gap: 0.4rem;
+  column-gap: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.approval-detail__kv-row {
+  display: contents;
+}
+
+.approval-detail__kv-k {
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+.approval-detail__kv-v {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: break-word;
+}
+
+.approval-detail__kv-v code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+}
+
+.approval-detail__foot {
+  padding: 0.9rem 1.15rem;
+  border-top: 1px solid var(--line);
+  background: var(--paper-2);
+}

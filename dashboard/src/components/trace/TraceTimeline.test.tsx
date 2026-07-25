@@ -54,6 +54,10 @@ describe('TraceTimeline', () => {
     expect(rows[1].querySelector('[data-testid="verdict-chip"]')).toHaveAttribute('data-verdict', 'denied')
     expect(rows[2].querySelector('[data-testid="verdict-chip"]')).toHaveAttribute('data-verdict', 'allowed')
     expect(rows[3].querySelector('[data-testid="verdict-chip"]')).toHaveAttribute('data-verdict', 'allowed')
+    // Ratified square corners for the Trace surface (AAASM-5075).
+    for (const row of rows) {
+      expect(row.querySelector('[data-testid="verdict-chip"]')).toHaveAttribute('data-shape', 'square')
+    }
   })
 
   it('renders an empty <ol> when given no events', () => {
