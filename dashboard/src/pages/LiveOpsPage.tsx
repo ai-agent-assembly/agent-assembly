@@ -421,7 +421,7 @@ export function LiveOpsPage() {
               </div>
             </div>
             <div className="live-page__legend" data-testid="live-ops-legend">
-              <span className="live-page__chip live-page__chip--ok">● allow</span>
+              <span className="live-page__chip">● allow</span>
               <span className="live-page__chip live-page__chip--warn">● narrow</span>
               <span className="live-page__chip live-page__chip--info">
                 ● approval

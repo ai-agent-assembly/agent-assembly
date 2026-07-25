@@ -152,13 +152,16 @@
   cursor: not-allowed;
 }
 
+/* Page-on-call reads as the header's primary incident action, so it gets a
+   solid danger fill rather than the outline treatment of the speed controls. */
 .live-page__btn--danger {
   border-color: var(--danger);
-  color: var(--danger);
+  background: var(--danger);
+  color: var(--paper-2);
 }
 
 .live-page__btn--danger:hover:not(:disabled) {
-  background: var(--danger-bg);
+  filter: brightness(1.08);
   border-color: var(--danger);
 }
 
@@ -281,11 +284,9 @@
   color: var(--ink-2);
 }
 
-.live-page__chip--ok {
-  color: var(--ok);
-  border-color: var(--ok);
-  background: var(--ok-bg);
-}
+/* "allow" reads as the neutral baseline in the legend (per hi-fi), so it keeps
+   the default chip treatment — no green tint — while the exceptional fates
+   (narrow/approval/scrub/deny) carry the coloured chips. */
 
 .live-page__chip--warn {
   color: var(--warn);
