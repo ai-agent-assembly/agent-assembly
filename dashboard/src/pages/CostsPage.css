@@ -45,7 +45,7 @@
 
 .costs-kpis {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 1px;
   background: var(--line);
   border-bottom: 1px solid var(--line);
@@ -54,6 +54,18 @@
 .costs-kpi {
   background: var(--paper-2);
   padding: 14px 20px;
+}
+
+/* Mini budget bar + "% used" caption inside the Daily / Monthly KPI cards. */
+.costs-kpi__bar {
+  margin-top: 8px;
+}
+
+.costs-kpi__used {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--ink-4);
+  margin-top: 3px;
 }
 
 .costs-kpi__label {
