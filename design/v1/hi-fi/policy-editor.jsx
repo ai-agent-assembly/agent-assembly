@@ -1,4 +1,23 @@
 /* global React */
+/*
+ * ─── SUPERSESSION NOTE — Policy editor (AAASM-5072 / AAASM-5077, ratified 2026-07-25) ─
+ * The shipped implementation (dashboard/src/) is AUTHORITATIVE over this mock for the
+ * ratified items below. The prior mock behavior is NO LONGER the required
+ * implementation target. See ADR 0017
+ * (docs/src/adr/0017-dashboard-design-parity-ratified-evolutions.md).
+ *
+ * Ratified (shipped authoritative):
+ *   • Visual rule-builder — shipped ports this rule-builder faithfully; ratified as-is
+ *     (recorded so it is not re-litigated).
+ *   • Simulate — shipped ships a SINGLE-REQUEST DRY-RUN as the v0 feature; this mock's
+ *     replay-impact Simulate (the `SimulateModal` in policy.jsx) is DEFERRED to backend
+ *     (AAASM-5094 / SaaS) and is no longer the FE target. The "+ exception" per-FP-row
+ *     wiring is deferred with that modal.
+ *
+ * NOT superseded: the FE-parity spec sections in this file remain the reference for
+ * in-flight FE work — do not delete them.
+ * ──────────────────────────────────────────────────────────────────────────────────
+ */
 /* ============================================================
    Policy editor — rich, interactive form
    Turn 4: clause-level interaction (popover selects, verb toggle,
