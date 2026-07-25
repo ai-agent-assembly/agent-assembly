@@ -66,9 +66,9 @@ export function AgentConfigTab({ agent }: Readonly<{ agent: Agent }>) {
     <div className="acfg" data-testid="agent-config-tab">
       <div className="acfg__eyebrow">config (read-only · FE-derived · backend-only keys pending)</div>
       <pre className="acfg__yaml" data-testid="agent-config-yaml">
-        {lines.map((line, i) => (
+        {lines.map((line) => (
           <span
-            key={i}
+            key={line.text}
             className={`acfg__line${line.pending ? ' acfg__line--pending' : ''}`}
             data-testid={line.pending ? 'agent-config-pending-line' : undefined}
           >
