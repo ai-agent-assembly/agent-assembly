@@ -3336,6 +3336,16 @@ components:
         timestamp:
           type: string
           description: Decision timestamp as an RFC 3339 UTC string (audit `timestamp_ns`).
+        traceId:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Distributed-trace id linking this decision to its session trace
+            (`/api/v1/traces/...`). **Always `null` today**: the audit log records no
+            per-decision trace id, so it is surfaced nullable rather than fabricated.
+            Populated once trace-id propagation lands on the runtime — the
+            ADR-0018-gated follow-up (ADR 0018 / AAASM-5086 follow-up).
         verb:
           type:
           - string
@@ -3345,6 +3355,20 @@ components:
             `TOOL_CALL` / `FILE_OPERATION`). The design's `verb` column: the audit
             log records the action *category*, not a fine-grained read/write verb,
             so this is the closest recorded source. `null` when unrecorded.
+        verdict:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/RuntimeVerdict'
+            description: |-
+              The canonical 5-way runtime verdict (`allow` / `narrow` / `scrub` /
+              `pending` / `deny`, AAASM-5086) for this action — the vocabulary the
+              dashboard renders. Distinct from `decision`/`decisionLabel`, which are the
+              coarse proto enforcement outcome: a proto `deny` cannot tell a full block
+              from a scoped `narrow`, nor a proto `allow` from a `scrub`. **Always
+              `null` today**: deriving the verdict requires capturing it at decision
+              time on the enforcement hot path, which is the ADR-0018-gated follow-up
+              (populated once decision-capture lands — ADR 0018 / AAASM-5086 follow-up).
+              Wired through now so the column lands without another contract change.
     AgentDecisionsResponse:
       type: object
       description: Recent per-agent decision stream (AAASM-5058).
@@ -6590,6 +6614,21 @@ components:
           description: |-
             When true, the run logs the work it *would* perform without
             taking action. Defaults to `false`.
+    RuntimeVerdict:
+      type: string
+      description: |-
+        The canonical 5-way runtime verdict for a single enforced action.
+
+        Wire form is lowercase (`"allow"`, `"narrow"`, `"scrub"`, `"pending"`,
+        `"deny"`) to match the dashboard's verdict styling keys. The variants are
+        ordered least-to-most restrictive; do not reorder for wire stability, but the
+        order carries no serialized meaning (each variant serializes by name).
+      enum:
+      - allow
+      - narrow
+      - scrub
+      - pending
+      - deny
     SampleCall:
       type: object
       description: |-
