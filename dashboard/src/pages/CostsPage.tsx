@@ -260,16 +260,11 @@ export function CostsPage() {
 
       <BurnCallouts dailyPct={kpis.daily.pct} dailyLimit={kpis.daily.limit} />
 
-      <section className="costs-section" data-testid="costs-history">
-        <div className="costs-section__head">
-          <h2 className="costs-section__title">7-day spend history</h2>
-        </div>
-        <HistoryChart
-          data={historyQuery.data}
-          isLoading={historyQuery.isLoading}
-          isError={historyQuery.isError}
-        />
-      </section>
+      <HistoryChart
+        data={historyQuery.data}
+        isLoading={historyQuery.isLoading}
+        isError={historyQuery.isError}
+      />
 
       <CostTabs
         value={tab}
