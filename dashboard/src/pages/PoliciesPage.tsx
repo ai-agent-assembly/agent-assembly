@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState, type RefObject } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { usePoliciesQuery, useCreatePolicy, type Policy } from '../features/policies/api'
 import { useSandboxSummaryQuery } from '../features/audit/api'
-import { extractEnforcementMode } from '../features/policies/policyYamlHelpers'
+import { extractEnforcementMode, extractScope } from '../features/policies/policyYamlHelpers'
 import { SandboxEnableLiveDialog } from '../features/policies/SandboxEnableLiveDialog'
 import { SandboxSummaryCard } from '../components/SandboxSummaryCard'
 import { EmptyState, ErrorState } from '../components/states'
@@ -103,6 +103,9 @@ function PolicySkeletonRow() {
 
 function PolicyRow({ policy, onEdit }: Readonly<{ policy: Policy; onEdit: () => void }>) {
   const proposed = !policy.active
+  // The aa-api `PolicyResponse` has no `scope` field, so recover it from the
+  // raw `policy_yaml` via the same parse the editor's draftFromPolicy uses.
+  const scope = extractScope(policy.policy_yaml ?? '')
   return (
     <li>
       <button
@@ -111,11 +114,16 @@ function PolicyRow({ policy, onEdit }: Readonly<{ policy: Policy; onEdit: () => 
         data-testid="policy-row"
         onClick={onEdit}
       >
-        <span className="policies-list__row-name">
-          {policy.name}
-          {proposed ? (
-            <span className="policies-list__chip-draft">draft</span>
-          ) : null}
+        <span className="policies-list__row-main">
+          <span className="policies-list__row-name">
+            {policy.name}
+            {proposed ? (
+              <span className="policies-list__chip-draft">draft</span>
+            ) : null}
+          </span>
+          <span className="policies-list__row-scope" data-testid="policy-row-scope">
+            scope: {scope}
+          </span>
         </span>
         <span className="policies-list__row-meta">
           v{policy.version} · {policy.rule_count} {policy.rule_count === 1 ? 'rule' : 'rules'}
