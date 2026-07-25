@@ -109,6 +109,38 @@ export function TopologyPage() {
     exportGraphJson(allNodes, allEdges)
   }, [allNodes, allEdges])
 
+  // Right-hand panel is node-first, then team, else the empty prompt. Kept as a
+  // named element rather than an inline nested ternary for readability (S3358).
+  let detailPanel
+  if (selectedNode) {
+    detailPanel = (
+      <NodeDetailPanel
+        node={selectedNode}
+        nodes={allNodes}
+        edges={allEdges}
+        onClose={() => setSelectedNode(null)}
+        onViewTrace={handleViewTrace}
+        onAgentMutated={() => ignorePromise(refetch())}
+      />
+    )
+  } else if (selectedTeam) {
+    detailPanel = (
+      <TeamDetailPanel
+        team={selectedTeam}
+        nodes={allNodes}
+        edges={allEdges}
+        onClose={() => setSelectedTeam(null)}
+        onSelectNode={handleNodeClick}
+      />
+    )
+  } else {
+    detailPanel = (
+      <div className="topology-page__panel-empty" data-testid="topology-panel-empty">
+        Click an agent or team in the graph to see its details.
+      </div>
+    )
+  }
+
   return (
     <main className="topology-page" data-testid="topology-view">
       <header className="topology-page__head" data-testid="topology-header">
@@ -174,28 +206,7 @@ export function TopologyPage() {
             data-testid="topology-panel-wrapper"
             aria-label="Detail panel"
           >
-            {selectedNode ? (
-              <NodeDetailPanel
-                node={selectedNode}
-                nodes={allNodes}
-                edges={allEdges}
-                onClose={() => setSelectedNode(null)}
-                onViewTrace={handleViewTrace}
-                onAgentMutated={() => ignorePromise(refetch())}
-              />
-            ) : selectedTeam ? (
-              <TeamDetailPanel
-                team={selectedTeam}
-                nodes={allNodes}
-                edges={allEdges}
-                onClose={() => setSelectedTeam(null)}
-                onSelectNode={handleNodeClick}
-              />
-            ) : (
-              <div className="topology-page__panel-empty" data-testid="topology-panel-empty">
-                Click an agent or team in the graph to see its details.
-              </div>
-            )}
+            {detailPanel}
           </aside>
         </div>
       )}
