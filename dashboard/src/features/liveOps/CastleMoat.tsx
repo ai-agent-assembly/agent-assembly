@@ -184,8 +184,8 @@ export function CastleMoat({
       })
     }
 
-    function drawTravelling(a: Arrow) {
-      if (!ctx) return true
+    function drawTravelling(a: Arrow): void {
+      if (!ctx) return
       const cx = sizeW / 2
       const cy = sizeH / 2
       const startR = Math.min(sizeW, sizeH) * 0.49
@@ -212,7 +212,6 @@ export function CastleMoat({
       ctx.beginPath()
       ctx.arc(a.startX, a.startY, 3, 0, Math.PI * 2)
       ctx.fill()
-      return true
     }
 
     function drawBurst(a: Arrow): boolean {
@@ -252,7 +251,13 @@ export function CastleMoat({
       let i = 0
       while (i < arrows.length) {
         const a = arrows[i]
-        const survived = a.progress < 1 ? drawTravelling(a) : drawBurst(a)
+        let survived: boolean
+        if (a.progress < 1) {
+          drawTravelling(a)
+          survived = true
+        } else {
+          survived = drawBurst(a)
+        }
         if (!survived) {
           arrows.splice(i, 1)
           continue
