@@ -7,7 +7,9 @@ import type { UseQueryResult } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { CostsPage } from './CostsPage'
 import * as teamsApi from '../features/teams/api'
+import * as topologyApi from '../features/topology/api'
 import type { CostSummary, TopologyOverview } from '../features/teams/api'
+import type { TopologyGraph, TopologyNode } from '../features/topology/types'
 
 // recharts (used by the reused CostBreakdownPanel) needs ResizeObserver in jsdom.
 class ResizeObserverStub {
@@ -64,10 +66,20 @@ const COSTS: CostSummary = {
   ],
 }
 
+function node(id: string, team: string): TopologyNode {
+  return { id, team } as unknown as TopologyNode
+}
+
+function mockTopology(nodes: readonly TopologyNode[] = []) {
+  vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+    mockQuery<TopologyGraph>({ data: { nodes, edges: [] }, isLoading: false, isError: false }),
+  )
+}
+
 function setupMocks(
   overview: TopologyOverview | undefined = OVERVIEW,
   costs: CostSummary | undefined = COSTS,
-  opts: { isLoading?: boolean; isError?: boolean } = {},
+  opts: { isLoading?: boolean; isError?: boolean; nodes?: readonly TopologyNode[] } = {},
 ) {
   vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
     mockQuery<TopologyOverview>({
@@ -85,6 +97,7 @@ function setupMocks(
       refetch: vi.fn(),
     }),
   )
+  mockTopology(opts.nodes ?? [])
 }
 
 // CostBreakdownPanel issues its own raw fetch to the analytics endpoint.
@@ -106,24 +119,33 @@ function mockBreakdownFetch() {
   })
 }
 
+/** Activate a tab by its test id. */
+async function openTab(name: 'agents' | 'teams' | 'tree') {
+  await userEvent.click(screen.getByTestId(`costs-tab-${name}`))
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('CostsPage', () => {
-  it('renders the KPI strip from the cost summary', async () => {
+describe('CostsPage — KPI strip', () => {
+  it('renders Daily / Monthly / Agents-tracked plus the live Utilisation + Blocked KPIs', async () => {
     setupMocks()
     mockBreakdownFetch()
     render(<CostsPage />, { wrapper: Wrapper })
 
-    const total = await screen.findByTestId('costs-kpi-total')
-    expect(within(total).getByText('$210.00')).toBeInTheDocument()
+    const daily = await screen.findByTestId('costs-kpi-daily')
+    expect(within(daily).getByText('$210.00')).toBeInTheDocument()
 
-    // Top consumer = highest daily-spend agent.
-    const top = screen.getByTestId('costs-kpi-top-consumer')
-    expect(within(top).getByText('agent-spendy')).toBeInTheDocument()
+    const monthly = screen.getByTestId('costs-kpi-monthly')
+    expect(within(monthly).getByText('$3200.00')).toBeInTheDocument()
 
-    // Budget utilisation = 210/200 = 105.0%.
+    // 2 per-agent rows across 2 per-team rows.
+    const agents = screen.getByTestId('costs-kpi-agents')
+    expect(within(agents).getByText('2')).toBeInTheDocument()
+    expect(within(agents).getByText('across 2 teams')).toBeInTheDocument()
+
+    // Budget utilisation = 210/200 = 105.0% (daily period).
     const util = screen.getByTestId('costs-kpi-utilisation')
     expect(within(util).getByText('105.0%')).toBeInTheDocument()
 
@@ -132,68 +154,162 @@ describe('CostsPage', () => {
     expect(within(blocked).getByText('1')).toBeInTheDocument()
   })
 
-  it('renders a budget bar per team, red (danger) when burn ≥ 95% threshold', async () => {
+  it('switches the utilisation KPI to monthly; daily/monthly cards are period-independent', async () => {
     setupMocks()
     mockBreakdownFetch()
     render(<CostsPage />, { wrapper: Wrapper })
+
+    await screen.findByTestId('costs-kpi-utilisation')
+    await userEvent.click(screen.getByTestId('costs-period-monthly'))
+
+    // Utilisation follows the toggle: monthly = 3200/5000 = 64.0%.
+    expect(within(screen.getByTestId('costs-kpi-utilisation')).getByText('64.0%')).toBeInTheDocument()
+    // Daily + Monthly spend cards stay put (they show both periods at once).
+    expect(within(screen.getByTestId('costs-kpi-daily')).getByText('$210.00')).toBeInTheDocument()
+    expect(within(screen.getByTestId('costs-kpi-monthly')).getByText('$3200.00')).toBeInTheDocument()
+  })
+
+  it('degrades to dashes / N-A / 0 across the strip before any cost data arrives', async () => {
+    vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
+      mockQuery<TopologyOverview>({ data: OVERVIEW, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    vi.spyOn(teamsApi, 'useCostSummaryQuery').mockReturnValue(
+      mockQuery<CostSummary>({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    mockTopology()
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const daily = await screen.findByTestId('costs-kpi-daily')
+    expect(within(daily).getByText('—')).toBeInTheDocument()
+
+    const util = screen.getByTestId('costs-kpi-utilisation')
+    expect(within(util).getByText('N/A')).toBeInTheDocument()
+    expect(within(util).getByText('no budget limit set')).toBeInTheDocument()
+
+    expect(within(screen.getByTestId('costs-kpi-agents')).getByText('0')).toBeInTheDocument()
+  })
+
+  it('renders N/A utilisation when spend exists but no limit is configured', async () => {
+    const noLimitCosts: CostSummary = {
+      date: '2026-05-13',
+      daily_spend_usd: '42.00',
+      per_agent: [
+        { agent_id: 'agent-spendy', daily_spend_usd: '42.00', date: '2026-05-13', monthly_spend_usd: '600.00' },
+      ],
+      per_team: [{ team_id: 'team-hot', daily_spend_usd: '42.00', date: '2026-05-13', monthly_spend_usd: '600.00' }],
+    }
+    setupMocks({ ...OVERVIEW, teams: [{ team_id: 'team-hot', agent_count: 3, root_agent_count: 1 }] }, noLimitCosts)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    expect(within(await screen.findByTestId('costs-kpi-daily')).getByText('$42.00')).toBeInTheDocument()
+    const util = screen.getByTestId('costs-kpi-utilisation')
+    expect(within(util).getByText('N/A')).toBeInTheDocument()
+    expect(within(util).getByText('no budget limit set')).toBeInTheDocument()
+  })
+})
+
+describe('CostsPage — burn callouts', () => {
+  it('shows the red critical banner when daily burn is ≥ 95% (210/200 = 105%)', async () => {
+    setupMocks()
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const danger = await screen.findByTestId('costs-callout-danger')
+    expect(danger).toHaveTextContent('Daily budget critical — 105.0%')
+    expect(screen.queryByTestId('costs-callout-warn')).not.toBeInTheDocument()
+  })
+
+  it('shows the amber warning banner in the 80–95% band', async () => {
+    const warmCosts: CostSummary = { ...COSTS, daily_spend_usd: '170.00' } // 170/200 = 85%
+    setupMocks(OVERVIEW, warmCosts)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const warn = await screen.findByTestId('costs-callout-warn')
+    expect(warn).toHaveTextContent('Daily budget warning — 85.0%')
+    expect(screen.queryByTestId('costs-callout-danger')).not.toBeInTheDocument()
+  })
+
+  it('renders no callout below 80%', async () => {
+    const coolCosts: CostSummary = { ...COSTS, daily_spend_usd: '40.00' } // 20%
+    setupMocks(OVERVIEW, coolCosts)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    await screen.findByTestId('costs-kpi-daily')
+    expect(screen.queryByTestId('costs-callout-danger')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('costs-callout-warn')).not.toBeInTheDocument()
+  })
+})
+
+describe('CostsPage — tabs', () => {
+  it('defaults to the Per-agent tab: table + live breakdown panel', async () => {
+    setupMocks()
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    expect(await screen.findByTestId('costs-agent-table')).toBeInTheDocument()
+    expect(screen.getByTestId('cost-breakdown-panel')).toBeInTheDocument()
+    // Other tabs' bodies are not mounted until selected.
+    expect(screen.queryByTestId('team-budget-bar')).not.toBeInTheDocument()
+    expect(screen.getByTestId('costs-tab-agents')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('renders per-agent rows with daily/monthly spend and a topology-resolved team', async () => {
+    setupMocks(OVERVIEW, COSTS, { nodes: [node('agent-spendy', 'team-hot')] })
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const table = await screen.findByTestId('costs-agent-table')
+    const spendy = table.querySelector('[data-agent="agent-spendy"]') as HTMLElement
+    expect(within(spendy).getByText('agent-spendy')).toBeInTheDocument()
+    expect(within(spendy).getByText('team-hot')).toBeInTheDocument()
+    expect(within(spendy).getByText('$150.00')).toBeInTheDocument()
+    expect(within(spendy).getByText('$2200.00')).toBeInTheDocument()
+    // agent-thrifty has no topology node → team dash.
+    const thrifty = table.querySelector('[data-agent="agent-thrifty"]') as HTMLElement
+    expect(within(thrifty).getByText('—')).toBeInTheDocument()
+  })
+
+  it('switches to the Per-team tab and renders a budget bar per team', async () => {
+    setupMocks()
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    await screen.findByTestId('costs-agent-table')
+    await openTab('teams')
 
     const bars = await screen.findAllByTestId('team-budget-bar')
     expect(bars).toHaveLength(2)
-
-    const hot = bars.find(b => b.dataset.team === 'team-hot')!
-    expect(hot.dataset.thresholdBucket).toBe('danger')
-
-    const cool = bars.find(b => b.dataset.team === 'team-cool')!
-    expect(cool.dataset.thresholdBucket).toBe('ok')
+    expect(bars.find(b => b.dataset.team === 'team-hot')!.dataset.thresholdBucket).toBe('danger')
+    expect(bars.find(b => b.dataset.team === 'team-cool')!.dataset.thresholdBucket).toBe('ok')
   })
 
-  // The per-agent breakdown is backed by /api/v1/analytics/cost-breakdown, which
-  // now ships in aa-api (AAASM-4141), so the live chart panel renders real data
-  // instead of the "coming soon" placeholder.
-  it('renders the live per-agent cost breakdown panel', async () => {
+  it('switches to the Budget-tree tab', async () => {
     setupMocks()
     mockBreakdownFetch()
     render(<CostsPage />, { wrapper: Wrapper })
 
-    expect(await screen.findByTestId('cost-breakdown-panel')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Cost Breakdown' })).toBeInTheDocument()
-    // The placeholder must not render now that the backend is available.
-    expect(screen.queryByTestId('cost-breakdown-unavailable')).not.toBeInTheDocument()
+    await screen.findByTestId('costs-agent-table')
+    await openTab('tree')
+    expect(await screen.findByTestId('costs-budget-tree')).toBeInTheDocument()
   })
+})
 
-  it('switches KPI figures to the monthly period via the toggle', async () => {
-    setupMocks()
-    mockBreakdownFetch()
-    render(<CostsPage />, { wrapper: Wrapper })
-
-    await screen.findByTestId('costs-kpi-total')
-    await userEvent.click(screen.getByTestId('costs-period-monthly'))
-
-    const total = screen.getByTestId('costs-kpi-total')
-    expect(within(total).getByText('$3200.00')).toBeInTheDocument()
-    // Monthly utilisation = 3200/5000 = 64.0%.
-    const util = screen.getByTestId('costs-kpi-utilisation')
-    expect(within(util).getByText('64.0%')).toBeInTheDocument()
-  })
-
+describe('CostsPage — per-team states (under the Per-team tab)', () => {
   it('shows the empty state when no teams are registered', async () => {
     setupMocks({ ...OVERVIEW, teams: [], team_count: 0 })
     mockBreakdownFetch()
     render(<CostsPage />, { wrapper: Wrapper })
 
+    await screen.findByTestId('costs-tabs')
+    await openTab('teams')
     expect(await screen.findByTestId('costs-team-empty')).toBeInTheDocument()
   })
 
-  it('shows an error state with retry when the cost query fails', async () => {
-    setupMocks(OVERVIEW, undefined, { isError: true })
-    mockBreakdownFetch()
-    render(<CostsPage />, { wrapper: Wrapper })
-
-    expect(await screen.findByTestId('costs-error')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
-  })
-
-  it('refetches the cost summary when Retry is clicked in the error state', async () => {
+  it('shows an error state with retry, and refetches on click', async () => {
     const refetch = vi.fn()
     vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
       mockQuery<TopologyOverview>({ data: OVERVIEW, isLoading: false, isError: false, refetch: vi.fn() }),
@@ -201,56 +317,42 @@ describe('CostsPage', () => {
     vi.spyOn(teamsApi, 'useCostSummaryQuery').mockReturnValue(
       mockQuery<CostSummary>({ data: undefined, isLoading: false, isError: true, refetch }),
     )
+    mockTopology()
     mockBreakdownFetch()
     render(<CostsPage />, { wrapper: Wrapper })
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+    await screen.findByTestId('costs-tabs')
+    await openTab('teams')
+    expect(await screen.findByTestId('costs-error')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(refetch).toHaveBeenCalledTimes(1)
   })
 
-  it('shows the loading state while either query is in flight', async () => {
+  it('shows the loading state while a query is in flight (no error/list co-render)', async () => {
     setupMocks(OVERVIEW, COSTS, { isLoading: true })
     mockBreakdownFetch()
     render(<CostsPage />, { wrapper: Wrapper })
 
+    await screen.findByTestId('costs-tabs')
+    await openTab('teams')
     expect(await screen.findByTestId('costs-loading')).toBeInTheDocument()
-    // Error / empty / list branches must not co-render with loading.
     expect(screen.queryByTestId('costs-error')).not.toBeInTheDocument()
     expect(screen.queryByTestId('team-budget-bar')).not.toBeInTheDocument()
   })
 
-  it('error state takes precedence over loading and the team list', async () => {
+  it('error takes precedence over the team list', async () => {
     setupMocks(OVERVIEW, undefined, { isError: true })
     mockBreakdownFetch()
     render(<CostsPage />, { wrapper: Wrapper })
 
+    await screen.findByTestId('costs-tabs')
+    await openTab('teams')
     expect(await screen.findByTestId('costs-error')).toBeInTheDocument()
     expect(screen.queryByTestId('costs-loading')).not.toBeInTheDocument()
     expect(screen.queryByTestId('team-budget-bar')).not.toBeInTheDocument()
   })
 
-  it('recomputes the per-team budget bars (daily vs monthly are independent toggles)', async () => {
-    setupMocks()
-    mockBreakdownFetch()
-    render(<CostsPage />, { wrapper: Wrapper })
-
-    // The bars are driven by daily spend/limit and stay stable across the toggle:
-    // the period toggle only re-scopes the KPI strip, not the per-team daily bars.
-    const before = await screen.findAllByTestId('team-budget-bar')
-    expect(before).toHaveLength(2)
-
-    await userEvent.click(screen.getByTestId('costs-period-monthly'))
-
-    const after = await screen.findAllByTestId('team-budget-bar')
-    const hot = after.find(b => b.dataset.team === 'team-hot')!
-    expect(hot.dataset.thresholdBucket).toBe('danger')
-    // KPI strip followed the toggle to monthly.
-    const total = screen.getByTestId('costs-kpi-total')
-    expect(within(total).getByText('$3200.00')).toBeInTheDocument()
-  })
-
-  it('buckets a team in the amber/warn band (80–95% of limit)', async () => {
-    // team-warn 170/200 = 85% → warn; team-cool 20/200 = 10% → ok.
+  it('buckets a team in the amber/warn band (80–95% of limit) and reads 0 blocked', async () => {
     const warmCosts: CostSummary = {
       ...COSTS,
       per_team: [
@@ -269,91 +371,12 @@ describe('CostsPage', () => {
     mockBreakdownFetch()
     render(<CostsPage />, { wrapper: Wrapper })
 
-    const bars = await screen.findAllByTestId('team-budget-bar')
-    const warn = bars.find(b => b.dataset.team === 'team-warn')!
-    expect(warn.dataset.thresholdBucket).toBe('warn')
-    // No team is in the danger bucket → blocked-by-budget reads 0.
-    const blocked = screen.getByTestId('costs-kpi-blocked')
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
     expect(within(blocked).getByText('0')).toBeInTheDocument()
     expect(within(blocked).getByText('no teams over limit')).toBeInTheDocument()
-  })
 
-  it('renders dashes/N-A across the KPI strip before any cost data arrives', async () => {
-    // `costs` data undefined is the real pre-fetch state; every figure should
-    // degrade gracefully rather than render NaN. (setupMocks defaults a passed
-    // `undefined` back to COSTS, so wire the cost query mock directly here.)
-    vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
-      mockQuery<TopologyOverview>({ data: OVERVIEW, isLoading: false, isError: false, refetch: vi.fn() }),
-    )
-    vi.spyOn(teamsApi, 'useCostSummaryQuery').mockReturnValue(
-      mockQuery<CostSummary>({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() }),
-    )
-    mockBreakdownFetch()
-    render(<CostsPage />, { wrapper: Wrapper })
-
-    const total = await screen.findByTestId('costs-kpi-total')
-    expect(within(total).getByText('—')).toBeInTheDocument()
-
-    const util = screen.getByTestId('costs-kpi-utilisation')
-    expect(within(util).getByText('N/A')).toBeInTheDocument()
-    expect(within(util).getByText('no budget limit set')).toBeInTheDocument()
-
-    const top = screen.getByTestId('costs-kpi-top-consumer')
-    expect(within(top).getByText('—')).toBeInTheDocument()
-    expect(within(top).getByText('no spend data')).toBeInTheDocument()
-  })
-
-  it('renders N/A utilisation when spend exists but no budget limit is configured', async () => {
-    // daily_limit_usd omitted (the OSS API leaves it unset when no budget is set).
-    const noLimitCosts: CostSummary = {
-      date: '2026-05-13',
-      daily_spend_usd: '42.00',
-      per_agent: [
-        { agent_id: 'agent-spendy', daily_spend_usd: '42.00', date: '2026-05-13', monthly_spend_usd: '600.00' },
-      ],
-      per_team: [{ team_id: 'team-hot', daily_spend_usd: '42.00', date: '2026-05-13', monthly_spend_usd: '600.00' }],
-    }
-    setupMocks({ ...OVERVIEW, teams: [{ team_id: 'team-hot', agent_count: 3, root_agent_count: 1 }] }, noLimitCosts)
-    mockBreakdownFetch()
-    render(<CostsPage />, { wrapper: Wrapper })
-
-    const total = await screen.findByTestId('costs-kpi-total')
-    expect(within(total).getByText('$42.00')).toBeInTheDocument()
-    const util = screen.getByTestId('costs-kpi-utilisation')
-    expect(within(util).getByText('N/A')).toBeInTheDocument()
-    expect(within(util).getByText('no budget limit set')).toBeInTheDocument()
-  })
-
-  it('reports zero spend as $0.00 / 0.0% rather than N/A when a limit exists', async () => {
-    const zeroCosts: CostSummary = {
-      ...COSTS,
-      daily_spend_usd: '0.00',
-      per_agent: [
-        { agent_id: 'agent-idle', daily_spend_usd: '0.00', date: '2026-05-13', monthly_spend_usd: '0.00' },
-      ],
-      per_team: [{ team_id: 'team-hot', daily_spend_usd: '0.00', date: '2026-05-13', monthly_spend_usd: '0.00' }],
-    }
-    setupMocks({ ...OVERVIEW, teams: [{ team_id: 'team-hot', agent_count: 3, root_agent_count: 1 }] }, zeroCosts)
-    mockBreakdownFetch()
-    render(<CostsPage />, { wrapper: Wrapper })
-
-    const total = await screen.findByTestId('costs-kpi-total')
-    expect(within(total).getByText('$0.00')).toBeInTheDocument()
-    const util = screen.getByTestId('costs-kpi-utilisation')
-    expect(within(util).getByText('0.0%')).toBeInTheDocument()
-  })
-
-  it('surfaces over-budget utilisation above 100% and flags blocked teams', async () => {
-    // COSTS: daily 210/200 = 105.0% over budget; team-hot 190/200 = 95% → danger.
-    setupMocks()
-    mockBreakdownFetch()
-    render(<CostsPage />, { wrapper: Wrapper })
-
-    const util = await screen.findByTestId('costs-kpi-utilisation')
-    expect(within(util).getByText('105.0%')).toBeInTheDocument()
-
-    const blocked = screen.getByTestId('costs-kpi-blocked')
-    expect(within(blocked).getByText('1')).toBeInTheDocument()
-    expect(within(blocked).getByText('teams at ≥95% of org limit')).toBeInTheDocument()
+    await openTab('teams')
+    const bars = await screen.findAllByTestId('team-budget-bar')
+    expect(bars.find(b => b.dataset.team === 'team-warn')!.dataset.thresholdBucket).toBe('warn')
   })
 })
