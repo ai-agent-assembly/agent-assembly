@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
@@ -65,8 +65,6 @@ describe('AgentCapabilityMatrix', () => {
   it('shows the error state when the matrix fetch fails', async () => {
     vi.spyOn(capabilityClient, 'getMatrix').mockRejectedValue(new Error('boom'))
     renderWith(<AgentCapabilityMatrix agentId="abc123" renderDrawer={drawer} />)
-    await waitFor(() =>
-      expect(screen.getByTestId('agent-capability-matrix-error')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('agent-capability-matrix-error')).toBeInTheDocument()
   })
 })
