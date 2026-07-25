@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { capabilityClient } from '../api/capability'
+import { useCapabilityMatrixQuery } from '../features/capability/api'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingState } from '../components/LoadingState'
@@ -24,9 +25,12 @@ type Tab = 'matrix' | 'resource' | 'agent'
 export function CapabilityPage() {
   const [tab, setTab] = useState<Tab>('matrix')
   const [verb, setVerb] = useState<Verb>('write')
-  const [matrix, setMatrix] = useState<CapabilityMatrix | null>(null)
-  const [loadError, setLoadError] = useState<Error | null>(null)
-  const [reloadKey, setReloadKey] = useState(0)
+  const { data, error: loadError, isPending, refetch } = useCapabilityMatrixQuery()
+  // The bulk-override bar edits the grid optimistically. That edit lives in its
+  // own state and shadows the fetched matrix, so the fetched value never has to
+  // be copied into state (and cannot go stale behind a refetch).
+  const [optimistic, setOptimistic] = useState<CapabilityMatrix | null>(null)
+  const matrix = optimistic ?? data ?? null
   const [filters, setFilters] = useState<CapabilityFilters>(EMPTY_FILTERS)
   const [sort, setSort] = useState<SortState>(NO_SORT)
   const [inspected, setInspected] = useState<CellSelection | null>(null)
@@ -64,39 +68,23 @@ export function CapabilityPage() {
     if (!matrix) return
     const agentIds = [...selected]
     if (agentIds.length === 0) return
-    const prev = matrix
-    const optimistic = applyOverrideLocal(matrix, { agentIds, resourceId, verb, decision })
-    setMatrix(optimistic)
+    const prev = optimistic
+    setOptimistic(applyOverrideLocal(matrix, { agentIds, resourceId, verb, decision }))
     setSelected(new Set())
     try {
       await capabilityClient.applyOverride({ agentIds, resourceId, verb, decision })
       toast(`override applied to ${agentIds.length} agent${agentIds.length === 1 ? '' : 's'}`, 'success')
     } catch (e) {
-      setMatrix(prev)
+      // Drop the optimistic edit; the fetched projection becomes visible again.
+      setOptimistic(prev)
       const msg = e instanceof Error ? e.message : 'override failed'
       toast(`rollback: ${msg}`, 'error')
     }
   }
 
-  useEffect(() => {
-    let alive = true
-    capabilityClient.getMatrix().then(
-      (m) => {
-        if (alive) setMatrix(m)
-      },
-      (e: unknown) => {
-        if (alive) setLoadError(e instanceof Error ? e : new Error('failed to load matrix'))
-      },
-    )
-    return () => {
-      alive = false
-    }
-  }, [reloadKey])
-
   const handleRetry = () => {
-    setMatrix(null)
-    setLoadError(null)
-    setReloadKey((k) => k + 1)
+    setOptimistic(null)
+    void refetch()
   }
 
   const visibleAgents = matrix
@@ -111,7 +99,7 @@ export function CapabilityPage() {
     )
   }
 
-  if (!matrix) {
+  if (isPending || !matrix) {
     return (
       <div className="capability-page" data-testid="capability-page">
         <LoadingState page="capability" />

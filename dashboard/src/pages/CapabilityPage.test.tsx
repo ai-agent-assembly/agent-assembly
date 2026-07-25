@@ -1,4 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CapabilityPage } from './CapabilityPage'
@@ -23,7 +24,11 @@ function LocationProbe() {
 }
 
 function renderPage() {
+  // A throwaway client per render, with retries off so a rejected fetch surfaces
+  // the error state immediately instead of being retried.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
+    <QueryClientProvider client={queryClient}>
     <ToastProvider>
       <MemoryRouter initialEntries={['/capability']}>
         <Routes>
@@ -32,7 +37,8 @@ function renderPage() {
         </Routes>
         <LocationProbe />
       </MemoryRouter>
-    </ToastProvider>,
+    </ToastProvider>
+    </QueryClientProvider>,
   )
 }
 

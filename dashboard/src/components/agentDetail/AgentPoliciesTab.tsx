@@ -13,6 +13,7 @@ import type { Policy } from '../../features/capability/types'
 import { LoadingState } from '../LoadingState'
 import { ErrorState } from '../ErrorState'
 import './AgentDetailTabs.css'
+import { NO_DATA } from '../../features/capability/display'
 
 function statusClass(status: Policy['status']): string {
   if (status === 'active') return ' adt-status--active'
@@ -70,7 +71,7 @@ export function AgentPoliciesTab({
                 <td>
                   <span className={`adt-status${statusClass(p.status)}`}>{p.status}</span>
                 </td>
-                <td className="adt-num">{p.hits24h.toLocaleString()}</td>
+                <td className="adt-num">{p.hits24h?.toLocaleString() ?? NO_DATA}</td>
                 <td>
                   <Link to={`/policies?policy=${encodeURIComponent(p.id)}`} data-testid={`policy-open-${p.id}`}>
                     open ↗

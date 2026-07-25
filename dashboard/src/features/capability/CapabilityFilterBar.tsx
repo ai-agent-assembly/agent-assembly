@@ -1,6 +1,7 @@
 import type { CapabilityAgent } from './types'
 import type { CapabilityFilters } from './filters'
 import './CapabilityFilterBar.css'
+import type { AgentMode } from './types'
 
 export interface CapabilityFilterBarProps {
   filters: CapabilityFilters
@@ -34,8 +35,10 @@ export function CapabilityFilterBar({
   agents,
 }: Readonly<CapabilityFilterBarProps>) {
   const frameworks = uniqueSorted(agents.map((a) => a.framework))
-  const owners = uniqueSorted(agents.map((a) => a.owner))
-  const modes = uniqueSorted(agents.map((a) => a.mode))
+  // Agents whose owner / mode the endpoint could not source contribute no
+  // option — a blank entry would filter on a value nothing actually carries.
+  const owners = uniqueSorted(agents.map((a) => a.owner).filter((o): o is string => !!o))
+  const modes = uniqueSorted(agents.map((a) => a.mode).filter((m): m is AgentMode => !!m))
 
   return (
     <div className="cap-filterbar" role="search">

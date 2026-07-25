@@ -6,10 +6,17 @@ export type AgentMode = 'enforce' | 'shadow'
 
 export type AgentStatus = 'active' | 'idle' | 'suspended'
 
+export type ResourceGroup = 'comm' | 'files' | 'data' | 'infra' | 'code'
+
 export interface Resource {
   id: string
   name: string
-  group: 'comm' | 'files' | 'data' | 'infra' | 'code'
+  /**
+   * Absent for tool columns: an MCP tool name is operator-supplied and the
+   * gateway classifies it nowhere, so the backend omits the group rather than
+   * guessing one (AAASM-5090).
+   */
+  group?: ResourceGroup
   paths: string[]
 }
 
@@ -19,10 +26,21 @@ export interface CapabilityAgent {
   id: string
   name: string
   framework: string
-  owner: string
-  trust: number
-  mode: AgentMode
+  /** Owning team; absent when the agent registered without one. */
+  owner?: string
+  /**
+   * 0–100 trust score. Absent from the live endpoint — nothing in the gateway
+   * computes one yet (AAASM-5083) — so every consumer must fold it to `—`
+   * rather than assume 0.
+   */
+  trust?: number
+  /**
+   * Absent when the agent declared no enforcement-mode override, or declared
+   * one this two-value view cannot represent.
+   */
+  mode?: AgentMode
   status: AgentStatus
+  /** ISO 8601 UTC timestamp of the agent's last heartbeat. */
   lastSeen: string
   flagged?: boolean
   note?: string
@@ -39,10 +57,11 @@ export interface PolicyRule {
 export interface Policy {
   id: string
   name: string
-  version: string
+  version?: string
   scope: string
   status: 'active' | 'proposed' | 'archived'
-  hits24h: number
+  /** Absent from the live endpoint — attribution is owned by AAASM-5096. */
+  hits24h?: number
   affects: string[]
   rules: PolicyRule[]
 }
