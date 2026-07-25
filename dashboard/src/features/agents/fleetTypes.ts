@@ -7,6 +7,20 @@ import type { Agent } from './api'
  */
 export const FLEET_FLAGGED_THRESHOLD = 50
 
+/** One agent's blocked + scrubbed decision counts over the metrics window. */
+export interface AgentEnforcementCount {
+  readonly blocked: number
+  readonly scrubbed: number
+}
+
+/**
+ * Per-agent enforcement counts keyed by agent id, as returned (folded into a
+ * lookup) by `GET /api/v1/analytics/agent-enforcement` (AAASM-5084). Absence of
+ * a key means the agent recorded no blocked/scrubbed decisions in the window,
+ * which the Fleet view renders as `—` rather than `0`.
+ */
+export type AgentEnforcementLookup = Readonly<Record<string, AgentEnforcementCount>>
+
 /** Enforcement modes rendered by `ModeChip`. */
 export type FleetMode = 'enforce' | 'shadow' | 'off'
 
@@ -15,9 +29,11 @@ const MODE_VALUES: readonly FleetMode[] = ['enforce', 'shadow', 'off']
 /**
  * Projection of an `AgentResponse` onto the columns the Fleet page renders.
  *
- * Numeric metrics not yet backed by an analytics endpoint (`trust`,
- * `blocked24h`, `scrubbed24h`) are represented as `null` so table cells can
- * render an unambiguous `—` placeholder rather than misleading zeros.
+ * `blocked24h` / `scrubbed24h` are sourced from the per-agent enforcement
+ * endpoint (AAASM-5084) when a lookup is supplied to `toFleetAgent`; an agent
+ * absent from that lookup — and any metric with no backing endpoint yet
+ * (`trust`) — is represented as `null` so table cells render an unambiguous `—`
+ * placeholder rather than a misleading zero.
  */
 export interface FleetAgent {
   readonly source: Agent
@@ -64,9 +80,18 @@ function parseMode(raw: string | undefined): FleetMode {
   return 'enforce'
 }
 
-/** Project an `AgentResponse` onto the Fleet page view-model. */
-export function toFleetAgent(agent: Agent): FleetAgent {
+/**
+ * Project an `AgentResponse` onto the Fleet page view-model.
+ *
+ * When an `enforcement` lookup is supplied (from
+ * `GET /api/v1/analytics/agent-enforcement`), this agent's `blocked24h` /
+ * `scrubbed24h` are filled from it; an agent missing from the lookup — or no
+ * lookup at all (the metrics query still loading, or a caller that doesn't need
+ * the counts) — leaves both `null`, so the view renders `—`.
+ */
+export function toFleetAgent(agent: Agent, enforcement?: AgentEnforcementLookup): FleetAgent {
   const metadata = agent.metadata ?? {}
+  const counts = enforcement?.[agent.id]
   return {
     source: agent,
     id: agent.id,
@@ -78,8 +103,8 @@ export function toFleetAgent(agent: Agent): FleetAgent {
     flagged: agent.policy_violations_count >= FLEET_FLAGGED_THRESHOLD,
     lastSeen: agent.last_event ?? null,
     trust: null,
-    blocked24h: null,
-    scrubbed24h: null,
+    blocked24h: counts ? counts.blocked : null,
+    scrubbed24h: counts ? counts.scrubbed : null,
     note: metadata.note ?? null,
   }
 }
