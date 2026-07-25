@@ -589,6 +589,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/agent-enforcement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/agent-enforcement` — per-agent blocked + scrubbed counts.
+         * @description Aggregates the existing audit log over the requested window, grouping by
+         *     agent id and counting the two enforcement outcomes the Fleet page surfaces:
+         *     `blocked` = `PolicyViolation` events, `scrubbed` = `CredentialLeakBlocked`
+         *     events. This is the same audit event-type → verdict mapping the enforcement
+         *     timeline uses ([`timeline_verdict`], AAASM-5031): read-only observability
+         *     over data the API already holds — no enforcement or audit-write path is
+         *     touched, and no value is fabricated. Only agents that recorded at least one
+         *     blocked or scrubbed decision appear (an agent with neither is omitted, so the
+         *     dashboard renders `—` rather than a synthetic zero). Confined to the caller's
+         *     tenant via [`fetch_window_entries`], matching the other audit-derived
+         *     analytics routes (tool-usage, policy-effectiveness).
+         */
+        get: operations["get_agent_enforcement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analytics/approvals": {
         parameters: {
             query?: never;
@@ -1940,6 +1970,26 @@ export interface components {
         AgentDecisionsResponse: {
             /** @description Decisions newest-first, capped to the request's `limit`. */
             decisions: components["schemas"]["AgentDecisionResponse"][];
+        };
+        /** @description One agent's blocked + scrubbed decision counts over the requested window. */
+        AgentEnforcementCounts: {
+            /**
+             * @description Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+             *     uses, so the dashboard can join these counts directly onto its fleet rows.
+             */
+            agent_id: string;
+            /**
+             * Format: int64
+             * @description Blocked decisions in the window: `PolicyViolation` audit events (the
+             *     gateway records proto `Decision::DENY` as this event type).
+             */
+            blocked: number;
+            /**
+             * Format: int64
+             * @description Scrubbed decisions in the window: `CredentialLeakBlocked` audit events
+             *     (the gateway records proto `Decision::REDACT` as this event type).
+             */
+            scrubbed: number;
         };
         /** @description One agent's health sparkline. */
         AgentHealth: {
@@ -5889,6 +5939,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActionVolumeResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_enforcement: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+                 *     `24h` — the window the Fleet "/24h" columns and Agent-Detail tiles show;
+                 *     any unrecognised value also falls back to `24h`.
+                 */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-agent blocked + scrubbed decision counts over the window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentEnforcementCounts"][];
                 };
             };
             /** @description Missing or invalid credentials */
