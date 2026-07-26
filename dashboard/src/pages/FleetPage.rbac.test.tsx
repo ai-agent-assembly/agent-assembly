@@ -110,7 +110,9 @@ describe('FleetPage bulk-bar write gates', () => {
     // click either reaches the network or it does not — nothing in between.
     fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
 
-    await waitFor(() => expect(screen.getByTestId('fleet-bulkbar')).toBeInTheDocument())
+    // Yield a tick first, so an ungated click would have had its request in
+    // flight by the time the assertion runs.
+    await screen.findByTestId('fleet-bulkbar')
     expect(post).not.toHaveBeenCalled()
   })
 

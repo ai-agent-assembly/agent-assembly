@@ -104,7 +104,9 @@ describe('AlertRulesTable write gates', () => {
 
     fireEvent.click(screen.getByTestId('alert-rules-row-delete'))
 
-    await waitFor(() => expect(screen.getByTestId('alert-rules-table')).toBeInTheDocument())
+    // Yield a tick first, so an ungated click would have had its DELETE in
+    // flight by the time the assertion runs.
+    await screen.findByTestId('alert-rules-table')
     expect(mutatingCalls()).toHaveLength(0)
   })
 
