@@ -154,9 +154,7 @@ describe('Step5EnrollAgent — AAASM-5133 real enrollment', () => {
 
     fireEvent.click(screen.getByTestId('onboarding-enroll-start'))
 
-    await waitFor(() =>
-      expect(screen.getByTestId('onboarding-enroll-agent-agent-2')).toBeInTheDocument(),
-    )
+    await screen.findByTestId('onboarding-enroll-agent-agent-2')
     expect(screen.getByTestId('onboarding-enroll-agent-last-event-agent-1')).toHaveTextContent(
       '2026-07-26T09:00:00Z',
     )

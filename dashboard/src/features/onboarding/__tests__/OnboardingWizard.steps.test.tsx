@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
@@ -125,12 +125,12 @@ describe('OnboardingWizard step → state patching', () => {
     const onPersist = vi.fn()
     renderWizard({ initialStep: 'install', initialState: EMPTY_STATE, onPersist })
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('onboarding-install-verify'))
-    })
+    fireEvent.click(screen.getByTestId('onboarding-install-verify'))
 
-    expect(onPersist).toHaveBeenLastCalledWith(
-      expect.objectContaining({ state: expect.objectContaining({ gatewayHealthy: true }) }),
+    await waitFor(() =>
+      expect(onPersist).toHaveBeenLastCalledWith(
+        expect.objectContaining({ state: expect.objectContaining({ gatewayHealthy: true }) }),
+      ),
     )
   })
 
@@ -142,14 +142,12 @@ describe('OnboardingWizard step → state patching', () => {
     const onPersist = vi.fn()
     renderWizard({ initialStep: 'install', initialState: EMPTY_STATE, onPersist })
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('onboarding-install-verify'))
-    })
+    fireEvent.click(screen.getByTestId('onboarding-install-verify'))
+    await screen.findByTestId('onboarding-install-ok')
     expect(screen.getByTestId('onboarding-continue')).not.toBeDisabled()
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('onboarding-install-verify'))
-    })
+    fireEvent.click(screen.getByTestId('onboarding-install-verify'))
+    await screen.findByTestId('onboarding-install-absent')
 
     const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
     expect(last.state.gatewayHealthy).toBe(false)
@@ -161,9 +159,8 @@ describe('OnboardingWizard step → state patching', () => {
     const onPersist = vi.fn()
     renderWizard({ initialStep: 'install', initialState: EMPTY_STATE, onPersist })
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('onboarding-install-verify'))
-    })
+    fireEvent.click(screen.getByTestId('onboarding-install-verify'))
+    await screen.findByTestId('onboarding-install-absent')
 
     const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
     expect(last.state.gatewayHealthy).toBe(false)
@@ -217,7 +214,7 @@ describe('OnboardingWizard step → state patching', () => {
 
     fireEvent.click(screen.getByTestId('onboarding-enroll-start'))
 
-    await waitFor(() => expect(screen.getByTestId('onboarding-enroll-empty')).toBeInTheDocument())
+    await screen.findByTestId('onboarding-enroll-empty')
     const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
     expect(last.state.enrolled).toBe(false)
   })

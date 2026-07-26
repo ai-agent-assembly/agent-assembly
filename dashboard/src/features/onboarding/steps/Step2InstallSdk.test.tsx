@@ -66,11 +66,18 @@ const FABRICATIONS = [
   'connecting to runtime',
 ]
 
-/** Drive the probe button and let its promise settle. */
+/**
+ * Drive the probe button and let its promise settle.
+ *
+ * `fireEvent` wraps the click in `act()` itself, so wrapping it again bought
+ * nothing. What still needs flushing is the `await` inside `handleProbe`: its
+ * `setResult`/`setPhase` land a microtask after the click returns, and without
+ * a flush the assertions would race them. Hence the *empty* act — it exists for
+ * the async continuation, not for the event.
+ */
 async function clickProbe() {
-  await act(async () => {
-    fireEvent.click(screen.getByTestId('onboarding-install-verify'))
-  })
+  fireEvent.click(screen.getByTestId('onboarding-install-verify'))
+  await act(async () => {})
 }
 
 beforeEach(() => {
