@@ -54,8 +54,8 @@ function makeTopology(teamId: string): TeamTopology {
     team_id: teamId,
     agent_count: 2,
     members: [
-      { id: `${teamId}-a1`, name: 'orchestrator', status: 'active', depth: 0, flagged: false, mode: 'enforce' },
-      { id: `${teamId}-a2`, name: 'worker-1', status: 'active', depth: 1, flagged: false, mode: 'shadow' },
+      { id: `${teamId}-a1`, name: 'orchestrator', status: 'active', depth: 0, flagged: false, mode: 'enforce', trust: null },
+      { id: `${teamId}-a2`, name: 'worker-1', status: 'active', depth: 1, flagged: false, mode: 'shadow', trust: null },
     ],
   }
 }

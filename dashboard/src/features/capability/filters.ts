@@ -27,7 +27,7 @@ export function applyFilters(
     if (filters.mode !== 'any' && a.mode !== filters.mode) return false
     // An agent with no trust score is not "below" any ceiling — it is unmeasured,
     // so a trust filter cannot include or exclude it on the strength of a 0.
-    if (filters.trustMax !== null && (a.trust === undefined || a.trust > filters.trustMax))
+    if (filters.trustMax !== null && (a.trust == null || a.trust > filters.trustMax))
       return false
     if (!q) return true
     return (

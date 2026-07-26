@@ -2181,14 +2181,15 @@ export interface components {
             /** @description Team this agent belongs to, if any. */
             team_id?: string | null;
             /**
-             * Format: double
-             * @description Trust score (0–100), or `null` when no trust-analytics source exists yet.
+             * Format: int32
+             * @description Trust score as an integer on a 0–100 scale, or `null` when no
+             *     trust-analytics source exists yet.
              *     The registry does not compute a per-agent trust score today, so this is
              *     currently always `null` — the same placeholder the Fleet page uses. Kept
              *     present (not omitted) so the client renders an explicit "no data" state
              *     instead of inferring a misleading default.
              */
-            trust?: number | null;
+            trust: number | null;
         };
         /** @description JSON representation of an agent returned by the API. */
         AgentResponse: {
@@ -2301,11 +2302,13 @@ export interface components {
             /** @description Team this agent belongs to, if any. */
             team_id?: string | null;
             /**
-             * Format: double
-             * @description Trust score (0–100), or `null` when no trust-analytics source exists yet.
-             *     Same placeholder as [`AgentNode::trust`].
+             * Format: int32
+             * @description Trust score as an integer on a 0–100 scale, or `null` when no
+             *     trust-analytics source exists yet.
+             *     Same representation, placeholder, and null contract as
+             *     [`AgentNode::trust`] (AAASM-5104).
              */
-            trust?: number | null;
+            trust: number | null;
         };
         /**
          * @description Rich alert detail response used by `GET /api/v1/alerts/:id`.
@@ -2822,14 +2825,15 @@ export interface components {
             status: components["schemas"]["AgentStatus"];
             /**
              * Format: int32
-             * @description Trust score on a 0–100 scale.
+             * @description Trust score as an integer on a 0–100 scale, or `null` when no
+             *     trust-analytics source exists yet.
              *
-             *     Always absent: no trust score is computed anywhere in the gateway today.
+             *     Always `null`: no trust score is computed anywhere in the gateway today.
              *     Deriving one would be a new scoring rule, which is the subject of its own
              *     story (AAASM-5083) — emitting a placeholder here would be indistinguishable
              *     from a real score to every consumer.
              */
-            trust?: number | null;
+            trust: number | null;
         };
         /**
          * @description Top-level response shape for `GET /api/v1/capability/matrix`. Mirrors
