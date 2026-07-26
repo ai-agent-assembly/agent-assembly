@@ -107,7 +107,7 @@ describe('AuditLogPage', () => {
     await screen.findByTestId('audit-row-1048')
     expect(screen.getByTestId('audit-row-1047')).toBeInTheDocument()
     expect(screen.getByTestId('audit-row-1044')).toBeInTheDocument()
-    expect(screen.getByTestId('audit-count')).toHaveTextContent('3 / 3 loaded')
+    expect(screen.getByTestId('audit-count')).toHaveTextContent('3 / 3')
   })
 
   // ── AAASM-5117: the regression this lane exists to prevent ────────────────
@@ -189,7 +189,7 @@ describe('AuditLogPage', () => {
 
     await waitFor(() => expect(screen.queryByTestId('audit-row-1048')).toBeNull())
     expect(screen.getByTestId('audit-row-1047')).toBeInTheDocument()
-    expect(screen.getByTestId('audit-count')).toHaveTextContent('1 / 3 loaded')
+    expect(screen.getByTestId('audit-count')).toHaveTextContent('1 / 3')
   })
 
   it('filters by event family via the type-filter button row', async () => {
@@ -212,7 +212,7 @@ describe('AuditLogPage', () => {
 
     fireEvent.click(screen.getByTestId('audit-type-btn-all'))
     await waitFor(() => {
-      expect(screen.getByTestId('audit-count')).toHaveTextContent('3 / 3 loaded')
+      expect(screen.getByTestId('audit-count')).toHaveTextContent('3 / 3')
     })
   })
 
@@ -313,7 +313,7 @@ describe('AuditLogPage', () => {
 
     fireEvent.change(screen.getByTestId('audit-search'), { target: { value: 'no-match' } })
     expect(await screen.findByTestId('audit-empty')).toBeInTheDocument()
-    expect(screen.getByTestId('audit-count')).toHaveTextContent('0 / 3 loaded')
+    expect(screen.getByTestId('audit-count')).toHaveTextContent('0 / 3')
   })
 
   it('expands a row to reveal the payload detail', async () => {
@@ -515,7 +515,7 @@ describe('AuditLogPage — window coverage', () => {
     await screen.findByTestId('audit-row-1048')
 
     fireEvent.click(screen.getByTestId('audit-type-btn-approval'))
-    await waitFor(() => expect(screen.getByTestId('audit-count')).toHaveTextContent('1 / 3 loaded'))
+    await waitFor(() => expect(screen.getByTestId('audit-count')).toHaveTextContent('1 / 3'))
 
     fireEvent.click(screen.getByTestId('audit-export-csv'))
     expect(await screen.findByTestId('toast')).toHaveTextContent('Exported 1 row to CSV')

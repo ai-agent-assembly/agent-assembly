@@ -571,8 +571,12 @@ export function AuditLogPage() {
             )
           })}
         </div>
+        {/* One counter, denominated in the same units as the banner beside it:
+            `filtered / total-matching-the-server-filter`. An earlier revision
+            read `N / N loaded` next to `Partial — N of 4820`, two true numbers
+            that together invite the reading that N is the whole set. */}
         <span className="audit-count" data-testid="audit-count">
-          {filtered.length} / {all.length} loaded
+          {filtered.length} / {isKnown(coverage.total) ? coverage.total.value : '?'}
         </span>
       </div>
 
