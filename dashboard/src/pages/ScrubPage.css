@@ -37,6 +37,17 @@
   background: var(--paper-3);
 }
 
+/* An affordance with no production path is disabled rather than removed, so the
+   operator can see the capability is intended and is told why it is inert. */
+.scrub-head-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.scrub-head-btn:disabled:hover {
+  background: var(--paper);
+}
+
 .scrub-page-title {
   margin: 0;
   font-family: 'JetBrains Mono', monospace;
@@ -72,15 +83,19 @@
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--ink-3);
+  /* The segments carry state labels now, not two-word literals, so they wrap
+     on a narrow viewport instead of overflowing the strip. */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .scrub-stats-item {
   color: var(--ink-3);
 }
 
-.scrub-stats-ok {
-  color: var(--ok);
-}
+/* `.scrub-stats-ok` is gone: its only user was the hardcoded "● 0 leaks (30d)"
+   all-clear, and nothing on this strip is entitled to a success colour
+   (AAASM-5112). Absence tone now comes from the shared truthfulness palette. */
 
 .scrub-stats-scrubbed {
   color: var(--scrub);
