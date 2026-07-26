@@ -423,12 +423,18 @@ export function PoliciesPage() {
   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
 
   const attemptCloseEditor = useCallback(() => {
+    // The simulator is a native modal <dialog> in the top layer, but its Esc
+    // keydown still bubbles to the document listener OverlayHost installs — so
+    // without this guard one Esc would dismiss the simulator *and* the editor
+    // behind it (or raise the discard prompt over it). Esc belongs to the
+    // topmost surface; the simulator closes itself via its own `cancel`.
+    if (simulateOpen) return
     if (editorDirtyRef.current) {
       setConfirmDiscardOpen(true)
     } else {
       closeOverlay()
     }
-  }, [closeOverlay])
+  }, [closeOverlay, simulateOpen])
 
   const handleDiscardConfirm = useCallback(() => {
     setConfirmDiscardOpen(false)
