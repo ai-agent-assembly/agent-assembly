@@ -11,7 +11,7 @@
  * the listed agents are the ones it returned, and a failed poll renders as an
  * absence rather than as a zero.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { StatusState, TruthfulValue } from '../../../components/truthfulness'
 import {
   absent,
@@ -30,37 +30,37 @@ export interface Step5EnrollAgentProps {
   onEnrolled: () => void
 }
 
-/**
- * `live` is now a *finding*, not a timer expiry: it is only reachable from a
- * poll that returned at least one registered agent.
- */
-type Phase = 'idle' | 'listening' | 'live'
-
 /** Reason shown before the operator has asked the registry anything. */
 const NOT_ASKED = 'Start the listener to poll the gateway for registered agents'
 
 export function Step5EnrollAgent({ state, onEnrolled }: Readonly<Step5EnrollAgentProps>) {
   // A resumed session that once saw an agent is not evidence that one is
-  // registered now, so resuming re-enters `listening` and re-asks rather than
-  // restoring a `live` badge from localStorage.
-  const [phase, setPhase] = useState<Phase>(state.enrolled ? 'listening' : 'idle')
+  // registered now, so resuming re-enters the poll and re-asks rather than
+  // restoring a "registered" badge from localStorage.
+  const [polling, setPolling] = useState(state.enrolled)
 
-  const query = useRegisteredAgentsQuery(phase !== 'idle')
-  const registry: Certain<RegisteredAgents> =
-    phase === 'idle' ? absent('not-evaluated', NOT_ASKED) : certainFromQuery(query)
+  const query = useRegisteredAgentsQuery(polling)
+  const registry: Certain<RegisteredAgents> = polling
+    ? certainFromQuery(query)
+    : absent('not-evaluated', NOT_ASKED)
   const enrolledCount = mapCertain(registry, (r) => r.total)
   const agents = isKnown(registry) ? registry.value.items : []
 
-  useEffect(() => {
-    if (phase !== 'listening') return
-    if (!isKnown(registry) || registry.value.total <= 0) return
-    setPhase('live')
-    onEnrolled()
-  }, [phase, registry, onEnrolled])
-
-  // A known zero is a real answer — the gateway was asked and holds no agents —
-  // so it drives the bar honestly. Any absence leaves the bar empty.
+  // "Registered" is derived from the poll, never stored: there is no state to
+  // get out of step with the registry, and no way to reach the badge except by
+  // the gateway having answered with at least one agent. A known zero is a real
+  // answer — asked and answered "none" — so it drives the meter honestly; any
+  // absence leaves it empty.
   const hasAgents = isKnown(enrolledCount) && enrolledCount.value > 0
+
+  // The parent is told once. `onEnrolled` is a fresh closure on every render of
+  // the wizard, so without the latch this would re-fire on each poll tick.
+  const reported = useRef(false)
+  useEffect(() => {
+    if (!hasAgents || reported.current) return
+    reported.current = true
+    onEnrolled()
+  }, [hasAgents, onEnrolled])
 
   return (
     <section data-testid="onboarding-step-enroll">
@@ -88,22 +88,22 @@ export function Step5EnrollAgent({ state, onEnrolled }: Readonly<Step5EnrollAgen
 
       <div className="onb-term-meta">
         <span className="onb-term-meta-label">gateway agent registry</span>
-        {phase === 'idle' && (
+        {!polling && (
           <button
             type="button"
             className="onb-btn"
             data-testid="onboarding-enroll-start"
-            onClick={() => setPhase('listening')}
+            onClick={() => setPolling(true)}
           >
             ▸ start listener
           </button>
         )}
-        {phase === 'listening' && (
+        {polling && !hasAgents && (
           <span className="onb-id-action-btn live" data-testid="onboarding-enroll-listening">
             polling…
           </span>
         )}
-        {phase === 'live' && (
+        {polling && hasAgents && (
           <span className="onb-id-action-btn live" data-testid="onboarding-enroll-connected">
             agent registered
           </span>
