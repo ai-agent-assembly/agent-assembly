@@ -63,7 +63,7 @@ describe('OnboardingPage', () => {
       state: {
         ...EMPTY_STATE,
         framework: 'langchain',
-        gatewayReachable: true,
+        gatewayHealthy: true,
       },
     })
     renderAt('/onboarding')
@@ -71,6 +71,32 @@ describe('OnboardingPage', () => {
       'step 4 of 5',
     )
     expect(screen.getByTestId('onboarding-step-policy')).toBeInTheDocument()
+  })
+
+  it('tells the operator when saved progress was discarded rather than restarting silently', () => {
+    globalThis.localStorage.setItem(
+      ONBOARDING_SESSION_KEY,
+      // A pre-AAASM-5179 payload: carries the withdrawn `identity` key.
+      JSON.stringify({
+        step: 'policy',
+        state: {
+          framework: 'langchain',
+          installVerified: true,
+          identity: { did: 'did:aa:abc' },
+          policyPreset: 'read-only',
+          enrolled: false,
+        },
+      }),
+    )
+    renderAt('/onboarding')
+
+    expect(screen.getByTestId('onboarding-step-counter')).toHaveTextContent('step 1 of 5')
+    expect(screen.getByTestId('toast-container')).toHaveTextContent(/discarded/i)
+  })
+
+  it('says nothing when there was no session to discard', () => {
+    renderAt('/onboarding')
+    expect(screen.getByTestId('toast-container')).not.toHaveTextContent(/discarded/i)
   })
 
   it('clears the persisted session and fires a success toast on "skip onboarding"', () => {
@@ -90,7 +116,7 @@ describe('OnboardingPage', () => {
       step: 'enroll',
       state: {
         framework: 'langchain',
-        gatewayReachable: true,
+        gatewayHealthy: true,
         policyPreset: 'read-only',
         enrolled: true,
       },
