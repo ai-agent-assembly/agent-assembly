@@ -153,3 +153,4 @@
   - [0017 - Dashboard Design-Parity — Ratified Evolutions](adr/0017-dashboard-design-parity-ratified-evolutions.md)
   - [0018 - Canonical Runtime Verdict & Enriched Decision Record](adr/0018-canonical-runtime-verdict-and-enriched-decision-record.md)
   - [0019 - Agent Trust-Score Derivation](adr/0019-agent-trust-score-derivation.md)
+  - [0020 - Rolling vs Calendar Monthly Budget Windows](adr/0020-rolling-monthly-budget-window.md)
