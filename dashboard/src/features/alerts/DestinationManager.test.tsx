@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DestinationManager } from './DestinationManager'
+import { GrantScopes, WRITE_SCOPES } from '../../auth/GrantScopes'
 import * as api from './api'
 import type { Destination } from './types'
 
@@ -63,7 +64,11 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 function renderManager(open = true) {
-  return render(<DestinationManager open={open} onClose={vi.fn()} />)
+  return render(
+    <GrantScopes scopes={WRITE_SCOPES}>
+      <DestinationManager open={open} onClose={vi.fn()} />
+    </GrantScopes>,
+  )
 }
 
 describe('DestinationManager', () => {

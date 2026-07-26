@@ -7,16 +7,19 @@ import { ServiceIdentitiesPanel } from './ServiceIdentitiesPanel'
 import { ToastProvider } from '../../components/ToastProvider'
 import { _apiKeysInternal } from './apiKeys'
 import { REVEAL_AUTOCLOSE_MS } from './RevealOnceModal'
+import { GrantScopes, WRITE_SCOPES } from '../../auth/GrantScopes'
 
 function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <ToastProvider>
-        <MemoryRouter>
-          <ServiceIdentitiesPanel />
-        </MemoryRouter>
-      </ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>
+          <MemoryRouter>
+            <ServiceIdentitiesPanel />
+          </MemoryRouter>
+        </ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>,
   )
 }

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AlertRulesTable } from './AlertRulesTable'
+import { GrantScopes, WRITE_SCOPES } from '../../auth/GrantScopes'
 import { ToastProvider } from '../../components/ToastProvider'
 import type { AlertRule } from './types'
 
@@ -80,7 +81,9 @@ function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>
-      <ToastProvider>{children}</ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>{children}</ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>
   )
 }

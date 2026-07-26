@@ -7,6 +7,7 @@ import { api } from '../../api/client'
 import { absent, known } from '../../lib/truthfulness'
 import { APPROVALS_QUERY_KEY, type Approval } from '../approvals/api'
 import { ApprovalPool } from './ApprovalPool'
+import { GrantScopes, WRITE_SCOPES } from '../../auth/GrantScopes'
 
 /** A real approval id: a UUID, which is what the decide endpoints parse. */
 const UUID_1 = '3f1c9a52-0c4e-4a1b-9f2d-6a7b8c9d0e1f'
@@ -35,7 +36,9 @@ function renderPool(ui: React.ReactElement) {
     client,
     ...render(
       <QueryClientProvider client={client}>
-        <MemoryRouter>{ui}</MemoryRouter>
+        <GrantScopes scopes={WRITE_SCOPES}>
+          <MemoryRouter>{ui}</MemoryRouter>
+        </GrantScopes>
       </QueryClientProvider>,
     ),
   }

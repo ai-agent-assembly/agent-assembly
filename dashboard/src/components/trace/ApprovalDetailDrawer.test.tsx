@@ -5,12 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import { api } from '../../api/client'
 import type { Approval } from '../../features/approvals/api'
 import { ApprovalDetailDrawer } from './ApprovalDetailDrawer'
+import { GrantScopes, WRITE_SCOPES } from '../../auth/GrantScopes'
 
 function renderWithClient(ui: React.ReactElement) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
+  return render(
+    <QueryClientProvider client={client}>
+      <GrantScopes scopes={WRITE_SCOPES}>{ui}</GrantScopes>
+    </QueryClientProvider>,
+  )
 }
 
 // One hour in the future so ApprovalCountdown renders without firing onExpire.

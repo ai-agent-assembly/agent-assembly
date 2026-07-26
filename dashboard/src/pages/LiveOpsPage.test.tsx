@@ -12,6 +12,7 @@ import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import type { LiveOperation } from '../features/liveOps/types'
 import { LiveOpsPage } from './LiveOpsPage'
+import { GrantScopes, WRITE_SCOPES } from '../auth/GrantScopes'
 
 function renderWithProviders(ui: ReactElement) {
   const client = new QueryClient({
@@ -19,9 +20,11 @@ function renderWithProviders(ui: ReactElement) {
   })
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <ToastProvider>{ui}</ToastProvider>
-      </MemoryRouter>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <MemoryRouter>
+          <ToastProvider>{ui}</ToastProvider>
+        </MemoryRouter>
+      </GrantScopes>
     </QueryClientProvider>,
   )
 }
@@ -330,11 +333,13 @@ describe('LiveOpsPage', () => {
     mockStream({ ops: [makeOp('op-2'), makeOp('op-1')] })
     rerender(
       <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter>
-          <ToastProvider>
-            <LiveOpsPage />
-          </ToastProvider>
-        </MemoryRouter>
+        <GrantScopes scopes={WRITE_SCOPES}>
+          <MemoryRouter>
+            <ToastProvider>
+              <LiveOpsPage />
+            </ToastProvider>
+          </MemoryRouter>
+        </GrantScopes>
       </QueryClientProvider>,
     )
     expect(screen.getAllByTestId('op-row')).toHaveLength(1)
@@ -379,11 +384,13 @@ describe('LiveOpsPage', () => {
     mockStream({ ops: [makeOp('op-1', { status: 'terminated' })] })
     rerender(
       <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter>
-          <ToastProvider>
-            <LiveOpsPage />
-          </ToastProvider>
-        </MemoryRouter>
+        <GrantScopes scopes={WRITE_SCOPES}>
+          <MemoryRouter>
+            <ToastProvider>
+              <LiveOpsPage />
+            </ToastProvider>
+          </MemoryRouter>
+        </GrantScopes>
       </QueryClientProvider>,
     )
     expect(screen.queryByTestId('op-row-override')).toBeNull()

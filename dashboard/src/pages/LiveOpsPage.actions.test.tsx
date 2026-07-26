@@ -12,6 +12,7 @@ import * as actions from '../features/liveOps/actions'
 import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
 import type { LiveOperation } from '../features/liveOps/types'
 import { LiveOpsPage } from './LiveOpsPage'
+import { GrantScopes, WRITE_SCOPES } from '../auth/GrantScopes'
 
 vi.mock('../features/agents/api', () => ({ useAgentsQuery: vi.fn() }))
 vi.mock('../features/analytics/useTeamsQuery', () => ({ useTeamsQuery: vi.fn() }))
@@ -52,11 +53,13 @@ function mockStream(ops: LiveOperation[]) {
 function renderPage() {
   return render(
     <QueryClientProvider client={new QueryClient()}>
-      <MemoryRouter>
-        <ToastProvider>
-          <LiveOpsPage />
-        </ToastProvider>
-      </MemoryRouter>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <MemoryRouter>
+          <ToastProvider>
+            <LiveOpsPage />
+          </ToastProvider>
+        </MemoryRouter>
+      </GrantScopes>
     </QueryClientProvider>,
   )
 }
@@ -106,11 +109,13 @@ describe('LiveOpsPage row actions', () => {
     mockStream([makeOp('op-1', { status: 'blocked' })])
     rerender(
       <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter>
-          <ToastProvider>
-            <LiveOpsPage />
-          </ToastProvider>
-        </MemoryRouter>
+        <GrantScopes scopes={WRITE_SCOPES}>
+          <MemoryRouter>
+            <ToastProvider>
+              <LiveOpsPage />
+            </ToastProvider>
+          </MemoryRouter>
+        </GrantScopes>
       </QueryClientProvider>,
     )
 
