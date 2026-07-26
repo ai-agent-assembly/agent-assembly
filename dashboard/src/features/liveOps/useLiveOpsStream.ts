@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { components } from '../../api/generated/schema'
 import { mintWsTicket, WsTicketError } from '../../auth/wsTicket'
+import { absent, certain, known, type Certain } from '../../lib/truthfulness'
 import type { CallStackNode, CallStackNodeKind, LiveOperation, OperationStatus } from './types'
 import { OPERATION_STATUSES } from './types'
 
@@ -151,6 +152,46 @@ function coerceStatus(raw: string | null | undefined): OperationStatus {
   return 'running'
 }
 
+/**
+ * Why an `ops_change` row can say nothing about the op's verb, target or
+ * duration: `OpsChangePayload` carries exactly `op_id`, `state` and
+ * `updated_at` (see `openapi/v1.yaml`). Those three columns are not "missing
+ * from this frame" — the payload has no field for them at all, so no amount of
+ * waiting produces one. That is `not-supported`, not `unknown`.
+ */
+const NOT_ON_OPS_CHANGE = 'ops_change events carry only op_id, state and updated_at'
+
+/**
+ * Lift a wire latency into the truthfulness vocabulary (AAASM-5129).
+ *
+ * The mapper used to write `?? 0` here, and `formatLatency` rendered anything
+ * below 1 as `<1ms` — so on production, where `ViolationPayload.latency_ms` is
+ * documented as "Optional today — populated once the audit pipeline tracks
+ * per-action duration end-to-end", every row claimed a sub-millisecond latency
+ * that was never measured.
+ *
+ * The field *does* exist on the wire, so a missing value is `unknown` (we
+ * asked, the producer had nothing to say) rather than `not-supported` — this
+ * fills itself in once the audit pipeline lands, with no dashboard change.
+ *
+ * A zero that really arrived on the wire stays a known `0`: a measured zero is
+ * an answer, and the vocabulary is explicit that `0` is real data. Only
+ * non-finite or negative values are rejected, because `latency_ms` is declared
+ * `minimum: 0` and anything outside that is uninterpretable rather than fast.
+ */
+function certainLatency(raw: number | null | undefined): Certain<number> {
+  if (raw === null || raw === undefined) {
+    return absent<number>(
+      'unknown',
+      'The audit pipeline does not record per-action duration yet',
+    )
+  }
+  if (!Number.isFinite(raw) || raw < 0) {
+    return absent<number>('unknown', `Uninterpretable latency on the wire: ${String(raw)}`)
+  }
+  return known(raw)
+}
+
 function mapEvent(event: GovernanceEvent): LiveOperation | null {
   if (event.event_type === 'violation') {
     const audit = isAuditPayload(event.payload) ? event.payload : null
@@ -159,11 +200,13 @@ function mapEvent(event: GovernanceEvent): LiveOperation | null {
       id: String(event.id),
       agent: event.agent_id,
       team: audit?.team ?? undefined,
-      opType: audit?.op_type ?? 'unknown',
-      resource: audit?.resource ?? '',
+      // An empty `resource` is a blank cell, not a target — `certain` folds
+      // `''` into the absence for exactly this reason.
+      opType: certain(audit?.op_type, 'unknown', 'The event carried no operation type'),
+      resource: certain(audit?.resource, 'unknown', 'The event carried no resource'),
       status: coerceStatus(audit?.status),
       startedAt: event.timestamp,
-      latencyMs: audit?.latency_ms ?? 0,
+      latencyMs: certainLatency(audit?.latency_ms),
       ...(callStack ? { callStack } : {}),
     }
   }
@@ -172,18 +215,18 @@ function mapEvent(event: GovernanceEvent): LiveOperation | null {
     // The op_id (`"{trace_id}:{span_id}"`) is the stable identifier
     // across the op's lifetime — keying the row map by it lets the
     // dashboard merge successive transitions into one row instead of
-    // stacking new rows. Resource/opType are not carried on the
+    // stacking new rows. Resource/opType/latency are not carried on the
     // ops_change payload by design (they live on the originating
     // violation event); the row will inherit them from any matching
     // earlier violation event via the merge logic below.
     return {
       id: event.payload.op_id,
       agent: event.agent_id,
-      opType: 'unknown',
-      resource: '',
+      opType: absent<string>('not-supported', NOT_ON_OPS_CHANGE),
+      resource: absent<string>('not-supported', NOT_ON_OPS_CHANGE),
       status: opStateToStatus(event.payload.state),
       startedAt: event.payload.updated_at,
-      latencyMs: 0,
+      latencyMs: absent<number>('not-supported', NOT_ON_OPS_CHANGE),
     }
   }
   return null
