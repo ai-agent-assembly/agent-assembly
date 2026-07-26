@@ -213,3 +213,84 @@ describe('TeamsPage (two-pane)', () => {
     expect(screen.queryByTestId('team-detail-pane')).not.toBeInTheDocument()
   })
 })
+
+describe('TeamsPage — every agent is reachable from some grouping (AAASM-5157)', () => {
+  async function openOrphans() {
+    const user = userEvent.setup()
+    render(<TeamsPage />, { wrapper: Wrapper })
+    await user.click(await screen.findByTestId('team-list-orphan-row'))
+    await screen.findByTestId('orphan-detail-pane')
+  }
+
+  it('lists a spawned team-less agent exactly once, though the overview omits it', async () => {
+    setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
+    await openOrphans()
+
+    // The gateway's root-only field never carried this agent.
+    expect(makeOverview(2, ORPHANS).standalone_root_agents.map(a => a.id)).toEqual(['o1'])
+
+    const rows = screen.getAllByTestId('orphan-agent-row')
+    expect(rows).toHaveLength(2)
+    expect(screen.getAllByRole('link', { name: 'spawned-rogue' })).toHaveLength(1)
+    expect(rows[1]).toHaveTextContent('depth 2')
+  })
+
+  it('keeps agents a team does claim out of the unclaimed list', async () => {
+    setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
+    await openOrphans()
+    expect(screen.queryByRole('link', { name: 'worker' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'orchestrator' })).not.toBeInTheDocument()
+  })
+
+  it('agrees with its own count chip and with the registry tally', async () => {
+    setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
+    await openOrphans()
+    expect(screen.getByTestId('team-list-orphan-count')).toHaveTextContent('2')
+    expect(screen.getByTestId('orphan-detail-agent-count')).toHaveTextContent('2 agents')
+    expect(screen.getAllByTestId('orphan-agent-row')).toHaveLength(2)
+    expect(screen.queryByTestId('orphan-census-mismatch')).not.toBeInTheDocument()
+  })
+
+  it('states the discrepancy when the registry counts agents no grouping shows', async () => {
+    const overview = makeOverview(2, ORPHANS)
+    // One more agent in the registry than any grouping on this page can reach.
+    setupMocks({ ...overview, total_agent_count: overview.total_agent_count + 1 }, [...TEAM_MEMBERS, ...ORPHANS])
+    await openOrphans()
+
+    const notice = screen.getByTestId('orphan-census-mismatch')
+    expect(notice).toHaveAttribute('data-truth-state', 'unknown')
+    expect(notice).toHaveTextContent('1 agent unaccounted for')
+    expect(notice).toHaveTextContent('5 grouped here vs 6 reported by the registry')
+  })
+
+  it('reports a failed fleet request as unavailable rather than as zero unclaimed', async () => {
+    setupMocks(makeOverview(2), TEAM_MEMBERS)
+    vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
+      mockQuery<AgentNode[]>({
+        data: undefined,
+        isPending: false,
+        isError: true,
+        error: new Error('Failed to fetch topology agents'),
+      }),
+    )
+    await openOrphans()
+
+    expect(screen.getByTestId('team-list-orphan-count-value')).toHaveAttribute('data-truth-state', 'unavailable')
+    expect(screen.getByTestId('team-list-orphan-count')).not.toHaveTextContent('0')
+    const absent = screen.getByTestId('orphan-agents-absent')
+    expect(absent).toHaveAttribute('data-truth-state', 'unavailable')
+    expect(screen.queryByTestId('orphan-agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('orphan-agents-list')).not.toBeInTheDocument()
+    // A count that could not be taken cannot disagree with anything either.
+    expect(screen.queryByTestId('orphan-census-mismatch')).not.toBeInTheDocument()
+  })
+
+  it('keeps the unclaimed section reachable while the team list is failing', async () => {
+    setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
+    vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
+      mockQuery<TopologyOverview>({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() }),
+    )
+    await openOrphans()
+    expect(screen.getAllByTestId('orphan-agent-row')).toHaveLength(2)
+  })
+})
