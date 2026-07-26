@@ -674,6 +674,89 @@ mod tests {
         assert_eq!(state.key_store.len(), 1, "exactly the seeded admin key is present");
     }
 
+    /// AAASM-5102 — the shipped `serve_local` entrypoint goes through
+    /// `local_hardened_at`, which swaps in a durable SQLite-backed registry.
+    /// The engine has to end up holding *that* registry: if it keeps the
+    /// throwaway one `local_in_memory` would otherwise have created, every
+    /// lineage lookup misses and the cascade silently degrades to Global+Agent
+    /// again — the wiring fix would then never reach production.
+    #[tokio::test]
+    async fn local_hardened_engine_resolves_lineage_from_the_durable_registry() {
+        let mut state = AppState::local_hardened(LocalAuth::Off)
+            .await
+            .expect("hardened state builds");
+
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.deny.insert(aa_core::Capability::TerminalExec);
+        let engine = Arc::get_mut(&mut state.policy_engine).expect("engine is unshared right after construction");
+        engine.load_policy(aa_gateway::policy::PolicyDocument {
+            name: Some("team-rules".to_string()),
+            policy_version: Some("1".to_string()),
+            version: None,
+            scope: aa_gateway::policy::PolicyScope::Team("team-alpha".to_string()),
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: Default::default(),
+            capabilities: Some(caps),
+        });
+
+        state
+            .agent_registry
+            .register(test_record([0x01; 16], "team-alpha"))
+            .expect("register");
+
+        let merged = state
+            .policy_engine
+            .effective_permissions(&aa_core::identity::AgentId::from_bytes([0x01; 16]))
+            .merged;
+        assert!(
+            merged.deny.contains(&aa_core::Capability::TerminalExec),
+            "the engine must resolve the durable registry's lineage: {:?}",
+            merged.deny
+        );
+    }
+
+    /// Minimal registered agent owned by `team_id`.
+    fn test_record(agent_id: [u8; 16], team_id: &str) -> aa_gateway::registry::AgentRecord {
+        aa_gateway::registry::AgentRecord {
+            agent_id,
+            name: "a".to_string(),
+            framework: "langgraph".to_string(),
+            version: "0.1.0".to_string(),
+            risk_tier: 1,
+            tool_names: Vec::new(),
+            public_key: "pk".to_string(),
+            credential_token: "tok".to_string(),
+            metadata: std::collections::BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: aa_gateway::registry::AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: Vec::new(),
+            recent_events: std::collections::VecDeque::new(),
+            recent_traces: Vec::new(),
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: Some(team_id.to_string()),
+            org_id: None,
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some(agent_id),
+            children: Vec::new(),
+            parent_key: None,
+            enforcement_mode: None,
+        }
+    }
+
     #[test]
     fn local_state_error_messages_are_descriptive() {
         let load = LocalStateError::PolicyLoad("bad policy".to_string());
