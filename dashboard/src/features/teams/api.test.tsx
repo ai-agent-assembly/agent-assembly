@@ -9,6 +9,7 @@ import {
   useCostSummaryQuery,
   useSuspendTeam,
   useResumeTeam,
+  useTeamPoliciesQuery,
   useTeamTopologyQuery,
   useTopologyOverviewQuery,
   type CostSummary,
@@ -260,5 +261,46 @@ describe('useResumeTeam', () => {
     await expect(
       result.current.mutateAsync({ teamId: 'research', memberIds: ['a1'] }),
     ).rejects.toThrow('Failed to resume agent a1')
+  })
+})
+
+describe('useTeamPoliciesQuery', () => {
+  it('returns the policies array on success', async () => {
+    get.mockResolvedValue({
+      data: {
+        team_id: 'support',
+        policies: [{ id: 'team:support/guard', name: 'guard', scope: 'team:support' }],
+      },
+    } satisfies FetchResult)
+    const { wrapper } = makeWrapper()
+    const { result } = renderHook(() => useTeamPoliciesQuery('support'), { wrapper })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toHaveLength(1)
+    expect(result.current.data?.[0].id).toBe('team:support/guard')
+    expect(get).toHaveBeenCalledWith('/api/v1/policies/team/{team_id}', {
+      params: { path: { team_id: 'support' } },
+    })
+  })
+
+  it('surfaces an error rather than an empty list when the request fails', async () => {
+    get.mockResolvedValue({ error: { detail: 'forbidden' } } satisfies FetchResult)
+    const { wrapper } = makeWrapper()
+    const { result } = renderHook(() => useTeamPoliciesQuery('support'), { wrapper })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.data).toBeUndefined()
+  })
+
+  it('yields an empty list when the response carries no policies key', async () => {
+    get.mockResolvedValue({ data: { team_id: 'support' } } satisfies FetchResult)
+    const { wrapper } = makeWrapper()
+    const { result } = renderHook(() => useTeamPoliciesQuery('support'), { wrapper })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual([])
+  })
+
+  it('does not fetch until a team is selected', () => {
+    const { wrapper } = makeWrapper()
+    renderHook(() => useTeamPoliciesQuery(undefined), { wrapper })
+    expect(get).not.toHaveBeenCalled()
   })
 })
