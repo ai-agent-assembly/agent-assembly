@@ -16,6 +16,9 @@ pub mod destinations;
 pub mod devtools;
 pub mod dispatch;
 pub mod edges;
+/// Shared read-only mirrors of the gateway's enforcement stages. Crate-internal:
+/// it is a projection helper, not an HTTP surface.
+pub(crate) mod enforcement_mirror;
 pub mod health;
 pub mod iam;
 pub mod logs;

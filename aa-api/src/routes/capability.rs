@@ -62,6 +62,7 @@ use crate::models::capability::{
     CapabilityOverrideResponse, Decision, OverrideRecord, Policy, PolicyRule, PolicyStatus, Resource, ResourceGroup,
     Verb,
 };
+use crate::routes::enforcement_mirror::{agent_tool_ids, cascade_denies_all_egress, cascade_denies_tool};
 use crate::state::AppState;
 
 /// Reasons a revoke request can fail.
@@ -459,11 +460,6 @@ const SYSTEM_RESOURCES: [(&str, &str, ResourceGroup); 3] = [
     ("network_outbound", "Network (outbound)", ResourceGroup::Infra),
 ];
 
-/// The `tools` key that means "every tool without an explicit entry"
-/// (AAASM-4152). It is a fallback pattern, never a tool name, so it must never
-/// reach the matrix as a resource column.
-const TOOL_WILDCARD: &str = "*";
-
 /// Whether `id` is one of the reserved system-family column ids.
 ///
 /// A tool may legally be *named* `filesystem`; without this guard it would
@@ -471,43 +467,6 @@ const TOOL_WILDCARD: &str = "*";
 /// filesystem cell.
 fn is_system_resource(id: &str) -> bool {
     SYSTEM_RESOURCES.iter().any(|(sid, _, _)| *sid == id)
-}
-
-/// Whether the cascade's tool stage would deny `tool`.
-///
-/// **Mirrors `stage_tool_allow` in `aa-gateway/src/engine/decision.rs`** — an
-/// exact `tools` entry wins, otherwise the `"*"` fallback applies, and
-/// `allow: false` denies. Any deny anywhere in the cascade is final, matching
-/// the evaluator's short-circuit on the first `Deny`.
-///
-/// The capability set alone cannot answer this: a tool denied by
-/// `tools: { "*": { allow: false } }` contributes no `mcp_tool:` capability, so
-/// reading only the merged capabilities reported `allow` for a tool the gateway
-/// blocks — and contradicted the rule rows [`project_rules`] emits from the very
-/// same `tools` map.
-fn cascade_denies_tool(cascade: &[Arc<aa_gateway::policy::PolicyDocument>], tool: &str) -> bool {
-    cascade.iter().any(|doc| {
-        doc.tools
-            .get(tool)
-            .or_else(|| doc.tools.get(TOOL_WILDCARD))
-            .is_some_and(|tp| !tp.allow)
-    })
-}
-
-/// Whether the cascade's network stage denies *every* outbound host.
-///
-/// **Mirrors `stage_network` in `aa-gateway/src/engine/decision.rs`** for the one
-/// case a single cell can state without a concrete URL: a document that declares
-/// a `network` section with an empty allowlist is deny-all (the fail-closed
-/// matcher — AAASM-3127/AAASM-3730).
-///
-/// A present, non-empty allowlist is deliberately *not* treated as a deny: egress
-/// is permitted, just host-restricted, and the cell has no host to test. Such an
-/// agent keeps its capability-derived decision.
-fn cascade_denies_all_egress(cascade: &[Arc<aa_gateway::policy::PolicyDocument>]) -> bool {
-    cascade
-        .iter()
-        .any(|doc| doc.network.as_ref().is_some_and(|np| np.allowlist.is_empty()))
 }
 
 /// Resolve one capability to a matrix decision using the same public helpers as
@@ -593,31 +552,6 @@ fn project_mode(mode: Option<aa_core::EnforcementMode>) -> Option<AgentMode> {
 /// several documents; collapsing them on scope alone would drop all but the first
 /// from the policies list.
 type PolicyKey = (String, Option<String>);
-
-/// Tool columns one agent contributes: what it declared at registration, plus any
-/// tool its own cascade names — whether by an `mcp_tool:` grant or by a per-tool
-/// policy. All three are real declarations about this agent, so all three earn it
-/// a cell.
-fn agent_tool_ids(
-    record: &aa_gateway::registry::AgentRecord,
-    caps: &aa_core::CapabilitySet,
-    cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
-) -> std::collections::BTreeSet<String> {
-    let mut agent_tools: std::collections::BTreeSet<String> = record.tool_names.iter().cloned().collect();
-    for cap in caps.allow.iter().chain(caps.deny.iter()) {
-        if let aa_core::Capability::McpTool(name) = cap {
-            agent_tools.insert(name.clone());
-        }
-    }
-    for doc in cascade {
-        agent_tools.extend(doc.tools.keys().cloned());
-    }
-    // `"*"` is the tool stage's fallback pattern, not a tool. Left in, it became
-    // a resource column literally named `*` whose cell read `allow` — the exact
-    // inverse of what `tools: { "*": { allow: false } }` declares.
-    agent_tools.remove(TOOL_WILDCARD);
-    agent_tools
-}
 
 /// Fold one agent's cascade into the shared policy rows, recording the agent as
 /// affected by every document that declares capabilities or tools.
@@ -846,6 +780,7 @@ fn project_rules(doc: &aa_gateway::policy::PolicyDocument) -> Vec<PolicyRule> {
 mod tests {
     use super::*;
     use crate::auth::{AuthenticatedCaller, Tenant};
+    use crate::routes::enforcement_mirror::TOOL_WILDCARD;
     use aa_gateway::policy::rbac::CallerRole;
     use aa_gateway::registry::AgentRecord;
 
