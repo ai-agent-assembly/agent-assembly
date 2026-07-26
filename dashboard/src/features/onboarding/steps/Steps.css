@@ -477,6 +477,13 @@
 
 .onb-enroll-count.is-live { color: var(--ok); }
 
+/* The `/ ∞` suffix beside the count. An absent count renders the shared `—`
+   marker in the count's place, so the suffix must not inherit the 28px size. */
+.onb-enroll-count-total {
+  font-size: 14px;
+  color: var(--ink-4);
+}
+
 .onb-enroll-bar {
   height: 4px;
   background: var(--line);

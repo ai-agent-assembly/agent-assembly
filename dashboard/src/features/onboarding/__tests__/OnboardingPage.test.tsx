@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, it, expect, beforeEach } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { OnboardingPage } from '../../../pages/OnboardingPage'
 import { ToastProvider } from '../../../components/ToastProvider'
 import { ONBOARDING_COMPLETED_KEY } from '../useGatewayConfiguredGuard'
@@ -10,16 +11,31 @@ import {
 } from '../useWizardSession'
 import { EMPTY_STATE } from '../types'
 
+// The enroll step polls the agent registry; see `features/onboarding/api.test.tsx`
+// for why the client, not `globalThis.fetch`, is the mock boundary.
+vi.mock('../../../api/client', () => ({
+  api: {
+    GET: vi.fn().mockResolvedValue({
+      data: { items: [], page: 1, per_page: 100, total: 0 },
+      error: undefined,
+      response: { ok: true, status: 200 },
+    }),
+  },
+}))
+
 function renderAt(path: string) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <ToastProvider>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path="/" element={<div data-testid="root-page">root</div>} />
-          <Route path="/onboarding" element={<OnboardingPage />} />
-        </Routes>
-      </MemoryRouter>
-    </ToastProvider>,
+    <QueryClientProvider client={client}>
+      <ToastProvider>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/" element={<div data-testid="root-page">root</div>} />
+            <Route path="/onboarding" element={<OnboardingPage />} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>
+    </QueryClientProvider>,
   )
 }
 

@@ -1,28 +1,23 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { OnboardingWizard } from '../OnboardingWizard'
+import { api } from '../../../api/client'
 import { probeGatewayHealth } from '../api'
 import { EMPTY_STATE, type WizardState } from '../types'
 
-// `openapi-fetch` captures `globalThis.fetch` at module load, so intercepting
-// the probe is the only way to keep the wizard's step 2 off the network here
-// (see `features/onboarding/api.test.tsx`).
+// Both boundaries are mocked for the same reason: `openapi-fetch` captures
+// `globalThis.fetch` at module load, so intercepting the client is the only way
+// to keep these tests off the network (see `features/onboarding/api.test.tsx`).
+vi.mock('../../../api/client', () => ({ api: { GET: vi.fn() } }))
 vi.mock('../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api')>()),
   probeGatewayHealth: vi.fn(),
 }))
 
+const apiGet = api.GET as unknown as ReturnType<typeof vi.fn>
 const probe = vi.mocked(probeGatewayHealth)
-
-const HEALTHY = {
-  status: 'ok',
-  version: '0.0.1',
-  api_version: 'v1',
-  uptime_secs: 1,
-  active_connections: 0,
-  pipeline_lag_ms: 0,
-  checks: { storage: 'ok' },
-}
 
 const FILLED_STATE: WizardState = {
   framework: 'langchain',
@@ -31,16 +26,43 @@ const FILLED_STATE: WizardState = {
   enrolled: true,
 }
 
+function wrapper({ children }: { children: ReactNode }) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>
+}
+
+function renderWizard(props: Partial<React.ComponentProps<typeof OnboardingWizard>> = {}) {
+  return render(
+    <OnboardingWizard onFinish={vi.fn()} onSkipAll={vi.fn()} {...props} />,
+    { wrapper },
+  )
+}
+
+beforeEach(() => {
+  apiGet.mockReset()
+  apiGet.mockResolvedValue({
+    data: { items: [], page: 1, per_page: 100, total: 0 },
+    error: undefined,
+    response: { ok: true, status: 200 } as Response,
+  })
+  probe.mockReset()
+  probe.mockResolvedValue({
+    data: {
+      status: 'ok',
+      version: '0.0.1',
+      api_version: 'v1',
+      uptime_secs: 1,
+      active_connections: 0,
+      pipeline_lag_ms: 0,
+      checks: { storage: 'ok' },
+    },
+  })
+})
+
 describe('OnboardingWizard step rendering', () => {
   it('renders the identity step as an explicit not-supported surface', () => {
-    render(
-      <OnboardingWizard
-        initialStep="identity"
-        initialState={{ ...FILLED_STATE, enrolled: false }}
-        onFinish={vi.fn()}
-        onSkipAll={vi.fn()}
-      />,
-    )
+    renderWizard({ initialStep: 'identity', initialState: { ...FILLED_STATE, enrolled: false } })
+
     expect(screen.getByTestId('onboarding-step-identity')).toBeInTheDocument()
     expect(screen.getByTestId('onboarding-identity-unsupported')).toHaveAttribute(
       'data-truth-state',
@@ -51,72 +73,38 @@ describe('OnboardingWizard step rendering', () => {
   it('lets the operator past the identity step, which asks nothing of them', () => {
     // AAASM-5179: the step can never be "completed", so gating Continue on it
     // would strand the wizard behind a permanently-disabled button.
-    render(
-      <OnboardingWizard
-        initialStep="identity"
-        initialState={EMPTY_STATE}
-        onFinish={vi.fn()}
-        onSkipAll={vi.fn()}
-      />,
-    )
+    renderWizard({ initialStep: 'identity', initialState: EMPTY_STATE })
+
     expect(screen.getByTestId('onboarding-continue')).not.toBeDisabled()
   })
 
   it('renders the policy step', () => {
-    render(
-      <OnboardingWizard
-        initialStep="policy"
-        initialState={FILLED_STATE}
-        onFinish={vi.fn()}
-        onSkipAll={vi.fn()}
-      />,
-    )
+    renderWizard({ initialStep: 'policy', initialState: FILLED_STATE })
     expect(screen.getByTestId('onboarding-step-policy')).toBeInTheDocument()
   })
 
   it('renders the enroll step', () => {
-    render(
-      <OnboardingWizard
-        initialStep="enroll"
-        initialState={FILLED_STATE}
-        onFinish={vi.fn()}
-        onSkipAll={vi.fn()}
-      />,
-    )
+    renderWizard({ initialStep: 'enroll', initialState: FILLED_STATE })
     expect(screen.getByTestId('onboarding-step-enroll')).toBeInTheDocument()
   })
 
   it('fires onPersist with the current step and state on mount and after navigation', () => {
     const onPersist = vi.fn()
-    render(
-      <OnboardingWizard
-        initialStep="install"
-        initialState={{ ...FILLED_STATE, enrolled: false }}
-        onFinish={vi.fn()}
-        onSkipAll={vi.fn()}
-        onPersist={onPersist}
-      />,
-    )
-    expect(onPersist).toHaveBeenCalledWith(
-      expect.objectContaining({ step: 'install' }),
-    )
+    renderWizard({
+      initialStep: 'install',
+      initialState: { ...FILLED_STATE, enrolled: false },
+      onPersist,
+    })
+    expect(onPersist).toHaveBeenCalledWith(expect.objectContaining({ step: 'install' }))
 
     fireEvent.click(screen.getByTestId('onboarding-continue'))
-    expect(onPersist).toHaveBeenCalledWith(
-      expect.objectContaining({ step: 'identity' }),
-    )
+    expect(onPersist).toHaveBeenCalledWith(expect.objectContaining({ step: 'identity' }))
   })
 
   it('persists framework selection into wizard state via the step onChange', () => {
     const onPersist = vi.fn()
-    render(
-      <OnboardingWizard
-        initialState={EMPTY_STATE}
-        onFinish={vi.fn()}
-        onSkipAll={vi.fn()}
-        onPersist={onPersist}
-      />,
-    )
+    renderWizard({ initialState: EMPTY_STATE, onPersist })
+
     fireEvent.click(screen.getByTestId('onboarding-framework-langchain'))
     expect(onPersist).toHaveBeenLastCalledWith(
       expect.objectContaining({ state: expect.objectContaining({ framework: 'langchain' }) }),
@@ -125,39 +113,22 @@ describe('OnboardingWizard step rendering', () => {
 
   it('skip-step on the final step finishes the wizard', () => {
     const onFinish = vi.fn()
-    render(
-      <OnboardingWizard
-        initialStep="enroll"
-        initialState={FILLED_STATE}
-        onFinish={onFinish}
-        onSkipAll={vi.fn()}
-      />,
-    )
+    renderWizard({ initialStep: 'enroll', initialState: FILLED_STATE, onFinish })
+
     fireEvent.click(screen.getByTestId('onboarding-skip-step'))
     expect(onFinish).toHaveBeenCalledWith(FILLED_STATE)
   })
 })
 
 describe('OnboardingWizard step → state patching', () => {
-  beforeEach(() => {
-    probe.mockReset()
-    probe.mockResolvedValue({ data: HEALTHY })
-  })
-
   it('patches gatewayReachable only after the gateway itself answered ok', async () => {
     const onPersist = vi.fn()
-    render(
-      <OnboardingWizard
-        initialStep="install"
-        initialState={EMPTY_STATE}
-        onFinish={vi.fn()}
-        onSkipAll={vi.fn()}
-        onPersist={onPersist}
-      />,
-    )
+    renderWizard({ initialStep: 'install', initialState: EMPTY_STATE, onPersist })
+
     await act(async () => {
       fireEvent.click(screen.getByTestId('onboarding-install-verify'))
     })
+
     expect(onPersist).toHaveBeenLastCalledWith(
       expect.objectContaining({ state: expect.objectContaining({ gatewayReachable: true }) }),
     )
@@ -166,42 +137,66 @@ describe('OnboardingWizard step → state patching', () => {
   it('leaves gatewayReachable false when the probe fails', async () => {
     probe.mockResolvedValue({ isError: true, error: new TypeError('Failed to fetch') })
     const onPersist = vi.fn()
-    render(
-      <OnboardingWizard
-        initialStep="install"
-        initialState={EMPTY_STATE}
-        onFinish={vi.fn()}
-        onSkipAll={vi.fn()}
-        onPersist={onPersist}
-      />,
-    )
+    renderWizard({ initialStep: 'install', initialState: EMPTY_STATE, onPersist })
+
     await act(async () => {
       fireEvent.click(screen.getByTestId('onboarding-install-verify'))
     })
+
     const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
     expect(last.state.gatewayReachable).toBe(false)
     expect(screen.getByTestId('onboarding-continue')).toBeDisabled()
   })
 
-  it('patches enrolled into state when the enroll step completes', () => {
-    vi.useFakeTimers()
-    const onPersist = vi.fn()
-    render(
-      <OnboardingWizard
-        initialStep="enroll"
-        initialState={EMPTY_STATE}
-        onFinish={vi.fn()}
-        onSkipAll={vi.fn()}
-        onPersist={onPersist}
-      />,
-    )
-    fireEvent.click(screen.getByTestId('onboarding-enroll-start'))
-    act(() => {
-      vi.advanceTimersByTime(800)
+  it('patches enrolled only when the registry reports an agent', async () => {
+    apiGet.mockResolvedValue({
+      data: {
+        items: [
+          {
+            id: 'a1',
+            name: 'research-bot',
+            framework: 'langgraph',
+            version: '0.0.1',
+            status: 'active',
+            tool_names: [],
+            metadata: {},
+            session_count: 0,
+            policy_violations_count: 0,
+            active_sessions: [],
+            recent_events: [],
+            recent_traces: [],
+            last_event: null,
+            layer: null,
+            pid: null,
+          },
+        ],
+        page: 1,
+        per_page: 100,
+        total: 1,
+      },
+      error: undefined,
+      response: { ok: true, status: 200 } as Response,
     })
-    expect(onPersist).toHaveBeenLastCalledWith(
-      expect.objectContaining({ state: expect.objectContaining({ enrolled: true }) }),
+    const onPersist = vi.fn()
+    renderWizard({ initialStep: 'enroll', initialState: EMPTY_STATE, onPersist })
+
+    fireEvent.click(screen.getByTestId('onboarding-enroll-start'))
+
+    await waitFor(() =>
+      expect(onPersist).toHaveBeenLastCalledWith(
+        expect.objectContaining({ state: expect.objectContaining({ enrolled: true }) }),
+      ),
     )
-    vi.useRealTimers()
+  })
+
+  it('does not patch enrolled when the registry answers with no agents', async () => {
+    const onPersist = vi.fn()
+    renderWizard({ initialStep: 'enroll', initialState: EMPTY_STATE, onPersist })
+
+    fireEvent.click(screen.getByTestId('onboarding-enroll-start'))
+
+    await waitFor(() => expect(screen.getByTestId('onboarding-enroll-empty')).toBeInTheDocument())
+    const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
+    expect(last.state.enrolled).toBe(false)
   })
 })

@@ -88,8 +88,9 @@ function run(width: number, height: number) {
       }
 
       // The footer button must actually be clickable (Playwright actionability
-      // fails if it's off-screen / covered). `continue` is intentionally
-      // disabled on step 3 until an identity is issued, so drive `back`.
+      // fails if it's off-screen / covered). `back` is driven because it is the
+      // one control present on every step but the first — step 3 no longer gates
+      // Continue on an identity it cannot issue (AAASM-5179).
       await back.click()
       await expect(
         page.getByTestId('onboarding-stepper-install'),
