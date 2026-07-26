@@ -1,7 +1,6 @@
-import type { CapabilityAgent } from './types'
+import type { AgentMode, CapabilityAgent } from './types'
 import type { CapabilityFilters } from './filters'
 import './CapabilityFilterBar.css'
-import type { AgentMode } from './types'
 
 export interface CapabilityFilterBarProps {
   filters: CapabilityFilters
