@@ -195,3 +195,48 @@ supersession note pointing back to this ADR.
   ADR.
 - **Cloud/SaaS-tier items** (human-user directory on Identity and Teams; policy
   rollout/canary) — out of the OSS scope entirely.
+
+---
+
+## Addendum — Topology deviations introduced after ratification
+
+**Ticket**: [AAASM-5099](https://lightning-dust-mite.atlassian.net/browse/AAASM-5099)
+
+The 21 items above are the closed output of the AAASM-5077 reconciliation program.
+This addendum records deviations from `design/v1/hi-fi/topology.jsx` introduced by
+*later* work, under the same rule the Decision section states: the shipped
+implementation is authoritative and the mock behavior is superseded. It is appended
+rather than folded into the list above so that the program's item numbering, its
+count note, and the three already-ratified Topology entries all stay untouched.
+
+### Topology — [AAASM-5099](https://lightning-dust-mite.atlassian.net/browse/AAASM-5099) (`design/v1/hi-fi/topology.jsx`)
+
+A1. **No `③ parent` inheritance row.** The mock's node-detail Policy-Inheritance
+    panel draws a `parent` tier between org and team. Shipped emits no parent row.
+    *Why shipped is authoritative:* there is no parent tier in the product's scope
+    vocabulary — `aa_gateway::policy::scope::PolicyScope` is
+    `Global | Org | Team | Agent | Tool`, and a parent agent's own `agent:`-scoped
+    policies are **not** inherited by the agents it spawns. Rendering a parent row
+    would assert an inheritance relationship the policy engine does not implement,
+    which is worse than omitting it: an operator would read a permission as
+    inherited when nothing grants it.
+A2. **`① org baseline` renders as a `global` tier.** The mock's broadest row is
+    labelled "org baseline" and it has no global row at all. Shipped emits
+    `global` as the broadest tier and `org` only when the agent actually carries an
+    `org_id`. *Why:* the cascade the gateway walks is `Global → Org → Team → Agent`;
+    `Global` is a real, separately-authorable scope whose documents apply to every
+    agent, and an agent with no `org_id` has no org tier to show. Collapsing the two
+    would mislabel a fleet-wide policy as one org's baseline.
+A3. **`→ effective` verdict wording is derived from the payload.** The mock hardcodes
+    the verdict row to `narrowed (pending)` / `baseline`. Shipped derives the wording
+    client-side from the node's actual `allow` / `deny` / `allowRestricted` values.
+    *Why:* those two mock strings are placeholder copy for a static screenshot, not a
+    vocabulary the API produces; a real cascade can be restricted, deny-listed, both,
+    or neither, and the panel must say which. `narrowed (pending)` in particular
+    describes credential-narrowing, which is a different policy stage
+    ([AAASM-5094](https://lightning-dust-mite.atlassian.net/browse/AAASM-5094)) and
+    is not readable from this payload at all.
+
+These three follow the same *honest v0* principle as the ratified items: where the
+mock implies a capability the backend does not model, ship what the data supports and
+record the gap rather than rendering a plausible-looking fiction.
