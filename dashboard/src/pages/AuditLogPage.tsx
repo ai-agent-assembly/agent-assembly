@@ -1,39 +1,74 @@
 import { Fragment, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { ignorePromise } from '../lib/ignorePromise'
 import {
-  AUDIT_EVENT_TYPES,
+  AUDIT_EVENT_GROUPS,
+  auditCoverage,
   auditEventHref,
+  coverageStatement,
+  eventGroupOf,
   extractDecision,
   extractTraceId,
   payloadSummary,
   useAuditLogQuery,
+  type AuditDecision,
   type LogEntry,
 } from '../features/audit/logs'
 import { downloadAuditCsv, downloadComplianceReport } from '../features/audit/export'
+import { AbsenceMarker, StatusState } from '../components/truthfulness'
+import { isKnown, type Certain } from '../lib/truthfulness'
 import { useToast } from '../components/Toast'
 import './AuditLogPage.css'
 
-/** Display metadata per event type — label + chip variant for the table. */
+/**
+ * Display metadata per event type — label + chip variant for the table.
+ *
+ * One entry per `aa_core::audit::AuditEventType` variant (AAASM-5118). The
+ * previous table listed six names invented by the hi-fi fixture, of which only
+ * `PolicyViolation` exists on the backend.
+ */
 const EVENT_META: Record<string, { label: string; chip: string; icon: string }> = {
-  LLMCall: { label: 'LLM Call', chip: 'info', icon: '◈' },
-  ToolCall: { label: 'Tool Call', chip: 'info', icon: '⚙' },
-  FileOp: { label: 'File Op', chip: 'warn', icon: '▤' },
-  NetworkCall: { label: 'Network', chip: '', icon: '⇥' },
+  ToolCallIntercepted: { label: 'Tool Call', chip: 'info', icon: '⚙' },
+  ToolDispatched: { label: 'Tool Dispatched', chip: 'info', icon: '⚙' },
   PolicyViolation: { label: 'Policy Violation', chip: 'danger', icon: '⚑' },
-  ApprovalEvent: { label: 'Approval', chip: 'ok', icon: '✓' },
+  MessageBlocked: { label: 'Message Blocked', chip: 'danger', icon: '⊘' },
+  CredentialLeakBlocked: { label: 'Credential Blocked', chip: 'danger', icon: '⊘' },
+  ApprovalRequested: { label: 'Approval Requested', chip: 'info', icon: '◷' },
+  ApprovalGranted: { label: 'Approval Granted', chip: 'ok', icon: '✓' },
+  ApprovalDenied: { label: 'Approval Denied', chip: 'danger', icon: '✕' },
+  ApprovalTimedOut: { label: 'Approval Timed Out', chip: 'warn', icon: '◷' },
+  ApprovalRouted: { label: 'Approval Routed', chip: 'info', icon: '⇄' },
+  ApprovalEscalated: { label: 'Approval Escalated', chip: 'warn', icon: '⇄' },
+  BudgetLimitApproached: { label: 'Budget Warning', chip: 'warn', icon: '◈' },
+  BudgetLimitExceeded: { label: 'Budget Exceeded', chip: 'danger', icon: '◈' },
+  AgentForceDeregistered: { label: 'Agent Deregistered', chip: 'warn', icon: '⊘' },
+  A2ACallIntercepted: { label: 'A2A Call', chip: 'info', icon: '⇥' },
+  A2AImpersonationAttempted: { label: 'A2A Impersonation', chip: 'danger', icon: '⚑' },
+  SandboxStarted: { label: 'Sandbox Started', chip: '', icon: '▣' },
+  SandboxFilesystemBlocked: { label: 'Sandbox FS Blocked', chip: 'danger', icon: '▣' },
+  SandboxCpuTimeout: { label: 'Sandbox CPU Timeout', chip: 'warn', icon: '▣' },
+  SandboxOomKilled: { label: 'Sandbox OOM Killed', chip: 'warn', icon: '▣' },
+  SandboxTerminated: { label: 'Sandbox Terminated', chip: '', icon: '▣' },
+  SandboxHostFnRateLimited: { label: 'Sandbox Rate Limited', chip: 'warn', icon: '▣' },
 }
 
-/** Chip variant + lowercased label for the decision verdict carried in the payload. */
-const DECISION_META: Record<string, { chip: string; label: string }> = {
+/**
+ * Chip variant + lowercased label for the decision verdict carried in the
+ * payload. Keyed by the four real `assembly.common.v1.Decision` variants — the
+ * mock's invented `APPROVE` key matched no proto variant and is gone.
+ */
+const DECISION_META: Record<AuditDecision, { chip: string; label: string }> = {
   ALLOW: { chip: 'ok', label: 'allow' },
   DENY: { chip: 'danger', label: 'deny' },
   PENDING: { chip: 'info', label: 'pending' },
   REDACT: { chip: 'scrub', label: 'redact' },
-  APPROVE: { chip: 'ok', label: 'approved' },
 }
 
-const MONO_SUMMARY_TYPES = new Set(['LLMCall', 'ToolCall', 'NetworkCall'])
+/**
+ * Event families whose summary is machine output (identifiers, paths, hosts)
+ * and reads better monospaced.
+ */
+const MONO_SUMMARY_GROUPS = new Set(['tool', 'sandbox', 'a2a'])
 
 function chipClass(variant: string): string {
   return variant ? `audit-chip audit-chip--${variant}` : 'audit-chip'
@@ -48,11 +83,39 @@ function prettyPayload(payload: string): string {
 }
 
 /**
- * Audit Log page (`/audit`, AAASM-3510) — the immutable governance trail across
- * all agents, per `design/v1/hi-fi/audit-log.jsx`. A filterable event table
- * (clickable type-stats strip, agent select, free-text search) over
+ * Shorten a 32-char audit id digest for display without hiding that it is a
+ * digest. The full value stays in `title` and in the copy action.
+ */
+function shortDigest(hex: string): string {
+  return hex.length > 14 ? `${hex.slice(0, 14)}…` : hex
+}
+
+/** Render a verdict chip, or the shared absence affordance. */
+function DecisionCell({ decision, seq }: Readonly<{ decision: Certain<AuditDecision>; seq: number }>) {
+  if (!isKnown(decision)) {
+    return <AbsenceMarker state={decision.state} detail={decision.detail} testId={`audit-decision-${seq}`} />
+  }
+  const meta = DECISION_META[decision.value]
+  return (
+    <span className={chipClass(meta.chip)} data-testid={`audit-decision-${seq}`}>
+      {meta.label}
+    </span>
+  )
+}
+
+/**
+ * Audit Log page (`/audit`, AAASM-3510) — the governance trail across all
+ * agents, per `design/v2/hi-fi/audit-log.jsx` (authoritative per ADR 0025;
+ * byte-identical to the v1 file the original port cited). A filterable event
+ * table (clickable type-stats strip, agent select, free-text search) over
  * `GET /api/v1/logs`, with an expandable per-row payload detail and a stable
  * `/audit/event/:seq` cross-link mirroring the IAM Access Log.
+ *
+ * The layout is the mock's; the *schema* is not. The mock is driven by a
+ * hand-written fixture whose event types, payload fields and decision spelling
+ * none of the backend producers emit, so every reader on this page is written
+ * against the gateway and runtime instead — see `features/audit/logs.ts` for
+ * the verified wire shapes.
  *
  * Theme-token only — inverts under `:root[data-theme="dark"]` with no JS.
  */
@@ -61,14 +124,15 @@ export function AuditLogPage() {
   const [agentFilter, setAgentFilter] = useState<string>('all')
   const [q, setQ] = useState('')
   const [expanded, setExpanded] = useState<number | null>(null)
-  const navigate = useNavigate()
+  const [pages, setPages] = useState(1)
   const { toast } = useToast()
 
   // The type/agent filters are applied client-side so toggling them never
   // refetches; the server query stays broad and the stats strip can show live
-  // per-type counts over the whole window.
-  const { data, isLoading, isError, refetch } = useAuditLogQuery()
-  const all = useMemo<LogEntry[]>(() => data ?? [], [data])
+  // per-type counts over the whole loaded window.
+  const { data, isPending, isError, isFetching, refetch } = useAuditLogQuery({ pages })
+  const all = useMemo<LogEntry[]>(() => data?.entries ?? [], [data])
+  const coverage = useMemo(() => auditCoverage(data), [data])
 
   const agents = useMemo(
     () => ['all', ...Array.from(new Set(all.map((e) => e.agent_id)))],
@@ -77,18 +141,23 @@ export function AuditLogPage() {
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {}
-    for (const e of all) c[e.event_type] = (c[e.event_type] ?? 0) + 1
+    for (const e of all) {
+      const group = eventGroupOf(e.event_type)
+      c[group] = (c[group] ?? 0) + 1
+    }
     return c
   }, [all])
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
     return all.filter((e) => {
-      if (typeFilter !== 'all' && e.event_type !== typeFilter) return false
+      if (typeFilter !== 'all' && eventGroupOf(e.event_type) !== typeFilter) return false
       if (agentFilter !== 'all' && e.agent_id !== agentFilter) return false
       if (needle) {
+        const summary = payloadSummary(e.payload)
+        const summaryText = isKnown(summary) ? summary.value : ''
         const hay =
-          `${e.agent_id} ${e.event_type} ${payloadSummary(e.event_type, e.payload)} ${e.session_id}`.toLowerCase()
+          `${e.agent_id} ${e.event_type} ${summaryText} ${e.session_id}`.toLowerCase()
         if (!hay.includes(needle)) return false
       }
       return true
@@ -97,28 +166,38 @@ export function AuditLogPage() {
 
   const stats = [
     { key: 'all', label: 'Total', count: all.length },
-    ...AUDIT_EVENT_TYPES.map((key) => ({
-      key,
-      label: EVENT_META[key].label,
-      count: counts[key] ?? 0,
+    ...AUDIT_EVENT_GROUPS.map((group) => ({
+      key: group.key,
+      label: group.label,
+      count: counts[group.key] ?? 0,
     })),
   ]
 
   // Both header exports run over the currently-filtered rows (client-side —
   // there is no server export/compliance endpoint), so what downloads always
-  // matches what the operator has narrowed the table to.
+  // matches what the operator has narrowed the table to. Coverage travels with
+  // them so neither artifact can present the window as the whole trail.
   const handleExportCsv = () => {
     if (filtered.length === 0) {
       toast('No rows to export', 'info')
       return
     }
-    downloadAuditCsv(filtered)
-    toast(`Exported ${filtered.length} row${filtered.length === 1 ? '' : 's'} to CSV`, 'success')
+    downloadAuditCsv(filtered, coverage)
+    const scope = coverage.complete ? 'complete' : 'partial'
+    toast(
+      `Exported ${filtered.length} row${filtered.length === 1 ? '' : 's'} to CSV (${scope} window)`,
+      'success',
+    )
   }
 
   const handleComplianceReport = () => {
-    downloadComplianceReport(filtered, { typeFilter, agentFilter, search: q })
-    toast(`Compliance report generated (${filtered.length} events)`, 'success')
+    downloadComplianceReport(filtered, { typeFilter, agentFilter, search: q }, coverage)
+    toast(
+      coverage.complete
+        ? `Compliance report generated (${filtered.length} events)`
+        : `Compliance report generated over a PARTIAL window (${filtered.length} events)`,
+      coverage.complete ? 'success' : 'info',
+    )
   }
 
   // Pick the body section with an explicit branch rather than a nested ternary
@@ -126,19 +205,20 @@ export function AuditLogPage() {
   let body: React.ReactNode
   if (isError) {
     body = (
-      <div className="audit-state audit-state--error" data-testid="audit-error">
-        <p>Failed to load audit log.</p>
-        <button type="button" className="audit-btn" onClick={() => ignorePromise(refetch())}>
-          Retry
-        </button>
-      </div>
+      <StatusState
+        state="unavailable"
+        title="Audit log unavailable"
+        description="The gateway did not return the governance trail. No entries are shown — this is not an empty trail."
+        testId="audit-error"
+        action={
+          <button type="button" className="audit-btn" onClick={() => ignorePromise(refetch())}>
+            Retry
+          </button>
+        }
+      />
     )
-  } else if (isLoading) {
-    body = (
-      <div className="audit-state" data-testid="audit-loading">
-        Loading…
-      </div>
-    )
+  } else if (isPending) {
+    body = <StatusState state="unknown" title="Loading audit log…" testId="audit-loading" />
   } else {
     body = (
       <div className="audit-table-wrap">
@@ -147,9 +227,9 @@ export function AuditLogPage() {
             <tr>
               <th style={{ width: 52 }}>seq</th>
               <th style={{ width: 100 }}>time</th>
-              <th style={{ width: 150 }}>agent</th>
+              <th style={{ width: 170 }}>agent (audit id digest)</th>
               <th style={{ width: 150 }}>event type</th>
-              <th style={{ width: 84 }}>decision</th>
+              <th style={{ width: 96 }}>decision</th>
               <th>summary</th>
               <th style={{ width: 90 }}>session</th>
               <th style={{ width: 64 }}></th>
@@ -170,13 +250,11 @@ export function AuditLogPage() {
                   icon: '·',
                 }
                 const decision = extractDecision(e.payload)
-                const dm = (decision && DECISION_META[decision]) || {
-                  chip: '',
-                  label: decision ? decision.toLowerCase() : '—',
-                }
-                const summary = payloadSummary(e.event_type, e.payload)
+                const summary = payloadSummary(e.payload)
+                const trace = extractTraceId(e.payload)
                 const isExp = expanded === e.seq
                 const isViolation = e.event_type === 'PolicyViolation'
+                const group = eventGroupOf(e.event_type)
                 const rowCls = [
                   'audit-row',
                   isExp ? 'audit-row--expanded' : '',
@@ -198,17 +276,20 @@ export function AuditLogPage() {
                         <div className="audit-cell-date">{e.timestamp.slice(0, 10)}</div>
                       </td>
                       <td>
-                        <button
-                          type="button"
-                          className="audit-agent-link"
-                          data-testid={`audit-agent-link-${e.seq}`}
-                          onClick={(ev) => {
-                            ev.stopPropagation()
-                            navigate(`/agents/${e.agent_id}`)
-                          }}
+                        {/* The audit id is SHA256(agent DID)[..16]; the fleet's
+                            AgentResponse.id is SHA256("{org}/{team}/{DID}")[..16].
+                            The two can never be equal, and nothing on the wire
+                            carries the agent's name or DID here, so the cell
+                            shows the digest for what it is rather than linking
+                            to an agent page that could not resolve it
+                            (AAASM-5151). */}
+                        <span
+                          className="audit-agent-id audit-mono"
+                          data-testid={`audit-agent-id-${e.seq}`}
+                          title={`Audit agent id digest ${e.agent_id} — not resolvable to a registered agent name (AAASM-5151)`}
                         >
-                          {e.agent_id}
-                        </button>
+                          {shortDigest(e.agent_id)}
+                        </span>
                       </td>
                       <td>
                         <span className={chipClass(meta.chip)}>
@@ -216,20 +297,29 @@ export function AuditLogPage() {
                         </span>
                       </td>
                       <td>
-                        <span className={chipClass(dm.chip)}>{dm.label}</span>
+                        <DecisionCell decision={decision} seq={e.seq} />
                       </td>
                       <td>
-                        <span
-                          className={[
-                            'audit-summary',
-                            isViolation ? 'audit-summary--violation' : '',
-                            MONO_SUMMARY_TYPES.has(e.event_type) ? 'audit-summary--mono' : '',
-                          ]
-                            .filter(Boolean)
-                            .join(' ')}
-                        >
-                          {summary}
-                        </span>
+                        {isKnown(summary) ? (
+                          <span
+                            data-testid={`audit-summary-${e.seq}`}
+                            className={[
+                              'audit-summary',
+                              isViolation ? 'audit-summary--violation' : '',
+                              MONO_SUMMARY_GROUPS.has(group) ? 'audit-summary--mono' : '',
+                            ]
+                              .filter(Boolean)
+                              .join(' ')}
+                          >
+                            {summary.value}
+                          </span>
+                        ) : (
+                          <AbsenceMarker
+                            state={summary.state}
+                            detail={summary.detail}
+                            testId={`audit-summary-${e.seq}`}
+                          />
+                        )}
                       </td>
                       <td className="audit-session">{e.session_id}</td>
                       <td>
@@ -255,15 +345,27 @@ export function AuditLogPage() {
                                 <span className="audit-kv__v">{e.seq}</span>
                                 <span className="audit-kv__k">timestamp</span>
                                 <span className="audit-kv__v">{e.timestamp}</span>
+                                <span className="audit-kv__k">agent id</span>
+                                <span className="audit-kv__v" data-testid={`audit-agent-full-${e.seq}`}>
+                                  {e.agent_id}
+                                </span>
                                 <span className="audit-kv__k">session</span>
                                 <span className="audit-kv__v">{e.session_id}</span>
                                 <span className="audit-kv__k">trace</span>
-                                <span className="audit-kv__v" data-testid={`audit-trace-${e.seq}`}>
-                                  {extractTraceId(e.payload) ?? '—'}
+                                <span className="audit-kv__v">
+                                  {isKnown(trace) ? (
+                                    <span data-testid={`audit-trace-${e.seq}`}>{trace.value}</span>
+                                  ) : (
+                                    <AbsenceMarker
+                                      state={trace.state}
+                                      detail={trace.detail}
+                                      testId={`audit-trace-${e.seq}`}
+                                    />
+                                  )}
                                 </span>
                                 <span className="audit-kv__k">decision</span>
                                 <span className="audit-kv__v">
-                                  <span className={chipClass(dm.chip)}>{dm.label}</span>
+                                  <DecisionCell decision={decision} seq={-e.seq} />
                                 </span>
                               </div>
                             </div>
@@ -291,9 +393,9 @@ export function AuditLogPage() {
         <div>
           <h1 className="audit-head__title">Audit Log</h1>
           <p className="audit-head__sub">
-            Immutable governance trail — LLM calls, tool invocations, file ops,
-            network requests, policy verdicts, and approval decisions across all
-            agents.
+            Governance trail — intercepted and dispatched tool calls, policy
+            violations, credential blocks, approval decisions, budget limits,
+            agent-to-agent calls, and sandbox outcomes across all agents.
           </p>
         </div>
         <div className="audit-head__actions">
@@ -319,6 +421,34 @@ export function AuditLogPage() {
         </div>
       </header>
 
+      {/* The coverage banner is above the stats strip on purpose: every number
+          below it is a count over the loaded window, and an operator has to
+          read what the window is before reading a total drawn from it. It is
+          rendered only once a window exists — the loading and failure cases are
+          stated by the body, and describing an unasked question as "unknown
+          coverage" would put a governance caveat where there is not yet a
+          claim. */}
+      {data && (
+        <div
+          className={`audit-coverage${coverage.complete ? '' : ' audit-coverage--partial'}`}
+          data-testid="audit-coverage"
+          role="status"
+        >
+          <span className="audit-coverage__text">{coverageStatement(coverage)}</span>
+          {coverage.moreAvailable && (
+            <button
+              type="button"
+              className="audit-btn audit-coverage__more"
+              data-testid="audit-load-more"
+              disabled={isFetching}
+              onClick={() => setPages((p) => p + 1)}
+            >
+              {isFetching ? 'Loading…' : 'Load more'}
+            </button>
+          )}
+        </div>
+      )}
+
       <div
         className="audit-stats"
         style={{ gridTemplateColumns: `repeat(${stats.length}, 1fr)` }}
@@ -336,7 +466,7 @@ export function AuditLogPage() {
             >
               <div
                 className={`audit-stat__count${
-                  key === 'PolicyViolation' && !active ? ' audit-stat__count--danger' : ''
+                  key === 'policy' && !active ? ' audit-stat__count--danger' : ''
                 }`}
               >
                 {count}
@@ -360,25 +490,26 @@ export function AuditLogPage() {
           />
         </div>
         <span className="audit-divider" />
-        <span className="audit-filter-label">agent</span>
+        <span className="audit-filter-label">agent id</span>
         <select
           className="audit-select"
-          aria-label="Filter by agent"
+          aria-label="Filter by agent id digest"
           value={agentFilter}
           onChange={(e) => setAgentFilter(e.target.value)}
           data-testid="audit-agent-filter"
         >
           {agents.map((a) => (
-            <option key={a} value={a}>
-              {a}
+            <option key={a} value={a} title={a}>
+              {a === 'all' ? 'all' : shortDigest(a)}
             </option>
           ))}
         </select>
         <span className="audit-divider" />
         <span className="audit-filter-label">type</span>
         <div className="audit-type-filters" data-testid="audit-type-filters">
-          {['all', ...AUDIT_EVENT_TYPES].map((v) => {
+          {['all', ...AUDIT_EVENT_GROUPS.map((g) => g.key)].map((v) => {
             const active = typeFilter === v
+            const label = v === 'all' ? 'all' : AUDIT_EVENT_GROUPS.find((g) => g.key === v)!.label
             return (
               <button
                 type="button"
@@ -388,13 +519,13 @@ export function AuditLogPage() {
                 data-testid={`audit-type-btn-${v}`}
                 onClick={() => setTypeFilter(v)}
               >
-                {v === 'all' ? 'all' : EVENT_META[v].label}
+                {label}
               </button>
             )
           })}
         </div>
         <span className="audit-count" data-testid="audit-count">
-          {filtered.length} / {all.length}
+          {filtered.length} / {all.length} loaded
         </span>
       </div>
 
