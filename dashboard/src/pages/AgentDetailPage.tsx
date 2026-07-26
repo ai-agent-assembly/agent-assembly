@@ -16,6 +16,7 @@ import { AgentPoliciesTab } from '../components/agentDetail/AgentPoliciesTab'
 import { AgentLineageTab } from '../components/agentDetail/AgentLineageTab'
 import { AgentCapabilityTab } from '../components/agentDetail/AgentCapabilityTab'
 import { AgentCapabilityOverviewPanel } from '../components/agentDetail/AgentCapabilityOverviewPanel'
+import { AgentPostureSummary } from '../components/agentDetail/AgentPostureSummary'
 import { AgentConfigTab } from '../components/agentDetail/AgentConfigTab'
 // AAASM-1055 "how to approach": "Lazy-load the chart component so the agent
 // detail page does not pay its bundle cost up front" (recharts is large).
@@ -138,52 +139,6 @@ const TABS: ReadonlyArray<{ id: AgentDetailTab; label: string }> = [
   { id: 'lineage',    label: 'Lineage' },
   { id: 'config',     label: 'Config' },
 ]
-
-interface MiniBarProps {
-  label: string
-  value: number
-  max: number
-  tone: 'ok' | 'warn' | 'deny' | 'info'
-}
-
-function MiniBar({ label, value, max, tone }: Readonly<MiniBarProps>) {
-  const pct = max === 0 ? 0 : Math.min(100, Math.max(0, (value / max) * 100))
-  return (
-    <div className="ad-minibar" data-testid={`ad-minibar-${tone}`}>
-      <div className="ad-minibar__label">{label}</div>
-      <div className="ad-minibar__track">
-        <span
-          className={`ad-minibar__fill ad-minibar__fill--${tone}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <div className="ad-minibar__value">{value}</div>
-    </div>
-  )
-}
-
-interface PostureSummaryProps {
-  agent: Agent
-}
-
-function PostureSummary({ agent }: Readonly<PostureSummaryProps>) {
-  // The dashboard has not yet wired a per-decision breakdown endpoint
-  // (cf. AAASM-1280 capability matrix). Until that lands, the panel
-  // derives an approximate decisions-this-session view from the two
-  // counters the API exposes today: total sessions handled and
-  // policy violations recorded.
-  const denyCount = agent.policy_violations_count
-  const allowCount = Math.max(0, agent.session_count - denyCount)
-  const max = Math.max(allowCount, denyCount, 1)
-  return (
-    <div data-testid="agent-detail-posture">
-      <MiniBar label="Allow"    value={allowCount} max={max} tone="ok" />
-      <MiniBar label="Narrow"   value={0}          max={max} tone="warn" />
-      <MiniBar label="Deny"     value={denyCount}  max={max} tone="deny" />
-      <MiniBar label="Approval" value={0}          max={max} tone="info" />
-    </div>
-  )
-}
 
 export function AgentDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -361,7 +316,7 @@ export function AgentDetailPage() {
                 <div className="ad-overview" data-testid="agent-profile">
                   <section className="ad-card">
                     <h2 className="ad-card__title">posture summary</h2>
-                    <PostureSummary agent={agent} />
+                    <AgentPostureSummary agentId={agent.id} agentName={agent.name} />
                   </section>
 
                   <section className="ad-card">
