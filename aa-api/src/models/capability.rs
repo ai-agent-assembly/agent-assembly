@@ -131,8 +131,9 @@ pub struct Policy {
     /// Number of times this policy fired in the last 24 hours.
     ///
     /// Always absent here: attributing audit events back to the policy document
-    /// that produced them is the subject of its own story (AAASM-5096). A `0`
-    /// would be indistinguishable from "fired zero times".
+    /// that produced them needs the deciding document captured at the
+    /// enforcement boundary, which is owned by AAASM-5107. A `0` would be
+    /// indistinguishable from "fired zero times".
     #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
     pub hits_24h: Option<u64>,
     /// Ids of the agents whose cascade includes this policy scope.

@@ -105,6 +105,16 @@ struct PolicyReach {
 /// passing it in keeps all four tiers present regardless of how the engine was
 /// constructed. `capability::project_matrix` and `topology::project_graph_nodes`
 /// apply the same workaround for the same reason.
+///
+/// **The `tool:` tier is out of reach here, by construction.**
+/// `collect_cascade_with_lineage` walks Global → Org → Team → Agent only;
+/// `PolicyEngine::evaluate` appends the `tool:`-scoped tier itself, selected from
+/// the tool name of the action being evaluated (AAASM-3981). Tool selection is
+/// therefore per-action, and no projection built from an agent alone can name it.
+/// A `tool:`-scoped document that *is* enforced consequently never appears in
+/// `PolicyResponse::affects` or on the team mapping. That is a reporting gap, not
+/// an enforcement one — nothing here decides anything — and closing it needs a
+/// per-(agent, tool) surface rather than a per-agent one.
 fn cascade_for(state: &AppState, record: &AgentRecord) -> Vec<Arc<PolicyDocument>> {
     let agent_id = AgentId::from_bytes(record.agent_id);
     let lineage = state.agent_registry.lineage(&record.agent_id).unwrap_or_default();
@@ -225,12 +235,13 @@ pub struct PolicyResponse {
     /// payload's `policy_rule` is the free-text deny *reason*
     /// (`aa_gateway::service::policy_service::evaluate_one`), empty on every
     /// allow. `aa_gateway::engine::decision::PolicyDecision::Deny` does carry a
-    /// `source_scope`, but `into_policy_result` drops it before the audit write.
-    /// Capturing the deciding document at decision time is enforcement-boundary
-    /// work owned by AAASM-5100 / ADR 0018; until it lands this is reported
-    /// absent rather than as a `0` that would be indistinguishable from "fired
-    /// zero times". The same field is absent for the same reason on the
-    /// capability matrix's `Policy`.
+    /// `source_scope`, but `into_policy_result` drops it before the audit write —
+    /// and it is scope-granular, not document-granular, so it could not name a
+    /// document even if it survived. Capturing the deciding document at decision
+    /// time is enforcement-boundary work owned by AAASM-5107; until it lands this
+    /// is reported absent rather than as a `0` that would be indistinguishable
+    /// from "fired zero times". The same field is absent for the same reason on
+    /// the capability matrix's `Policy`.
     #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
     pub hits_24h: Option<u64>,
 }

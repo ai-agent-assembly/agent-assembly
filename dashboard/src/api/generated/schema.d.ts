@@ -3785,8 +3785,9 @@ export interface components {
              * @description Number of times this policy fired in the last 24 hours.
              *
              *     Always absent here: attributing audit events back to the policy document
-             *     that produced them is the subject of its own story (AAASM-5096). A `0`
-             *     would be indistinguishable from "fired zero times".
+             *     that produced them needs the deciding document captured at the
+             *     enforcement boundary, which is owned by AAASM-5107. A `0` would be
+             *     indistinguishable from "fired zero times".
              */
             hits24h?: number | null;
             id: string;
@@ -3885,12 +3886,13 @@ export interface components {
              *     payload's `policy_rule` is the free-text deny *reason*
              *     (`aa_gateway::service::policy_service::evaluate_one`), empty on every
              *     allow. `aa_gateway::engine::decision::PolicyDecision::Deny` does carry a
-             *     `source_scope`, but `into_policy_result` drops it before the audit write.
-             *     Capturing the deciding document at decision time is enforcement-boundary
-             *     work owned by AAASM-5100 / ADR 0018; until it lands this is reported
-             *     absent rather than as a `0` that would be indistinguishable from "fired
-             *     zero times". The same field is absent for the same reason on the
-             *     capability matrix's `Policy`.
+             *     `source_scope`, but `into_policy_result` drops it before the audit write —
+             *     and it is scope-granular, not document-granular, so it could not name a
+             *     document even if it survived. Capturing the deciding document at decision
+             *     time is enforcement-boundary work owned by AAASM-5107; until it lands this
+             *     is reported absent rather than as a `0` that would be indistinguishable
+             *     from "fired zero times". The same field is absent for the same reason on
+             *     the capability matrix's `Policy`.
              */
             hits24h?: number | null;
             /** @description Policy name from metadata. */
