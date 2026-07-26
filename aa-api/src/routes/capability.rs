@@ -968,6 +968,67 @@ mod tests {
         assert_eq!(term.exec, Decision::Allow);
     }
 
+    /// Pins the rule flattening directly: the endpoint tests build an in-memory
+    /// engine that loads no documents, so no projection path reaches it.
+    #[test]
+    fn project_rules_flattens_capabilities_and_tools() {
+        use aa_core::Capability as C;
+
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.allow.insert(C::FileRead);
+        caps.allow.insert(C::McpTool("search".to_string()));
+        // Inert grants (`Capability::is_enforceable` is false) have no column.
+        caps.allow.insert(C::AgentSpawn);
+        caps.deny.insert(C::FileWrite);
+
+        let doc = aa_gateway::policy::PolicyDocument {
+            name: Some("baseline".to_string()),
+            policy_version: None,
+            version: None,
+            scope: PolicyScope::Global,
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: std::collections::HashMap::from([(
+                "deploy".to_string(),
+                aa_gateway::policy::ToolPolicy {
+                    allow: false,
+                    limit_per_hour: None,
+                    requires_approval_if: Some("size > 1".to_string()),
+                },
+            )]),
+            capabilities: Some(caps),
+        };
+
+        let rules = project_rules(&doc);
+        let flat: Vec<(&str, &str, &[Verb], &str)> = rules
+            .iter()
+            .map(|r| {
+                (
+                    r.resource.as_str(),
+                    r.action.as_str(),
+                    r.verb.as_slice(),
+                    r.condition.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flat,
+            vec![
+                // Sorted by (resource, action); the tool policy carries its own
+                // approval condition, capability rules carry none.
+                ("deploy", "deny", &[Verb::Exec][..], "size > 1"),
+                ("filesystem", "allow", &[Verb::Read][..], ""),
+                ("filesystem", "deny", &[Verb::Write][..], ""),
+                ("search", "allow", &[Verb::Exec][..], ""),
+            ],
+            "agent_spawn contributes no row"
+        );
+    }
+
     // ── Authorization ───────────────────────────────────────────────────────
 
     #[tokio::test]
