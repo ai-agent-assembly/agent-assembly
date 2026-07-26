@@ -26,6 +26,13 @@ function formatChecks(checks: GatewayHealth['checks']): string {
   return entries.map(([name, status]) => `${name}=${status}`).join('  ')
 }
 
+/** The subsystems the gateway itself flagged, for the degraded line. */
+function degradedSubsystems(checks: GatewayHealth['checks']): string[] {
+  return Object.entries(checks)
+    .filter(([, status]) => status !== 'ok')
+    .map(([name]) => name)
+}
+
 /**
  * Turn a probe outcome into terminal lines.
  *
@@ -51,7 +58,18 @@ export function buildProbeLines(result: Certain<GatewayHealth>): Line[] {
   ]
 
   if (health.status !== 'ok') {
-    return [...body, { kind: 'warn', text: `! gateway reachable but reports "${health.status}"` }]
+    // Names what the gateway flagged rather than sending the operator hunting.
+    // This is the *production* degraded path: `health.rs` pairs `"degraded"`
+    // with a 503, so this line is what a real unhealthy gateway renders.
+    const failing = degradedSubsystems(health.checks)
+    const named = failing.length > 0 ? `: ${failing.join(', ')}` : ''
+    return [
+      ...body,
+      {
+        kind: 'warn',
+        text: `! gateway answered and reports "${health.status}"${named}`,
+      },
+    ]
   }
   return [...body, { kind: 'ok', text: '✓ gateway reachable' }]
 }

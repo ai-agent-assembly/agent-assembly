@@ -23,23 +23,35 @@ export interface RegisteredAgents {
   readonly items: readonly RegisteredAgent[]
 }
 
+/** Every value in a `checks` map is a status string; anything else is not one. */
+function isChecksMap(value: unknown): value is Record<string, string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  return Object.values(value).every((entry) => typeof entry === 'string')
+}
+
 /**
- * Name the subsystems a degraded `checks` map is complaining about.
+ * Recognise a body as a `HealthResponse`, or decline to guess.
  *
- * The health endpoint answers 503 with a full `HealthResponse`, so the operator
- * can be told *what* is down instead of just that something is. Anything that
- * is not a recognisable checks map yields `undefined` and the caller falls back
- * to the bare status code — a wrong guess about the body would be its own small
- * fabrication.
+ * This is the hinge of the whole 503 path, so it is deliberately strict. The
+ * gateway answers a degraded probe with a *complete* HealthResponse — see
+ * `aa-api/src/routes/health.rs`, where the 503 and the `"degraded"` status
+ * string are derived from the same `all_ok` boolean — so a real degraded answer
+ * always carries every field checked here. A reverse proxy's HTML error page or
+ * an `aa-api` `ProblemDetail` carries none of them and is correctly declined.
+ *
+ * Declining matters as much as accepting: reading a health report out of a body
+ * that is not one would be a fabrication of exactly the kind this lane removes.
  */
-function describeDegradedChecks(body: unknown): string | undefined {
-  if (typeof body !== 'object' || body === null) return undefined
-  const checks = (body as { checks?: unknown }).checks
-  if (typeof checks !== 'object' || checks === null) return undefined
-  const degraded = Object.entries(checks as Record<string, unknown>)
-    .filter(([, value]) => value !== 'ok')
-    .map(([name]) => name)
-  return degraded.length > 0 ? degraded.join(', ') : undefined
+function asHealthResponse(body: unknown): GatewayHealth | null {
+  if (typeof body !== 'object' || body === null) return null
+  const candidate = body as Partial<GatewayHealth>
+  const shaped =
+    typeof candidate.status === 'string' &&
+    candidate.status !== '' &&
+    typeof candidate.version === 'string' &&
+    typeof candidate.api_version === 'string' &&
+    isChecksMap(candidate.checks)
+  return shaped ? (body as GatewayHealth) : null
 }
 
 /**
@@ -50,6 +62,15 @@ function describeDegradedChecks(body: unknown): string | undefined {
  * thing being reported. It never throws; a rejected `fetch` (the gateway-down
  * case, and the whole reason the ticket is release-blocking) comes back as an
  * error outcome so the caller has no way to render it as a success.
+ *
+ * **A 503 is an answer, not a silence.** `health.rs` returns 503 *with* a full
+ * HealthResponse naming the failing subsystem in `checks`, so routing every
+ * non-2xx to `unavailable` would assert we heard nothing from a gateway that
+ * just told us precisely what was broken — the same defect this lane exists to
+ * remove, sign-inverted. A recognisable body is therefore returned as data
+ * whatever the status code, and the caller reports it as degraded. `isError` is
+ * reserved for a genuinely absent answer: a rejected request, or a response
+ * whose body is not a health report.
  */
 export async function probeGatewayHealth(): Promise<QueryOutcome<GatewayHealth>> {
   try {
@@ -57,9 +78,11 @@ export async function probeGatewayHealth(): Promise<QueryOutcome<GatewayHealth>>
     if (response.ok && error === undefined) {
       return { data: data ?? null }
     }
-    const degraded = describeDegradedChecks(error)
-    const detail = degraded ? `HTTP ${response.status} — degraded: ${degraded}` : `HTTP ${response.status}`
-    return { isError: true, error: new Error(detail) }
+    const reported = asHealthResponse(error)
+    if (reported !== null) {
+      return { data: reported }
+    }
+    return { isError: true, error: new Error(`HTTP ${response.status}`) }
   } catch (cause) {
     return {
       isError: true,

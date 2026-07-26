@@ -1,14 +1,23 @@
+/**
+ * Mocks the HTTP client rather than `probeGatewayHealth`, so every case below
+ * drives the real probe → `certainFromQuery` → `buildProbeLines` chain from a
+ * genuine `{ data, error, response }` triple.
+ *
+ * That matters for the degraded case in particular: `aa-api/src/routes/health.rs`
+ * pairs `status: "degraded"` with a **503**, so a mocked 200-carrying-degraded
+ * would exercise a state the gateway cannot produce while leaving the real one
+ * untested. (`openapi-fetch` captures `globalThis.fetch` at module load, so the
+ * client is the only interceptable seam — see `features/onboarding/api.test.tsx`.)
+ */
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Step2InstallSdk } from './Step2InstallSdk'
-import { probeGatewayHealth, type GatewayHealth } from '../api'
+import { api } from '../../../api/client'
+import type { GatewayHealth } from '../api'
 
-vi.mock('../api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../api')>()),
-  probeGatewayHealth: vi.fn(),
-}))
+vi.mock('../../../api/client', () => ({ api: { GET: vi.fn() } }))
 
-const probe = vi.mocked(probeGatewayHealth)
+const apiGet = api.GET as unknown as ReturnType<typeof vi.fn>
 
 const HEALTHY: GatewayHealth = {
   status: 'ok',
@@ -18,6 +27,28 @@ const HEALTHY: GatewayHealth = {
   active_connections: 2,
   pipeline_lag_ms: 0,
   checks: { storage: 'ok', policy_engine: 'ok' },
+}
+
+/** What a gateway with a broken storage backend actually answers. */
+const DEGRADED: GatewayHealth = {
+  ...HEALTHY,
+  status: 'degraded',
+  checks: { storage: 'degraded', policy_engine: 'ok' },
+}
+
+/** The subset of `Response` the probe reads. */
+function res(status: number): Response {
+  return { ok: status >= 200 && status < 300, status } as Response
+}
+
+/** A 200 answer. */
+function ok(data: unknown) {
+  return { data, error: undefined, response: res(200) }
+}
+
+/** A non-2xx answer; `openapi-fetch` puts the parsed body in `error`. */
+function failure(status: number, error: unknown) {
+  return { data: undefined, error, response: res(status) }
 }
 
 /**
@@ -43,7 +74,7 @@ async function clickProbe() {
 }
 
 beforeEach(() => {
-  probe.mockReset()
+  apiGet.mockReset()
 })
 
 afterEach(() => {
@@ -53,7 +84,7 @@ afterEach(() => {
 
 describe('Step2InstallSdk — package commands', () => {
   it('defaults to the pip command and switches to npm/go on tab click', () => {
-    render(<Step2InstallSdk onReachable={vi.fn()} />)
+    render(<Step2InstallSdk onProbed={vi.fn()} />)
     expect(screen.getByTestId('onboarding-install-cmd')).toHaveTextContent(
       'pip install agent-assembly',
     )
@@ -76,7 +107,7 @@ describe('Step2InstallSdk — AAASM-5145 clipboard outcome', () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
 
-    render(<Step2InstallSdk onReachable={vi.fn()} />)
+    render(<Step2InstallSdk onProbed={vi.fn()} />)
     fireEvent.click(screen.getByTestId('onboarding-install-copy'))
     await act(async () => {})
 
@@ -94,7 +125,7 @@ describe('Step2InstallSdk — AAASM-5145 clipboard outcome', () => {
     const writeText = vi.fn().mockRejectedValue(new Error('denied'))
     Object.assign(navigator, { clipboard: { writeText } })
 
-    render(<Step2InstallSdk onReachable={vi.fn()} />)
+    render(<Step2InstallSdk onProbed={vi.fn()} />)
     fireEvent.click(screen.getByTestId('onboarding-install-copy'))
     await act(async () => {})
 
@@ -111,7 +142,7 @@ describe('Step2InstallSdk — AAASM-5145 clipboard outcome', () => {
     // green anyway.
     Object.assign(navigator, { clipboard: undefined })
 
-    render(<Step2InstallSdk onReachable={vi.fn()} />)
+    render(<Step2InstallSdk onProbed={vi.fn()} />)
     fireEvent.click(screen.getByTestId('onboarding-install-copy'))
     await act(async () => {})
 
@@ -122,22 +153,22 @@ describe('Step2InstallSdk — AAASM-5145 clipboard outcome', () => {
 
 describe('Step2InstallSdk — AAASM-5132 gateway probe', () => {
   it('claims nothing before the operator asks', () => {
-    const onReachable = vi.fn()
-    render(<Step2InstallSdk onReachable={onReachable} />)
+    const onProbed = vi.fn()
+    render(<Step2InstallSdk onProbed={onProbed} />)
 
     expect(screen.queryByTestId('onboarding-install-ok')).toBeNull()
     expect(screen.queryByTestId('onboarding-install-err')).toBeNull()
     expect(screen.getByTestId('onboarding-install-terminal')).toHaveTextContent(
       /cannot observe your SDK/i,
     )
-    expect(onReachable).not.toHaveBeenCalled()
-    expect(probe).not.toHaveBeenCalled()
+    expect(onProbed).not.toHaveBeenCalled()
+    expect(apiGet).not.toHaveBeenCalled()
   })
 
   it('reports the gateway’s own version, api version and checks on a healthy answer', async () => {
-    probe.mockResolvedValue({ data: HEALTHY })
-    const onReachable = vi.fn()
-    render(<Step2InstallSdk onReachable={onReachable} />)
+    apiGet.mockResolvedValue(ok(HEALTHY))
+    const onProbed = vi.fn()
+    render(<Step2InstallSdk onProbed={onProbed} />)
 
     await clickProbe()
 
@@ -146,12 +177,12 @@ describe('Step2InstallSdk — AAASM-5132 gateway probe', () => {
     expect(terminal).toHaveTextContent('0.0.1')
     expect(terminal).toHaveTextContent('storage=ok')
     expect(screen.getByTestId('onboarding-install-ok')).toHaveTextContent('gateway reachable')
-    expect(onReachable).toHaveBeenCalledTimes(1)
+    expect(onProbed).toHaveBeenCalledExactlyOnceWith(true)
   })
 
   it('never prints the fabricated transcript, even on the success path', async () => {
-    probe.mockResolvedValue({ data: HEALTHY })
-    render(<Step2InstallSdk onReachable={vi.fn()} />)
+    apiGet.mockResolvedValue(ok(HEALTHY))
+    render(<Step2InstallSdk onProbed={vi.fn()} />)
 
     await clickProbe()
 
@@ -162,9 +193,9 @@ describe('Step2InstallSdk — AAASM-5132 gateway probe', () => {
   })
 
   it('renders a failed probe as an error and refuses to report the step verified', async () => {
-    probe.mockResolvedValue({ isError: true, error: new TypeError('Failed to fetch') })
-    const onReachable = vi.fn()
-    render(<Step2InstallSdk onReachable={onReachable} />)
+    apiGet.mockRejectedValue(new TypeError('Failed to fetch'))
+    const onProbed = vi.fn()
+    render(<Step2InstallSdk onProbed={onProbed} />)
 
     await clickProbe()
 
@@ -177,25 +208,50 @@ describe('Step2InstallSdk — AAASM-5132 gateway probe', () => {
       'data-truth-state',
       'unavailable',
     )
-    expect(onReachable).not.toHaveBeenCalled()
+    expect(onProbed).toHaveBeenCalledWith(false)
   })
 
-  it('does not claim reachability when the gateway answers but reports itself degraded', async () => {
-    probe.mockResolvedValue({ data: { ...HEALTHY, status: 'degraded' } })
-    const onReachable = vi.fn()
-    render(<Step2InstallSdk onReachable={onReachable} />)
+  it('renders a real 503-with-body as degraded — an answer, not silence', async () => {
+    // The production degraded path: 503 carrying a complete HealthResponse.
+    // Nothing here is a mocked 200.
+    apiGet.mockResolvedValue(failure(503, DEGRADED))
+    const onProbed = vi.fn()
+    render(<Step2InstallSdk onProbed={onProbed} />)
 
     await clickProbe()
 
-    expect(screen.getByTestId('onboarding-install-warn')).toHaveTextContent('degraded')
+    // It is NOT reported as "the gateway did not answer".
+    expect(screen.queryByTestId('onboarding-install-err')).toBeNull()
+    expect(screen.queryByTestId('onboarding-install-absent')).toBeNull()
+    const terminal = screen.getByTestId('onboarding-install-terminal')
+    expect(terminal).not.toHaveTextContent('did not answer')
+    // The subsystem the gateway named is on screen, twice over.
+    expect(terminal).toHaveTextContent('storage=degraded')
+    expect(screen.getByTestId('onboarding-install-warn')).toHaveTextContent('storage')
+    // Still not healthy, so the step does not pass.
     expect(screen.queryByTestId('onboarding-install-ok')).toBeNull()
-    expect(onReachable).not.toHaveBeenCalled()
+    expect(onProbed).toHaveBeenCalledWith(false)
+  })
+
+  it('renders a 503 whose body is not a health report as unavailable', async () => {
+    apiGet.mockResolvedValue(failure(503, { type: 'about:blank', title: 'Unavailable' }))
+    const onProbed = vi.fn()
+    render(<Step2InstallSdk onProbed={onProbed} />)
+
+    await clickProbe()
+
+    expect(screen.getByTestId('onboarding-install-absent')).toHaveAttribute(
+      'data-truth-state',
+      'unavailable',
+    )
+    expect(screen.getAllByTestId('onboarding-install-err')[1]).toHaveTextContent('HTTP 503')
+    expect(onProbed).toHaveBeenCalledWith(false)
   })
 
   it('renders an empty 200 body as unknown rather than as a healthy gateway', async () => {
-    probe.mockResolvedValue({ data: null })
-    const onReachable = vi.fn()
-    render(<Step2InstallSdk onReachable={onReachable} />)
+    apiGet.mockResolvedValue(ok(null))
+    const onProbed = vi.fn()
+    render(<Step2InstallSdk onProbed={onProbed} />)
 
     await clickProbe()
 
@@ -204,18 +260,18 @@ describe('Step2InstallSdk — AAASM-5132 gateway probe', () => {
       'unknown',
     )
     expect(screen.queryByTestId('onboarding-install-ok')).toBeNull()
-    expect(onReachable).not.toHaveBeenCalled()
+    expect(onProbed).toHaveBeenCalledWith(false)
   })
 
   it('ignores a second click while a probe is in flight', async () => {
     let release: (() => void) | undefined
-    probe.mockImplementation(
+    apiGet.mockImplementation(
       () =>
         new Promise((resolve) => {
-          release = () => resolve({ data: HEALTHY })
+          release = () => resolve(ok(HEALTHY))
         }),
     )
-    render(<Step2InstallSdk onReachable={vi.fn()} />)
+    render(<Step2InstallSdk onProbed={vi.fn()} />)
 
     const button = screen.getByTestId('onboarding-install-verify')
     fireEvent.click(button)
@@ -228,14 +284,14 @@ describe('Step2InstallSdk — AAASM-5132 gateway probe', () => {
       release?.()
     })
 
-    expect(probe).toHaveBeenCalledTimes(1)
+    expect(apiGet).toHaveBeenCalledTimes(1)
   })
 
   it('lets a re-check succeed after a failure, replacing the error transcript', async () => {
-    probe.mockResolvedValueOnce({ isError: true, error: new Error('ECONNREFUSED') })
-    probe.mockResolvedValueOnce({ data: HEALTHY })
-    const onReachable = vi.fn()
-    render(<Step2InstallSdk onReachable={onReachable} />)
+    apiGet.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    apiGet.mockResolvedValueOnce(ok(HEALTHY))
+    const onProbed = vi.fn()
+    render(<Step2InstallSdk onProbed={onProbed} />)
 
     await clickProbe()
     expect(screen.getAllByTestId('onboarding-install-err').length).toBeGreaterThan(0)
@@ -244,6 +300,28 @@ describe('Step2InstallSdk — AAASM-5132 gateway probe', () => {
     await clickProbe()
     expect(screen.queryByTestId('onboarding-install-err')).toBeNull()
     expect(screen.getByTestId('onboarding-install-ok')).toBeInTheDocument()
-    expect(onReachable).toHaveBeenCalledTimes(1)
+    expect(onProbed.mock.calls).toEqual([[false], [true]])
+  })
+
+  it('withdraws the healthy verdict when a re-check fails — the flag never latches', async () => {
+    // AAASM-5132 review: reporting only successes latched the wizard's flag
+    // `true` for good, so a failing re-check rendered the red UNAVAILABLE
+    // transcript while the footer still read "✓ ready to continue".
+    apiGet.mockResolvedValueOnce(ok(HEALTHY))
+    apiGet.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const onProbed = vi.fn()
+    render(<Step2InstallSdk onProbed={onProbed} />)
+
+    await clickProbe()
+    expect(onProbed).toHaveBeenLastCalledWith(true)
+
+    await clickProbe()
+    expect(onProbed).toHaveBeenLastCalledWith(false)
+    expect(onProbed.mock.calls).toEqual([[true], [false]])
+    expect(screen.queryByTestId('onboarding-install-ok')).toBeNull()
+    expect(screen.getByTestId('onboarding-install-absent')).toHaveAttribute(
+      'data-truth-state',
+      'unavailable',
+    )
   })
 })

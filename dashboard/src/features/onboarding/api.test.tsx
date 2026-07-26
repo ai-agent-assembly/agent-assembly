@@ -93,38 +93,62 @@ describe('probeGatewayHealth', () => {
     expect(outcome.data).toEqual(HEALTHY)
   })
 
-  it('reports a 503 as an error naming the degraded subsystems', async () => {
+  // ── The 503-with-body path ────────────────────────────────────────────────
+  // `aa-api/src/routes/health.rs` derives the 503 and the "degraded" status
+  // string from the same `all_ok` boolean, so a degraded gateway *always*
+  // answers 503 carrying a complete HealthResponse. That is an answer. Routing
+  // it to `unavailable` would assert we heard nothing from a gateway that had
+  // just named the broken subsystem.
+
+  it('treats a 503 carrying a HealthResponse as an answer, not as silence', async () => {
     apiGet.mockResolvedValue(failure(503, DEGRADED))
 
     const outcome = await probeGatewayHealth()
 
+    expect(outcome.isError).toBeUndefined()
+    expect(outcome.error).toBeUndefined()
+    expect(outcome.data).toEqual(DEGRADED)
+    // The subsystem report survives intact — it is the actionable part.
+    expect(outcome.data?.checks).toEqual(DEGRADED.checks)
+  })
+
+  it('declines a 503 whose body is a ProblemDetail rather than a health report', async () => {
+    apiGet.mockResolvedValue(failure(503, { type: 'about:blank', title: 'Unavailable', status: 503 }))
+
+    const outcome = await probeGatewayHealth()
+
     expect(outcome.isError).toBe(true)
-    expect(outcome.data).toBeUndefined()
-    expect((outcome.error as Error).message).toBe(
-      'HTTP 503 — degraded: policy_engine, audit_pipeline',
-    )
+    expect((outcome.error as Error).message).toBe('HTTP 503')
   })
 
-  it('falls back to the bare status when the error body carries no checks map', async () => {
-    apiGet.mockResolvedValue(failure(500, { detail: 'internal' }))
-
-    expect(((await probeGatewayHealth()).error as Error).message).toBe('HTTP 500')
-  })
-
-  it('falls back to the bare status when the error body is not an object at all', async () => {
-    apiGet.mockResolvedValue(failure(502, 'bad gateway'))
+  it('declines a body that is not an object at all — a proxy error page', async () => {
+    apiGet.mockResolvedValue(failure(502, '<html>502 Bad Gateway</html>'))
 
     expect(((await probeGatewayHealth()).error as Error).message).toBe('HTTP 502')
   })
 
-  it('falls back to the bare status when checks is present but not an object', async () => {
-    apiGet.mockResolvedValue(failure(503, { checks: 'degraded' }))
+  it('declines a body whose checks is present but not a map of strings', async () => {
+    apiGet.mockResolvedValue(
+      failure(503, { ...DEGRADED, checks: { storage: { state: 'degraded' } } }),
+    )
 
     expect(((await probeGatewayHealth()).error as Error).message).toBe('HTTP 503')
   })
 
-  it('falls back to the bare status when every subsystem in the map reports ok', async () => {
-    apiGet.mockResolvedValue(failure(503, HEALTHY))
+  it('declines a body missing the version fields a health report always carries', async () => {
+    apiGet.mockResolvedValue(failure(503, { status: 'degraded', checks: { storage: 'degraded' } }))
+
+    expect(((await probeGatewayHealth()).error as Error).message).toBe('HTTP 503')
+  })
+
+  it('declines a body whose checks is an array rather than a map', async () => {
+    apiGet.mockResolvedValue(failure(503, { ...DEGRADED, checks: ['storage'] }))
+
+    expect(((await probeGatewayHealth()).error as Error).message).toBe('HTTP 503')
+  })
+
+  it('declines a body whose status is an empty string', async () => {
+    apiGet.mockResolvedValue(failure(503, { ...DEGRADED, status: '' }))
 
     expect(((await probeGatewayHealth()).error as Error).message).toBe('HTTP 503')
   })
