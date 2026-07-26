@@ -340,8 +340,9 @@ fn cascade_denies(
 ///   absence from `deny` is not a grant.
 /// * `stage_capability` — `collect_merged_capabilities` plus
 ///   `allow_is_restricted()`, the two values `PolicyEngine::capability_guard`
-///   (`aa-gateway/src/engine/mod.rs`) consults, with denies tested through
-///   [`aa_core::capability_is_denied`] rather than a bare set lookup.
+///   (`aa-gateway/src/engine/mod.rs`) consults, with the `file_write` ⇒
+///   `file_delete` superset rule applied via [`aa_core::capability_is_denied`] so
+///   `deny` states both capabilities the guard blocks, not just the one authored.
 ///
 /// `stage_approval` is **not** mirrored: it evaluates a tool's
 /// `requires_approval_if` CEL condition against a concrete action, which a
@@ -362,6 +363,9 @@ fn project_effective_permissions(
     let egress_denied = cascade_denies_all_egress(cascade);
 
     let mut deny: std::collections::BTreeSet<String> = merged.deny.iter().map(ToString::to_string).collect();
+    if aa_core::capability_is_denied(&merged.deny, &C::FileDelete) {
+        deny.insert(C::FileDelete.to_string());
+    }
     if egress_denied {
         deny.insert(C::NetworkOutbound.to_string());
     }
