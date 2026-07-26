@@ -103,7 +103,18 @@ fn policy_reach(state: &AppState, caller: &AuthenticatedCaller) -> BTreeMap<Poli
 ///
 /// Returns `None` for an empty or invalid snapshot: the row then reports no
 /// reach at all rather than guessing one from a document it could not read.
+///
+/// The blank check is not redundant. A snapshot the history store could not
+/// resolve arrives here as `""`, and `PolicyValidator::from_yaml("")` **succeeds**
+/// — every section is optional, so it yields a permissive default document that
+/// declares no name and defaults to `PolicyScope::Global`. That document keys
+/// onto `("global", None)`, exactly the key an unnamed global policy occupies, so
+/// letting it through would let an unreadable snapshot inherit the reach of a
+/// document nobody could show it is. Reject it before it can key onto anything.
 fn document_from_yaml(yaml: &str) -> Option<PolicyDocument> {
+    if yaml.trim().is_empty() {
+        return None;
+    }
     PolicyValidator::from_yaml(yaml).ok().map(|out| out.document)
 }
 
@@ -1008,6 +1019,19 @@ mod tests {
             body.policies.is_empty(),
             "an out-of-tenant member must not contribute its cascade: {:?}",
             body.policies
+        );
+    }
+
+    #[test]
+    fn document_from_yaml_rejects_an_unreadable_snapshot() {
+        // A snapshot the history store could not resolve arrives as "". It must
+        // not parse into a permissive default `(global, None)` document, which
+        // would key onto whatever global document the engine carries and inherit
+        // its reach.
+        assert!(document_from_yaml("").is_none(), "an empty snapshot is not a document");
+        assert!(
+            document_from_yaml("this is not: [valid: yaml").is_none(),
+            "an unparseable snapshot is not a document"
         );
     }
 }
