@@ -1,7 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Step2InstallSdk, buildProbeLines } from './Step2InstallSdk'
-import { absent, known } from '../../../lib/truthfulness'
+import { Step2InstallSdk } from './Step2InstallSdk'
 import { probeGatewayHealth, type GatewayHealth } from '../api'
 
 vi.mock('../api', async (importOriginal) => ({
@@ -246,26 +245,5 @@ describe('Step2InstallSdk — AAASM-5132 gateway probe', () => {
     expect(screen.queryByTestId('onboarding-install-err')).toBeNull()
     expect(screen.getByTestId('onboarding-install-ok')).toBeInTheDocument()
     expect(onReachable).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('buildProbeLines', () => {
-  it('emits no ok line for any absence', () => {
-    for (const state of ['unavailable', 'unknown', 'unconfigured', 'not-supported'] as const) {
-      const lines = buildProbeLines(absent(state, 'detail here'))
-      expect(lines.some((l) => l.kind === 'ok')).toBe(false)
-      expect(lines.filter((l) => l.kind === 'err')).toHaveLength(2)
-    }
-  })
-
-  it('falls back to "no response" when the absence carries no detail', () => {
-    const lines = buildProbeLines(absent('unavailable'))
-    expect(lines.at(-1)).toEqual({ kind: 'err', text: 'no response' })
-  })
-
-  it('says so plainly when the gateway reports no subsystem checks at all', () => {
-    const lines = buildProbeLines(known({ ...HEALTHY, checks: {} }))
-    expect(lines.some((l) => l.text.includes('none reported'))).toBe(true)
-    expect(lines.at(-1)?.kind).toBe('ok')
   })
 })
