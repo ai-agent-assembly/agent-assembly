@@ -20,7 +20,7 @@ class MemoryStorage implements Storage {
 
 const FILLED_STATE: WizardState = {
   framework: 'langchain',
-  installVerified: true,
+  gatewayReachable: true,
   policyPreset: 'read-only',
   enrolled: false,
 }

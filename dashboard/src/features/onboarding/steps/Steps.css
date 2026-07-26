@@ -220,11 +220,37 @@
   overflow-wrap: break-word;
 }
 
+/* The terminal panel stays dark in both themes (see the --term-* note in
+   src/styles.css), so its warn/err hues are declared locally against that fixed
+   background rather than reaching for the theme-aware --warn/--danger tokens,
+   which are tuned for the page surface. Values match design/v2/hi-fi
+   /onboarding.jsx:303-304, whose .onb-term-err/.onb-term-warn rules the original
+   port dropped along with the failure path they were for (AAASM-5132). */
+.onb-term {
+  --term-warn: #f3c14b;
+  --term-err: #ff6b6b;
+}
+
 .onb-term-prompt { color: var(--term-prompt); user-select: none; }
 .onb-term-cmd { color: var(--term-cmd); }
 .onb-term-out { color: var(--term-out); }
 .onb-term-ok { color: var(--term-ok); }
+.onb-term-warn { color: var(--term-warn); }
+.onb-term-err { color: var(--term-err); }
 .onb-term-faint { color: var(--term-faint); }
+
+.onb-term-caveat {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.onb-term-meta-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 
 .onb-term-meta {
   display: flex;

@@ -1,11 +1,32 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { OnboardingWizard } from '../OnboardingWizard'
+import { probeGatewayHealth } from '../api'
 import { EMPTY_STATE, type WizardState } from '../types'
+
+// `openapi-fetch` captures `globalThis.fetch` at module load, so intercepting
+// the probe is the only way to keep the wizard's step 2 off the network here
+// (see `features/onboarding/api.test.tsx`).
+vi.mock('../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api')>()),
+  probeGatewayHealth: vi.fn(),
+}))
+
+const probe = vi.mocked(probeGatewayHealth)
+
+const HEALTHY = {
+  status: 'ok',
+  version: '0.0.1',
+  api_version: 'v1',
+  uptime_secs: 1,
+  active_connections: 0,
+  pipeline_lag_ms: 0,
+  checks: { storage: 'ok' },
+}
 
 const FILLED_STATE: WizardState = {
   framework: 'langchain',
-  installVerified: true,
+  gatewayReachable: true,
   policyPreset: 'read-only',
   enrolled: true,
 }
@@ -119,14 +140,11 @@ describe('OnboardingWizard step rendering', () => {
 
 describe('OnboardingWizard step → state patching', () => {
   beforeEach(() => {
-    vi.useFakeTimers()
-  })
-  afterEach(() => {
-    vi.runOnlyPendingTimers()
-    vi.useRealTimers()
+    probe.mockReset()
+    probe.mockResolvedValue({ data: HEALTHY })
   })
 
-  it('patches installVerified into state when the install step verifies', () => {
+  it('patches gatewayReachable only after the gateway itself answered ok', async () => {
     const onPersist = vi.fn()
     render(
       <OnboardingWizard
@@ -137,16 +155,36 @@ describe('OnboardingWizard step → state patching', () => {
         onPersist={onPersist}
       />,
     )
-    fireEvent.click(screen.getByTestId('onboarding-install-verify'))
-    act(() => {
-      vi.advanceTimersByTime(600)
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-install-verify'))
     })
     expect(onPersist).toHaveBeenLastCalledWith(
-      expect.objectContaining({ state: expect.objectContaining({ installVerified: true }) }),
+      expect.objectContaining({ state: expect.objectContaining({ gatewayReachable: true }) }),
     )
   })
 
+  it('leaves gatewayReachable false when the probe fails', async () => {
+    probe.mockResolvedValue({ isError: true, error: new TypeError('Failed to fetch') })
+    const onPersist = vi.fn()
+    render(
+      <OnboardingWizard
+        initialStep="install"
+        initialState={EMPTY_STATE}
+        onFinish={vi.fn()}
+        onSkipAll={vi.fn()}
+        onPersist={onPersist}
+      />,
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-install-verify'))
+    })
+    const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
+    expect(last.state.gatewayReachable).toBe(false)
+    expect(screen.getByTestId('onboarding-continue')).toBeDisabled()
+  })
+
   it('patches enrolled into state when the enroll step completes', () => {
+    vi.useFakeTimers()
     const onPersist = vi.fn()
     render(
       <OnboardingWizard
@@ -164,5 +202,6 @@ describe('OnboardingWizard step → state patching', () => {
     expect(onPersist).toHaveBeenLastCalledWith(
       expect.objectContaining({ state: expect.objectContaining({ enrolled: true }) }),
     )
+    vi.useRealTimers()
   })
 })

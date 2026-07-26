@@ -6,7 +6,7 @@ export function canAdvance(state: WizardState, step: StepId): boolean {
     case 'framework':
       return state.framework !== null
     case 'install':
-      return state.installVerified
+      return state.gatewayReachable
     case 'identity':
       // Identity issuance has no path from the browser (AAASM-5179/5176), so the
       // step asks nothing of the operator and gates nothing. Keeping the old

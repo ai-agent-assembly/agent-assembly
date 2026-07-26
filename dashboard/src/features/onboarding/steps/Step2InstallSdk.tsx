@@ -1,19 +1,33 @@
 import { useState } from 'react'
-import type { WizardState } from '../types'
+import { AbsenceMarker } from '../../../components/truthfulness'
+import {
+  TRUTH_STATE_META,
+  certainFromQuery,
+  isKnown,
+  type Certain,
+} from '../../../lib/truthfulness'
+import { probeGatewayHealth, type GatewayHealth } from '../api'
 import './Steps.css'
 
 export interface Step2InstallSdkProps {
-  state: WizardState
-  onVerified: () => void
+  /** Fired only after the gateway itself answered `200` with `status: "ok"`. */
+  onReachable: () => void
 }
 
 type PackageManager = 'pip' | 'npm' | 'go'
-type Phase = 'idle' | 'running' | 'verified'
+
+/**
+ * `verified` is deliberately absent from this union.
+ *
+ * The step used to carry a `verified` phase reached by a 600 ms timer, which is
+ * what let it announce success while the gateway was down (AAASM-5132). The
+ * phase now records only whether a probe is in flight; *what the probe found*
+ * lives in a `Certain<GatewayHealth>`, which cannot be read without narrowing.
+ */
+type Phase = 'idle' | 'probing' | 'answered'
 
 /** The copy button's outcome. `failed` did not exist before AAASM-5145. */
 type CopyState = 'idle' | 'copied' | 'failed'
-
-const COPY_RESET_MS = 1400
 
 const COMMANDS: Record<PackageManager, string> = {
   pip: 'pip install agent-assembly',
@@ -21,32 +35,71 @@ const COMMANDS: Record<PackageManager, string> = {
   go: 'go get github.com/agent-assembly/sdk-go',
 }
 
-interface Line {
-  kind: 'prompt' | 'cmd' | 'out' | 'ok'
+const COPY_RESET_MS = 1400
+
+export interface Line {
+  kind: 'prompt' | 'cmd' | 'out' | 'ok' | 'warn' | 'err'
   text: string
 }
 
-const VERIFIED_LINES: Line[] = [
+/** The request, echoed so the operator can see exactly what was asked. */
+const REQUEST_LINES: readonly Line[] = [
   { kind: 'prompt', text: '$ ' },
-  { kind: 'cmd', text: 'aa-cli verify' },
-  { kind: 'out', text: 'connecting to runtime…  done.' },
-  { kind: 'out', text: 'sdk version    1.4.2 (latest)' },
-  { kind: 'out', text: 'control-plane  https://api.agent-assembly.com' },
-  { kind: 'ok', text: '✓ verified · ready to enroll' },
+  { kind: 'cmd', text: 'GET /api/v1/health' },
 ]
 
-export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkProps>) {
+function formatChecks(checks: GatewayHealth['checks']): string {
+  const entries = Object.entries(checks)
+  if (entries.length === 0) return 'none reported'
+  return entries.map(([name, status]) => `${name}=${status}`).join('  ')
+}
+
+/**
+ * Turn a probe outcome into terminal lines.
+ *
+ * Exported and pure so every branch — including the two that were previously
+ * untypeable, `warn` and `err` — is reachable from a unit test without driving
+ * the component. The one thing this function may never do is emit an `ok` line
+ * for anything other than a gateway that answered with `status: "ok"`.
+ */
+export function buildProbeLines(result: Certain<GatewayHealth>): Line[] {
+  if (!isKnown(result)) {
+    const meta = TRUTH_STATE_META[result.state]
+    return [
+      ...REQUEST_LINES,
+      { kind: 'err', text: `✗ ${meta.label.toLowerCase()} — the gateway did not answer` },
+      { kind: 'err', text: result.detail ?? 'no response' },
+    ]
+  }
+
+  const health = result.value
+  const body: Line[] = [
+    ...REQUEST_LINES,
+    { kind: 'out', text: `gateway version  ${health.version}` },
+    { kind: 'out', text: `api version      ${health.api_version}` },
+    { kind: 'out', text: `subsystems       ${formatChecks(health.checks)}` },
+  ]
+
+  if (health.status !== 'ok') {
+    return [...body, { kind: 'warn', text: `! gateway reachable but reports "${health.status}"` }]
+  }
+  return [...body, { kind: 'ok', text: '✓ gateway reachable' }]
+}
+
+export function Step2InstallSdk({ onReachable }: Readonly<Step2InstallSdkProps>) {
   const [pkg, setPkg] = useState<PackageManager>('pip')
   const [copyState, setCopyState] = useState<CopyState>('idle')
-  const [phase, setPhase] = useState<Phase>(state.installVerified ? 'verified' : 'idle')
-  const [lines, setLines] = useState<Line[]>(state.installVerified ? VERIFIED_LINES : [])
+  const [phase, setPhase] = useState<Phase>('idle')
+  // Null until the operator asks. A resumed session is not evidence that the
+  // gateway is up *now*, so the persisted flag never seeds a transcript here —
+  // the step re-asks rather than replaying an old verdict.
+  const [result, setResult] = useState<Certain<GatewayHealth> | null>(null)
 
   const handleCopy = async () => {
     // `navigator.clipboard` is undefined in a non-secure context — precisely the
     // self-hosted http://<gateway-host>:<port> case — so the member access below
     // throws synchronously inside this async function. Reporting "✓ copied"
-    // regardless was AAASM-5145; the success flag now lives inside the `try`,
-    // matching `features/iam/RevealOnceModal.tsx`.
+    // regardless was AAASM-5145; the success flag now lives inside the `try`.
     try {
       await navigator.clipboard.writeText(COMMANDS[pkg])
       setCopyState('copied')
@@ -56,30 +109,34 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
     globalThis.setTimeout(() => setCopyState('idle'), COPY_RESET_MS)
   }
 
-  const handleRun = () => {
-    if (phase === 'running') return
-    setPhase('running')
-    setLines([
-      { kind: 'prompt', text: '$ ' },
-      { kind: 'cmd', text: 'aa-cli verify' },
-      { kind: 'out', text: 'connecting to runtime…' },
-    ])
-    globalThis.setTimeout(() => {
-      setLines(VERIFIED_LINES)
-      setPhase('verified')
-      onVerified()
-    }, 600)
+  // Re-entry is prevented by the button's own `disabled` while `phase` is
+  // 'probing', so there is no second guard here to go stale against it.
+  const handleProbe = async () => {
+    setPhase('probing')
+    setResult(null)
+    const certain = certainFromQuery(await probeGatewayHealth())
+    setResult(certain)
+    setPhase('answered')
+    if (isKnown(certain) && certain.value.status === 'ok') {
+      onReachable()
+    }
   }
 
-  let verifyButtonLabel: string
-  if (phase === 'idle') verifyButtonLabel = '▸ run aa-cli verify'
-  else if (phase === 'running') verifyButtonLabel = 'verifying…'
-  else verifyButtonLabel = '↻ re-run'
+  let probeButtonLabel: string
+  if (phase === 'probing') probeButtonLabel = 'checking…'
+  else if (phase === 'idle') probeButtonLabel = '▸ check gateway connection'
+  else probeButtonLabel = '↻ re-check'
 
   let copyLabel: string
   if (copyState === 'copied') copyLabel = '✓ copied'
   else if (copyState === 'failed') copyLabel = '✗ copy failed'
   else copyLabel = 'copy'
+
+  let idleHint: string
+  if (phase === 'probing') idleHint = '# asking the gateway…'
+  else idleHint = '# checks that this browser can reach the gateway — it cannot observe your SDK'
+
+  const lines = result ? buildProbeLines(result) : []
 
   return (
     <section data-testid="onboarding-step-install">
@@ -125,23 +182,31 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
       )}
 
       <div className="onb-term-meta">
-        <span className="onb-term-meta-label">verify connection</span>
-        <button
-          type="button"
-          className="onb-btn"
-          data-testid="onboarding-install-verify"
-          onClick={handleRun}
-          disabled={phase === 'running'}
-        >
-          {verifyButtonLabel}
-        </button>
+        <span className="onb-term-meta-label">gateway connection</span>
+        <div className="onb-term-meta-right">
+          {result && !isKnown(result) && (
+            <AbsenceMarker
+              state={result.state}
+              detail={result.detail}
+              showLabel
+              testId="onboarding-install-absent"
+            />
+          )}
+          <button
+            type="button"
+            className="onb-btn"
+            data-testid="onboarding-install-verify"
+            onClick={handleProbe}
+            disabled={phase === 'probing'}
+          >
+            {probeButtonLabel}
+          </button>
+        </div>
       </div>
 
       <div className="onb-term" data-testid="onboarding-install-terminal">
         {lines.length === 0 ? (
-          <div className="onb-term-line onb-term-faint">
-            # run verify above to check the SDK reaches the control-plane
-          </div>
+          <div className="onb-term-line onb-term-faint">{idleHint}</div>
         ) : (
           lines.map((l) => (
             <div key={`${l.kind}-${l.text}`} className="onb-term-line">
@@ -153,10 +218,25 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
                   {l.text}
                 </span>
               )}
+              {l.kind === 'warn' && (
+                <span className="onb-term-warn" data-testid="onboarding-install-warn">
+                  {l.text}
+                </span>
+              )}
+              {l.kind === 'err' && (
+                <span className="onb-term-err" data-testid="onboarding-install-err">
+                  {l.text}
+                </span>
+              )}
             </div>
           ))
         )}
       </div>
+      <p className="onb-term-caveat" data-testid="onboarding-install-caveat">
+        A reachable gateway is not a verified SDK — this page cannot see your agent
+        process. Step 5 reports what the registry actually holds once your SDK
+        registers.
+      </p>
     </section>
   )
 }

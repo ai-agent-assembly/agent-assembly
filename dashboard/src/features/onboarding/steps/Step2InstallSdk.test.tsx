@@ -1,42 +1,84 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Step2InstallSdk } from './Step2InstallSdk'
-import { EMPTY_STATE, type WizardState } from '../types'
+import { Step2InstallSdk, buildProbeLines } from './Step2InstallSdk'
+import { absent, known } from '../../../lib/truthfulness'
+import { probeGatewayHealth, type GatewayHealth } from '../api'
 
-const VERIFIED_STATE: WizardState = { ...EMPTY_STATE, installVerified: true }
+vi.mock('../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api')>()),
+  probeGatewayHealth: vi.fn(),
+}))
+
+const probe = vi.mocked(probeGatewayHealth)
+
+const HEALTHY: GatewayHealth = {
+  status: 'ok',
+  version: '0.0.1',
+  api_version: 'v1',
+  uptime_secs: 900,
+  active_connections: 2,
+  pipeline_lag_ms: 0,
+  checks: { storage: 'ok', policy_engine: 'ok' },
+}
+
+/**
+ * The exact strings the pre-AAASM-5132 step printed unconditionally.
+ *
+ * Asserted absent on the *successful* path too: reintroducing any of them means
+ * the step has gone back to inventing an answer instead of reporting the
+ * gateway's.
+ */
+const FABRICATIONS = [
+  '1.4.2',
+  'api.agent-assembly.com',
+  'aa-cli verify',
+  'ready to enroll',
+  'connecting to runtime',
+]
+
+/** Drive the probe button and let its promise settle. */
+async function clickProbe() {
+  await act(async () => {
+    fireEvent.click(screen.getByTestId('onboarding-install-verify'))
+  })
+}
 
 beforeEach(() => {
-  vi.useFakeTimers()
+  probe.mockReset()
 })
 
 afterEach(() => {
-  vi.runOnlyPendingTimers()
   vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
-describe('Step2InstallSdk', () => {
+describe('Step2InstallSdk — package commands', () => {
   it('defaults to the pip command and switches to npm/go on tab click', () => {
-    render(<Step2InstallSdk state={EMPTY_STATE} onVerified={vi.fn()} />)
-    expect(screen.getByTestId('onboarding-install-cmd')).toHaveTextContent('pip install agent-assembly')
+    render(<Step2InstallSdk onReachable={vi.fn()} />)
+    expect(screen.getByTestId('onboarding-install-cmd')).toHaveTextContent(
+      'pip install agent-assembly',
+    )
 
     fireEvent.click(screen.getByTestId('onboarding-install-tab-npm'))
-    expect(screen.getByTestId('onboarding-install-cmd')).toHaveTextContent('npm install @agent-assembly/sdk')
+    expect(screen.getByTestId('onboarding-install-cmd')).toHaveTextContent(
+      'npm install @agent-assembly/sdk',
+    )
 
     fireEvent.click(screen.getByTestId('onboarding-install-tab-go'))
     expect(screen.getByTestId('onboarding-install-cmd')).toHaveTextContent(
       'go get github.com/agent-assembly/sdk-go',
     )
   })
+})
 
-  it('copies the active command to the clipboard and flips the label back after the timeout', async () => {
+describe('Step2InstallSdk — AAASM-5145 clipboard outcome', () => {
+  it('reports success only after the write resolves, and resets on the timer', async () => {
+    vi.useFakeTimers()
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
 
-    render(<Step2InstallSdk state={EMPTY_STATE} onVerified={vi.fn()} />)
+    render(<Step2InstallSdk onReachable={vi.fn()} />)
     fireEvent.click(screen.getByTestId('onboarding-install-copy'))
-    // Flush the async clipboard handler's state update (setCopied) without
-    // wrapping the fireEvent call itself — the label flips on a microtask.
     await act(async () => {})
 
     expect(writeText).toHaveBeenCalledWith('pip install agent-assembly')
@@ -53,10 +95,8 @@ describe('Step2InstallSdk', () => {
     const writeText = vi.fn().mockRejectedValue(new Error('denied'))
     Object.assign(navigator, { clipboard: { writeText } })
 
-    render(<Step2InstallSdk state={EMPTY_STATE} onVerified={vi.fn()} />)
+    render(<Step2InstallSdk onReachable={vi.fn()} />)
     fireEvent.click(screen.getByTestId('onboarding-install-copy'))
-    // Flush the async clipboard handler's state update without wrapping the
-    // fireEvent call itself — the label flips on a microtask.
     await act(async () => {})
 
     const button = screen.getByTestId('onboarding-install-copy')
@@ -72,44 +112,160 @@ describe('Step2InstallSdk', () => {
     // green anyway.
     Object.assign(navigator, { clipboard: undefined })
 
-    render(<Step2InstallSdk state={EMPTY_STATE} onVerified={vi.fn()} />)
+    render(<Step2InstallSdk onReachable={vi.fn()} />)
     fireEvent.click(screen.getByTestId('onboarding-install-copy'))
     await act(async () => {})
 
     expect(screen.getByTestId('onboarding-install-copy')).toHaveTextContent('✗ copy failed')
     expect(screen.getByTestId('onboarding-install-copy-error')).toBeInTheDocument()
   })
+})
 
-  it('runs verify and calls onVerified once the terminal resolves', () => {
-    const onVerified = vi.fn()
-    render(<Step2InstallSdk state={EMPTY_STATE} onVerified={onVerified} />)
+describe('Step2InstallSdk — AAASM-5132 gateway probe', () => {
+  it('claims nothing before the operator asks', () => {
+    const onReachable = vi.fn()
+    render(<Step2InstallSdk onReachable={onReachable} />)
 
-    fireEvent.click(screen.getByTestId('onboarding-install-verify'))
-    expect(screen.getByText('verifying…')).toBeInTheDocument()
-
-    act(() => {
-      vi.advanceTimersByTime(600)
-    })
-
-    expect(onVerified).toHaveBeenCalledTimes(1)
-    expect(screen.getByTestId('onboarding-install-ok')).toBeInTheDocument()
+    expect(screen.queryByTestId('onboarding-install-ok')).toBeNull()
+    expect(screen.queryByTestId('onboarding-install-err')).toBeNull()
+    expect(screen.getByTestId('onboarding-install-terminal')).toHaveTextContent(
+      /cannot observe your SDK/i,
+    )
+    expect(onReachable).not.toHaveBeenCalled()
+    expect(probe).not.toHaveBeenCalled()
   })
 
-  it('ignores a verify click that arrives mid-run', () => {
-    const onVerified = vi.fn()
-    render(<Step2InstallSdk state={EMPTY_STATE} onVerified={onVerified} />)
-    const verify = screen.getByTestId('onboarding-install-verify')
-    fireEvent.click(verify)
-    fireEvent.click(verify)
-    act(() => {
-      vi.advanceTimersByTime(600)
-    })
-    expect(onVerified).toHaveBeenCalledTimes(1)
+  it('reports the gateway’s own version, api version and checks on a healthy answer', async () => {
+    probe.mockResolvedValue({ data: HEALTHY })
+    const onReachable = vi.fn()
+    render(<Step2InstallSdk onReachable={onReachable} />)
+
+    await clickProbe()
+
+    const terminal = screen.getByTestId('onboarding-install-terminal')
+    expect(terminal).toHaveTextContent('GET /api/v1/health')
+    expect(terminal).toHaveTextContent('0.0.1')
+    expect(terminal).toHaveTextContent('storage=ok')
+    expect(screen.getByTestId('onboarding-install-ok')).toHaveTextContent('gateway reachable')
+    expect(onReachable).toHaveBeenCalledTimes(1)
   })
 
-  it('hydrates straight into the verified terminal when state.installVerified is true', () => {
-    render(<Step2InstallSdk state={VERIFIED_STATE} onVerified={vi.fn()} />)
+  it('never prints the fabricated transcript, even on the success path', async () => {
+    probe.mockResolvedValue({ data: HEALTHY })
+    render(<Step2InstallSdk onReachable={vi.fn()} />)
+
+    await clickProbe()
+
+    const terminal = screen.getByTestId('onboarding-install-terminal')
+    for (const fabrication of FABRICATIONS) {
+      expect(terminal).not.toHaveTextContent(fabrication)
+    }
+  })
+
+  it('renders a failed probe as an error and refuses to report the step verified', async () => {
+    probe.mockResolvedValue({ isError: true, error: new TypeError('Failed to fetch') })
+    const onReachable = vi.fn()
+    render(<Step2InstallSdk onReachable={onReachable} />)
+
+    await clickProbe()
+
+    expect(screen.queryByTestId('onboarding-install-ok')).toBeNull()
+    const err = screen.getAllByTestId('onboarding-install-err')
+    expect(err[0]).toHaveTextContent('unavailable')
+    expect(err[1]).toHaveTextContent('Failed to fetch')
+    // The shared absence marker carries the state and its screen-reader sentence.
+    expect(screen.getByTestId('onboarding-install-absent')).toHaveAttribute(
+      'data-truth-state',
+      'unavailable',
+    )
+    expect(onReachable).not.toHaveBeenCalled()
+  })
+
+  it('does not claim reachability when the gateway answers but reports itself degraded', async () => {
+    probe.mockResolvedValue({ data: { ...HEALTHY, status: 'degraded' } })
+    const onReachable = vi.fn()
+    render(<Step2InstallSdk onReachable={onReachable} />)
+
+    await clickProbe()
+
+    expect(screen.getByTestId('onboarding-install-warn')).toHaveTextContent('degraded')
+    expect(screen.queryByTestId('onboarding-install-ok')).toBeNull()
+    expect(onReachable).not.toHaveBeenCalled()
+  })
+
+  it('renders an empty 200 body as unknown rather than as a healthy gateway', async () => {
+    probe.mockResolvedValue({ data: null })
+    const onReachable = vi.fn()
+    render(<Step2InstallSdk onReachable={onReachable} />)
+
+    await clickProbe()
+
+    expect(screen.getByTestId('onboarding-install-absent')).toHaveAttribute(
+      'data-truth-state',
+      'unknown',
+    )
+    expect(screen.queryByTestId('onboarding-install-ok')).toBeNull()
+    expect(onReachable).not.toHaveBeenCalled()
+  })
+
+  it('ignores a second click while a probe is in flight', async () => {
+    let release: (() => void) | undefined
+    probe.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ data: HEALTHY })
+        }),
+    )
+    render(<Step2InstallSdk onReachable={vi.fn()} />)
+
+    const button = screen.getByTestId('onboarding-install-verify')
+    fireEvent.click(button)
+    await act(async () => {})
+    expect(button).toHaveTextContent('checking…')
+    expect(button).toBeDisabled()
+
+    fireEvent.click(button)
+    await act(async () => {
+      release?.()
+    })
+
+    expect(probe).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets a re-check succeed after a failure, replacing the error transcript', async () => {
+    probe.mockResolvedValueOnce({ isError: true, error: new Error('ECONNREFUSED') })
+    probe.mockResolvedValueOnce({ data: HEALTHY })
+    const onReachable = vi.fn()
+    render(<Step2InstallSdk onReachable={onReachable} />)
+
+    await clickProbe()
+    expect(screen.getAllByTestId('onboarding-install-err').length).toBeGreaterThan(0)
+    expect(screen.getByTestId('onboarding-install-verify')).toHaveTextContent('↻ re-check')
+
+    await clickProbe()
+    expect(screen.queryByTestId('onboarding-install-err')).toBeNull()
     expect(screen.getByTestId('onboarding-install-ok')).toBeInTheDocument()
-    expect(screen.getByTestId('onboarding-install-verify')).toHaveTextContent('↻ re-run')
+    expect(onReachable).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('buildProbeLines', () => {
+  it('emits no ok line for any absence', () => {
+    for (const state of ['unavailable', 'unknown', 'unconfigured', 'not-supported'] as const) {
+      const lines = buildProbeLines(absent(state, 'detail here'))
+      expect(lines.some((l) => l.kind === 'ok')).toBe(false)
+      expect(lines.filter((l) => l.kind === 'err')).toHaveLength(2)
+    }
+  })
+
+  it('falls back to "no response" when the absence carries no detail', () => {
+    const lines = buildProbeLines(absent('unavailable'))
+    expect(lines.at(-1)).toEqual({ kind: 'err', text: 'no response' })
+  })
+
+  it('says so plainly when the gateway reports no subsystem checks at all', () => {
+    const lines = buildProbeLines(known({ ...HEALTHY, checks: {} }))
+    expect(lines.some((l) => l.text.includes('none reported'))).toBe(true)
+    expect(lines.at(-1)?.kind).toBe('ok')
   })
 })

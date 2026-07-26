@@ -106,8 +106,7 @@ export function OnboardingWizard({
           )}
           {current === 'install' && (
             <Step2InstallSdk
-              state={state}
-              onVerified={() => patchState({ installVerified: true })}
+              onReachable={() => patchState({ gatewayReachable: true })}
             />
           )}
           {/* Takes no callback: there is nothing for it to report (AAASM-5179). */}

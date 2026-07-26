@@ -36,17 +36,21 @@ export interface PolicyPreset {
  * There is deliberately no `identity` field: the browser cannot issue one, so an
  * `AgentIdentity` here could only ever hold fabricated key material. Removing it
  * is what makes the AAASM-5179 fiction untypeable rather than merely unrendered.
+ *
+ * `gatewayReachable` was `installVerified`, which named a claim the step could
+ * not support: the probe observes the *gateway answering*, and says nothing
+ * about the operator's SDK (AAASM-5132).
  */
 export interface WizardState {
   framework: FrameworkId | null
-  installVerified: boolean
+  gatewayReachable: boolean
   policyPreset: PolicyPresetId | null
   enrolled: boolean
 }
 
 export const EMPTY_STATE: WizardState = {
   framework: null,
-  installVerified: false,
+  gatewayReachable: false,
   policyPreset: null,
   enrolled: false,
 }

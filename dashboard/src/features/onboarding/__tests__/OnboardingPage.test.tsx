@@ -47,7 +47,7 @@ describe('OnboardingPage', () => {
       state: {
         ...EMPTY_STATE,
         framework: 'langchain',
-        installVerified: true,
+        gatewayReachable: true,
       },
     })
     renderAt('/onboarding')
@@ -74,7 +74,7 @@ describe('OnboardingPage', () => {
       step: 'enroll',
       state: {
         framework: 'langchain',
-        installVerified: true,
+        gatewayReachable: true,
         policyPreset: 'read-only',
         enrolled: true,
       },

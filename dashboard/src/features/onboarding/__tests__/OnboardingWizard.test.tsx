@@ -5,7 +5,7 @@ import type { WizardState } from '../types'
 
 const FILLED_STATE: WizardState = {
   framework: 'langchain',
-  installVerified: true,
+  gatewayReachable: true,
   policyPreset: 'read-only',
   enrolled: true,
 }
