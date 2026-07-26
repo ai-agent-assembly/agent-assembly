@@ -1,0 +1,70 @@
+import { render, screen } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
+import { absent, known, type CascadeEvidence, type Certain } from '../../../lib/truthfulness'
+import { CapabilitySummary } from '../CapabilitySummary'
+import type { CapabilityAgent, Resource } from '../types'
+
+const RESOURCES: Resource[] = [
+  { id: 'filesystem', name: 'Filesystem', group: 'files', paths: [] },
+  { id: 'terminal', name: 'Terminal', group: 'infra', paths: [] },
+]
+
+/**
+ * Two agents whose every cell resolved to `allow` — exactly what `aa-api`
+ * projects when no policy document constrains anything (AAASM-5106).
+ */
+const AGENTS: CapabilityAgent[] = ['a', 'b'].map((id) => ({
+  id,
+  name: `agent-${id}`,
+  framework: 'langgraph',
+  status: 'active',
+  lastSeen: '2026-07-26T00:00:00Z',
+  caps: {
+    filesystem: { read: 'allow', write: 'allow', delete: 'allow', exec: 'na' },
+    terminal: { read: 'na', write: 'allow', delete: 'na', exec: 'allow' },
+  },
+}))
+
+const LOADED: Certain<CascadeEvidence> = known({ documentCount: 1 })
+const EMPTY: Certain<CascadeEvidence> = known({ documentCount: 0 })
+
+describe('CapabilitySummary', () => {
+  it('reports real counts when a policy cascade backs them', () => {
+    render(<CapabilitySummary agents={AGENTS} resources={RESOURCES} verb="write" cascade={LOADED} />)
+    expect(screen.getByTestId('cap-summary-allow')).toHaveTextContent('4')
+    expect(screen.getByTestId('cap-summary-deny')).toHaveTextContent('0')
+  })
+
+  it('renders Unconfigured rather than a green allow count on an empty cascade', () => {
+    // The headline regression: a fully-permissive grid produced by the absence
+    // of policy must not be summarised as a measured permission total.
+    render(<CapabilitySummary agents={AGENTS} resources={RESOURCES} verb="write" cascade={EMPTY} />)
+    for (const id of ['cap-summary-allow', 'cap-summary-narrow', 'cap-summary-deny']) {
+      const stat = screen.getByTestId(id)
+      expect(stat).toHaveAttribute('data-truth-state', 'unconfigured')
+      expect(stat).toHaveTextContent('—')
+      expect(stat).not.toHaveTextContent(/\d/)
+    }
+  })
+
+  it('renders Not evaluated for the flag column the backend never populates', () => {
+    render(<CapabilitySummary agents={AGENTS} resources={RESOURCES} verb="write" cascade={LOADED} />)
+    const flagged = screen.getByTestId('cap-summary-flagged')
+    expect(flagged).toHaveAttribute('data-truth-state', 'not-evaluated')
+    expect(flagged).toHaveTextContent('Not evaluated')
+  })
+
+  it('renders Unavailable when the matrix request failed', () => {
+    render(
+      <CapabilitySummary
+        agents={AGENTS}
+        resources={RESOURCES}
+        verb="write"
+        cascade={absent('unavailable', 'HTTP 503')}
+      />,
+    )
+    const allow = screen.getByTestId('cap-summary-allow')
+    expect(allow).toHaveAttribute('data-truth-state', 'unavailable')
+    expect(allow).toHaveAttribute('title', 'Unavailable — HTTP 503')
+  })
+})
