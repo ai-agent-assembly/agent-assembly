@@ -242,6 +242,19 @@ impl AppState {
     /// with a daily budget limit) written to a per-process temp file because
     /// [`PolicyEngine::load_from_file`] is the only public loader.
     pub fn local_in_memory() -> Result<Self, LocalStateError> {
+        Self::local_in_memory_with_registry(Arc::new(AgentRegistry::new()))
+    }
+
+    /// [`local_in_memory`](Self::local_in_memory) over a caller-supplied agent
+    /// registry.
+    ///
+    /// AAASM-5102 — the engine has to adopt the *same* `Arc<AgentRegistry>` the
+    /// `AppState` exposes, and [`local_hardened_at`](Self::local_hardened_at)
+    /// needs a durable SQLite-backed registry rather than the throwaway
+    /// in-memory one. Threading it in here is what lets both entrypoints share
+    /// one registry instance; replacing `state.agent_registry` after the fact
+    /// would leave the engine holding the discarded registry.
+    fn local_in_memory_with_registry(agent_registry: Arc<AgentRegistry>) -> Result<Self, LocalStateError> {
         use std::sync::atomic::AtomicUsize;
 
         // Unique temp paths per call so concurrent processes / tests do not
@@ -277,9 +290,18 @@ impl AppState {
 
         let events = Arc::new(EventBroadcast::default());
         let budget_alert_tx = events.budget_sender();
+        // AAASM-5102: the engine adopts the *same* registry the AppState
+        // exposes. Without `with_registry`, `PolicyEngine::registry` stays
+        // `None`, and every lineage-less cascade read (`collect_cascade` →
+        // `effective_permissions`, behind `GET /agents/{id}/capabilities`)
+        // resolves `Lineage::default()` and walks only Global and Agent —
+        // silently dropping every Org- and Team-scoped allow *and* deny.
+        // Enforcement was never affected: it resolves tenancy itself via
+        // `authoritative_lineage` (AAASM-3729).
         let policy_engine = Arc::new(
             aa_gateway::engine::PolicyEngine::load_from_file(&policy_path, budget_alert_tx)
                 .map_err(|e| LocalStateError::PolicyLoad(format!("{e:?}")))?
+                .with_registry(Arc::clone(&agent_registry))
                 .with_invalidation_hub(aa_gateway::invalidation::InvalidationHub::new()),
         );
 
@@ -326,7 +348,7 @@ impl AppState {
         let audit_reader = Arc::new(AuditReader::new(audit_dir));
 
         Ok(AppState {
-            agent_registry: Arc::new(AgentRegistry::new()),
+            agent_registry,
             policy_engine,
             budget_tracker,
             approval_queue: ApprovalQueue::new(),
@@ -435,7 +457,43 @@ impl AppState {
     ) -> Result<Self, LocalStateError> {
         use std::sync::atomic::AtomicUsize;
 
-        let mut state = Self::local_in_memory()?;
+        // --- Durable agent registry (AAASM-4447 / AAASM-4459). ---
+        // Built *before* the base wiring (AAASM-5102): `local_in_memory` attaches
+        // whatever registry it is given to the policy engine, so the durable one
+        // has to exist first. Assigning `state.agent_registry` afterwards would
+        // leave the engine resolving lineage against the discarded throwaway
+        // registry — i.e. against an always-empty registry, which is exactly the
+        // `Lineage::default()` fallback this ticket removes.
+        //
+        // The embedded gRPC `AgentLifecycleService` (AAASM-4460) and the
+        // REST/dashboard surface share this SAME `Arc<AgentRegistry>`, so an
+        // SDK-registered agent is immediately visible to the dashboard and
+        // persists across restarts (mirrors aa-gateway/src/main.rs).
+        if let Some(parent) = registry_db_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|source| LocalStateError::PolicyWrite {
+                    path: registry_db_path.clone(),
+                    source,
+                })?;
+            }
+        }
+        let registry_storage = aa_gateway::storage::open_sqlite_backend(&registry_db_path)
+            .await
+            .map_err(|e| LocalStateError::Storage(format!("{e}")))?;
+        let registry = Arc::new(AgentRegistry::new().with_storage(registry_storage));
+        let restored = registry
+            .rehydrate_from_storage()
+            .await
+            .map_err(|e| LocalStateError::Storage(format!("registry rehydrate failed: {e}")))?;
+        if restored > 0 {
+            tracing::info!(
+                restored,
+                path = %registry_db_path.display(),
+                "rehydrated agents from durable registry store"
+            );
+        }
+
+        let mut state = Self::local_in_memory_with_registry(registry)?;
 
         // --- Rate limiting: honour AA_RATE_LIMIT_RPM in the live limiter. ---
         // `local_in_memory` hard-codes 1000; the shipped binary resolves the
@@ -548,39 +606,6 @@ impl AppState {
                 }
             }
         }
-
-        // --- Durable agent registry (AAASM-4447 / AAASM-4459). ---
-        // `local_in_memory` seeds a throwaway in-memory `AgentRegistry`. Replace
-        // it with one backed by a durable SQLite store and rehydrated on boot,
-        // mirroring the aa-gateway legacy-grpc path (aa-gateway/src/main.rs). The
-        // embedded gRPC `AgentLifecycleService` (AAASM-4460) and the
-        // REST/dashboard surface then share this SAME `Arc<AgentRegistry>`, so an
-        // SDK-registered agent is immediately visible to the dashboard and
-        // persists across restarts.
-        if let Some(parent) = registry_db_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|source| LocalStateError::PolicyWrite {
-                    path: registry_db_path.clone(),
-                    source,
-                })?;
-            }
-        }
-        let registry_storage = aa_gateway::storage::open_sqlite_backend(&registry_db_path)
-            .await
-            .map_err(|e| LocalStateError::Storage(format!("{e}")))?;
-        let registry = Arc::new(AgentRegistry::new().with_storage(registry_storage));
-        let restored = registry
-            .rehydrate_from_storage()
-            .await
-            .map_err(|e| LocalStateError::Storage(format!("registry rehydrate failed: {e}")))?;
-        if restored > 0 {
-            tracing::info!(
-                restored,
-                path = %registry_db_path.display(),
-                "rehydrated agents from durable registry store"
-            );
-        }
-        state.agent_registry = registry;
 
         Ok(state)
     }
