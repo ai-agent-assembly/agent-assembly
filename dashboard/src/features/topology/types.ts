@@ -43,8 +43,15 @@ export interface PolicyChainTier {
  *
  * `allowRestricted` must be read with `allow`: an empty `allow` alongside
  * `allowRestricted` is deny-all, not unrestricted.
+ *
+ * Named for its wire counterpart `NodeEffectivePermissions`, not
+ * `EffectivePermissions`, because `features/agents/api.ts` already exports that
+ * name for a different shape (`merged` + `sources`, from
+ * `GET /agents/{id}/capabilities`). The Rust type carries the `Node` prefix for
+ * the same reason; two unrelated types under one name in one app is a
+ * mis-import waiting to happen.
  */
-export interface EffectivePermissions {
+export interface NodeEffectivePermissions {
   readonly chain: readonly PolicyChainTier[]
   readonly allow: readonly string[]
   readonly deny: readonly string[]
@@ -107,7 +114,7 @@ export interface TopologyNode {
    * chain — the panel then shows its "no data" affordance rather than an
    * empty-but-authoritative chain.
    */
-  readonly effectivePermissions?: EffectivePermissions | null
+  readonly effectivePermissions?: NodeEffectivePermissions | null
 }
 
 export interface TopologyEdge {

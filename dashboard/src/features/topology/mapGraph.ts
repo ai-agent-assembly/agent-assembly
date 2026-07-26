@@ -1,6 +1,6 @@
 import type { components } from '../../api/generated/schema'
 import type {
-  EffectivePermissions,
+  NodeEffectivePermissions,
   TopologyEdge,
   TopologyGraph,
   TopologyMode,
@@ -57,7 +57,7 @@ const GRAPH_KINDS: readonly TopologyEdge['kind'][] = [
  * payload carries none — the panel renders its "no data" affordance rather than
  * an empty chain, which would read as "no policies apply".
  */
-function toPermissions(raw: ApiPermissions | null | undefined): EffectivePermissions | null {
+function toPermissions(raw: ApiPermissions | null | undefined): NodeEffectivePermissions | null {
   if (!raw) return null
   return {
     chain: (raw.chain ?? []).map((t) => ({

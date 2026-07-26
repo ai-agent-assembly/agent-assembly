@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAgentLineageQuery, useTopologyNodeRecentEvents } from '../../features/topology/api'
 import { useResumeAgent, useSuspendAgent } from '../../features/agents/mutations'
 import type {
-  EffectivePermissions,
+  NodeEffectivePermissions,
   PolicyChainTier,
   TopologyEdge,
   TopologyNode,
@@ -381,7 +381,7 @@ function tierLabel(tier: PolicyChainTier): string {
  * A restriction is called out even when `allow` is empty: an empty allow-list
  * with the flag set is deny-all, not unrestricted (AAASM-4154).
  */
-function effectiveSummary(permissions: EffectivePermissions): string {
+function effectiveSummary(permissions: NodeEffectivePermissions): string {
   const parts: string[] = []
   if (permissions.allowRestricted) parts.push('allow-list enforced')
   if (permissions.deny.length > 0) parts.push(`${permissions.deny.length} denied`)
@@ -397,7 +397,7 @@ function effectiveSummary(permissions: EffectivePermissions): string {
  * empty chain would read as "no policies apply", which is a different claim.
  * A tier that applies but carries no document is real state and reads "none".
  */
-function PolicyInheritance({ permissions }: Readonly<{ permissions?: EffectivePermissions | null }>) {
+function PolicyInheritance({ permissions }: Readonly<{ permissions?: NodeEffectivePermissions | null }>) {
   if (!permissions) {
     return (
       <div className="node-detail-panel__hint" data-testid="node-detail-inheritance-empty">
