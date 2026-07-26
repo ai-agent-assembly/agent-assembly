@@ -114,6 +114,26 @@
   color: #fff;
 }
 
+.appshell__nav-badge--absent {
+  /* An unknown count is not a count: it drops the red count-chip treatment so
+     it can never be misread as a number, and keeps only the shared `—` marker
+     (AAASM-5149). */
+  background: none;
+  padding: 0;
+  font-size: 0.75rem;
+}
+
+/* The rail is dark in both themes, so the marker's theme-following tone colours
+   (--warn / --danger, tuned for a paper background) are re-pointed at the two
+   rail-safe accents this file already owns. */
+.appshell__nav-badge--absent .truth-tone--caution {
+  color: var(--shell-nav-star);
+}
+
+.appshell__nav-badge--absent .truth-tone--fault {
+  color: var(--shell-nav-dot-down);
+}
+
 .appshell__nav-foot {
   /* Runtime + agent-count status line pinned to the bottom of the rail. */
   margin-top: auto;

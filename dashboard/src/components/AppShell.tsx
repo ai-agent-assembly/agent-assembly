@@ -9,7 +9,10 @@ import { CANONICAL_ROUTES, ROUTE_GROUPS, type RouteGroup } from '../routes'
 import { useAgentsQuery } from '../features/agents/api'
 import { usePoliciesQuery } from '../features/policies/api'
 import { useAlertsQuery } from '../features/alerts/api'
+import { criticalFiringBadge } from '../features/alerts/alertBadge'
 import { DEFAULT_ALERT_FILTERS } from '../features/alerts/types'
+import { certainFromQuery, isKnown, known, type Certain } from '../lib/truthfulness'
+import { AbsenceMarker } from './truthfulness'
 import { TraceDrawerProvider } from './trace/TraceDrawerProvider'
 import { TraceDrawer } from './trace/TraceDrawer'
 import { ThemeToggle } from './ThemeToggle'
@@ -110,6 +113,45 @@ function LastSyncStatus({ updatedAt }: Readonly<{ updatedAt: number }>) {
   )
 }
 
+// ── Rail count badge ───────────────────────────────────────────────────────────
+
+/**
+ * A rail count chip, or the legible absence of one (AAASM-5149).
+ *
+ * Takes a `Certain<number>` rather than a number, so there is no call shape
+ * that can hand it a count derived from a failed request. When the count is
+ * absent the chip still renders — as the shared `—` marker with the reason in
+ * its tooltip and its screen-reader sentence — because *omitting* the badge is
+ * itself a claim, and "no badge on Alerts" reads as "nothing critical is
+ * happening", which is precisely what an outage does not entitle the shell to
+ * say.
+ *
+ * No `role="alert"` here even for `unavailable`: the rail is persistent chrome
+ * that mounts with the session, so the role would fire an announcement on every
+ * cold boot. The absence is announced by the marker's own sentence instead.
+ */
+function NavBadge({ routeId, badge }: Readonly<{ routeId: string; badge: Certain<number> }>) {
+  if (isKnown(badge)) {
+    return (
+      <span className="appshell__nav-badge" data-testid={`nav-badge-${routeId}`}>
+        {badge.value}
+      </span>
+    )
+  }
+  return (
+    <span
+      className="appshell__nav-badge appshell__nav-badge--absent"
+      data-testid={`nav-badge-${routeId}`}
+    >
+      <AbsenceMarker
+        state={badge.state}
+        detail={badge.detail}
+        testId={`nav-badge-absent-${routeId}`}
+      />
+    </span>
+  )
+}
+
 // ── AppShell ───────────────────────────────────────────────────────────────────
 
 export function AppShell() {
@@ -130,12 +172,27 @@ export function AppShell() {
 
   const agentCount = agents.data?.length
   const runtimeReachable = !agents.isError
-  const criticalAlerts = (alerts.data ?? []).filter((a) => a.severity === 'CRITICAL').length
+  // AAASM-5149. Two defects in one expression, both fixed by the selector:
+  // the old count had no status predicate, so a CRITICAL resolved weeks ago
+  // kept a red badge forever; and it read `alerts.data ?? []`, which turns a
+  // failed request into "0 critical" and therefore into no badge at all. The
+  // query *outcome* is carried through instead, so an outage stays an outage
+  // all the way to the DOM.
+  const criticalAlerts = criticalFiringBadge(certainFromQuery(alerts))
+  // Still fail-open on a failed policies query (`?? []` → 0 → no badge). Out of
+  // this ticket's scope, which is the alerts badge; the `known()` here is
+  // truthful for every value this expression can produce, since a count above
+  // zero can only come from a loaded list.
   const inactivePolicies = (policies.data ?? []).filter((p) => !p.active).length
 
-  const badgeFor = (routeId: string): number | null => {
-    if (routeId === 'alerts') return criticalAlerts || null
-    if (routeId === 'policy') return inactivePolicies || null
+  const badgeFor = (routeId: string): Certain<number> | null => {
+    // A *known* zero earns no badge: an unadorned rail item is the honest
+    // rendering of "nothing is firing". An absence is not a zero and does earn
+    // one — see NavBadge.
+    if (routeId === 'alerts') {
+      return isKnown(criticalAlerts) && criticalAlerts.value === 0 ? null : criticalAlerts
+    }
+    if (routeId === 'policy') return inactivePolicies ? known(inactivePolicies) : null
     return null
   }
 
@@ -198,11 +255,7 @@ export function AppShell() {
                       ★
                     </span>
                   )}
-                  {badge != null && (
-                    <span className="appshell__nav-badge" data-testid={`nav-badge-${r.id}`}>
-                      {badge}
-                    </span>
-                  )}
+                  {badge != null && <NavBadge routeId={r.id} badge={badge} />}
                 </NavLink>
               )
             })}
