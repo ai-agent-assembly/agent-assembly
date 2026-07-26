@@ -8,6 +8,7 @@ import { useAlertsQuery } from '../features/alerts/api'
 import type { Alert, AlertFilters } from '../features/alerts/types'
 import { useEnforcementTimelineQuery } from '../features/overview/api'
 import { EnforcementTimeline } from '../components/overview/EnforcementTimeline'
+import { useToast } from '../components/Toast'
 import {
   NO_DATA,
   TRUTH_STATE_META,
@@ -47,10 +48,14 @@ const ALL_ALERTS: AlertFilters = {
  * endpoint. The tile shipped as a hardcoded `0` in an `ok` tone — an
  * unmeasured all-clear on the single most consequential claim the page makes
  * (AAASM-5113).
+ *
+ * `not-evaluated` rather than `not-supported`: the latter tells the operator
+ * the backend can never answer and to stop looking, which is a stronger claim
+ * than this page can make. Nothing has evaluated it — that may yet change.
  */
 const NO_LEAK_METRIC: Certain<number> = absent(
   'not-evaluated',
-  'No leak-detection metric is reported by the backend',
+  'No leak evaluation has been performed for this window',
 )
 
 /**
@@ -268,6 +273,7 @@ function queueNote(count: Certain<number>): string {
 
 export function OverviewPage() {
   const navigate = useNavigate()
+  const { toast } = useToast()
   const [windowSel, setWindowSel] = useState<Window>('24h')
 
   const agentsQuery = useAgentsQuery()
@@ -291,6 +297,7 @@ export function OverviewPage() {
     isEmpty: fleet.length === 0,
     navigate,
     refetch: agentsQuery.refetch,
+    toast,
   })
   if (guard) return guard
 

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { OverviewPage } from './OverviewPage'
+import { ToastProvider } from '../components/ToastProvider'
 import * as agentsApi from '../features/agents/api'
 import * as approvalsApi from '../features/approvals/api'
 import * as policiesApi from '../features/policies/api'
@@ -140,12 +141,17 @@ function LocationProbe() {
 }
 
 function renderPage() {
+  // ToastProvider is part of the real app shell (main.tsx) and the page now
+  // depends on it: the error state's secondary action reports that no status
+  // page exists rather than opening a dead host.
   return render(
     <QueryClientProvider client={makeClient()}>
-      <MemoryRouter initialEntries={['/overview']}>
-        <OverviewPage />
-        <LocationProbe />
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter initialEntries={['/overview']}>
+          <OverviewPage />
+          <LocationProbe />
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>,
   )
 }
@@ -171,7 +177,7 @@ describe('OverviewPage', () => {
     expect(screen.getByTestId('empty-state-overview')).toBeInTheDocument()
   })
 
-  it('error state — Retry refetches and the secondary opens the external status page', () => {
+  it('error state — Retry refetches and the secondary opens no dead status link', () => {
     const refetch = vi.fn().mockResolvedValue(undefined)
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     setup({ agentsState: { isError: true, data: undefined, refetch } })
@@ -179,16 +185,16 @@ describe('OverviewPage', () => {
     const error = within(screen.getByTestId('error-state-generic'))
     fireEvent.click(error.getByRole('button', { name: /Retry/ }))
     expect(refetch).toHaveBeenCalledTimes(1)
+
+    // status.agent-assembly.com answers HTTP 530 and ADR 0007 marks it "Future
+    // (placeholder)", so the outage-time button opens nothing and says why.
     fireEvent.click(error.getByRole('button', { name: /Open status page/ }))
-    expect(open).toHaveBeenCalledWith(
-      'https://status.agent-assembly.com',
-      '_blank',
-      'noopener,noreferrer',
-    )
+    expect(open).not.toHaveBeenCalled()
     expect(screen.getByTestId('location-probe')).not.toHaveTextContent('/audit')
+    expect(screen.getByTestId('toast')).toHaveTextContent(/No status page is available/)
   })
 
-  it('empty state — the CTA opens onboarding and the secondary opens the external docs', () => {
+  it('empty state — the CTA opens onboarding and the secondary opens the verified docs', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     setup({ agents: [] })
     renderPage()
@@ -196,8 +202,9 @@ describe('OverviewPage', () => {
     fireEvent.click(empty.getByRole('button', { name: /Start setup wizard/ }))
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/onboarding')
     fireEvent.click(empty.getByRole('button', { name: /View install docs/ }))
+    // Probed: /core/ → 200, /quickstart → 404.
     expect(open).toHaveBeenCalledWith(
-      'https://docs.agent-assembly.com/quickstart',
+      'https://docs.agent-assembly.com/core/',
       '_blank',
       'noopener,noreferrer',
     )
