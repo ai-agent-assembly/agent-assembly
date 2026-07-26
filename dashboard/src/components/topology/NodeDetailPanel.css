@@ -262,6 +262,48 @@
   cursor: not-allowed;
 }
 
+/* ── Policy inheritance (AAASM-5099) ───────────────────────── */
+
+.node-detail-panel__inheritance {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+}
+
+.node-detail-panel__inheritance-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.3rem 0.55rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.node-detail-panel__inheritance-row:last-child {
+  border-bottom: none;
+}
+
+.node-detail-panel__inheritance-row--effective {
+  background: var(--paper-2, var(--paper));
+  font-weight: 700;
+}
+
+.node-detail-panel__inheritance-label {
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.node-detail-panel__inheritance-value {
+  color: var(--ink-2);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.node-detail-panel__inheritance-value--none {
+  color: var(--ink-4);
+}
+
 /* ── Lineage (AAASM-5071) ──────────────────────────────────── */
 
 .node-detail-panel__lineage {

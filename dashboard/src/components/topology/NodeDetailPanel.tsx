@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAgentLineageQuery, useTopologyNodeRecentEvents } from '../../features/topology/api'
 import { useResumeAgent, useSuspendAgent } from '../../features/agents/mutations'
-import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
+import type {
+  EffectivePermissions,
+  PolicyChainTier,
+  TopologyEdge,
+  TopologyNode,
+} from '../../features/topology/types'
 import { SuspendReasonDialog } from '../SuspendReasonDialog'
 import { bucketForRatio } from './budgetThreshold'
 import './NodeDetailPanel.css'
@@ -190,6 +195,13 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
           </div>
         </section>
 
+        {/* Policy inheritance — the agent's real cascade, carried per node by
+            GET /api/v1/topology (AAASM-5099). */}
+        <section className="node-detail-panel__section" data-testid="node-detail-inheritance">
+          <div className="node-detail-panel__section-label">policy inheritance</div>
+          <PolicyInheritance permissions={node.effectivePermissions} />
+        </section>
+
         {/* Lineage — delegation ancestry (root → this agent) from
             GET /topology/lineage/{id} (AAASM-5071). */}
         <section className="node-detail-panel__section" data-testid="node-detail-lineage">
@@ -344,6 +356,68 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
         />
       )}
     </>
+  )
+}
+
+/** Row label for one cascade tier — the tier name plus its selector. */
+function tierLabel(tier: PolicyChainTier): string {
+  const [, selector] = tier.scope.split(':', 2)
+  return selector ? `${tier.tier} (${selector})` : tier.tier
+}
+
+/**
+ * One-line summary of the merged capability set — the design's "→ effective"
+ * row. Derived here from the real `allow` / `deny` / `allowRestricted` fields
+ * rather than shipped as a server-side verdict, so the wording can change
+ * without a contract change.
+ *
+ * A restriction is called out even when `allow` is empty: an empty allow-list
+ * with the flag set is deny-all, not unrestricted (AAASM-4154).
+ */
+function effectiveSummary(permissions: EffectivePermissions): string {
+  const parts: string[] = []
+  if (permissions.allowRestricted) parts.push('allow-list enforced')
+  if (permissions.deny.length > 0) parts.push(`${permissions.deny.length} denied`)
+  if (permissions.allow.length > 0) parts.push(`${permissions.allow.length} allowed`)
+  return parts.length > 0 ? parts.join(' · ') : 'baseline — no capability restriction'
+}
+
+/**
+ * The agent's policy-inheritance chain: one row per cascade tier, then the
+ * merged effective row.
+ *
+ * Renders the no-data affordance when the payload carries no chain at all — an
+ * empty chain would read as "no policies apply", which is a different claim.
+ * A tier that applies but carries no document is real state and reads "none".
+ */
+function PolicyInheritance({ permissions }: Readonly<{ permissions?: EffectivePermissions | null }>) {
+  if (!permissions) {
+    return (
+      <div className="node-detail-panel__hint" data-testid="node-detail-inheritance-empty">
+        —
+      </div>
+    )
+  }
+  return (
+    <div className="node-detail-panel__inheritance" data-testid="node-detail-inheritance-chain">
+      {permissions.chain.map((tier) => (
+        <div key={tier.scope} className="node-detail-panel__inheritance-row" data-testid="node-detail-inheritance-tier" data-tier={tier.tier}>
+          <span className="node-detail-panel__inheritance-label">{tierLabel(tier)}</span>
+          <span
+            className={`node-detail-panel__inheritance-value${tier.policies.length === 0 ? ' node-detail-panel__inheritance-value--none' : ''}`}
+          >
+            {tier.policies.length > 0 ? tier.policies.join(', ') : 'none'}
+          </span>
+        </div>
+      ))}
+      <div
+        className="node-detail-panel__inheritance-row node-detail-panel__inheritance-row--effective"
+        data-testid="node-detail-inheritance-effective"
+      >
+        <span className="node-detail-panel__inheritance-label">→ effective</span>
+        <span className="node-detail-panel__inheritance-value">{effectiveSummary(permissions)}</span>
+      </div>
+    </div>
   )
 }
 
