@@ -117,41 +117,67 @@ export interface VerdictTally {
   readonly deny: Certain<number>
 }
 
+/** Every count carries the same absence, for the cases that disqualify a tally. */
+function tallyOf(allow: Certain<number>, narrow: Certain<number>, deny: Certain<number>): VerdictTally {
+  return { allow, narrow, deny }
+}
+
 /**
  * Tally the verdicts of a cell collection.
  *
- * When the cascade is absent, the absence propagates to every count. When it is
- * present but empty, every count is `unconfigured` — including `deny`, because
- * a cascade that loaded nothing evaluated nothing, so a zero denial count is a
- * claim the data cannot support.
+ * **Every cell is resolved through [`resolveVerdict`]** rather than inspected
+ * directly, so the two entry points into this module cannot answer the same
+ * input differently. An earlier revision duplicated the classification here and
+ * promptly drifted: `resolveVerdict(undefined, loaded)` said `not-evaluated`
+ * while the tally counted the same cell as a measured zero.
+ *
+ * Three things disqualify the whole tally rather than merely going uncounted:
+ *
+ *  - an **absent cascade**, whose absence propagates to every count;
+ *  - an **empty cascade**, where nothing was evaluated, so every count is
+ *    `unconfigured` — including `deny`, since a zero denial count over an
+ *    unevaluated grid is a claim the data cannot support;
+ *  - **any unevaluated cell** (`not-evaluated`). A count is only a measurement
+ *    if it covers the whole set it claims to describe; "0 denied" over a grid
+ *    with holes in it is the same lie in a smaller font.
+ *
+ * `not-supported` (`na`) does *not* disqualify: it is a permanent, honest
+ * statement that the verb has no meaning for that resource, so the cell is
+ * legitimately outside the population being counted.
  */
 export function tallyVerdicts(
   decisions: Iterable<CapabilityVerdict | undefined>,
   cascade: Certain<CascadeEvidence>,
 ): VerdictTally {
   if (!isKnown(cascade)) {
-    return {
-      allow: propagateAbsence(cascade),
-      narrow: propagateAbsence(cascade),
-      deny: propagateAbsence(cascade),
-    }
+    return tallyOf(propagateAbsence(cascade), propagateAbsence(cascade), propagateAbsence(cascade))
   }
   if (cascadeIsEmpty(cascade.value)) {
     const reason = 'No policy document is loaded, so no cell was evaluated'
-    return {
-      allow: absent('unconfigured', reason),
-      narrow: absent('unconfigured', reason),
-      deny: absent('unconfigured', reason),
-    }
+    return tallyOf(
+      absent('unconfigured', reason),
+      absent('unconfigured', reason),
+      absent('unconfigured', reason),
+    )
   }
 
-  let allow = 0
-  let narrow = 0
-  let deny = 0
+  const counts: Record<'allow' | 'narrow' | 'deny', number> = { allow: 0, narrow: 0, deny: 0 }
   for (const decision of decisions) {
-    if (decision === 'allow') allow += 1
-    else if (decision === 'narrow') narrow += 1
-    else if (decision === 'deny') deny += 1
+    const resolved = resolveVerdict(decision, cascade)
+    if (isKnown(resolved)) {
+      if (resolved.value in counts) counts[resolved.value as keyof typeof counts] += 1
+      continue
+    }
+    // A permanent, honest gap is outside the population being counted; any
+    // other absence means the grid has a hole and no count over it is a
+    // measurement.
+    if (resolved.state === 'not-supported') continue
+    const reason = 'At least one cell in this grid was never evaluated'
+    return tallyOf(
+      absent(resolved.state, reason),
+      absent(resolved.state, reason),
+      absent(resolved.state, reason),
+    )
   }
-  return { allow: known(allow), narrow: known(narrow), deny: known(deny) }
+  return tallyOf(known(counts.allow), known(counts.narrow), known(counts.deny))
 }
