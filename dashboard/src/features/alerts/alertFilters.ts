@@ -70,3 +70,13 @@ export function applyClientFilters(
     return true
   })
 }
+
+/**
+ * Add or remove one value from a multi-select filter list.
+ *
+ * Shared by the filter-bar chips and the stats tiles so both drive the single
+ * filter model identically.
+ */
+export function toggleFilterValue<T>(list: readonly T[], value: T): readonly T[] {
+  return list.includes(value) ? list.filter((v) => v !== value) : [...list, value]
+}

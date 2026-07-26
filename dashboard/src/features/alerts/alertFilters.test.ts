@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyClientFilters, resolveTimeWindow } from './alertFilters'
+import { applyClientFilters, resolveTimeWindow, toggleFilterValue } from './alertFilters'
 import { DEFAULT_ALERT_FILTERS, type Alert, type AlertFilters } from './types'
 
 const NOW = Date.parse('2026-05-13T12:00:00Z')
@@ -102,5 +102,21 @@ describe('resolveTimeWindow', () => {
       customTo: null,
     }
     expect(resolveTimeWindow(filters, NOW)).toEqual({ fromMs: null, toMs: null })
+  })
+})
+
+describe('toggleFilterValue', () => {
+  it('adds a value that is absent', () => {
+    expect(toggleFilterValue(['CRITICAL'], 'HIGH')).toEqual(['CRITICAL', 'HIGH'])
+  })
+
+  it('removes a value that is present', () => {
+    expect(toggleFilterValue(['CRITICAL', 'HIGH'], 'CRITICAL')).toEqual(['HIGH'])
+  })
+
+  it('does not mutate the input list', () => {
+    const list = ['CRITICAL']
+    toggleFilterValue(list, 'HIGH')
+    expect(list).toEqual(['CRITICAL'])
   })
 })

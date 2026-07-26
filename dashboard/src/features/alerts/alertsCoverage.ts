@@ -42,3 +42,25 @@ export function statsScopeNote(
   }
   return `Counts cover the ${alerts.value.length} alerts on this page; the server did not report a total.`
 }
+
+/**
+ * The row-count label.
+ *
+ * Numerator and denominator always describe the *same* population — the loaded
+ * page. Pairing a filtered row count against the fleet `total` produced a ratio
+ * over a population that was never queried ("7 of 214 alerts" when the 7 came
+ * from a filtered 50-row page). The fleet total is stated once, by the
+ * truncation notice, which is the only figure entitled to it.
+ *
+ * Lives here rather than in the page so the page's own complexity stays
+ * readable and this rule is unit-testable without rendering.
+ */
+export function alertsCountLabel(
+  shown: number,
+  loaded: number,
+  pageIsWholeFleet: boolean,
+): string {
+  const scope = pageIsWholeFleet ? '' : ' on this page'
+  if (shown === loaded) return `${shown} alert${shown === 1 ? '' : 's'}${scope}`
+  return `${shown} of ${loaded} alerts${scope}`
+}

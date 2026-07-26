@@ -5,8 +5,9 @@
 export { AlertList } from './AlertList'
 export { AlertFilterBar } from './AlertFilterBar'
 export { AlertStatsStrip } from './AlertStatsStrip'
-export { coversWholeFleet, statsScopeNote } from './alertsCoverage'
+export { alertsCountLabel, coversWholeFleet, statsScopeNote } from './alertsCoverage'
 export { AlertCardFeed } from './AlertCardFeed'
+export { AlertsFeedBody, type AlertsFeedBodyProps } from './AlertsFeedBody'
 export {
   AlertCategoryFilter,
   type CategoryCounts,
@@ -28,7 +29,12 @@ export { AlertRulesTable } from './AlertRulesTable'
 export { DestinationManager } from './DestinationManager'
 export { ResolveAction } from './ResolveAction'
 export { SilenceAction } from './SilenceAction'
-export { applyClientFilters, resolveTimeWindow, type TimeWindow } from './alertFilters'
+export {
+  applyClientFilters,
+  resolveTimeWindow,
+  toggleFilterValue,
+  type TimeWindow,
+} from './alertFilters'
 export {
   criticalFiringBadge,
   criticalFiringCount,
