@@ -53,10 +53,19 @@ Given an **empty** cascade, `collect_merged_capabilities`
   falls through;
 - every call therefore returns `Decision::Allow`.
 
-**Every cell of the matrix renders green `allow`.** The page whose entire purpose is
-to answer *"what can this agent do?"* answers *"everything"* — and it answers with the
-same confident green it would use for a genuinely authored default-allow policy. The
-two are indistinguishable to the operator.
+**Every cell of the matrix renders `allow`.** The page whose entire purpose is to
+answer *"what can this agent do?"* answers *"everything"* — and it renders exactly what
+it would render for a genuinely authored default-allow policy. The two are
+indistinguishable to the operator.
+
+**And `allow` is the *least* salient state in the grid, by design.**
+`.cap-mx-cell--allow` is `background: var(--paper-2)` — the plain page surface —
+against `--warn-bg` for `narrow`, `--info-bg` for `approval` and `--danger-bg` for
+`deny` (`dashboard/src/features/capability/CapabilityMatrixGrid.css:177-198`). That is
+the correct design choice for a real matrix: attention belongs on the restrictions. It
+is the worst possible property for a *fabricated* one. A uniformly neutral grid does
+not shout "everything is permitted" — it reads as *"nothing to see here"*, which is a
+more effective way to stop an operator looking than an alarming colour would ever be.
 
 `decide` is not individually wrong. It is fail-closed *given* a cascade, and its
 doc-comment (`capability.rs:475-479`) says exactly that. The failure is entirely a
@@ -87,8 +96,8 @@ process's own loaded policy — not from anything `aa-api` projected.
 
 **But it is an operator-deception risk, and that is not a lesser category.** The
 product's value proposition is that an operator can look at the dashboard and know
-what their agents are permitted to do. A grid that renders uniform green when it
-actually knows nothing:
+what their agents are permitted to do. A grid that renders uniform, unremarkable
+`allow` when it actually knows nothing:
 
 - invites the operator to *stop looking* — the surface designed to prompt tightening
   says there is nothing to tighten;
@@ -97,11 +106,18 @@ actually knows nothing:
 - is indistinguishable from the genuinely-permissive case, so it cannot be
   detected by inspection, only by reading the source.
 
-The correct framing is: **not a security hole in the enforcement path; a integrity
+The correct framing is: **not a security hole in the enforcement path; an integrity
 hole in the reporting path.** ADR 0017 item 12 already committed this project to the
 opposite of what is shipped here — it superseded the mock's per-type redaction
 templates precisely because they "would **fabricate data** the backend does not
-actually emit". A green cell backed by no cascade is the same fabrication.
+actually emit". An `allow` cell backed by no cascade is the same fabrication.
+
+A related inversion on the same surface, found in review and worth recording because it
+compounds the effect: `CapabilitySummary.tsx:39` renders the **denied** count with
+`tone="ok"`, while the `allow` count carries no tone at all
+(`CapabilitySummary.tsx:37-39`). So the summary bar's only positively-toned number is
+the one that goes to **zero** under an empty cascade — an all-`allow` grid presents as
+"0 denied", styled reassuringly.
 
 ### Why "empty" and "unavailable" must be treated as one case
 
@@ -116,7 +132,7 @@ cannot distinguish any of them:
 4. a load or refresh failed.
 
 Cases 1 and 4 are *"we do not know"*. Cases 2 and 3 are *"we know, and the answer is
-nothing"*. All four currently render identically as green `allow`. Any rule that fixes
+nothing"*. All four currently render identically as `allow`. Any rule that fixes
 only case 1 leaves the same lie reachable through the others, which is why this ADR
 scopes the decision to the **semantic class** ("no constraining policy data reached
 this projection") rather than to the ADR-0023 wiring defect.
@@ -132,7 +148,7 @@ one deliberately rather than inherit one.
 
 | | Meaning | Matrix renders | Honest? |
 |---|---|---|---|
-| **(a) Default-allow** *(shipped, by accident)* | "nothing constrains it, therefore it is permitted" | green `allow` | **No** — asserts a permission nothing granted |
+| **(a) Default-allow** *(shipped, by accident)* | "nothing constrains it, therefore it is permitted" | `allow` (the neutral cell) | **No** — asserts a permission nothing granted |
 | **(b) Default-deny** | "no policy authorises it, therefore it is refused" | red `deny` | **No** — asserts a refusal nothing imposed, and would contradict `evaluate_primary`, which permits it |
 | **(c) Explicit-unconfigured** | "no policy data reached this projection; the answer is not known" | a distinct non-verdict state | **Yes** |
 
@@ -153,7 +169,8 @@ codebase, which already reaches for the same distinction repeatedly:
   rather than emitting a misleading `0`" (`aa-api/src/models/topology.rs:283-291`);
 - the Fleet table renders `null` metrics as `—` "rather than a misleading zero"
   (`dashboard/src/features/agents/fleetTypes.ts:32-37`);
-- ADR 0018 froze `verdict` / `traceId` / `latencyMs` as *present in the schema and
+- ADR 0018 froze four fields on the per-decision record (`verdict`, `traceId`,
+  `latencyMs`, `matchedPolicy`), three of them unsourced, as *present in the schema and
   honestly `null`* rather than synthesised.
 
 The rule those four instances share, stated once: **permission is never inferred from
@@ -180,8 +197,11 @@ So representation requires **new signal**, and there are two shapes:
   all have to learn it.
 
 Whichever is chosen, the **rendering** requirement is fixed and is not a matter of
-taste: an unconfigured cell must be visually distinct from `allow`, must not be green,
-and must not be counted in any "allowed" tally. The `CapabilitySummary` "allowed" stat
+taste: an unconfigured cell must be **visually distinct from `allow`** and must not be
+counted in any "allowed" tally. Note that "distinct from `allow`" is a stronger
+requirement than it sounds, precisely *because* `allow` is the neutral page surface —
+an unconfigured treatment cannot simply be "greyed out", since that is very nearly what
+`allow` already looks like. The `CapabilitySummary` "allowed" stat
 (`dashboard/src/features/capability/CapabilitySummary.tsx:34-38`) currently sums cells
 that include the fabricated allows.
 
@@ -216,7 +236,8 @@ The matrix is read by humans as evidence. Two consequences:
   the response is unconfigured without rendering it. This is the argument for putting
   the signal in the response body rather than solving it purely in the dashboard.
 - **The projection is not itself an audit record and must not become one.** ADR 0018
-  froze the per-decision record (`RuntimeVerdict`, `traceId`, `latencyMs`) as the
+  froze the per-decision record (four fields — `verdict`, `traceId`, `latencyMs`,
+  `matchedPolicy`) as the
   audit-grade artifact, sourced from the enforcement path. Nothing here should write to
   the audit log — a *reporting* surface emitting audit entries would create exactly the
   circular evidence ("the dashboard says it was allowed, and here is the dashboard's
@@ -247,16 +268,42 @@ state? A dashboard nobody has open cannot report anything.
 
 ### 6. Migration and regression tests
 
-The reason this defect shipped is that **there is no test that exercises `decide` with
-an empty cascade and asserts anything about the result.** The existing unit test
-(`aa-api/src/routes/capability.rs:1117`,
-`decide_honours_the_guard_fail_closed_rules`) tests the guard rules *given* capability
-data — which is the case that already works. The regression suite must therefore
-include, at minimum:
+**The empty case is already tested — and the test pins it to `Allow`.**
+`decide_honours_the_guard_fail_closed_rules`
+(`aa-api/src/routes/capability.rs:1117-1138`) opens with a default (therefore empty)
+`CapabilitySet` and asserts:
 
-1. **The missing unit test** — project the matrix with an empty cascade and assert no
-   cell is `Allow`. This test would have failed on the day the projection went live and
-   is the single highest-value item here.
+```rust
+let mut caps = aa_core::CapabilitySet::default();
+// No restriction declared at all -> unconstrained.
+assert_eq!(decide(&caps, &C::FileRead), Decision::Allow);   // :1122
+```
+
+This matters more than a missing test would, and it changes the shape of the work.
+A gap can be closed by adding a test; **here the behaviour is actively locked in by a
+green assertion that reads as intentional** — its comment ("No restriction declared at
+all -> unconstrained") states the semantics as a deliberate choice. Any implementation
+must therefore *change an existing passing assertion*, which is a materially larger
+migration story than adding coverage:
+
+- the change will read as "weakening a fail-closed test" to a reviewer who has not read
+  this ADR, so the commit must cite it;
+- the assertion is correct **for `decide` in isolation** — an empty `CapabilitySet`
+  genuinely imposes no capability restriction, and that is what the enforcement guard
+  means by it. What is wrong is *publishing that as a matrix cell*. So the fix may
+  belong at the **projection** layer (which knows whether a cascade was loaded) rather
+  than inside `decide`, leaving this unit test correct and untouched;
+- if instead `decide` is changed, its two other assertions in the same test (explicit
+  deny wins; a live allow-list denies what it omits) must be shown to still hold.
+
+The regression suite must therefore include, at minimum:
+
+1. **Resolve the pinned assertion at `capability.rs:1122`** — either (a) leave `decide`
+   and its unit test untouched and add a *projection-level* test asserting no cell is
+   `Allow` when no cascade was loaded, or (b) change `decide` and rewrite the assertion
+   with a comment citing this ADR. **(a) is preferred**: it fixes the layer that has the
+   information, and it does not weaken a test whose stated semantics are right for the
+   function it covers.
 2. **A distinctness test** — an empty cascade and a genuinely default-allow policy
    must produce *different* responses. If they don't, the fix is cosmetic.
 3. **`Na` non-regression** — a terminal row's read/write/delete verbs stay `Na`, not
@@ -276,13 +323,23 @@ generated client contract.
 
 ---
 
-## Interim position (in force now, not contingent on sign-off)
+## Interim position — recorded, not authorised here
 
-Another lane of this programme is already implementing the following, and this ADR
-records it as the **interim rule**:
+**This ADR authorises nothing.** It is `Proposed`; it grants no permission to write
+code, and the paragraphs below are a *description* of work another lane is already
+carrying out under its own ticket and its own approval, recorded here so this decision
+record is not silently contradicted by what is shipping alongside it.
+
+Where this ADR previously said work was "safe to proceed with immediately", that was an
+authorisation claim a `Proposed` record cannot make, and it is withdrawn. Anything not
+already approved elsewhere is scheduled through the normal ticket route — including the
+regression items in §6.
+
+Another lane of this programme is implementing the following, and this ADR records it as
+the **interim rule** it is working to:
 
 > **An empty or unavailable cascade renders as *Unconfigured* / *Not evaluated* —
-> never as green `allow`. Permission is never inferred from missing policy data.**
+> never as `allow`. Permission is never inferred from missing policy data.**
 
 It is interim in *mechanism*, not in *principle*. The principle — do not assert a
 permission you cannot source — is not up for sign-off; it is already this project's
@@ -313,8 +370,8 @@ place.** No option below preserves it.
    mechanism left open? (Recommended yes.)
 
 Until items 1 and 2 are answered, no implementation ticket should be opened beyond the
-interim rendering rule and the regression tests in §6, both of which are safe to
-proceed with immediately.
+interim rendering rule already in flight under its own ticket. The regression items in
+§6 are **recommendations to be scheduled**, not work this ADR releases.
 
 ---
 
@@ -325,10 +382,10 @@ proceed with immediately.
   made once, in a vocabulary the rest of the codebase already reaches for informally.
 - **Positive.** The regression tests in §6 close the specific hole that let this ship —
   every existing test supplied capability data, so none could catch the empty case.
-- **Negative / accepted.** Operators lose a reassuring all-green grid and gain a grid
-  that says it does not know. That is the intended trade: an honest unknown is more
-  useful than a false clean bill of health, but it will read as a regression to anyone
-  who trusted the green.
+- **Negative / accepted.** Operators lose a grid that quietly reads as settled and
+  gain one that says it does not know. That is the intended trade: an honest unknown is
+  more useful than a false clean bill of health, but it will read as a regression to
+  anyone who took the calm grid as confirmation.
 - **Negative / accepted.** A cell-level state is a breaking enum extension for any
   out-of-tree consumer of the generated client.
 - **Neutral.** This ADR is orthogonal to ADR 0023. If Option A or B lands and `aa-api`
