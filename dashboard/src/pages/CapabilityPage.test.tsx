@@ -1,4 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CapabilityPage } from './CapabilityPage'
@@ -23,7 +24,11 @@ function LocationProbe() {
 }
 
 function renderPage() {
+  // A throwaway client per render, with retries off so a rejected fetch surfaces
+  // the error state immediately instead of being retried.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
+    <QueryClientProvider client={queryClient}>
     <ToastProvider>
       <MemoryRouter initialEntries={['/capability']}>
         <Routes>
@@ -32,7 +37,8 @@ function renderPage() {
         </Routes>
         <LocationProbe />
       </MemoryRouter>
-    </ToastProvider>,
+    </ToastProvider>
+    </QueryClientProvider>,
   )
 }
 
@@ -163,6 +169,28 @@ describe('CapabilityPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply override' }))
 
     await waitFor(() => expect(applyOverride).toHaveBeenCalledTimes(1))
+  })
+
+  it('re-syncs with the server projection after a successful override', async () => {
+    // The server replays the override onto its own projection, so the refetch is
+    // authoritative. Before the fix the optimistic copy shadowed `data` forever:
+    // this refetch resolved and was silently discarded, freezing the page.
+    const refetched: CapabilityMatrix = {
+      ...FIXTURE,
+      agents: FIXTURE.agents.map((a, i) => (i === 0 ? { ...a, name: 'renamed-by-server' } : a)),
+    }
+    getMatrix.mockResolvedValueOnce(FIXTURE).mockResolvedValue(refetched)
+    applyOverride.mockResolvedValueOnce({ updated: [] })
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+
+    fireEvent.click(screen.getByLabelText('select all agents'))
+    fireEvent.change(screen.getByLabelText('resource'), {
+      target: { value: FIXTURE.resources[0].id },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply override' }))
+
+    expect(await screen.findByText('renamed-by-server')).toBeInTheDocument()
   })
 
   it('rolls back and toasts on a failed bulk override', async () => {

@@ -26,7 +26,7 @@ describe('applyFilters', () => {
 
   it('caps results by trustMax inclusively', () => {
     const lowTrust = applyFilters(AGENTS, { ...EMPTY_FILTERS, trustMax: 60 })
-    expect(lowTrust.every((a) => a.trust <= 60)).toBe(true)
+    expect(lowTrust.every((a) => (a.trust ?? Infinity) <= 60)).toBe(true)
     expect(lowTrust.length).toBeGreaterThan(0)
   })
 })

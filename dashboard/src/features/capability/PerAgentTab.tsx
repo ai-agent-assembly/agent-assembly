@@ -3,6 +3,7 @@ import type { CapabilityAgent, Decision, Resource } from './types'
 import { DECISIONS, VERBS } from './types'
 import type { CellSelection } from './CapabilityMatrixGrid'
 import './PerAgentTab.css'
+import { orNoData } from './display'
 
 export interface PerAgentTabProps {
   agents: CapabilityAgent[]
@@ -82,8 +83,8 @@ export function PerAgentTab({
             )}
           </h2>
           <p className="cap-pat-meta">
-            {selected.framework} · {selected.owner} · trust {selected.trust} ·{' '}
-            {selected.mode} mode
+            {selected.framework} · {orNoData(selected.owner)} · trust{' '}
+            {orNoData(selected.trust)} · {orNoData(selected.mode)} mode
             {selected.note && (
               <>
                 {' '}
@@ -112,7 +113,7 @@ export function PerAgentTab({
                   <tr key={r.id} data-testid={`per-agent-row-${r.id}`}>
                     <td>
                       <strong>{r.name}</strong>{' '}
-                      <span className="cap-pat-resource-group">· {r.group}</span>
+                      {r.group && <span className="cap-pat-resource-group">· {r.group}</span>}
                     </td>
                     {VERBS.map((v) => {
                       const decision: Decision = cap?.[v] ?? 'na'

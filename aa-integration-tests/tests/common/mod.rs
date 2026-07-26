@@ -931,7 +931,7 @@ spec:
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
                 .build(),
-            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
@@ -1071,7 +1071,7 @@ spec:
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
                 .build(),
-            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
@@ -1212,7 +1212,7 @@ spec:
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
                 .build(),
-            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
@@ -1345,7 +1345,7 @@ spec:
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
                 .build(),
-            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
@@ -1470,7 +1470,7 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
                 .build(),
-            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),

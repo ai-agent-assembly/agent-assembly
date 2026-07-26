@@ -2,6 +2,7 @@ import type { CapabilityAgent, Decision, Resource, Verb } from './types'
 import { DECISIONS } from './types'
 import type { SortState } from './sort'
 import './CapabilityMatrixGrid.css'
+import { orNoData } from './display'
 
 export interface CapabilityMatrixGridProps {
   agents: CapabilityAgent[]
@@ -90,7 +91,7 @@ export function CapabilityMatrixGrid({
               disabled={!sortable}
               onClick={sortable ? () => onSortChange?.(r.id) : undefined}
             >
-              <div className="cap-mx-col-h-group">{r.group}</div>
+              <div className="cap-mx-col-h-group">{r.group ?? ''}</div>
               <span>
                 {r.name} <span className="cap-mx-sort-ind">{sortIndicator(r.id)}</span>
               </span>
@@ -157,15 +158,18 @@ function RowGroup({
         <div className="cap-mx-row-h-meta">
           <span>{agent.framework}</span>
           <span aria-hidden>·</span>
-          <span>{agent.owner}</span>
-          <span className="cap-mx-row-h-trust">trust {agent.trust}</span>
+          <span>{orNoData(agent.owner)}</span>
+          <span className="cap-mx-row-h-trust">trust {orNoData(agent.trust)}</span>
         </div>
-        <div className="cap-trust-bar" aria-hidden>
-          <div
-            className={`cap-trust-bar-fill ${trustToneClass(agent.trust)}`}
-            style={{ width: `${agent.trust}%` }}
-          />
-        </div>
+        {/* No trust score means no bar to draw — an empty bar would read as 0. */}
+        {agent.trust !== undefined && (
+          <div className="cap-trust-bar" aria-hidden>
+            <div
+              className={`cap-trust-bar-fill ${trustToneClass(agent.trust)}`}
+              style={{ width: `${agent.trust}%` }}
+            />
+          </div>
+        )}
       </div>
       {resources.map((r) => {
         const cap = agent.caps[r.id]

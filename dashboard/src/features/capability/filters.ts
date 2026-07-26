@@ -25,12 +25,15 @@ export function applyFilters(
     if (filters.framework !== 'any' && a.framework !== filters.framework) return false
     if (filters.owner !== 'any' && a.owner !== filters.owner) return false
     if (filters.mode !== 'any' && a.mode !== filters.mode) return false
-    if (filters.trustMax !== null && a.trust > filters.trustMax) return false
+    // An agent with no trust score is not "below" any ceiling — it is unmeasured,
+    // so a trust filter cannot include or exclude it on the strength of a 0.
+    if (filters.trustMax !== null && (a.trust === undefined || a.trust > filters.trustMax))
+      return false
     if (!q) return true
     return (
       a.name.toLowerCase().includes(q) ||
       a.framework.toLowerCase().includes(q) ||
-      a.owner.toLowerCase().includes(q) ||
+      (a.owner?.toLowerCase().includes(q) ?? false) ||
       a.id.toLowerCase().includes(q)
     )
   })

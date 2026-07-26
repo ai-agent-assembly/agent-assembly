@@ -46,13 +46,25 @@ pub enum ResourceGroup {
 /// dashboard Capability Matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Resource {
-    /// Stable identifier (e.g. `"gmail"`, `"pg"`, `"shell"`).
+    /// Stable identifier — the wire-format [`aa_core::Capability`] family this
+    /// column projects (`"filesystem"`, `"terminal"`, `"network_outbound"`) or
+    /// the declared MCP tool name for a tool column.
     pub id: String,
-    /// Human-readable display name (e.g. `"Postgres"`).
+    /// Human-readable display name.
     pub name: String,
     /// Coarse group this resource belongs to.
-    pub group: ResourceGroup,
-    /// Globbed paths covered by this resource (e.g. `["pg.public.*"]`).
+    ///
+    /// Only populated for the fixed system capability families, whose domain
+    /// the `Capability` enum itself names (`file_*` → `files`, `network_*` /
+    /// `terminal_exec` → `infra`). An MCP tool is an operator-supplied string
+    /// with no classification anywhere in the policy model, so its group is
+    /// left absent rather than guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<ResourceGroup>,
+    /// Globbed paths covered by this resource.
+    ///
+    /// Always empty: the capability model grants a whole family or tool, it
+    /// does not carry per-path sub-scopes, so there is no real source for this.
     pub paths: Vec<String>,
 }
 
@@ -110,12 +122,20 @@ pub struct PolicyRule {
 pub struct Policy {
     pub id: String,
     pub name: String,
-    pub version: String,
+    /// Revision from the policy document's `metadata.version`. Absent for
+    /// documents parsed from the flat (non-envelope) format, which declare none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub scope: String,
     pub status: PolicyStatus,
     /// Number of times this policy fired in the last 24 hours.
-    #[serde(rename = "hits24h")]
-    pub hits_24h: u64,
+    ///
+    /// Always absent here: attributing audit events back to the policy document
+    /// that produced them is the subject of its own story (AAASM-5096). A `0`
+    /// would be indistinguishable from "fired zero times".
+    #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
+    pub hits_24h: Option<u64>,
+    /// Ids of the agents whose cascade includes this policy scope.
     pub affects: Vec<String>,
     pub rules: Vec<PolicyRule>,
 }
@@ -167,18 +187,36 @@ pub struct CapabilityMatrix {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityAgent {
+    /// Hex-encoded agent UUID, as registered.
     pub id: String,
     pub name: String,
     pub framework: String,
-    pub owner: String,
+    /// Owning team, from the registry's first-class `team_id` (falling back to
+    /// `org_id`). Absent when the agent registered without either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     /// Trust score on a 0–100 scale.
-    pub trust: u8,
-    pub mode: AgentMode,
+    ///
+    /// Always absent: no trust score is computed anywhere in the gateway today.
+    /// Deriving one would be a new scoring rule, which is the subject of its own
+    /// story (AAASM-5083) — emitting a placeholder here would be indistinguishable
+    /// from a real score to every consumer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<u8>,
+    /// Enforcement posture, from the agent's registered `enforcement_mode`
+    /// override. Absent when the agent declared none (the effective mode is then
+    /// per-policy-document, so there is no single agent-level answer) or when it
+    /// declared `Disabled`, which this two-value view cannot represent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<AgentMode>,
     pub status: AgentStatus,
-    /// Human-readable relative-time string (e.g. `"2m ago"`).
+    /// ISO 8601 UTC timestamp of the agent's most recent heartbeat.
     pub last_seen: String,
+    /// Always absent: flagging an agent as over-permissioned is a scoring rule
+    /// with no implementation in the gateway (see `trust`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flagged: Option<bool>,
+    /// Always absent: no operator-authored per-agent note exists in the registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// Resource-id → CapCell mapping for this agent.
@@ -237,8 +275,10 @@ pub struct OverrideRecord {
     pub decision: Decision,
     /// ISO 8601 UTC timestamp when the override was applied.
     pub created_at: String,
-    /// Whether the override is still active. Always `true` in the current
-    /// implementation (no TTL or explicit delete support yet).
+    /// Whether the override is still replayed over the projection. Set to
+    /// `false` by an explicit `DELETE /capability/override/{id}` or by the TTL
+    /// timer firing; entries are never removed, so a revoked override stays
+    /// visible in the log with `active: false`.
     pub active: bool,
 }
 
@@ -281,7 +321,7 @@ mod tests {
         let r = Resource {
             id: "pg".to_string(),
             name: "Postgres".to_string(),
-            group: ResourceGroup::Data,
+            group: Some(ResourceGroup::Data),
             paths: vec!["pg.public.*".to_string(), "pg.public.users".to_string()],
         };
         let json = serde_json::to_value(&r).unwrap();
@@ -326,10 +366,10 @@ mod tests {
         let p = Policy {
             id: "policy-1".to_string(),
             name: "Default Policy".to_string(),
-            version: "1".to_string(),
+            version: Some("1".to_string()),
             scope: "global".to_string(),
             status: PolicyStatus::Active,
-            hits_24h: 1234,
+            hits_24h: Some(1234),
             affects: vec!["support-triage".to_string()],
             rules: vec![PolicyRule {
                 resource: "pg".to_string(),
@@ -399,9 +439,9 @@ mod tests {
             id: "support-triage".to_string(),
             name: "support-triage".to_string(),
             framework: "CrewAI".to_string(),
-            owner: "cx-tools".to_string(),
-            trust: 78,
-            mode: AgentMode::Enforce,
+            owner: Some("cx-tools".to_string()),
+            trust: Some(78),
+            mode: Some(AgentMode::Enforce),
             status: AgentStatus::Active,
             last_seen: "12s ago".to_string(),
             flagged: None,

@@ -1026,7 +1026,9 @@ export interface paths {
          * @description Returns the subset of agent rows that actually changed — the dashboard
          *     uses this to drive an optimistic-UI rollback when an override fails.
          *     An unknown `agentId` rejects the request with 400 and leaves the store
-         *     untouched; an unknown `resourceId` on an agent is silently skipped.
+         *     untouched; an unknown `resourceId` on an agent is silently skipped. A
+         *     `narrow` or `approval` decision is also rejected with 400 — the projection
+         *     emits only allow / deny / na, so no revoke could restore such a cell.
          *
          *     When `ttlSeconds` is present the override is automatically reverted after
          *     that many seconds and the response status is **201 Created**. Without a
@@ -2759,21 +2761,36 @@ export interface components {
             caps: {
                 [key: string]: components["schemas"]["CapCell"];
             };
+            /**
+             * @description Always absent: flagging an agent as over-permissioned is a scoring rule
+             *     with no implementation in the gateway (see `trust`).
+             */
             flagged?: boolean | null;
             framework: string;
+            /** @description Hex-encoded agent UUID, as registered. */
             id: string;
-            /** @description Human-readable relative-time string (e.g. `"2m ago"`). */
+            /** @description ISO 8601 UTC timestamp of the agent's most recent heartbeat. */
             lastSeen: string;
-            mode: components["schemas"]["AgentMode"];
+            mode?: null | components["schemas"]["AgentMode"];
             name: string;
+            /** @description Always absent: no operator-authored per-agent note exists in the registry. */
             note?: string | null;
-            owner: string;
+            /**
+             * @description Owning team, from the registry's first-class `team_id` (falling back to
+             *     `org_id`). Absent when the agent registered without either.
+             */
+            owner?: string | null;
             status: components["schemas"]["AgentStatus"];
             /**
              * Format: int32
              * @description Trust score on a 0–100 scale.
+             *
+             *     Always absent: no trust score is computed anywhere in the gateway today.
+             *     Deriving one would be a new scoring rule, which is the subject of its own
+             *     story (AAASM-5083) — emitting a placeholder here would be indistinguishable
+             *     from a real score to every consumer.
              */
-            trust: number;
+            trust?: number | null;
         };
         /**
          * @description Top-level response shape for `GET /api/v1/capability/matrix`. Mirrors
@@ -3487,8 +3504,10 @@ export interface components {
          */
         OverrideRecord: {
             /**
-             * @description Whether the override is still active. Always `true` in the current
-             *     implementation (no TTL or explicit delete support yet).
+             * @description Whether the override is still replayed over the projection. Set to
+             *     `false` by an explicit `DELETE /capability/override/{id}` or by the TTL
+             *     timer firing; entries are never removed, so a revoked override stays
+             *     visible in the log with `active: false`.
              */
             active: boolean;
             /** @description Agent identifiers this override was applied to. */
@@ -3645,18 +3664,27 @@ export interface components {
         };
         /** @description A policy version shown in the dashboard Capability Matrix's policies tab. */
         Policy: {
+            /** @description Ids of the agents whose cascade includes this policy scope. */
             affects: string[];
             /**
              * Format: int64
              * @description Number of times this policy fired in the last 24 hours.
+             *
+             *     Always absent here: attributing audit events back to the policy document
+             *     that produced them is the subject of its own story (AAASM-5096). A `0`
+             *     would be indistinguishable from "fired zero times".
              */
-            hits24h: number;
+            hits24h?: number | null;
             id: string;
             name: string;
             rules: components["schemas"]["PolicyRule"][];
             scope: string;
             status: components["schemas"]["PolicyStatus"];
-            version: string;
+            /**
+             * @description Revision from the policy document's `metadata.version`. Absent for
+             *     documents parsed from the flat (non-envelope) format, which declare none.
+             */
+            version?: string | null;
         };
         /** @description Per-rule, per-day policy outcome counts. */
         PolicyDay: {
@@ -3820,13 +3848,21 @@ export interface components {
          *     dashboard Capability Matrix.
          */
         Resource: {
-            /** @description Coarse group this resource belongs to. */
-            group: components["schemas"]["ResourceGroup"];
-            /** @description Stable identifier (e.g. `"gmail"`, `"pg"`, `"shell"`). */
+            group?: null | components["schemas"]["ResourceGroup"];
+            /**
+             * @description Stable identifier — the wire-format [`aa_core::Capability`] family this
+             *     column projects (`"filesystem"`, `"terminal"`, `"network_outbound"`) or
+             *     the declared MCP tool name for a tool column.
+             */
             id: string;
-            /** @description Human-readable display name (e.g. `"Postgres"`). */
+            /** @description Human-readable display name. */
             name: string;
-            /** @description Globbed paths covered by this resource (e.g. `["pg.public.*"]`). */
+            /**
+             * @description Globbed paths covered by this resource.
+             *
+             *     Always empty: the capability model grants a whole family or tool, it
+             *     does not carry per-path sub-scopes, so there is no real source for this.
+             */
             paths: string[];
         };
         /**
@@ -6617,7 +6653,7 @@ export interface operations {
                     "application/json": components["schemas"]["CapabilityOverrideResponse"];
                 };
             };
-            /** @description Unknown agent id */
+            /** @description Unknown agent id, or a decision the projection cannot express (narrow / approval) */
             400: {
                 headers: {
                     [name: string]: unknown;

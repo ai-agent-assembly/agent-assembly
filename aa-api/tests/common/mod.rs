@@ -181,7 +181,7 @@ spec:
         topology_stats_cache: moka::future::Cache::builder()
             .time_to_live(std::time::Duration::from_secs(10))
             .build(),
-        capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+        capability_store: aa_api::routes::capability::CapabilityStore::new(),
         iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
         ops_registry: Arc::new(OpsRegistry::new()),
         destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
@@ -226,6 +226,19 @@ pub fn test_state_with_retention_engine(engine: Arc<RetentionEngine>) -> AppStat
 #[allow(dead_code)]
 pub fn test_app_with_auth(entries: &[ApiKeyEntry], rpm: u32) -> Router {
     build_app(test_state_with_auth(AuthMode::On, entries, rpm))
+}
+
+/// Build the full app with a set of agents already registered.
+///
+/// Registry-backed projections (the capability matrix) return rows only for
+/// agents the registry knows about, so a test that exercises one has to seed it.
+#[allow(dead_code)]
+pub fn test_app_with_agents(agents: Vec<aa_gateway::registry::AgentRecord>) -> Router {
+    let state = test_state();
+    for a in agents {
+        state.agent_registry.register(a).expect("test agent should register");
+    }
+    build_app(state)
 }
 
 /// Build the full app with auth disabled (bypass mode).

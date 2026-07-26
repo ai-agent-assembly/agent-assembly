@@ -1,10 +1,41 @@
-//! Capability matrix endpoints (AAASM-1366).
+//! Capability matrix endpoints (AAASM-1366, made live in AAASM-5090).
 //!
-//! The store holds an in-memory `CapabilityMatrix` seeded to mirror the
-//! dashboard's typed mock client (`dashboard/src/api/capability.ts`). This
-//! lets the dashboard swap the mock for the generated `openapi-fetch`
-//! client without a shape change; a follow-up Story can replace the seed
-//! with a live projection from the policy engine.
+//! `GET /capability/matrix` is a **read-only projection** of state the gateway
+//! already holds — the agent registry plus the policy engine's capability
+//! cascade. It evaluates nothing and enforces nothing: no runtime, proxy or
+//! eBPF path is touched, and the projection cannot change a verdict.
+//!
+//! ## Where each cell comes from
+//!
+//! A cell is the merged capability grant for one agent, computed with the same
+//! public `aa_core` helpers the enforcement guard uses
+//! ([`aa_core::capability_is_denied`] and [`aa_core::CapabilitySet::allow_is_restricted`]),
+//! so the matrix cannot drift from the guard's own most-restrictive-wins /
+//! fail-closed semantics. The four matrix verbs are exactly the four verb-shaped
+//! capability variants that [`aa_core::action_to_capability`] already maps
+//! governance actions onto (`file_read` / `file_write` / `file_delete` /
+//! `terminal_exec`), so no new verb-mapping rule is introduced here.
+//!
+//! ## What this projection deliberately does not cover
+//!
+//! Cells carry only `allow` / `deny` / `na`. The `narrow` and `approval`
+//! decisions are products of *other* policy stages (credential scrubbing, and a
+//! tool's `requires_approval_if` CEL condition evaluated against a concrete
+//! action) — they cannot be read off a static capability set, and deciding them
+//! for a whole grid would mean running the simulation oracle per cell. That view
+//! is owned by the policy-replay story (AAASM-5094), so those decisions simply
+//! never appear here rather than being approximated.
+//!
+//! Fields with no source in the gateway at all (trust score, over-permission
+//! flags, per-policy 24h hit counts) are emitted as absent — see the field docs
+//! on [`crate::models::capability`] for which story owns each one.
+//!
+//! ## Overrides are a display overlay
+//!
+//! `POST`/`DELETE /capability/override` record operator intent and are replayed
+//! over the projection on read. They have never fed enforcement — the store is
+//! read by these four handlers and nothing else — so an override annotates the
+//! view without changing what the gateway actually permits.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -28,28 +59,10 @@ use crate::auth::scope::{RequireRead, Scope};
 use crate::error::ProblemDetail;
 use crate::models::capability::{
     AgentMode, AgentStatus, CapCell, CapabilityAgent, CapabilityMatrix, CapabilityOverrideRequest,
-    CapabilityOverrideResponse, ChangeType, Decision, OverrideRecord, Policy, PolicyRule, PolicyStatus, Resource,
-    ResourceGroup, SampleCall, Verb,
+    CapabilityOverrideResponse, Decision, OverrideRecord, Policy, PolicyRule, PolicyStatus, Resource, ResourceGroup,
+    Verb,
 };
 use crate::state::AppState;
-
-/// Reasons an override request can fail before reaching the handler's
-/// response path. Mapped to ProblemDetail by the handler.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OverrideError {
-    /// The request named an agent id that the store does not know about.
-    UnknownAgent(String),
-}
-
-/// Pre-mutation snapshot of a single (agent, resource, verb) cell, used to
-/// restore the original decision when a TTL expires.
-#[derive(Debug, Clone)]
-struct CellSnapshot {
-    agent_id: String,
-    resource_id: String,
-    verb: Verb,
-    original: Decision,
-}
 
 /// Reasons a revoke request can fail.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,42 +71,23 @@ pub enum RevokeOverrideError {
     NotFound,
 }
 
-/// Per-agent revert record — tracks the pre-override cell value so
-/// `DELETE /capability/override/{id}` can restore each cell individually.
-#[derive(Debug, Clone)]
-struct RevertRecord {
-    override_id: String,
-    agent_id: String,
-    resource_id: String,
-    verb: Verb,
-    prev_decision: Decision,
-}
-
-/// Thread-safe holder for the dashboard Capability Matrix snapshot, the
-/// append-only override log (for `GET /capability/override`), and the
-/// per-agent revert records (for `DELETE /capability/override/{id}`).
-#[derive(Debug)]
+/// Append-only log of operator capability overrides, replayed over the live
+/// projection on every read of the matrix.
+///
+/// The store deliberately holds no matrix of its own: the base values come from
+/// the registry + policy cascade on each request, so an override never has to be
+/// reconciled against a stale copy, and revoking one restores the projected
+/// value with no bookkeeping. Nothing outside this module reads the store, so an
+/// entry here annotates the dashboard view only — it does not reach enforcement.
+#[derive(Debug, Default)]
 pub struct CapabilityStore {
-    inner: RwLock<CapabilityMatrix>,
-    /// Append-only log of all override operations applied since startup.
     overrides: RwLock<Vec<OverrideRecord>>,
-    /// Per-agent pre-override cell values used to revert on DELETE.
-    revert_records: RwLock<Vec<RevertRecord>>,
 }
 
 impl CapabilityStore {
-    /// Build a store seeded with the dashboard fixture data.
-    pub fn new_seeded() -> Arc<Self> {
-        Arc::new(Self {
-            inner: RwLock::new(seeded_matrix()),
-            overrides: RwLock::new(vec![]),
-            revert_records: RwLock::new(Vec::new()),
-        })
-    }
-
-    /// Return a cloned snapshot of the matrix.
-    pub async fn snapshot(&self) -> CapabilityMatrix {
-        self.inner.read().await.clone()
+    /// Build an empty store. The matrix it overlays is projected per request.
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
     }
 
     /// Return all recorded overrides, optionally filtered to those affecting
@@ -110,80 +104,15 @@ impl CapabilityStore {
         }
     }
 
-    /// Apply a single `(resource_id, verb, decision)` override across the
-    /// requested agents.  Returns a stable UUID for the override plus the
-    /// agent rows that actually changed.
+    /// Record a `(resource_id, verb, decision)` override across `req.agent_ids`
+    /// and return its stable UUID.
     ///
-    /// Rejects unknown `agent_id` values with `OverrideError::UnknownAgent`.
-    /// An unknown `resource_id` is silently ignored for that agent (matches
-    /// the dashboard mock at `capability.ts::applyOverrideToAgents`).
-    ///
-    /// On success, appends one [`OverrideRecord`] to the override log so
-    /// `GET /capability/override` can list applied overrides, and records
-    /// per-agent revert data so `DELETE /capability/override/{id}` can undo.
-    ///
-    /// When `req.ttl_seconds` is `Some(n)`, a background Tokio task is spawned
-    /// that sleeps for `n` seconds then reverts the affected cells to their
-    /// pre-override decisions. The `Arc<Self>` receiver is required so the
-    /// background task can hold a reference to the store beyond the call.
-    pub async fn apply_override(
-        self: Arc<Self>,
-        req: &CapabilityOverrideRequest,
-    ) -> Result<(String, Vec<CapabilityAgent>), OverrideError> {
+    /// When `req.ttl_seconds` is `Some(n)`, a background Tokio task deactivates
+    /// the entry after `n` seconds. The `Arc<Self>` receiver lets that task
+    /// outlive the call.
+    pub async fn record_override(self: Arc<Self>, req: &CapabilityOverrideRequest) -> String {
         let override_id = Uuid::new_v4().to_string();
-        let (updated, revert_items, snapshots) = {
-            let mut matrix = self.inner.write().await;
-            // Validate every requested agent_id up front so a single unknown id
-            // rejects the whole request without partial mutation.
-            for id in &req.agent_ids {
-                if !matrix.agents.iter().any(|a| &a.id == id) {
-                    return Err(OverrideError::UnknownAgent(id.clone()));
-                }
-            }
-
-            let mut updated = Vec::with_capacity(req.agent_ids.len());
-            let mut revert_items: Vec<RevertRecord> = Vec::new();
-            let mut snapshots: Vec<CellSnapshot> = Vec::new();
-            for agent in matrix.agents.iter_mut() {
-                if !req.agent_ids.contains(&agent.id) {
-                    continue;
-                }
-                if let Some(cell) = agent.caps.get_mut(&req.resource_id) {
-                    let prev_decision = match req.verb {
-                        Verb::Read => cell.read,
-                        Verb::Write => cell.write,
-                        Verb::Delete => cell.delete,
-                        Verb::Exec => cell.exec,
-                    };
-                    revert_items.push(RevertRecord {
-                        override_id: override_id.clone(),
-                        agent_id: agent.id.clone(),
-                        resource_id: req.resource_id.clone(),
-                        verb: req.verb,
-                        prev_decision,
-                    });
-                    snapshots.push(CellSnapshot {
-                        agent_id: agent.id.clone(),
-                        resource_id: req.resource_id.clone(),
-                        verb: req.verb,
-                        original: prev_decision,
-                    });
-                    match req.verb {
-                        Verb::Read => cell.read = req.decision,
-                        Verb::Write => cell.write = req.decision,
-                        Verb::Delete => cell.delete = req.decision,
-                        Verb::Exec => cell.exec = req.decision,
-                    }
-                    updated.push(agent.clone());
-                }
-            }
-            (updated, revert_items, snapshots)
-        };
-        // Persist revert records for DELETE support.
-        self.revert_records.write().await.extend(revert_items);
-        // Append to the override log regardless of whether any cells changed
-        // (unknown resource_id is silently skipped but still logged).
-        let log_entry = OverrideRecord {
+        self.overrides.write().await.push(OverrideRecord {
             id: override_id.clone(),
             agent_ids: req.agent_ids.clone(),
             resource_id: req.resource_id.clone(),
@@ -191,74 +120,55 @@ impl CapabilityStore {
             decision: req.decision,
             created_at: chrono::Utc::now().to_rfc3339(),
             active: true,
-        };
-        self.overrides.write().await.push(log_entry);
+        });
 
         if let Some(ttl_secs) = req.ttl_seconds {
             let store = Arc::clone(&self);
+            let id = override_id.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(ttl_secs)).await;
-                store.revert_override(snapshots).await;
+                let _ = store.revoke_override(&id).await;
             });
         }
 
-        Ok((override_id, updated))
+        override_id
     }
 
-    /// Revert all cell changes made by the override identified by `id`,
-    /// remove its revert records, and mark the log entry as inactive.
+    /// Deactivate the override identified by `id` so it stops being replayed.
     ///
-    /// Returns `RevokeOverrideError::NotFound` when no active override with
-    /// that id exists.
+    /// Returns [`RevokeOverrideError::NotFound`] when no *active* entry carries
+    /// that id — either it never existed or it was already revoked/expired.
     pub async fn revoke_override(&self, id: &str) -> Result<(), RevokeOverrideError> {
-        let records: Vec<RevertRecord> = self
-            .revert_records
-            .read()
-            .await
-            .iter()
-            .filter(|r| r.override_id == id)
-            .cloned()
-            .collect();
-        if records.is_empty() {
-            return Err(RevokeOverrideError::NotFound);
-        }
-        {
-            let mut matrix = self.inner.write().await;
-            for record in &records {
-                if let Some(agent) = matrix.agents.iter_mut().find(|a| a.id == record.agent_id) {
-                    if let Some(cell) = agent.caps.get_mut(&record.resource_id) {
-                        match record.verb {
-                            Verb::Read => cell.read = record.prev_decision,
-                            Verb::Write => cell.write = record.prev_decision,
-                            Verb::Delete => cell.delete = record.prev_decision,
-                            Verb::Exec => cell.exec = record.prev_decision,
-                        }
-                    }
-                }
-            }
-        }
-        self.revert_records.write().await.retain(|r| r.override_id != id);
-        // Mark the log entry inactive so GET /capability/override reflects the revocation.
-        for entry in self.overrides.write().await.iter_mut() {
-            if entry.id == id {
+        let mut log = self.overrides.write().await;
+        match log.iter_mut().find(|r| r.id == id && r.active) {
+            Some(entry) => {
                 entry.active = false;
+                Ok(())
             }
+            None => Err(RevokeOverrideError::NotFound),
         }
-        Ok(())
     }
 
-    /// Restore cell decisions to their pre-override values. Called by the
-    /// background TTL expiry task spawned in `apply_override`.
-    async fn revert_override(&self, snapshots: Vec<CellSnapshot>) {
-        let mut matrix = self.inner.write().await;
-        for snap in snapshots {
-            if let Some(agent) = matrix.agents.iter_mut().find(|a| a.id == snap.agent_id) {
-                if let Some(cell) = agent.caps.get_mut(&snap.resource_id) {
-                    match snap.verb {
-                        Verb::Read => cell.read = snap.original,
-                        Verb::Write => cell.write = snap.original,
-                        Verb::Delete => cell.delete = snap.original,
-                        Verb::Exec => cell.exec = snap.original,
+    /// Replay every active override onto `matrix`, newest last so a later
+    /// override of the same cell wins.
+    ///
+    /// An override naming an agent or resource the projection does not contain
+    /// is skipped: the underlying grant may have gone away since it was
+    /// recorded, and inventing a row for it would show a cell the policy
+    /// cascade does not actually produce.
+    pub async fn apply_overlay(&self, matrix: &mut CapabilityMatrix) {
+        let log = self.overrides.read().await;
+        for record in log.iter().filter(|r| r.active) {
+            for agent in matrix.agents.iter_mut() {
+                if !record.agent_ids.contains(&agent.id) {
+                    continue;
+                }
+                if let Some(cell) = agent.caps.get_mut(&record.resource_id) {
+                    match record.verb {
+                        Verb::Read => cell.read = record.decision,
+                        Verb::Write => cell.write = record.decision,
+                        Verb::Delete => cell.delete = record.decision,
+                        Verb::Exec => cell.exec = record.decision,
                     }
                 }
             }
@@ -279,6 +189,17 @@ pub struct MatrixQueryParams {
     /// When `true`, exclude capability cells where all four verb decisions are `na`.
     #[param(example = true)]
     pub effective_only: Option<bool>,
+}
+
+/// Project the live matrix and replay the active override overlay onto it.
+///
+/// Shared by the read and the override-write handlers so both agree on which
+/// agents and resources exist at this instant.
+async fn projected_matrix(state: &AppState) -> CapabilityMatrix {
+    let records = state.agent_registry.list();
+    let mut matrix = project_matrix(&records, state);
+    state.capability_store.apply_overlay(&mut matrix).await;
+    matrix
 }
 
 /// `GET /api/v1/capability/matrix` — return the agent × resource × verb ×
@@ -316,7 +237,7 @@ pub async fn get_matrix(
         return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
             .with_detail("Reading the capability matrix requires admin scope".to_string()));
     }
-    let mut matrix = state.capability_store.snapshot().await;
+    let mut matrix = projected_matrix(&state).await;
 
     if let Some(ref tid) = params.team_id {
         matrix.agents.retain(|a| &a.id == tid);
@@ -349,7 +270,9 @@ pub async fn get_matrix(
 /// Returns the subset of agent rows that actually changed — the dashboard
 /// uses this to drive an optimistic-UI rollback when an override fails.
 /// An unknown `agentId` rejects the request with 400 and leaves the store
-/// untouched; an unknown `resourceId` on an agent is silently skipped.
+/// untouched; an unknown `resourceId` on an agent is silently skipped. A
+/// `narrow` or `approval` decision is also rejected with 400 — the projection
+/// emits only allow / deny / na, so no revoke could restore such a cell.
 ///
 /// When `ttlSeconds` is present the override is automatically reverted after
 /// that many seconds and the response status is **201 Created**. Without a
@@ -361,7 +284,7 @@ pub async fn get_matrix(
     responses(
         (status = 200, description = "Updated agent rows (no TTL)", body = CapabilityOverrideResponse),
         (status = 201, description = "Updated agent rows with TTL scheduled", body = CapabilityOverrideResponse),
-        (status = 400, description = "Unknown agent id"),
+        (status = 400, description = "Unknown agent id, or a decision the projection cannot express (narrow / approval)"),
         (status = 403, description = "Caller lacks the role required to mutate capability state")
     ),
     tag = "capability"
@@ -376,14 +299,44 @@ pub async fn apply_override(
         .map_err(OverrideHandlerError::Forbidden)?;
 
     let has_ttl = body.ttl_seconds.is_some();
-    let (override_id, updated) = Arc::clone(&state.capability_store)
-        .apply_override(&body)
-        .await
-        .map_err(|e| match e {
-            OverrideError::UnknownAgent(id) => OverrideHandlerError::BadRequest(
-                ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Unknown agent id: {id}")),
+
+    // The projection emits only allow / deny / na (see the module docs: `narrow`
+    // and `approval` are products of stages this endpoint does not run). An
+    // override that wrote one of those would put a decision in the grid that no
+    // projection can ever produce or restore.
+    if matches!(body.decision, Decision::Narrow | Decision::Approval) {
+        return Err(OverrideHandlerError::BadRequest(
+            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(
+                "Capability overrides accept only allow, deny or na; narrow and approval are \
+                 decided per action by other policy stages"
+                    .to_string(),
             ),
-        })?;
+        ));
+    }
+
+    // Validate every requested agent against the live projection before
+    // recording anything, so one unknown id rejects the whole request rather
+    // than logging an override that can never apply to a real row.
+    let mut matrix = projected_matrix(&state).await;
+    if let Some(unknown) = body
+        .agent_ids
+        .iter()
+        .find(|id| !matrix.agents.iter().any(|a| &&a.id == id))
+    {
+        return Err(OverrideHandlerError::BadRequest(
+            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Unknown agent id: {unknown}")),
+        ));
+    }
+
+    let override_id = Arc::clone(&state.capability_store).record_override(&body).await;
+
+    // Re-apply the overlay so the echoed rows already carry the new decision.
+    state.capability_store.apply_overlay(&mut matrix).await;
+    let updated: Vec<CapabilityAgent> = matrix
+        .agents
+        .into_iter()
+        .filter(|a| body.agent_ids.contains(&a.id) && a.caps.contains_key(&body.resource_id))
+        .collect();
 
     let status = if has_ttl { StatusCode::CREATED } else { StatusCode::OK };
     Ok((status, Json(CapabilityOverrideResponse { override_id, updated })))
@@ -492,272 +445,425 @@ pub async fn revoke_override(
     }
 }
 
-// ── Seed data — kept in sync with `dashboard/src/features/capability/fixtures.ts` ──
+// ── Live projection from the agent registry + policy capability cascade ──────
 
-fn seeded_matrix() -> CapabilityMatrix {
+/// The fixed, non-parameterised capability families, as `(resource id, display
+/// name, group)`.
+///
+/// These are the only resources whose domain the [`aa_core::Capability`] enum
+/// itself names, so they are the only ones that can carry a [`ResourceGroup`]
+/// without guessing. Tool columns are discovered per agent and left ungrouped.
+const SYSTEM_RESOURCES: [(&str, &str, ResourceGroup); 3] = [
+    ("filesystem", "Filesystem", ResourceGroup::Files),
+    ("terminal", "Terminal", ResourceGroup::Infra),
+    ("network_outbound", "Network (outbound)", ResourceGroup::Infra),
+];
+
+/// The `tools` key that means "every tool without an explicit entry"
+/// (AAASM-4152). It is a fallback pattern, never a tool name, so it must never
+/// reach the matrix as a resource column.
+const TOOL_WILDCARD: &str = "*";
+
+/// Whether `id` is one of the reserved system-family column ids.
+///
+/// A tool may legally be *named* `filesystem`; without this guard it would
+/// collide with the system column and silently overwrite that agent's real
+/// filesystem cell.
+fn is_system_resource(id: &str) -> bool {
+    SYSTEM_RESOURCES.iter().any(|(sid, _, _)| *sid == id)
+}
+
+/// Whether the cascade's tool stage would deny `tool`.
+///
+/// **Mirrors `stage_tool_allow` in `aa-gateway/src/engine/decision.rs`** — an
+/// exact `tools` entry wins, otherwise the `"*"` fallback applies, and
+/// `allow: false` denies. Any deny anywhere in the cascade is final, matching
+/// the evaluator's short-circuit on the first `Deny`.
+///
+/// The capability set alone cannot answer this: a tool denied by
+/// `tools: { "*": { allow: false } }` contributes no `mcp_tool:` capability, so
+/// reading only the merged capabilities reported `allow` for a tool the gateway
+/// blocks — and contradicted the rule rows [`project_rules`] emits from the very
+/// same `tools` map.
+fn cascade_denies_tool(cascade: &[Arc<aa_gateway::policy::PolicyDocument>], tool: &str) -> bool {
+    cascade.iter().any(|doc| {
+        doc.tools
+            .get(tool)
+            .or_else(|| doc.tools.get(TOOL_WILDCARD))
+            .is_some_and(|tp| !tp.allow)
+    })
+}
+
+/// Whether the cascade's network stage denies *every* outbound host.
+///
+/// **Mirrors `stage_network` in `aa-gateway/src/engine/decision.rs`** for the one
+/// case a single cell can state without a concrete URL: a document that declares
+/// a `network` section with an empty allowlist is deny-all (the fail-closed
+/// matcher — AAASM-3127/AAASM-3730).
+///
+/// A present, non-empty allowlist is deliberately *not* treated as a deny: egress
+/// is permitted, just host-restricted, and the cell has no host to test. Such an
+/// agent keeps its capability-derived decision.
+fn cascade_denies_all_egress(cascade: &[Arc<aa_gateway::policy::PolicyDocument>]) -> bool {
+    cascade
+        .iter()
+        .any(|doc| doc.network.as_ref().is_some_and(|np| np.allowlist.is_empty()))
+}
+
+/// Resolve one capability to a matrix decision using the same public helpers as
+/// the enforcement guard's capability stage.
+///
+/// Mirrors `stage_capability` in `aa-gateway`: an explicit deny (honouring the
+/// `file_write` ⇒ `file_delete` superset rule) wins, then a live allow-list
+/// restriction denies anything it omits — fail-closed even when the allow set
+/// merged down to empty. Anything else is allowed because no capability rule
+/// constrains it.
+fn decide(caps: &aa_core::CapabilitySet, cap: &aa_core::Capability) -> Decision {
+    if aa_core::capability_is_denied(&caps.deny, cap) {
+        return Decision::Deny;
+    }
+    if caps.allow_is_restricted() && !caps.allow.contains(cap) {
+        return Decision::Deny;
+    }
+    Decision::Allow
+}
+
+/// Build the cell for a system capability family. Verbs the family does not
+/// model stay `Na` — the capability enum draws no read/write/delete distinction
+/// for terminal or network access, so reporting anything else would invent one.
+///
+/// `egress_denied` carries the network stage's verdict (see
+/// [`cascade_denies_all_egress`]); the capability set alone cannot see an
+/// allowlist-based deny.
+fn system_cell(caps: &aa_core::CapabilitySet, resource_id: &str, egress_denied: bool) -> CapCell {
+    use aa_core::Capability as C;
+    let na = Decision::Na;
+    match resource_id {
+        "filesystem" => CapCell {
+            read: decide(caps, &C::FileRead),
+            write: decide(caps, &C::FileWrite),
+            delete: decide(caps, &C::FileDelete),
+            exec: na,
+            flag: None,
+        },
+        "terminal" => CapCell {
+            read: na,
+            write: na,
+            delete: na,
+            exec: decide(caps, &C::TerminalExec),
+            flag: None,
+        },
+        _ => CapCell {
+            read: na,
+            write: na,
+            delete: na,
+            exec: if egress_denied {
+                Decision::Deny
+            } else {
+                decide(caps, &C::NetworkOutbound)
+            },
+            flag: None,
+        },
+    }
+}
+
+/// Map the registry's liveness status onto the matrix's. `Idle` is never
+/// produced: the registry has no idle state, and deriving one from heartbeat
+/// staleness would be a threshold this endpoint has no mandate to pick.
+fn project_status(status: &aa_gateway::registry::AgentStatus) -> AgentStatus {
+    match status {
+        aa_gateway::registry::AgentStatus::Active => AgentStatus::Active,
+        _ => AgentStatus::Suspended,
+    }
+}
+
+/// Map the agent's registered enforcement-mode override onto the matrix's
+/// two-value view. `Disabled` and "no override declared" both yield `None` —
+/// neither is representable as enforce-or-shadow, and the effective mode for the
+/// latter is decided per policy document, not per agent.
+fn project_mode(mode: Option<aa_core::EnforcementMode>) -> Option<AgentMode> {
+    match mode {
+        Some(aa_core::EnforcementMode::Enforce) => Some(AgentMode::Enforce),
+        Some(aa_core::EnforcementMode::Observe) => Some(AgentMode::Shadow),
+        _ => None,
+    }
+}
+
+/// (scope label, document name). Keyed on both because one scope may carry
+/// several documents; collapsing them on scope alone would drop all but the first
+/// from the policies list.
+type PolicyKey = (String, Option<String>);
+
+/// Tool columns one agent contributes: what it declared at registration, plus any
+/// tool its own cascade names — whether by an `mcp_tool:` grant or by a per-tool
+/// policy. All three are real declarations about this agent, so all three earn it
+/// a cell.
+fn agent_tool_ids(
+    record: &aa_gateway::registry::AgentRecord,
+    caps: &aa_core::CapabilitySet,
+    cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
+) -> std::collections::BTreeSet<String> {
+    let mut agent_tools: std::collections::BTreeSet<String> = record.tool_names.iter().cloned().collect();
+    for cap in caps.allow.iter().chain(caps.deny.iter()) {
+        if let aa_core::Capability::McpTool(name) = cap {
+            agent_tools.insert(name.clone());
+        }
+    }
+    for doc in cascade {
+        agent_tools.extend(doc.tools.keys().cloned());
+    }
+    // `"*"` is the tool stage's fallback pattern, not a tool. Left in, it became
+    // a resource column literally named `*` whose cell read `allow` — the exact
+    // inverse of what `tools: { "*": { allow: false } }` declares.
+    agent_tools.remove(TOOL_WILDCARD);
+    agent_tools
+}
+
+/// Fold one agent's cascade into the shared policy rows, recording the agent as
+/// affected by every document that declares capabilities or tools.
+///
+/// A document declaring neither contributes no rule, so it is skipped rather than
+/// listed as a policy row with an empty rule set.
+fn collect_policy_rows(
+    cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
+    id_hex: &str,
+    policy_rows: &mut BTreeMap<PolicyKey, (Arc<aa_gateway::policy::PolicyDocument>, Vec<String>)>,
+) {
+    for doc in cascade {
+        if doc.capabilities.is_none() && doc.tools.is_empty() {
+            continue;
+        }
+        let entry = policy_rows
+            .entry((doc.scope.to_string(), doc.name.clone()))
+            .or_insert_with(|| (Arc::clone(doc), Vec::new()));
+        entry.1.push(id_hex.to_string());
+    }
+}
+
+/// Project the capability matrix from the registry and the policy cascade.
+///
+/// `records` is the whole fleet: the endpoint is admin-global by design
+/// (AAASM-4841), and its only caller passes `agent_registry.list()`. The
+/// projection therefore does no tenant filtering of its own — the `team_id`
+/// query parameter narrows the result afterwards, it is not an authorization
+/// boundary.
+///
+/// The cascade is collected with an explicit lineage rather than via
+/// `PolicyEngine::effective_permissions`, because the engine `aa-api` builds is
+/// not registry-wired: without a lineage it resolves only the Global and Agent
+/// tiers and would silently drop every Org- and Team-scoped policy.
+fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppState) -> CapabilityMatrix {
+    use aa_core::Capability as C;
+
+    // Resource columns: the three system families, then every tool any visible
+    // agent declared or any applicable policy names, de-duplicated and sorted so
+    // the column order is stable across requests.
+    let mut tool_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut agents: Vec<CapabilityAgent> = Vec::with_capacity(records.len());
+    // Policy key -> (document, agent ids it applies to).
+    let mut policy_rows: BTreeMap<PolicyKey, (Arc<aa_gateway::policy::PolicyDocument>, Vec<String>)> = BTreeMap::new();
+
+    for record in records {
+        let agent_id = aa_core::identity::AgentId::from_bytes(record.agent_id);
+        let id_hex = hex::encode(record.agent_id);
+        let lineage = state.agent_registry.lineage(&record.agent_id).unwrap_or_default();
+        let cascade = state.policy_engine.collect_cascade_with_lineage(&agent_id, &lineage);
+        let caps = aa_gateway::engine::PolicyEngine::collect_merged_capabilities(&cascade);
+
+        let agent_tools = agent_tool_ids(record, &caps, &cascade);
+        collect_policy_rows(&cascade, &id_hex, &mut policy_rows);
+        tool_ids.extend(agent_tools.iter().cloned());
+
+        let egress_denied = cascade_denies_all_egress(&cascade);
+        let mut cells: BTreeMap<String, CapCell> = BTreeMap::new();
+        for (rid, _, _) in SYSTEM_RESOURCES {
+            cells.insert(rid.to_string(), system_cell(&caps, rid, egress_denied));
+        }
+        for tool in agent_tools.iter().filter(|t| !is_system_resource(t)) {
+            // A tool is invoked, never read/written/deleted — the capability
+            // model has one grant per tool, so only `exec` is meaningful.
+            //
+            // Most-restrictive wins across the two stages that can block a tool:
+            // the `tools` map (stage 3) and the capability set (stage 3.5). The
+            // evaluator returns on the first `Deny`, so either one is final.
+            let exec = if cascade_denies_tool(&cascade, tool) {
+                Decision::Deny
+            } else {
+                decide(&caps, &C::McpTool(tool.clone()))
+            };
+            cells.insert(
+                tool.clone(),
+                CapCell {
+                    read: Decision::Na,
+                    write: Decision::Na,
+                    delete: Decision::Na,
+                    exec,
+                    flag: None,
+                },
+            );
+        }
+
+        agents.push(CapabilityAgent {
+            id: id_hex,
+            name: record.name.clone(),
+            framework: record.framework.clone(),
+            owner: record.team_id.clone().or_else(|| record.org_id.clone()),
+            trust: None,
+            mode: project_mode(record.enforcement_mode),
+            status: project_status(&record.status),
+            last_seen: record.last_heartbeat.to_rfc3339(),
+            flagged: None,
+            note: None,
+            caps: cells,
+        });
+    }
+
+    let mut resources: Vec<Resource> = SYSTEM_RESOURCES
+        .iter()
+        .map(|(id, name, group)| Resource {
+            id: (*id).to_string(),
+            name: (*name).to_string(),
+            group: Some(*group),
+            paths: Vec::new(),
+        })
+        .collect();
+    resources.extend(
+        tool_ids
+            .into_iter()
+            .filter(|id| !is_system_resource(id))
+            .map(|id| Resource {
+                name: id.clone(),
+                id,
+                group: None,
+                paths: Vec::new(),
+            }),
+    );
+
+    let policies = policy_rows
+        .into_iter()
+        .map(|((scope, name), (doc, mut affects))| {
+            affects.sort();
+            affects.dedup();
+            Policy {
+                // Scope-qualified so two same-named documents at different tiers
+                // stay distinguishable in the UI's per-policy links.
+                id: match &name {
+                    Some(n) => format!("{scope}/{n}"),
+                    None => scope.clone(),
+                },
+                name: name.unwrap_or_else(|| scope.clone()),
+                version: doc.policy_version.clone(),
+                scope,
+                // Every document reached here is in a live cascade, so it is by
+                // definition the active one for its scope. `Proposed` /
+                // `Archived` have no representation in the loaded engine.
+                status: PolicyStatus::Active,
+                hits_24h: None,
+                affects,
+                rules: project_rules(&doc),
+            }
+        })
+        .collect();
+
     CapabilityMatrix {
-        resources: seeded_resources(),
-        agents: seeded_agents(),
-        policies: seeded_policies(),
-        sample_calls: seeded_sample_calls(),
+        resources,
+        agents,
+        policies,
+        // Representative call samples require a proposed-vs-current policy diff
+        // that nothing computes today; the policy-replay story (AAASM-5094) owns
+        // that surface, so the dimension is reported empty rather than invented.
+        sample_calls: Vec::new(),
     }
 }
 
-fn resource(id: &str, name: &str, group: ResourceGroup, paths: &[&str]) -> Resource {
-    Resource {
-        id: id.to_string(),
-        name: name.to_string(),
-        group,
-        paths: paths.iter().map(|p| (*p).to_string()).collect(),
+/// Resolve a system capability to its matrix column and verb, or `None` when the
+/// capability has no column.
+fn verbs_for(cap: &aa_core::Capability) -> Option<(&'static str, Verb)> {
+    use aa_core::Capability as C;
+
+    match cap {
+        C::FileRead => Some(("filesystem", Verb::Read)),
+        C::FileWrite => Some(("filesystem", Verb::Write)),
+        C::FileDelete => Some(("filesystem", Verb::Delete)),
+        C::TerminalExec => Some(("terminal", Verb::Exec)),
+        C::NetworkOutbound => Some(("network_outbound", Verb::Exec)),
+        _ => None,
     }
 }
 
-fn seeded_resources() -> Vec<Resource> {
-    vec![
-        resource(
-            "gmail",
-            "Gmail",
-            ResourceGroup::Comm,
-            &[
-                "gmail/*",
-                "gmail/labels/INBOX/*",
-                "gmail/labels/INBOX/read",
-                "gmail/send",
-            ],
-        ),
-        resource(
-            "gdrive",
-            "Google Drive",
-            ResourceGroup::Files,
-            &["gdrive/*", "gdrive/shared/*", "gdrive/personal/*"],
-        ),
-        resource(
-            "s3",
-            "AWS S3",
-            ResourceGroup::Files,
-            &["s3://*", "s3://reports/*", "s3://customer-pii/*"],
-        ),
-        resource(
-            "pg",
-            "Postgres",
-            ResourceGroup::Data,
-            &[
-                "pg.public.*",
-                "pg.public.users",
-                "pg.public.orders",
-                "pg.public.audit_log",
-            ],
-        ),
-        resource("shell", "Shell exec", ResourceGroup::Infra, &["shell:*"]),
-        resource("http", "HTTP egress", ResourceGroup::Infra, &["http://*", "https://*"]),
-        resource(
-            "github",
-            "GitHub",
-            ResourceGroup::Code,
-            &["github.com/acme/*", "github.com/acme/infra/*"],
-        ),
-        resource(
-            "slack",
-            "Slack",
-            ResourceGroup::Comm,
-            &["slack/channels/*", "slack/dm/*"],
-        ),
-    ]
-}
+/// Flatten one capability set's allow and deny declarations into rule rows,
+/// carrying the declaration verbatim as the rule's `action`.
+fn capability_rules(caps: &aa_core::CapabilitySet) -> Vec<PolicyRule> {
+    use aa_core::Capability as C;
 
-fn cell(read: Decision, write: Decision, delete: Decision, exec: Decision, flag: bool) -> CapCell {
-    CapCell {
-        read,
-        write,
-        delete,
-        exec,
-        flag: if flag { Some(true) } else { None },
-    }
-}
-
-fn caps_for(entries: &[(&str, CapCell)]) -> BTreeMap<String, CapCell> {
-    entries.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect()
-}
-
-fn seeded_agents() -> Vec<CapabilityAgent> {
-    use Decision::*;
-    vec![
-        CapabilityAgent {
-            id: "research-bot-04".into(),
-            name: "research-bot-04".into(),
-            framework: "LangChain".into(),
-            owner: "data-platform".into(),
-            trust: 42,
-            mode: AgentMode::Enforce,
-            status: AgentStatus::Active,
-            last_seen: "2m ago".into(),
-            flagged: Some(true),
-            note: Some("over-permissioned · 6 resources still allow, 4 narrowed, 0 deny".into()),
-            caps: caps_for(&[
-                ("gmail", cell(Allow, Allow, Allow, Na, true)),
-                ("gdrive", cell(Allow, Narrow, Allow, Na, true)),
-                ("s3", cell(Allow, Allow, Approval, Na, true)),
-                ("pg", cell(Allow, Approval, Deny, Na, false)),
-                ("shell", cell(Na, Na, Na, Allow, true)),
-                ("http", cell(Allow, Allow, Na, Na, true)),
-                ("github", cell(Allow, Narrow, Deny, Na, false)),
-                ("slack", cell(Allow, Narrow, Na, Na, false)),
-            ]),
-        },
-        CapabilityAgent {
-            id: "support-triage".into(),
-            name: "support-triage".into(),
-            framework: "CrewAI".into(),
-            owner: "cx-tools".into(),
-            trust: 78,
-            mode: AgentMode::Enforce,
-            status: AgentStatus::Active,
-            last_seen: "12s ago".into(),
-            flagged: None,
-            note: None,
-            caps: caps_for(&[
-                ("gmail", cell(Allow, Narrow, Deny, Na, false)),
-                ("gdrive", cell(Narrow, Deny, Deny, Na, false)),
-                ("s3", cell(Narrow, Deny, Deny, Na, false)),
-                ("pg", cell(Narrow, Approval, Deny, Na, false)),
-                ("shell", cell(Na, Na, Na, Deny, false)),
-                ("http", cell(Narrow, Narrow, Na, Na, false)),
-                ("github", cell(Narrow, Deny, Deny, Na, false)),
-                ("slack", cell(Allow, Narrow, Na, Na, false)),
-            ]),
-        },
-        CapabilityAgent {
-            id: "infra-ops-bot".into(),
-            name: "infra-ops-bot".into(),
-            framework: "AutoGen".into(),
-            owner: "platform".into(),
-            trust: 88,
-            mode: AgentMode::Enforce,
-            status: AgentStatus::Active,
-            last_seen: "1m ago".into(),
-            flagged: None,
-            note: None,
-            caps: caps_for(&[
-                ("gmail", cell(Deny, Deny, Deny, Na, false)),
-                ("gdrive", cell(Deny, Deny, Deny, Na, false)),
-                ("s3", cell(Narrow, Narrow, Approval, Na, false)),
-                ("pg", cell(Narrow, Narrow, Approval, Na, false)),
-                ("shell", cell(Na, Na, Na, Narrow, false)),
-                ("http", cell(Allow, Narrow, Na, Na, false)),
-                ("github", cell(Allow, Narrow, Approval, Na, false)),
-                ("slack", cell(Narrow, Approval, Na, Na, false)),
-            ]),
-        },
-        CapabilityAgent {
-            id: "analytics-runner".into(),
-            name: "analytics-runner".into(),
-            framework: "LangChain".into(),
-            owner: "analytics".into(),
-            trust: 71,
-            mode: AgentMode::Enforce,
-            status: AgentStatus::Active,
-            last_seen: "4s ago".into(),
-            flagged: None,
-            note: None,
-            caps: caps_for(&[
-                ("gmail", cell(Deny, Deny, Deny, Na, false)),
-                ("gdrive", cell(Narrow, Deny, Deny, Na, false)),
-                ("s3", cell(Allow, Narrow, Deny, Na, false)),
-                ("pg", cell(Allow, Narrow, Deny, Na, false)),
-                ("shell", cell(Na, Na, Na, Deny, false)),
-                ("http", cell(Narrow, Deny, Na, Na, false)),
-                ("github", cell(Narrow, Deny, Deny, Na, false)),
-                ("slack", cell(Narrow, Deny, Na, Na, false)),
-            ]),
-        },
-    ]
-}
-
-fn seeded_policies() -> Vec<Policy> {
-    vec![
-        Policy {
-            id: "platform-baseline".into(),
-            name: "Platform baseline".into(),
-            version: "v3".into(),
-            scope: "global".into(),
-            status: PolicyStatus::Active,
-            hits_24h: 1284,
-            affects: vec!["research-bot-04".into(), "support-triage".into()],
-            rules: vec![
-                PolicyRule {
-                    resource: "shell".into(),
-                    verb: vec![Verb::Exec],
-                    action: "deny".into(),
-                    condition: "trust < 60".into(),
+    let mut rules: Vec<PolicyRule> = Vec::new();
+    for (set, action) in [(&caps.allow, "allow"), (&caps.deny, "deny")] {
+        for cap in set {
+            let (resource, verb) = match cap {
+                C::McpTool(name) => (name.clone(), Verb::Exec),
+                other => match verbs_for(other) {
+                    Some((r, v)) => (r.to_string(), v),
+                    // Model / inbound-network / agent-spawn grants are inert
+                    // (`Capability::is_enforceable`) and have no column.
+                    None => continue,
                 },
-                PolicyRule {
-                    resource: "pg".into(),
-                    verb: vec![Verb::Write, Verb::Delete],
-                    action: "approval".into(),
-                    condition: "table in (public.users, public.orders)".into(),
-                },
-            ],
-        },
-        Policy {
-            id: "pii-guardrail".into(),
-            name: "PII guardrail".into(),
-            version: "v1".into(),
-            scope: "team:cx-tools".into(),
-            status: PolicyStatus::Proposed,
-            hits_24h: 0,
-            affects: vec!["support-triage".into()],
-            rules: vec![PolicyRule {
-                resource: "s3".into(),
-                verb: vec![Verb::Read],
-                action: "narrow".into(),
-                condition: "prefix = customer-pii/".into(),
-            }],
-        },
-    ]
+            };
+            rules.push(PolicyRule {
+                resource,
+                verb: vec![verb],
+                action: action.to_string(),
+                condition: String::new(),
+            });
+        }
+    }
+    rules
 }
 
-fn seeded_sample_calls() -> Vec<SampleCall> {
-    vec![
-        SampleCall {
-            ts: "2026-04-23T14:23:01Z".into(),
-            agent: "support-triage".into(),
-            verb: Verb::Read,
-            resource: "pg".into(),
-            detail: Some("SELECT * FROM public.users WHERE id = 4521".into()),
-            current_decision: Decision::Allow,
-            proposed_decision: None,
-            change_type: Some(ChangeType::Unchanged),
-            fp_reason: None,
-        },
-        SampleCall {
-            ts: "2026-04-23T14:24:00Z".into(),
-            agent: "support-triage".into(),
-            verb: Verb::Write,
-            resource: "pg".into(),
-            detail: Some("UPDATE public.orders SET refund = 250 WHERE id = 99".into()),
-            current_decision: Decision::Approval,
-            proposed_decision: Some(Decision::Deny),
-            change_type: Some(ChangeType::NewlyBlocked),
-            fp_reason: None,
-        },
-        SampleCall {
-            ts: "2026-04-23T15:01:00Z".into(),
-            agent: "research-bot-04".into(),
-            verb: Verb::Exec,
-            resource: "shell".into(),
-            detail: Some("bash -c 'curl http://unauthorized'".into()),
-            current_decision: Decision::Allow,
-            proposed_decision: Some(Decision::Deny),
-            change_type: Some(ChangeType::NewlyBlocked),
-            fp_reason: None,
-        },
-    ]
+/// Flatten one policy document's capability and tool declarations into the
+/// matrix's rule rows.
+///
+/// `action` carries the declaration verbatim (`allow` / `deny`); `condition` is
+/// the tool's own `requires_approval_if` expression, or empty when it declares
+/// none.
+fn project_rules(doc: &aa_gateway::policy::PolicyDocument) -> Vec<PolicyRule> {
+    let mut rules: Vec<PolicyRule> = Vec::new();
+    if let Some(caps) = doc.capabilities.as_ref() {
+        rules.extend(capability_rules(caps));
+    }
+    for (tool, policy) in &doc.tools {
+        rules.push(PolicyRule {
+            resource: tool.clone(),
+            verb: vec![Verb::Exec],
+            action: if policy.allow { "allow" } else { "deny" }.to_string(),
+            condition: policy.requires_approval_if.clone().unwrap_or_default(),
+        });
+    }
+    rules.sort_by(|a, b| a.resource.cmp(&b.resource).then(a.action.cmp(&b.action)));
+    rules
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth::{AuthenticatedCaller, Tenant};
+    use aa_gateway::policy::rbac::CallerRole;
+    use aa_gateway::registry::AgentRecord;
+
+    /// An `OrgAdmin` writer — the role `apply_override` / `revoke_override`
+    /// require for a `Global`-scope policy mutation.
+    fn org_admin_writer() -> PolicyWriteAuth {
+        PolicyWriteAuth {
+            caller: AuthenticatedCaller {
+                key_id: "k".to_string(),
+                scopes: vec![Scope::Admin],
+                tenant: Tenant {
+                    team_id: None,
+                    org_id: None,
+                },
+            },
+            role: CallerRole::OrgAdmin,
+        }
+    }
 
     fn reader(scopes: Vec<Scope>) -> RequireRead {
         RequireRead(AuthenticatedCaller {
@@ -768,6 +874,421 @@ mod tests {
                 org_id: None,
             },
         })
+    }
+
+    /// Minimal registered agent. Only the fields the projection reads carry
+    /// meaningful values.
+    fn record(id_byte: u8, name: &str, tools: &[&str]) -> AgentRecord {
+        AgentRecord {
+            agent_id: [id_byte; 16],
+            name: name.to_string(),
+            framework: "langgraph".to_string(),
+            version: "0.1.0".to_string(),
+            risk_tier: 1,
+            tool_names: tools.iter().map(|t| (*t).to_string()).collect(),
+            public_key: "pk".to_string(),
+            credential_token: "tok".to_string(),
+            metadata: std::collections::BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: aa_gateway::registry::AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: Vec::new(),
+            recent_events: std::collections::VecDeque::new(),
+            recent_traces: Vec::new(),
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: Some("team-alpha".to_string()),
+            org_id: None,
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some([id_byte; 16]),
+            children: Vec::new(),
+            parent_key: None,
+            enforcement_mode: None,
+        }
+    }
+
+    fn state_with(records: Vec<AgentRecord>) -> AppState {
+        let state = AppState::local_in_memory().expect("state builds");
+        for r in records {
+            state.agent_registry.register(r).expect("register");
+        }
+        state
+    }
+
+    /// A policy document carrying only the sections the projection reads.
+    fn policy_doc(
+        name: &str,
+        scope: PolicyScope,
+        capabilities: Option<aa_core::CapabilitySet>,
+        tools: &[(&str, bool)],
+        network_allowlist: Option<Vec<String>>,
+    ) -> aa_gateway::policy::PolicyDocument {
+        aa_gateway::policy::PolicyDocument {
+            name: Some(name.to_string()),
+            policy_version: Some("1".to_string()),
+            version: None,
+            scope,
+            network: network_allowlist.map(|allowlist| aa_gateway::policy::NetworkPolicy { allowlist }),
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: tools
+                .iter()
+                .map(|(n, allow)| {
+                    (
+                        (*n).to_string(),
+                        aa_gateway::policy::ToolPolicy {
+                            allow: *allow,
+                            limit_per_hour: None,
+                            requires_approval_if: None,
+                        },
+                    )
+                })
+                .collect(),
+            capabilities,
+        }
+    }
+
+    /// `state_with` plus real policy documents in the engine.
+    ///
+    /// The engine `local_in_memory` builds is loaded from a budget-only file, so
+    /// without this every projection test asserts cells that are `allow` purely
+    /// because nothing constrains them.
+    fn state_with_policies(records: Vec<AgentRecord>, docs: Vec<aa_gateway::policy::PolicyDocument>) -> AppState {
+        let mut state = state_with(records);
+        let engine = Arc::get_mut(&mut state.policy_engine).expect("engine is unshared until the state is cloned");
+        for doc in docs {
+            engine.load_policy(doc);
+        }
+        state
+    }
+
+    fn hex_id(b: u8) -> String {
+        hex::encode([b; 16])
+    }
+
+    async fn matrix_for(state: &AppState) -> CapabilityMatrix {
+        let (status, Json(m)) = get_matrix(
+            reader(vec![Scope::Admin]),
+            Query(MatrixQueryParams::default()),
+            Extension(state.clone()),
+        )
+        .await
+        .expect("admin may read");
+        assert_eq!(status, StatusCode::OK);
+        m
+    }
+
+    // ── Projection ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn matrix_projects_registered_agents_not_fixtures() {
+        let state = state_with(vec![record(0x01, "checkout-agent", &["search"])]);
+        let m = matrix_for(&state).await;
+
+        assert_eq!(m.agents.len(), 1, "one registered agent yields one row");
+        let agent = &m.agents[0];
+        assert_eq!(agent.id, hex_id(0x01));
+        assert_eq!(agent.name, "checkout-agent");
+        assert_eq!(agent.framework, "langgraph");
+        assert_eq!(agent.owner.as_deref(), Some("team-alpha"));
+        assert_eq!(agent.status, AgentStatus::Active);
+        // The declared tool becomes a column, alongside the system families.
+        let ids: Vec<&str> = m.resources.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"filesystem"), "system families are always present");
+        assert!(ids.contains(&"terminal"));
+        assert!(ids.contains(&"network_outbound"));
+        assert!(ids.contains(&"search"), "declared tool becomes a resource column");
+    }
+
+    #[tokio::test]
+    async fn matrix_is_empty_when_no_agent_is_registered() {
+        let state = state_with(vec![]);
+        let m = matrix_for(&state).await;
+        assert!(m.agents.is_empty(), "no agents registered -> no rows");
+        assert!(m.sample_calls.is_empty());
+        // Resource columns still describe the fixed capability families.
+        assert_eq!(m.resources.len(), SYSTEM_RESOURCES.len());
+    }
+
+    #[tokio::test]
+    async fn fields_without_a_real_source_are_absent_never_zero() {
+        let state = state_with(vec![record(0x01, "a", &[])]);
+        let m = matrix_for(&state).await;
+        let agent = &m.agents[0];
+        assert!(agent.trust.is_none(), "no trust score exists; must not be faked");
+        assert!(agent.flagged.is_none());
+        assert!(agent.note.is_none());
+        // No enforcement_mode override was declared.
+        assert!(agent.mode.is_none());
+        for policy in &m.policies {
+            assert!(policy.hits_24h.is_none(), "24h hit counts have no source here");
+        }
+        // Serialized form must omit them rather than emit a placeholder.
+        let json = serde_json::to_value(agent).unwrap();
+        assert!(json.get("trust").is_none());
+        assert!(json.get("mode").is_none());
+    }
+
+    #[tokio::test]
+    async fn last_seen_is_the_real_heartbeat_timestamp() {
+        let mut rec = record(0x01, "a", &[]);
+        rec.last_heartbeat = chrono::DateTime::parse_from_rfc3339("2026-07-25T10:11:12Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let state = state_with(vec![rec]);
+        let m = matrix_for(&state).await;
+        assert!(
+            m.agents[0].last_seen.starts_with("2026-07-25T10:11:12"),
+            "lastSeen is the registry heartbeat, not a rendered phrase: {}",
+            m.agents[0].last_seen
+        );
+    }
+
+    #[tokio::test]
+    async fn enforcement_mode_override_maps_observe_to_shadow() {
+        let mut enforce = record(0x01, "enforced", &[]);
+        enforce.enforcement_mode = Some(aa_core::EnforcementMode::Enforce);
+        let mut observe = record(0x02, "shadowed", &[]);
+        observe.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
+        let mut disabled = record(0x03, "disabled", &[]);
+        disabled.enforcement_mode = Some(aa_core::EnforcementMode::Disabled);
+
+        let state = state_with(vec![enforce, observe, disabled]);
+        let m = matrix_for(&state).await;
+        let by_name = |n: &str| m.agents.iter().find(|a| a.name == n).unwrap();
+        assert_eq!(by_name("enforced").mode, Some(AgentMode::Enforce));
+        assert_eq!(by_name("shadowed").mode, Some(AgentMode::Shadow));
+        assert_eq!(
+            by_name("disabled").mode,
+            None,
+            "Disabled has no enforce/shadow representation and must not be coerced"
+        );
+    }
+
+    /// Every deny the enforcement stages would produce has to reach the grid.
+    /// Before AAASM-5090's review pass the tool and network cells were read off
+    /// the merged capability set alone, so a tool denied by `tools:` and an
+    /// agent with a deny-all egress allowlist both reported `allow`.
+    #[tokio::test]
+    async fn every_stage_that_denies_is_visible_in_the_cells() {
+        use aa_core::Capability as C;
+
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.deny.insert(C::FileWrite);
+
+        let state = state_with_policies(
+            vec![record(0x01, "a", &["send_email", "read_file"])],
+            vec![policy_doc(
+                "strict",
+                PolicyScope::Global,
+                Some(caps),
+                // Wildcard denies every unlisted tool; the exact entry wins.
+                &[("*", false), ("read_file", true)],
+                // Declared-but-empty allowlist is deny-all egress.
+                Some(Vec::new()),
+            )],
+        );
+        let m = matrix_for(&state).await;
+        let cells = &m.agents[0].caps;
+
+        assert_eq!(cells["filesystem"].write, Decision::Deny, "capability stage");
+        assert_eq!(cells["send_email"].exec, Decision::Deny, "tool wildcard fallback");
+        assert_eq!(
+            cells["read_file"].exec,
+            Decision::Allow,
+            "exact tool entry beats the wildcard"
+        );
+        assert_eq!(
+            cells["network_outbound"].exec,
+            Decision::Deny,
+            "empty allowlist is deny-all"
+        );
+        // Unconstrained families are still allowed — the deny is not blanket.
+        assert_eq!(cells["filesystem"].read, Decision::Allow);
+        assert_eq!(cells["terminal"].exec, Decision::Allow);
+    }
+
+    /// The `"*"` tools key is a fallback pattern, not a tool. A column named `*`
+    /// reading `allow` is the exact inverse of what `"*": { allow: false }` says.
+    #[tokio::test]
+    async fn the_tool_wildcard_never_becomes_a_resource_column() {
+        let state = state_with_policies(
+            vec![record(0x01, "a", &[])],
+            vec![policy_doc("strict", PolicyScope::Global, None, &[("*", false)], None)],
+        );
+        let m = matrix_for(&state).await;
+
+        assert!(
+            m.resources.iter().all(|r| r.id != TOOL_WILDCARD),
+            "wildcard leaked into the resource columns: {:?}",
+            m.resources.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
+        assert!(!m.agents[0].caps.contains_key(TOOL_WILDCARD));
+    }
+
+    /// Guards the explicit lineage at the top of [`project_matrix`]: the engine
+    /// `aa-api` builds is not registry-wired, so resolving the cascade without a
+    /// lineage silently drops every Org- and Team-scoped document. Regressing
+    /// that call would leave this the only failing test.
+    #[tokio::test]
+    async fn a_team_scoped_deny_reaches_the_projection() {
+        use aa_core::Capability as C;
+
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.deny.insert(C::TerminalExec);
+
+        // `record` registers the agent under team-alpha.
+        let state = state_with_policies(
+            vec![record(0x01, "a", &[])],
+            vec![policy_doc(
+                "team-rules",
+                PolicyScope::Team("team-alpha".to_string()),
+                Some(caps),
+                &[],
+                None,
+            )],
+        );
+        let m = matrix_for(&state).await;
+
+        assert_eq!(
+            m.agents[0].caps["terminal"].exec,
+            Decision::Deny,
+            "a Team-scoped policy must reach the cascade"
+        );
+        assert!(
+            m.policies.iter().any(|p| p.scope == "team:team-alpha"),
+            "and be listed as a responsible policy: {:?}",
+            m.policies.iter().map(|p| &p.scope).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn decide_honours_the_guard_fail_closed_rules() {
+        use aa_core::Capability as C;
+        let mut caps = aa_core::CapabilitySet::default();
+
+        // No restriction declared at all -> unconstrained.
+        assert_eq!(decide(&caps, &C::FileRead), Decision::Allow);
+
+        // An explicit deny wins.
+        caps.deny.insert(C::FileWrite);
+        assert_eq!(decide(&caps, &C::FileWrite), Decision::Deny);
+        // deny(file_write) is a superset that also blocks delete (AAASM-4103).
+        assert_eq!(decide(&caps, &C::FileDelete), Decision::Deny);
+
+        // A live allow-list denies anything it omits, even when empty
+        // (AAASM-4154 fail-closed).
+        let restricted = aa_core::CapabilitySet {
+            allow: Default::default(),
+            deny: Default::default(),
+            allow_restricted: true,
+        };
+        assert_eq!(decide(&restricted, &C::TerminalExec), Decision::Deny);
+    }
+
+    #[test]
+    fn system_cell_leaves_unmodelled_verbs_na() {
+        let caps = aa_core::CapabilitySet::default();
+        let fs = system_cell(&caps, "filesystem", false);
+        assert_eq!(fs.exec, Decision::Na, "the capability model has no filesystem exec");
+        assert_eq!(fs.read, Decision::Allow);
+
+        let term = system_cell(&caps, "terminal", false);
+        assert_eq!(term.read, Decision::Na);
+        assert_eq!(term.write, Decision::Na);
+        assert_eq!(term.delete, Decision::Na);
+        assert_eq!(term.exec, Decision::Allow);
+
+        // The egress verdict only reaches the network family.
+        let net = system_cell(&caps, "network_outbound", true);
+        assert_eq!(net.exec, Decision::Deny);
+        assert_eq!(system_cell(&caps, "terminal", true).exec, Decision::Allow);
+    }
+
+    /// Pins the rule flattening directly, covering the capability variants no
+    /// projection test declares.
+    #[test]
+    fn project_rules_flattens_capabilities_and_tools() {
+        use aa_core::Capability as C;
+
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.allow.insert(C::FileRead);
+        caps.allow.insert(C::McpTool("search".to_string()));
+        // Inert grants (`Capability::is_enforceable` is false) have no column.
+        caps.allow.insert(C::AgentSpawn);
+        caps.deny.insert(C::FileWrite);
+
+        let doc = aa_gateway::policy::PolicyDocument {
+            name: Some("baseline".to_string()),
+            policy_version: None,
+            version: None,
+            scope: PolicyScope::Global,
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: std::collections::HashMap::from([(
+                "deploy".to_string(),
+                aa_gateway::policy::ToolPolicy {
+                    allow: false,
+                    limit_per_hour: None,
+                    requires_approval_if: Some("size > 1".to_string()),
+                },
+            )]),
+            capabilities: Some(caps),
+        };
+
+        let rules = project_rules(&doc);
+        let flat: Vec<(&str, &str, &[Verb], &str)> = rules
+            .iter()
+            .map(|r| {
+                (
+                    r.resource.as_str(),
+                    r.action.as_str(),
+                    r.verb.as_slice(),
+                    r.condition.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flat,
+            vec![
+                // Sorted by (resource, action); the tool policy carries its own
+                // approval condition, capability rules carry none.
+                ("deploy", "deny", &[Verb::Exec][..], "size > 1"),
+                ("filesystem", "allow", &[Verb::Read][..], ""),
+                ("filesystem", "deny", &[Verb::Write][..], ""),
+                ("search", "allow", &[Verb::Exec][..], ""),
+            ],
+            "agent_spawn contributes no row"
+        );
+    }
+
+    // ── Authorization ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_matrix_denies_non_admin_reader() {
+        let state = state_with(vec![record(0x01, "a", &[])]);
+        let err = get_matrix(
+            reader(vec![Scope::Read]),
+            Query(MatrixQueryParams::default()),
+            Extension(state),
+        )
+        .await
+        .expect_err("a plain reader is forbidden");
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
     }
 
     #[tokio::test]
@@ -786,22 +1307,162 @@ mod tests {
         assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
     }
 
+    // ── Query filters ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn team_id_and_tool_filters_narrow_the_projection() {
+        let state = state_with(vec![record(0x01, "a", &["search"]), record(0x02, "b", &["search"])]);
+
+        let (_s, Json(by_agent)) = get_matrix(
+            reader(vec![Scope::Admin]),
+            Query(MatrixQueryParams {
+                team_id: Some(hex_id(0x01)),
+                ..Default::default()
+            }),
+            Extension(state.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_agent.agents.len(), 1);
+        assert_eq!(by_agent.agents[0].id, hex_id(0x01));
+
+        let (_s, Json(by_tool)) = get_matrix(
+            reader(vec![Scope::Admin]),
+            Query(MatrixQueryParams {
+                tool: Some("search".into()),
+                ..Default::default()
+            }),
+            Extension(state),
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_tool.resources.len(), 1);
+        for agent in &by_tool.agents {
+            assert_eq!(agent.caps.len(), 1, "caps narrow to the selected tool");
+            assert!(agent.caps.contains_key("search"));
+        }
+    }
+
+    // ── Override overlay ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn override_overlays_the_projection_and_revoke_restores_it() {
+        let state = state_with(vec![record(0x01, "a", &[])]);
+        let target = hex_id(0x01);
+        let base = matrix_for(&state).await.agents[0].caps["filesystem"].read;
+        assert_eq!(base, Decision::Allow);
+
+        let (status, Json(resp)) = apply_override(
+            org_admin_writer(),
+            Extension(state.clone()),
+            Json(CapabilityOverrideRequest {
+                agent_ids: vec![target.clone()],
+                resource_id: "filesystem".into(),
+                verb: Verb::Read,
+                decision: Decision::Deny,
+                ttl_seconds: None,
+            }),
+        )
+        .await
+        .expect("org admin may override");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resp.updated.len(), 1);
+        assert_eq!(resp.updated[0].caps["filesystem"].read, Decision::Deny);
+
+        // The overlay is visible on a fresh read of the live projection.
+        let after = matrix_for(&state).await;
+        assert_eq!(after.agents[0].caps["filesystem"].read, Decision::Deny);
+        // and only the targeted verb moved.
+        assert_eq!(after.agents[0].caps["filesystem"].write, Decision::Allow);
+
+        state
+            .capability_store
+            .revoke_override(&resp.override_id)
+            .await
+            .expect("revoke succeeds");
+        let restored = matrix_for(&state).await;
+        assert_eq!(
+            restored.agents[0].caps["filesystem"].read, base,
+            "revoking restores the projected value with no bookkeeping"
+        );
+    }
+
+    #[tokio::test]
+    async fn override_rejects_an_agent_absent_from_the_projection() {
+        let state = state_with(vec![record(0x01, "a", &[])]);
+        let err = apply_override(
+            org_admin_writer(),
+            Extension(state.clone()),
+            Json(CapabilityOverrideRequest {
+                agent_ids: vec!["does-not-exist".into()],
+                resource_id: "filesystem".into(),
+                verb: Verb::Read,
+                decision: Decision::Deny,
+                ttl_seconds: None,
+            }),
+        )
+        .await
+        .expect_err("unknown agent is rejected");
+        match err {
+            OverrideHandlerError::BadRequest(p) => assert_eq!(p.status, StatusCode::BAD_REQUEST.as_u16()),
+            other => panic!("expected 400, got {other:?}"),
+        }
+        // Nothing was recorded.
+        assert!(state.capability_store.list_overrides(None).await.is_empty());
+    }
+
+    /// The projection emits only allow / deny / na, so an override may not
+    /// write a decision no revoke could ever restore.
+    #[tokio::test]
+    async fn override_rejects_a_decision_the_projection_cannot_express() {
+        for decision in [Decision::Narrow, Decision::Approval] {
+            let state = state_with(vec![record(0x01, "a", &[])]);
+            let err = apply_override(
+                org_admin_writer(),
+                Extension(state.clone()),
+                Json(CapabilityOverrideRequest {
+                    agent_ids: vec![hex_id(0x01)],
+                    resource_id: "filesystem".into(),
+                    verb: Verb::Read,
+                    decision,
+                    ttl_seconds: None,
+                }),
+            )
+            .await
+            .expect_err("narrow / approval are rejected");
+            match err {
+                OverrideHandlerError::BadRequest(p) => assert_eq!(p.status, StatusCode::BAD_REQUEST.as_u16()),
+                other => panic!("expected 400 for {decision:?}, got {other:?}"),
+            }
+            assert!(state.capability_store.list_overrides(None).await.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn revoking_an_unknown_override_is_not_found() {
+        let state = state_with(vec![]);
+        let err = state
+            .capability_store
+            .revoke_override("no-such-id")
+            .await
+            .expect_err("unknown id");
+        assert_eq!(err, RevokeOverrideError::NotFound);
+    }
+
     #[tokio::test]
     async fn list_overrides_admin_sees_applied_override_and_filter_works() {
-        let state = AppState::local_in_memory().expect("state builds");
-        let target = state.capability_store.snapshot().await.agents[0].id.clone();
+        let state = state_with(vec![record(0x01, "a", &[])]);
+        let target = hex_id(0x01);
         Arc::clone(&state.capability_store)
-            .apply_override(&CapabilityOverrideRequest {
+            .record_override(&CapabilityOverrideRequest {
                 agent_ids: vec![target.clone()],
-                resource_id: "pg".into(),
+                resource_id: "filesystem".into(),
                 verb: Verb::Write,
                 decision: Decision::Deny,
                 ttl_seconds: None,
             })
-            .await
-            .expect("override applies");
+            .await;
 
-        // Admin caller: 200 with the applied override visible.
         let (status, Json(all)) = list_overrides(
             reader(vec![Scope::Admin]),
             Query(ListOverridesParams { agent_id: None }),
@@ -813,7 +1474,6 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert!(all[0].agent_ids.contains(&target));
 
-        // The agent_id filter still narrows the result for an admin.
         let (_status, Json(filtered)) = list_overrides(
             reader(vec![Scope::Admin]),
             Query(ListOverridesParams {
@@ -824,94 +1484,5 @@ mod tests {
         .await
         .expect("admin may list filtered");
         assert!(filtered.is_empty(), "filter to an unaffected agent yields nothing");
-    }
-
-    #[tokio::test]
-    async fn seeded_store_contains_eight_resources() {
-        let store = CapabilityStore::new_seeded();
-        let m = store.snapshot().await;
-        assert_eq!(m.resources.len(), 8);
-        let ids: Vec<&str> = m.resources.iter().map(|r| r.id.as_str()).collect();
-        assert!(ids.contains(&"pg"));
-        assert!(ids.contains(&"shell"));
-    }
-
-    #[tokio::test]
-    async fn apply_override_mutates_targeted_cells_only() {
-        let store = CapabilityStore::new_seeded();
-        let before = store.snapshot().await;
-        let target_agent = before.agents[0].id.clone();
-        let untouched_agent = before.agents[1].id.clone();
-
-        let req = CapabilityOverrideRequest {
-            agent_ids: vec![target_agent.clone()],
-            resource_id: "pg".into(),
-            verb: Verb::Write,
-            decision: Decision::Deny,
-            ttl_seconds: None,
-        };
-        let (_override_id, updated) = Arc::clone(&store).apply_override(&req).await.unwrap();
-        assert_eq!(updated.len(), 1);
-        assert_eq!(updated[0].id, target_agent);
-        assert_eq!(updated[0].caps.get("pg").unwrap().write, Decision::Deny);
-
-        let after = store.snapshot().await;
-        let other_after = after.agents.iter().find(|a| a.id == untouched_agent).unwrap();
-        let other_before = before.agents.iter().find(|a| a.id == untouched_agent).unwrap();
-        assert_eq!(
-            other_after.caps.get("pg").unwrap().write,
-            other_before.caps.get("pg").unwrap().write,
-            "untouched agent's `pg.write` must be unchanged"
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_override_rejects_unknown_agent() {
-        let store = CapabilityStore::new_seeded();
-        let err = Arc::clone(&store)
-            .apply_override(&CapabilityOverrideRequest {
-                agent_ids: vec!["does-not-exist".into()],
-                resource_id: "pg".into(),
-                verb: Verb::Read,
-                decision: Decision::Allow,
-                ttl_seconds: None,
-            })
-            .await
-            .unwrap_err();
-        assert_eq!(err, OverrideError::UnknownAgent("does-not-exist".into()));
-    }
-
-    #[tokio::test]
-    async fn apply_override_skips_unknown_resource_silently() {
-        let store = CapabilityStore::new_seeded();
-        let target = store.snapshot().await.agents[0].id.clone();
-        let (_override_id, updated) = Arc::clone(&store)
-            .apply_override(&CapabilityOverrideRequest {
-                agent_ids: vec![target],
-                resource_id: "nonexistent-resource".into(),
-                verb: Verb::Read,
-                decision: Decision::Deny,
-                ttl_seconds: None,
-            })
-            .await
-            .unwrap();
-        assert!(updated.is_empty(), "agent without that resource cell yields no row");
-    }
-
-    #[tokio::test]
-    async fn every_agent_has_a_cell_for_every_resource() {
-        let store = CapabilityStore::new_seeded();
-        let m = store.snapshot().await;
-        let resource_ids: Vec<&str> = m.resources.iter().map(|r| r.id.as_str()).collect();
-        assert!(!m.agents.is_empty());
-        for agent in &m.agents {
-            for rid in &resource_ids {
-                assert!(
-                    agent.caps.contains_key(*rid),
-                    "agent {} missing cell for resource {rid}",
-                    agent.id
-                );
-            }
-        }
     }
 }
