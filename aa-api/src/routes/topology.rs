@@ -1567,6 +1567,34 @@ mod graph_tests {
         );
     }
 
+    /// `deny(file_write)` also blocks `file_delete` (`aa_core::capability_is_denied`
+    /// — the fail-closed migration for policies authored before `file_delete`
+    /// existed). Emitting the raw merged deny set under-stated the gateway by one
+    /// capability, and under-reporting a denial is the permissive direction.
+    #[tokio::test]
+    async fn a_write_deny_reports_the_delete_it_also_blocks() {
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.deny.insert(aa_core::Capability::FileWrite);
+
+        let state = state_with_policies(
+            vec![record(0x01, "a", Some("team-alpha"))],
+            vec![policy_doc(
+                "team-rules",
+                PolicyScope::Team("team-alpha".to_string()),
+                caps,
+            )],
+        );
+
+        let graph = graph_for(admin(), &state).await;
+        let perms = graph.nodes[0].effective_permissions.as_ref().expect("chain present");
+
+        assert_eq!(
+            perms.deny,
+            vec!["file_delete".to_string(), "file_write".to_string()],
+            "a write deny blocks delete too, so both belong in the reported set"
+        );
+    }
+
     // ── Authorization / tenancy ────────────────────────────────────────────
 
     /// Deny-by-default: a non-admin caller with no tenant scope can never be
