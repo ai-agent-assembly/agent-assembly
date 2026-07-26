@@ -19,7 +19,9 @@
  *     severity chip still narrows the rendered feed (AAASM-5122);
  *  5. the resolve affordance POSTs to the shipped
  *     `/api/v1/alerts/{id}/resolve` endpoint (AAASM-5121);
- *  6. a read-scope caller gets every write affordance disabled (AAASM-5147);
+ *  6. a read-scope caller gets every write affordance disabled — including the
+ *     zero-rule empty-state CTA, which opens the same form as the gated header
+ *     button (AAASM-5147);
  *  7. neither theme produces console errors or uncaught exceptions.
  *
  * `openapi-fetch` captures `globalThis.fetch` at module load, so failures are
@@ -125,6 +127,8 @@ interface Fixture {
   failAlerts?: boolean
   /** Serve a page that falls short of the reported total. */
   truncated?: boolean
+  /** Serve an empty rules list — the zero-rule install state. */
+  noRules?: boolean
   /** Scopes the seeded session token carries. */
   scopes?: string[]
 }
@@ -160,7 +164,7 @@ async function bootstrap(page: Page, theme: Theme, fixture: Fixture = {}): Promi
   await page.route('**/api/v1/alerts/rules**', (r: Route) =>
     fixture.failRules
       ? r.fulfill({ status: 503, json: { detail: 'rules backend unavailable' } })
-      : r.fulfill({ json: RULES }),
+      : r.fulfill({ json: fixture.noRules ? [] : RULES }),
   )
 
   await page.route('**/api/v1/alerts/*/resolve', (r: Route) => {
@@ -285,68 +289,88 @@ test.describe('AAASM-5150 review — the Alerts surface tells the truth', () => 
       await expect(page.getByTestId('alerts-stats-scope')).toContainText(
         'Counts cover the 3 alerts on this page, not all 214.',
       )
-      await expect(page.getByTestId('alerts-count')).toContainText('3 of 214 alerts')
+      // The count describes the page; only the truncation notice names the
+      // fleet total, so the two numbers can never be read as one ratio.
+      await expect(page.getByTestId('alerts-count')).toContainText('3 alerts on this page')
+      await expect(page.getByTestId('alerts-count')).not.toContainText('214')
 
       await shot(page, `truncation-${theme}`)
       expect(harness.errors).toEqual([])
     })
+
+    test(`the filter controls narrow a real feed and send no dropped parameters — ${theme}`, async ({ page }) => {
+      const harness = await bootstrap(page, theme)
+      await navigate(page, '/alerts')
+      await expect(page.getByTestId('alert-row')).toHaveCount(3)
+
+      // AAASM-5122: the API declares only page/per_page — nothing else is sent.
+      expect(harness.listRequests.length).toBeGreaterThan(0)
+      for (const url of harness.listRequests) {
+        expect(new URL(url).search).toBe('')
+      }
+
+      // The chip that used to return an identical list now narrows the feed.
+      await page.getByTestId('alerts-filter-severity-HIGH').click()
+      await expect(page.getByTestId('alert-row')).toHaveCount(1)
+      // Narrowed: shown and loaded are both page figures, named together.
+      await expect(page.getByTestId('alerts-count')).toContainText('1 of 3 alerts')
+
+      await shot(page, `filters-applied-${theme}`)
+      expect(harness.errors).toEqual([])
+    })
+
+    test(`the resolve affordance posts to the shipped endpoint — ${theme}`, async ({ page }) => {
+      const harness = await bootstrap(page, theme)
+      await navigate(page, '/alerts')
+      await page.getByTestId('alert-row').first().click()
+
+      const submit = page.getByTestId('resolve-action-submit')
+      await expect(submit).toBeEnabled()
+      await submit.click()
+
+      await expect(async () => {
+        expect(harness.writes).toHaveLength(1)
+      }).toPass()
+      expect(harness.writes[0].method).toBe('POST')
+      expect(new URL(harness.writes[0].url).pathname).toBe('/api/v1/alerts/al-1/resolve')
+
+      await shot(page, `resolve-action-${theme}`)
+      expect(harness.errors).toEqual([])
+    })
+
+    test(`a read-scope caller sees every write affordance disabled — ${theme}`, async ({ page }) => {
+      const harness = await bootstrap(page, theme, { scopes: ['read'] })
+      await navigate(page, '/alerts')
+
+      await expect(page.getByTestId('alerts-open-rule-form')).toBeDisabled()
+
+      await page.getByTestId('alert-row').first().click()
+      await expect(page.getByTestId('resolve-action-submit')).toBeDisabled()
+      await expect(page.getByTestId('silence-action-submit')).toBeDisabled()
+      await shot(page, `rbac-read-only-detail-${theme}`)
+      await page.getByTestId('alert-detail-drawer-close').click()
+
+      await page.getByTestId('alerts-open-destinations').click()
+      await expect(page.getByTestId('destination-form-submit')).toBeDisabled()
+      await shot(page, `rbac-read-only-destinations-${theme}`)
+
+      expect(harness.errors).toEqual([])
+    })
+
+    // The zero-rule install is the only state that renders the empty-state CTA,
+    // and that CTA opens the same rule form as the gated header button. Every
+    // other RBAC case here seeds a rule, so without this the bypass is
+    // unreachable end-to-end as well as in unit tests.
+    test(`a read-scope caller cannot reach the rule form from a zero-rule install — ${theme}`, async ({ page }) => {
+      const harness = await bootstrap(page, theme, { scopes: ['read'], noRules: true })
+      await navigate(page, '/alerts')
+
+      await expect(page.getByTestId('alerts-empty-no-rules')).toBeVisible()
+      await expect(page.getByTestId('alerts-empty-create-cta')).toBeDisabled()
+      await expect(page.getByTestId('alerts-open-rule-form')).toBeDisabled()
+
+      await shot(page, `rbac-zero-rules-${theme}`)
+      expect(harness.errors).toEqual([])
+    })
   }
-
-  test('the filter controls narrow a real feed and send no dropped parameters', async ({ page }) => {
-    const harness = await bootstrap(page, 'light')
-    await navigate(page, '/alerts')
-    await expect(page.getByTestId('alert-row')).toHaveCount(3)
-
-    // AAASM-5122: the API declares only page/per_page — nothing else is sent.
-    expect(harness.listRequests.length).toBeGreaterThan(0)
-    for (const url of harness.listRequests) {
-      expect(new URL(url).search).toBe('')
-    }
-
-    // The chip that used to return an identical list now narrows the feed.
-    await page.getByTestId('alerts-filter-severity-HIGH').click()
-    await expect(page.getByTestId('alert-row')).toHaveCount(1)
-    await expect(page.getByTestId('alerts-count')).toContainText('1 alert')
-
-    await shot(page, 'filters-applied-light')
-    expect(harness.errors).toEqual([])
-  })
-
-  test('the resolve affordance posts to the shipped endpoint', async ({ page }) => {
-    const harness = await bootstrap(page, 'light')
-    await navigate(page, '/alerts')
-    await page.getByTestId('alert-row').first().click()
-
-    const submit = page.getByTestId('resolve-action-submit')
-    await expect(submit).toBeEnabled()
-    await submit.click()
-
-    await expect(async () => {
-      expect(harness.writes).toHaveLength(1)
-    }).toPass()
-    expect(harness.writes[0].method).toBe('POST')
-    expect(new URL(harness.writes[0].url).pathname).toBe('/api/v1/alerts/al-1/resolve')
-
-    await shot(page, 'resolve-action-light')
-    expect(harness.errors).toEqual([])
-  })
-
-  test('a read-scope caller sees every write affordance disabled', async ({ page }) => {
-    const harness = await bootstrap(page, 'light', { scopes: ['read'] })
-    await navigate(page, '/alerts')
-
-    await expect(page.getByTestId('alerts-open-rule-form')).toBeDisabled()
-
-    await page.getByTestId('alert-row').first().click()
-    await expect(page.getByTestId('resolve-action-submit')).toBeDisabled()
-    await expect(page.getByTestId('silence-action-submit')).toBeDisabled()
-    await shot(page, 'rbac-read-only-detail-light')
-    await page.getByTestId('alert-detail-drawer-close').click()
-
-    await page.getByTestId('alerts-open-destinations').click()
-    await expect(page.getByTestId('destination-form-submit')).toBeDisabled()
-    await shot(page, 'rbac-read-only-destinations-light')
-
-    expect(harness.errors).toEqual([])
-  })
 })
