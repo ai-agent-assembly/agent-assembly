@@ -583,9 +583,13 @@ fn collect_policy_rows(
 /// boundary.
 ///
 /// The cascade is collected with an explicit lineage rather than via
-/// `PolicyEngine::effective_permissions`, because the engine `aa-api` builds is
-/// not registry-wired: without a lineage it resolves only the Global and Agent
-/// tiers and would silently drop every Org- and Team-scoped policy.
+/// `PolicyEngine::effective_permissions`: without a lineage the engine falls
+/// back to `Lineage::default()` and resolves only the Global and Agent tiers,
+/// silently dropping every Org- and Team-scoped policy. AAASM-5102 wired the
+/// registry into the engine `AppState::local_in_memory` builds, so that
+/// fallback no longer fires in the shipped composition root — this projection
+/// keeps the explicit lineage anyway so it stays correct under any engine,
+/// registry-wired or not.
 fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppState) -> CapabilityMatrix {
     use aa_core::Capability as C;
 
@@ -1071,10 +1075,12 @@ mod tests {
         assert!(!m.agents[0].caps.contains_key(TOOL_WILDCARD));
     }
 
-    /// Guards the explicit lineage at the top of [`project_matrix`]: the engine
-    /// `aa-api` builds is not registry-wired, so resolving the cascade without a
-    /// lineage silently drops every Org- and Team-scoped document. Regressing
-    /// that call would leave this the only failing test.
+    /// Guards the explicit lineage at the top of [`project_matrix`]: resolving
+    /// the cascade without a lineage silently drops every Org- and Team-scoped
+    /// document. Since AAASM-5102 the engine is registry-wired too, so this now
+    /// guards the projection against a *second* regression rather than the only
+    /// one — see `agents::tests::a_team_scoped_deny_reaches_the_capabilities_response`
+    /// for the composition-root guard.
     #[tokio::test]
     async fn a_team_scoped_deny_reaches_the_projection() {
         use aa_core::Capability as C;

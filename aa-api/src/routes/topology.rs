@@ -395,10 +395,12 @@ fn project_effective_permissions(
 /// policy cascade, effective permissions, and daily budget.
 ///
 /// The cascade is collected with an **explicitly resolved** lineage rather than
-/// via `PolicyEngine::collect_cascade` / `effective_permissions`: the engine
-/// `aa-api` builds is not registry-wired (AAASM-5102), so those resolve
-/// `Lineage::default()` and silently walk only the Global and Agent tiers,
-/// dropping every Org- and Team-scoped allow *and* deny. Same guard as
+/// via `PolicyEngine::collect_cascade` / `effective_permissions`: an engine with
+/// no registry attached resolves `Lineage::default()` and silently walks only
+/// the Global and Agent tiers, dropping every Org- and Team-scoped allow *and*
+/// deny. AAASM-5102 attached the registry in `AppState::local_in_memory`, so the
+/// shipped engine no longer takes that fallback — the explicit lineage stays as
+/// the guard that keeps this projection correct under any engine. Same guard as
 /// `capability::project_matrix` (AAASM-5090).
 fn project_graph_nodes(records: &[AgentRecord], state: &AppState) -> Vec<AgentNode> {
     // Budget: snapshot once (not per node) and index today's per-agent spend by
@@ -1369,12 +1371,14 @@ mod graph_tests {
 
     // ── Effective permissions ──────────────────────────────────────────────
 
-    /// Guards the explicit lineage in [`project_graph_nodes`]: the engine
-    /// `aa-api` builds is not registry-wired (AAASM-5102), so resolving the
-    /// cascade without a lineage silently walks only Global and Agent and drops
-    /// every Org- and Team-scoped allow AND deny. Regressing that call back to
-    /// `collect_cascade` / `effective_permissions` would leave this the only
-    /// failing test.
+    /// Guards the explicit lineage in [`project_graph_nodes`]: resolving the
+    /// cascade without a lineage walks only Global and Agent and drops every
+    /// Org- and Team-scoped allow AND deny. Since AAASM-5102 registry-wired the
+    /// engine, regressing that call to `collect_cascade` /
+    /// `effective_permissions` would no longer break this test on its own — it
+    /// guards the projection, and
+    /// `agents::tests::a_team_scoped_deny_reaches_the_capabilities_response`
+    /// guards the composition root that makes the unlineaged path safe.
     #[tokio::test]
     async fn a_team_scoped_policy_reaches_the_permission_chain() {
         let mut caps = aa_core::CapabilitySet::default();
