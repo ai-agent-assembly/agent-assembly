@@ -4,7 +4,10 @@ import { useToast } from '../components/Toast'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/states'
+import { certainFromQuery } from '../lib/truthfulness'
 import { useAgentsQuery } from '../features/agents/api'
+import { useApprovalsQuery, type Approval } from '../features/approvals/api'
+import { useApprovalsStream } from '../features/approvals/useApprovalsStream'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import {
   haltAgent,
@@ -124,6 +127,13 @@ export function LiveOpsPage() {
 
   const agentsQuery = useAgentsQuery()
   const teamsQuery = useTeamsQuery()
+  // AAASM-5128: the approval queue is its own data source, not a slice of the
+  // ops ring. The query supplies the rows (with the UUID ids the decide
+  // endpoints require) and the `types=approval` socket keeps them current —
+  // the ops socket subscribes to `violation,ops_change` and never sees one.
+  const approvalsQuery = useApprovalsQuery()
+  useApprovalsStream()
+  const approvals = certainFromQuery<Approval[]>(approvalsQuery)
 
   // Derived map: every override whose WS-reported status already matches
   // its intent is hidden from the UI. The raw `overrides` state still
@@ -493,10 +503,11 @@ export function LiveOpsPage() {
           </header>
           <div className="live-page__pane-body">
             <ApprovalPool
-              ops={ops}
+              approvals={approvals}
               onError={(action, detail) =>
                 toast(`Failed to ${action} approval: ${detail}`, 'error')
               }
+              onRetry={() => void approvalsQuery.refetch()}
             />
           </div>
         </section>

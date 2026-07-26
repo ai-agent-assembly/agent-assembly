@@ -1,20 +1,28 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '../components/ToastProvider'
+import { known } from '../lib/truthfulness'
 import { useAgentsQuery } from '../features/agents/api'
-import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
+import { useApprovalsQuery, type Approval } from '../features/approvals/api'
 import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
+import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import type { LiveOperation } from '../features/liveOps/types'
 import { LiveOpsPage } from './LiveOpsPage'
 
 function renderWithProviders(ui: ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
   return render(
-    <MemoryRouter>
-      <ToastProvider>{ui}</ToastProvider>
-    </MemoryRouter>,
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <ToastProvider>{ui}</ToastProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -24,6 +32,17 @@ vi.mock('../features/agents/api', () => ({
 
 vi.mock('../features/analytics/useTeamsQuery', () => ({
   useTeamsQuery: vi.fn(),
+}))
+
+// AAASM-5128: the approvals pane now has its own query + socket. Partial mock
+// — `ApprovalActions` renders inside the pane and needs the real approve /
+// reject mutation hooks from this module.
+vi.mock('../features/approvals/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../features/approvals/api')>()),
+  useApprovalsQuery: vi.fn(),
+}))
+vi.mock('../features/approvals/useApprovalsStream', () => ({
+  useApprovalsStream: () => ({ connected: true }),
 }))
 
 vi.mock('../features/liveOps/useLiveOpsStream', () => ({
@@ -75,15 +94,33 @@ const AGENTS = [
 
 const TEAMS = [{ team_id: 'support', agent_count: 1, root_agent_count: 1 }]
 
+interface ApprovalsOutcome {
+  data?: Approval[]
+  isPending?: boolean
+  isError?: boolean
+  error?: unknown
+}
+
+function mockApprovals(outcome: ApprovalsOutcome = {}) {
+  vi.mocked(useApprovalsQuery).mockReturnValue({
+    data: [],
+    isPending: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+    ...outcome,
+  } as unknown as ReturnType<typeof useApprovalsQuery>)
+}
+
 function makeOp(id: string, overrides: Partial<LiveOperation> = {}): LiveOperation {
   return {
     id,
     agent: 'support-agent',
-    opType: 'read',
-    resource: 'gmail.send',
+    opType: known('read'),
+    resource: known('gmail.send'),
     status: 'running',
     startedAt: '2026-05-13T14:23:01Z',
-    latencyMs: 100,
+    latencyMs: known(100),
     ...overrides,
   }
 }
@@ -111,6 +148,7 @@ describe('LiveOpsPage', () => {
     vi.mocked(useTeamsQuery).mockReturnValue({
       data: TEAMS,
     } as unknown as ReturnType<typeof useTeamsQuery>)
+    mockApprovals()
     mockStream()
   })
 
@@ -279,11 +317,13 @@ describe('LiveOpsPage', () => {
     // New op streams in; rendered list stays frozen at 1, pill shows backlog.
     mockStream({ ops: [makeOp('op-2'), makeOp('op-1')] })
     rerender(
-      <MemoryRouter>
-        <ToastProvider>
-          <LiveOpsPage />
-        </ToastProvider>
-      </MemoryRouter>,
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <ToastProvider>
+            <LiveOpsPage />
+          </ToastProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
     )
     expect(screen.getAllByTestId('op-row')).toHaveLength(1)
     expect(screen.getByTestId('auto-scroll-flush')).toHaveTextContent(
@@ -326,11 +366,13 @@ describe('LiveOpsPage', () => {
     // (under the pre-1422 model `terminating` only cleared on `completing`).
     mockStream({ ops: [makeOp('op-1', { status: 'terminated' })] })
     rerender(
-      <MemoryRouter>
-        <ToastProvider>
-          <LiveOpsPage />
-        </ToastProvider>
-      </MemoryRouter>,
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <ToastProvider>
+            <LiveOpsPage />
+          </ToastProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
     )
     expect(screen.queryByTestId('op-row-override')).toBeNull()
   })

@@ -1,9 +1,12 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '../components/ToastProvider'
+import { known } from '../lib/truthfulness'
 import { useAgentsQuery } from '../features/agents/api'
+import { useApprovalsQuery } from '../features/approvals/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import * as actions from '../features/liveOps/actions'
 import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
@@ -12,6 +15,10 @@ import { LiveOpsPage } from './LiveOpsPage'
 
 vi.mock('../features/agents/api', () => ({ useAgentsQuery: vi.fn() }))
 vi.mock('../features/analytics/useTeamsQuery', () => ({ useTeamsQuery: vi.fn() }))
+vi.mock('../features/approvals/api', () => ({ useApprovalsQuery: vi.fn() }))
+vi.mock('../features/approvals/useApprovalsStream', () => ({
+  useApprovalsStream: () => ({ connected: true }),
+}))
 vi.mock('../features/liveOps/useLiveOpsStream', () => ({ useLiveOpsStream: vi.fn() }))
 vi.mock('../features/liveOps/actions', () => ({
   pauseOp: vi.fn(),
@@ -25,11 +32,11 @@ function makeOp(id: string, overrides: Partial<LiveOperation> = {}): LiveOperati
   return {
     id,
     agent: 'support-agent',
-    opType: 'read',
-    resource: 'gmail.send',
+    opType: known('read'),
+    resource: known('gmail.send'),
     status: 'running',
     startedAt: '2026-05-13T14:23:01Z',
-    latencyMs: 100,
+    latencyMs: known(100),
     ...overrides,
   }
 }
@@ -44,11 +51,13 @@ function mockStream(ops: LiveOperation[]) {
 
 function renderPage() {
   return render(
-    <MemoryRouter>
-      <ToastProvider>
-        <LiveOpsPage />
-      </ToastProvider>
-    </MemoryRouter>,
+    <QueryClientProvider client={new QueryClient()}>
+      <MemoryRouter>
+        <ToastProvider>
+          <LiveOpsPage />
+        </ToastProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -60,6 +69,12 @@ describe('LiveOpsPage row actions', () => {
     vi.mocked(useTeamsQuery).mockReturnValue({
       data: [],
     } as unknown as ReturnType<typeof useTeamsQuery>)
+    vi.mocked(useApprovalsQuery).mockReturnValue({
+      data: [],
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useApprovalsQuery>)
     vi.mocked(actions.pauseOp).mockReset()
     vi.mocked(actions.resumeOp).mockReset()
     vi.mocked(actions.terminateOp).mockReset()
@@ -90,11 +105,13 @@ describe('LiveOpsPage row actions', () => {
 
     mockStream([makeOp('op-1', { status: 'blocked' })])
     rerender(
-      <MemoryRouter>
-        <ToastProvider>
-          <LiveOpsPage />
-        </ToastProvider>
-      </MemoryRouter>,
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <ToastProvider>
+            <LiveOpsPage />
+          </ToastProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
     )
 
     await waitFor(() => {
