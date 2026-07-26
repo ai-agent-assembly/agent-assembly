@@ -6,6 +6,7 @@ import { dslFor } from './dslFor'
 import { RuleCard } from './RuleCard'
 import { ScopeRow } from './ScopeRow'
 import { ValidationPanel } from './ValidationPanel'
+import { rulesChangedCount } from './rulesChangedCount'
 import type { PolicyDraft, RuleDraft } from './types'
 import './editor.css'
 
@@ -100,9 +101,11 @@ export function PolicyEditorOverlay({
     onSimulate()
   }
 
+  const changedRules = rulesChangedCount(draft.rules, originalRuleById)
+
   let footerStatus: string
   if (isDirty) {
-    footerStatus = `${draft.rules.length} rule(s) modified · run simulate to preview impact`
+    footerStatus = `${changedRules} rule(s) modified · run simulate to preview impact`
   } else if (draft.status === 'proposed') {
     footerStatus = 'Draft — never deployed'
   } else {
