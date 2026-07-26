@@ -58,17 +58,16 @@ describe('TopologySidebar', () => {
     expect(onFilterTeam).toHaveBeenCalledWith('support')
   })
 
-  it('renders all six edge kinds, with only delegation/call enabled', () => {
+  it('renders all six edge kinds, every one enabled (AAASM-5099)', () => {
     renderSidebar()
     const toggles = screen.getAllByTestId('topology-edge-toggle')
     expect(toggles.map((t) => t.dataset.kind)).toEqual([
       'delegates_to', 'calls', 'reads', 'writes', 'approves', 'messages',
     ])
-    const available = toggles.filter((t) => t.dataset.available === 'true')
-    expect(available.map((t) => t.dataset.kind)).toEqual(['delegates_to', 'calls'])
-    // The four not-yet-emitted kinds have a disabled checkbox.
-    for (const t of toggles.filter((t) => t.dataset.available === 'false')) {
-      expect(t.querySelector('input')).toBeDisabled()
+    // The projection now emits all six, so none is a disabled "soon" row.
+    expect(toggles.every((t) => t.dataset.available === 'true')).toBe(true)
+    for (const t of toggles) {
+      expect(t.querySelector('input')).not.toBeDisabled()
     }
   })
 
@@ -77,6 +76,13 @@ describe('TopologySidebar', () => {
     const calls = screen.getAllByTestId('topology-edge-toggle').find((t) => t.dataset.kind === 'calls')!
     await userEvent.click(calls.querySelector('input')!)
     expect(onToggleKind).toHaveBeenCalledWith('call')
+  })
+
+  it('fires onToggleKind for a newly-emitted kind too (AAASM-5099)', async () => {
+    const { onToggleKind } = renderSidebar()
+    const reads = screen.getAllByTestId('topology-edge-toggle').find((t) => t.dataset.kind === 'reads')!
+    await userEvent.click(reads.querySelector('input')!)
+    expect(onToggleKind).toHaveBeenCalledWith('reads')
   })
 
   it('fires onToggleCrossTeam when the cross-team toggle changes', async () => {

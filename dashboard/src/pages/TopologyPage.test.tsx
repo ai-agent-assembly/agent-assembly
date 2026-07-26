@@ -134,6 +134,21 @@ describe('TopologyPage', () => {
     expect(screen.getByTestId('topology-export-button')).toBeInTheDocument()
   })
 
+  it("counts cross-team edges from the server's flag, not the endpoints' teams", () => {
+    // Both endpoints sit on `support`, so the client derivation would count 0;
+    // the server flag (AAASM-5099) is the one definition all three surfaces
+    // (badge, canvas, /topology/edges) share.
+    const flagged: TopologyGraph = {
+      ...GRAPH,
+      edges: [{ source: 'a1', target: 'a3', kind: 'messages', crossTeam: true }],
+    }
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: flagged, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+    expect(screen.getByTestId('topology-stat-crossteam')).toHaveTextContent('1 cross-team')
+  })
+
   it('opens the TeamDetailPanel when a team cluster is clicked', async () => {
     vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
       mockQuery({ data: GRAPH, isLoading: false, isError: false, refetch: vi.fn() }),

@@ -203,6 +203,90 @@ describe('NodeDetailPanel — lineage, cross-team, suspend/resume', () => {
     )
   }
 
+  // ── Policy inheritance (AAASM-5099) ────────────────────────────────────
+
+  const PERMS = {
+    chain: [
+      { tier: 'global', scope: 'global', policies: ['baseline'] },
+      { tier: 'team', scope: 'team:support', policies: [] },
+      { tier: 'agent', scope: 'agent:agent-001', policies: ['agent-override'] },
+    ],
+    allow: ['file_read'],
+    deny: ['terminal_exec'],
+    allowRestricted: true,
+  } as const
+
+  function stubLineageOnly() {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
+      mockLineage({ data: undefined, isLoading: false, isError: false }),
+    )
+  }
+
+  it('renders one row per cascade tier with its policies', () => {
+    stubLineageOnly()
+    renderWith({ ...NODE, effectivePermissions: PERMS })
+
+    const rows = screen.getAllByTestId('node-detail-inheritance-tier')
+    expect(rows.map((r) => r.dataset.tier)).toEqual(['global', 'team', 'agent'])
+    expect(rows[0]).toHaveTextContent('baseline')
+    // A tier the agent has but with no document reads "none" — real state,
+    // distinct from the no-data affordance below.
+    expect(rows[1]).toHaveTextContent('team (support)')
+    expect(rows[1]).toHaveTextContent('none')
+    expect(rows[2]).toHaveTextContent('agent-override')
+  })
+
+  it('summarises the merged capability set in the effective row', () => {
+    stubLineageOnly()
+    renderWith({ ...NODE, effectivePermissions: PERMS })
+
+    const effective = screen.getByTestId('node-detail-inheritance-effective')
+    expect(effective).toHaveTextContent('allow-list enforced')
+    expect(effective).toHaveTextContent('1 denied')
+    expect(effective).toHaveTextContent('1 allowed')
+  })
+
+  it('reads an unconstrained cascade as baseline, not as an empty deny-all', () => {
+    stubLineageOnly()
+    renderWith({
+      ...NODE,
+      effectivePermissions: {
+        chain: [{ tier: 'global', scope: 'global', policies: [] }],
+        allow: [],
+        deny: [],
+        allowRestricted: false,
+      },
+    })
+    expect(screen.getByTestId('node-detail-inheritance-effective')).toHaveTextContent('baseline')
+  })
+
+  it('calls out a restriction even when the merged allow-list is empty', () => {
+    stubLineageOnly()
+    renderWith({
+      ...NODE,
+      effectivePermissions: {
+        chain: [{ tier: 'global', scope: 'global', policies: ['strict'] }],
+        allow: [],
+        deny: [],
+        allowRestricted: true,
+      },
+    })
+    // An empty allow-list with the flag set is deny-all (AAASM-4154); reading it
+    // as "baseline" would invert what the gateway enforces.
+    const effective = screen.getByTestId('node-detail-inheritance-effective')
+    expect(effective).toHaveTextContent('allow-list enforced')
+    expect(effective).not.toHaveTextContent('baseline')
+  })
+
+  it('folds an absent chain to the no-data affordance', () => {
+    stubLineageOnly()
+    renderWith(NODE)
+
+    expect(screen.queryByTestId('node-detail-inheritance-chain')).toBeNull()
+    expect(screen.getByTestId('node-detail-inheritance-empty')).toHaveTextContent('—')
+  })
+
   it('renders the delegation lineage chain from the lineage query', () => {
     stubBaseQueries()
     vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(

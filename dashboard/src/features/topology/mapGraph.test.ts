@@ -60,20 +60,68 @@ describe('mapTopologyGraph', () => {
     expect(nodes[0].trust).toBeNull()
   })
 
-  it('keeps delegation and call edges and drops any other kind', () => {
+  it('keeps all six edge kinds and carries the cross-team flag (AAASM-5099)', () => {
     const graph: ApiGraph = {
       nodes: [],
       edges: [
-        { source: 'a', target: 'b', kind: 'delegation' },
-        { source: 'b', target: 'c', kind: 'call' },
-        { source: 'c', target: 'd', kind: 'messages' },
+        { source: 'a', target: 'b', kind: 'delegation', cross_team: false },
+        { source: 'b', target: 'c', kind: 'call', cross_team: false },
+        { source: 'c', target: 'd', kind: 'reads', cross_team: false },
+        { source: 'd', target: 'e', kind: 'writes', cross_team: false },
+        { source: 'e', target: 'f', kind: 'approves', cross_team: false },
+        { source: 'f', target: 'g', kind: 'messages', cross_team: true },
       ],
     }
     const { edges } = mapTopologyGraph(graph)
-    expect(edges).toEqual([
-      { source: 'a', target: 'b', kind: 'delegation' },
-      { source: 'b', target: 'c', kind: 'call' },
-    ])
+    expect(edges.map((e) => e.kind)).toEqual(['delegation', 'call', 'reads', 'writes', 'approves', 'messages'])
+    expect(edges[5]).toEqual({ source: 'f', target: 'g', kind: 'messages', crossTeam: true })
+    expect(edges[0].crossTeam).toBe(false)
+  })
+
+  it('drops a kind the view model does not know so TopologyEdge stays sound', () => {
+    const graph = {
+      nodes: [],
+      edges: [
+        { source: 'a', target: 'b', kind: 'delegation', cross_team: false },
+        { source: 'c', target: 'd', kind: 'observes', cross_team: false },
+      ],
+    } as unknown as ApiGraph
+    const { edges } = mapTopologyGraph(graph)
+    expect(edges).toHaveLength(1)
+    expect(edges[0].kind).toBe('delegation')
+  })
+
+  it('maps the policy-inheritance chain onto the view model (AAASM-5099)', () => {
+    const { nodes } = mapTopologyGraph({
+      nodes: [
+        node({
+          effective_permissions: {
+            chain: [
+              { tier: 'global', scope: 'global', policies: ['baseline'] },
+              { tier: 'team', scope: 'team:platform', policies: [] },
+            ],
+            allow: ['file_read'],
+            deny: ['terminal_exec'],
+            allow_restricted: true,
+          },
+        }),
+      ],
+      edges: [],
+    })
+    expect(nodes[0].effectivePermissions).toEqual({
+      chain: [
+        { tier: 'global', scope: 'global', policies: ['baseline'] },
+        { tier: 'team', scope: 'team:platform', policies: [] },
+      ],
+      allow: ['file_read'],
+      deny: ['terminal_exec'],
+      allowRestricted: true,
+    })
+  })
+
+  it('leaves the chain null when the node carries none (no fabricated empty chain)', () => {
+    const { nodes } = mapTopologyGraph({ nodes: [node()], edges: [] })
+    expect(nodes[0].effectivePermissions).toBeNull()
   })
 
   it('tolerates a partial payload missing nodes / edges arrays', () => {

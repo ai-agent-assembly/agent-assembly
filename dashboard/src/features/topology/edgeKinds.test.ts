@@ -13,23 +13,26 @@ describe('edgeKinds', () => {
     ])
   })
 
-  it('marks exactly delegation + call as available, mapped to model kinds', () => {
-    const available = EDGE_KINDS.filter((k) => k.available)
-    expect(available.map((k) => k.modelKind)).toEqual(['delegation', 'call'])
-    // The other four are "coming soon" — styled but carry no model kind yet.
-    for (const k of EDGE_KINDS.filter((k) => !k.available)) {
-      expect(k.modelKind).toBeUndefined()
-    }
+  it('marks all six as available now the projection emits them (AAASM-5099)', () => {
+    expect(EDGE_KINDS.every((k) => k.available)).toBe(true)
+    expect(EDGE_KINDS.map((k) => k.modelKind)).toEqual([
+      'delegation',
+      'call',
+      'reads',
+      'writes',
+      'approves',
+      'messages',
+    ])
   })
 
   it('exposes the available model kinds as a stable list', () => {
-    expect(AVAILABLE_EDGE_KINDS).toEqual(['delegation', 'call'])
+    expect(AVAILABLE_EDGE_KINDS).toEqual(['delegation', 'call', 'reads', 'writes', 'approves', 'messages'])
   })
 
   it('defaultVisibleKinds returns a fresh mutable set of the available kinds', () => {
     const a = defaultVisibleKinds()
     const b = defaultVisibleKinds()
-    expect([...a].sort()).toEqual(['call', 'delegation'])
+    expect([...a].sort()).toEqual(['approves', 'call', 'delegation', 'messages', 'reads', 'writes'])
     a.delete('call')
     // Mutating one set must not affect a freshly built one.
     expect(b.has('call')).toBe(true)
