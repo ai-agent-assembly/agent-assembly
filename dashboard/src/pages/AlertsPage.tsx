@@ -6,8 +6,13 @@ import { AlertList } from '../features/alerts/AlertList'
 import { AlertFilterBar } from '../features/alerts/AlertFilterBar'
 import { AlertStatsStrip } from '../features/alerts/AlertStatsStrip'
 import { AlertCardFeed } from '../features/alerts/AlertCardFeed'
-import { AlertCategoryFilter, type CategoryFilterValue } from '../features/alerts/AlertCategoryFilter'
+import {
+  AlertCategoryFilter,
+  type CategoryCounts,
+  type CategoryFilterValue,
+} from '../features/alerts/AlertCategoryFilter'
 import { categoryCounts, deriveCategory, indexRulesById } from '../features/alerts/alertCategory'
+import { applyClientFilters } from '../features/alerts/alertFilters'
 import { AlertsTabs, type AlertsTab } from '../features/alerts/AlertsTabs'
 import { AlertDetailDrawer } from '../features/alerts/AlertDetailDrawer'
 import { AlertDetailContent } from '../features/alerts/AlertDetailContent'
@@ -17,7 +22,7 @@ import { DestinationManager } from '../features/alerts/DestinationManager'
 import { EmptyStateNoRules } from '../features/alerts/EmptyStateNoRules'
 import { EmptyStateNoAlerts } from '../features/alerts/EmptyStateNoAlerts'
 import { AlertsErrorBanner } from '../features/alerts/AlertsErrorBanner'
-import { useAlertRulesQuery, useAlertsQuery } from '../features/alerts/api'
+import { useAlertRulesQuery, useAlertsPageQuery } from '../features/alerts/api'
 import { useAlertsStream } from '../features/alerts/useAlertsStream'
 import { applyFire, applyResolve, applySilence } from '../features/alerts/alertsStreamSync'
 import {
@@ -25,6 +30,15 @@ import {
   filtersToSearchParams,
 } from '../features/alerts/urlFilters'
 import type { Alert, AlertFilters, AlertRule, AlertStatus, Severity } from '../features/alerts/types'
+import { StatusState, TruthfulValue } from '../components/truthfulness'
+import {
+  certainFromQuery,
+  isKnown,
+  known,
+  mapCertain,
+  propagateAbsence,
+  type Certain,
+} from '../lib/truthfulness'
 import { Tooltip } from '../components/Tooltip'
 import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 
@@ -66,11 +80,34 @@ export function AlertsPage() {
     [filters, setSearchParams],
   )
 
-  const alertsQuery = useAlertsQuery(filters)
+  const alertsQuery = useAlertsPageQuery()
   const rulesQuery = useAlertRulesQuery()
-  const rows = useMemo(
-    () => partitionByTab(alertsQuery.data ?? [], tab),
-    [alertsQuery.data, tab],
+
+  // Both queries are lifted into the shared truthfulness vocabulary before
+  // anything is derived from them, so an outage can only ever propagate as an
+  // absence — never as an empty list that later reads as "nothing is wrong".
+  const alertsState: Certain<readonly Alert[]> = certainFromQuery({
+    isPending: alertsQuery.isPending,
+    isError: alertsQuery.isError,
+    error: alertsQuery.error,
+    data: alertsQuery.data?.items,
+  })
+  const totalState: Certain<number> = certainFromQuery({
+    isPending: alertsQuery.isPending,
+    isError: alertsQuery.isError,
+    error: alertsQuery.error,
+    data: alertsQuery.data?.total,
+  })
+  const rulesState: Certain<readonly AlertRule[]> = certainFromQuery({
+    isPending: rulesQuery.isPending,
+    isError: rulesQuery.isError,
+    error: rulesQuery.error,
+    data: rulesQuery.data,
+  })
+
+  const loadedAlerts = useMemo(
+    () => (isKnown(alertsState) ? alertsState.value : []),
+    [alertsState],
   )
 
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null)
@@ -86,7 +123,7 @@ export function AlertsPage() {
   const { canWrite } = usePermissions()
 
   // Stats-strip tiles reuse the single filter model the filter bar drives:
-  // toggling a tile adds/removes the matching severity/status server filter.
+  // toggling a tile adds/removes the matching severity/status filter.
   const toggleSeverity = useCallback(
     (s: Severity) =>
       setFilters({
@@ -108,15 +145,39 @@ export function AlertsPage() {
     [filters, setFilters],
   )
 
-  const rulesById = useMemo(() => indexRulesById(rulesQuery.data ?? []), [rulesQuery.data])
-  const loadedAlerts = alertsQuery.data ?? []
-  const catCounts = useMemo(() => categoryCounts(rows, rulesById), [rows, rulesById])
+  const rulesById = useMemo(
+    () => indexRulesById(isKnown(rulesState) ? rulesState.value : []),
+    [rulesState],
+  )
+
+  // AAASM-5122: the API drops every filter but page/per_page, so the filter bar
+  // and the stats tiles narrow the loaded page here instead of pretending the
+  // server did it.
+  const filteredAlerts = useMemo(
+    () => applyClientFilters(loadedAlerts, filters),
+    [loadedAlerts, filters],
+  )
+  const rows = useMemo(() => partitionByTab(filteredAlerts, tab), [filteredAlerts, tab])
+
+  // AAASM-5150: the category join has no basis without the rules list. Leaving
+  // the selection live would drop every alert into `uncategorized` and empty the
+  // feed — which the page then narrated as "No alerts in this window" while
+  // alerts were firing. Fall back to 'all' and report the absence instead.
+  const effectiveCategory: CategoryFilterValue = isKnown(rulesState) ? categoryFilter : 'all'
+  const catCounts: Certain<CategoryCounts> = useMemo(
+    () =>
+      isKnown(rulesState)
+        ? known(categoryCounts(rows, rulesById))
+        : propagateAbsence(rulesState),
+    [rows, rulesById, rulesState],
+  )
+
   const visibleRows = useMemo(
     () =>
-      categoryFilter === 'all'
+      effectiveCategory === 'all'
         ? rows
-        : rows.filter((a) => deriveCategory(a, rulesById) === categoryFilter),
-    [rows, categoryFilter, rulesById],
+        : rows.filter((a) => deriveCategory(a, rulesById) === effectiveCategory),
+    [rows, effectiveCategory, rulesById],
   )
 
   const queryClient = useQueryClient()
@@ -126,18 +187,32 @@ export function AlertsPage() {
     onSilence: (a) => applySilence(queryClient, a),
   })
 
-  const noRulesConfigured =
-    !rulesQuery.isLoading && !rulesQuery.isError && (rulesQuery.data ?? []).length === 0
+  const alertsUnavailable = !isKnown(alertsState) && !alertsQuery.isPending
+  const noRulesConfigured = isKnown(rulesState) && rulesState.value.length === 0
+  // Only a *successful* alerts query earns the "no alerts" sentence.
   const noAlertsInWindow =
-    !alertsQuery.isLoading && !alertsQuery.isError && visibleRows.length === 0 && !noRulesConfigured
+    isKnown(alertsState) && visibleRows.length === 0 && !noRulesConfigured
 
-  const alertsPlural = visibleRows.length === 1 ? '' : 's'
-  const alertsCountLabel = alertsQuery.isLoading
-    ? 'Loading…'
-    : `${visibleRows.length} alert${alertsPlural}`
+  const truncated =
+    isKnown(alertsState) && isKnown(totalState) && totalState.value > loadedAlerts.length
 
   let alertsBody
-  if (noRulesConfigured) {
+  if (alertsUnavailable && !isKnown(alertsState)) {
+    alertsBody = (
+      <StatusState
+        state={alertsState.state}
+        title="Alerts unavailable"
+        description="The alerts list could not be loaded, so this page cannot say whether any alerts are firing."
+        detail={alertsState.detail}
+        testId="alerts-unavailable"
+        action={
+          <button type="button" onClick={() => ignorePromise(alertsQuery.refetch())}>
+            Retry
+          </button>
+        }
+      />
+    )
+  } else if (noRulesConfigured) {
     alertsBody = <EmptyStateNoRules onCreateRule={() => setRuleFormOpen(true)} />
   } else if (noAlertsInWindow) {
     alertsBody = <EmptyStateNoAlerts />
@@ -150,7 +225,7 @@ export function AlertsPage() {
       <AlertList
         rows={visibleRows}
         onSelect={setSelectedAlertId}
-        loading={alertsQuery.isLoading && visibleRows.length === 0}
+        loading={alertsQuery.isPending && visibleRows.length === 0}
       />
     )
   }
@@ -239,7 +314,8 @@ export function AlertsPage() {
       ) : (
         <>
           <AlertStatsStrip
-            alerts={loadedAlerts}
+            alerts={alertsState}
+            total={totalState}
             activeSeverities={filters.severities}
             activeStatuses={filters.statuses}
             onToggleSeverity={toggleSeverity}
@@ -249,7 +325,7 @@ export function AlertsPage() {
           <AlertFilterBar value={filters} onChange={setFilters} />
 
           <AlertCategoryFilter
-            value={categoryFilter}
+            value={effectiveCategory}
             counts={catCounts}
             onChange={setCategoryFilter}
           />
@@ -259,6 +335,38 @@ export function AlertsPage() {
               message={alertsQuery.error?.message ?? 'unknown error'}
               onRetry={() => ignorePromise(alertsQuery.refetch())}
             />
+          )}
+
+          {/* AAASM-5150: a rules outage used to be silent. It changes what the
+              page can say — categories become underivable — so it gets its own
+              banner and its own retry rather than degrading the category chips
+              to a quiet row of zeroes. */}
+          {rulesQuery.isError && (
+            <AlertsErrorBanner
+              subject="alert rules"
+              testId="alerts-rules-error"
+              message={rulesQuery.error?.message ?? 'unknown error'}
+              onRetry={() => ignorePromise(rulesQuery.refetch())}
+            />
+          )}
+
+          {truncated && (
+            <p
+              data-testid="alerts-truncation-notice"
+              role="status"
+              style={{
+                margin: '0.5rem 0 0',
+                padding: '6px 10px',
+                background: 'var(--badge-amber-bg)',
+                color: 'var(--alert-banner-text)',
+                borderRadius: '4px',
+                fontSize: '0.75rem',
+              }}
+            >
+              Showing the first {loadedAlerts.length} of{' '}
+              {isKnown(totalState) ? totalState.value : ''} alerts. Everything on this page —
+              counts, filters, and the empty state — describes this page only.
+            </p>
           )}
 
           <div
@@ -273,7 +381,19 @@ export function AlertsPage() {
               data-testid="alerts-count"
               style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}
             >
-              {alertsCountLabel}
+              {alertsQuery.isPending ? (
+                'Loading…'
+              ) : (
+                <TruthfulValue
+                  value={mapCertain(alertsState, () =>
+                    truncated
+                      ? `${visibleRows.length} of ${isKnown(totalState) ? totalState.value : ''} alerts`
+                      : `${visibleRows.length} alert${visibleRows.length === 1 ? '' : 's'}`,
+                  )}
+                  showLabel
+                  testId="alerts-count-value"
+                />
+              )}
             </span>
             <div
               data-testid="alerts-view-toggle"
