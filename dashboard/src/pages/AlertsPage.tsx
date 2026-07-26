@@ -2,25 +2,22 @@ import { useCallback, useMemo, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { AlertList } from '../features/alerts/AlertList'
+import { AlertsFeedBody } from '../features/alerts/AlertsFeedBody'
 import { AlertFilterBar } from '../features/alerts/AlertFilterBar'
 import { AlertStatsStrip } from '../features/alerts/AlertStatsStrip'
-import { AlertCardFeed } from '../features/alerts/AlertCardFeed'
 import {
   AlertCategoryFilter,
   type CategoryCounts,
   type CategoryFilterValue,
 } from '../features/alerts/AlertCategoryFilter'
 import { categoryCounts, deriveCategory, indexRulesById } from '../features/alerts/alertCategory'
-import { applyClientFilters } from '../features/alerts/alertFilters'
+import { applyClientFilters, toggleFilterValue } from '../features/alerts/alertFilters'
 import { AlertsTabs, type AlertsTab } from '../features/alerts/AlertsTabs'
 import { AlertDetailDrawer } from '../features/alerts/AlertDetailDrawer'
 import { AlertDetailContent } from '../features/alerts/AlertDetailContent'
 import { AlertRuleForm } from '../features/alerts/AlertRuleForm'
 import { AlertRulesTable } from '../features/alerts/AlertRulesTable'
 import { DestinationManager } from '../features/alerts/DestinationManager'
-import { EmptyStateNoRules } from '../features/alerts/EmptyStateNoRules'
-import { EmptyStateNoAlerts } from '../features/alerts/EmptyStateNoAlerts'
 import { AlertsErrorBanner } from '../features/alerts/AlertsErrorBanner'
 import { useAlertRulesQuery, useAlertsPageQuery } from '../features/alerts/api'
 import { useAlertsStream } from '../features/alerts/useAlertsStream'
@@ -30,8 +27,8 @@ import {
   filtersToSearchParams,
 } from '../features/alerts/urlFilters'
 import type { Alert, AlertFilters, AlertRule, AlertStatus, Severity } from '../features/alerts/types'
-import { coversWholeFleet } from '../features/alerts/alertsCoverage'
-import { StatusState, TruthfulValue } from '../components/truthfulness'
+import { alertsCountLabel, coversWholeFleet } from '../features/alerts/alertsCoverage'
+import { TruthfulValue } from '../components/truthfulness'
 import {
   certainFromQuery,
   isKnown,
@@ -127,22 +124,12 @@ export function AlertsPage() {
   // toggling a tile adds/removes the matching severity/status filter.
   const toggleSeverity = useCallback(
     (s: Severity) =>
-      setFilters({
-        ...filters,
-        severities: filters.severities.includes(s)
-          ? filters.severities.filter((v) => v !== s)
-          : [...filters.severities, s],
-      }),
+      setFilters({ ...filters, severities: toggleFilterValue(filters.severities, s) }),
     [filters, setFilters],
   )
   const toggleStatus = useCallback(
     (s: AlertStatus) =>
-      setFilters({
-        ...filters,
-        statuses: filters.statuses.includes(s)
-          ? filters.statuses.filter((v) => v !== s)
-          : [...filters.statuses, s],
-      }),
+      setFilters({ ...filters, statuses: toggleFilterValue(filters.statuses, s) }),
     [filters, setFilters],
   )
 
@@ -188,63 +175,16 @@ export function AlertsPage() {
     onSilence: (a) => applySilence(queryClient, a),
   })
 
-  const alertsUnavailable = !isKnown(alertsState) && !alertsQuery.isPending
+  // Rules loaded and came back empty — distinct from "the rules request failed",
+  // which must never read as "nothing is configured". AlertsFeedBody owns the
+  // precedence between this and the other feed surfaces.
   const noRulesConfigured = isKnown(rulesState) && rulesState.value.length === 0
-  // Only a *successful* alerts query earns the "no alerts" sentence.
-  const noAlertsInWindow =
-    isKnown(alertsState) && visibleRows.length === 0 && !noRulesConfigured
 
   // Whether this page is provably the whole fleet. Everything the page counts is
   // derived from the page, so when this is false every figure must say so.
   const pageIsWholeFleet = coversWholeFleet(alertsState, totalState)
   const truncated =
     isKnown(alertsState) && isKnown(totalState) && totalState.value > loadedAlerts.length
-
-  /**
-   * The row-count label.
-   *
-   * Numerator and denominator always describe the *same* population — the loaded
-   * page. Pairing the filtered row count against the fleet `total` produced a
-   * ratio over a population that was never queried ("7 of 214 alerts" when the
-   * 7 came from a filtered 50-row page). The fleet total is stated once, by the
-   * truncation notice, which is the only figure entitled to it.
-   */
-  function countLabel(): string {
-    const shown = visibleRows.length
-    const loaded = loadedAlerts.length
-    const scope = pageIsWholeFleet ? '' : ' on this page'
-    if (shown === loaded) return `${shown} alert${shown === 1 ? '' : 's'}${scope}`
-    return `${shown} of ${loaded} alerts${scope}`
-  }
-
-  let alertsBody
-  if (alertsUnavailable && !isKnown(alertsState)) {
-    alertsBody = (
-      <StatusState
-        state={alertsState.state}
-        title="Alerts unavailable"
-        description="The alerts list could not be loaded, so this page cannot say whether any alerts are firing."
-        detail={alertsState.detail}
-        testId="alerts-unavailable"
-      />
-    )
-  } else if (noRulesConfigured) {
-    alertsBody = <EmptyStateNoRules onCreateRule={() => setRuleFormOpen(true)} />
-  } else if (noAlertsInWindow) {
-    alertsBody = <EmptyStateNoAlerts pageScoped={!pageIsWholeFleet} />
-  } else if (viewMode === 'cards') {
-    alertsBody = (
-      <AlertCardFeed rows={visibleRows} rulesById={rulesById} onSelect={setSelectedAlertId} />
-    )
-  } else {
-    alertsBody = (
-      <AlertList
-        rows={visibleRows}
-        onSelect={setSelectedAlertId}
-        loading={alertsQuery.isPending && visibleRows.length === 0}
-      />
-    )
-  }
 
   return (
     <main style={{ padding: '1.5rem' }}>
@@ -367,10 +307,14 @@ export function AlertsPage() {
           )}
 
           {truncated && (
-            <p
+            // <output> carries an implicit `status` role with better assistive
+            // support than the explicit attribute, and matches the stream
+            // banner above. This is a page-level notice, not the shared
+            // `StatusState` primitive — that component keeps its own markup.
+            <output
               data-testid="alerts-truncation-notice"
-              role="status"
               style={{
+                display: 'block',
                 margin: '0.5rem 0 0',
                 padding: '6px 10px',
                 background: 'var(--badge-amber-bg)',
@@ -382,7 +326,7 @@ export function AlertsPage() {
               Showing the first {loadedAlerts.length} of{' '}
               {isKnown(totalState) ? totalState.value : ''} alerts. Everything on this page —
               counts, filters, and the empty state — describes this page only.
-            </p>
+            </output>
           )}
 
           <div
@@ -401,7 +345,9 @@ export function AlertsPage() {
                 'Loading…'
               ) : (
                 <TruthfulValue
-                  value={mapCertain(alertsState, countLabel)}
+                  value={mapCertain(alertsState, (rows) =>
+                    alertsCountLabel(visibleRows.length, rows.length, pageIsWholeFleet),
+                  )}
                   showLabel
                   testId="alerts-count-value"
                 />
@@ -439,7 +385,17 @@ export function AlertsPage() {
             </div>
           </div>
 
-          {alertsBody}
+          <AlertsFeedBody
+            alerts={alertsState}
+            pending={alertsQuery.isPending}
+            noRulesConfigured={noRulesConfigured}
+            pageIsWholeFleet={pageIsWholeFleet}
+            rows={visibleRows}
+            rulesById={rulesById}
+            viewMode={viewMode}
+            onSelect={setSelectedAlertId}
+            onCreateRule={() => setRuleFormOpen(true)}
+          />
         </>
       )}
 
