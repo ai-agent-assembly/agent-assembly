@@ -65,9 +65,16 @@ export function tokenize(
  * Named capture groups must be valid JS identifiers; `CredentialKind` ids
  * already are, but a policy-defined id need not be, so it is sanitised rather
  * than trusted.
+ *
+ * `\W` is used in its strict sense of `[^A-Za-z0-9_]`, which holds because this
+ * literal carries neither the `u`/`v` nor the `i` flag. Adding either is the one
+ * change that could alter which characters survive, so a future flag here needs
+ * re-checking rather than assuming the classes stay interchangeable. Note this
+ * only renames a capture group — it is not part of match-boundary logic, so it
+ * cannot move where a detector starts or ends.
  */
 function groupName(id: string): string {
-  return `d${id.replace(/[^A-Za-z0-9_]/g, '_')}`
+  return `d${id.replace(/\W/g, '_')}`
 }
 
 export function countMatchesByDetector(tokens: readonly ScrubToken[]): Record<string, number> {
