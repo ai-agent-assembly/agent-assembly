@@ -173,3 +173,46 @@ describe('AccessLogFilterBar (AAASM-1398)', () => {
     )
   })
 })
+
+describe('AccessLogFilterBar — disabled (AAASM-5111)', () => {
+  it('defaults to enabled, so existing call sites are unaffected', () => {
+    render(<AccessLogFilterBar identities={IDENTITIES} value={{}} onChange={vi.fn()} />)
+    expect(screen.getByTestId('access-log-filter-bar')).toHaveAttribute('data-disabled', 'false')
+    expect(screen.getByTestId('access-log-filter-identity')).not.toBeDisabled()
+  })
+
+  it('disables every control when there is no dataset to narrow', () => {
+    render(
+      <AccessLogFilterBar identities={IDENTITIES} value={{}} onChange={vi.fn()} disabled />,
+    )
+    expect(screen.getByTestId('access-log-filter-bar')).toHaveAttribute('data-disabled', 'true')
+    expect(screen.getByTestId('access-log-filter-identity')).toBeDisabled()
+    expect(screen.getByTestId('access-log-filter-event-type')).toBeDisabled()
+    expect(screen.getByTestId('access-log-filter-time-range')).toBeDisabled()
+  })
+
+  it('disables the custom date inputs too', () => {
+    render(
+      <AccessLogFilterBar
+        identities={IDENTITIES}
+        value={{ timeRange: { kind: 'custom', from: '2026-05-10', to: '2026-05-17' } }}
+        onChange={vi.fn()}
+        disabled
+      />,
+    )
+    expect(screen.getByTestId('access-log-filter-custom-from')).toBeDisabled()
+    expect(screen.getByTestId('access-log-filter-custom-to')).toBeDisabled()
+  })
+
+  it('emits nothing when a disabled control is interacted with', async () => {
+    const onChange = vi.fn<(next: AccessLogFilter) => void>()
+    render(
+      <AccessLogFilterBar identities={IDENTITIES} value={{}} onChange={onChange} disabled />,
+    )
+    await userEvent.selectOptions(
+      screen.getByTestId('access-log-filter-identity'),
+      'gateway-ci',
+    )
+    expect(onChange).not.toHaveBeenCalled()
+  })
+})

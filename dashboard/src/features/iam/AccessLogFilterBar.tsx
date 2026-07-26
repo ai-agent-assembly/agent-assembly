@@ -31,6 +31,14 @@ export interface AccessLogFilterBarProps {
   identities: readonly string[]
   value: AccessLogFilter
   onChange: (next: AccessLogFilter) => void
+  /**
+   * Render every control inert.
+   *
+   * Set when there is no dataset to narrow (AAASM-5111). A working filter over
+   * a surface with no source would let an operator conclude "no events matched"
+   * from what is really "there are no events to match against".
+   */
+  disabled?: boolean
 }
 
 function readTimeRangeKind(range: AccessLogTimeRange | undefined): TimeRangeOption | '' {
@@ -42,17 +50,23 @@ export function AccessLogFilterBar({
   identities,
   value,
   onChange,
+  disabled = false,
 }: Readonly<AccessLogFilterBarProps>) {
   const currentTimeKind = readTimeRangeKind(value.timeRange)
   const isCustom = value.timeRange?.kind === 'custom'
 
   return (
-    <div className="iam-access-log-filter-bar" data-testid="access-log-filter-bar">
+    <div
+      className={`iam-access-log-filter-bar${disabled ? ' iam-access-log-filter-bar--disabled' : ''}`}
+      data-testid="access-log-filter-bar"
+      data-disabled={disabled}
+    >
       <label className="iam-access-log-filter-bar__field">
         <span className="iam-access-log-filter-bar__label">Identity</span>
         <select
           className="iam-access-log-filter-bar__select"
           data-testid="access-log-filter-identity"
+          disabled={disabled}
           value={value.identity ?? ''}
           onChange={(e) => {
             const raw = e.target.value
@@ -73,6 +87,7 @@ export function AccessLogFilterBar({
         <select
           className="iam-access-log-filter-bar__select"
           data-testid="access-log-filter-event-type"
+          disabled={disabled}
           value={value.eventType ?? ''}
           onChange={(e) => {
             const raw = e.target.value
@@ -96,6 +111,7 @@ export function AccessLogFilterBar({
         <select
           className="iam-access-log-filter-bar__select"
           data-testid="access-log-filter-time-range"
+          disabled={disabled}
           value={currentTimeKind}
           onChange={(e) => {
             const raw = e.target.value as TimeRangeOption | ''
@@ -134,6 +150,7 @@ export function AccessLogFilterBar({
               type="date"
               className="iam-access-log-filter-bar__date"
               data-testid="access-log-filter-custom-from"
+              disabled={disabled}
               // <input type="date"> emits YYYY-MM-DD; we keep that as the
               // stored representation in the filter and the data layer
               // does an ISO string comparison.
@@ -153,6 +170,7 @@ export function AccessLogFilterBar({
               type="date"
               className="iam-access-log-filter-bar__date"
               data-testid="access-log-filter-custom-to"
+              disabled={disabled}
               value={value.timeRange.to.slice(0, 10)}
               onChange={(e) => {
                 if (value.timeRange?.kind !== 'custom') return
