@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
-import { certainFromQuery, mapCertain } from '../lib/truthfulness'
+import { absent, certainFromQuery, mapCertain } from '../lib/truthfulness'
 import {
   joinTeamRows,
   useCostSummaryQuery,
   useTopologyAgentsQuery,
   useTopologyOverviewQuery,
+  type TopologyOverview,
 } from '../features/teams/api'
 import { reconcileAgentCensus, selectOrphanAgents } from '../features/teams/orphans'
 import { TeamListPane } from '../features/teams/TeamListPane'
@@ -45,7 +46,22 @@ export function TeamsPage() {
   // `Certain` all the way to the chip and the pane so a failed topology request
   // renders as "unavailable" rather than as a reassuring `0 unclaimed`.
   const orphans = mapCertain(certainFromQuery(agentsQuery), selectOrphanAgents)
-  const census = reconcileAgentCensus(overviewQuery.data, orphans)
+
+  // The census compares two independently-fetched snapshots, and TanStack keeps
+  // serving the *previous* payload throughout a background refetch. So while
+  // either query is in flight the two sides can be minutes apart — an overview
+  // that already includes a freshly-spawned child against a fleet list that does
+  // not — and their difference would say nothing about governance. Withholding
+  // the registry side until both are settled removes that class of skew; it
+  // cannot remove all of it, since two responses are never simultaneous, which
+  // is why the notice itself only ever reports the disagreement.
+  const refreshing = overviewQuery.isFetching || agentsQuery.isFetching
+  const census = reconcileAgentCensus(
+    refreshing
+      ? absent<TopologyOverview>('unknown', 'Both sources are being refreshed')
+      : certainFromQuery(overviewQuery),
+    orphans,
+  )
 
   // Derive the effective selection rather than syncing it into state from an
   // effect: default to the first team until the operator picks one, and fall

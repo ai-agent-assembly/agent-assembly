@@ -105,10 +105,10 @@ function topologyFor(teamId: string): TeamTopology {
 
 function setupMocks(overview: TopologyOverview, nodes: AgentNode[] = [], costs: CostSummary | undefined = COSTS) {
   vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
-    mockQuery<TopologyOverview>({ data: overview, isLoading: false, isError: false, refetch: vi.fn() }),
+    mockQuery<TopologyOverview>({ data: overview, isLoading: false, isFetching: false, isError: false, refetch: vi.fn() }),
   )
   vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
-    mockQuery<AgentNode[]>({ data: nodes, isPending: false, isError: false, error: null }),
+    mockQuery<AgentNode[]>({ data: nodes, isPending: false, isFetching: false, isError: false, error: null }),
   )
   vi.spyOn(teamsApi, 'useCostSummaryQuery').mockReturnValue(
     mockQuery<CostSummary>({ data: costs, isLoading: false, isError: false, refetch: vi.fn() }),
@@ -139,10 +139,10 @@ describe('TeamsPage (two-pane)', () => {
     const user = userEvent.setup()
     const refetch = vi.fn()
     vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
-      mockQuery<TopologyOverview>({ data: undefined, isLoading: false, isError: true, refetch }),
+      mockQuery<TopologyOverview>({ data: undefined, isLoading: false, isFetching: false, isError: true, refetch }),
     )
     vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
-      mockQuery<AgentNode[]>({ data: [], isPending: false, isError: false, error: null }),
+      mockQuery<AgentNode[]>({ data: [], isPending: false, isFetching: false, isError: false, error: null }),
     )
     vi.spyOn(teamsApi, 'useCostSummaryQuery').mockReturnValue(mockQuery<CostSummary>({ data: undefined, isLoading: false, isError: false }))
     vi.spyOn(teamsApi, 'useTeamTopologyQuery').mockReturnValue({ data: undefined, notFound: false, isLoading: false, isError: false })
@@ -251,16 +251,70 @@ describe('TeamsPage — every agent is reachable from some grouping (AAASM-5157)
     expect(screen.queryByTestId('orphan-census-mismatch')).not.toBeInTheDocument()
   })
 
-  it('states the discrepancy when the registry counts agents no grouping shows', async () => {
+  it('states the disagreement when the two sources report different totals', async () => {
     const overview = makeOverview(2, ORPHANS)
-    // One more agent in the registry than any grouping on this page can reach.
+    // One more agent in the registry than the groupings on this page display.
     setupMocks({ ...overview, total_agent_count: overview.total_agent_count + 1 }, [...TEAM_MEMBERS, ...ORPHANS])
     await openOrphans()
 
     const notice = screen.getByTestId('orphan-census-mismatch')
     expect(notice).toHaveAttribute('data-truth-state', 'unknown')
-    expect(notice).toHaveTextContent('1 agent unaccounted for')
+    expect(notice).toHaveTextContent('Agent totals disagree by 1')
     expect(notice).toHaveTextContent('5 grouped here vs 6 reported by the registry')
+    // The stronger reading would be false whenever the skew is a mid-change
+    // snapshot, which the page cannot rule out.
+    expect(notice).not.toHaveTextContent('not reachable')
+  })
+
+  it('withholds the comparison while either source is refetching', async () => {
+    // The skew this guards: an overview that has already refreshed to include a
+    // newly-spawned agent, against a fleet list still serving its pre-spawn
+    // payload. TanStack keeps the old data visible throughout a background
+    // refetch, so both sides look present while being minutes apart.
+    const overview = makeOverview(2, ORPHANS)
+    setupMocks({ ...overview, total_agent_count: overview.total_agent_count + 1 }, [...TEAM_MEMBERS, ...ORPHANS])
+    vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
+      mockQuery<AgentNode[]>({
+        data: [...TEAM_MEMBERS, ...ORPHANS],
+        isPending: false,
+        isFetching: true,
+        isError: false,
+        error: null,
+      }),
+    )
+    await openOrphans()
+
+    expect(screen.queryByTestId('orphan-census-mismatch')).not.toBeInTheDocument()
+    // The list itself is unaffected — stale rows are still real agents.
+    expect(screen.getAllByTestId('orphan-agent-row')).toHaveLength(2)
+  })
+
+  it('withholds the comparison while the registry side is refetching', async () => {
+    const overview = makeOverview(2, ORPHANS)
+    setupMocks({ ...overview, total_agent_count: overview.total_agent_count + 1 }, [...TEAM_MEMBERS, ...ORPHANS])
+    vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
+      mockQuery<TopologyOverview>({
+        data: { ...overview, total_agent_count: overview.total_agent_count + 1 },
+        isLoading: false,
+        isFetching: true,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    await openOrphans()
+    expect(screen.queryByTestId('orphan-census-mismatch')).not.toBeInTheDocument()
+  })
+
+  it('reports the group count as unavailable when the team list failed', async () => {
+    setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
+    vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
+      mockQuery<TopologyOverview>({ data: undefined, isLoading: false, isFetching: false, isError: true, refetch: vi.fn() }),
+    )
+    render(<TeamsPage />, { wrapper: Wrapper })
+    await screen.findByTestId('teams-error')
+
+    expect(screen.getByTestId('team-list-count-value')).toHaveAttribute('data-truth-state', 'unavailable')
+    expect(screen.getByTestId('team-list-count')).not.toHaveTextContent('0 group')
   })
 
   it('reports a failed fleet request as unavailable rather than as zero unclaimed', async () => {
@@ -269,6 +323,7 @@ describe('TeamsPage — every agent is reachable from some grouping (AAASM-5157)
       mockQuery<AgentNode[]>({
         data: undefined,
         isPending: false,
+        isFetching: false,
         isError: true,
         error: new Error('Failed to fetch topology agents'),
       }),
@@ -288,7 +343,7 @@ describe('TeamsPage — every agent is reachable from some grouping (AAASM-5157)
   it('keeps the unclaimed section reachable while the team list is failing', async () => {
     setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
     vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
-      mockQuery<TopologyOverview>({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() }),
+      mockQuery<TopologyOverview>({ data: undefined, isLoading: false, isFetching: false, isError: true, refetch: vi.fn() }),
     )
     await openOrphans()
     expect(screen.getAllByTestId('orphan-agent-row')).toHaveLength(2)

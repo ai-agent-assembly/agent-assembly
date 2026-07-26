@@ -83,19 +83,35 @@ describe('TeamOrphanDetail', () => {
     expect(screen.getByTestId('orphan-detail-callout')).toBeInTheDocument()
   })
 
-  it('states an unaccounted-for surplus instead of adjusting a total', () => {
+  it('states the disagreement instead of adjusting a total', () => {
     renderOrphan(known([agent({ id: 'a1' })]), known({ grouped: 4, total: 7, unaccountedFor: 3 }))
     const notice = screen.getByTestId('orphan-census-mismatch')
     expect(notice).toHaveAttribute('data-truth-state', 'unknown')
-    expect(notice).toHaveTextContent('3 agents unaccounted for')
+    expect(notice).toHaveTextContent('Agent totals disagree by 3')
     expect(notice).toHaveTextContent('4 grouped here vs 7 reported by the registry')
   })
 
-  it('states a surplus in the other direction rather than picking a side', () => {
+  it('reports a difference in either direction with the same, weaker claim', () => {
     renderOrphan(known([agent({ id: 'a1' })]), known({ grouped: 9, total: 7, unaccountedFor: -2 }))
     const notice = screen.getByTestId('orphan-census-mismatch')
-    expect(notice).toHaveTextContent('2 agents unaccounted for')
-    expect(notice).toHaveTextContent('the two sources disagree')
+    expect(notice).toHaveTextContent('Agent totals disagree by 2')
+    expect(notice).toHaveTextContent('read from separate responses')
+  })
+
+  it('never claims an agent is unreachable, in either direction', () => {
+    // A spawn landing between the two responses produces this same arithmetic,
+    // so the stronger reading would be false during ordinary product behaviour.
+    for (const unaccountedFor of [3, -3]) {
+      const { unmount } = renderOrphan(
+        known([agent({ id: 'a1' })]),
+        known({ grouped: 4, total: 4 + unaccountedFor, unaccountedFor }),
+      )
+      const notice = screen.getByTestId('orphan-census-mismatch')
+      expect(notice).not.toHaveTextContent('not reachable')
+      expect(notice).not.toHaveTextContent('unaccounted for')
+      expect(notice).toHaveTextContent('this view cannot tell which')
+      unmount()
+    }
   })
 
   it('says nothing when the census reconciles or cannot be taken', () => {

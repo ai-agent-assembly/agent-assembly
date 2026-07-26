@@ -57,36 +57,36 @@ describe('selectOrphanAgents', () => {
 describe('reconcileAgentCensus', () => {
   it('reconciles when the groupings cover the registry tally', () => {
     const census = reconcileAgentCensus(
-      overview([TEAM('platform', 3), TEAM('data', 2)], 6),
+      known(overview([TEAM('platform', 3), TEAM('data', 2)], 6)),
       known([agent({ id: 'o1' })]),
     )
     expect(census).toEqual(known({ grouped: 6, total: 6, unaccountedFor: 0 }))
   })
 
-  it('reports how many agents the groupings cannot reach', () => {
-    const census = reconcileAgentCensus(overview([TEAM('platform', 3)], 5), known([agent({ id: 'o1' })]))
+  it('reports the size of the disagreement', () => {
+    const census = reconcileAgentCensus(known(overview([TEAM('platform', 3)], 5)), known([agent({ id: 'o1' })]))
     expect(isKnown(census) && census.value.unaccountedFor).toBe(1)
   })
 
-  it('reports a negative surplus rather than clamping it away', () => {
-    const census = reconcileAgentCensus(overview([TEAM('platform', 3)], 2), known([agent({ id: 'o1' })]))
+  it('reports a negative difference rather than clamping it away', () => {
+    const census = reconcileAgentCensus(known(overview([TEAM('platform', 3)], 2)), known([agent({ id: 'o1' })]))
     expect(isKnown(census) && census.value.unaccountedFor).toBe(-2)
   })
 
-  it('has no verdict when the overview is missing', () => {
-    expect(reconcileAgentCensus(undefined, known([]))).toEqual(
-      absent('unknown', 'Topology overview unavailable'),
+  it('has no verdict when the registry side is withheld, and keeps its reason', () => {
+    expect(reconcileAgentCensus(absent('unknown', 'Both sources are being refreshed'), known([]))).toEqual(
+      absent('unknown', 'Both sources are being refreshed'),
     )
   })
 
   it('has no verdict when the unclaimed set could not be counted', () => {
-    expect(reconcileAgentCensus(overview([TEAM('platform', 3)], 3), absent('unavailable'))).toEqual(
+    expect(reconcileAgentCensus(known(overview([TEAM('platform', 3)], 3)), absent('unavailable'))).toEqual(
       absent('unknown', 'Unclaimed agents could not be counted'),
     )
   })
 
   it('counts a zero-agent team as a real zero, not a missing value', () => {
-    const census = reconcileAgentCensus(overview([TEAM('empty', 0)], 0), known([]))
+    const census = reconcileAgentCensus(known(overview([TEAM('empty', 0)], 0)), known([]))
     expect(census).toEqual(known({ grouped: 0, total: 0, unaccountedFor: 0 }))
   })
 })

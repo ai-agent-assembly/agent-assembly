@@ -215,9 +215,15 @@ test.describe('AAASM-5157 — no agent is missing from every Teams grouping', ()
       const notice = page.getByTestId('orphan-census-mismatch')
       await expect(notice).toBeVisible()
       await expect(notice).toHaveAttribute('data-truth-state', 'unknown')
-      await expect(notice).toContainText('1 agent unaccounted for')
+      await expect(notice).toContainText('Agent totals disagree by 1')
       await expect(notice).toContainText('4 grouped here vs 5 reported by the registry')
+      // Reports the disagreement only: a spawn landing between the two responses
+      // yields the same arithmetic, so the unreachability reading would be false
+      // during ordinary product behaviour.
+      await expect(notice).not.toContainText('not reachable')
+      await expect(notice).toContainText('this view cannot tell which')
 
+      // Both queries have settled, which is what lets the comparison run at all.
       // The list itself is still complete and still agrees with its own chip.
       await expect(page.getByTestId('orphan-agent-row')).toHaveCount(2)
       expect(await visibleText(page, 'team-list-orphan-count')).toBe('2')

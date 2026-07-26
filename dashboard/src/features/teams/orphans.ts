@@ -56,24 +56,37 @@ export interface AgentCensus {
  * Cross-check the groupings against the registry tally.
  *
  * Both figures come from the caller's own tenant scope with no filters applied,
- * so in a healthy system they are equal by construction. Any difference is a
- * real disagreement the operator must see rather than a number the page gets to
- * pick between — hence a `Certain`: if either side is missing there is no
- * verdict to report, and it says so instead of assuming agreement.
+ * so in a healthy system they are equal. Any difference is a disagreement the
+ * operator must see rather than a number the page gets to pick between — hence a
+ * `Certain`: if either side is missing there is no verdict to report, and it
+ * says so instead of assuming agreement.
+ *
+ * The two sides arrive in **separate responses**, so a difference is evidence
+ * that the sources disagree — never, on its own, evidence that an agent is
+ * unreachable. A delegation spawn landing between the two responses produces the
+ * same arithmetic as a genuinely hidden agent, and nothing available here can
+ * tell them apart. Callers must not narrow that to the stronger claim (see
+ * `TeamsPage` for the freshness gate, and `CensusNotice` for the wording).
+ *
+ * `overview` is a `Certain` rather than a bare value so the caller can withhold
+ * a snapshot it knows to be mid-refresh, and the reason survives to the detail
+ * line instead of being flattened into "unavailable".
  */
 export function reconcileAgentCensus(
-  overview: TopologyOverview | undefined,
+  overview: Certain<TopologyOverview>,
   orphans: Certain<readonly AgentNode[]>,
 ): Certain<AgentCensus> {
-  if (!overview) return absent('unknown', 'Topology overview unavailable')
-  if (isAbsent(orphans)) {
-    return absent('unknown', 'Unclaimed agents could not be counted')
+  if (isAbsent(overview)) {
+    return absent('unknown', overview.detail ?? 'Registry tally unavailable')
   }
-  const inTeams = (overview.teams ?? []).reduce((sum, team) => sum + team.agent_count, 0)
+  if (isAbsent(orphans)) {
+    return absent('unknown', orphans.detail ?? 'Unclaimed agents could not be counted')
+  }
+  const inTeams = (overview.value.teams ?? []).reduce((sum, team) => sum + team.agent_count, 0)
   const grouped = inTeams + orphans.value.length
   return known({
     grouped,
-    total: overview.total_agent_count,
-    unaccountedFor: overview.total_agent_count - grouped,
+    total: overview.value.total_agent_count,
+    unaccountedFor: overview.value.total_agent_count - grouped,
   })
 }

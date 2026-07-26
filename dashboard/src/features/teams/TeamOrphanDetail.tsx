@@ -44,25 +44,28 @@ function OrphanCountChip({ orphans }: Readonly<{ orphans: Certain<readonly Agent
 /**
  * The page's own consistency check, surfaced instead of resolved.
  *
- * Two numbers derived from the same tenant scope disagreeing means agents exist
- * that no grouping on this page can reach. There is no way to tell from the
- * available data *which* agents those are, so the honest output is the
- * discrepancy itself — not a quietly-adjusted total, and not the higher of the
- * two presented as fact.
+ * The wording reports the disagreement and stops there, deliberately. "Some
+ * agents are not reachable" would be a stronger claim than the evidence
+ * supports: the two figures come from separate responses, so a delegation spawn
+ * landing between them produces exactly the same arithmetic as a genuinely
+ * hidden agent. Asserting the hidden-agent reading would put a false sentence on
+ * a governance surface during ordinary product behaviour — the same failure
+ * class this page was fixed to remove. The operator gets both figures and is
+ * told what the view cannot determine.
  */
 function CensusNotice({ census }: Readonly<{ census: Certain<AgentCensus> }>) {
   if (!isKnown(census) || census.value.unaccountedFor === 0) return null
   const { grouped, total, unaccountedFor } = census.value
-  const missing = Math.abs(unaccountedFor)
+  const gap = Math.abs(unaccountedFor)
   return (
     <StatusState
       state="unknown"
       testId="orphan-census-mismatch"
-      title={`${missing} agent${missing === 1 ? '' : 's'} unaccounted for`}
+      title={`Agent totals disagree by ${gap}`}
       description={
-        unaccountedFor > 0
-          ? 'The registry reports more agents than these groupings display, so some agents are not reachable from any team or from this list.'
-          : 'These groupings display more agents than the registry reports; the two sources disagree and neither can be treated as the fleet.'
+        'These groupings and the registry were read from separate responses and report different totals. '
+        + 'That is either a snapshot taken mid-change or agents this page cannot reach; this view cannot tell which. '
+        + 'Reload to see whether it settles.'
       }
       detail={`${grouped} grouped here vs ${total} reported by the registry.`}
     />
