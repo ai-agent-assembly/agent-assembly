@@ -24,6 +24,12 @@ interface PolicyEditorOverlayProps {
    * for the duration of the mutation. Falsy in tests + stub flows.
    */
   isSaving?: boolean
+  /**
+   * Opens the shipped single-request dry-run simulator (ADR-0017 item 6).
+   * Required, not optional: the button must never be rendered with no
+   * production path behind it (AAASM-5142).
+   */
+  onSimulate: () => void
 }
 
 /**
@@ -40,6 +46,7 @@ export function PolicyEditorOverlay({
   onClose,
   onDirtyChange,
   isSaving = false,
+  onSimulate,
 }: Readonly<PolicyEditorOverlayProps>) {
   const {
     draft,
@@ -90,9 +97,8 @@ export function PolicyEditorOverlay({
       toast('Fix validation errors before simulating.', 'error')
       return
     }
-    toast('Simulate impact: coming soon.', 'info')
+    onSimulate()
   }
-
 
   let footerStatus: string
   if (isDirty) {

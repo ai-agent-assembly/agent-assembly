@@ -30,6 +30,7 @@ describe('PolicyEditorOverlay — header', () => {
         initialDraft={makeDraft({ status: 'active' })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -47,6 +48,7 @@ describe('PolicyEditorOverlay — header', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -64,6 +66,7 @@ describe('PolicyEditorOverlay — draft callout', () => {
         initialDraft={makeDraft({ status: 'proposed' })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -76,6 +79,7 @@ describe('PolicyEditorOverlay — draft callout', () => {
         initialDraft={makeDraft({ status: 'active' })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -90,6 +94,7 @@ describe('PolicyEditorOverlay — body', () => {
         initialDraft={makeDraft({ rules: [defaultRule(), defaultRule()] })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -105,6 +110,7 @@ describe('PolicyEditorOverlay — body', () => {
         initialDraft={makeDraft({ rules: [defaultRule()] })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -120,6 +126,7 @@ describe('PolicyEditorOverlay — body', () => {
         initialDraft={makeDraft({ rules: [defaultRule(), defaultRule()] })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -136,6 +143,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -149,6 +157,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -165,6 +174,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={onSave}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -181,6 +191,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={onClose}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -195,6 +206,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -214,6 +226,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={onSave}
         onClose={() => {}}
+        onSimulate={() => {}}
         isSaving
       />,
       { wrapper: Wrapper },
@@ -227,27 +240,32 @@ describe('PolicyEditorOverlay — footer', () => {
 })
 
 describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
-  it('Simulate shows a "coming soon" info toast when validation is clean', async () => {
+  it('Simulate opens the shipped simulator instead of claiming it is unbuilt', async () => {
     const user = userEvent.setup()
+    const onSimulate = vi.fn()
     render(
       <PolicyEditorOverlay
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={onSimulate}
       />,
       { wrapper: Wrapper },
     )
     await user.click(screen.getByTestId('editor-simulate-btn'))
-    expect(await screen.findByText(/Simulate impact: coming soon/)).toBeInTheDocument()
+    expect(onSimulate).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument()
   })
 
-  it('Simulate warns to fix validation errors when they exist', async () => {
+  it('Simulate warns to fix validation errors, and does not open the simulator', async () => {
     const user = userEvent.setup()
+    const onSimulate = vi.fn()
     render(
       <PolicyEditorOverlay
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={onSimulate}
       />,
       { wrapper: Wrapper },
     )
@@ -257,6 +275,7 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
     expect(
       await screen.findByText(/Fix validation errors before simulating/),
     ).toBeInTheDocument()
+    expect(onSimulate).not.toHaveBeenCalled()
   })
 
   it('DSL toggle switches to a read-only Rego preview of the draft', async () => {
@@ -266,6 +285,7 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
         initialDraft={makeDraft({ id: 'pol-preview', name: 'preview-policy' })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -298,6 +318,7 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -317,6 +338,7 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
         })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -338,6 +360,7 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
         onDirtyChange={onDirtyChange}
       />,
       { wrapper: Wrapper },
@@ -355,6 +378,7 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
         onDirtyChange={onDirtyChange}
       />,
       { wrapper: Wrapper },
@@ -371,6 +395,7 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
         initialDraft={makeDraft({ rules: [defaultRule()] })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -379,3 +404,4 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
     expect(screen.getByTestId('editor-rule-1')).toBeInTheDocument()
   })
 })
+
