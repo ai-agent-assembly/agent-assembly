@@ -281,6 +281,32 @@ describe('AgentDetailPage tab navigation', () => {
     expect(screen.getByTestId('agent-detail-tab-overview')).toHaveAttribute('aria-selected', 'true')
   })
 
+  it('draws the posture summary from the capability matrix, not from the agent counters', async () => {
+    // AAASM-5131 wiring guard. This agent reports session_count 10 and
+    // policy_violations_count 4, which the old panel rendered as `Allow 6` /
+    // `Deny 4` — two counters with no arithmetic relationship. The matrix
+    // fixture grants one allow and one deny cell, so those are the only
+    // figures the panel may show, and neither `6` nor `4` may appear.
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    // Re-queried on every attempt: settling swaps the absence marker for a
+    // different element, so a captured node would stay detached at "unknown".
+    await waitFor(() =>
+      expect(screen.getByTestId('agent-posture-allow')).toHaveAttribute(
+        'data-truth-state',
+        'known',
+      ),
+    )
+    expect(screen.getByTestId('agent-posture-allow')).toHaveTextContent('1')
+    expect(screen.getByTestId('agent-posture-deny')).toHaveTextContent('1')
+    expect(screen.getByTestId('agent-detail-posture')).not.toHaveTextContent(/\b(6|4)\b/)
+
+    // The two figures the projection can never emit stay explicitly absent.
+    for (const row of ['agent-posture-narrow', 'agent-posture-approval']) {
+      expect(screen.getByTestId(row)).toHaveAttribute('data-truth-state', 'not-supported')
+    }
+  })
+
   it('renders the agent-scoped capability matrix when the Capability tab is selected', async () => {
     // AAASM-5073: Capability tab replaces InheritedPermissionsPanel with the
     // agent-scoped resource×verb matrix (cascade provenance folded into the
