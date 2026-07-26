@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import { api } from '../../api/client'
 import { isKnown } from '../../lib/truthfulness'
 import {
+  agentStatusVariant,
   toPermissionCascade,
   toRegistryAgent,
   useAgentPermissionsQuery,
@@ -32,14 +33,20 @@ function makeWrapper() {
   }
 }
 
-/** A registry entry with every field the endpoint actually populates. */
+/**
+ * A registry entry with every field the endpoint actually populates.
+ *
+ * `status` is the Rust `Debug` rendering `aa-api` emits
+ * (`format!("{:?}", r.status)`), not a lowercase enum — a fixture using
+ * `'active'` describes a response the gateway cannot produce.
+ */
 function rawAgent(over: Record<string, unknown> = {}) {
   return {
     id: 'a1',
     name: 'orchestrator',
     framework: 'langgraph',
     version: '1.0.0',
-    status: 'active',
+    status: 'Active',
     tool_names: [],
     metadata: {},
     session_count: 0,
@@ -62,20 +69,47 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+describe('agentStatusVariant', () => {
+  // The wire values are `format!("{:?}", aa_gateway::registry::AgentStatus)`.
+  it.each([
+    ['Active', 'Active'],
+    ['Deregistered', 'Deregistered'],
+    ['Suspended(Manual)', 'Suspended'],
+    ['Suspended(BudgetExceeded)', 'Suspended'],
+    ['Suspended(ParentDeregistered)', 'Suspended'],
+    ['Suspended(ParentSuspended { parent_agent_id: [1, 2, 3] })', 'Suspended'],
+  ])('reads the outer variant of %s as %s', (wire, expected) => {
+    expect(agentStatusVariant(wire)).toBe(expected)
+  })
+
+  it('passes through a value it does not recognise', () => {
+    // Classification must never rewrite the status; an unknown variant keeps
+    // its own name so the caller can still render it verbatim.
+    expect(agentStatusVariant('SomethingNew')).toBe('SomethingNew')
+  })
+})
+
 describe('toRegistryAgent', () => {
   it('carries id, name and the registry status verbatim', () => {
     const agent = toRegistryAgent(rawAgent() as never)
     expect(agent.id).toBe('a1')
     expect(agent.name).toBe('orchestrator')
-    expect(agent.status).toEqual({ known: true, value: 'active' })
+    expect(agent.status).toEqual({ known: true, value: 'Active' })
   })
 
-  it('does not coerce an unrecognised status into a known liveness word', () => {
+  it('keeps a suspension payload intact', () => {
+    // `BudgetExceeded` (auto-resumable) and `Manual` (operator-only) are
+    // operationally different, so the payload must survive the projection.
+    const agent = toRegistryAgent(rawAgent({ status: 'Suspended(BudgetExceeded)' }) as never)
+    expect(agent.status).toEqual({ known: true, value: 'Suspended(BudgetExceeded)' })
+  })
+
+  it('does not coerce an unrecognised status into a known variant', () => {
     // The schema types `status` as an open string. Whatever the gateway says is
     // what renders — mapping it onto the nearest known word would assert a
     // liveness state the gateway never reported.
-    const agent = toRegistryAgent(rawAgent({ status: 'quarantined' }) as never)
-    expect(agent.status).toEqual({ known: true, value: 'quarantined' })
+    const agent = toRegistryAgent(rawAgent({ status: 'Quarantined' }) as never)
+    expect(agent.status).toEqual({ known: true, value: 'Quarantined' })
   })
 
   it('reports the owning team as not-supported, never as a team name', () => {
@@ -155,6 +189,23 @@ describe('toPermissionCascade', () => {
     expect(cascade.agentId).toBe('a1')
     expect(cascade.sources.map((s) => s.scope)).toEqual(['global', 'team:platform'])
     expect(cascade.sources[1].deny).toEqual(['secrets.read'])
+  })
+
+  it('preserves the merged verdict the backend already computed', () => {
+    // `effective_permissions` merges the cascade most-restrictive-wins before
+    // it ever reaches the client. Dropping `allow`/`deny` here would leave the
+    // panel re-deriving an answer the endpoint had already given it.
+    const cascade = toPermissionCascade('a1', {
+      allow: [],
+      deny: ['secrets.read'],
+      sources: [
+        { scope: 'global', allow: ['secrets.read'], deny: [] },
+        { scope: 'team:platform', allow: [], deny: ['secrets.read'] },
+      ],
+    } as never)
+
+    expect(cascade.allow).toEqual([])
+    expect(cascade.deny).toEqual(['secrets.read'])
   })
 
   it('keeps an empty cascade empty instead of inventing a scope for it', () => {

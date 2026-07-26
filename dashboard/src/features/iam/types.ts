@@ -98,20 +98,6 @@ export interface GeneratedApiKey {
 }
 
 /**
- * Liveness words the registry is known to emit (`AgentStatus` in the OpenAPI
- * schema). `AgentResponse.status` is declared as a free-form `string`, so this
- * list drives **styling only** — an unrecognised word still renders verbatim
- * rather than being coerced into one of these.
- *
- * The previous vocabulary here was `online` / `offline` / `degraded`, which no
- * endpoint has ever emitted: it existed to type four hardcoded agents
- * (AAASM-5110). A closed union with no producer behind it is an invitation to
- * invent rows that satisfy it.
- */
-export const AGENT_STATUS_TONES = ['active', 'idle', 'suspended'] as const
-export type AgentStatusTone = (typeof AGENT_STATUS_TONES)[number]
-
-/**
  * One row of the Roles tab's agent registry, projected from `AgentResponse`
  * (`GET /api/v1/agents`).
  *

@@ -1,30 +1,37 @@
-import { useAgentsQuery } from './agents'
+import { agentStatusVariant, useAgentsQuery } from './agents'
 import { ignorePromise } from '../../lib/ignorePromise'
 import { StatusState, TruthfulValue } from '../../components/truthfulness'
-import { AGENT_STATUS_TONES, type Agent, type AgentStatusTone } from './types'
+import type { Agent } from './types'
 import './AgentRegistryList.css'
 
-const STATUS_CLASS: Record<AgentStatusTone, string> = {
-  active: 'iam-agent-status--active',
-  idle: 'iam-agent-status--idle',
-  suspended: 'iam-agent-status--suspended',
-}
-
-function isKnownTone(status: string): status is AgentStatusTone {
-  return (AGENT_STATUS_TONES as readonly string[]).includes(status)
+/**
+ * Tone per outer status variant, keyed on what `GET /api/v1/agents` actually
+ * emits — see `agentStatusVariant` for why these are capitalised Rust variant
+ * names and not the lowercase capability-matrix enum.
+ */
+const STATUS_CLASS: Record<string, string> = {
+  Active: 'iam-agent-status--active',
+  Suspended: 'iam-agent-status--suspended',
+  Deregistered: 'iam-agent-status--deregistered',
 }
 
 /**
  * Render the registry's own word for the agent's status.
  *
- * `AgentResponse.status` is an open `string`, so an unrecognised value keeps
- * its text and simply loses the colour. Mapping it onto a nearest-neighbour
- * chip would be the dashboard asserting a liveness state the gateway did not
- * report.
+ * The text is passed through **verbatim**, including a suspension payload such
+ * as `Suspended(Manual)`. Relabelling it would mean inventing a display
+ * vocabulary the backend does not define — and the payload is operationally
+ * load-bearing, since `BudgetExceeded` (auto-resumable) and `Manual`
+ * (operator-only) are different situations. Only the *tone* is derived, from
+ * the outer variant, so a payload cannot cost a suspended agent its colour.
  */
 function StatusChip({ status }: Readonly<{ status: string }>) {
-  const toneClass = isKnownTone(status) ? STATUS_CLASS[status] : 'iam-agent-status--other'
-  return <span className={`iam-agent-status ${toneClass}`}>{status}</span>
+  const toneClass = STATUS_CLASS[agentStatusVariant(status)] ?? 'iam-agent-status--other'
+  return (
+    <span className={`iam-agent-status ${toneClass}`} data-status={status} title={status}>
+      {status}
+    </span>
+  )
 }
 
 function formatLastSeen(value: string): string {
