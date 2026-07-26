@@ -1,7 +1,7 @@
 //! AAASM-1483 / F122 ST-B — Live-gateway HTTP integration tests for
 //! all `/api/v1/topology/*` endpoints.
 //!
-//! 16 tests, team scope `f122-topology-it`. All tests start a fresh
+//! 17 tests, team scope `f122-topology-it`. All tests start a fresh
 //! `TopologyTestEnv` (in-process axum server on a free port), seed state
 //! directly into the shared `Arc<AgentRegistry>`, and drive assertions via
 //! `reqwest` against the running server. No gateway mocking.
@@ -12,7 +12,7 @@
 //!  - Team (2)
 //!  - Lineage (2)
 //!  - Edges (2)
-//!  - Graph (3) — AAASM-5040 `GET /api/v1/topology`
+//!  - Graph (4) — AAASM-5040 / AAASM-5099 `GET /api/v1/topology`
 //!  - Caching (1)
 //!
 //! Lineage ordering convention: `GET /topology/lineage/{id}` returns ancestors
@@ -559,8 +559,10 @@ async fn topology_graph_empty_registry_returns_empty_nodes_and_edges() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn topology_graph_returns_nodes_with_badges_and_delegation_call_edges() {
-    // A → B (delegates_to), B → C (calls), A → C (messages, NOT graphed).
+async fn topology_graph_returns_nodes_with_badges_and_every_edge_kind() {
+    // One edge of each of the six stored kinds between three same-team agents.
+    // AAASM-5099 widened the projection from delegates_to/calls to all six, so
+    // every one of them has to reach the graph.
     const A: [u8; 16] = [0x60; 16];
     const B: [u8; 16] = [0x61; 16];
     const C: [u8; 16] = [0x62; 16];
@@ -582,7 +584,15 @@ async fn topology_graph_returns_nodes_with_badges_and_delegation_call_edges() {
 
     let client = Client::new();
     let base = env.base_url();
-    for (src, tgt, et) in [(A, B, "delegates_to"), (B, C, "calls"), (A, C, "messages")] {
+    let posted: [([u8; 16], [u8; 16], &str); 6] = [
+        (A, B, "delegates_to"),
+        (B, C, "calls"),
+        (A, C, "reads"),
+        (C, A, "writes"),
+        (B, A, "approves"),
+        (C, B, "messages"),
+    ];
+    for (src, tgt, et) in posted {
         let resp = client
             .post(format!("{base}/api/v1/topology/edges"))
             .json(&serde_json::json!({
@@ -622,18 +632,90 @@ async fn topology_graph_returns_nodes_with_badges_and_delegation_call_edges() {
     assert_eq!(node_b["mode"], "shadow", "B's mode badge reflects metadata.mode");
     assert_eq!(node_b["flagged"], true, "B is flagged at the violation threshold");
 
-    // Edges: only delegation (delegates_to) + call (calls); messages excluded.
+    // Edges: every stored kind is graphed (AAASM-5099). The two structural kinds
+    // keep the graph vocabulary AAASM-5040 shipped; the other four pass their
+    // canonical wire string through.
     let edges = body["edges"].as_array().expect("edges array");
-    assert_eq!(edges.len(), 2, "only the delegation + call edges are graphed");
-    let kinds: Vec<&str> = edges.iter().map(|e| e["kind"].as_str().unwrap()).collect();
-    assert!(kinds.contains(&"delegation"), "delegates_to maps to kind=delegation");
-    assert!(kinds.contains(&"call"), "calls maps to kind=call");
-    assert!(!kinds.contains(&"messages"), "messages edges are not graphed");
+    assert_eq!(edges.len(), posted.len(), "every stored edge kind is graphed");
+    let mut kinds: Vec<&str> = edges.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    kinds.sort_unstable();
+    assert_eq!(
+        kinds,
+        ["approves", "call", "delegation", "messages", "reads", "writes"],
+        "delegates_to/calls remap to delegation/call; the rest pass through"
+    );
     for e in edges {
         assert!(
             e["source"].is_string() && e["target"].is_string(),
             "edge has hex endpoints"
         );
+        // All three agents share one team, so nothing crosses a boundary — the
+        // flag must be present and false, never absent.
+        assert_eq!(e["cross_team"], false, "same-team edge reports cross_team=false: {e}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_graph_flags_cross_team_edges_and_carries_the_permission_chain() {
+    // AAASM-5099 — the two fields the widened projection adds beyond the kinds:
+    // a server-computed `cross_team` flag per edge, and the policy-inheritance
+    // chain per node.
+    const HOME: [u8; 16] = [0x80; 16];
+    const AWAY: [u8; 16] = [0x81; 16];
+
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    env.agent_registry
+        .register(root_agent(HOME, Some(TEAM)))
+        .expect("register HOME");
+    env.agent_registry
+        .register(root_agent(AWAY, Some("f122-other-team")))
+        .expect("register AWAY");
+
+    let client = Client::new();
+    let base = env.base_url();
+    client
+        .post(format!("{base}/api/v1/topology/edges"))
+        .json(&serde_json::json!({
+            "source_agent_id": hex(&HOME),
+            "target_agent_id": hex(&AWAY),
+            "edge_type": "approves"
+        }))
+        .send()
+        .await
+        .expect("POST cross-team edge");
+
+    let body: serde_json::Value = reqwest::get(format!("{base}/api/v1/topology"))
+        .await
+        .expect("GET topology graph")
+        .json()
+        .await
+        .expect("graph JSON");
+
+    let edges = body["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), 1, "the one posted edge is graphed");
+    assert_eq!(edges[0]["kind"], "approves");
+    assert_eq!(
+        edges[0]["cross_team"], true,
+        "endpoints on different teams cross a boundary"
+    );
+
+    // Every node carries the chain, and it walks broadest -> narrowest. The
+    // team tier must be present: it is the tier that silently disappears if the
+    // cascade is resolved without an explicit registry lineage (AAASM-5102).
+    for n in body["nodes"].as_array().expect("nodes array") {
+        let chain = n["effective_permissions"]["chain"]
+            .as_array()
+            .expect("node carries the inheritance chain");
+        let tiers: Vec<&str> = chain.iter().map(|t| t["tier"].as_str().unwrap()).collect();
+        assert_eq!(tiers.first(), Some(&"global"), "chain starts at the broadest tier");
+        assert_eq!(tiers.last(), Some(&"agent"), "chain ends at the agent itself");
+        assert!(
+            tiers.contains(&"team"),
+            "a team-scoped agent has a team tier: {tiers:?}"
+        );
+        assert!(n["effective_permissions"]["allow"].is_array());
+        assert!(n["effective_permissions"]["deny"].is_array());
+        assert!(n["effective_permissions"]["allow_restricted"].is_boolean());
     }
 }
 
