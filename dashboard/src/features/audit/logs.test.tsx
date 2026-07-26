@@ -85,28 +85,17 @@ describe('extractVerdict — proto enum wire shape', () => {
     expect(value(extractVerdict(payload).enforced)).toBe('ALLOW')
   })
 
-  it('treats DECISION_UNSPECIFIED (0) as unknown, never as a verdict', () => {
-    const { enforced } = extractVerdict('{"decision":0}')
+  // Every value the page must refuse to turn into a verdict. The case name is a
+  // parameter so a failure still names the specific contract that broke.
+  it.each([
+    ['DECISION_UNSPECIFIED (0), the proto default', '{"decision":0}', 'unknown'],
+    ['a discriminant this build does not know', '{"decision":97}', 'unknown'],
+    ['an unrecognised decision string', '{"decision":"probably-fine"}', 'unknown'],
+    ['no decision field at all', '{"event_id":"x"}', 'not-evaluated'],
+  ])('reports %s as an explicit absence, never a verdict', (_case, payload, state) => {
+    const { enforced } = extractVerdict(payload)
     expect(isKnown(enforced)).toBe(false)
-    expect(enforced).toMatchObject({ state: 'unknown' })
-  })
-
-  it('treats a discriminant this build does not know as unknown', () => {
-    const { enforced } = extractVerdict('{"decision":97}')
-    expect(isKnown(enforced)).toBe(false)
-    expect(enforced).toMatchObject({ state: 'unknown' })
-  })
-
-  it('reports not-evaluated when the entry carries no decision at all', () => {
-    const { enforced } = extractVerdict('{"event_id":"x"}')
-    expect(isKnown(enforced)).toBe(false)
-    expect(enforced).toMatchObject({ state: 'not-evaluated' })
-  })
-
-  it('does not invent a verdict from an unrecognised string', () => {
-    const { enforced } = extractVerdict('{"decision":"probably-fine"}')
-    expect(isKnown(enforced)).toBe(false)
-    expect(enforced).toMatchObject({ state: 'unknown' })
+    expect(enforced).toMatchObject({ state })
   })
 
   it('reports unknown for malformed JSON', () => {
