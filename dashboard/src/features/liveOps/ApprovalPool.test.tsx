@@ -160,9 +160,7 @@ describe('ApprovalPool', () => {
 
     await userEvent.click(screen.getByTestId('approval-approve-btn'))
 
-    await waitFor(() =>
-      expect(screen.getByTestId('approval-pool-empty')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('approval-pool-empty')).toBeInTheDocument()
   })
 
   it('surfaces onError when an inline action rejects and keeps the card', async () => {
