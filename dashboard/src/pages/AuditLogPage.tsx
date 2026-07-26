@@ -476,10 +476,13 @@ export function AuditLogPage() {
           coverage" would put a governance caveat where there is not yet a
           claim. */}
       {data && (
-        <div
+        // <output> carries an implicit `status` role, so this is the same
+        // announcement contract with better assistive-tech support (S6819).
+        // Deliberately not applied to `components/truthfulness/StatusState`,
+        // which is the shared primitive — its markup is AAASM-5173's to change.
+        <output
           className={`audit-coverage${coverage.complete ? '' : ' audit-coverage--partial'}`}
           data-testid="audit-coverage"
-          role="status"
         >
           <span className="audit-coverage__text">{coverageStatement(coverage)}</span>
           {coverage.moreAvailable && (
@@ -493,7 +496,7 @@ export function AuditLogPage() {
               {isFetching ? 'Loading…' : 'Load more'}
             </button>
           )}
-        </div>
+        </output>
       )}
 
       <div
