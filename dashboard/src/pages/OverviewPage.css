@@ -142,7 +142,13 @@
   gap: 12px;
 }
 
+/* Row layout so a ring whose score is absent can carry its state marker beside
+   the label without displacing the sublabel below it. */
 .overview-ring__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
   font-size: 11px;
   font-family: 'JetBrains Mono', monospace;
   text-transform: uppercase;
@@ -325,7 +331,7 @@
   color: var(--ink-4);
 }
 
-.overview-recent__decision {
+.overview-recent__severity {
   font-weight: 600;
 }
 

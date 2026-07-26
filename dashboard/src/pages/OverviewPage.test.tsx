@@ -4,12 +4,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { OverviewPage } from './OverviewPage'
+import { ToastProvider } from '../components/ToastProvider'
 import * as agentsApi from '../features/agents/api'
 import * as approvalsApi from '../features/approvals/api'
 import * as policiesApi from '../features/policies/api'
 import * as alertsApi from '../features/alerts/api'
 import * as overviewApi from '../features/overview/api'
 import type { Agent } from '../features/agents/api'
+import type { AgentEnforcementLookup } from '../features/agents/fleetTypes'
 import type { Approval } from '../features/approvals/api'
 import type { Policy } from '../features/policies/api'
 import type { Alert } from '../features/alerts/types'
@@ -26,6 +28,13 @@ function makeClient() {
 function mockQuery<T>(partial: unknown): UseQueryResult<T, Error> {
   return partial as UseQueryResult<T, Error>
 }
+
+/**
+ * A query that failed. `certainFromQuery` turns this into `unavailable`, which
+ * is the whole point of the AAASM-5115 regression tests below: before this
+ * lane, each of these collapsed to `?? []` and rendered as `0`.
+ */
+const FAILED = { data: undefined, isError: true, error: new Error('503 service_unavailable') }
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -64,49 +73,85 @@ function makeAlert(overrides: Partial<Alert> = {}): Alert {
   }
 }
 
+/** Enforcement counts for the default single-agent fleet. */
+const FULL_ENFORCEMENT: AgentEnforcementLookup = { 'agent-1': { blocked: 4, scrubbed: 12 } }
+
 function setup({
   agents = [makeAgent()],
-  approvals = [],
-  policies = [],
-  alerts = [],
+  approvals = [] as Approval[],
+  policies = [] as Policy[],
+  alerts = [] as Alert[],
   timeline = { window: '24h', bucketSecs: 3600, buckets: [] },
+  enforcement = FULL_ENFORCEMENT,
   agentsState = {},
+  approvalsState = {},
+  policiesState = {},
+  alertsState = {},
+  enforcementState = {},
 }: {
   agents?: Agent[]
   approvals?: Approval[]
   policies?: Policy[]
   alerts?: Alert[]
   timeline?: EnforcementTimeline
+  enforcement?: AgentEnforcementLookup
   agentsState?: Record<string, unknown>
+  approvalsState?: Record<string, unknown>
+  policiesState?: Record<string, unknown>
+  alertsState?: Record<string, unknown>
+  enforcementState?: Record<string, unknown>
 } = {}) {
-  const agentsPartial = { data: agents, isLoading: false, isError: false, ...agentsState }
-  vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(mockQuery<Agent[]>(agentsPartial))
+  vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+    mockQuery<Agent[]>({ data: agents, isLoading: false, isError: false, ...agentsState }),
+  )
+  vi.spyOn(agentsApi, 'useAgentEnforcementQuery').mockReturnValue(
+    mockQuery<AgentEnforcementLookup>({ data: enforcement, ...enforcementState }),
+  )
   vi.spyOn(approvalsApi, 'useApprovalsQuery').mockReturnValue(
-    mockQuery<Approval[]>({ data: approvals }),
+    mockQuery<Approval[]>({ data: approvals, ...approvalsState }),
   )
   vi.spyOn(policiesApi, 'usePoliciesQuery').mockReturnValue(
-    mockQuery<Policy[]>({ data: policies }),
+    mockQuery<Policy[]>({ data: policies, ...policiesState }),
   )
   vi.spyOn(alertsApi, 'useAlertsQuery').mockReturnValue(
-    mockQuery<readonly Alert[]>({ data: alerts }),
+    mockQuery<readonly Alert[]>({ data: alerts, ...alertsState }),
   )
   vi.spyOn(overviewApi, 'useEnforcementTimelineQuery').mockReturnValue(
     mockQuery<EnforcementTimeline>({ data: timeline, isLoading: false, isError: false }),
   )
 }
 
-/** Surfaces the current router path so guard-secondary navigation can be asserted. */
+/**
+ * The text an operator actually sees, with the screen-reader sentence removed.
+ *
+ * Asserting on raw `textContent` is not good enough here: an `unavailable`
+ * marker announces "…the request for this value failed. 503 service_unavailable",
+ * so a naive `not.toHaveTextContent('0')` passes or fails on a digit inside the
+ * announcement rather than on the value being rendered.
+ */
+function visibleText(el: HTMLElement): string {
+  const clone = el.cloneNode(true) as HTMLElement
+  clone.querySelectorAll('.truth-sr-only').forEach((n) => n.remove())
+  return clone.textContent?.trim() ?? ''
+}
+
+/** Surfaces the current router path so drill-down navigation can be asserted. */
 function LocationProbe() {
   return <div data-testid="location-probe">{useLocation().pathname}</div>
 }
 
 function renderPage() {
+  // ToastProvider is part of the real app shell (main.tsx) and the page now
+  // depends on it: the error state's secondary action reports that no status
+  // page exists rather than opening a dead host.
   return render(
     <QueryClientProvider client={makeClient()}>
-      <MemoryRouter initialEntries={['/overview']}>
-        <OverviewPage />
-        <LocationProbe />
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter initialEntries={['/overview']}>
+          <OverviewPage />
+          <LocationProbe />
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>,
   )
 }
@@ -132,25 +177,37 @@ describe('OverviewPage', () => {
     expect(screen.getByTestId('empty-state-overview')).toBeInTheDocument()
   })
 
-  it('error state — Retry refetches the agents query and the secondary action opens the audit log', () => {
+  it('error state — Retry refetches and the secondary opens no dead status link', () => {
     const refetch = vi.fn().mockResolvedValue(undefined)
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
     setup({ agentsState: { isError: true, data: undefined, refetch } })
     renderPage()
     const error = within(screen.getByTestId('error-state-generic'))
     fireEvent.click(error.getByRole('button', { name: /Retry/ }))
     expect(refetch).toHaveBeenCalledTimes(1)
+
+    // status.agent-assembly.com answers HTTP 530 and ADR 0007 marks it "Future
+    // (placeholder)", so the outage-time button opens nothing and says why.
     fireEvent.click(error.getByRole('button', { name: /Open status page/ }))
-    expect(screen.getByTestId('location-probe')).toHaveTextContent('/audit')
+    expect(open).not.toHaveBeenCalled()
+    expect(screen.getByTestId('location-probe')).not.toHaveTextContent('/audit')
+    expect(screen.getByTestId('toast')).toHaveTextContent(/No status page is available/)
   })
 
-  it('empty state — the CTA opens onboarding and the secondary opens the fleet', () => {
+  it('empty state — the CTA opens onboarding and the secondary opens the verified docs', () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
     setup({ agents: [] })
     renderPage()
     const empty = within(screen.getByTestId('empty-state-overview'))
     fireEvent.click(empty.getByRole('button', { name: /Start setup wizard/ }))
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/onboarding')
     fireEvent.click(empty.getByRole('button', { name: /View install docs/ }))
-    expect(screen.getByTestId('location-probe')).toHaveTextContent('/agents')
+    // Probed: /core/ → 200, /quickstart → 404.
+    expect(open).toHaveBeenCalledWith(
+      'https://docs.agent-assembly.com/core/',
+      '_blank',
+      'noopener,noreferrer',
+    )
   })
 
   it('renders the headline sections with live-derived KPIs', () => {
@@ -167,32 +224,223 @@ describe('OverviewPage', () => {
     expect(screen.getByTestId('overview-top-issue')).toBeInTheDocument()
     expect(screen.getByTestId('overview-snapshot')).toBeInTheDocument()
 
-    // Three posture rings.
+    // Four posture rings.
     expect(screen.getByText('L1 · identity')).toBeInTheDocument()
     expect(screen.getByText('L2 · capability')).toBeInTheDocument()
     expect(screen.getByText('L3 · scrub')).toBeInTheDocument()
+    expect(screen.getByText('overall')).toBeInTheDocument()
 
     // Pending approvals KPI reflects the mocked queue length.
-    expect(screen.getByTestId('overview-approvals')).toHaveTextContent('2')
+    expect(screen.getByTestId('overview-approval-count')).toHaveTextContent('2')
 
     // Top issue surfaces the firing alert's rule name.
     expect(screen.getByText('shell.exec blocked')).toBeInTheDocument()
   })
 
-  it('shows a clean posture message when nothing is firing', () => {
+  // ── AAASM-5113 — the fabricated L3 posture score ────────────────────────
+  it('renders the scrub ring as not-evaluated, never a score', () => {
+    setup({ agents: [makeAgent()] })
+    renderPage()
+    const ring = screen.getByTestId('overview-ring-L3 · scrub')
+    expect(ring).toHaveAttribute('data-truth-state', 'not-evaluated')
+    expect(ring).toHaveTextContent('—')
+    expect(ring).not.toHaveTextContent('91')
+    // The reason is legible to the operator, not just to the type system.
+    expect(screen.getByTestId('overview-ring-state-L3 · scrub')).toHaveTextContent('Not evaluated')
+  })
+
+  it('describes the overall ring as an unweighted mean of the layers it actually averages', () => {
+    setup({ agents: [makeAgent()] })
+    renderPage()
+    const ring = screen.getByTestId('overview-ring-overall')
+    expect(ring).toHaveAttribute('data-truth-state', 'known')
+    expect(ring).toHaveTextContent('unweighted mean · L1 and L2')
+    expect(screen.queryByText('weighted across all layers')).not.toBeInTheDocument()
+  })
+
+  it('renders the L3 "leaked" tile as not-evaluated, never a green zero', () => {
+    setup({ agents: [makeAgent()] })
+    renderPage()
+    const leaked = screen.getByTestId('overview-leaked')
+    expect(leaked).toHaveAttribute('data-truth-state', 'not-evaluated')
+    expect(visibleText(leaked)).toBe('—')
+  })
+
+  // ── AAASM-5114 — blocked/scrubbed collapsing to 0 ───────────────────────
+  it('sums blocked and scrubbed when every agent reported a count', () => {
+    setup({ agents: [makeAgent()], enforcement: FULL_ENFORCEMENT })
+    renderPage()
+    expect(screen.getByTestId('overview-blocked')).toHaveTextContent('4')
+    expect(screen.getByTestId('overview-stripped')).toHaveTextContent('12')
+    expect(screen.getByTestId('overview-scrubbed')).toHaveTextContent('12')
+  })
+
+  it('renders blocked and scrubbed as unknown when an agent did not report — never 0', () => {
+    // Two agents, counts for only one: the same condition Fleet renders as `—`.
+    setup({
+      agents: [makeAgent(), makeAgent({ id: 'a2', name: 'sales-bot' })],
+      enforcement: FULL_ENFORCEMENT,
+    })
+    renderPage()
+    for (const id of ['overview-blocked', 'overview-stripped', 'overview-scrubbed']) {
+      const tile = screen.getByTestId(id)
+      expect(tile).toHaveAttribute('data-truth-state', 'unknown')
+      expect(visibleText(tile)).toBe('—')
+    }
+  })
+
+  it('renders blocked and scrubbed as unavailable when the enforcement query fails', () => {
+    setup({ agents: [makeAgent()], enforcementState: FAILED })
+    renderPage()
+    expect(screen.getByTestId('overview-blocked')).toHaveAttribute(
+      'data-truth-state',
+      'unavailable',
+    )
+    expect(screen.getByTestId('overview-stripped')).toHaveTextContent('—')
+  })
+
+  // ── AAASM-5115 — a failed query is not a clean bill of health ───────────
+  it('renders the approvals queue as unavailable — never 0, never "queue clear"', () => {
+    setup({ agents: [makeAgent()], approvalsState: FAILED })
+    renderPage()
+    const approvals = screen.getByTestId('overview-approvals')
+    const count = screen.getByTestId('overview-approval-count')
+    expect(count).toHaveAttribute('data-truth-state', 'unavailable')
+    expect(visibleText(count)).toBe('—')
+    expect(approvals).not.toHaveTextContent('queue clear')
+    expect(approvals).toHaveTextContent('queue unavailable')
+    // The failure reason reaches assistive tech rather than reading as silence.
+    expect(approvals).toHaveTextContent(/the request for this value failed/i)
+  })
+
+  it('still reports a genuinely empty queue as clear', () => {
+    setup({ agents: [makeAgent()], approvals: [] })
+    renderPage()
+    const approvals = screen.getByTestId('overview-approvals')
+    expect(screen.getByTestId('overview-approval-count')).toHaveTextContent('0')
+    expect(approvals).toHaveTextContent('queue clear')
+  })
+
+  it('reports awaiting-decision copy when approvals are pending', () => {
+    setup({
+      agents: [makeAgent()],
+      approvals: [{ id: 'ap-1' }, { id: 'ap-2' }, { id: 'ap-3' }] as unknown as Approval[],
+    })
+    renderPage()
+    const approvals = screen.getByTestId('overview-approvals')
+    expect(screen.getByTestId('overview-approval-count')).toHaveTextContent('3')
+    expect(approvals).toHaveTextContent('awaiting operator decision')
+  })
+
+  it('renders the active-policy count as unavailable when the policies query fails', () => {
+    setup({ agents: [makeAgent()], policiesState: FAILED })
+    renderPage()
+    const count = screen.getByTestId('overview-policy-count')
+    expect(count).toHaveAttribute('data-truth-state', 'unavailable')
+    expect(visibleText(count)).toBe('—')
+  })
+
+  it('renders the firing-alert count and panels as unavailable when the alerts query fails', () => {
+    setup({ agents: [makeAgent()], alertsState: FAILED })
+    renderPage()
+    expect(screen.getByTestId('overview-firing-count')).toHaveTextContent('—')
+    expect(screen.getByTestId('overview-firing-stat')).toHaveAttribute(
+      'data-truth-state',
+      'unavailable',
+    )
+    // A failed alerts query must not read as "nothing is firing".
+    const issue = screen.getByTestId('overview-top-issue')
+    expect(issue).not.toHaveTextContent('No critical issues')
+    expect(screen.getByTestId('overview-top-issue-absent')).toHaveAttribute(
+      'data-truth-state',
+      'unavailable',
+    )
+    const recent = screen.getByTestId('overview-recent')
+    expect(recent).not.toHaveTextContent('No alerts are firing in this window.')
+    expect(screen.getByTestId('overview-recent-absent')).toBeInTheDocument()
+  })
+
+  it('shows a clean posture message only when the alerts query genuinely succeeded', () => {
     setup({ agents: [makeAgent()], alerts: [] })
     renderPage()
     expect(screen.getByText('No critical issues')).toBeInTheDocument()
+    expect(screen.queryByTestId('overview-top-issue-absent')).not.toBeInTheDocument()
   })
 
-  it('toggles the time window selection', () => {
-    setup()
+  // ── AAASM-5116 — fabricated enforcement verdicts ────────────────────────
+  it('lists recent alerts by their own severity, not as enforcement verdicts', () => {
+    setup({
+      agents: [makeAgent()],
+      alerts: [
+        makeAlert({ id: 'c', severity: 'CRITICAL', ruleName: 'shell.exec', agentId: 'bot-x' }),
+        makeAlert({ id: 'h', severity: 'HIGH', ruleName: 'net.egress', agentId: null }),
+        makeAlert({ id: 'm', severity: 'MEDIUM', ruleName: 'budget breach', agentId: 'bot-y' }),
+      ],
+    })
     renderPage()
-    const sevenDay = screen.getByTestId('overview-window-7d')
-    fireEvent.click(sevenDay)
-    expect(sevenDay.className).toContain('is-active')
+    const recent = screen.getByTestId('overview-recent')
+
+    // The panel says what it is, and reports the alerts' real severities.
+    expect(recent).toHaveTextContent('recent alerts')
+    expect(recent).toHaveTextContent('critical')
+    expect(recent).toHaveTextContent('high')
+    expect(recent).toHaveTextContent('medium')
+
+    // No severity is dressed up as an enforcement decision that never occurred.
+    expect(recent).not.toHaveTextContent('deny')
+    expect(recent).not.toHaveTextContent('narrow')
+    expect(recent).not.toHaveTextContent('scrub')
+
+    expect(recent).toHaveTextContent('bot-x')
+    expect(recent).toHaveTextContent('fleet')
   })
 
+  it('carries no severity-to-verdict mapping in the page source', () => {
+    // Guards the whole class of defect, not just the three strings above.
+    // Comments are stripped first: the module documents the removed helpers by
+    // name so the next reader knows why the panel is titled "recent alerts".
+    const code = overviewTsx.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(code).not.toMatch(/alertDecision/)
+    expect(code).not.toMatch(/decisionTone/)
+  })
+
+  it('shows the empty recent-alerts note when nothing is firing', () => {
+    setup({ agents: [makeAgent()], alerts: [makeAlert({ status: 'RESOLVED' })] })
+    renderPage()
+    expect(screen.getByText('No alerts are firing in this window.')).toBeInTheDocument()
+  })
+
+  // ── hero copy ──────────────────────────────────────────────────────────
+  it('does not claim all-layer health from the flagged count alone', () => {
+    setup({ agents: [makeAgent()] })
+    renderPage()
+    expect(screen.getByText('No over-permissioned agents across the fleet.')).toBeInTheDocument()
+    expect(screen.queryByText(/healthy across all layers/i)).not.toBeInTheDocument()
+  })
+
+  it('renders the singular over-permissioned hero message for one flagged agent', () => {
+    setup({
+      agents: [
+        makeAgent({ id: 'a1', name: 'ok-bot' }),
+        makeAgent({ id: 'a2', name: 'bad-bot', policy_violations_count: 99 }),
+      ],
+    })
+    renderPage()
+    expect(screen.getByText(/1 agent over-permissioned\./)).toBeInTheDocument()
+  })
+
+  it('pluralises the over-permissioned hero message for multiple flagged agents', () => {
+    setup({
+      agents: [
+        makeAgent({ id: 'a1', name: 'bad-1', policy_violations_count: 60 }),
+        makeAgent({ id: 'a2', name: 'bad-2', policy_violations_count: 70 }),
+      ],
+    })
+    renderPage()
+    expect(screen.getByText(/2 agents over-permissioned\./)).toBeInTheDocument()
+  })
+
+  // ── window toggle ──────────────────────────────────────────────────────
   it('defaults the window to 24h and reflects it in the subtitle', () => {
     setup()
     renderPage()
@@ -218,36 +466,6 @@ describe('OverviewPage', () => {
     },
   )
 
-  it('renders the singular over-permissioned hero message for one flagged agent', () => {
-    setup({
-      agents: [
-        makeAgent({ id: 'a1', name: 'ok-bot' }),
-        makeAgent({ id: 'a2', name: 'bad-bot', policy_violations_count: 99 }),
-      ],
-    })
-    renderPage()
-    expect(screen.getByText(/1 agent over-permissioned\./)).toBeInTheDocument()
-  })
-
-  it('pluralises the over-permissioned hero message for multiple flagged agents', () => {
-    setup({
-      agents: [
-        makeAgent({ id: 'a1', name: 'bad-1', policy_violations_count: 60 }),
-        makeAgent({ id: 'a2', name: 'bad-2', policy_violations_count: 70 }),
-      ],
-    })
-    renderPage()
-    expect(screen.getByText(/2 agents over-permissioned\./)).toBeInTheDocument()
-  })
-
-  it('shows the healthy hero message when no agent is flagged', () => {
-    setup({ agents: [makeAgent()] })
-    renderPage()
-    expect(
-      screen.getByText('Enforcement is healthy across all layers.'),
-    ).toBeInTheDocument()
-  })
-
   it('derives the fleet snapshot counts from agent modes and flags', () => {
     setup({
       agents: [
@@ -264,65 +482,13 @@ describe('OverviewPage', () => {
     })
     renderPage()
     const snapshot = screen.getByTestId('overview-snapshot')
-    // total agents heading.
     expect(snapshot).toHaveTextContent('4 agents')
-    // 3 enforcing, 1 shadow, 1 flagged surfaced as snapshot tiles.
     expect(snapshot.querySelector('.overview-snapshot__num.is-ok')).toHaveTextContent('3')
     expect(snapshot.querySelector('.overview-snapshot__num.is-warn')).toHaveTextContent('1')
     expect(snapshot.querySelector('.overview-snapshot__num.is-danger')).toHaveTextContent('1')
   })
 
-  it('renders recent decisions mapped from firing-alert severities', () => {
-    setup({
-      agents: [makeAgent()],
-      alerts: [
-        makeAlert({ id: 'c', severity: 'CRITICAL', ruleName: 'shell.exec', agentId: 'bot-x' }),
-        makeAlert({ id: 'h', severity: 'HIGH', ruleName: 'net.egress', agentId: null }),
-        makeAlert({ id: 'm', severity: 'MEDIUM', ruleName: 'fs.read', agentId: 'bot-y' }),
-      ],
-    })
-    renderPage()
-    const recent = screen.getByTestId('overview-recent')
-    // CRITICAL → deny, HIGH → narrow, MEDIUM (and below) → scrub.
-    expect(recent).toHaveTextContent('deny')
-    expect(recent).toHaveTextContent('narrow')
-    expect(recent).toHaveTextContent('scrub')
-    // agentId is rendered when present, "fleet" when null.
-    expect(recent).toHaveTextContent('bot-x')
-    expect(recent).toHaveTextContent('fleet')
-  })
-
-  it('shows the empty recent-decisions note when nothing is firing', () => {
-    setup({
-      agents: [makeAgent()],
-      alerts: [makeAlert({ status: 'RESOLVED' })],
-    })
-    renderPage()
-    expect(
-      screen.getByText('No enforcement events in this window.'),
-    ).toBeInTheDocument()
-  })
-
-  it('reports a clear approvals queue when there are no pending approvals', () => {
-    setup({ agents: [makeAgent()], approvals: [] })
-    renderPage()
-    const approvals = screen.getByTestId('overview-approvals')
-    expect(approvals).toHaveTextContent('0')
-    expect(approvals).toHaveTextContent('queue clear')
-  })
-
-  it('reports awaiting-decision copy when approvals are pending', () => {
-    setup({
-      agents: [makeAgent()],
-      approvals: [{ id: 'ap-1' }, { id: 'ap-2' }, { id: 'ap-3' }] as unknown as Approval[],
-    })
-    renderPage()
-    const approvals = screen.getByTestId('overview-approvals')
-    expect(approvals).toHaveTextContent('3')
-    expect(approvals).toHaveTextContent('awaiting operator decision')
-  })
-
-  it('surfaces a fleet-wide top issue and active-policy count for a null agentId alert', () => {
+  it('surfaces a fleet-wide top issue for a null agentId alert', () => {
     setup({
       agents: [makeAgent()],
       policies: [{ name: 'p-1' }, { name: 'p-2' }] as unknown as Policy[],
@@ -332,9 +498,7 @@ describe('OverviewPage', () => {
     const issue = screen.getByTestId('overview-top-issue')
     expect(issue).toHaveTextContent('budget breach')
     expect(issue).toHaveTextContent('fleet-wide')
-    // Active policies KPI reflects the mocked policy set.
-    expect(screen.getByText('active policies')).toBeInTheDocument()
-    expect(screen.getByText('2')).toBeInTheDocument()
+    expect(screen.getByTestId('overview-policy-count')).toHaveTextContent('2')
   })
 
   // Theme safety: the page must rely on CSS theme tokens so it inverts under
@@ -362,7 +526,9 @@ describe('OverviewPage', () => {
     renderPage()
     const probe = screen.getByTestId('location-probe')
 
-    fireEvent.click(within(screen.getByTestId('overview-hero')).getByRole('button', { name: /open Capability/ }))
+    fireEvent.click(
+      within(screen.getByTestId('overview-hero')).getByRole('button', { name: /open Capability/ }),
+    )
     expect(probe).toHaveTextContent('/capability')
 
     const issue = within(screen.getByTestId('overview-top-issue'))
@@ -384,9 +550,13 @@ describe('OverviewPage', () => {
     fireEvent.click(screen.getByTestId('overview-layer-Scrub'))
     expect(probe).toHaveTextContent('/scrub')
 
-    fireEvent.click(within(screen.getByTestId('overview-recent')).getByRole('button', { name: /tail/ }))
+    fireEvent.click(
+      within(screen.getByTestId('overview-recent')).getByRole('button', { name: /tail/ }),
+    )
     expect(probe).toHaveTextContent('/live')
-    fireEvent.click(within(screen.getByTestId('overview-snapshot')).getByRole('button', { name: /open Fleet/ }))
+    fireEvent.click(
+      within(screen.getByTestId('overview-snapshot')).getByRole('button', { name: /open Fleet/ }),
+    )
     expect(probe).toHaveTextContent('/agents')
   })
 })

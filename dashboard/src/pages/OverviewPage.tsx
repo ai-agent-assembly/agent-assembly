@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAgentsQuery, useAgentEnforcementQuery } from '../features/agents/api'
 import { toFleetAgent } from '../features/agents/fleetTypes'
@@ -8,7 +8,18 @@ import { useAlertsQuery } from '../features/alerts/api'
 import type { Alert, AlertFilters } from '../features/alerts/types'
 import { useEnforcementTimelineQuery } from '../features/overview/api'
 import { EnforcementTimeline } from '../components/overview/EnforcementTimeline'
-import { deriveOverviewKpis } from './OverviewPage.kpis'
+import { useToast } from '../components/Toast'
+import {
+  NO_DATA,
+  TRUTH_STATE_META,
+  absent,
+  certainFromQuery,
+  isKnown,
+  mapCertain,
+  type Certain,
+} from '../lib/truthfulness'
+import { AbsenceMarker, StatusState, TruthfulValue } from '../components/truthfulness'
+import { deriveOverviewKpis, pickTopAlert } from './OverviewPage.kpis'
 import { OverviewGuard } from './OverviewPage.guard'
 import './OverviewPage.css'
 
@@ -31,33 +42,62 @@ const ALL_ALERTS: AlertFilters = {
 }
 
 /**
+ * Why the L3 "leaked" tile has no number.
+ *
+ * Nothing in the product computes whether a secret reached an external
+ * endpoint. The tile shipped as a hardcoded `0` in an `ok` tone — an
+ * unmeasured all-clear on the single most consequential claim the page makes
+ * (AAASM-5113).
+ *
+ * `not-evaluated` rather than `not-supported`: the latter tells the operator
+ * the backend can never answer and to stop looking, which is a stronger claim
+ * than this page can make. Nothing has evaluated it — that may yet change.
+ */
+const NO_LEAK_METRIC: Certain<number> = absent(
+  'not-evaluated',
+  'No leak evaluation has been performed for this window',
+)
+
+/**
  * A single SVG health ring. `color` is passed as a theme-token string
  * (e.g. `var(--ok)`) so the ring inverts with the active theme — never a
  * literal colour. The track uses `var(--line)`.
+ *
+ * `score` is `Certain` rather than `number`: a ring is the most authoritative-
+ * looking element on the page, so it must be impossible to render one from a
+ * value the dashboard cannot compute. An absent score draws an empty arc, puts
+ * `—` where the numeral goes, and states the reason next to the ring's label.
  */
 function HealthRing({
   score,
   label,
   sublabel,
   color,
-}: Readonly<{ score: number; label: string; sublabel: string; color: string }>) {
+}: Readonly<{ score: Certain<number>; label: string; sublabel: ReactNode; color: string }>) {
   const circumference = 2 * Math.PI * 30
-  const dash = (Math.max(0, Math.min(100, score)) / 100) * circumference
+  const value = isKnown(score) ? score.value : 0
+  const dash = (Math.max(0, Math.min(100, value)) / 100) * circumference
   return (
-    <div className="overview-ring" data-testid={`overview-ring-${label}`}>
+    <div
+      className="overview-ring"
+      data-testid={`overview-ring-${label}`}
+      data-truth-state={isKnown(score) ? 'known' : score.state}
+    >
       <svg width="76" height="76" viewBox="0 0 76 76" aria-hidden="true">
         <circle cx="38" cy="38" r="30" fill="none" stroke="var(--line)" strokeWidth="6" />
-        <circle
-          cx="38"
-          cy="38"
-          r="30"
-          fill="none"
-          stroke={color}
-          strokeWidth="6"
-          strokeDasharray={`${dash} ${circumference}`}
-          strokeLinecap="round"
-          transform="rotate(-90 38 38)"
-        />
+        {isKnown(score) && (
+          <circle
+            cx="38"
+            cy="38"
+            r="30"
+            fill="none"
+            stroke={color}
+            strokeWidth="6"
+            strokeDasharray={`${dash} ${circumference}`}
+            strokeLinecap="round"
+            transform="rotate(-90 38 38)"
+          />
+        )}
         <text
           x="38"
           y="42"
@@ -67,11 +107,21 @@ function HealthRing({
           fontWeight="700"
           fill="var(--ink)"
         >
-          {score}
+          {isKnown(score) ? score.value : NO_DATA}
         </text>
       </svg>
       <div>
-        <div className="overview-ring__label">{label}</div>
+        <div className="overview-ring__label">
+          <span>{label}</span>
+          {!isKnown(score) && (
+            <AbsenceMarker
+              state={score.state}
+              detail={score.detail}
+              showLabel
+              testId={`overview-ring-state-${label}`}
+            />
+          )}
+        </div>
         <div className="overview-ring__sub">{sublabel}</div>
       </div>
     </div>
@@ -80,7 +130,8 @@ function HealthRing({
 
 interface LayerStat {
   readonly label: string
-  readonly value: number | string
+  /** A `TruthfulValue` wherever the figure can be absent — never a bare `0`. */
+  readonly value: ReactNode
   readonly tone?: 'ok' | 'warn' | 'danger' | 'info' | 'scrub'
 }
 
@@ -90,6 +141,22 @@ const TONE_CLASS: Record<NonNullable<LayerStat['tone']>, string> = {
   danger: 'is-danger',
   info: 'is-info',
   scrub: 'is-scrub',
+}
+
+/**
+ * Tone for a count that may be absent.
+ *
+ * An absence carries no tone: `TruthfulValue` renders its own state-toned `—`,
+ * and painting an unknown figure `ok` green is the fabrication this page is
+ * being cleaned of.
+ */
+function countTone(
+  count: Certain<number>,
+  whenPositive: LayerStat['tone'],
+  whenZero: LayerStat['tone'],
+): LayerStat['tone'] {
+  if (!isKnown(count)) return undefined
+  return count.value > 0 ? whenPositive : whenZero
 }
 
 function LayerCard({
@@ -142,26 +209,18 @@ function LayerCard({
   )
 }
 
-function decisionTone(decision: string): string {
-  switch (decision) {
-    case 'deny':
-      return 'var(--danger)'
-    case 'narrow':
-      return 'var(--warn)'
-    case 'scrub':
-      return 'var(--scrub)'
-    case 'approval':
-      return 'var(--info)'
-    default:
-      return 'var(--ok)'
-  }
-}
-
-/** Map an alert severity onto the Overview "decision" vocabulary. */
-function alertDecision(severity: Alert['severity']): string {
-  if (severity === 'CRITICAL') return 'deny'
-  if (severity === 'HIGH') return 'narrow'
-  return 'scrub'
+/**
+ * Colour for an alert's own severity.
+ *
+ * This replaces `decisionTone`, which coloured a *fabricated* enforcement
+ * verdict. Severity is a real field the alerts API emits, so tinting it asserts
+ * nothing the data does not already say (AAASM-5116).
+ */
+const SEVERITY_TONE: Record<Alert['severity'], string> = {
+  CRITICAL: 'var(--danger)',
+  HIGH: 'var(--warn)',
+  MEDIUM: 'var(--info)',
+  LOW: 'var(--ink-4)',
 }
 
 function shortTime(iso: string): string {
@@ -177,14 +236,27 @@ function shortTime(iso: string): string {
   })
 }
 
-/** One row in the "recent decisions" list. */
-function RecentDecisionRow({ alert }: Readonly<{ alert: Alert }>) {
-  const decision = alertDecision(alert.severity)
+/**
+ * One row in the "recent alerts" list.
+ *
+ * This panel was titled "recent decisions" and rendered
+ * `alertDecision(severity)` — CRITICAL as `deny`, HIGH as `narrow`, everything
+ * else as `scrub` — in the enforcement colour vocabulary, so a MEDIUM budget
+ * alert was shown to the operator as a `scrub` enforcement decision that never
+ * happened (AAASM-5116). Nothing in `design/v2/hi-fi/overview.jsx` or any ADR
+ * ratifies that mapping; the mock's list is of real decision records.
+ *
+ * The honest source for real verdicts is the audit log, whose wire contract
+ * AAASM-5117 is fixing in parallel. Rather than invent a second decision
+ * vocabulary ahead of that lane, this panel now reports what it actually has:
+ * alerts, labelled as alerts, with their own severity.
+ */
+function RecentAlertRow({ alert }: Readonly<{ alert: Alert }>) {
   return (
     <div className="overview-recent__row">
       <span className="overview-recent__time">{shortTime(alert.firstFiredAt)}</span>
-      <span className="overview-recent__decision" style={{ color: decisionTone(decision) }}>
-        {decision}
+      <span className="overview-recent__severity" style={{ color: SEVERITY_TONE[alert.severity] }}>
+        {alert.severity.toLowerCase()}
       </span>
       <span className="overview-recent__target">
         {alert.agentId ?? 'fleet'} <span>· {alert.ruleName}</span>
@@ -193,8 +265,15 @@ function RecentDecisionRow({ alert }: Readonly<{ alert: Alert }>) {
   )
 }
 
+/** Sub-line under the approvals count; never affirms a clear queue it cannot see. */
+function queueNote(count: Certain<number>): string {
+  if (!isKnown(count)) return `queue ${TRUTH_STATE_META[count.state].label.toLowerCase()}`
+  return count.value === 0 ? 'queue clear' : 'awaiting operator decision'
+}
+
 export function OverviewPage() {
   const navigate = useNavigate()
+  const { toast } = useToast()
   const [windowSel, setWindowSel] = useState<Window>('24h')
 
   const agentsQuery = useAgentsQuery()
@@ -218,12 +297,18 @@ export function OverviewPage() {
     isEmpty: fleet.length === 0,
     navigate,
     refetch: agentsQuery.refetch,
+    toast,
   })
   if (guard) return guard
 
-  const approvals = approvalsQuery.data ?? []
-  const policies = policiesQuery.data ?? []
-  const alerts = alertsQuery.data ?? []
+  // Only the agents query is gated by the guard above. Every other query keeps
+  // its own provenance instead of collapsing to `?? []`, which turned a 503
+  // into "0" and, for approvals, into the affirmative "queue clear"
+  // (AAASM-5115).
+  const approvals = certainFromQuery(approvalsQuery)
+  const policies = certainFromQuery(policiesQuery)
+  const alerts = certainFromQuery(alertsQuery)
+  const enforcement = certainFromQuery(enforcementQuery)
 
   const {
     total,
@@ -233,14 +318,17 @@ export function OverviewPage() {
     blocked,
     scrubbed,
     firingAlerts,
-    topAlert,
     identityScore,
     capabilityScore,
     scrubScore,
     overallScore,
-  } = deriveOverviewKpis(fleet, alerts)
+  } = deriveOverviewKpis(fleet, alerts, enforcement)
 
-  const recent = firingAlerts.slice(0, 5)
+  const approvalCount = mapCertain(approvals, (a) => a.length)
+  const policyCount = mapCertain(policies, (p) => p.length)
+  const firingCount = mapCertain(firingAlerts, (a) => a.length)
+  const topAlert = isKnown(firingAlerts) ? pickTopAlert(firingAlerts.value) : undefined
+  const recent = isKnown(firingAlerts) ? firingAlerts.value.slice(0, 5) : []
 
   return (
     <main className="overview-page" data-testid="overview-page">
@@ -278,16 +366,17 @@ export function OverviewPage() {
           <div className="overview-hero__head">
             <div>
               <div className="overview-card__label">posture · three-layer defense</div>
+              {/* The headline used to read "Enforcement is healthy across all
+                  layers." off `flagged === 0` alone — an all-layer health claim
+                  drawn from one layer's signal, and one the L3 ring below can no
+                  longer support. It now states only what `flagged` measures. */}
               <h2 className="overview-hero__title">
                 {flagged === 0 ? (
-                  'Enforcement is healthy across all layers.'
+                  'No over-permissioned agents across the fleet.'
                 ) : (
-                  <>
-                    Enforcement is healthy.{' '}
-                    <em>
-                      {flagged} agent{flagged === 1 ? '' : 's'} over-permissioned.
-                    </em>
-                  </>
+                  <em>
+                    {flagged} agent{flagged === 1 ? '' : 's'} over-permissioned.
+                  </em>
                 )}
               </h2>
             </div>
@@ -318,13 +407,20 @@ export function OverviewPage() {
             <HealthRing
               score={scrubScore}
               label="L3 · scrub"
-              sublabel={`${scrubbed} secrets stripped`}
+              sublabel={
+                <>
+                  <TruthfulValue value={scrubbed} testId="overview-scrubbed" /> secrets stripped
+                </>
+              }
               color="var(--scrub)"
             />
             <HealthRing
               score={overallScore}
               label="overall"
-              sublabel="weighted across all layers"
+              // Was "weighted across all layers" over an unweighted mean of
+              // three, one of which was a constant. It is now an unweighted
+              // mean of the two layers that have a derivation at all.
+              sublabel="unweighted mean · L1 and L2"
               color="var(--ok)"
             />
           </div>
@@ -340,10 +436,19 @@ export function OverviewPage() {
             <div className="overview-issue__head">
               <div className="overview-issue__tag">▲ critical · top issue</div>
               <span className="overview-chip overview-chip--danger">
-                {firingAlerts.length} firing
+                <TruthfulValue value={firingCount} testId="overview-firing-count" /> firing
               </span>
             </div>
-            {topAlert ? (
+            {!isKnown(firingAlerts) && (
+              <StatusState
+                state={firingAlerts.state}
+                title="Alert status unavailable"
+                description="The alerts query did not return, so the fleet's firing alerts cannot be listed. This is not a report that nothing is firing."
+                detail={firingAlerts.detail}
+                testId="overview-top-issue-absent"
+              />
+            )}
+            {isKnown(firingAlerts) && topAlert && (
               <>
                 <h3 className="overview-issue__title">{topAlert.ruleName}</h3>
                 <div className="overview-issue__body">
@@ -374,11 +479,12 @@ export function OverviewPage() {
                   </button>
                 </div>
               </>
-            ) : (
+            )}
+            {isKnown(firingAlerts) && !topAlert && (
               <>
                 <h3 className="overview-issue__title">No critical issues</h3>
                 <div className="overview-issue__body">
-                  No alerts are firing across the fleet. Enforcement is operating within policy.
+                  No alerts are firing across the fleet.
                 </div>
               </>
             )}
@@ -386,10 +492,10 @@ export function OverviewPage() {
 
           <section className="overview-card" data-testid="overview-approvals">
             <div className="overview-card__label">⚑ pending approvals</div>
-            <div className="overview-bignum">{approvals.length}</div>
-            <div className="overview-muted">
-              {approvals.length === 0 ? 'queue clear' : 'awaiting operator decision'}
+            <div className="overview-bignum">
+              <TruthfulValue value={approvalCount} testId="overview-approval-count" />
             </div>
+            <div className="overview-muted">{queueNote(approvalCount)}</div>
             <div className="overview-issue__actions">
               <button
                 type="button"
@@ -430,8 +536,15 @@ export function OverviewPage() {
             sub="Policy enforcement"
             accent="var(--warn)"
             stats={[
-              { label: 'active policies', value: policies.length },
-              { label: 'blocked / 24h', value: blocked, tone: blocked > 0 ? 'danger' : 'ok' },
+              {
+                label: 'active policies',
+                value: <TruthfulValue value={policyCount} testId="overview-policy-count" />,
+              },
+              {
+                label: 'blocked / 24h',
+                value: <TruthfulValue value={blocked} testId="overview-blocked" />,
+                tone: countTone(blocked, 'danger', 'ok'),
+              },
               { label: 'shadow mode', value: shadow, tone: shadow > 0 ? 'warn' : 'ok' },
             ]}
             footer="Effective allows are narrowed by the active policy set."
@@ -443,16 +556,27 @@ export function OverviewPage() {
             sub="Secret sanitization"
             accent="var(--scrub)"
             stats={[
-              { label: 'stripped / 24h', value: scrubbed, tone: 'scrub' },
-              { label: 'firing alerts', value: firingAlerts.length, tone: firingAlerts.length > 0 ? 'danger' : 'ok' },
-              { label: 'leaked', value: 0, tone: 'ok' },
+              {
+                label: 'stripped / 24h',
+                value: <TruthfulValue value={scrubbed} testId="overview-stripped" />,
+                tone: isKnown(scrubbed) ? 'scrub' : undefined,
+              },
+              {
+                label: 'firing alerts',
+                value: <TruthfulValue value={firingCount} testId="overview-firing-stat" />,
+                tone: countTone(firingCount, 'danger', 'ok'),
+              },
+              {
+                label: 'leaked',
+                value: <TruthfulValue value={NO_LEAK_METRIC} testId="overview-leaked" />,
+              },
             ]}
             footer="Secrets are stripped before payloads reach external endpoints."
             onOpen={() => navigate('/scrub')}
           />
         </div>
 
-        {/* Enforcement timeline + recent decisions, side by side (timeline 1.6fr,
+        {/* Enforcement timeline + recent alerts, side by side (timeline 1.6fr,
             recent 1fr per .overview-row-wide). The fleet snapshot then spans the
             full width in its own row below, matching design/v1's grouping. */}
         <div className="overview-row-wide">
@@ -465,7 +589,7 @@ export function OverviewPage() {
 
           <section className="overview-card" data-testid="overview-recent">
             <div className="overview-recent__head">
-              <div className="overview-card__label">◷ recent decisions</div>
+              <div className="overview-card__label">◷ recent alerts</div>
               <button
                 type="button"
                 className="overview-btn overview-btn--sm"
@@ -474,11 +598,20 @@ export function OverviewPage() {
                 tail →
               </button>
             </div>
-            {recent.length === 0 ? (
-              <p className="overview-empty-note">No enforcement events in this window.</p>
-            ) : (
-              recent.map((a) => <RecentDecisionRow key={a.id} alert={a} />)
+            {!isKnown(firingAlerts) && (
+              <StatusState
+                state={firingAlerts.state}
+                title="Recent alerts unavailable"
+                detail={firingAlerts.detail}
+                testId="overview-recent-absent"
+              />
             )}
+            {isKnown(firingAlerts) && recent.length === 0 && (
+              <p className="overview-empty-note">No alerts are firing in this window.</p>
+            )}
+            {recent.map((a) => (
+              <RecentAlertRow key={a.id} alert={a} />
+            ))}
           </section>
         </div>
 
