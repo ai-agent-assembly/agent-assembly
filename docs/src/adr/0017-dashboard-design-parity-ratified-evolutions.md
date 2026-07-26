@@ -240,3 +240,95 @@ A3. **`→ effective` verdict wording is derived from the payload.** The mock ha
 These three follow the same *honest v0* principle as the ratified items: where the
 mock implies a capability the backend does not model, ship what the data supports and
 record the gap rather than rendering a plausible-looking fiction.
+
+---
+
+## Correction — two recorded claims disproven on re-audit (AAASM-5082)
+
+**Ticket**: [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082)
+**Date**: 2026-07
+
+A dashboard-truthfulness re-audit under Epic
+[AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082) checked the
+ratified items above against the source. **Two of the claims recorded in the Decision
+section are false.** They are corrected here rather than edited away: the point of an
+ADR is that the record shows what was believed, and shows it being corrected. The
+original item text above is **left untouched**, as are the item numbering, the count
+note, and every other ratified entry — only the two claims below are affected, and only
+in the respects stated.
+
+Both errors are of the same kind, and it is worth naming it: **a plausible-looking
+fact about the shipped code was recorded without being verified against the shipped
+code.** That is precisely the failure mode the truthfulness programme exists to catch,
+so it is fitting that the programme's first finding is in its own governance record.
+
+### C1 — Item 17: "Fleet has zero FE-buildable-now work" is false
+
+- **What was claimed.** Item 17 (Fleet, AAASM-5078) ratifies the ahead-of-data column
+  layout, and in doing so asserts parenthetically that *"the data is backend-gated
+  (Fleet has zero FE-buildable-now work)"*. That parenthetical was the basis for Fleet
+  contributing no items to the 27-item FE-buildable set.
+- **What is actually true.** Fleet has at least one item that is buildable with the
+  data already on hand today: **there is no filtered-empty state.**
+  `dashboard/src/pages/FleetPage.tsx:472-479` handles only the *unfiltered* empty case
+  (`agents?.length === 0` → "No agents registered yet."). The table is driven by
+  `filteredFleet` (`FleetPage.tsx:230`, passed as `data` at `FleetPage.tsx:292`), and
+  nothing renders a message when `filteredFleet` is empty but `agents` is not — the
+  operator gets a header row above nothing, with no explanation of whether their
+  filters excluded everything or the fleet is empty.
+- **Evidence that this is a real parity gap, not an invention.** Both mocks specify the
+  state explicitly: `design/v1/hi-fi/fleet.jsx:291` and
+  `design/v2/hi-fi/fleet.jsx:275` render
+  `<div className="empty">no agents match these filters</div>`. It requires no backend
+  data whatsoever — `filteredFleet.length` and `filteredCount`
+  (`FleetPage.tsx:301`) are already computed in the component.
+- **Effect on the ratification.** **Item 17's ratification itself stands.** The
+  ahead-of-data column layout is still authoritative and still needs no rebuild. Only
+  the parenthetical claim about Fleet's FE-buildable inventory is withdrawn: Fleet is
+  **not** empty of FE-buildable-now work, and the AAASM-5077 inventory's Fleet line
+  should be re-opened rather than treated as closed.
+- **Not re-derived here.** This correction records *one* verified counter-example. It
+  does not claim to be a complete re-audit of Fleet, and the count note above is
+  therefore left as-is: no *ratified* item count changed.
+
+### C2 — Item 3: the ratified 5s Topology polling was never implemented
+
+- **What was claimed.** Item 3 (Topology, AAASM-5071) records *"5s polling as the
+  'live' stand-in. **Shipped** treats a 5-second poll as the 'live' feed"*, and ratifies
+  it as authoritative over the mock's implied WebSocket push feed. The claim is stated
+  in the past tense, as shipped behaviour.
+- **What is actually true.** **The dashboard does not poll anything, anywhere.**
+  `grep -rn "refetchInterval" dashboard/src` returns **zero matches**. React Query does
+  not poll unless `refetchInterval` is set — its default is `false` — and the app's
+  client is constructed with no default options at all
+  (`dashboard/src/main.tsx:9`: `const queryClient = new QueryClient()`). The topology
+  view issues a single `useQuery` (`dashboard/src/features/topology/api.ts:40-42`, used
+  at `dashboard/src/pages/TopologyPage.tsx:29`) which fetches on mount and then only on
+  remount or window refocus.
+- **The likely origin of the error.** `dashboard/src/features/topology/api.ts:43`
+  carries `staleTime: 5_000`, and its doc-comment (`api.ts:37-38`) says the shorter
+  `staleTime` is chosen because "topology reflects live agent state and benefits from
+  periodic refresh". `staleTime` is a **cache-freshness window, not a timer** — it
+  governs whether an already-mounted query *may* refetch when something else triggers
+  it, and it never schedules a fetch on its own. The 5-second number in the ADR and the
+  5-second number in the code are the same number meaning two different things.
+- **Effect on the ratification.** The ratification's *intent* — a poll is the honest v0
+  stand-in for a live push feed that has no backend — is unaffected and is not
+  withdrawn. What is withdrawn is the factual claim that it is **shipped**. Item 3
+  should be read as **ratified but unimplemented**: a decision on record, awaiting
+  build, not a description of current behaviour. Any subsequent audit, screenshot, or
+  status report that treated Topology as having a live/5s feed was reading this record,
+  not the product.
+- **Consequence beyond Topology.** Because there is no polling primitive anywhere in
+  `dashboard/src`, **no** dashboard surface auto-refreshes. Only the Live-Ops WebSocket
+  stream updates without operator action. Any other ratified item that assumed periodic
+  refresh should be re-checked against that fact before it is relied on.
+
+### What this correction does *not* change
+
+- No other ratified item is disturbed; the 20/21 counts and the item numbering are
+  unchanged.
+- The AAASM-5099 addendum above is unaffected.
+- No product code changes as a result of this correction. It is a record correction;
+  the two follow-ups it implies (the Fleet filtered-empty state, and building or
+  re-scoping the Topology refresh) are execution work for the owning stories.
