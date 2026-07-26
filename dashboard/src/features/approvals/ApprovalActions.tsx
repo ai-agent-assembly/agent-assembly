@@ -1,4 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../../auth/usePermissions'
 import { useApproveAction, useRejectAction } from './api'
 
 export interface ApprovalActionsProps {
@@ -55,6 +56,13 @@ function btnStyle(size: 'sm' | 'md', bg: string, enabled: boolean): CSSPropertie
  * (optimistic list removal, drawer close, toasts) rather than re-implementing
  * the request. Reject requires a reason (gateway contract), captured inline so
  * the control embeds in both a card and a drawer without a separate modal.
+ *
+ * AAASM-5148: the write gate lives *here*, not on the surfaces that mount this.
+ * This component owns the two mutations, so it is the last control before them;
+ * gating each host page instead would leave the mutation reachable from
+ * whichever host was added next, and a read-scope operator would learn their
+ * scope from a 403 toast. Gating it once covers Live-ops and the Trace approval
+ * drawer together.
  */
 export function ApprovalActions({
   approvalId,
@@ -68,13 +76,16 @@ export function ApprovalActions({
 }: Readonly<ApprovalActionsProps>) {
   const approve = useApproveAction()
   const reject = useRejectAction()
+  const { canWrite } = usePermissions()
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
 
   const busy = approve.isPending || reject.isPending
-  const actionsDisabled = disabled || busy
+  const actionsDisabled = disabled || busy || !canWrite
+  const writeHint = canWrite ? undefined : WRITE_REQUIRED_HINT
 
   async function handleApprove() {
+    if (disabled || !canWrite) return
     try {
       await approve.mutateAsync({ id: approvalId, by })
       onApproved?.(approvalId)
@@ -84,6 +95,7 @@ export function ApprovalActions({
   }
 
   async function handleRejectConfirm() {
+    if (disabled || !canWrite) return
     const trimmed = reason.trim()
     if (!trimmed) return
     try {
@@ -95,6 +107,13 @@ export function ApprovalActions({
       onError?.('reject', error)
     }
   }
+
+  // AAASM-5148: the confirm button — not the "Reject" button that opened this
+  // pane — is the last control before the reject mutation, and the pane can
+  // outlive the gate that let the operator in (a token refresh that drops
+  // `write`, or a host flipping `disabled` because the approval expired). It
+  // therefore re-derives the gate rather than trusting how it was reached.
+  const rejectConfirmDisabled = actionsDisabled || !reason.trim()
 
   if (rejecting) {
     return (
@@ -124,9 +143,10 @@ export function ApprovalActions({
           <button
             type="button"
             data-testid="approval-reject-confirm"
-            disabled={!reason.trim() || busy}
+            disabled={rejectConfirmDisabled}
+            title={writeHint}
             onClick={() => void handleRejectConfirm()}
-            style={btnStyle(size, 'var(--danger)', !!reason.trim() && !busy)}
+            style={btnStyle(size, 'var(--danger)', !rejectConfirmDisabled)}
           >
             Confirm reject
           </button>
@@ -163,6 +183,7 @@ export function ApprovalActions({
         type="button"
         data-testid="approval-approve-btn"
         disabled={actionsDisabled}
+        title={writeHint}
         onClick={() => void handleApprove()}
         style={btnStyle(size, 'var(--ok)', !actionsDisabled)}
       >
@@ -172,6 +193,7 @@ export function ApprovalActions({
         type="button"
         data-testid="approval-reject-btn"
         disabled={actionsDisabled}
+        title={writeHint}
         onClick={() => setRejecting(true)}
         style={btnStyle(size, 'var(--danger)', !actionsDisabled)}
       >
