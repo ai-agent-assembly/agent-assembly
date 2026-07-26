@@ -40,6 +40,14 @@ function formatLastSeen(value: string): string {
   return d.toISOString().slice(0, 16).replace('T', ' ')
 }
 
+/**
+ * `TruthfulValue`'s `format` callback for the status column.
+ *
+ * Hoisted to module scope so it keeps one identity for the lifetime of the
+ * module rather than being rebuilt on every render of the list.
+ */
+const renderStatusChip = (status: string) => <StatusChip status={status} />
+
 export interface AgentRegistryListProps {
   selectedAgentId: string | null
   onSelect: (agent: Agent) => void
@@ -116,7 +124,7 @@ export function AgentRegistryList({ selectedAgentId, onSelect }: Readonly<AgentR
                 <TruthfulValue
                   value={agent.status}
                   testId={`agent-status-${agent.id}`}
-                  format={(status) => <StatusChip status={status} />}
+                  format={renderStatusChip}
                 />
               </td>
               <td className="iam-agent-list__mono">
