@@ -40,6 +40,17 @@ import {
 } from '../features/liveOps/types'
 import './LiveOpsPage.css'
 
+/**
+ * Why "page on-call" is inert (AAASM-5148 review follow-up).
+ *
+ * It has never had a production path — the handler only raised a toast saying
+ * so. An enabled, danger-styled control on an incident surface asserts that
+ * paging happened; the operator has no way to tell that nobody was paged.
+ * Matching the AAASM-5140 treatment of the topology governance buttons: a
+ * disabled control that states the reason is the honest affordance.
+ */
+const NO_PAGING_BACKEND_TITLE = 'On-call paging is not available yet — no integration is wired'
+
 const OVERRIDE_VERB: Record<OperationOverride, string> = {
   pausing: 'pause',
   resuming: 'resume',
@@ -230,10 +241,6 @@ export function LiveOpsPage() {
     setIntensity((i) => Math.min(INTENSITY_MAX, i + INTENSITY_STEP))
   }
 
-  function handlePageOnCall() {
-    toast('Paging on-call — mock action')
-  }
-
   // Halt the agent owning `opId` — fleet-scoped for one agent. Unlike
   // pause/resume/terminate this is not a single-op lifecycle transition, so it
   // takes no optimistic row override; the WS stream reflects the agent's ops
@@ -345,7 +352,8 @@ export function LiveOpsPage() {
           <button
             type="button"
             className="live-page__btn live-page__btn--danger"
-            onClick={handlePageOnCall}
+            disabled
+            title={NO_PAGING_BACKEND_TITLE}
             data-testid="live-ops-page-oncall"
           >
             page on-call

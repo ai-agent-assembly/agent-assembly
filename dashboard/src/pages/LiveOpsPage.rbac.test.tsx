@@ -21,6 +21,7 @@ import { useAgentsQuery } from '../features/agents/api'
 import { useApprovalsQuery, type Approval } from '../features/approvals/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import * as actions from '../features/liveOps/actions'
+import { useApprovalsStream } from '../features/approvals/useApprovalsStream'
 import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
 import type { LiveOperation } from '../features/liveOps/types'
 import { LiveOpsPage } from './LiveOpsPage'
@@ -34,7 +35,7 @@ vi.mock('../features/approvals/api', async (importOriginal) => ({
   useApprovalsQuery: vi.fn(),
 }))
 vi.mock('../features/approvals/useApprovalsStream', () => ({
-  useApprovalsStream: () => ({ connected: true }),
+  useApprovalsStream: vi.fn(),
 }))
 vi.mock('../features/liveOps/useLiveOpsStream', () => ({ useLiveOpsStream: vi.fn() }))
 vi.mock('../features/liveOps/actions', () => ({
@@ -120,6 +121,9 @@ beforeEach(() => {
     reconnect: vi.fn(),
   })
   mockApprovals()
+  // Reset explicitly: `vi.resetAllMocks()` in afterEach clears the factory's
+  // implementation, and a hook returning `undefined` throws on destructure.
+  vi.mocked(useApprovalsStream).mockReturnValue({ connected: true })
 })
 
 afterEach(() => {
@@ -164,5 +168,32 @@ describe('LiveOpsPage write gates (AAASM-5148)', () => {
     // the conflation the pause/stream audit (AAASM-5153) is about.
     expect(screen.getByTestId('live-ops-faster')).toBeEnabled()
     expect(screen.getByTestId('live-ops-pause')).toBeEnabled()
+  })
+
+  /*
+   * AAASM-5140 treats a governance button with no production path as a defect
+   * in its own right, and disables it with a stated reason. "page on-call" is
+   * the same shape: it only ever raised a toast saying it was a mock, on a
+   * danger-styled control on an incident surface.
+   */
+  it('disables "page on-call" and says why — it has no production path', () => {
+    renderWithScopes(['admin'])
+    const button = screen.getByTestId('live-ops-page-oncall')
+    expect(button).toBeDisabled()
+    expect(button.getAttribute('title')).toMatch(/not available yet/i)
+  })
+
+  it('page on-call cannot be activated by click or keyboard', async () => {
+    const user = userEvent.setup()
+    renderWithScopes(['admin'])
+    const button = screen.getByTestId('live-ops-page-oncall')
+
+    // `userEvent` refuses to dispatch a pointer event to a disabled control,
+    // which is the browser's own behaviour — proving the affordance is gone
+    // rather than merely that a handler was removed.
+    await user.click(button)
+    button.focus()
+    expect(button).not.toHaveFocus()
+    expect(screen.queryByTestId('toast')).toBeNull()
   })
 })
