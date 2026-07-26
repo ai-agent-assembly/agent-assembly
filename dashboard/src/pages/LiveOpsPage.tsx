@@ -4,7 +4,8 @@ import { useToast } from '../components/Toast'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/states'
-import { certainFromQuery } from '../lib/truthfulness'
+import { TruthfulValue } from '../components/truthfulness'
+import { certainFromQuery, mapCertain } from '../lib/truthfulness'
 import { useAgentsQuery } from '../features/agents/api'
 import { useApprovalsQuery, type Approval } from '../features/approvals/api'
 import { useApprovalsStream } from '../features/approvals/useApprovalsStream'
@@ -134,6 +135,7 @@ export function LiveOpsPage() {
   const approvalsQuery = useApprovalsQuery()
   useApprovalsStream()
   const approvals = certainFromQuery<Approval[]>(approvalsQuery)
+  const waitingCount = mapCertain(approvals, (list) => list.length)
 
   // Derived map: every override whose WS-reported status already matches
   // its intent is hidden from the UI. The raw `overrides` state still
@@ -500,6 +502,13 @@ export function LiveOpsPage() {
         >
           <header className="live-page__pane-head">
             <h2 className="live-page__pane-title">⚑ approval queue</h2>
+            {/* AAASM-5167: the count is `Certain`, so a failed queue request
+                renders the shared absence marker here rather than "0 waiting"
+                — which would read as a clear queue. */}
+            <span className="live-page__pane-chip" data-testid="live-ops-approvals-chip">
+              <TruthfulValue value={waitingCount} testId="live-ops-approvals-count" />{' '}
+              waiting
+            </span>
           </header>
           <div className="live-page__pane-body">
             <ApprovalPool

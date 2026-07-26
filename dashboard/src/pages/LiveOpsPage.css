@@ -362,6 +362,26 @@
   color: var(--ink-3);
 }
 
+/* Waiting-count chip in the approvals pane head (AAASM-5167). Mirrors the
+   hi-fi's `{approvals.length} waiting` chip. It hosts a TruthfulValue, so it
+   must not assume its content is a number — the absence marker renders a `—`
+   with its own tone here. */
+.live-page__pane-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--info);
+  background: var(--info-bg);
+  border: 1px solid var(--info);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 /* ── Pipeline / castle-moat view toggle (AAASM-5074) ───────────
    Segmented control mirroring the hi-fi: two flush buttons, the
    active one filled with the ink token. */

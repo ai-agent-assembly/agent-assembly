@@ -94,6 +94,18 @@ const AGENTS = [
 
 const TEAMS = [{ team_id: 'support', agent_count: 1, root_agent_count: 1 }]
 
+const APPROVAL: Approval = {
+  id: '3f1c9a52-0c4e-4a1b-9f2d-6a7b8c9d0e1f',
+  agent_id: 'support-agent',
+  action: 'write pg.users',
+  reason: 'Policy requires human approval',
+  status: 'pending',
+  created_at: '2026-05-14T01:00:00Z',
+  expires_at: new Date(Date.now() + 600_000).toISOString(),
+  routing_status: null,
+  team_id: null,
+}
+
 interface ApprovalsOutcome {
   data?: Approval[]
   isPending?: boolean
@@ -393,5 +405,52 @@ describe('LiveOpsPage', () => {
     await user.click(screen.getByTestId('auto-scroll-toggle-input'))
 
     expect(screen.getAllByTestId('op-row')).toHaveLength(2)
+  })
+
+  // ── AAASM-5167: the approvals pane head states what it knows ───────────
+
+  it('shows the waiting count when the queue loaded', () => {
+    mockApprovals({ data: [APPROVAL] })
+    renderWithProviders(<LiveOpsPage />)
+    const count = screen.getByTestId('live-ops-approvals-count')
+    expect(count).toHaveAttribute('data-truth-state', 'known')
+    expect(count).toHaveTextContent('1')
+    expect(screen.getByTestId('live-ops-approvals-chip')).toHaveTextContent('1 waiting')
+  })
+
+  it('shows a real zero when the queue loaded and is clear', () => {
+    mockApprovals({ data: [] })
+    renderWithProviders(<LiveOpsPage />)
+    // A zero from a successful request is a real answer and stays a zero.
+    expect(screen.getByTestId('live-ops-approvals-count')).toHaveTextContent('0')
+    expect(screen.getByTestId('approval-pool-empty')).toBeInTheDocument()
+  })
+
+  it('never renders a failed queue as "0 waiting"', () => {
+    // The detail is deliberately digit-free so the "no number is claimed"
+    // assertion below cannot be satisfied by an error string that happens to
+    // contain no zero — an HTTP status like 503 would smuggle digits in.
+    mockApprovals({
+      isError: true,
+      error: new Error('gateway unavailable'),
+      data: undefined,
+    })
+    renderWithProviders(<LiveOpsPage />)
+    const count = screen.getByTestId('live-ops-approvals-count')
+    expect(count).toHaveAttribute('data-truth-state', 'unavailable')
+    expect(count).toHaveTextContent('—')
+    expect(count.textContent).not.toMatch(/\d/)
+    // …and the pane body says the queue is broken, not that it is clear.
+    expect(screen.getByTestId('approval-pool-unavailable')).toBeInTheDocument()
+    expect(screen.queryByTestId('approval-pool-empty')).toBeNull()
+  })
+
+  it('reads as in-flight, not as zero, before the first response', () => {
+    mockApprovals({ isPending: true, data: undefined })
+    renderWithProviders(<LiveOpsPage />)
+    expect(screen.getByTestId('live-ops-approvals-count')).toHaveAttribute(
+      'data-truth-state',
+      'unknown',
+    )
   })
 })
