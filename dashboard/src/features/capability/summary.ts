@@ -1,46 +1,101 @@
+import {
+  absent,
+  certain,
+  isKnown,
+  known,
+  propagateAbsence,
+  tallyVerdicts,
+  type CapabilityVerdict,
+  type CascadeEvidence,
+  type Certain,
+  type VerdictTally,
+} from '../../lib/truthfulness'
 import type { CapabilityAgent, Resource, Verb } from './types'
 
 /**
- * Aggregate counts for the matrix summary row. Every field is derived from the
- * already-loaded matrix for the currently displayed verb — no extra fetch — so
- * the tiles always agree with the cells rendered in the grid.
+ * Aggregate counts for the matrix summary row.
+ *
+ * Every field is `Certain` (AAASM-5173): a summary count is the single easiest
+ * number to fake, because "0 denied" reads as *we evaluated and found no
+ * denials* when the truth is often *nothing was ever evaluated*. Consumers must
+ * narrow through `isKnown` before rendering, which is what stops an absence
+ * reaching the screen as a zero.
  */
-export interface CapabilitySummary {
-  /** Cells whose effective decision for `verb` is `allow`. */
-  allow: number
-  /** Cells narrowed to a sub-scope for `verb`. */
-  narrow: number
-  /** Cells denied outright for `verb`. */
-  deny: number
-  /** Distinct agents carrying a recent flag (verb-independent). */
-  flaggedAgents: number
+export interface CapabilitySummary extends VerdictTally {
+  /** Distinct agents carrying a recent over-permission flag (verb-independent). */
+  readonly flaggedAgents: Certain<number>
+}
+
+/** Flatten the visible grid into the per-cell decisions for one verb. */
+function* cellDecisions(
+  agents: CapabilityAgent[],
+  resources: Resource[],
+  verb: Verb,
+): Generator<CapabilityVerdict | undefined> {
+  for (const agent of agents) {
+    for (const resource of resources) {
+      yield agent.caps[resource.id]?.[verb]
+    }
+  }
 }
 
 /**
- * Count effective decisions across the visible agents × resources grid for one
- * verb. Mirrors the per-cell decision the grid renders (`caps[resource][verb]`,
- * defaulting to `na`), so the summary can never drift from what the user sees.
+ * Count the agents the backend has flagged as over-permissioned.
+ *
+ * `flagged` is absent on every agent in the live projection — nothing in the
+ * gateway computes over-permission yet — and an all-absent column means the
+ * question was never asked. Reporting `0 flagged agents` there would be a clean
+ * bill of health the data cannot support, so it folds to `not-evaluated`. Once
+ * a single agent carries a real boolean the column becomes a genuine
+ * measurement and the count is asserted normally.
+ */
+function countFlagged(agents: CapabilityAgent[]): Certain<number> {
+  const evaluated = agents.some((agent) => agent.flagged !== undefined)
+  if (!evaluated) {
+    return absent('not-evaluated', 'No agent carries an over-permission verdict')
+  }
+  return known(agents.filter((agent) => agent.flagged === true).length)
+}
+
+/**
+ * Summarise the visible agents × resources grid for one verb.
+ *
+ * `cascade` carries what the dashboard knows about the policy documents the
+ * verdicts were drawn from, and it is the whole point of the signature: with an
+ * empty cascade `aa-api`'s `decide()` falls through to `Allow` for every cell
+ * (AAASM-5106), so counting those cells would report a fully-permissive fleet
+ * that no policy ever granted. `tallyVerdicts` folds that case to
+ * `unconfigured` instead — see `lib/truthfulness/verdict.ts` for the rule.
  */
 export function summarizeMatrix(
   agents: CapabilityAgent[],
   resources: Resource[],
   verb: Verb,
+  cascade: Certain<CascadeEvidence>,
 ): CapabilitySummary {
-  let allow = 0
-  let narrow = 0
-  let deny = 0
-  for (const agent of agents) {
-    for (const resource of resources) {
-      const decision = agent.caps[resource.id]?.[verb] ?? 'na'
-      if (decision === 'allow') allow += 1
-      else if (decision === 'narrow') narrow += 1
-      else if (decision === 'deny') deny += 1
-    }
-  }
+  const tally = tallyVerdicts(cellDecisions(agents, resources, verb), cascade)
   return {
-    allow,
-    narrow,
-    deny,
-    flaggedAgents: agents.filter((a) => a.flagged).length,
+    ...tally,
+    // A cascade the dashboard could not load says nothing about flags either,
+    // so only re-derive the flag column when the matrix itself is trustworthy.
+    flaggedAgents: isKnown(cascade) ? countFlagged(agents) : absent('unavailable', cascade.detail),
   }
+}
+
+/**
+ * Describe the policy cascade behind a loaded matrix.
+ *
+ * `policies` is the set of documents the projection resolved into the cascade;
+ * an empty array is the AAASM-5106 condition (nothing loaded), not "no policy
+ * applies". `certain` is used rather than a bare length check so an absent
+ * policy list stays distinguishable from an empty one — collapsing those two is
+ * the same class of bug this lane exists to remove.
+ */
+export function cascadeEvidenceOf(
+  policies: readonly unknown[] | null | undefined,
+): Certain<CascadeEvidence> {
+  const resolved = certain(policies, 'unavailable', 'The matrix carried no policy list')
+  return isKnown(resolved)
+    ? known({ documentCount: resolved.value.length })
+    : propagateAbsence(resolved)
 }
