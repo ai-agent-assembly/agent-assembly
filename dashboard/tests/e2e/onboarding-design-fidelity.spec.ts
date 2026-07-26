@@ -75,6 +75,34 @@ async function preconfigureGateway(page: Page) {
 
 async function mockApi(page: Page) {
   await page.route('**/api/v1/ws/events**', (route) => route.abort())
+  // Step 5 polls the real agent registry since AAASM-5133 — the happy path only
+  // reaches "connected" when the gateway actually reports a registered agent.
+  await page.route('**/api/v1/agents**', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'agent-1',
+            name: 'research-bot',
+            framework: 'langgraph',
+            version: '0.0.1',
+            status: 'active',
+            tool_names: [],
+            metadata: {},
+            session_count: 0,
+            policy_violations_count: 0,
+            active_sessions: [],
+            recent_events: [],
+            recent_traces: [],
+            last_event: '2026-07-26T09:00:00Z',
+          },
+        ],
+        page: 1,
+        per_page: 100,
+        total: 1,
+      },
+    }),
+  )
 }
 
 async function gotoOnboarding(page: Page) {
@@ -196,7 +224,8 @@ function describeAtViewport(width: number, height: number) {
       await expect(page.getByTestId('onboarding-continue')).toBeEnabled()
       await page.getByTestId('onboarding-continue').click()
 
-      // Step 2 — install. Skip rather than wait on the simulated terminal.
+      // Step 2 — install. Skip rather than probe the gateway here; the probe's
+      // own contract is covered by review-aaasm-5132.spec.ts.
       await page.getByTestId('onboarding-skip-step').click()
 
       // Step 3 — identity. Skip.

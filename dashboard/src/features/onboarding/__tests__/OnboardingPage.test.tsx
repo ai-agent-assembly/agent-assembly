@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, it, expect, beforeEach } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { OnboardingPage } from '../../../pages/OnboardingPage'
 import { ToastProvider } from '../../../components/ToastProvider'
 import { ONBOARDING_COMPLETED_KEY } from '../useGatewayConfiguredGuard'
@@ -10,16 +11,31 @@ import {
 } from '../useWizardSession'
 import { EMPTY_STATE } from '../types'
 
+// The enroll step polls the agent registry; see `features/onboarding/api.test.tsx`
+// for why the client, not `globalThis.fetch`, is the mock boundary.
+vi.mock('../../../api/client', () => ({
+  api: {
+    GET: vi.fn().mockResolvedValue({
+      data: { items: [], page: 1, per_page: 100, total: 0 },
+      error: undefined,
+      response: { ok: true, status: 200 },
+    }),
+  },
+}))
+
 function renderAt(path: string) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <ToastProvider>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path="/" element={<div data-testid="root-page">root</div>} />
-          <Route path="/onboarding" element={<OnboardingPage />} />
-        </Routes>
-      </MemoryRouter>
-    </ToastProvider>,
+    <QueryClientProvider client={client}>
+      <ToastProvider>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/" element={<div data-testid="root-page">root</div>} />
+            <Route path="/onboarding" element={<OnboardingPage />} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>
+    </QueryClientProvider>,
   )
 }
 
@@ -47,13 +63,7 @@ describe('OnboardingPage', () => {
       state: {
         ...EMPTY_STATE,
         framework: 'langchain',
-        installVerified: true,
-        identity: {
-          did: 'did:aa:abc',
-          alg: 'Ed25519',
-          fingerprint: 'AA:BB',
-          issuedAt: 'x',
-        },
+        gatewayHealthy: true,
       },
     })
     renderAt('/onboarding')
@@ -61,6 +71,32 @@ describe('OnboardingPage', () => {
       'step 4 of 5',
     )
     expect(screen.getByTestId('onboarding-step-policy')).toBeInTheDocument()
+  })
+
+  it('tells the operator when saved progress was discarded rather than restarting silently', () => {
+    globalThis.localStorage.setItem(
+      ONBOARDING_SESSION_KEY,
+      // A pre-AAASM-5179 payload: carries the withdrawn `identity` key.
+      JSON.stringify({
+        step: 'policy',
+        state: {
+          framework: 'langchain',
+          installVerified: true,
+          identity: { did: 'did:aa:abc' },
+          policyPreset: 'read-only',
+          enrolled: false,
+        },
+      }),
+    )
+    renderAt('/onboarding')
+
+    expect(screen.getByTestId('onboarding-step-counter')).toHaveTextContent('step 1 of 5')
+    expect(screen.getByTestId('toast-container')).toHaveTextContent(/discarded/i)
+  })
+
+  it('says nothing when there was no session to discard', () => {
+    renderAt('/onboarding')
+    expect(screen.getByTestId('toast-container')).not.toHaveTextContent(/discarded/i)
   })
 
   it('clears the persisted session and fires a success toast on "skip onboarding"', () => {
@@ -80,13 +116,7 @@ describe('OnboardingPage', () => {
       step: 'enroll',
       state: {
         framework: 'langchain',
-        installVerified: true,
-        identity: {
-          did: 'did:aa:abc',
-          alg: 'Ed25519',
-          fingerprint: 'AA:BB',
-          issuedAt: 'x',
-        },
+        gatewayHealthy: true,
         policyPreset: 'read-only',
         enrolled: true,
       },

@@ -1,14 +1,38 @@
 import { useState } from 'react'
-import type { WizardState } from '../types'
+import { AbsenceMarker } from '../../../components/truthfulness'
+import { certainFromQuery, isKnown, type Certain } from '../../../lib/truthfulness'
+import { probeGatewayHealth, type GatewayHealth } from '../api'
+import { buildProbeLines } from './probeLines'
 import './Steps.css'
 
 export interface Step2InstallSdkProps {
-  state: WizardState
-  onVerified: () => void
+  /**
+   * The finding of the *most recent* probe: `true` only when the gateway itself
+   * answered `status: "ok"`.
+   *
+   * Reported on every probe, including the failures. An earlier revision fired
+   * only on success, which latched the wizard's flag `true` for good: a failing
+   * re-check then rendered the red UNAVAILABLE transcript while the footer
+   * still read "✓ ready to continue" and the stale `true` was persisted to
+   * localStorage. A flag named for an observation may not outlive it.
+   */
+  onProbed: (healthy: boolean) => void
 }
 
 type PackageManager = 'pip' | 'npm' | 'go'
-type Phase = 'idle' | 'running' | 'verified'
+
+/**
+ * `verified` is deliberately absent from this union.
+ *
+ * The step used to carry a `verified` phase reached by a 600 ms timer, which is
+ * what let it announce success while the gateway was down (AAASM-5132). The
+ * phase now records only whether a probe is in flight; *what the probe found*
+ * lives in a `Certain<GatewayHealth>`, which cannot be read without narrowing.
+ */
+type Phase = 'idle' | 'probing' | 'answered'
+
+/** The copy button's outcome. `failed` did not exist before AAASM-5145. */
+type CopyState = 'idle' | 'copied' | 'failed'
 
 const COMMANDS: Record<PackageManager, string> = {
   pip: 'pip install agent-assembly',
@@ -16,55 +40,59 @@ const COMMANDS: Record<PackageManager, string> = {
   go: 'go get github.com/agent-assembly/sdk-go',
 }
 
-interface Line {
-  kind: 'prompt' | 'cmd' | 'out' | 'ok'
-  text: string
-}
+const COPY_RESET_MS = 1400
 
-const VERIFIED_LINES: Line[] = [
-  { kind: 'prompt', text: '$ ' },
-  { kind: 'cmd', text: 'aa-cli verify' },
-  { kind: 'out', text: 'connecting to runtime…  done.' },
-  { kind: 'out', text: 'sdk version    1.4.2 (latest)' },
-  { kind: 'out', text: 'control-plane  https://api.agent-assembly.com' },
-  { kind: 'ok', text: '✓ verified · ready to enroll' },
-]
-
-export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkProps>) {
+export function Step2InstallSdk({ onProbed }: Readonly<Step2InstallSdkProps>) {
   const [pkg, setPkg] = useState<PackageManager>('pip')
-  const [copied, setCopied] = useState(false)
-  const [phase, setPhase] = useState<Phase>(state.installVerified ? 'verified' : 'idle')
-  const [lines, setLines] = useState<Line[]>(state.installVerified ? VERIFIED_LINES : [])
+  const [copyState, setCopyState] = useState<CopyState>('idle')
+  const [phase, setPhase] = useState<Phase>('idle')
+  // Null until the operator asks. A resumed session is not evidence that the
+  // gateway is up *now*, so the persisted flag never seeds a transcript here —
+  // the step re-asks rather than replaying an old verdict.
+  const [result, setResult] = useState<Certain<GatewayHealth> | null>(null)
 
   const handleCopy = async () => {
+    // `navigator.clipboard` is undefined in a non-secure context — precisely the
+    // self-hosted http://<gateway-host>:<port> case — so the member access below
+    // throws synchronously inside this async function. Reporting "✓ copied"
+    // regardless was AAASM-5145; the success flag now lives inside the `try`.
     try {
       await navigator.clipboard.writeText(COMMANDS[pkg])
+      setCopyState('copied')
     } catch {
-      // ignore clipboard failure (older browsers / no permission)
+      setCopyState('failed')
     }
-    setCopied(true)
-    globalThis.setTimeout(() => setCopied(false), 1400)
+    globalThis.setTimeout(() => setCopyState('idle'), COPY_RESET_MS)
   }
 
-  const handleRun = () => {
-    if (phase === 'running') return
-    setPhase('running')
-    setLines([
-      { kind: 'prompt', text: '$ ' },
-      { kind: 'cmd', text: 'aa-cli verify' },
-      { kind: 'out', text: 'connecting to runtime…' },
-    ])
-    globalThis.setTimeout(() => {
-      setLines(VERIFIED_LINES)
-      setPhase('verified')
-      onVerified()
-    }, 600)
+  // Re-entry is prevented by the button's own `disabled` while `phase` is
+  // 'probing', so there is no second guard here to go stale against it.
+  const handleProbe = async () => {
+    setPhase('probing')
+    setResult(null)
+    const certain = certainFromQuery(await probeGatewayHealth())
+    setResult(certain)
+    setPhase('answered')
+    // Reported in both directions — a degraded or unreachable gateway clears
+    // the flag that an earlier successful probe set.
+    onProbed(isKnown(certain) && certain.value.status === 'ok')
   }
 
-  let verifyButtonLabel: string
-  if (phase === 'idle') verifyButtonLabel = '▸ run aa-cli verify'
-  else if (phase === 'running') verifyButtonLabel = 'verifying…'
-  else verifyButtonLabel = '↻ re-run'
+  let probeButtonLabel: string
+  if (phase === 'probing') probeButtonLabel = 'checking…'
+  else if (phase === 'idle') probeButtonLabel = '▸ check gateway connection'
+  else probeButtonLabel = '↻ re-check'
+
+  let copyLabel: string
+  if (copyState === 'copied') copyLabel = '✓ copied'
+  else if (copyState === 'failed') copyLabel = '✗ copy failed'
+  else copyLabel = 'copy'
+
+  let idleHint: string
+  if (phase === 'probing') idleHint = '# asking the gateway…'
+  else idleHint = '# checks that this browser can reach the gateway — it cannot observe your SDK'
+
+  const lines = result ? buildProbeLines(result) : []
 
   return (
     <section data-testid="onboarding-step-install">
@@ -95,32 +123,46 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
         </code>
         <button
           type="button"
-          className={`onb-pkg-copy${copied ? ' is-copied' : ''}`}
+          className={`onb-pkg-copy is-${copyState}`}
           data-testid="onboarding-install-copy"
+          data-copy-state={copyState}
           onClick={handleCopy}
         >
-          {copied ? '✓ copied' : 'copy'}
+          {copyLabel}
         </button>
       </div>
+      {copyState === 'failed' && (
+        <p className="onb-copy-error" role="alert" data-testid="onboarding-install-copy-error">
+          The clipboard is unavailable here — copy the command above by hand.
+        </p>
+      )}
 
       <div className="onb-term-meta">
-        <span className="onb-term-meta-label">verify connection</span>
-        <button
-          type="button"
-          className="onb-btn"
-          data-testid="onboarding-install-verify"
-          onClick={handleRun}
-          disabled={phase === 'running'}
-        >
-          {verifyButtonLabel}
-        </button>
+        <span className="onb-term-meta-label">gateway connection</span>
+        <div className="onb-term-meta-right">
+          {result && !isKnown(result) && (
+            <AbsenceMarker
+              state={result.state}
+              detail={result.detail}
+              showLabel
+              testId="onboarding-install-absent"
+            />
+          )}
+          <button
+            type="button"
+            className="onb-btn"
+            data-testid="onboarding-install-verify"
+            onClick={handleProbe}
+            disabled={phase === 'probing'}
+          >
+            {probeButtonLabel}
+          </button>
+        </div>
       </div>
 
       <div className="onb-term" data-testid="onboarding-install-terminal">
         {lines.length === 0 ? (
-          <div className="onb-term-line onb-term-faint">
-            # run verify above to check the SDK reaches the control-plane
-          </div>
+          <div className="onb-term-line onb-term-faint">{idleHint}</div>
         ) : (
           lines.map((l) => (
             <div key={`${l.kind}-${l.text}`} className="onb-term-line">
@@ -132,10 +174,25 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
                   {l.text}
                 </span>
               )}
+              {l.kind === 'warn' && (
+                <span className="onb-term-warn" data-testid="onboarding-install-warn">
+                  {l.text}
+                </span>
+              )}
+              {l.kind === 'err' && (
+                <span className="onb-term-err" data-testid="onboarding-install-err">
+                  {l.text}
+                </span>
+              )}
             </div>
           ))
         )}
       </div>
+      <p className="onb-term-caveat" data-testid="onboarding-install-caveat">
+        A reachable gateway is not a verified SDK — this page cannot see your agent
+        process. Step 5 reports what the registry actually holds once your SDK
+        registers.
+      </p>
     </section>
   )
 }

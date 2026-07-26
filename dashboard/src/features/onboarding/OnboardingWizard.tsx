@@ -106,16 +106,11 @@ export function OnboardingWizard({
           )}
           {current === 'install' && (
             <Step2InstallSdk
-              state={state}
-              onVerified={() => patchState({ installVerified: true })}
+              onProbed={(healthy) => patchState({ gatewayHealthy: healthy })}
             />
           )}
-          {current === 'identity' && (
-            <Step3IssueIdentity
-              state={state}
-              onIssued={(identity) => patchState({ identity })}
-            />
-          )}
+          {/* Takes no callback: there is nothing for it to report (AAASM-5179). */}
+          {current === 'identity' && <Step3IssueIdentity />}
           {current === 'policy' && (
             <Step4BaselinePolicy
               state={state}

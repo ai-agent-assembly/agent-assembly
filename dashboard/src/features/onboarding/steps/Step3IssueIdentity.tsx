@@ -1,130 +1,49 @@
-import { useState } from 'react'
-import type { AgentIdentity, WizardState } from '../types'
+/**
+ * Step 3 — agent identity (AAASM-5179).
+ *
+ * This step used to mint a DID in the browser: 16 random bytes behind
+ * `did:aa:`, a hardcoded `alg: 'Ed25519'`, a "fingerprint" of 8 further
+ * unrelated random bytes, and the line *"private key stored in your
+ * `~/.aa/keys/` · do not commit"*. No keypair was ever generated — there is no
+ * `crypto.subtle` call anywhere in the dashboard — and a browser cannot write
+ * to that path. It was a security instruction premised on a fiction: an
+ * operator who believes a private key is on disk skips real key provisioning.
+ *
+ * Identity is issued by the gateway over the runtime gRPC handshake
+ * (`RequestChallenge` / `Register`, with an Ed25519 possession proof). There is
+ * no HTTP surface for it — `openapi/v1.yaml` declares `GET /api/v1/agents` only,
+ * and AAASM-5176 owns adding one. Until a *persistence-verification signal*
+ * exists, this step may not claim a key was generated, signed, published, or
+ * stored, so it renders `not-supported` and offers no action at all.
+ */
+import { StatusState } from '../../../components/truthfulness'
 import './Steps.css'
 
-export interface Step3IssueIdentityProps {
-  state: WizardState
-  onIssued: (identity: AgentIdentity) => void
-}
-
-type Phase = 'idle' | 'spinning' | 'done'
-
-const HEX = '0123456789abcdef'
-
-// These bytes back an agent's DID and key fingerprint — identity material, not
-// UI decoration — so they must come from a CSPRNG, never Math.random().
-// See typescript:S2245.
-function randHex(byteCount: number): string {
-  const bytes = new Uint8Array(byteCount)
-  crypto.getRandomValues(bytes)
-  let out = ''
-  for (const byte of bytes) {
-    out += HEX[byte >> 4] + HEX[byte & 0x0f]
-  }
-  return out
-}
-
-function formatFingerprint(): string {
-  const groups: string[] = []
-  for (let i = 0; i < 8; i++) groups.push(randHex(1))
-  return groups.join(':').toUpperCase()
-}
-
-export function Step3IssueIdentity({ state, onIssued }: Readonly<Step3IssueIdentityProps>) {
-  const [phase, setPhase] = useState<Phase>(state.identity ? 'done' : 'idle')
-  const id = state.identity
-
-  const handleGenerate = () => {
-    if (phase !== 'idle') return
-    setPhase('spinning')
-    globalThis.setTimeout(() => {
-      const identity: AgentIdentity = {
-        did: `did:aa:${randHex(16)}`,
-        alg: 'Ed25519',
-        fingerprint: formatFingerprint(),
-        issuedAt: new Date().toISOString().replace('T', ' ').slice(0, 19) + 'Z',
-      }
-      onIssued(identity)
-      setPhase('done')
-    }, 800)
-  }
-
+export function Step3IssueIdentity() {
   return (
     <section data-testid="onboarding-step-identity">
       <h2 className="onb-body-title">Issue first agent identity.</h2>
       <p className="onb-body-sub">
-        Every agent gets a unique cryptographic identity (DID). The keypair is
-        generated locally — the private key never leaves your control plane.
+        Agent identity is minted by the gateway when your agent registers. The
+        dashboard has no path to it, so nothing on this page can issue one for
+        you.
       </p>
 
-      <div className="onb-id-card">
-        <div
-          className={`onb-id-glyph${phase === 'done' ? ' is-done' : ''}${phase === 'spinning' ? ' is-spinning' : ''}`}
-          data-testid="onboarding-identity-glyph"
-          aria-hidden
-        >
-          {phase === 'done' ? '✓' : phase === 'spinning' ? '' : '◯'}
-        </div>
-
-        {phase === 'idle' && (
+      <StatusState
+        state="not-supported"
+        title="Identity issuance is not available from the dashboard"
+        description={
           <>
-            <button
-              type="button"
-              className="onb-id-action-btn"
-              data-testid="onboarding-identity-generate"
-              onClick={handleGenerate}
-            >
-              ▸ generate keypair
-            </button>
-            <div className="onb-id-hint">Ed25519 · 256-bit · ~1.4s</div>
+            Your agent obtains its DID during the SDK&rsquo;s registration
+            handshake with the gateway, which requires a keypair the SDK holds
+            and a possession proof this page cannot produce. There is no HTTP
+            endpoint to call, so this step cannot generate a keypair, and no key
+            material is created, transmitted, or written to disk by the browser.
           </>
-        )}
-
-        {phase === 'spinning' && (
-          <>
-            <button type="button" className="onb-id-action-btn" disabled>
-              generating…
-            </button>
-            <div className="onb-id-hint">
-              deriving curve point · signing CSR · publishing to registry
-            </div>
-          </>
-        )}
-
-        {phase === 'done' && id && (
-          <>
-            <div className="onb-id-issued" data-testid="onboarding-identity-issued">
-              ✓ identity issued
-            </div>
-            <dl className="onb-id-out">
-              <div className="onb-id-row">
-                <dt className="onb-id-key">DID</dt>
-                <dd
-                  className="onb-id-val"
-                  data-testid="onboarding-identity-did"
-                >
-                  {id.did}
-                </dd>
-              </div>
-              <div className="onb-id-row">
-                <dt className="onb-id-key">algorithm</dt>
-                <dd className="onb-id-val">{id.alg}</dd>
-              </div>
-              <div className="onb-id-row">
-                <dt className="onb-id-key">fingerprint</dt>
-                <dd className="onb-id-val is-fp">{id.fingerprint}</dd>
-              </div>
-              <div className="onb-id-row">
-                <dt className="onb-id-key">issued</dt>
-                <dd className="onb-id-val">{id.issuedAt}</dd>
-              </div>
-            </dl>
-            <div className="onb-id-hint" data-testid="onboarding-identity-key-hint">
-              private key stored in your <code>~/.aa/keys/</code> · do not commit
-            </div>
-          </>
-        )}
-      </div>
+        }
+        detail="Run your agent with the SDK installed — step 5 reports the registry state once it registers."
+        testId="onboarding-identity-unsupported"
+      />
     </section>
   )
 }
