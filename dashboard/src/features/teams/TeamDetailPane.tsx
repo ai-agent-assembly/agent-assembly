@@ -2,19 +2,20 @@ import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useBudgetTreeQuery } from '../costs/api'
 import { useApprovalsQuery } from '../approvals/api'
-import { useTeamTopologyQuery } from './api'
+import { useTeamPoliciesQuery, useTeamTopologyQuery } from './api'
 import { selectTeamApprovals, selectTeamBudget } from './detailData'
 import { TeamBudgetCard } from './TeamBudgetCard'
 import { TeamApprovalRoutingCard } from './TeamApprovalRoutingCard'
 import { TeamMembersCard } from './TeamMembersCard'
+import { TeamActivePoliciesCard } from './TeamActivePoliciesCard'
 
 interface TeamDetailPaneProps {
   teamId: string | undefined
 }
 
 /**
- * Right pane of the two-pane Teams view: header + the three detail cards
- * (budget usage, approval routing, members) for the selected team. Each card
+ * Right pane of the two-pane Teams view: header + the four detail cards
+ * (budget usage, approval routing, active policies, members). Each card
  * owns its own null-safe/loading state, so a slow or missing dependency degrades
  * one card rather than the whole pane.
  */
@@ -22,6 +23,7 @@ export function TeamDetailPane({ teamId }: Readonly<TeamDetailPaneProps>) {
   const budgetTree = useBudgetTreeQuery()
   const approvalsQuery = useApprovalsQuery()
   const topology = useTeamTopologyQuery(teamId)
+  const policiesQuery = useTeamPoliciesQuery(teamId)
 
   const members = topology.data?.members ?? []
   const budget = useMemo(
@@ -70,6 +72,11 @@ export function TeamDetailPane({ teamId }: Readonly<TeamDetailPaneProps>) {
       <div className="teams-detail-cards">
         <TeamBudgetCard budget={budget} isLoading={budgetTree.isLoading} />
         <TeamApprovalRoutingCard approvals={approvals} isLoading={approvalsQuery.isLoading} />
+        <TeamActivePoliciesCard
+          policies={policiesQuery.data ?? []}
+          isLoading={policiesQuery.isLoading}
+          isError={policiesQuery.isError}
+        />
         <TeamMembersCard members={members} isLoading={topology.isLoading} isError={topology.isError} />
       </div>
     </div>

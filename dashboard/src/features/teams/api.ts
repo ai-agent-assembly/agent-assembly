@@ -11,6 +11,7 @@ export type TeamTopology = components['schemas']['TeamTopology']
 export type AgentLineage = components['schemas']['AgentLineage']
 export type LineageStep = components['schemas']['LineageStep']
 export type AgentNode = components['schemas']['AgentNode']
+export type TeamPolicy = components['schemas']['TeamPolicyResponse']
 
 export interface TeamListRow {
   team_id: string
@@ -39,6 +40,28 @@ export function useCostSummaryQuery() {
       const { data, error } = await api.GET('/api/v1/costs')
       if (error) throw new Error('Failed to fetch cost summary')
       return data as CostSummary
+    },
+  })
+}
+
+/**
+ * Policies in force for one team (`GET /api/v1/policies/team/{team_id}`,
+ * AAASM-5096) — the union of the team's agents' policy cascades, deduplicated
+ * by document. Backs the Active-policies card.
+ *
+ * Kept separate from `GET /api/v1/policies`, which requires Admin scope because
+ * it discloses raw policy YAML; this one is readable by the team's own operator.
+ */
+export function useTeamPoliciesQuery(teamId: string | undefined) {
+  return useQuery({
+    queryKey: ['policies', 'team', teamId],
+    enabled: !!teamId,
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/v1/policies/team/{team_id}', {
+        params: { path: { team_id: teamId! } },
+      })
+      if (error) throw new Error('Failed to fetch team policies')
+      return data?.policies ?? []
     },
   })
 }
