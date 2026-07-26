@@ -1,3 +1,5 @@
+import type { Certain } from '../../lib/truthfulness'
+
 // Member roles are the gateway's real policy-RBAC role ids, not a separate
 // "membership tier" vocabulary. Keeping them identical to the ids returned by
 // `GET /api/v1/iam/roles` is what lets the Roles-tab cards join member counts
@@ -95,34 +97,52 @@ export interface GeneratedApiKey {
   secret: string
 }
 
-export const AGENT_STATUSES = ['online', 'offline', 'degraded'] as const
-export type AgentStatus = (typeof AGENT_STATUSES)[number]
-
+/**
+ * One row of the Roles tab's agent registry, projected from `AgentResponse`
+ * (`GET /api/v1/agents`).
+ *
+ * Fields the registry does not carry are `Certain` absences rather than
+ * values. That is the load-bearing part: the old shape declared
+ * `owner_team: string` and a closed `status` union, and the only way to
+ * satisfy those types without an endpoint was to fabricate agents. A
+ * `Certain` field cannot be satisfied by invention — whoever builds one has
+ * to name the state the absence is in.
+ */
 export interface Agent {
-  id: string
-  name: string
-  owner_team: string
-  status: AgentStatus
-  last_seen: string | null
+  readonly id: string
+  readonly name: string
+  /**
+   * Team that owns this agent. Permanently absent: `GET /api/v1/agents`
+   * models no owning team for a registered agent.
+   */
+  readonly owner_team: Certain<string>
+  /** Runtime status, verbatim from the registry. */
+  readonly status: Certain<string>
+  /** Timestamp of the agent's most recent event (`AgentResponse.last_event`). */
+  readonly last_seen: Certain<string>
 }
 
-export const INHERITANCE_KINDS = ['team', 'role', 'policy'] as const
-export type InheritanceKind = (typeof INHERITANCE_KINDS)[number]
-
-export interface InheritanceSource {
-  kind: InheritanceKind
-  /** Display name of the team / role / policy that granted this permission. */
-  name: string
-  granted_at: string
+/** One scope's contribution to an agent's capability cascade. */
+export interface CascadeScopeGrants {
+  /** Wire-format scope label, e.g. `global`, `team:platform`. */
+  readonly scope: string
+  readonly allow: readonly string[]
+  readonly deny: readonly string[]
 }
 
-export interface EffectivePermission {
-  /** Permission identifier, e.g. `policies.read`, `audit.export`. */
-  permission: string
-  source: InheritanceSource
-}
-
-export interface AgentPermissions {
-  agent_id: string
-  effective: EffectivePermission[]
+/**
+ * An agent's effective capabilities plus the cascade they were resolved from
+ * (`GET /api/v1/agents/{id}/capabilities`).
+ *
+ * `sources` is the evidence, not decoration: an empty `sources` is the
+ * AAASM-5106 condition — the gateway resolved no policy document, so an empty
+ * `allow`/`deny` means *nothing was evaluated*, not *nothing is granted*. The
+ * panel has to tell those apart, which is why the raw cascade is carried
+ * through rather than flattened into a permission list.
+ */
+export interface AgentPermissionCascade {
+  readonly agentId: string
+  readonly allow: readonly string[]
+  readonly deny: readonly string[]
+  readonly sources: readonly CascadeScopeGrants[]
 }
