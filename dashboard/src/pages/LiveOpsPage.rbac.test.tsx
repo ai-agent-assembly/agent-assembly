@@ -197,3 +197,19 @@ describe('LiveOpsPage write gates (AAASM-5148)', () => {
     expect(screen.queryByTestId('toast')).toBeNull()
   })
 })
+
+describe('LiveOpsPage approvals stream freshness', () => {
+  it('says the count is not live when the approvals socket is down', () => {
+    vi.mocked(useApprovalsStream).mockReturnValue({ connected: false })
+    renderWithScopes(['write'])
+    const note = screen.getByTestId('live-ops-approvals-stale')
+    expect(note).toBeInTheDocument()
+    expect(note.getAttribute('title')).toMatch(/not arriving/i)
+  })
+
+  it('says nothing when the approvals socket is connected', () => {
+    vi.mocked(useApprovalsStream).mockReturnValue({ connected: true })
+    renderWithScopes(['write'])
+    expect(screen.queryByTestId('live-ops-approvals-stale')).toBeNull()
+  })
+})

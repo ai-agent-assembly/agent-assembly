@@ -369,6 +369,18 @@
   color: var(--ink-3);
 }
 
+/* "not live" note beside the waiting count: the approvals socket is down, so
+   the count refreshes only on reload. Deliberately quiet — it qualifies the
+   number next to it rather than competing with it. */
+.live-page__pane-note {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--warn);
+  cursor: help;
+}
+
 /* Waiting-count chip in the approvals pane head (AAASM-5167). Mirrors the
    hi-fi's `{approvals.length} waiting` chip. It hosts a TruthfulValue, so it
    must not assume its content is a number — the absence marker renders a `—`

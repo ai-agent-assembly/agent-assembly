@@ -147,7 +147,7 @@ export function LiveOpsPage() {
   // endpoints require) and the `types=approval` socket keeps them current —
   // the ops socket subscribes to `violation,ops_change` and never sees one.
   const approvalsQuery = useApprovalsQuery()
-  useApprovalsStream()
+  const { connected: approvalsLive } = useApprovalsStream()
   const approvals = certainFromQuery<Approval[]>(approvalsQuery)
   const waitingCount = mapCertain(approvals, (list) => list.length)
 
@@ -529,6 +529,19 @@ export function LiveOpsPage() {
               <TruthfulValue value={waitingCount} testId="live-ops-approvals-count" />{' '}
               waiting
             </span>
+            {/* The count is only as fresh as the socket feeding it. The ops
+                stream states its connection in the header pill; this queue had
+                no equivalent, so a dead approvals socket left a stale count
+                looking live. */}
+            {!approvalsLive && (
+              <span
+                className="live-page__pane-note"
+                data-testid="live-ops-approvals-stale"
+                title="Live approval updates are not arriving; the count refreshes only on reload."
+              >
+                not live
+              </span>
+            )}
           </header>
           <div className="live-page__pane-body">
             <ApprovalPool
