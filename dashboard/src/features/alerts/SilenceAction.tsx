@@ -40,6 +40,13 @@ export function SilenceAction({ alertId, silenced = false }: Readonly<SilenceAct
     return Number.isFinite(minutes) && minutes > 0 ? minutes * 60 : null
   }
 
+  // Extracted rather than nested inline: a read-only caller sees the control as
+  // unavailable, a write caller sees it as busy or ready.
+  let submitCursor: string
+  if (!canWrite) submitCursor = 'not-allowed'
+  else if (silence.isPending) submitCursor = 'wait'
+  else submitCursor = 'pointer'
+
   const submit = async () => {
     const seconds = resolveSeconds()
     if (seconds === null) {
@@ -164,7 +171,7 @@ export function SilenceAction({ alertId, silenced = false }: Readonly<SilenceAct
           color: 'var(--text-on-accent)',
           border: 'none',
           borderRadius: '4px',
-          cursor: canWrite ? (silence.isPending ? 'wait' : 'pointer') : 'not-allowed',
+          cursor: submitCursor,
           fontSize: '0.875rem',
         }}
       >

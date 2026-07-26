@@ -122,6 +122,13 @@ export function AlertRuleForm({
   else if (initialValue) submitLabel = 'Save changes'
   else submitLabel = 'Create rule'
 
+  // Same shape as submitLabel above: a read-only caller sees the control as
+  // unavailable, a write caller sees it as busy or ready.
+  let submitCursor: string
+  if (!canWrite) submitCursor = 'not-allowed'
+  else if (submitting) submitCursor = 'wait'
+  else submitCursor = 'pointer'
+
   return (
     <div
       role="dialog"
@@ -264,7 +271,7 @@ export function AlertRuleForm({
                   color: 'var(--text-on-accent)',
                   border: 'none',
                   borderRadius: '4px',
-                  cursor: canWrite ? (submitting ? 'wait' : 'pointer') : 'not-allowed',
+                  cursor: submitCursor,
                 }}
               >
                 {submitLabel}
