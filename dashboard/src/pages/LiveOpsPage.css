@@ -253,8 +253,15 @@
   white-space: nowrap;
 }
 
-.live-page__halt-all:hover {
+.live-page__halt-all:hover:enabled {
   filter: brightness(1.08);
+}
+
+/* AAASM-5148: a read-scope caller must see the kill switch is not theirs to
+   pull, not discover it from a 403 after the confirmation dialog. */
+.live-page__halt-all:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .live-page__halt-all:focus-visible {

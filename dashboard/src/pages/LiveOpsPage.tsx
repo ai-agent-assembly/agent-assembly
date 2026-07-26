@@ -5,6 +5,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/states'
 import { TruthfulValue } from '../components/truthfulness'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 import { certainFromQuery, mapCertain } from '../lib/truthfulness'
 import { useAgentsQuery } from '../features/agents/api'
 import { useApprovalsQuery, type Approval } from '../features/approvals/api'
@@ -128,6 +129,8 @@ export function LiveOpsPage() {
 
   const agentsQuery = useAgentsQuery()
   const teamsQuery = useTeamsQuery()
+  const { canWrite } = usePermissions()
+
   // AAASM-5128: the approval queue is its own data source, not a slice of the
   // ops ring. The query supplies the rows (with the UUID ids the decide
   // endpoints require) and the `types=approval` socket keeps them current —
@@ -247,6 +250,7 @@ export function LiveOpsPage() {
 
   async function handleHaltAll() {
     setConfirmingHaltAll(false)
+    if (!canWrite) return
     try {
       await haltGlobal()
       toast('Halt-all issued — every agent operation is stopping', 'error')
@@ -389,6 +393,8 @@ export function LiveOpsPage() {
           type="button"
           className="live-page__halt-all"
           onClick={() => setConfirmingHaltAll(true)}
+          disabled={!canWrite}
+          title={canWrite ? undefined : WRITE_REQUIRED_HINT}
           data-testid="live-ops-halt-all"
         >
           ⏹ halt all
@@ -522,8 +528,12 @@ export function LiveOpsPage() {
         </section>
       </div>
 
+      {/* AAASM-5148: the fleet-wide kill switch is the highest-blast-radius
+          control on the page, so the gate is applied to the dialog as well as
+          the button that opens it — a scope that lapses while the dialog is
+          open must close it, not leave a live "Halt all" behind. */}
       <ConfirmDialog
-        open={confirmingHaltAll}
+        open={confirmingHaltAll && canWrite}
         title="Halt all operations?"
         body={
           <p>
