@@ -44,23 +44,9 @@
   color: var(--shell-text);
 }
 
-.iam-agent-perm-panel__loading,
-.iam-agent-perm-panel__error {
+.iam-agent-perm-panel__loading {
   color: var(--shell-text-muted);
   font-size: 0.85rem;
-}
-
-.iam-agent-perm-panel__error {
-  color: var(--status-danger-hover-text);
-}
-
-.iam-agent-perm-panel__empty {
-  padding: 1rem;
-  text-align: center;
-  color: var(--shell-text-muted);
-  font-size: 0.85rem;
-  border: 1px dashed var(--shell-border-subtle);
-  border-radius: 0.375rem;
 }
 
 .iam-agent-perm-group {
@@ -89,7 +75,7 @@
 
 .iam-agent-perm-row {
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: 1fr auto;
   gap: 0.5rem;
   align-items: center;
   padding: 0.25rem 0.5rem;
@@ -103,14 +89,42 @@
   font-weight: 600;
 }
 
-.iam-agent-perm-row__source {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+.iam-agent-perm-row__verdict {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 9999px;
+}
+
+.iam-agent-perm-row__verdict--allow {
+  background: var(--status-success-bg);
+  color: var(--status-success-text-strong);
+}
+
+.iam-agent-perm-row__verdict--deny {
+  background: var(--badge-amber-bg);
+  color: var(--alert-banner-text);
+}
+
+.iam-agent-perm-group__note {
+  margin: 0;
   font-size: 0.75rem;
   color: var(--shell-text-muted);
 }
 
-.iam-agent-perm-row__granted {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+.iam-agent-perm-group__granted {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0;
   font-size: 0.7rem;
   color: var(--shell-text-muted);
+}
+
+.iam-agent-perm-group__granted-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }

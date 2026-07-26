@@ -52,14 +52,6 @@
   font-weight: 600;
 }
 
-.iam-agent-list__error {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  color: var(--status-danger-hover-text);
-  padding: 0.75rem 0;
-}
-
 .iam-agent-status {
   display: inline-block;
   padding: 2px 8px;
@@ -70,6 +62,10 @@
   letter-spacing: 0.04em;
 }
 
-.iam-agent-status--online { background: var(--status-success-bg); color: var(--status-success-text-strong); }
-.iam-agent-status--offline { background: var(--shell-surface-muted); color: var(--shell-text-strong); }
-.iam-agent-status--degraded { background: var(--badge-amber-bg); color: var(--alert-banner-text); }
+/* Tones for the three liveness words the registry is known to emit. Any other
+   value the gateway sends still renders — it just falls through to `--other`
+   rather than borrowing a colour that would assert a state it never claimed. */
+.iam-agent-status--active { background: var(--status-success-bg); color: var(--status-success-text-strong); }
+.iam-agent-status--idle { background: var(--shell-surface-muted); color: var(--shell-text-strong); }
+.iam-agent-status--suspended { background: var(--badge-amber-bg); color: var(--alert-banner-text); }
+.iam-agent-status--other { background: var(--shell-surface-muted); color: var(--shell-text-muted); }
