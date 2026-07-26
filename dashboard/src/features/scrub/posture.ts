@@ -68,7 +68,18 @@ export const SCRUBBING_RUNTIME_STATE: Certain<string> = absent(
   'The scanner’s global on/off state is not exposed over the API (AAASM-5174).',
 )
 
-/** Per-detector hit counts over 24h — no endpoint aggregates by kind. */
+/**
+ * Per-detector hit counts over 24h — no endpoint aggregates by kind.
+ *
+ * `not-supported` rather than `unknown` even though related raw material is on
+ * the wire: `AlertResponse.detected_pattern_type` (`openapi/v1.yaml:4045-4051`,
+ * served by `GET /api/v1/alerts`) names the credential kind behind a
+ * `secret_detected` alert. It is not a hit count and cannot be summed into one —
+ * alerts are rule-triggered and deduped, so one alert can stand for many
+ * detections and a detection inside an open dedup window produces no alert at
+ * all. Turning that into a per-detector counter needs the aggregation described
+ * in AAASM-5174 item 2, not a different fetch here.
+ */
 export const DETECTOR_HITS_24H: Certain<number> = absent(
   'not-supported',
   'No endpoint reports per-detector hit counts (AAASM-5174).',
