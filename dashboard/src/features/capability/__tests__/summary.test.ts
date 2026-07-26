@@ -30,6 +30,11 @@ function makeAgent(patch: Partial<CapabilityAgent> = {}): CapabilityAgent {
     name: 'agent',
     framework: 'LangChain',
     owner: 'team-x',
+    // Kept populated even though this suite never reads it: AAASM-5104 makes
+    // `CapabilityAgent.trust` required, so a fixture omitting it would break
+    // type-check the moment that lands. `50` rather than `null` because
+    // today's `trust?: number` rejects null — 50 satisfies both shapes.
+    trust: 50,
     mode: 'enforce',
     status: 'active',
     lastSeen: '1m ago',

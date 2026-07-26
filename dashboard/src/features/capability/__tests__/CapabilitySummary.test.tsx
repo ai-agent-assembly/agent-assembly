@@ -17,6 +17,9 @@ const AGENTS: CapabilityAgent[] = ['a', 'b'].map((id) => ({
   id,
   name: `agent-${id}`,
   framework: 'langgraph',
+  // Populated for forward-compatibility with AAASM-5104, which makes `trust`
+  // required; `50` satisfies both today's `trust?: number` and that change.
+  trust: 50,
   status: 'active',
   lastSeen: '2026-07-26T00:00:00Z',
   caps: {
