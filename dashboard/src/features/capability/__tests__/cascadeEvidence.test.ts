@@ -25,6 +25,30 @@ describe('cascadeEvidenceFromQuery', () => {
     expect(isKnown(evidence) && evidence.value.documentCount).toBe(2)
   })
 
+  it('accepts a TanStack success result verbatim, error: null included', () => {
+    // This is the shape `CapabilityPage` actually passes. Before the fix the
+    // `error: null` TanStack sets on every success was read as a thrown value,
+    // so a healthy matrix reported Unavailable across the whole summary row.
+    const evidence = cascadeEvidenceFromQuery({
+      data: matrix(2),
+      error: null,
+      isError: false,
+      isPending: false,
+    })
+    expect(isKnown(evidence)).toBe(true)
+    expect(isKnown(evidence) && evidence.value.documentCount).toBe(2)
+  })
+
+  it('accepts a TanStack pending result verbatim as unknown', () => {
+    const evidence = cascadeEvidenceFromQuery({
+      data: undefined,
+      error: null,
+      isError: false,
+      isPending: true,
+    })
+    expect(isAbsent(evidence) && evidence.state).toBe('unknown')
+  })
+
   it('keeps a failed request separate from an empty cascade', () => {
     // Two different problems with two different fixes: retry the request, or
     // load a policy. Collapsing them would send the operator the wrong way.

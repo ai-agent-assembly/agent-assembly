@@ -40,9 +40,13 @@ export function CapabilityPage() {
   // matrix actually on screen — optimistic edits included — so a bulk override
   // cannot slip past the truthfulness normalisation the fetched matrix goes
   // through.
+  //
+  // `loadError` is passed through as TanStack hands it over — `null` on a
+  // healthy query — rather than being coerced to `undefined`. Normalising it
+  // here would hide whether the helper actually accepts the library's shape.
   const cascadeEvidence = cascadeEvidenceFromQuery({
     isPending,
-    error: loadError ?? undefined,
+    error: loadError,
     data: matrix,
   })
   const [filters, setFilters] = useState<CapabilityFilters>(EMPTY_FILTERS)
