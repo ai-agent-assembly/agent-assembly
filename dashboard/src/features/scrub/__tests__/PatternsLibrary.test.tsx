@@ -1,132 +1,88 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { PatternsLibrary } from '../PatternsLibrary'
-import type { ScrubPattern } from '../types'
+import { BUILT_IN_DETECTORS } from '../detectors'
+import type { ScrubDetector } from '../types'
 
-const PATTERNS: ScrubPattern[] = [
-  {
-    id: 'AWS_KEY',
-    name: 'AWS access key',
-    regex: 'AKIA[0-9A-Z]{16}',
-    example: 'AKIAIOSFODNN7EXAMPLE',
-    replace: '[REDACTED:AWS_KEY]',
-    severity: 'critical',
-    hits24h: 14,
-    enabled: true,
-  },
-  {
-    id: 'PHONE',
-    name: 'Phone',
-    regex: '[0-9]{10}',
-    example: '0123456789',
-    replace: '[REDACTED:PHONE]',
-    severity: 'low',
-    hits24h: 12,
-    enabled: false,
-  },
-  {
-    id: 'EMAIL_PII',
-    name: 'Email',
-    regex: '[a-z]+@[a-z]+',
-    example: 'a@b',
-    replace: '[REDACTED:EMAIL]',
-    severity: 'medium',
-    hits24h: 87,
-    enabled: true,
-  },
+const DETECTORS: ScrubDetector[] = [
+  BUILT_IN_DETECTORS.find((d) => d.id === 'AwsAccessKey')!,
+  BUILT_IN_DETECTORS.find((d) => d.id === 'EmailAddress')!,
+  BUILT_IN_DETECTORS.find((d) => d.id === 'Custom')!,
 ]
 
+const renderLibrary = (
+  overrides: Partial<React.ComponentProps<typeof PatternsLibrary>> = {},
+) =>
+  render(
+    <PatternsLibrary
+      detectors={DETECTORS}
+      selectedId="AwsAccessKey"
+      onSelect={vi.fn()}
+      matchCounts={{}}
+      {...overrides}
+    />,
+  )
+
 describe('PatternsLibrary', () => {
-  it('renders one row per pattern with severity, hits, and a toggle', () => {
-    render(
-      <PatternsLibrary
-        patterns={PATTERNS}
-        selectedId="AWS_KEY"
-        onSelect={vi.fn()}
-        onToggle={vi.fn()}
-        matchCounts={{}}
-      />,
-    )
-    expect(screen.getByTestId('scrub-patterns-row-AWS_KEY')).toBeInTheDocument()
-    expect(screen.getByTestId('scrub-patterns-row-PHONE')).toBeInTheDocument()
-    expect(screen.getByTestId('scrub-patterns-row-EMAIL_PII')).toBeInTheDocument()
-    expect(screen.getByTestId('scrub-patterns-sev-AWS_KEY')).toHaveTextContent('critical')
+  it('renders one row per detector with its category and origin', () => {
+    renderLibrary()
+    expect(screen.getByTestId('scrub-patterns-row-AwsAccessKey')).toBeInTheDocument()
+    expect(screen.getByTestId('scrub-patterns-row-EmailAddress')).toBeInTheDocument()
+    expect(screen.getByTestId('scrub-patterns-cat-AwsAccessKey')).toHaveTextContent('api-key')
+    expect(screen.getByTestId('scrub-patterns-origin-AwsAccessKey')).toHaveTextContent('built-in')
+    expect(screen.getByTestId('scrub-patterns-origin-Custom')).toHaveTextContent('policy')
   })
 
-  it('shows the in-sample chip only for patterns with non-zero match counts', () => {
-    render(
-      <PatternsLibrary
-        patterns={PATTERNS}
-        selectedId="AWS_KEY"
-        onSelect={vi.fn()}
-        onToggle={vi.fn()}
-        matchCounts={{ AWS_KEY: 3 }}
-      />,
-    )
-    expect(screen.getByTestId('scrub-patterns-matchchip-AWS_KEY')).toHaveTextContent(
+  it('offers no enable/disable control at all', () => {
+    renderLibrary()
+    // The toggle asserted a per-detector switch the product does not have; its
+    // absence is the fix, so its return must fail this test (AAASM-5174).
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+    expect(screen.queryByTestId('scrub-patterns-toggle-AwsAccessKey')).toBeNull()
+  })
+
+  it('renders every 24h cell as an explicit absence, never a number', () => {
+    renderLibrary()
+    for (const d of DETECTORS) {
+      const cell = screen.getByTestId(`scrub-patterns-hits-${d.id}`)
+      expect(cell).toHaveAttribute('data-truth-state', 'not-supported')
+      // The visible cell is the glyph alone: no count of any kind survives.
+      expect(cell.querySelector('.truth-absent__glyph')?.textContent).toBe('—')
+    }
+  })
+
+  it('says in visible text that the catalogue is read-only', () => {
+    renderLibrary()
+    expect(screen.getByTestId('scrub-patterns-note')).toHaveTextContent(/read-only/i)
+    expect(screen.getByTestId('scrub-patterns-note')).toHaveTextContent('AAASM-5174')
+  })
+
+  it('shows the in-sample chip only for detectors with non-zero match counts', () => {
+    renderLibrary({ matchCounts: { AwsAccessKey: 3 } })
+    expect(screen.getByTestId('scrub-patterns-matchchip-AwsAccessKey')).toHaveTextContent(
       '3 in sample',
     )
-    expect(screen.queryByTestId('scrub-patterns-matchchip-EMAIL_PII')).toBeNull()
+    expect(screen.queryByTestId('scrub-patterns-matchchip-EmailAddress')).toBeNull()
   })
 
   it('calls onSelect when a row is clicked', () => {
     const onSelect = vi.fn()
-    render(
-      <PatternsLibrary
-        patterns={PATTERNS}
-        selectedId="AWS_KEY"
-        onSelect={onSelect}
-        onToggle={vi.fn()}
-        matchCounts={{}}
-      />,
-    )
-    fireEvent.click(screen.getByTestId('scrub-patterns-row-EMAIL_PII'))
-    expect(onSelect).toHaveBeenCalledWith('EMAIL_PII')
-  })
-
-  it('calls onToggle (and not onSelect) when the checkbox is clicked', () => {
-    const onSelect = vi.fn()
-    const onToggle = vi.fn()
-    render(
-      <PatternsLibrary
-        patterns={PATTERNS}
-        selectedId="AWS_KEY"
-        onSelect={onSelect}
-        onToggle={onToggle}
-        matchCounts={{}}
-      />,
-    )
-    fireEvent.click(screen.getByTestId('scrub-patterns-toggle-EMAIL_PII'))
-    expect(onToggle).toHaveBeenCalledWith('EMAIL_PII')
-    expect(onSelect).not.toHaveBeenCalled()
+    renderLibrary({ onSelect })
+    fireEvent.click(screen.getByTestId('scrub-patterns-row-EmailAddress'))
+    expect(onSelect).toHaveBeenCalledWith('EmailAddress')
   })
 
   it('filters by name and id when the search input is non-empty', () => {
-    render(
-      <PatternsLibrary
-        patterns={PATTERNS}
-        selectedId="AWS_KEY"
-        onSelect={vi.fn()}
-        onToggle={vi.fn()}
-        matchCounts={{}}
-      />,
-    )
-    const search = screen.getByTestId('scrub-patterns-search')
-    fireEvent.change(search, { target: { value: 'phone' } })
-    expect(screen.queryByTestId('scrub-patterns-row-AWS_KEY')).toBeNull()
-    expect(screen.getByTestId('scrub-patterns-row-PHONE')).toBeInTheDocument()
+    renderLibrary()
+    fireEvent.change(screen.getByTestId('scrub-patterns-search'), {
+      target: { value: 'email' },
+    })
+    expect(screen.queryByTestId('scrub-patterns-row-AwsAccessKey')).toBeNull()
+    expect(screen.getByTestId('scrub-patterns-row-EmailAddress')).toBeInTheDocument()
   })
 
-  it('shows the empty-search row when no patterns match', () => {
-    render(
-      <PatternsLibrary
-        patterns={PATTERNS}
-        selectedId="AWS_KEY"
-        onSelect={vi.fn()}
-        onToggle={vi.fn()}
-        matchCounts={{}}
-      />,
-    )
+  it('shows the empty-search row when no detector matches', () => {
+    renderLibrary()
     fireEvent.change(screen.getByTestId('scrub-patterns-search'), {
       target: { value: 'xyznomatch' },
     })

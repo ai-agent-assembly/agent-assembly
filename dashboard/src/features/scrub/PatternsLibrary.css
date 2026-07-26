@@ -63,8 +63,19 @@
   z-index: 1;
 }
 
-.scrub-patterns-col-toggle {
-  width: 28px;
+.scrub-patterns-note {
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--ink-4);
+}
+
+.scrub-patterns-col-origin {
+  width: 74px;
 }
 
 .scrub-patterns-col-hits {
@@ -84,21 +95,30 @@
   background: var(--paper-3);
 }
 
-.scrub-patterns-row.is-disabled {
-  opacity: 0.55;
-}
-
 .scrub-patterns-row td {
   padding: 8px 10px;
   vertical-align: middle;
 }
 
-.scrub-patterns-toggle-cell {
-  width: 28px;
+.scrub-patterns-origin-cell {
+  width: 74px;
 }
 
-.scrub-patterns-toggle-cell input {
-  cursor: pointer;
+/* Origin is a provenance label, not a state: it says where the detector comes
+   from, which is checkable, rather than whether it is running, which is not. */
+.scrub-patterns-origin {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  border: 1px solid var(--line-2);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.scrub-patterns-origin--policy-defined {
+  color: var(--info);
+  border-color: var(--info);
 }
 
 .scrub-patterns-name {
@@ -128,17 +148,26 @@
   text-transform: lowercase;
 }
 
-.scrub-patterns-sev {
+/* Category, transcribed from the scanner's own section grouping. It replaces a
+   `severity` scale that existed nowhere behind the product. Colour distinguishes
+   the groups; it deliberately does not encode a risk ranking the product has
+   never made. */
+.scrub-patterns-cat {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 600;
-  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
 }
 
-.scrub-patterns-sev--critical { color: var(--danger); }
-.scrub-patterns-sev--high { color: var(--warn); }
-.scrub-patterns-sev--medium { color: var(--info); }
-.scrub-patterns-sev--low { color: var(--ink-3); }
+.scrub-patterns-cat--api-key,
+.scrub-patterns-cat--private-key { color: var(--danger); }
+.scrub-patterns-cat--auth-token,
+.scrub-patterns-cat--cloud-credential { color: var(--warn); }
+.scrub-patterns-cat--database-url,
+.scrub-patterns-cat--pii { color: var(--info); }
+.scrub-patterns-cat--generic,
+.scrub-patterns-cat--policy-defined { color: var(--ink-3); }
 
 .scrub-patterns-hits {
   text-align: right;

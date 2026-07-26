@@ -77,11 +77,14 @@ function describeAtViewport(width: number, height: number) {
     test('severity chips resolve to the documented token RGBs', async ({ page }) => {
       await gotoScrub(page)
 
+      // AAASM-5156: the `severity` scale these chips rendered existed nowhere
+      // behind the product, so the column now carries the scanner's own
+      // category grouping. Same four token colours, same visual contract.
       const expectations: Array<[string, string]> = [
-        ['.scrub-patterns-sev--critical', HIFI_TOKENS.danger],
-        ['.scrub-patterns-sev--high', HIFI_TOKENS.warn],
-        ['.scrub-patterns-sev--medium', HIFI_TOKENS.info],
-        ['.scrub-patterns-sev--low', HIFI_TOKENS.ink3],
+        ['.scrub-patterns-cat--api-key', HIFI_TOKENS.danger],
+        ['.scrub-patterns-cat--auth-token', HIFI_TOKENS.warn],
+        ['.scrub-patterns-cat--pii', HIFI_TOKENS.info],
+        ['.scrub-patterns-cat--generic', HIFI_TOKENS.ink3],
       ]
       for (const [selector, expected] of expectations) {
         const locator = page.locator(selector).first()
@@ -131,9 +134,11 @@ function describeAtViewport(width: number, height: number) {
       )
       expect(color).toBe(HIFI_TOKENS.scrub)
 
-      // Placeholder text follows the [REDACTED:XXX] pattern.
+      // Placeholder text is the label `aa-security` actually emits —
+      // `[REDACTED:<CredentialKind>]`, CamelCase (AAASM-5156). The previous
+      // SHOUT_CASE ids were labels the gateway never wrote.
       const text = await redacted.textContent()
-      expect(text).toMatch(/^\[REDACTED:[A-Z0-9_]+\]$/)
+      expect(text).toMatch(/^\[REDACTED:[A-Za-z]+\]$/)
 
       await page.screenshot({
         path: `${EVIDENCE_DIR}/scrub-${width}-payload-diff.png`,

@@ -1,79 +1,77 @@
 import { describe, it, expect } from 'vitest'
-import { countMatchesByPattern, tokenize } from '../tokenize'
-import type { ScrubPattern } from '../types'
+import { countMatchesByDetector, tokenize } from '../tokenize'
+import { BUILT_IN_DETECTORS, PREVIEWABLE_DETECTORS } from '../detectors'
+import type { ScrubDetector } from '../types'
 
-const AWS: ScrubPattern = {
-  id: 'AWS_KEY',
-  name: 'AWS access key ID',
-  regex: 'AKIA[0-9A-Z]{16}',
-  example: 'AKIAIOSFODNN7EXAMPLE',
-  replace: '[REDACTED:AWS_KEY]',
-  severity: 'critical',
-  hits24h: 0,
-  enabled: true,
+const byId = (id: string): ScrubDetector => {
+  const found = BUILT_IN_DETECTORS.find((d) => d.id === id)
+  if (!found) throw new Error(`no detector ${id}`)
+  return found
 }
 
-const EMAIL: ScrubPattern = {
-  id: 'EMAIL_PII',
-  name: 'Email',
-  regex: '[a-z0-9._%+-]+@[a-z0-9.-]+',
-  example: 'a@b.co',
-  replace: '[REDACTED:EMAIL]',
-  severity: 'medium',
-  hits24h: 0,
-  enabled: true,
-}
-
-const PHONE_DISABLED: ScrubPattern = {
-  ...EMAIL,
-  id: 'PHONE',
-  name: 'Phone',
-  regex: '[0-9]{10}',
-  example: '0123456789',
-  replace: '[REDACTED:PHONE]',
-  severity: 'low',
-  enabled: false,
-}
+const AWS = byId('AwsAccessKey')
+const EMAIL = byId('EmailAddress')
+const ENTROPY = byId('GenericHighEntropy')
 
 describe('tokenize', () => {
-  it('returns a single plain token when no patterns are enabled', () => {
-    const tokens = tokenize('hello world', [PHONE_DISABLED])
-    expect(tokens).toEqual([{ kind: 'plain', text: 'hello world' }])
+  it('returns a single plain token when no detector can be approximated', () => {
+    expect(tokenize('hello world', [ENTROPY])).toEqual([{ kind: 'plain', text: 'hello world' }])
   })
 
-  it('returns an empty array for empty input with no enabled patterns', () => {
-    expect(tokenize('', [PHONE_DISABLED])).toEqual([])
+  it('returns an empty array for empty input with no usable detector', () => {
+    expect(tokenize('', [ENTROPY])).toEqual([])
   })
 
-  it('emits a single match token when the entire input is one pattern hit', () => {
-    const tokens = tokenize('AKIAABCDEFGHIJKLMNOP', [AWS])
+  it('emits a single match token when the entire input is one hit', () => {
+    const tokens = tokenize('AKIAIOSFODNN7EXAMPLE', [AWS])
     expect(tokens).toHaveLength(1)
-    expect(tokens[0]).toMatchObject({ kind: 'match', text: 'AKIAABCDEFGHIJKLMNOP' })
+    expect(tokens[0]).toMatchObject({ kind: 'match', text: 'AKIAIOSFODNN7EXAMPLE' })
     if (tokens[0].kind === 'match') {
-      expect(tokens[0].pattern.id).toBe('AWS_KEY')
+      expect(tokens[0].detector.id).toBe('AwsAccessKey')
     }
   })
 
-  it('interleaves plain text and match tokens in the correct order', () => {
-    const text = 'key=AKIAABCDEFGHIJKLMNOP for jane@acme.com end'
-    const tokens = tokenize(text, [AWS, EMAIL])
-    const kinds = tokens.map((t) => t.kind)
-    expect(kinds).toEqual(['plain', 'match', 'plain', 'match', 'plain'])
-    expect(tokens[1]).toMatchObject({ kind: 'match' })
-    if (tokens[1].kind === 'match') expect(tokens[1].pattern.id).toBe('AWS_KEY')
-    if (tokens[3].kind === 'match') expect(tokens[3].pattern.id).toBe('EMAIL_PII')
+  it('interleaves plain text and match tokens in order', () => {
+    const tokens = tokenize('key=AKIAIOSFODNN7EXAMPLE for jane@acme.com end', [AWS, EMAIL])
+    expect(tokens.map((t) => t.kind)).toEqual(['plain', 'match', 'plain', 'match', 'plain'])
+    if (tokens[1].kind === 'match') expect(tokens[1].detector.id).toBe('AwsAccessKey')
+    if (tokens[3].kind === 'match') expect(tokens[3].detector.id).toBe('EmailAddress')
   })
 
-  it('skips disabled patterns even when their regex would match', () => {
-    const tokens = tokenize('call 0123456789 then', [PHONE_DISABLED])
-    expect(tokens).toEqual([{ kind: 'plain', text: 'call 0123456789 then' }])
+  it('resolves an sk-ant- token to AnthropicKey, not OpenAiKey', () => {
+    // The scanner's AC ordering is load-bearing; the preview alternation has to
+    // reproduce that tie-break or it teaches the wrong redaction label.
+    const tokens = tokenize('sk-ant-api03-EXAMPLEEXAMPLEEXAMPLE')
+    expect(tokens).toHaveLength(1)
+    if (tokens[0].kind === 'match') expect(tokens[0].detector.id).toBe('AnthropicKey')
   })
 
-  it('countMatchesByPattern groups by pattern id', () => {
-    const text = 'a@b.com and AKIAAAAAAAAAAAAAAAAA and c@d.com'
-    const tokens = tokenize(text, [AWS, EMAIL])
-    const counts = countMatchesByPattern(tokens)
-    expect(counts.EMAIL_PII).toBe(2)
-    expect(counts.AWS_KEY).toBe(1)
+  it('defaults to the previewable slice of the shipped catalogue', () => {
+    const tokens = tokenize('ghp_EXAMPLEEXAMPLEEXAMPLEEX')
+    expect(tokens).toHaveLength(1)
+    if (tokens[0].kind === 'match') expect(tokens[0].detector.id).toBe('GitHubPat')
+    expect(PREVIEWABLE_DETECTORS.some((d) => d.id === 'GitHubPat')).toBe(true)
+  })
+
+  it('never labels a match with a redaction string the gateway does not emit', () => {
+    const tokens = tokenize('AKIAIOSFODNN7EXAMPLE jane@acme.com 123-45-6789')
+    const labels = tokens.flatMap((t) => (t.kind === 'match' ? [t.detector.replace] : []))
+    expect(labels.length).toBeGreaterThan(0)
+    for (const label of labels) {
+      expect(label).toMatch(/^\[REDACTED:[A-Za-z]+\]$/)
+    }
+    expect(labels).not.toContain('[REDACTED:PEM]')
+  })
+
+  it('countMatchesByDetector groups by detector id', () => {
+    const tokens = tokenize('a@b.com and AKIAIOSFODNN7EXAMPLE and c@d.com', [AWS, EMAIL])
+    const counts = countMatchesByDetector(tokens)
+    expect(counts.EmailAddress).toBe(2)
+    expect(counts.AwsAccessKey).toBe(1)
+  })
+
+  it('reports nothing for a detector that matched nothing, rather than zero', () => {
+    const counts = countMatchesByDetector(tokenize('nothing here', [AWS, EMAIL]))
+    expect(counts).toEqual({})
   })
 })
