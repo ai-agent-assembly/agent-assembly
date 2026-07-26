@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useSilenceAlertMutation } from './api'
 import { useToast } from '../../components/Toast'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../../auth/usePermissions'
 
 interface SilenceActionProps {
   alertId: string
@@ -28,12 +29,23 @@ export function SilenceAction({ alertId, silenced = false }: Readonly<SilenceAct
   const [reason, setReason] = useState<string>('')
   const silence = useSilenceAlertMutation()
   const { toast } = useToast()
+  // AAASM-5147: without this gate a read-scope caller could submit and got back
+  // a raw `POST … failed: 403` toast from the fetch helper — the control looked
+  // available right up until the gateway refused it.
+  const { canWrite } = usePermissions()
 
   const resolveSeconds = (): number | null => {
     if (selected.value !== null) return selected.value
     const minutes = Number.parseInt(customMinutes, 10)
     return Number.isFinite(minutes) && minutes > 0 ? minutes * 60 : null
   }
+
+  // Extracted rather than nested inline: a read-only caller sees the control as
+  // unavailable, a write caller sees it as busy or ready.
+  let submitCursor: string
+  if (!canWrite) submitCursor = 'not-allowed'
+  else if (silence.isPending) submitCursor = 'wait'
+  else submitCursor = 'pointer'
 
   const submit = async () => {
     const seconds = resolveSeconds()
@@ -150,7 +162,8 @@ export function SilenceAction({ alertId, silenced = false }: Readonly<SilenceAct
         type="button"
         data-testid="silence-action-submit"
         onClick={() => void submit()}
-        disabled={silence.isPending}
+        disabled={!canWrite || silence.isPending}
+        title={canWrite ? undefined : WRITE_REQUIRED_HINT}
         style={{
           alignSelf: 'flex-end',
           padding: '6px 14px',
@@ -158,7 +171,7 @@ export function SilenceAction({ alertId, silenced = false }: Readonly<SilenceAct
           color: 'var(--text-on-accent)',
           border: 'none',
           borderRadius: '4px',
-          cursor: silence.isPending ? 'wait' : 'pointer',
+          cursor: submitCursor,
           fontSize: '0.875rem',
         }}
       >

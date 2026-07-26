@@ -8,6 +8,7 @@ import { DedupAndSuppressionFields } from './DedupAndSuppressionFields'
 import { useCreateAlertRuleMutation, useUpdateAlertRuleMutation } from './api'
 import { ruleFormSchema, type RuleFormValues } from './ruleFormSchema'
 import { useToast } from '../../components/Toast'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../../auth/usePermissions'
 import type { AlertRule, AlertRuleInput } from './types'
 
 interface AlertRuleFormProps {
@@ -93,6 +94,11 @@ export function AlertRuleForm({
   const { toast } = useToast()
 
   const submitting = create.isPending || update.isPending
+  // AAASM-5147: the form is the last gate before the mutation. Gating only the
+  // buttons that open it leaves the write reachable by any other route into the
+  // form — deep link, an ungated CTA, a future caller — and the caller learns
+  // their scope from a 403 toast instead of the UI.
+  const { canWrite } = usePermissions()
 
   const handleSubmit = methods.handleSubmit(async (values) => {
     const input = toRuleInput(values)
@@ -115,6 +121,13 @@ export function AlertRuleForm({
   if (submitting) submitLabel = 'Saving…'
   else if (initialValue) submitLabel = 'Save changes'
   else submitLabel = 'Create rule'
+
+  // Same shape as submitLabel above: a read-only caller sees the control as
+  // unavailable, a write caller sees it as busy or ready.
+  let submitCursor: string
+  if (!canWrite) submitCursor = 'not-allowed'
+  else if (submitting) submitCursor = 'wait'
+  else submitCursor = 'pointer'
 
   return (
     <div
@@ -250,14 +263,15 @@ export function AlertRuleForm({
               <button
                 type="submit"
                 data-testid="alert-rule-form-submit"
-                disabled={submitting}
+                disabled={!canWrite || submitting}
+                title={canWrite ? undefined : WRITE_REQUIRED_HINT}
                 style={{
                   padding: '6px 14px',
                   background: 'var(--button-primary-bg)',
                   color: 'var(--text-on-accent)',
                   border: 'none',
                   borderRadius: '4px',
-                  cursor: submitting ? 'wait' : 'pointer',
+                  cursor: submitCursor,
                 }}
               >
                 {submitLabel}

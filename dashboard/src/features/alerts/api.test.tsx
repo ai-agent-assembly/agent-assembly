@@ -3,12 +3,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   useAlertsQuery,
+  useAlertsPageQuery,
   useAlertQuery,
   useAlertRulesQuery,
   useCreateAlertRuleMutation,
   useUpdateAlertRuleMutation,
   useDeleteAlertRuleMutation,
   useSilenceAlertMutation,
+  useResolveAlertMutation,
   useDestinationsQuery,
   useCreateDestinationMutation,
   useUpdateDestinationMutation,
@@ -140,18 +142,30 @@ const FIXTURE_SILENCE: Silence = {
 // ── Queries ───────────────────────────────────────────────────────────────
 
 describe('useAlertsQuery', () => {
-  it('fetches /api/v1/alerts with filter query string and Bearer token', async () => {
-    // AAASM-4892: /alerts returns a paginated { items, total } object.
+  it('sends no filter query string — the API declares only page/per_page (AAASM-5122)', async () => {
     nextResponse = { ok: true, status: 200, body: { items: [FIXTURE_ALERT], page: 1, per_page: 50, total: 1 } }
     const { Wrapper } = wrapper()
     const filters = { ...DEFAULT_ALERT_FILTERS, severities: ['CRITICAL'] as const }
     const { result } = renderHook(() => useAlertsQuery(filters), { wrapper: Wrapper })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(result.current.data).toEqual([FIXTURE_ALERT])
-    expect(calls[0].url).toBe('/api/v1/alerts?severity=CRITICAL&range=24h')
+    expect(calls[0].url).toBe('/api/v1/alerts')
     expect((calls[0].init.headers as Record<string, string>).Authorization).toBe(
       'Bearer test-token',
     )
+  })
+
+  it('does not refire when only the ignored filters change', async () => {
+    nextResponse = { ok: true, status: 200, body: { items: [FIXTURE_ALERT], page: 1, per_page: 50, total: 1 } }
+    const { Wrapper } = wrapper()
+    const { result, rerender } = renderHook(
+      ({ f }: { f: typeof DEFAULT_ALERT_FILTERS }) => useAlertsQuery(f),
+      { wrapper: Wrapper, initialProps: { f: DEFAULT_ALERT_FILTERS } },
+    )
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    rerender({ f: { ...DEFAULT_ALERT_FILTERS, severities: ['CRITICAL'] } })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(calls).toHaveLength(1)
   })
 
   it('returns isError on non-2xx response', async () => {
@@ -161,6 +175,64 @@ describe('useAlertsQuery', () => {
       wrapper: Wrapper,
     })
     await waitFor(() => expect(result.current.isError).toBe(true))
+  })
+})
+
+describe('useAlertsPageQuery', () => {
+  it('reads the pagination envelope so truncation is knowable (AAASM-5123)', async () => {
+    nextResponse = {
+      ok: true,
+      status: 200,
+      body: { items: [FIXTURE_ALERT], page: 1, per_page: 50, total: 214 },
+    }
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useAlertsPageQuery(), { wrapper: Wrapper })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual({
+      items: [FIXTURE_ALERT],
+      page: 1,
+      perPage: 50,
+      total: 214,
+    })
+  })
+
+  it('reports a missing total as null rather than defaulting it to the page size', async () => {
+    nextResponse = { ok: true, status: 200, body: { items: [FIXTURE_ALERT] } }
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useAlertsPageQuery(), { wrapper: Wrapper })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data?.total).toBeNull()
+    expect(result.current.data?.items).toHaveLength(1)
+  })
+
+  it('does not turn a failed request into an empty page', async () => {
+    nextResponse = { ok: false, status: 503, body: undefined }
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useAlertsPageQuery(), { wrapper: Wrapper })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.data).toBeUndefined()
+  })
+})
+
+describe('useResolveAlertMutation', () => {
+  it('POSTs to the resolve path with a body and invalidates the alerts cache', async () => {
+    nextResponse = { ok: true, status: 200, body: { ...FIXTURE_ALERT, status: 'RESOLVED' } }
+    const { client, Wrapper } = wrapper()
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    const { result } = renderHook(() => useResolveAlertMutation(), { wrapper: Wrapper })
+    await result.current.mutateAsync({ alertId: 'a-1', reason: 'handled' })
+    expect(calls[0].url).toBe('/api/v1/alerts/a-1/resolve')
+    expect(calls[0].init.method).toBe('POST')
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ reason: 'handled' })
+    expect(spy).toHaveBeenCalledWith({ queryKey: [alertsQueryKeys.alerts] })
+  })
+
+  it('still sends a body when no reason is given — requestBody is required', async () => {
+    nextResponse = { ok: true, status: 200, body: { ...FIXTURE_ALERT, status: 'RESOLVED' } }
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useResolveAlertMutation(), { wrapper: Wrapper })
+    await result.current.mutateAsync({ alertId: 'a-1' })
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ reason: null })
   })
 })
 

@@ -2,6 +2,7 @@ import { useAlertQuery } from './api'
 import { SeverityBadge } from './SeverityBadge'
 import { StatusBadge } from './StatusBadge'
 import { SilenceAction } from './SilenceAction'
+import { ResolveAction } from './ResolveAction'
 import { RuleYamlViewer } from './RuleYamlViewer'
 import type { AlertDetail } from './types'
 
@@ -145,7 +146,10 @@ export function AlertDetailContent({ alertId }: Readonly<AlertDetailContentProps
       </section>
 
       {data.status !== 'RESOLVED' && (
-        <SilenceAction alertId={data.id} silenced={data.status === 'SUPPRESSED'} />
+        <>
+          <ResolveAction alertId={data.id} />
+          <SilenceAction alertId={data.id} silenced={data.status === 'SUPPRESSED'} />
+        </>
       )}
 
       <section style={sectionStyle}>

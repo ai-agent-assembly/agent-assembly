@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AlertRuleForm } from './AlertRuleForm'
 import { ToastProvider } from '../../components/ToastProvider'
+import { AuthContext, type AuthContextValue, type Scope } from '../../auth/AuthContext'
 import type { AlertRule, Destination } from './types'
 
 // ── fetch stub mirroring the AAASM-1075 test setup ─────────────────────────
@@ -86,9 +87,51 @@ function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   )
 }
 
+function renderWithScopes(scopes: Scope[]) {
+  const auth: AuthContextValue = {
+    token: 'tok',
+    scopes,
+    login: async () => {},
+    logout: () => {},
+  }
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={client}>
+      <AuthContext.Provider value={auth}>
+        <ToastProvider>
+          <AlertRuleForm open={true} onClose={vi.fn()} />
+        </ToastProvider>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+}
+
 // ── specs ──────────────────────────────────────────────────────────────────
 
 describe('AlertRuleForm', () => {
+  // AAASM-5147: the form is the last gate before the create/update mutation, so
+  // it must hold regardless of which control opened it.
+  it('disables submit for a read-only caller', () => {
+    responses['/api/v1/alerts/destinations'] = [SLACK]
+    renderWithScopes(['read'])
+    expect(screen.getByTestId('alert-rule-form-submit')).toBeDisabled()
+  })
+
+  it('enables submit for a write caller', () => {
+    responses['/api/v1/alerts/destinations'] = [SLACK]
+    renderWithScopes(['write'])
+    expect(screen.getByTestId('alert-rule-form-submit')).toBeEnabled()
+  })
+
+  it('issues no create request when a read-only caller clicks submit', async () => {
+    responses['/api/v1/alerts/destinations'] = [SLACK]
+    const user = userEvent.setup()
+    renderWithScopes(['read'])
+    expect(await screen.findByTestId('rule-destination-d-slack')).toBeInTheDocument()
+    await user.click(screen.getByTestId('alert-rule-form-submit'))
+    expect(calls.filter((c) => c.init.method === 'POST')).toHaveLength(0)
+  })
+
   it('does not render anything when closed', () => {
     render(<AlertRuleForm open={false} onClose={vi.fn()} />, { wrapper: Wrapper })
     expect(screen.queryByTestId('alert-rule-form')).not.toBeInTheDocument()
