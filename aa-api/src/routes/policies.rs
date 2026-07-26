@@ -730,3 +730,284 @@ pub async fn simulate_policy(
         }),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::Tenant;
+    use aa_gateway::registry::AgentRecord;
+
+    fn caller(scopes: Vec<Scope>, org_id: Option<&str>, team_id: Option<&str>) -> RequireRead {
+        RequireRead(AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes,
+            tenant: Tenant {
+                team_id: team_id.map(str::to_string),
+                org_id: org_id.map(str::to_string),
+            },
+        })
+    }
+
+    fn admin() -> RequireRead {
+        caller(vec![Scope::Admin], None, None)
+    }
+
+    /// Minimal registered agent; only the fields the reach walk reads carry
+    /// meaningful values.
+    fn record(id_byte: u8, name: &str, org_id: Option<&str>, team_id: Option<&str>) -> AgentRecord {
+        AgentRecord {
+            agent_id: [id_byte; 16],
+            name: name.to_string(),
+            framework: "langgraph".to_string(),
+            version: "0.1.0".to_string(),
+            risk_tier: 1,
+            tool_names: Vec::new(),
+            public_key: "pk".to_string(),
+            credential_token: "tok".to_string(),
+            metadata: std::collections::BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: aa_gateway::registry::AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: Vec::new(),
+            recent_events: std::collections::VecDeque::new(),
+            recent_traces: Vec::new(),
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: team_id.map(str::to_string),
+            org_id: org_id.map(str::to_string),
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some([id_byte; 16]),
+            children: Vec::new(),
+            parent_key: None,
+            enforcement_mode: None,
+        }
+    }
+
+    /// A policy document scoped to one team. Deliberately Team-scoped: a reach
+    /// walk that resolved the cascade without an explicit lineage would never
+    /// see it, so every assertion built on it is a regression guard for that.
+    fn team_scoped_yaml(name: &str, team: &str) -> String {
+        format!(
+            "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: {name}\n  version: \"1.0.0\"\nspec:\n  scope: team:{team}\n  tools:\n    bash:\n      allow: false\n"
+        )
+    }
+
+    fn state_with(records: Vec<AgentRecord>) -> AppState {
+        let state = AppState::local_in_memory().expect("state builds");
+        for r in records {
+            state.agent_registry.register(r).expect("register");
+        }
+        state
+    }
+
+    /// Load `yaml` into the engine's cascade **and** record it in the history
+    /// store, mirroring a policy that was applied and is now in force.
+    async fn install(state: &mut AppState, yaml: &str) {
+        let doc = document_from_yaml(yaml).expect("fixture yaml is valid");
+        let engine = Arc::get_mut(&mut state.policy_engine).expect("engine is unshared before the state is cloned");
+        engine.load_policy(doc);
+        state
+            .policy_history
+            .save(yaml, Some("test"))
+            .await
+            .expect("history accepts the snapshot");
+    }
+
+    /// Every version on one page, so `include_archived` results are all visible.
+    fn all_pages() -> PaginationParams {
+        PaginationParams {
+            page: None,
+            per_page: None,
+        }
+    }
+
+    /// The serialized `items` array, asserted on as JSON so the test sees exactly
+    /// the wire shape a client would — including which fields are omitted.
+    async fn list_items(state: &AppState, who: RequireRead) -> Vec<serde_json::Value> {
+        let response = list_policies(
+            who,
+            Extension(state.clone()),
+            axum::extract::Query(all_pages()),
+            axum::extract::Query(PolicyListFilter { include_archived: true }),
+        )
+        .await
+        .expect("caller may list");
+        let body = axum::body::to_bytes(response.into_response().into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("body is JSON");
+        parsed["items"].as_array().expect("items is an array").clone()
+    }
+
+    async fn team_policies(state: &AppState, who: RequireRead, team: &str) -> TeamPoliciesResponse {
+        let (status, Json(body)) =
+            list_team_policies(who, Extension(state.clone()), axum::extract::Path(team.to_string()))
+                .await
+                .expect("caller may read this team");
+        assert_eq!(status, StatusCode::OK);
+        body
+    }
+
+    // ── affects[] ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn affects_names_agents_whose_team_scoped_cascade_carries_the_policy() {
+        let mut state = state_with(vec![
+            record(0x01, "checkout-agent", None, Some("team-alpha")),
+            record(0x02, "outsider", None, Some("team-beta")),
+        ]);
+        install(&mut state, &team_scoped_yaml("alpha-guard", "team-alpha")).await;
+
+        let items = list_items(&state, admin()).await;
+        assert_eq!(items.len(), 1, "one applied version");
+        // The whole point: a Team-scoped document is only in the cascade when the
+        // lineage is resolved explicitly. `collect_cascade` on aa-api's
+        // registry-less engine walks Global+Agent only and would omit the field.
+        assert_eq!(
+            items[0]["affects"],
+            serde_json::json!(["checkout-agent"]),
+            "a team-scoped policy reaches exactly that team's agents, and only those"
+        );
+    }
+
+    #[tokio::test]
+    async fn affects_is_absent_not_empty_for_a_version_the_engine_does_not_carry() {
+        let state = state_with(vec![record(0x01, "checkout-agent", None, Some("team-alpha"))]);
+        // Recorded in history but never loaded into the engine — an archived
+        // version, in force for nobody.
+        state
+            .policy_history
+            .save(&team_scoped_yaml("retired", "team-alpha"), Some("test"))
+            .await
+            .expect("history accepts the snapshot");
+
+        let items = list_items(&state, admin()).await;
+        assert!(
+            items[0].get("affects").is_none(),
+            "a version not in force omits the field rather than claiming it targets nobody: {}",
+            items[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn hits_24h_is_always_absent_from_the_wire() {
+        let mut state = state_with(vec![record(0x01, "checkout-agent", None, Some("team-alpha"))]);
+        install(&mut state, &team_scoped_yaml("alpha-guard", "team-alpha")).await;
+
+        let items = list_items(&state, admin()).await;
+        // No audit record attributes a decision to a policy document, so the
+        // count must be omitted — never serialized as a 0 the UI would render.
+        assert!(
+            items[0].get("hits24h").is_none(),
+            "an absent hit count must be omitted, never serialized as 0: {}",
+            items[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_policies_denies_a_caller_without_admin_scope() {
+        let state = state_with(vec![record(0x01, "checkout-agent", None, Some("team-alpha"))]);
+        let err = list_policies(
+            caller(vec![Scope::Read], Some("acme"), Some("team-alpha")),
+            Extension(state.clone()),
+            axum::extract::Query(all_pages()),
+            axum::extract::Query(PolicyListFilter { include_archived: true }),
+        )
+        .await
+        .err()
+        .expect("a tenant-scoped reader must not enumerate policy versions");
+        assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
+    }
+
+    // ── team → policy mapping ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn team_policies_report_the_documents_in_force_for_that_team() {
+        let mut state = state_with(vec![
+            record(0x01, "checkout-agent", None, Some("team-alpha")),
+            record(0x02, "outsider", None, Some("team-beta")),
+        ]);
+        install(&mut state, &team_scoped_yaml("alpha-guard", "team-alpha")).await;
+
+        let body = team_policies(&state, admin(), "team-alpha").await;
+        assert_eq!(body.team_id, "team-alpha");
+        let ids: Vec<&str> = body.policies.iter().map(|p| p.id.as_str()).collect();
+        assert!(
+            ids.contains(&"team:team-alpha/alpha-guard"),
+            "the team tier must appear — it is dropped entirely by an unlineaged cascade: {ids:?}"
+        );
+        let row = body
+            .policies
+            .iter()
+            .find(|p| p.id == "team:team-alpha/alpha-guard")
+            .unwrap();
+        assert_eq!(row.name, "alpha-guard");
+        assert_eq!(row.scope, "team:team-alpha");
+        assert_eq!(row.version.as_deref(), Some("1.0.0"));
+        assert!(row.hits_24h.is_none());
+
+        // The other team does not inherit it.
+        let beta = team_policies(&state, admin(), "team-beta").await;
+        assert!(
+            !beta.policies.iter().any(|p| p.id == "team:team-alpha/alpha-guard"),
+            "a team-scoped document must not leak into another team"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_policies_are_empty_for_a_team_with_no_agents() {
+        let mut state = state_with(vec![]);
+        install(&mut state, &team_scoped_yaml("alpha-guard", "team-alpha")).await;
+
+        let body = team_policies(&state, admin(), "team-alpha").await;
+        assert!(
+            body.policies.is_empty(),
+            "no visible member means no cascade to union, not an invented one"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_policies_deny_a_caller_scoped_to_a_different_team() {
+        let state = state_with(vec![record(0x01, "checkout-agent", None, Some("team-alpha"))]);
+        let err = list_team_policies(
+            caller(vec![Scope::Read], None, Some("team-beta")),
+            Extension(state.clone()),
+            axum::extract::Path("team-alpha".to_string()),
+        )
+        .await
+        .expect_err("a caller scoped to another team must be denied");
+        assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn team_policies_exclude_members_outside_the_callers_org() {
+        let mut state = state_with(vec![record(
+            0x01,
+            "checkout-agent",
+            Some("other-org"),
+            Some("team-alpha"),
+        )]);
+        install(&mut state, &team_scoped_yaml("alpha-guard", "team-alpha")).await;
+
+        // Same team name, different org: the member is out of tenant, so it
+        // contributes nothing and the caller learns nothing about it.
+        let body = team_policies(
+            &state,
+            caller(vec![Scope::Read], Some("acme"), Some("team-alpha")),
+            "team-alpha",
+        )
+        .await;
+        assert!(
+            body.policies.is_empty(),
+            "an out-of-tenant member must not contribute its cascade: {:?}",
+            body.policies
+        );
+    }
+}
