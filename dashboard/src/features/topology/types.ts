@@ -18,7 +18,38 @@
  */
 export type TopologyStatus = 'active' | 'idle' | 'error' | 'suspended' | 'deregistered'
 
-export type TopologyEdgeKind = 'delegation' | 'call'
+/**
+ * The six relation kinds the topology graph renders.
+ *
+ * All six are emitted by `GET /api/v1/topology` since AAASM-5099. The two
+ * structural kinds keep the graph vocabulary shipped in AAASM-5040
+ * (`delegates_to` → `delegation`, `calls` → `call`); the other four carry the
+ * stored wire string verbatim.
+ */
+export type TopologyEdgeKind = 'delegation' | 'call' | 'reads' | 'writes' | 'approves' | 'messages'
+
+/** One scope tier of an agent's policy-inheritance chain. */
+export interface PolicyChainTier {
+  /** Cascade tier: `global`, `org`, `team`, or `agent`. */
+  readonly tier: string
+  /** Wire-format scope selector, e.g. `team:platform`. */
+  readonly scope: string
+  /** Policy documents loaded at this tier. Empty means "no policy here". */
+  readonly policies: readonly string[]
+}
+
+/**
+ * An agent's policy cascade with per-tier provenance (AAASM-5099).
+ *
+ * `allowRestricted` must be read with `allow`: an empty `allow` alongside
+ * `allowRestricted` is deny-all, not unrestricted.
+ */
+export interface EffectivePermissions {
+  readonly chain: readonly PolicyChainTier[]
+  readonly allow: readonly string[]
+  readonly deny: readonly string[]
+  readonly allowRestricted: boolean
+}
 
 /**
  * Enforcement mode of an agent, matching the Fleet page's `FleetMode`
@@ -70,12 +101,26 @@ export interface TopologyNode {
    * button is disabled when this is missing.
    */
   readonly latestSessionId?: string
+  /**
+   * The agent's policy-inheritance chain and merged capability set, carried by
+   * `GET /api/v1/topology` (AAASM-5099). `null`/absent when the payload has no
+   * chain — the panel then shows its "no data" affordance rather than an
+   * empty-but-authoritative chain.
+   */
+  readonly effectivePermissions?: EffectivePermissions | null
 }
 
 export interface TopologyEdge {
   readonly source: string
   readonly target: string
   readonly kind: TopologyEdgeKind
+  /**
+   * Whether the two endpoints sit on different teams, as computed by the server
+   * (AAASM-5099) using the same rule `/topology/edges` reports as
+   * `is_cross_team`. Optional so an older/partial payload stays null-safe;
+   * consumers fall back to comparing the two endpoints' teams.
+   */
+  readonly crossTeam?: boolean
 }
 
 export interface TopologyGraph {

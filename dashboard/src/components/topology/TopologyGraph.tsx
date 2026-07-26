@@ -50,10 +50,13 @@ const MODE_GLYPH: Record<NonNullable<TopologyNode['mode']>, string> = {
 
 /**
  * Per-kind edge styling, mirroring the hi-fi reference edge config
- * (`design/v1/hi-fi/topology.jsx` TOPO_EC). The design defines six relation
- * kinds; the frontend data model (`features/topology/types.ts`) currently
- * exposes only `delegation` and `call`, so exactly those two are styled here —
- * `delegation` as the primary solid line, `call` as a lighter dashed line.
+ * (`design/v1/hi-fi/topology.jsx` TOPO_EC). All six kinds the projection emits
+ * (AAASM-5099) are styled: `delegation` as the primary solid line, the rest as
+ * lighter dashed lines with distinct patterns so overlapping relations between
+ * the same pair stay tellable apart.
+ *
+ * Dash patterns match `features/topology/edgeKinds.ts` so an edge on the canvas
+ * looks like its sidebar swatch.
  *
  * `strokeWidth` is inlined; colour comes from CSS variables via the
  * `.topology-edge--<kind>` class so edges re-theme in light/dark like the rest
@@ -62,6 +65,10 @@ const MODE_GLYPH: Record<NonNullable<TopologyNode['mode']>, string> = {
 const EDGE_STYLE: Record<TopologyEdge['kind'], { width: number; dash?: string }> = {
   delegation: { width: 1.75 },
   call: { width: 1.5, dash: '6 4' },
+  reads: { width: 1.5, dash: '3 4' },
+  writes: { width: 1.5, dash: '3 4' },
+  approves: { width: 1.5, dash: '8 3' },
+  messages: { width: 1, dash: '2 5' },
 }
 
 const EDGE_KINDS = Object.keys(EDGE_STYLE) as ReadonlyArray<TopologyEdge['kind']>
@@ -323,8 +330,12 @@ export function TopologyGraph({
       const src = posById.get(String(edge.source))
       const tgt = posById.get(String(edge.target))
       if (!src || !tgt || src === tgt) return
-      // Cross-team toggle: hide long-range curves when disabled.
-      if (!showCrossTeam && src.source.team !== tgt.source.team) return
+      // Cross-team toggle: hide long-range curves when disabled. Prefer the
+      // server's `crossTeam` flag (AAASM-5099) so the canvas, the sidebar
+      // counter, and `/topology/edges` all agree on what crosses a boundary;
+      // fall back to comparing the endpoints' teams for a payload without it.
+      const crossTeam = edge.crossTeam ?? src.source.team !== tgt.source.team
+      if (!showCrossTeam && crossTeam) return
 
       const sDims = SIZE_VARIANT[bucketForRatio(src.source.budgetSpend, src.source.budgetLimit)]
       const tDims = SIZE_VARIANT[bucketForRatio(tgt.source.budgetSpend, tgt.source.budgetLimit)]
@@ -335,7 +346,6 @@ export function TopologyGraph({
 
       const start = rectBorderPoint(scx, scy, sDims.w, sDims.h, tcx, tcy)
       const end = rectBorderPoint(tcx, tcy, tDims.w, tDims.h, scx, scy)
-      const crossTeam = src.source.team !== tgt.source.team
 
       let d: string
       if (crossTeam) {

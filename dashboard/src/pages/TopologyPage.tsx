@@ -61,8 +61,13 @@ export function TopologyPage() {
   const stats = useMemo(() => {
     const active = allNodes.filter((n) => n.status === 'active').length
     const flagged = allNodes.filter((n) => n.flagged).length
+    // Cross-team count comes from the server's own `crossTeam` flag
+    // (AAASM-5099) so this badge, the canvas curves, and `/topology/edges` agree
+    // on one definition. Falls back to comparing endpoint teams for a payload
+    // that predates the flag.
     const teamById = new Map(allNodes.map((n) => [n.id, n.team]))
     const crossTeam = allEdges.filter((e) => {
+      if (e.crossTeam !== undefined) return e.crossTeam
       const s = teamById.get(e.source)
       const t = teamById.get(e.target)
       return s !== undefined && t !== undefined && s !== t
