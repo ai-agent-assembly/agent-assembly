@@ -16,7 +16,8 @@ use utoipa::IntoParams;
 
 use aa_core::identity::AgentId;
 use aa_core::topology::EdgeType;
-use aa_gateway::registry::{AgentRecord, AgentRegistry, AgentStatus};
+use aa_gateway::policy::PolicyScope;
+use aa_gateway::registry::{AgentRecord, AgentRegistry, AgentStatus, Lineage};
 use rust_decimal::prelude::ToPrimitive;
 
 use crate::auth::scope::{RequireRead, Scope};
@@ -24,8 +25,8 @@ use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::models::topology::{agent_flagged, agent_mode, format_id, status_str};
 pub use crate::models::topology::{
-    AgentLineage, AgentNode, AgentTree, LineageStep, NodeBudget, TeamSummary, TeamTopology, TopologyGraphEdge,
-    TopologyGraphResponse, TopologyOverview, TopologyStats,
+    AgentLineage, AgentNode, AgentTree, EffectivePermissions, LineageStep, NodeBudget, PolicyChainTier, TeamSummary,
+    TeamTopology, TopologyGraphEdge, TopologyGraphResponse, TopologyOverview, TopologyStats,
 };
 use crate::state::AppState;
 
@@ -227,7 +228,7 @@ fn build_tree(
 }
 
 // ---------------------------------------------------------------------------
-// Graph projection helpers
+// Graph projection helpers (AAASM-5099)
 // ---------------------------------------------------------------------------
 
 /// Per-edge-type page size for the graph projection. Matches the `EdgeRepo`
@@ -238,7 +239,7 @@ const EDGE_BATCH_LIMIT: u32 = 1000;
 /// Wire `kind` for a stored [`EdgeType`].
 ///
 /// The two structural kinds keep the graph vocabulary the dashboard already
-/// renders (`delegates_to` -> `delegation`, `calls` -> `call`, unchanged since
+/// renders (`delegates_to` → `delegation`, `calls` → `call`, unchanged since
 /// AAASM-5040); the other four pass their canonical wire string through.
 fn graph_edge_kind(edge_type: EdgeType) -> &'static str {
     match edge_type {
@@ -258,8 +259,80 @@ fn is_cross_team(source_team: Option<&str>, target_team: Option<&str>) -> bool {
     matches!((source_team, target_team), (Some(a), Some(b)) if a != b)
 }
 
+/// The agent's policy-inheritance chain: one row per cascade tier that applies
+/// to it, broadest → narrowest, listing the policy documents loaded there.
+///
+/// A tier appears only when the agent has that selector — an agent with no
+/// `org_id` has no Org row. `Tool` is not a tier here: it is selected per action
+/// (`aa_gateway::engine::action_tool_name`), so there is no agent-level answer.
+fn build_policy_chain(
+    cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
+    agent_id: &AgentId,
+    lineage: &Lineage,
+) -> Vec<PolicyChainTier> {
+    let mut tiers: Vec<(&str, PolicyScope)> = vec![("global", PolicyScope::Global)];
+    if let Some(org_id) = lineage.org_id.as_deref() {
+        tiers.push(("org", PolicyScope::Org(org_id.to_owned())));
+    }
+    if let Some(team_id) = lineage.team_id.as_deref() {
+        tiers.push(("team", PolicyScope::Team(team_id.to_owned())));
+    }
+    tiers.push(("agent", PolicyScope::Agent(*agent_id)));
+
+    tiers
+        .into_iter()
+        .map(|(tier, scope)| {
+            let label = scope.to_string();
+            let policies = cascade
+                .iter()
+                .filter(|doc| doc.scope == scope)
+                // An unnamed document is identified by its scope, matching how
+                // `capability::project_matrix` names a scope-only policy row.
+                .map(|doc| doc.name.clone().unwrap_or_else(|| label.clone()))
+                .collect();
+            PolicyChainTier {
+                tier: tier.to_owned(),
+                scope: label,
+                policies,
+            }
+        })
+        .collect()
+}
+
+/// Project one agent's effective permissions from an already-resolved cascade.
+///
+/// The merged set comes from `PolicyEngine::collect_merged_capabilities` and the
+/// restriction flag from `CapabilitySet::allow_is_restricted()` — the exact two
+/// values `PolicyEngine::capability_guard` (`aa-gateway/src/engine/mod.rs`)
+/// consults at the capability stage — so what the panel shows cannot drift from
+/// what the gateway enforces.
+fn project_effective_permissions(
+    cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
+    agent_id: &AgentId,
+    lineage: &Lineage,
+) -> EffectivePermissions {
+    let merged = aa_gateway::engine::PolicyEngine::collect_merged_capabilities(cascade);
+    let mut allow: Vec<String> = merged.allow.iter().map(ToString::to_string).collect();
+    let mut deny: Vec<String> = merged.deny.iter().map(ToString::to_string).collect();
+    allow.sort();
+    deny.sort();
+    EffectivePermissions {
+        chain: build_policy_chain(cascade, agent_id, lineage),
+        allow,
+        deny,
+        allow_restricted: merged.allow_is_restricted(),
+    }
+}
+
 /// Enrich the caller-visible records into graph nodes, resolving each agent's
-/// policy count and daily budget.
+/// policy cascade, effective permissions, and daily budget.
+///
+/// The cascade is collected with an **explicitly resolved** lineage rather than
+/// via `PolicyEngine::collect_cascade` / `effective_permissions`: the engine
+/// `aa-api` builds is not registry-wired (AAASM-5102), so those resolve
+/// `Lineage::default()` and silently walk only the Global and Agent tiers,
+/// dropping every Org- and Team-scoped allow *and* deny. Same guard as
+/// `capability::project_matrix` (AAASM-5090).
 fn project_graph_nodes(records: &[AgentRecord], state: &AppState) -> Vec<AgentNode> {
     // Budget: snapshot once (not per node) and index today's per-agent spend by
     // the same 32-char hex the node id uses, mirroring the `/api/v1/costs`
@@ -280,7 +353,10 @@ fn project_graph_nodes(records: &[AgentRecord], state: &AppState) -> Vec<AgentNo
         .map(|record| {
             let mut node = AgentNode::from(record);
             let agent_id = AgentId::from_bytes(record.agent_id);
-            node.policy_count = Some(state.policy_engine.collect_cascade(&agent_id).len() as u32);
+            let lineage = state.agent_registry.lineage(&record.agent_id).unwrap_or_default();
+            let cascade = state.policy_engine.collect_cascade_with_lineage(&agent_id, &lineage);
+            node.policy_count = Some(cascade.len() as u32);
+            node.effective_permissions = Some(project_effective_permissions(&cascade, &agent_id, &lineage));
             let limit_usd = state
                 .budget_tracker
                 .agent_daily_limit_usd(&agent_id)
@@ -867,9 +943,10 @@ pub async fn get_stats(
 /// kinds with a `cross_team` flag (AAASM-5099).
 ///
 /// Unlike the sibling `/topology/*` routes, this handler additionally enriches
-/// each node's `owner` / `policy_count` / `budget` (AAASM-5045) from registry
-/// metadata, the policy-engine cascade, and the budget tracker respectively, so
-/// the dashboard node-detail panel renders real values rather than placeholders.
+/// each node's `owner` / `policy_count` / `budget` (AAASM-5045) and
+/// `effective_permissions` (AAASM-5099) from registry metadata, the policy-engine
+/// cascade, and the budget tracker respectively, so the dashboard node-detail
+/// panel renders real values rather than placeholders.
 ///
 /// Tenant-scoped, `RequireRead`, deny-by-default exactly like the sibling
 /// `/topology/*` routes: a non-admin caller with no tenant scope receives an
@@ -909,12 +986,12 @@ pub async fn get_topology_graph(
     let teams_by_id: HashMap<[u8; 16], Option<String>> =
         records.iter().map(|r| (r.agent_id, r.team_id.clone())).collect();
 
-    // AAASM-5045 — enrich each node's owner / policy_count / budget from live
-    // registry, policy-engine, and budget-tracker state so the node-detail panel
-    // renders real values instead of neutral placeholders. `owner` is set by the
-    // `From<&AgentRecord>` impl (a pure metadata read); `policy_count` and
-    // `budget` need the two stores only this whole-fleet handler reaches — the
-    // list / tree endpoints leave them `null`.
+    // AAASM-5045 / AAASM-5099 — enrich each node's owner / policy_count /
+    // budget / effective_permissions from live registry, policy-engine, and
+    // budget-tracker state so the node-detail panel renders real values instead
+    // of neutral placeholders. `owner` is set by the `From<&AgentRecord>` impl
+    // (a pure metadata read); the rest need the stores only this whole-fleet
+    // handler reaches — the list / tree endpoints leave them `null`.
     let nodes = project_graph_nodes(&records, &state);
     let edges = collect_graph_edges(&state, &teams_by_id).await?;
 
