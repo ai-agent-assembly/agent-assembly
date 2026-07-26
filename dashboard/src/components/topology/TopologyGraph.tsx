@@ -567,7 +567,7 @@ export function TopologyGraph({
         // a truthy team, so a click here has never opened anything. Rather than
         // leave an affordance with no successful path, the cluster renders
         // inert (AAASM-5140's rule). Naming and properly surfacing the group is
-        // a separate, design-specified piece of work — see AAASM-5192.
+        // a separate, design-specified piece of work — see AAASM-5184.
         const selectable = onTeamClick !== undefined && c.team !== ''
         return (
         <g
