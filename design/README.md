@@ -47,3 +47,37 @@ translate the structure into the TypeScript components under `dashboard/src/`.
 light/dark reference captures (`theme-light.png`, `theme-dark.png`, `0X-dark-pages.png`).
 
 `design/v1/` remains as the pre-theme reference. Use **v2** as the current visual spec.
+
+### Which directory is authoritative — and why the closed audits still stand
+
+**`design/v2/hi-fi/` is the authoritative visual specification** (ADR 0025).
+`design/v1/hi-fi/` is a **historical pre-theme reference**, kept in-tree because
+ADR 0017's ratification items cite it by file and because its `SUPERSESSION NOTE`
+banners are part of the AAASM-5077 record. Do not delete it; do not treat it as a
+build target.
+
+ADR 0017, Epic AAASM-5020, Epic AAASM-5077 and every per-surface parity audit to date
+cite **v1** paths. Those verdicts **remain valid**, and the re-anchor to v2 is not
+grounds to re-run any of them. The reason is verifiable: a file-by-file diff of all 25
+files in both directories (ADR 0025) found 17 byte-identical, and every changed line in
+the remaining 8 is one of — a hard-coded colour replaced by a theme token; a JS-side
+palette introduced because `<canvas>` / SVG stroke attributes cannot read CSS custom
+properties (`live-ops.jsx`, `topology.jsx`); or the theme control itself (the topbar
+toggle in `shell.jsx`, the Theme radio in `tweaks.jsx`, `.theme-toggle` in
+`styles.css`). **No page's layout, component tree, information architecture, state
+model or data shape differs.** v2 is v1 plus theme tokenisation.
+
+The one structural addition is the theme switch itself — v2's `shell.jsx` renders a
+topbar button v1 does not. It is confined to the app chrome and touches no governance
+surface, so no audit verdict turns on it.
+
+### Evidence standard
+
+All future light/dark screenshots and visual-regression evidence use **v2**
+(`design/v2/screenshots/` holds the reference captures). A capture taken against v1 is
+evidence about the pre-theme prototype and does not satisfy a visual-fidelity
+acceptance criterion.
+
+New deviations found between the shipped dashboard and v2 are recorded as an addendum
+to ADR 0017, following the AAASM-5099 addendum convention — not as a new parity
+programme.
