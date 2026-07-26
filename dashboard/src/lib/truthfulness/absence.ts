@@ -142,18 +142,24 @@ export interface AbsentValue<T> {
  */
 export type Certain<T> = KnownValue<T> | AbsentValue<T>
 
+// The constructors return the *narrow* member rather than the `Certain<T>`
+// union, so `known(5).value` type-checks at a call site that already knows
+// which case it built. Assigning any of them to a `Certain<T>` still works, so
+// nothing is lost; what is gained is that tests and callers stop reaching for
+// `isKnown(x) && x.value` to read a value they just constructed.
+
 /** Assert a production value. */
-export function known<T>(value: T): Certain<T> {
+export function known<T>(value: T): KnownValue<T> {
   return { known: true, value }
 }
 
 /** Record an absence with an explicit, displayable reason. */
-export function absent<T>(state: TruthState, detail?: string): Certain<T> {
+export function absent<T>(state: TruthState, detail?: string): AbsentValue<T> {
   return { known: false, state, detail }
 }
 
 /** Record demo/fixture data: renderable, labelled, and never counted as truth. */
-export function demo<T>(sample: T, detail?: string): Certain<T> {
+export function demo<T>(sample: T, detail?: string): AbsentValue<T> {
   return { known: false, state: 'demo', detail, sample }
 }
 
@@ -190,7 +196,7 @@ export function certain<T>(
  * `T` is not a sample of `U`. Losing the sample is the point — it is better to
  * show `—` than to show a number that illustrates a different quantity.
  */
-export function propagateAbsence<T, U>(value: AbsentValue<T>): Certain<U> {
+export function propagateAbsence<T, U>(value: AbsentValue<T>): AbsentValue<U> {
   return { known: false, state: value.state, detail: value.detail }
 }
 
