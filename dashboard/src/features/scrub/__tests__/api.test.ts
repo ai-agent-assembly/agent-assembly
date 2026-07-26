@@ -40,6 +40,12 @@ describe('scrubbed24hFromQuery', () => {
     if (!isKnown(value)) {
       expect(value.state).toBe('unknown')
       expect(value.detail).toMatch(/cannot be read as zero/)
+      // The reason must name the two paths that actually return `200 []` — a
+      // swallowed audit-read failure and a caller with no tenant scope. The
+      // omission of zero-activity agents is NOT one of them: that omission is
+      // what would make `[]` unambiguous, so citing it argues for rendering `0`.
+      expect(value.detail).toMatch(/audit-read failure/)
+      expect(value.detail).toMatch(/no tenant scope/)
     }
   })
 

@@ -49,17 +49,40 @@ export function useScrubbed24hQuery() {
 /**
  * Fold the per-agent rows into the fleet's 24h redaction count.
  *
- * An **empty array is not zero**. The route omits any agent that recorded
- * neither a blocked nor a scrubbed decision, so `[]` cannot distinguish "no
- * agent redacted anything" from "nothing is being audited" — `openapi/v1.yaml`
- * says as much on this route: *"an agent with neither is omitted, so the
- * dashboard renders `—` rather than a synthetic zero."* Rendering `0` there
- * would recreate, from a live endpoint, precisely the all-clear this ticket
- * removed from a literal.
+ * ## Why `[]` is not zero
  *
- * A populated response that genuinely sums to `0` **is** a real zero and is
- * reported as one: some agent was audited, and none of its decisions was a
- * redaction.
+ * Not because the route omits agents with no enforcement activity — that
+ * omission is what would make `[]` *unambiguous*, since a successful read with
+ * no rows would mean zero `PolicyViolation` and zero `CredentialLeakBlocked`
+ * tenant-wide. The ambiguity is upstream of the aggregation, in two places that
+ * both return `200 []`:
+ *
+ *  - **A swallowed audit-read failure.** `fetch_window_entries`
+ *    (`aa-api/src/routes/analytics.rs:381-388`) ends
+ *    `AuditReader::list_windowed(…).await.unwrap_or_default()` at `:386`, so a
+ *    reader error becomes an empty entry list rather than a `5xx`. The handler
+ *    (`get_agent_enforcement`, `:1081`) then aggregates nothing and returns an
+ *    empty array with a success status.
+ *  - **A caller with no tenant scope.** `scope_entries` (`:350-358`) returns
+ *    `Vec::new()` at `:356` for a non-admin caller whose tenant carries no
+ *    `org_id`, so every entry is filtered out before it is counted.
+ *
+ * In both cases the honest answer is "we do not know", and rendering `0` would
+ * put a fabricated all-clear on a security surface during an audit-store outage
+ * — recreating from a live endpoint exactly the untruth this ticket removed
+ * from a literal.
+ *
+ * Note the `openapi/v1.yaml:1115` line — *"an agent with neither is omitted, so
+ * the dashboard renders `—` rather than a synthetic zero"* — is about a
+ * **per-agent row**, not about this fleet sum. It is not the justification here.
+ *
+ * ## Why the asymmetry is correct
+ *
+ * A **populated** response is itself evidence that the read succeeded and the
+ * caller had scope: neither failure mode above can produce a row. So a
+ * populated response whose `scrubbed` values sum to `0` **is** a real zero —
+ * some agent was audited, and none of its decisions was a redaction — and is
+ * reported as one.
  */
 export function scrubbed24hFromQuery(
   outcome: QueryOutcome<AgentEnforcementCounts[]>,
@@ -69,7 +92,7 @@ export function scrubbed24hFromQuery(
   if (rows.value.length === 0) {
     return absent(
       'unknown',
-      'No agent recorded a blocked or scrubbed decision in the last 24h; the route omits agents with neither, so this cannot be read as zero redactions.',
+      'The 24h enforcement window came back empty. That is also what a swallowed audit-read failure and a caller with no tenant scope return, so it cannot be read as zero redactions.',
     )
   }
   return known(rows.value.reduce((sum, row) => sum + row.scrubbed, 0))
