@@ -6,8 +6,15 @@
  * per-policy hit counts. Rendering those as `0` would read as a real measurement
  * ("this agent scored zero"), so every such field folds to a single shared
  * placeholder instead.
+ *
+ * The placeholder itself is re-exported, not re-declared (AAASM-5173): a second
+ * `—` constant is a second place it can drift from the shared vocabulary.
+ * Prefer `TruthfulValue` from `components/truthfulness` on new surfaces — it
+ * also carries *why* the value is missing, which a bare string cannot.
  */
-export const NO_DATA = '—'
+import { NO_DATA } from '../../lib/truthfulness'
+
+export { NO_DATA }
 
 /** Render an optional value, falling back to the no-data placeholder. */
 export function orNoData(value: string | number | null | undefined): string {
