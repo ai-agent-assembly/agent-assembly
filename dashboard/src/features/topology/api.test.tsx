@@ -5,15 +5,38 @@ import { useTopologyNodeRecentEvents, useTopologyQuery, type RecentEvent } from 
 import { mapTopologyGraph } from './mapGraph'
 import type { components } from '../../api/generated/schema'
 
-// The wire shape the real `GET /api/v1/topology` endpoint returns (AAASM-5040):
-// the `AgentNode` projection carrying live mode/flagged/trust badges, plus slim
-// {source,target,kind} edges.
+// The wire shape the real `GET /api/v1/topology` endpoint returns (AAASM-5040,
+// widened in AAASM-5099): the `AgentNode` projection carrying live
+// mode/flagged/trust badges and the policy-inheritance chain, plus
+// {source,target,kind,cross_team} edges in all six relation kinds.
 const API_GRAPH: components['schemas']['TopologyGraphResponse'] = {
   nodes: [
-    { id: 'agent-1', name: 'support-agent', depth: 0, status: 'active', team_id: 'support', mode: 'shadow', flagged: true, trust: null },
+    {
+      id: 'agent-1',
+      name: 'support-agent',
+      depth: 0,
+      status: 'active',
+      team_id: 'support',
+      mode: 'shadow',
+      flagged: true,
+      trust: null,
+      effective_permissions: {
+        chain: [
+          { tier: 'global', scope: 'global', policies: ['baseline'] },
+          { tier: 'team', scope: 'team:support', policies: [] },
+        ],
+        allow: [],
+        deny: ['terminal_exec'],
+        allow_restricted: false,
+      },
+    },
     { id: 'agent-2', name: 'data-analyst', depth: 1, status: 'suspended', team_id: 'analytics', mode: 'enforce', flagged: false, trust: null },
   ],
-  edges: [{ source: 'agent-1', target: 'agent-2', kind: 'delegation' }],
+  edges: [
+    { source: 'agent-1', target: 'agent-2', kind: 'delegation', cross_team: true },
+    { source: 'agent-2', target: 'agent-1', kind: 'reads', cross_team: true },
+    { source: 'agent-1', target: 'agent-1', kind: 'approves', cross_team: false },
+  ],
 }
 
 // What the hook returns after mapping the wire shape onto the view model.
@@ -44,10 +67,19 @@ describe('useTopologyQuery', () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(result.current.data).toEqual(EXPECTED_GRAPH)
     expect(result.current.data?.nodes).toHaveLength(2)
-    expect(result.current.data?.edges).toHaveLength(1)
+    expect(result.current.data?.edges).toHaveLength(3)
     // Live badges flow through from the AgentNode projection (AAASM-5036).
     expect(result.current.data?.nodes[0].mode).toBe('shadow')
     expect(result.current.data?.nodes[0].flagged).toBe(true)
+    // Widened projection (AAASM-5099): non-structural kinds, the cross-team
+    // flag, and the policy-inheritance chain all survive the hook.
+    expect(result.current.data?.edges.map((e) => e.kind)).toEqual(['delegation', 'reads', 'approves'])
+    expect(result.current.data?.edges[0].crossTeam).toBe(true)
+    expect(result.current.data?.edges[2].crossTeam).toBe(false)
+    expect(result.current.data?.nodes[0].effectivePermissions?.chain).toHaveLength(2)
+    expect(result.current.data?.nodes[0].effectivePermissions?.deny).toEqual(['terminal_exec'])
+    // A node without the field folds to null, not an empty chain.
+    expect(result.current.data?.nodes[1].effectivePermissions).toBeNull()
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining('/api/v1/topology'),
       expect.objectContaining({

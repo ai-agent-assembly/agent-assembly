@@ -135,6 +135,94 @@ pub struct NodeBudget {
     pub limit_usd: Option<f64>,
 }
 
+/// One scope tier of an agent's policy-inheritance chain (AAASM-5099).
+///
+/// A tier is emitted only when the agent actually has that selector: an agent
+/// with no `org_id` has no Org tier, so no Org row appears. The `Tool` tier is
+/// deliberately absent — it is selected per *action* (see
+/// `aa_gateway::engine::action_tool_name`), not per agent, so there is no
+/// agent-level answer to project.
+///
+/// # Example JSON
+/// ```json
+/// { "tier": "team", "scope": "team:platform", "policies": ["team-baseline"] }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({ "tier": "team", "scope": "team:platform", "policies": ["team-baseline"] }))]
+pub struct PolicyChainTier {
+    /// Cascade tier: `global`, `org`, `team`, or `agent`.
+    pub tier: String,
+    /// Wire-format scope selector this tier resolves to, e.g. `team:platform`
+    /// — the same string `PolicyScope`'s `Display` produces, so it matches the
+    /// `scope` a policy document declares.
+    pub scope: String,
+    /// Names of the loaded policy documents at this tier, in cascade order.
+    /// Empty when the tier applies to the agent but carries no policy — that is
+    /// real state ("no team policy"), not missing data.
+    pub policies: Vec<String>,
+}
+
+/// The policy cascade that governs one agent, with per-tier provenance
+/// (AAASM-5099) — the data behind the node-detail Policy-Inheritance panel.
+///
+/// `chain` is the `Global → Org → Team → Agent` walk, broadest first. `allow` /
+/// `deny` are the capability set that walk produces after the *earlier*
+/// enforcement stages are folded in — a capability blocked by the network or
+/// tool stage appears in `deny` and never in `allow`, even though the merged
+/// capability set alone says nothing about it. See
+/// `routes::topology::project_effective_permissions` for exactly which stages are
+/// mirrored and which cannot be.
+///
+/// Two consequences for a reader of this payload:
+///
+/// * `allow_restricted` must be read together with `allow`: an empty `allow` with
+///   `allow_restricted = true` is deny-all, not "unrestricted" (AAASM-4154).
+/// * Absence from `deny` is **not** a grant. A `tools: { "*": { allow: false } }`
+///   cascade denies tools that have never been named, and no list can enumerate
+///   them.
+///
+/// The hi-fi mock (`design/v1/hi-fi/topology.jsx`) additionally draws a
+/// "parent" row. There is no parent tier in the product's scope vocabulary
+/// (`aa_gateway::policy::scope::PolicyScope` is `Global | Org | Team | Agent |
+/// Tool`) — a parent agent's own `agent:`-scoped policies are not inherited by
+/// its children — so no parent row is emitted rather than fabricating one.
+///
+/// Distinct from `agents::EffectivePermissionsResponse`
+/// (`GET /api/v1/agents/{id}/capabilities`), which lists one row per *document*
+/// that declares capabilities. This one lists one row per *tier* — including a
+/// tier that carries no policy, which is what the panel renders as "no team
+/// policy" — and is embedded per node so the graph needs no per-agent fan-out.
+///
+/// # Example JSON
+/// ```json
+/// {
+///   "chain": [{ "tier": "global", "scope": "global", "policies": ["baseline"] }],
+///   "allow": ["file_read"],
+///   "deny": ["terminal_exec"],
+///   "allow_restricted": true
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "chain": [{ "tier": "global", "scope": "global", "policies": ["baseline"] }],
+    "allow": ["file_read"],
+    "deny": ["terminal_exec"],
+    "allow_restricted": true
+}))]
+pub struct NodeEffectivePermissions {
+    /// Cascade tiers that apply to this agent, broadest → narrowest.
+    pub chain: Vec<PolicyChainTier>,
+    /// Capabilities the merged cascade explicitly allows, canonical wire names
+    /// (`file_read`, `mcp_tool:<name>`, …), sorted.
+    pub allow: Vec<String>,
+    /// Capabilities the merged cascade explicitly denies, canonical wire names,
+    /// sorted.
+    pub deny: Vec<String>,
+    /// Whether an allow-list restriction is in force — anything absent from
+    /// `allow` is denied, even when `allow` is empty.
+    pub allow_restricted: bool,
+}
+
 /// Minimal agent representation used in list and tree responses.
 ///
 /// # Example JSON
@@ -205,6 +293,13 @@ pub struct AgentNode {
     /// projection is built without a budget-tracker lookup. Like `policy_count`,
     /// only the graph endpoint resolves it; the other endpoints leave it `null`.
     pub budget: Option<NodeBudget>,
+    /// The agent's policy-inheritance chain and merged capability set
+    /// (AAASM-5099), or `null` when this projection is built without a
+    /// policy-engine lookup. Like `policy_count` / `budget`, only the graph
+    /// endpoint resolves it — the list / tree / team endpoints leave it `null`
+    /// so the client renders "no data" rather than an empty-but-authoritative
+    /// chain.
+    pub effective_permissions: Option<NodeEffectivePermissions>,
 }
 
 impl From<&AgentRecord> for AgentNode {
@@ -227,40 +322,54 @@ impl From<&AgentRecord> for AgentNode {
             owner: r.metadata.get("owner").cloned(),
             policy_count: None,
             budget: None,
+            effective_permissions: None,
         }
     }
 }
 
-/// One directed edge in the dashboard topology graph (AAASM-5040).
+/// One directed edge in the dashboard topology graph (AAASM-5040, widened in
+/// AAASM-5099).
 ///
-/// A slim projection of a stored [`aa_core::topology::Edge`] carrying only what
-/// the dashboard graph renders: the two hex-encoded endpoints and the relation
-/// `kind`. `kind` is one of the two kinds the graph models — `delegation`
-/// (from a `delegates_to` edge) or `call` (from a `calls` edge) — matching the
-/// frontend `TopologyEdge` 1:1 so the client consumes edges without remapping.
+/// A slim projection of a stored [`aa_core::topology::Edge`] carrying what the
+/// dashboard graph renders: the two hex-encoded endpoints, the relation `kind`,
+/// and whether the edge crosses a team boundary.
+///
+/// `kind` covers all six stored [`aa_core::topology::EdgeType`] variants. The
+/// two structural kinds keep the graph vocabulary the frontend already renders
+/// (`delegates_to` → `delegation`, `calls` → `call`); the other four pass the
+/// stored wire string through unchanged (`reads`, `writes`, `approves`,
+/// `messages`), matching the frontend `TopologyEdge` 1:1 so the client consumes
+/// edges without remapping.
 ///
 /// # Example JSON
 /// ```json
-/// { "source": "0102030405060708090a0b0c0d0e0f10", "target": "aabbccdd00112233aabbccdd00112233", "kind": "delegation" }
+/// { "source": "0102030405060708090a0b0c0d0e0f10", "target": "aabbccdd00112233aabbccdd00112233", "kind": "delegation", "cross_team": false }
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
     "source": "0102030405060708090a0b0c0d0e0f10",
     "target": "aabbccdd00112233aabbccdd00112233",
-    "kind": "delegation"
+    "kind": "delegation",
+    "cross_team": false
 }))]
 pub struct TopologyGraphEdge {
     /// Hex-encoded UUID of the source (delegating / calling) agent.
     pub source: String,
     /// Hex-encoded UUID of the target agent.
     pub target: String,
-    /// Relation kind rendered by the graph: `delegation` or `call`.
+    /// Relation kind rendered by the graph: `delegation`, `call`, `reads`,
+    /// `writes`, `approves`, or `messages`.
     pub kind: String,
+    /// Whether the two endpoints belong to different teams. Matches the
+    /// `is_cross_team` rule `/topology/edges` uses (`edges::compute_cross_team`):
+    /// true only when both endpoints carry a `team_id` and the two differ — an
+    /// endpoint with no team is never counted as crossing a boundary.
+    pub cross_team: bool,
 }
 
 /// The whole-fleet topology graph rendered by the dashboard Topology page
-/// (AAASM-5040): every agent visible to the caller as a node, plus the
-/// delegation / call edges between those nodes.
+/// (AAASM-5040): every agent visible to the caller as a node, plus every stored
+/// edge between those nodes (all six relation kinds, AAASM-5099).
 ///
 /// Nodes reuse the [`AgentNode`] projection (so the per-node enforcement-mode,
 /// flagged, and trust badges from AAASM-5036 are carried through), letting the
@@ -275,7 +384,8 @@ pub struct TopologyGraphEdge {
 pub struct TopologyGraphResponse {
     /// All agents visible to the caller, one graph node each (sorted by id).
     pub nodes: Vec<AgentNode>,
-    /// Delegation / call edges whose endpoints are both visible nodes.
+    /// Edges of every stored relation kind whose endpoints are both visible
+    /// nodes.
     pub edges: Vec<TopologyGraphEdge>,
 }
 
@@ -556,6 +666,7 @@ mod tests {
             owner: None,
             policy_count: None,
             budget: None,
+            effective_permissions: None,
         }
     }
 
@@ -765,6 +876,7 @@ mod tests {
             source: "0102030405060708090a0b0c0d0e0f10".to_string(),
             target: "aabbccdd00112233aabbccdd00112233".to_string(),
             kind: "delegation".to_string(),
+            cross_team: false,
         });
     }
 
@@ -783,6 +895,7 @@ mod tests {
                 source: "aa".to_string(),
                 target: "bb".to_string(),
                 kind: "call".to_string(),
+                cross_team: true,
             }],
         });
     }

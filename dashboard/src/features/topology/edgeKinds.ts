@@ -5,12 +5,11 @@ import type { TopologyEdgeKind } from './types'
  * (`design/v1/hi-fi/topology.jsx` `TOPO_EC`): delegates_to, calls, reads,
  * writes, approves, messages.
  *
- * The live `GET /api/v1/topology` projection currently only emits the two
- * structural kinds — `delegation` and `call` — so only those two are
- * `available`. The other four are rendered in the sidebar legend/checkboxes as
- * disabled "coming soon" rows: the FE styling (colour, dash, arrowhead) is
- * ready so they light up the moment the backend widens the projection, without
- * fabricating edges that don't exist in the data (see AAASM-5071 scope note).
+ * The live `GET /api/v1/topology` projection emits all six since AAASM-5099, so
+ * every kind is `available` and toggleable. `available` is retained rather than
+ * dropped: it is what decides whether a checkbox is interactive, so a kind the
+ * projection later stops emitting can be greyed out again without restructuring
+ * the sidebar.
  *
  * `color` is a CSS value (token where one exists) so swatches and edges
  * re-theme in light/dark — the design's raw hex would not. `approves` has no
@@ -36,10 +35,10 @@ export interface EdgeKindMeta {
 export const EDGE_KINDS: readonly EdgeKindMeta[] = [
   { id: 'delegates_to', label: 'delegates_to', available: true, modelKind: 'delegation', color: 'var(--ink-3)', width: 2 },
   { id: 'calls', label: 'calls', available: true, modelKind: 'call', color: 'var(--info)', dash: '7 3', width: 1.5 },
-  { id: 'reads', label: 'reads', available: false, color: 'var(--ok)', dash: '3 4', width: 1.5 },
-  { id: 'writes', label: 'writes', available: false, color: 'var(--warn)', dash: '3 4', width: 1.5 },
-  { id: 'approves', label: 'approves', available: false, color: '#7c3aed', dash: '8 3', width: 1.5 },
-  { id: 'messages', label: 'messages', available: false, color: 'var(--ink-4)', dash: '2 5', width: 1 },
+  { id: 'reads', label: 'reads', available: true, modelKind: 'reads', color: 'var(--ok)', dash: '3 4', width: 1.5 },
+  { id: 'writes', label: 'writes', available: true, modelKind: 'writes', color: 'var(--warn)', dash: '3 4', width: 1.5 },
+  { id: 'approves', label: 'approves', available: true, modelKind: 'approves', color: '#7c3aed', dash: '8 3', width: 1.5 },
+  { id: 'messages', label: 'messages', available: true, modelKind: 'messages', color: 'var(--ink-4)', dash: '2 5', width: 1 },
 ]
 
 /** The model kinds the graph can actually render, in a stable set. */

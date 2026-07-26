@@ -1637,13 +1637,14 @@ export interface paths {
          * @description Returns every agent the caller's tenant may see as a graph node — reusing
          *     the same [`AgentNode`] projection as `/topology/overview`, so the per-node
          *     enforcement-mode / flagged / trust badges added in AAASM-5036 flow through
-         *     end-to-end — plus the `delegation` and `call` edges between those nodes from
-         *     the topology edge store.
+         *     end-to-end — plus every stored edge between those nodes, in all six relation
+         *     kinds with a `cross_team` flag (AAASM-5099).
          *
          *     Unlike the sibling `/topology/*` routes, this handler additionally enriches
-         *     each node's `owner` / `policy_count` / `budget` (AAASM-5045) from registry
-         *     metadata, the policy-engine cascade, and the budget tracker respectively, so
-         *     the dashboard node-detail panel renders real values rather than placeholders.
+         *     each node's `owner` / `policy_count` / `budget` (AAASM-5045) and
+         *     `effective_permissions` (AAASM-5099) from registry metadata, the policy-engine
+         *     cascade, and the budget tracker respectively, so the dashboard node-detail
+         *     panel renders real values rather than placeholders.
          *
          *     Tenant-scoped, `RequireRead`, deny-by-default exactly like the sibling
          *     `/topology/*` routes: a non-admin caller with no tenant scope receives an
@@ -2102,6 +2103,7 @@ export interface components {
              * @description Delegation depth — 0 for root agents.
              */
             depth: number;
+            effective_permissions?: null | components["schemas"]["NodeEffectivePermissions"];
             /**
              * @description Whether the agent is policy-flagged — `policy_violations_count` is at or
              *     above [`FLAGGED_VIOLATION_THRESHOLD`]. Drives the danger-tinted node card
@@ -3406,6 +3408,85 @@ export interface components {
             spend_usd: number;
         };
         /**
+         * @description The policy cascade that governs one agent, with per-tier provenance
+         *     (AAASM-5099) — the data behind the node-detail Policy-Inheritance panel.
+         *
+         *     `chain` is the `Global → Org → Team → Agent` walk, broadest first. `allow` /
+         *     `deny` are the capability set that walk produces after the *earlier*
+         *     enforcement stages are folded in — a capability blocked by the network or
+         *     tool stage appears in `deny` and never in `allow`, even though the merged
+         *     capability set alone says nothing about it. See
+         *     `routes::topology::project_effective_permissions` for exactly which stages are
+         *     mirrored and which cannot be.
+         *
+         *     Two consequences for a reader of this payload:
+         *
+         *     * `allow_restricted` must be read together with `allow`: an empty `allow` with
+         *       `allow_restricted = true` is deny-all, not "unrestricted" (AAASM-4154).
+         *     * Absence from `deny` is **not** a grant. A `tools: { "*": { allow: false } }`
+         *       cascade denies tools that have never been named, and no list can enumerate
+         *       them.
+         *
+         *     The hi-fi mock (`design/v1/hi-fi/topology.jsx`) additionally draws a
+         *     "parent" row. There is no parent tier in the product's scope vocabulary
+         *     (`aa_gateway::policy::scope::PolicyScope` is `Global | Org | Team | Agent |
+         *     Tool`) — a parent agent's own `agent:`-scoped policies are not inherited by
+         *     its children — so no parent row is emitted rather than fabricating one.
+         *
+         *     Distinct from `agents::EffectivePermissionsResponse`
+         *     (`GET /api/v1/agents/{id}/capabilities`), which lists one row per *document*
+         *     that declares capabilities. This one lists one row per *tier* — including a
+         *     tier that carries no policy, which is what the panel renders as "no team
+         *     policy" — and is embedded per node so the graph needs no per-agent fan-out.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "chain": [{ "tier": "global", "scope": "global", "policies": ["baseline"] }],
+         *       "allow": ["file_read"],
+         *       "deny": ["terminal_exec"],
+         *       "allow_restricted": true
+         *     }
+         *     ```
+         * @example {
+         *       "allow": [
+         *         "file_read"
+         *       ],
+         *       "allow_restricted": true,
+         *       "chain": [
+         *         {
+         *           "policies": [
+         *             "baseline"
+         *           ],
+         *           "scope": "global",
+         *           "tier": "global"
+         *         }
+         *       ],
+         *       "deny": [
+         *         "terminal_exec"
+         *       ]
+         *     }
+         */
+        NodeEffectivePermissions: {
+            /**
+             * @description Capabilities the merged cascade explicitly allows, canonical wire names
+             *     (`file_read`, `mcp_tool:<name>`, …), sorted.
+             */
+            allow: string[];
+            /**
+             * @description Whether an allow-list restriction is in force — anything absent from
+             *     `allow` is denied, even when `allow` is empty.
+             */
+            allow_restricted: boolean;
+            /** @description Cascade tiers that apply to this agent, broadest → narrowest. */
+            chain: components["schemas"]["PolicyChainTier"][];
+            /**
+             * @description Capabilities the merged cascade explicitly denies, canonical wire names,
+             *     sorted.
+             */
+            deny: string[];
+        };
+        /**
          * @description Acknowledgement returned by the per-op lifecycle endpoints.
          *
          *     The fields are deliberately minimal — they document what the
@@ -3685,6 +3766,43 @@ export interface components {
              *     documents parsed from the flat (non-envelope) format, which declare none.
              */
             version?: string | null;
+        };
+        /**
+         * @description One scope tier of an agent's policy-inheritance chain (AAASM-5099).
+         *
+         *     A tier is emitted only when the agent actually has that selector: an agent
+         *     with no `org_id` has no Org tier, so no Org row appears. The `Tool` tier is
+         *     deliberately absent — it is selected per *action* (see
+         *     `aa_gateway::engine::action_tool_name`), not per agent, so there is no
+         *     agent-level answer to project.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "tier": "team", "scope": "team:platform", "policies": ["team-baseline"] }
+         *     ```
+         * @example {
+         *       "policies": [
+         *         "team-baseline"
+         *       ],
+         *       "scope": "team:platform",
+         *       "tier": "team"
+         *     }
+         */
+        PolicyChainTier: {
+            /**
+             * @description Names of the loaded policy documents at this tier, in cascade order.
+             *     Empty when the tier applies to the agent but carries no policy — that is
+             *     real state ("no team policy"), not missing data.
+             */
+            policies: string[];
+            /**
+             * @description Wire-format scope selector this tier resolves to, e.g. `team:platform`
+             *     — the same string `PolicyScope`'s `Display` produces, so it matches the
+             *     `scope` a policy document declares.
+             */
+            scope: string;
+            /** @description Cascade tier: `global`, `org`, `team`, or `agent`. */
+            tier: string;
         };
         /** @description Per-rule, per-day policy outcome counts. */
         PolicyDay: {
@@ -4451,26 +4569,43 @@ export interface components {
             edges: components["schemas"]["EdgeResponse"][];
         };
         /**
-         * @description One directed edge in the dashboard topology graph (AAASM-5040).
+         * @description One directed edge in the dashboard topology graph (AAASM-5040, widened in
+         *     AAASM-5099).
          *
-         *     A slim projection of a stored [`aa_core::topology::Edge`] carrying only what
-         *     the dashboard graph renders: the two hex-encoded endpoints and the relation
-         *     `kind`. `kind` is one of the two kinds the graph models — `delegation`
-         *     (from a `delegates_to` edge) or `call` (from a `calls` edge) — matching the
-         *     frontend `TopologyEdge` 1:1 so the client consumes edges without remapping.
+         *     A slim projection of a stored [`aa_core::topology::Edge`] carrying what the
+         *     dashboard graph renders: the two hex-encoded endpoints, the relation `kind`,
+         *     and whether the edge crosses a team boundary.
+         *
+         *     `kind` covers all six stored [`aa_core::topology::EdgeType`] variants. The
+         *     two structural kinds keep the graph vocabulary the frontend already renders
+         *     (`delegates_to` → `delegation`, `calls` → `call`); the other four pass the
+         *     stored wire string through unchanged (`reads`, `writes`, `approves`,
+         *     `messages`), matching the frontend `TopologyEdge` 1:1 so the client consumes
+         *     edges without remapping.
          *
          *     # Example JSON
          *     ```json
-         *     { "source": "0102030405060708090a0b0c0d0e0f10", "target": "aabbccdd00112233aabbccdd00112233", "kind": "delegation" }
+         *     { "source": "0102030405060708090a0b0c0d0e0f10", "target": "aabbccdd00112233aabbccdd00112233", "kind": "delegation", "cross_team": false }
          *     ```
          * @example {
+         *       "cross_team": false,
          *       "kind": "delegation",
          *       "source": "0102030405060708090a0b0c0d0e0f10",
          *       "target": "aabbccdd00112233aabbccdd00112233"
          *     }
          */
         TopologyGraphEdge: {
-            /** @description Relation kind rendered by the graph: `delegation` or `call`. */
+            /**
+             * @description Whether the two endpoints belong to different teams. Matches the
+             *     `is_cross_team` rule `/topology/edges` uses (`edges::compute_cross_team`):
+             *     true only when both endpoints carry a `team_id` and the two differ — an
+             *     endpoint with no team is never counted as crossing a boundary.
+             */
+            cross_team: boolean;
+            /**
+             * @description Relation kind rendered by the graph: `delegation`, `call`, `reads`,
+             *     `writes`, `approves`, or `messages`.
+             */
             kind: string;
             /** @description Hex-encoded UUID of the source (delegating / calling) agent. */
             source: string;
@@ -4479,8 +4614,8 @@ export interface components {
         };
         /**
          * @description The whole-fleet topology graph rendered by the dashboard Topology page
-         *     (AAASM-5040): every agent visible to the caller as a node, plus the
-         *     delegation / call edges between those nodes.
+         *     (AAASM-5040): every agent visible to the caller as a node, plus every stored
+         *     edge between those nodes (all six relation kinds, AAASM-5099).
          *
          *     Nodes reuse the [`AgentNode`] projection (so the per-node enforcement-mode,
          *     flagged, and trust badges from AAASM-5036 are carried through), letting the
@@ -4496,7 +4631,10 @@ export interface components {
          *     }
          */
         TopologyGraphResponse: {
-            /** @description Delegation / call edges whose endpoints are both visible nodes. */
+            /**
+             * @description Edges of every stored relation kind whose endpoints are both visible
+             *     nodes.
+             */
             edges: components["schemas"]["TopologyGraphEdge"][];
             /** @description All agents visible to the caller, one graph node each (sorted by id). */
             nodes: components["schemas"]["AgentNode"][];

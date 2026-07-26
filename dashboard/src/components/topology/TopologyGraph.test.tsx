@@ -473,6 +473,48 @@ describe('TopologyGraph — pan/zoom, edge filter, team select', () => {
     expect(cross).toHaveLength(0)
   })
 
+  // ── Widened edge kinds (AAASM-5099) ────────────────────────────────────────
+
+  const EDGES6: TopologyEdge[] = [
+    { source: 'p1', target: 'w1', kind: 'delegation', crossTeam: false },
+    { source: 'w1', target: 'p1', kind: 'call', crossTeam: false },
+    { source: 'p1', target: 'x1', kind: 'reads', crossTeam: true },
+    { source: 'x1', target: 'p1', kind: 'writes', crossTeam: true },
+    { source: 'w1', target: 'x1', kind: 'approves', crossTeam: true },
+    { source: 'x1', target: 'w1', kind: 'messages', crossTeam: true },
+  ]
+
+  it('draws every one of the six relation kinds', () => {
+    render(<TopologyGraph nodes={NODES4} edges={EDGES6} />)
+    const paths = screen.getAllByTestId('topology-edge')
+    expect(paths.map(p => p.getAttribute('data-kind'))).toEqual([
+      'delegation', 'call', 'reads', 'writes', 'approves', 'messages',
+    ])
+    // Each kind carries its own class so the CSS token applies.
+    expect(paths[2]).toHaveClass('topology-edge--reads')
+    expect(paths[5]).toHaveClass('topology-edge--messages')
+  })
+
+  it('filters a newly-emitted kind out via visibleKinds', () => {
+    render(<TopologyGraph nodes={NODES4} edges={EDGES6} visibleKinds={new Set(['reads', 'messages'])} />)
+    const kinds = screen.getAllByTestId('topology-edge').map(p => p.getAttribute('data-kind'))
+    expect(kinds).toEqual(['reads', 'messages'])
+  })
+
+  it("trusts the server's crossTeam flag over the endpoints' teams", () => {
+    // Both endpoints are on team alpha, so the client derivation would say
+    // "intra-team"; the server flag (AAASM-5099) is authoritative.
+    const flagged: TopologyEdge[] = [{ source: 'p1', target: 'w1', kind: 'call', crossTeam: true }]
+    render(<TopologyGraph nodes={NODES4} edges={flagged} showCrossTeam={false} />)
+    expect(screen.queryAllByTestId('topology-edge')).toHaveLength(0)
+  })
+
+  it('falls back to comparing teams when the payload carries no flag', () => {
+    const unflagged: TopologyEdge[] = [{ source: 'p1', target: 'x1', kind: 'call' }]
+    render(<TopologyGraph nodes={NODES4} edges={unflagged} showCrossTeam={false} />)
+    expect(screen.queryAllByTestId('topology-edge')).toHaveLength(0)
+  })
+
   it('fires onTeamClick with the team when a cluster is clicked', async () => {
     const onTeamClick = vi.fn()
     render(<TopologyGraph nodes={NODES4} edges={EDGES3} onTeamClick={onTeamClick} />)

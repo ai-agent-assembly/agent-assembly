@@ -219,8 +219,8 @@
 }
 
 /* ── Relationship edges (AAASM-5019) ────────────────────────────
-   Mirrors design/v1/hi-fi/topology.jsx TOPO_EC. The data model exposes
-   two kinds; each maps to a token so lines re-theme in light/dark:
+   Mirrors design/v1/hi-fi/topology.jsx TOPO_EC. Each of the six kinds maps
+   to a token so lines re-theme in light/dark; the two structural ones:
      delegation → --ink-3  (primary solid line)
      call       → --info   (secondary dashed line)
    Arrowheads reuse the same token via fill so head + line match. */
@@ -254,11 +254,9 @@
   fill: var(--info);
 }
 
-/* Future edge kinds (reads / writes / approves / messages). The `/topology`
-   projection does not emit these yet, so no <path> of these kinds renders
-   today — but the FE styling is defined so they light up the moment the
-   backend widens the projection (AAASM-5071), no further UI change needed.
-   Colours mirror src/features/topology/edgeKinds.ts. */
+/* The four non-structural edge kinds (reads / writes / approves / messages),
+   emitted by the `/topology` projection since AAASM-5099. Colours mirror
+   src/features/topology/edgeKinds.ts so an edge matches its sidebar swatch. */
 .topology-edge--reads {
   stroke: var(--ok);
   opacity: 0.7;
@@ -277,6 +275,23 @@
 .topology-edge--messages {
   stroke: var(--ink-4);
   opacity: 0.6;
+}
+
+/* Arrowheads reuse each kind's stroke token via fill so head + line match. */
+.topology-edge__arrow--reads {
+  fill: var(--ok);
+}
+
+.topology-edge__arrow--writes {
+  fill: var(--warn);
+}
+
+.topology-edge__arrow--approves {
+  fill: #7c3aed;
+}
+
+.topology-edge__arrow--messages {
+  fill: var(--ink-4);
 }
 
 /* ── Team clusters (AAASM-1339) ─────────────────────────────── */

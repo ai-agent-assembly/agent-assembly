@@ -40,9 +40,9 @@ const STATUS_LEGEND: ReadonlyArray<{ readonly color: string; readonly label: str
  * filter list, the six edge-type checkboxes (+ cross-team toggle), a
  * cycle-alert block, and the status-stripe legend.
  *
- * Only the two edge kinds the `/topology` projection emits are toggleable; the
- * other four are shown disabled with a "soon" tag so the taxonomy is visible
- * and lights up once the backend widens the projection — no fabricated edges.
+ * All six edge kinds are toggleable since the `/topology` projection widened to
+ * emit them (AAASM-5099); a kind the projection stops emitting would render
+ * disabled with a "soon" tag rather than fabricating edges.
  */
 export function TopologySidebar({
   stats,
