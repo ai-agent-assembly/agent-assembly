@@ -169,11 +169,16 @@ export function LiveOpsPage() {
     return pruned ?? overrides
   }, [ops, overrides])
 
+  // The menu items that reach these are already gated, so the guard is
+  // unreachable today — it is here because `handleHaltAll` has one and a
+  // dispatcher that POSTs without checking is the asymmetry a later caller
+  // trips over.
   async function runAction(
     opId: string,
     intent: OperationOverride,
     call: (id: string) => Promise<void>,
   ) {
+    if (!canWrite) return
     setOverrides((prev) => new Map(prev).set(opId, intent))
     try {
       await call(opId)
@@ -246,6 +251,7 @@ export function LiveOpsPage() {
   // takes no optimistic row override; the WS stream reflects the agent's ops
   // settling on their own.
   async function handleHaltAgent(opId: string) {
+    if (!canWrite) return
     try {
       await haltAgent(opId)
       toast(`Halting agent for op ${opId}`)
