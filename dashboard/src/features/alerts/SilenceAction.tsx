@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useSilenceAlertMutation } from './api'
 import { useToast } from '../../components/Toast'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../../auth/usePermissions'
 
 interface SilenceActionProps {
   alertId: string
@@ -28,6 +29,10 @@ export function SilenceAction({ alertId, silenced = false }: Readonly<SilenceAct
   const [reason, setReason] = useState<string>('')
   const silence = useSilenceAlertMutation()
   const { toast } = useToast()
+  // AAASM-5147: without this gate a read-scope caller could submit and got back
+  // a raw `POST … failed: 403` toast from the fetch helper — the control looked
+  // available right up until the gateway refused it.
+  const { canWrite } = usePermissions()
 
   const resolveSeconds = (): number | null => {
     if (selected.value !== null) return selected.value
@@ -150,7 +155,8 @@ export function SilenceAction({ alertId, silenced = false }: Readonly<SilenceAct
         type="button"
         data-testid="silence-action-submit"
         onClick={() => void submit()}
-        disabled={silence.isPending}
+        disabled={!canWrite || silence.isPending}
+        title={canWrite ? undefined : WRITE_REQUIRED_HINT}
         style={{
           alignSelf: 'flex-end',
           padding: '6px 14px',
@@ -158,7 +164,7 @@ export function SilenceAction({ alertId, silenced = false }: Readonly<SilenceAct
           color: 'var(--text-on-accent)',
           border: 'none',
           borderRadius: '4px',
-          cursor: silence.isPending ? 'wait' : 'pointer',
+          cursor: canWrite ? (silence.isPending ? 'wait' : 'pointer') : 'not-allowed',
           fontSize: '0.875rem',
         }}
       >

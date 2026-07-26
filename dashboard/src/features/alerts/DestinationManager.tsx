@@ -7,6 +7,7 @@ import {
   useUpdateDestinationMutation,
 } from './api'
 import { useToast } from '../../components/Toast'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../../auth/usePermissions'
 import type { Destination, DestinationInput, DestinationKind } from './types'
 
 interface DestinationManagerProps {
@@ -48,6 +49,10 @@ export function DestinationManager({ open, onClose }: Readonly<DestinationManage
   const deleteMut = useDeleteDestinationMutation()
   const testMut = useTestDestinationMutation()
   const { toast } = useToast()
+  // AAASM-5147: the whole manager rendered enabled for a read-scope caller.
+  // Reading destinations is fine; every mutating control below is gated so the
+  // caller learns their scope from the UI rather than from a 403 toast.
+  const { canWrite } = usePermissions()
 
   const [draft, setDraft] = useState<DraftForm>(EMPTY_DRAFT)
 
@@ -218,7 +223,8 @@ export function DestinationManager({ open, onClose }: Readonly<DestinationManage
                       type="button"
                       data-testid={`destination-test-${d.id}`}
                       onClick={() => void testFire(d)}
-                      disabled={testMut.isPending}
+                      disabled={!canWrite || testMut.isPending}
+                      title={canWrite ? undefined : WRITE_REQUIRED_HINT}
                       style={{ padding: '2px 8px', fontSize: '0.75rem' }}
                     >
                       Test fire
@@ -227,6 +233,8 @@ export function DestinationManager({ open, onClose }: Readonly<DestinationManage
                       type="button"
                       data-testid={`destination-edit-${d.id}`}
                       onClick={() => setDraft(draftFromDestination(d))}
+                      disabled={!canWrite}
+                      title={canWrite ? undefined : WRITE_REQUIRED_HINT}
                       style={{ padding: '2px 8px', fontSize: '0.75rem' }}
                     >
                       Edit
@@ -235,7 +243,8 @@ export function DestinationManager({ open, onClose }: Readonly<DestinationManage
                       type="button"
                       data-testid={`destination-delete-${d.id}`}
                       onClick={() => void remove(d)}
-                      disabled={deleteMut.isPending}
+                      disabled={!canWrite || deleteMut.isPending}
+                      title={canWrite ? undefined : WRITE_REQUIRED_HINT}
                       style={{ padding: '2px 8px', fontSize: '0.75rem', color: 'var(--status-danger-text-strong)' }}
                     >
                       Delete
@@ -314,7 +323,8 @@ export function DestinationManager({ open, onClose }: Readonly<DestinationManage
               type="button"
               data-testid="destination-form-submit"
               onClick={() => void submit()}
-              disabled={createMut.isPending || updateMut.isPending}
+              disabled={!canWrite || createMut.isPending || updateMut.isPending}
+              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
               style={{
                 padding: '4px 12px',
                 background: 'var(--button-primary-bg)',
@@ -322,7 +332,7 @@ export function DestinationManager({ open, onClose }: Readonly<DestinationManage
                 border: 'none',
                 borderRadius: '4px',
                 fontSize: '0.75rem',
-                cursor: 'pointer',
+                cursor: canWrite ? 'pointer' : 'not-allowed',
               }}
             >
               {draft.editingId ? 'Save changes' : 'Add destination'}
