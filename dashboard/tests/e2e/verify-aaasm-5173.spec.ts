@@ -5,9 +5,9 @@
  *
  *  1. **The AAASM-5106 guard holds end to end.** With `policies: []` — the
  *     cascade every shipped deployment resolves — `aa-api`'s `decide()` falls
- *     through to `Allow` for every cell, so the grid is entirely green. The
- *     summary row must nevertheless report **Unconfigured**, not a permission
- *     total and a reassuring `0 denied`.
+ *     through to `Allow` for every cell, so the grid asserts `allow` across the
+ *     whole matrix. The summary row must nevertheless report **Unconfigured**,
+ *     not a permission total and a reassuring `0 denied`.
  *  2. **A real cascade still reports real numbers.** The guard must not be a
  *     blanket suppression: with a policy document loaded the same row asserts
  *     its counts, including an honest `0`.

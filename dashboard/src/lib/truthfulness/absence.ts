@@ -3,7 +3,7 @@
  *
  * The design-QA re-audit found the dashboard asserting things it does not know:
  * a failed request rendered as `0`, an absent latency rendered as `<1ms`, an
- * unevaluated capability rendered as a green `allow`. Each of those is the same
+ * unevaluated capability asserted as `allow`. Each of those is the same
  * bug — an *absence* silently promoted to a legitimate business value.
  *
  * This module defines, once, what the dashboard may say when it does not have a

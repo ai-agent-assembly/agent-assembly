@@ -15,17 +15,22 @@
  * `Allow` is therefore the *fallback*, not a measurement. Under AAASM-5106 the
  * policy cascade is empty in every shipped deployment, so `caps.deny` is empty
  * and `allow_is_restricted()` is false — which means every cell resolves to
- * `Allow` and the grid paints a fully-permissive green wall while the gateway
- * is in fact denying those calls.
+ * `Allow`: the grid asserts `allow` for every capability, an unbroken wall of
+ * `ALLOW`, while the gateway is in fact denying those calls.
  *
- * This is a **display-only** defect. `decide` is private to `aa-api` and no
- * enforcement crate depends on `aa-api`, so nothing here is a runtime bypass —
- * the enforcement path is untouched. What is wrong is the *claim the UI makes*.
+ * This is a **display-only** defect, and specifically a *data* one rather than a
+ * logic one. `decide` is a line-for-line mirror of the gateway's
+ * `stage_capability` (`aa-gateway/src/engine/decision.rs:207-221`) — same deny
+ * check, same fail-closed `allow_is_restricted()` — so it is not drifting from
+ * enforcement; it is being handed a cascade nothing populated. It is also
+ * private to `aa-api`, which no enforcement crate depends on, so nothing here
+ * is a runtime bypass. What is wrong is the *claim the UI makes*.
  *
  * ── The rule ────────────────────────────────────────────────────────────────
  *
  * **Never infer permission from missing policy data.** An empty or unavailable
- * cascade must render as Unconfigured / Not evaluated, never as a green Allow.
+ * cascade must render as Unconfigured / Not evaluated, never as an asserted
+ * Allow.
  * `resolveVerdict` is the single implementation of that rule, and
  * `verdict.test.ts` guards it.
  */

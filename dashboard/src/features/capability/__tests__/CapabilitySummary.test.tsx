@@ -35,9 +35,10 @@ describe('CapabilitySummary', () => {
     expect(screen.getByTestId('cap-summary-deny')).toHaveTextContent('0')
   })
 
-  it('renders Unconfigured rather than a green allow count on an empty cascade', () => {
-    // The headline regression: a fully-permissive grid produced by the absence
-    // of policy must not be summarised as a measured permission total.
+  it('renders Unconfigured rather than an allow count on an empty cascade', () => {
+    // The headline regression: a grid asserting `allow` for every cell purely
+    // because no policy constrained it must not be summarised as a measured
+    // permission total.
     render(<CapabilitySummary agents={AGENTS} resources={RESOURCES} verb="write" cascade={EMPTY} />)
     for (const id of ['cap-summary-allow', 'cap-summary-narrow', 'cap-summary-deny']) {
       const stat = screen.getByTestId(id)

@@ -24,7 +24,7 @@ describe('resolveVerdict — the AAASM-5106 guard', () => {
   it('never yields allow when the cascade loaded no documents', () => {
     // The regression this whole lane exists to prevent: `decide()`'s final arm
     // returns Allow for anything no rule constrained, so an empty cascade
-    // paints every cell green. That is absence, not permission.
+    // asserts `allow` for every cell. That is absence, not permission.
     const resolved = resolveVerdict('allow', EMPTY)
     expect(isKnown(resolved)).toBe(false)
     expect(isAbsent(resolved) && resolved.state).toBe('unconfigured')

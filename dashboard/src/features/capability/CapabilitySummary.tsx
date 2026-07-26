@@ -44,9 +44,9 @@ function SummaryStat({ n, label, tone = 'neutral', testId }: Readonly<StatProps>
  * the verb or the visible-agent set changes. They render through
  * `TruthfulValue`, so when the policy cascade is empty — which is every shipped
  * deployment until AAASM-5106 lands — the row reports **Unconfigured** instead
- * of a large allow count next to a reassuring `0 denied`. A green summary with
- * no policy behind it is the exact claim this lane exists to stop the dashboard
- * making.
+ * of a large allow count next to a reassuring `0 denied`. A summary asserting
+ * permissions with no policy behind it is the exact claim this lane exists to
+ * stop the dashboard making.
  */
 export function CapabilitySummary({
   agents,
