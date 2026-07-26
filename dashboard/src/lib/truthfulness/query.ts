@@ -24,6 +24,15 @@ import { absent, demo, known, type Certain, type TruthState } from './absence'
 export interface QueryOutcome<T> {
   readonly isPending?: boolean
   readonly isError?: boolean
+  /**
+   * The thrown value, if any.
+   *
+   * `null` is the *absence* of an error, not an error: TanStack Query declares
+   * `error: null` on both `QueryObserverSuccessResult` and
+   * `QueryObserverPendingResult`, so a healthy result always carries this key.
+   * Anything reading it must reject `null` as well as `undefined` — see
+   * `hasError`.
+   */
   readonly error?: unknown
   readonly data?: T | null
 }
@@ -42,6 +51,20 @@ export interface CertainFromQueryOptions {
    * "Demo data" label and is excluded from every `isKnown` aggregate.
    */
   readonly isDemo?: boolean
+}
+
+/**
+ * Whether `error` holds an actual thrown value.
+ *
+ * `null` must be excluded, not just `undefined`: TanStack Query populates
+ * `error: null` on every successful *and* pending result, so a bare
+ * `!== undefined` check reports a healthy query as a failure — rendering `—`
+ * with a fault tone and announcing "the request for this value failed" over a
+ * working API. That is the precise harm this module exists to prevent, so the
+ * check is factored out and tested against the literal library shapes.
+ */
+function hasError(error: unknown): boolean {
+  return error !== undefined && error !== null
 }
 
 /** Best-effort operator-facing detail from a thrown value. */
@@ -77,7 +100,7 @@ export function certainFromQuery<T>(
 ): Certain<T> {
   const { whenEmpty = 'unknown', isDemo = false } = options
 
-  if (outcome.isError === true || outcome.error !== undefined) {
+  if (outcome.isError === true || hasError(outcome.error)) {
     return absent<T>('unavailable', describeError(outcome.error))
   }
   if (outcome.isPending === true) {
