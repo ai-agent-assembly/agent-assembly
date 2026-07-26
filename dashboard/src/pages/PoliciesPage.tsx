@@ -165,7 +165,7 @@ function PolicyRow({ policy, onEdit }: Readonly<{ policy: Policy; onEdit: () => 
         <span className="policies-list__row-hits" data-testid="policy-row-hits">
           {/* Always `—` today: no audit record attributes a decision to a
               policy document, so the count is absent on the wire rather than a
-              0 (AAASM-5100 / ADR 0018 owns capturing it). */}
+              0 (AAASM-5107 owns capturing it). */}
           <b>{policy.hits24h ?? '—'}</b>
           <span>hits/24h</span>
         </span>
