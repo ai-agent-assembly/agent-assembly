@@ -7,9 +7,14 @@
 // open incident" inline.
 //
 // The shell's own wiring (`components/AppShell.tsx`) is owned by a different
-// lane and is NOT changed by this ticket — see the PR description.
+// lane and is NOT changed by this ticket. When it is wired, it must consume
+// `criticalFiringBadge` and pass a `Certain` built from the query outcome
+// (`certainFromQuery`) — NOT `criticalFiringCount(alerts.data ?? [])`. The
+// `?? []` form is the fail-open pattern this lane exists to remove: it turns a
+// failed alerts request into "0 critical alerts", which the shell renders as no
+// badge at all, which reads as "nothing critical is happening".
 
-import { certain, propagateAbsence, type Certain } from '../../lib/truthfulness'
+import { known, propagateAbsence, type Certain } from '../../lib/truthfulness'
 import type { Alert } from './types'
 
 /**
@@ -38,5 +43,5 @@ export function criticalFiringCount(alerts: readonly Alert[]): number {
  */
 export function criticalFiringBadge(alerts: Certain<readonly Alert[]>): Certain<number> {
   if (!alerts.known) return propagateAbsence(alerts)
-  return certain(criticalFiringCount(alerts.value), 'unknown')
+  return known(criticalFiringCount(alerts.value))
 }
