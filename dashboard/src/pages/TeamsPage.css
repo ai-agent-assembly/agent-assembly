@@ -313,6 +313,13 @@
   color: var(--badge-neutral-text);
 }
 
+/* Unit label following a value inside a chip, e.g. the `agents` in `2 agents`.
+   The chip is a flex container, so the separating space has to be a margin on
+   its own box rather than whitespace in a text node. */
+.teams-chip__unit {
+  margin-left: 0.35em;
+}
+
 .teams-chip.is-danger {
   background: var(--status-danger-bg);
   color: var(--status-danger-text-strong);

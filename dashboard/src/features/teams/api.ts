@@ -33,6 +33,42 @@ export function useTopologyOverviewQuery() {
   })
 }
 
+/**
+ * Every agent the caller's tenant may see, as `AgentNode` records
+ * (`GET /api/v1/topology`, AAASM-5040) — no depth, status, or team filter.
+ *
+ * The Teams page needs the whole fleet, not `/topology/overview`'s
+ * `standalone_root_agents`, to answer "which agents does no team govern?"
+ * (AAASM-5157). The overview's field is root-only, so a spawned agent with no
+ * team fell out of every grouping on the page.
+ *
+ * Deliberately not `features/topology`'s `useTopologyQuery`, which fetches the
+ * same endpoint: that hook maps the response onto the graph view model, which
+ * drops `depth` and folds any unrecognised `status` to `idle`. The orphan rows
+ * render both verbatim, and a governance list is the wrong place to show a
+ * lossy projection of an agent's real state.
+ */
+export function useTopologyAgentsQuery() {
+  return useQuery({
+    queryKey: ['topology', 'agents'],
+    // Matches `features/topology`'s hook over the same endpoint. This is the
+    // most expensive topology handler — it resolves a policy cascade and
+    // effective permissions per node plus a budget snapshot, and pages the edge
+    // set, nearly all of which this page discards — so it must not refetch on
+    // every mount and window focus. It also narrows the window in which this
+    // page holds two snapshots taken at different moments (see `TeamsPage`).
+    // The two hooks cannot share a cache entry: distinct keys are never deduped,
+    // and prefix matching applies to invalidation only.
+    staleTime: 5_000,
+    queryFn: async (): Promise<AgentNode[]> => {
+      const { data, error } = await api.GET('/api/v1/topology')
+      if (error) throw new Error('Failed to fetch topology agents')
+      if (!data) throw new Error('Topology response was empty')
+      return data.nodes
+    },
+  })
+}
+
 export function useCostSummaryQuery() {
   return useQuery({
     queryKey: ['costs', 'summary'],

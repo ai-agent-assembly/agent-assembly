@@ -11,6 +11,7 @@ import {
   useResumeTeam,
   useTeamPoliciesQuery,
   useTeamTopologyQuery,
+  useTopologyAgentsQuery,
   useTopologyOverviewQuery,
   type CostSummary,
   type TopologyOverview,
@@ -75,6 +76,42 @@ describe('useTopologyOverviewQuery', () => {
     const { result } = renderHook(() => useTopologyOverviewQuery(), { wrapper })
     await waitFor(() => expect(result.current.isError).toBe(true))
     expect(result.current.error?.message).toBe('Failed to fetch topology overview')
+  })
+})
+
+describe('useTopologyAgentsQuery', () => {
+  it('returns every graph node, including agents no team claims at depth > 0', async () => {
+    get.mockResolvedValue({
+      data: {
+        nodes: [
+          { id: 'a', name: 'root', status: 'active', depth: 0, flagged: false, mode: 'enforce', trust: null, team_id: 'research' },
+          { id: 'b', name: 'spawned', status: 'active', depth: 2, flagged: false, mode: 'off', trust: null, team_id: null },
+        ],
+        edges: [],
+      },
+    } satisfies FetchResult)
+    const { wrapper } = makeWrapper()
+    const { result } = renderHook(() => useTopologyAgentsQuery(), { wrapper })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data?.map(n => n.id)).toEqual(['a', 'b'])
+    expect(get).toHaveBeenCalledWith('/api/v1/topology')
+  })
+
+  it('throws rather than reporting an empty fleet when the request fails', async () => {
+    get.mockResolvedValue({ error: { message: 'boom' } } satisfies FetchResult)
+    const { wrapper } = makeWrapper()
+    const { result } = renderHook(() => useTopologyAgentsQuery(), { wrapper })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.error?.message).toBe('Failed to fetch topology agents')
+    expect(result.current.data).toBeUndefined()
+  })
+
+  it('throws rather than reporting an empty fleet when the body is missing', async () => {
+    get.mockResolvedValue({} satisfies FetchResult)
+    const { wrapper } = makeWrapper()
+    const { result } = renderHook(() => useTopologyAgentsQuery(), { wrapper })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.error?.message).toBe('Topology response was empty')
   })
 })
 

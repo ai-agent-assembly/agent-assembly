@@ -1,4 +1,6 @@
 import { bucketForRatio } from '../../components/topology/budgetThreshold'
+import { TruthfulValue } from '../../components/truthfulness/TruthfulValue'
+import { absent, isKnown, known, type Certain } from '../../lib/truthfulness'
 import { budgetBucketColor } from './budgetColor'
 import type { TeamListRow } from './api'
 
@@ -8,7 +10,13 @@ interface TeamListPaneProps {
   onSelect: (teamId: string) => void
   isLoading: boolean
   isError: boolean
-  orphanCount: number
+  /**
+   * How many agents no team claims — or why that is not known. A failed
+   * topology request must not render as `0` here: an empty-looking unclaimed
+   * chip reads as "everything is governed", which is the one claim this page
+   * may never make without evidence (AAASM-5157).
+   */
+  orphanCount: Certain<number>
   isOrphanSelected: boolean
   onSelectOrphan: () => void
 }
@@ -40,12 +48,22 @@ export function TeamListPane({
   isOrphanSelected,
   onSelectOrphan,
 }: Readonly<TeamListPaneProps>) {
+  // `rows` is already `[]` on both failure and first load, so the count has to
+  // be recovered from the query state rather than from the array's length.
+  let groupCount: Certain<number>
+  if (isError) groupCount = absent('unavailable', 'Failed to load teams')
+  else if (isLoading) groupCount = absent('unknown', 'Request in flight')
+  else groupCount = known(rows.length)
+
   return (
     <div className="teams-list-pane" data-testid="team-list-pane">
       <div className="teams-list-pane__head">
         <span className="teams-list-pane__title">Agent Groups</span>
         <span className="teams-list-pane__count" data-testid="team-list-count">
-          {rows.length} group{rows.length === 1 ? '' : 's'}
+          {/* Same rule as the unclaimed chip below: a failed overview must not
+              render as "0 groups", which reads as a measured empty org. */}
+          <TruthfulValue value={groupCount} testId="team-list-count-value" />
+          {' group'}{isKnown(groupCount) && groupCount.value === 1 ? '' : 's'}
         </span>
         <button
           type="button"
@@ -95,28 +113,30 @@ export function TeamListPane({
           </button>
         ))}
 
-        {!isLoading && !isError && (
-          <div className="teams-list-orphan" data-testid="team-list-orphan-section">
-            <div className="teams-list-orphan__label">unclaimed</div>
-            <button
-              type="button"
-              className={`teams-list-row teams-list-orphan__row${isOrphanSelected ? ' is-active' : ''}`}
-              data-testid="team-list-orphan-row"
-              aria-current={isOrphanSelected}
-              onClick={onSelectOrphan}
-            >
-              <div className="teams-list-row__top">
-                <span className="teams-list-row__name">orphan agents</span>
-                <span
-                  className={`teams-chip${orphanCount > 0 ? ' is-warn' : ''}`}
-                  data-testid="team-list-orphan-count"
-                >
-                  {orphanCount}
-                </span>
-              </div>
-            </button>
-          </div>
-        )}
+        {/* Rendered unconditionally: the unclaimed section has its own data
+            source, so hiding it behind the team list's loading/error state
+            would once again make ungoverned agents unreachable exactly when
+            something is wrong. */}
+        <div className="teams-list-orphan" data-testid="team-list-orphan-section">
+          <div className="teams-list-orphan__label">unclaimed</div>
+          <button
+            type="button"
+            className={`teams-list-row teams-list-orphan__row${isOrphanSelected ? ' is-active' : ''}`}
+            data-testid="team-list-orphan-row"
+            aria-current={isOrphanSelected}
+            onClick={onSelectOrphan}
+          >
+            <div className="teams-list-row__top">
+              <span className="teams-list-row__name">orphan agents</span>
+              <span
+                className={`teams-chip${isKnown(orphanCount) && orphanCount.value > 0 ? ' is-warn' : ''}`}
+                data-testid="team-list-orphan-count"
+              >
+                <TruthfulValue value={orphanCount} testId="team-list-orphan-count-value" />
+              </span>
+            </div>
+          </button>
+        </div>
       </div>
     </div>
   )
