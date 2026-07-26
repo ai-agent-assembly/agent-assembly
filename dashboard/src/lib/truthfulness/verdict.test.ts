@@ -72,14 +72,14 @@ describe('resolveVerdict — the AAASM-5106 guard', () => {
 })
 
 describe('tallyVerdicts', () => {
-  const CELLS: (CapabilityVerdict | undefined)[] = [
-    'allow',
-    'allow',
-    'narrow',
-    'deny',
-    'na',
-    undefined,
-  ]
+  /**
+   * A fully-evaluated grid. `na` is present because it is a real answer the
+   * backend gives, but no `undefined`: an unevaluated cell disqualifies the
+   * whole tally rather than going quietly uncounted, and that case has its own
+   * test below. An earlier revision counted `undefined` as nothing and reported
+   * the surviving zeroes as measurements — the contradiction MAJOR 4 named.
+   */
+  const CELLS: (CapabilityVerdict | undefined)[] = ['allow', 'allow', 'narrow', 'deny', 'na']
 
   it('counts only rule-backed verdicts when the cascade is loaded', () => {
     const tally = tallyVerdicts(CELLS, LOADED)
@@ -110,5 +110,44 @@ describe('tallyVerdicts', () => {
     // The one case where 0 is honest: rules ran, and none denied.
     const tally = tallyVerdicts(['allow'], LOADED)
     expect(isKnown(tally.deny) && tally.deny.value).toBe(0)
+  })
+})
+
+describe('tallyVerdicts agrees with resolveVerdict', () => {
+  it.each<CapabilityVerdict | undefined>(['allow', 'narrow', 'deny', 'na', undefined])(
+    'never counts a cell that resolveVerdict refuses to assert (%s)',
+    (decision) => {
+      // The two entry points must not answer the same input differently. An
+      // earlier revision duplicated the classification and drifted: a missing
+      // cell resolved to `not-evaluated` yet was tallied as a measured zero.
+      const resolved = resolveVerdict(decision, LOADED)
+      const tally = tallyVerdicts([decision], LOADED)
+      if (isKnown(resolved)) {
+        expect(isKnown(tally.allow)).toBe(true)
+      } else if (resolved.state === 'not-supported') {
+        // A permanent, honest gap: outside the population, not a disqualifier.
+        expect(isKnown(tally.allow) && tally.allow.value).toBe(0)
+      } else {
+        expect(isKnown(tally.allow)).toBe(false)
+        expect(isAbsent(tally.allow) && tally.allow.state).toBe(resolved.state)
+      }
+    },
+  )
+
+  it('disqualifies the whole tally when any cell was never evaluated', () => {
+    // "0 denied" over a grid with holes in it is the same lie in a smaller
+    // font — a count is a measurement only if it covers what it describes.
+    const tally = tallyVerdicts(['allow', 'deny', undefined], LOADED)
+    for (const count of [tally.allow, tally.narrow, tally.deny]) {
+      expect(isKnown(count)).toBe(false)
+      expect(isAbsent(count) && count.state).toBe('not-evaluated')
+    }
+  })
+
+  it('still counts a grid whose only absences are not-supported', () => {
+    const tally = tallyVerdicts(['allow', 'na', 'deny', 'na'], LOADED)
+    expect(isKnown(tally.allow) && tally.allow.value).toBe(1)
+    expect(isKnown(tally.deny) && tally.deny.value).toBe(1)
+    expect(isKnown(tally.narrow) && tally.narrow.value).toBe(0)
   })
 })
