@@ -693,6 +693,49 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
     }
 }
 
+/// Resolve a system capability to its matrix column and verb, or `None` when the
+/// capability has no column.
+fn verbs_for(cap: &aa_core::Capability) -> Option<(&'static str, Verb)> {
+    use aa_core::Capability as C;
+
+    match cap {
+        C::FileRead => Some(("filesystem", Verb::Read)),
+        C::FileWrite => Some(("filesystem", Verb::Write)),
+        C::FileDelete => Some(("filesystem", Verb::Delete)),
+        C::TerminalExec => Some(("terminal", Verb::Exec)),
+        C::NetworkOutbound => Some(("network_outbound", Verb::Exec)),
+        _ => None,
+    }
+}
+
+/// Flatten one capability set's allow and deny declarations into rule rows,
+/// carrying the declaration verbatim as the rule's `action`.
+fn capability_rules(caps: &aa_core::CapabilitySet) -> Vec<PolicyRule> {
+    use aa_core::Capability as C;
+
+    let mut rules: Vec<PolicyRule> = Vec::new();
+    for (set, action) in [(&caps.allow, "allow"), (&caps.deny, "deny")] {
+        for cap in set {
+            let (resource, verb) = match cap {
+                C::McpTool(name) => (name.clone(), Verb::Exec),
+                other => match verbs_for(other) {
+                    Some((r, v)) => (r.to_string(), v),
+                    // Model / inbound-network / agent-spawn grants are inert
+                    // (`Capability::is_enforceable`) and have no column.
+                    None => continue,
+                },
+            };
+            rules.push(PolicyRule {
+                resource,
+                verb: vec![verb],
+                action: action.to_string(),
+                condition: String::new(),
+            });
+        }
+    }
+    rules
+}
+
 /// Flatten one policy document's capability and tool declarations into the
 /// matrix's rule rows.
 ///
@@ -700,40 +743,9 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
 /// the tool's own `requires_approval_if` expression, or empty when it declares
 /// none.
 fn project_rules(doc: &aa_gateway::policy::PolicyDocument) -> Vec<PolicyRule> {
-    use aa_core::Capability as C;
-
-    fn verbs_for(cap: &aa_core::Capability) -> Option<(&'static str, Verb)> {
-        match cap {
-            C::FileRead => Some(("filesystem", Verb::Read)),
-            C::FileWrite => Some(("filesystem", Verb::Write)),
-            C::FileDelete => Some(("filesystem", Verb::Delete)),
-            C::TerminalExec => Some(("terminal", Verb::Exec)),
-            C::NetworkOutbound => Some(("network_outbound", Verb::Exec)),
-            _ => None,
-        }
-    }
-
     let mut rules: Vec<PolicyRule> = Vec::new();
     if let Some(caps) = doc.capabilities.as_ref() {
-        for (set, action) in [(&caps.allow, "allow"), (&caps.deny, "deny")] {
-            for cap in set {
-                let (resource, verb) = match cap {
-                    C::McpTool(name) => (name.clone(), Verb::Exec),
-                    other => match verbs_for(other) {
-                        Some((r, v)) => (r.to_string(), v),
-                        // Model / inbound-network / agent-spawn grants are inert
-                        // (`Capability::is_enforceable`) and have no column.
-                        None => continue,
-                    },
-                };
-                rules.push(PolicyRule {
-                    resource,
-                    verb: vec![verb],
-                    action: action.to_string(),
-                    condition: String::new(),
-                });
-            }
-        }
+        rules.extend(capability_rules(caps));
     }
     for (tool, policy) in &doc.tools {
         rules.push(PolicyRule {
