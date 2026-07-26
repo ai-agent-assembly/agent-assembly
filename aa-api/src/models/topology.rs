@@ -700,6 +700,9 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&node).unwrap()).unwrap();
         assert!(json.get("trust").is_some(), "trust key must be present");
         assert!(json["trust"].is_null(), "trust must serialize as null");
+        // AAASM-5104 — an unmeasured score must be unreadable as a real one.
+        assert!(!json["trust"].is_number(), "an unmeasured trust must not be a number");
+        assert_ne!(json["trust"], 0, "trust must never fold to a scored zero");
         assert_eq!(json["mode"], "enforce");
         assert_eq!(json["flagged"], false);
         // AAASM-5045 — owner / policy_count / budget follow the same "present
@@ -834,6 +837,55 @@ mod tests {
             children: vec![leaf],
         };
         roundtrip(&root);
+    }
+
+    /// AAASM-5104 — `AgentTree` carries the same trust contract as `AgentNode`:
+    /// present-and-`null` when unmeasured, and a whole number when scored.
+    #[test]
+    fn agent_tree_emits_trust_null_not_omitted_and_scores_as_an_integer() {
+        let mut tree = AgentTree {
+            id: "aa".to_string(),
+            name: "root".to_string(),
+            depth: 0,
+            status: "active".to_string(),
+            team_id: None,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            governance_level: None,
+            mode: "enforce".to_string(),
+            flagged: false,
+            trust: None,
+            children: vec![],
+        };
+        let json = serde_json::to_value(&tree).unwrap();
+        assert!(json.get("trust").is_some(), "trust key must be present");
+        assert!(json["trust"].is_null(), "trust must serialize as null");
+        assert!(!json["trust"].is_number(), "an unmeasured trust must not be a number");
+        assert_ne!(json["trust"], 0, "trust must never fold to a scored zero");
+
+        tree.trust = Some(78);
+        let scored = serde_json::to_value(&tree).unwrap();
+        assert_eq!(scored["trust"], 78);
+        assert!(
+            scored["trust"].is_u64(),
+            "a score is a whole number on a 0–100 scale, not a float: {}",
+            scored["trust"]
+        );
+    }
+
+    /// Same integer contract on `AgentNode`, so one agent cannot serialize as
+    /// `78` on one topology projection and `78.0` on the other.
+    #[test]
+    fn agent_node_scores_as_an_integer() {
+        let mut node = make_agent_node();
+        node.trust = Some(78);
+        let json = serde_json::to_value(&node).unwrap();
+        assert_eq!(json["trust"], 78);
+        assert!(
+            json["trust"].is_u64(),
+            "a score is a whole number on a 0–100 scale, not a float: {}",
+            json["trust"]
+        );
     }
 
     #[test]

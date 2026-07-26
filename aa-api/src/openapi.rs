@@ -349,3 +349,42 @@ impl Modify for SecurityAddon {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AAASM-5104 — `trust` must have one representation and one null contract
+    /// across every schema that carries it. Divergence here is invisible while
+    /// the value is always `null`, and becomes two incompatible shapes for one
+    /// concept in the generated TypeScript client the moment AAASM-5083 lands a
+    /// real score.
+    #[test]
+    fn trust_has_one_type_and_one_null_contract_across_schemas() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).expect("spec serializes");
+        for schema in ["AgentNode", "AgentTree", "CapabilityAgent"] {
+            let node = spec
+                .pointer(&format!("/components/schemas/{schema}"))
+                .unwrap_or_else(|| panic!("{schema} missing from components/schemas"));
+            let trust = node
+                .pointer("/properties/trust")
+                .unwrap_or_else(|| panic!("{schema}.trust missing"));
+            assert_eq!(
+                trust["type"],
+                serde_json::json!(["integer", "null"]),
+                "{schema}.trust must be a nullable integer — a float implies a \
+                 precision no scoring formula has agreed to"
+            );
+            assert_eq!(trust["minimum"], 0, "{schema}.trust must declare the 0–100 floor");
+            assert_eq!(trust["maximum"], 100, "{schema}.trust must declare the 0–100 ceiling");
+            let required = node["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{schema} declares no required fields"));
+            assert!(
+                required.iter().any(|f| f == "trust"),
+                "{schema}.trust must be required-but-nullable: an absent key invites \
+                 `?? 0`, which reads an unmeasured agent as a scored zero"
+            );
+        }
+    }
+}

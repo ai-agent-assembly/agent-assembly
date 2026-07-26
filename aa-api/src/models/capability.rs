@@ -400,6 +400,49 @@ mod tests {
     }
 
     #[test]
+    fn capability_agent_emits_trust_null_not_omitted() {
+        // AAASM-5104 — `trust` has no data source yet, but the key is always on
+        // the wire so the client must handle an explicit "no data" rather than
+        // shrug off a missing key with `?? 0`. Same contract as `AgentNode` /
+        // `AgentTree`.
+        let agent = CapabilityAgent {
+            id: "a".to_string(),
+            name: "a".to_string(),
+            framework: "CrewAI".to_string(),
+            owner: None,
+            trust: None,
+            mode: None,
+            status: AgentStatus::Active,
+            last_seen: "12s ago".to_string(),
+            flagged: None,
+            note: None,
+            caps: BTreeMap::new(),
+        };
+        let json = serde_json::to_value(&agent).unwrap();
+        assert!(json.get("trust").is_some(), "trust key must be present");
+        assert!(json["trust"].is_null(), "trust must serialize as null");
+        assert!(!json["trust"].is_number(), "an unmeasured trust must not be a number");
+        assert_ne!(json["trust"], 0, "trust must never fold to a scored zero");
+    }
+
+    #[test]
+    fn capability_agent_deserializes_a_missing_trust_key_as_no_score() {
+        // Dropping `skip_serializing_if` must not make the key mandatory on the
+        // way in: an older producer that omits it still reads back as "no
+        // score", never as a zero.
+        let raw = r#"{
+            "id": "a",
+            "name": "a",
+            "framework": "CrewAI",
+            "status": "active",
+            "lastSeen": "12s ago",
+            "caps": {}
+        }"#;
+        let agent: CapabilityAgent = serde_json::from_str(raw).unwrap();
+        assert!(agent.trust.is_none(), "a missing trust key is no score, not 0");
+    }
+
+    #[test]
     fn capability_matrix_serializes_sample_calls_in_camel_case() {
         let matrix = CapabilityMatrix {
             resources: vec![],
