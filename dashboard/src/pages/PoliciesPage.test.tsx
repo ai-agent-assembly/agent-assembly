@@ -622,3 +622,60 @@ describe('PoliciesPage — enable live enforcement dialog', () => {
     ).toBeInTheDocument()
   })
 })
+
+// ── AAASM-5096: affects[] chips + 24h hit counter on the list row ───────────
+
+describe('PoliciesPage list-row reach and hits', () => {
+  it('renders one chip per affected agent', () => {
+    mockPolicies({
+      data: [{ ...ACTIVE_POLICY, affects: ['research-bot', 'support-triage'] }],
+      isLoading: false,
+      isError: false,
+    })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    const affects = screen.getByTestId('policy-row-affects')
+    expect(affects).toHaveTextContent('research-bot')
+    expect(affects).toHaveTextContent('support-triage')
+    expect(screen.queryByTestId('policy-row-affects-overflow')).not.toBeInTheDocument()
+  })
+
+  it('collapses more than three affected agents into a +N chip', () => {
+    mockPolicies({
+      data: [{ ...ACTIVE_POLICY, affects: ['a', 'b', 'c', 'd', 'e'] }],
+      isLoading: false,
+      isError: false,
+    })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(screen.getByTestId('policy-row-affects-overflow')).toHaveTextContent('+2')
+  })
+
+  it('folds absent reach to an em dash rather than claiming zero agents', () => {
+    // `affects` is omitted from the wire when the version is not in force —
+    // which is a different claim from "targets nobody".
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(screen.getByTestId('policy-row-affects-empty')).toHaveTextContent('—')
+    expect(screen.queryByTestId('policy-row-affects')).not.toBeInTheDocument()
+  })
+
+  it('renders an empty reach list as no chips, not as an em dash', () => {
+    mockPolicies({ data: [{ ...ACTIVE_POLICY, affects: [] }], isLoading: false, isError: false })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(screen.getByTestId('policy-row-affects')).toBeEmptyDOMElement()
+    expect(screen.queryByTestId('policy-row-affects-empty')).not.toBeInTheDocument()
+  })
+
+  it('folds an absent 24h hit count to an em dash, never to 0', () => {
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    const hits = screen.getByTestId('policy-row-hits')
+    expect(hits).toHaveTextContent('—')
+    expect(hits).not.toHaveTextContent(/\b0\b/)
+  })
+
+  it('renders a real 24h hit count when one is present', () => {
+    mockPolicies({ data: [{ ...ACTIVE_POLICY, hits24h: 142 }], isLoading: false, isError: false })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(screen.getByTestId('policy-row-hits')).toHaveTextContent('142')
+  })
+})
