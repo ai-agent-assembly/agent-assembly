@@ -130,7 +130,7 @@ export function PerResourceTab({
                       <td>
                         <div className="cap-prt-trust">
                           <span className="cap-prt-trust-num">{orNoData(a.trust)}</span>
-                          {a.trust !== undefined && (
+                          {a.trust != null && (
                             <span className="cap-prt-trust-bar" aria-hidden>
                               <span
                                 className={`cap-prt-trust-bar-fill ${trustToneClass(a.trust)}`}

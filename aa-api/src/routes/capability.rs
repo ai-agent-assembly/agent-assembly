@@ -960,7 +960,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fields_without_a_real_source_are_absent_never_zero() {
+    async fn fields_without_a_real_source_are_never_faked() {
         let state = state_with(vec![record(0x01, "a", &[])]);
         let m = matrix_for(&state).await;
         let agent = &m.agents[0];
@@ -972,9 +972,15 @@ mod tests {
         for policy in &m.policies {
             assert!(policy.hits_24h.is_none(), "24h hit counts have no source here");
         }
-        // Serialized form must omit them rather than emit a placeholder.
         let json = serde_json::to_value(agent).unwrap();
-        assert!(json.get("trust").is_none());
+        // AAASM-5104 — `trust` is required-but-nullable: the key is always on the
+        // wire so a consumer must handle an explicit `null` instead of shrugging
+        // off a missing key with `?? 0`. It must still be unreadable as a score.
+        assert!(json.get("trust").is_some(), "trust key must be present");
+        assert!(json["trust"].is_null(), "trust must serialize as null");
+        assert!(!json["trust"].is_number(), "an unmeasured trust must not be a number");
+        assert_ne!(json["trust"], 0, "trust must never fold to a scored zero");
+        // Fields with no wire contract of their own are still omitted entirely.
         assert!(json.get("mode").is_none());
     }
 

@@ -40,8 +40,8 @@ function makeOverview(teamCount: number, orphans: TopologyOverview['standalone_r
 }
 
 const ORPHANS: TopologyOverview['standalone_root_agents'] = [
-  { id: 'o1', name: 'lonely-scraper', status: 'active', depth: 0, flagged: false, mode: 'off' },
-  { id: 'o2', name: 'rogue-bot', status: 'active', depth: 0, flagged: true, mode: 'off' },
+  { id: 'o1', name: 'lonely-scraper', status: 'active', depth: 0, flagged: false, mode: 'off', trust: null },
+  { id: 'o2', name: 'rogue-bot', status: 'active', depth: 0, flagged: true, mode: 'off', trust: null },
 ]
 
 const COSTS: CostSummary = {
@@ -70,10 +70,10 @@ const APPROVALS: Approval[] = [
 
 function topologyFor(teamId: string): TeamTopology {
   const members = teamId === 'team-000'
-    ? [{ id: 'a1', name: 'orchestrator', status: 'active', depth: 0, flagged: false, mode: 'enforce' }]
+    ? [{ id: 'a1', name: 'orchestrator', status: 'active', depth: 0, flagged: false, mode: 'enforce', trust: null }]
     : [
-        { id: 'b1', name: 'router', status: 'active', depth: 0, flagged: false, mode: 'enforce' },
-        { id: 'b2', name: 'scraper', status: 'suspended', depth: 1, flagged: true, mode: 'shadow' },
+        { id: 'b1', name: 'router', status: 'active', depth: 0, flagged: false, mode: 'enforce', trust: null },
+        { id: 'b2', name: 'scraper', status: 'suspended', depth: 1, flagged: true, mode: 'shadow', trust: null },
       ]
   return { team_id: teamId, agent_count: members.length, members }
 }

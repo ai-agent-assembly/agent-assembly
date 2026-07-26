@@ -186,4 +186,21 @@ describe('CapabilityMatrixGrid', () => {
     )
     expect(screen.getByLabelText('agent flagged')).toBeInTheDocument()
   })
+
+  // AAASM-5104 — the wire sends `trust: null` for an unmeasured agent rather than
+  // omitting the key. The row must fold that to the no-data placeholder and draw
+  // no bar: a zero-width bar reads as "scored zero", which is a real measurement.
+  it('renders an unmeasured trust as the no-data placeholder with no bar', () => {
+    const { container } = render(
+      <CapabilityMatrixGrid
+        agents={[{ ...AGENTS[0], trust: null }]}
+        resources={RESOURCES}
+        verb="write"
+      />,
+    )
+    const meta = container.querySelector('.cap-mx-row-h-trust')!
+    expect(meta).toHaveTextContent('trust —')
+    expect(meta.textContent).not.toMatch(/\b(0|NaN|undefined|null)\b/)
+    expect(container.querySelector('.cap-trust-bar')).toBeNull()
+  })
 })

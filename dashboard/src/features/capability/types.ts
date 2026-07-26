@@ -29,11 +29,14 @@ export interface CapabilityAgent {
   /** Owning team; absent when the agent registered without one. */
   owner?: string
   /**
-   * 0–100 trust score. Absent from the live endpoint — nothing in the gateway
-   * computes one yet (AAASM-5083) — so every consumer must fold it to `—`
-   * rather than assume 0.
+   * Trust score as an integer on a 0–100 scale, or `null` when unmeasured.
+   *
+   * Required-but-nullable, mirroring the wire contract (AAASM-5104): the key is
+   * always present and is always `null` today — nothing in the gateway computes
+   * a score yet (AAASM-5083) — so every consumer must fold it to `—` rather
+   * than assume 0.
    */
-  trust?: number
+  trust: number | null
   /**
    * Absent when the agent declared no enforcement-mode override, or declared
    * one this two-value view cannot represent.

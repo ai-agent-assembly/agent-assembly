@@ -196,13 +196,26 @@ pub struct CapabilityAgent {
     /// `org_id`). Absent when the agent registered without either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
-    /// Trust score on a 0–100 scale.
+    /// Trust score as an integer on a 0–100 scale, or `null` when no
+    /// trust-analytics source exists yet.
     ///
-    /// Always absent: no trust score is computed anywhere in the gateway today.
+    /// Always `null`: no trust score is computed anywhere in the gateway today.
     /// Deriving one would be a new scoring rule, which is the subject of its own
     /// story (AAASM-5083) — emitting a placeholder here would be indistinguishable
     /// from a real score to every consumer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    //
+    // AAASM-5104 — one representation and one null contract for `trust` across
+    // every schema that carries it ([`crate::models::topology::AgentNode`],
+    // [`crate::models::topology::AgentTree`], and here): an integer 0–100,
+    // required-but-nullable. Integer because the ratified mock renders a whole
+    // number (`design/v1/hi-fi/fleet.jsx:90`, `agent-detail.jsx:27`) and a float
+    // implies a precision no formula has agreed to. Required-but-nullable
+    // because an *absent* key invites `?? 0`, which silently turns "unmeasured"
+    // into "scored zero" — the worst possible misread for a trust score; an
+    // explicit `null` on an always-present key surfaces in TypeScript as a
+    // non-optional `| null` the consumer has to handle. Same discipline as
+    // `TeamPoliciesResponse::policies` (AAASM-5096).
+    #[schema(required = true, minimum = 0, maximum = 100)]
     pub trust: Option<u8>,
     /// Enforcement posture, from the agent's registered `enforcement_mode`
     /// override. Absent when the agent declared none (the effective mode is then
@@ -384,6 +397,49 @@ mod tests {
         assert_eq!(json["hits24h"], 1234, "field must be `hits24h`, not `hits_24h`");
         assert!(json.get("hits_24h").is_none());
         assert_eq!(json["rules"][0]["verb"][0], "write");
+    }
+
+    #[test]
+    fn capability_agent_emits_trust_null_not_omitted() {
+        // AAASM-5104 — `trust` has no data source yet, but the key is always on
+        // the wire so the client must handle an explicit "no data" rather than
+        // shrug off a missing key with `?? 0`. Same contract as `AgentNode` /
+        // `AgentTree`.
+        let agent = CapabilityAgent {
+            id: "a".to_string(),
+            name: "a".to_string(),
+            framework: "CrewAI".to_string(),
+            owner: None,
+            trust: None,
+            mode: None,
+            status: AgentStatus::Active,
+            last_seen: "12s ago".to_string(),
+            flagged: None,
+            note: None,
+            caps: BTreeMap::new(),
+        };
+        let json = serde_json::to_value(&agent).unwrap();
+        assert!(json.get("trust").is_some(), "trust key must be present");
+        assert!(json["trust"].is_null(), "trust must serialize as null");
+        assert!(!json["trust"].is_number(), "an unmeasured trust must not be a number");
+        assert_ne!(json["trust"], 0, "trust must never fold to a scored zero");
+    }
+
+    #[test]
+    fn capability_agent_deserializes_a_missing_trust_key_as_no_score() {
+        // Dropping `skip_serializing_if` must not make the key mandatory on the
+        // way in: an older producer that omits it still reads back as "no
+        // score", never as a zero.
+        let raw = r#"{
+            "id": "a",
+            "name": "a",
+            "framework": "CrewAI",
+            "status": "active",
+            "lastSeen": "12s ago",
+            "caps": {}
+        }"#;
+        let agent: CapabilityAgent = serde_json::from_str(raw).unwrap();
+        assert!(agent.trust.is_none(), "a missing trust key is no score, not 0");
     }
 
     #[test]
