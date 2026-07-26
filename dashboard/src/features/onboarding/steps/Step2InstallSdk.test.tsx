@@ -41,6 +41,7 @@ describe('Step2InstallSdk', () => {
 
     expect(writeText).toHaveBeenCalledWith('pip install agent-assembly')
     expect(screen.getByTestId('onboarding-install-copy')).toHaveTextContent('✓ copied')
+    expect(screen.queryByTestId('onboarding-install-copy-error')).toBeNull()
 
     act(() => {
       vi.advanceTimersByTime(1400)
@@ -48,16 +49,35 @@ describe('Step2InstallSdk', () => {
     expect(screen.getByTestId('onboarding-install-copy')).toHaveTextContent('copy')
   })
 
-  it('swallows a clipboard write rejection without throwing', async () => {
+  it('reports a rejected clipboard write as a failure, not as "copied"', async () => {
     const writeText = vi.fn().mockRejectedValue(new Error('denied'))
     Object.assign(navigator, { clipboard: { writeText } })
 
     render(<Step2InstallSdk state={EMPTY_STATE} onVerified={vi.fn()} />)
     fireEvent.click(screen.getByTestId('onboarding-install-copy'))
-    // Flush the async clipboard handler's state update (setCopied) without
-    // wrapping the fireEvent call itself — the label flips on a microtask.
+    // Flush the async clipboard handler's state update without wrapping the
+    // fireEvent call itself — the label flips on a microtask.
     await act(async () => {})
-    expect(screen.getByTestId('onboarding-install-copy')).toHaveTextContent('✓ copied')
+
+    const button = screen.getByTestId('onboarding-install-copy')
+    expect(button).toHaveTextContent('✗ copy failed')
+    expect(button).not.toHaveTextContent('✓ copied')
+    expect(button).toHaveAttribute('data-copy-state', 'failed')
+    expect(screen.getByTestId('onboarding-install-copy-error')).toHaveAttribute('role', 'alert')
+  })
+
+  it('reports a failure when navigator.clipboard is undefined — the non-secure-context case', async () => {
+    // http://<gateway-host>:<port>, i.e. every self-hosted deployment. The
+    // member access throws a TypeError; the pre-fix code turned the button
+    // green anyway.
+    Object.assign(navigator, { clipboard: undefined })
+
+    render(<Step2InstallSdk state={EMPTY_STATE} onVerified={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('onboarding-install-copy'))
+    await act(async () => {})
+
+    expect(screen.getByTestId('onboarding-install-copy')).toHaveTextContent('✗ copy failed')
+    expect(screen.getByTestId('onboarding-install-copy-error')).toBeInTheDocument()
   })
 
   it('runs verify and calls onVerified once the terminal resolves', () => {

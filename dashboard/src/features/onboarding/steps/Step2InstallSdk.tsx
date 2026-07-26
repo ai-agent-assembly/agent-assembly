@@ -10,6 +10,11 @@ export interface Step2InstallSdkProps {
 type PackageManager = 'pip' | 'npm' | 'go'
 type Phase = 'idle' | 'running' | 'verified'
 
+/** The copy button's outcome. `failed` did not exist before AAASM-5145. */
+type CopyState = 'idle' | 'copied' | 'failed'
+
+const COPY_RESET_MS = 1400
+
 const COMMANDS: Record<PackageManager, string> = {
   pip: 'pip install agent-assembly',
   npm: 'npm install @agent-assembly/sdk',
@@ -32,18 +37,23 @@ const VERIFIED_LINES: Line[] = [
 
 export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkProps>) {
   const [pkg, setPkg] = useState<PackageManager>('pip')
-  const [copied, setCopied] = useState(false)
+  const [copyState, setCopyState] = useState<CopyState>('idle')
   const [phase, setPhase] = useState<Phase>(state.installVerified ? 'verified' : 'idle')
   const [lines, setLines] = useState<Line[]>(state.installVerified ? VERIFIED_LINES : [])
 
   const handleCopy = async () => {
+    // `navigator.clipboard` is undefined in a non-secure context — precisely the
+    // self-hosted http://<gateway-host>:<port> case — so the member access below
+    // throws synchronously inside this async function. Reporting "✓ copied"
+    // regardless was AAASM-5145; the success flag now lives inside the `try`,
+    // matching `features/iam/RevealOnceModal.tsx`.
     try {
       await navigator.clipboard.writeText(COMMANDS[pkg])
+      setCopyState('copied')
     } catch {
-      // ignore clipboard failure (older browsers / no permission)
+      setCopyState('failed')
     }
-    setCopied(true)
-    globalThis.setTimeout(() => setCopied(false), 1400)
+    globalThis.setTimeout(() => setCopyState('idle'), COPY_RESET_MS)
   }
 
   const handleRun = () => {
@@ -65,6 +75,11 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
   if (phase === 'idle') verifyButtonLabel = '▸ run aa-cli verify'
   else if (phase === 'running') verifyButtonLabel = 'verifying…'
   else verifyButtonLabel = '↻ re-run'
+
+  let copyLabel: string
+  if (copyState === 'copied') copyLabel = '✓ copied'
+  else if (copyState === 'failed') copyLabel = '✗ copy failed'
+  else copyLabel = 'copy'
 
   return (
     <section data-testid="onboarding-step-install">
@@ -95,13 +110,19 @@ export function Step2InstallSdk({ state, onVerified }: Readonly<Step2InstallSdkP
         </code>
         <button
           type="button"
-          className={`onb-pkg-copy${copied ? ' is-copied' : ''}`}
+          className={`onb-pkg-copy is-${copyState}`}
           data-testid="onboarding-install-copy"
+          data-copy-state={copyState}
           onClick={handleCopy}
         >
-          {copied ? '✓ copied' : 'copy'}
+          {copyLabel}
         </button>
       </div>
+      {copyState === 'failed' && (
+        <p className="onb-copy-error" role="alert" data-testid="onboarding-install-copy-error">
+          The clipboard is unavailable here — copy the command above by hand.
+        </p>
+      )}
 
       <div className="onb-term-meta">
         <span className="onb-term-meta-label">verify connection</span>

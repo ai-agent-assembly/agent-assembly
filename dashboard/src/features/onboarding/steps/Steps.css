@@ -188,6 +188,19 @@
   background: var(--ok);
 }
 
+/* A failed clipboard write is now visible rather than reported as a success
+   (AAASM-5145). */
+.onb-pkg-copy.is-failed {
+  background: var(--danger);
+}
+
+.onb-copy-error {
+  margin-top: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--danger);
+}
+
 .onb-term {
   background: var(--term-bg);
   color: var(--term-text);
