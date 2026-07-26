@@ -91,13 +91,16 @@ function shortDigest(hex: string): string {
 }
 
 /** Render a verdict chip, or the shared absence affordance. */
-function DecisionCell({ decision, seq }: Readonly<{ decision: Certain<AuditDecision>; seq: number }>) {
+function DecisionCell({
+  decision,
+  testId,
+}: Readonly<{ decision: Certain<AuditDecision>; testId: string }>) {
   if (!isKnown(decision)) {
-    return <AbsenceMarker state={decision.state} detail={decision.detail} testId={`audit-decision-${seq}`} />
+    return <AbsenceMarker state={decision.state} detail={decision.detail} testId={testId} />
   }
   const meta = DECISION_META[decision.value]
   return (
-    <span className={chipClass(meta.chip)} data-testid={`audit-decision-${seq}`}>
+    <span className={chipClass(meta.chip)} data-testid={testId}>
       {meta.label}
     </span>
   )
@@ -297,7 +300,7 @@ export function AuditLogPage() {
                         </span>
                       </td>
                       <td>
-                        <DecisionCell decision={decision} seq={e.seq} />
+                        <DecisionCell decision={decision} testId={`audit-decision-${e.seq}`} />
                       </td>
                       <td>
                         {isKnown(summary) ? (
@@ -365,7 +368,7 @@ export function AuditLogPage() {
                                 </span>
                                 <span className="audit-kv__k">decision</span>
                                 <span className="audit-kv__v">
-                                  <DecisionCell decision={decision} seq={-e.seq} />
+                                  <DecisionCell decision={decision} testId={`audit-detail-decision-${e.seq}`} />
                                 </span>
                               </div>
                             </div>
