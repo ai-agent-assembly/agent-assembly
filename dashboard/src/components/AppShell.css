@@ -9,6 +9,26 @@
   --shell-nav-star: #facc15;
   --shell-nav-dot-ok: #4ade80;
   --shell-nav-dot-down: #f87171;
+
+  /* Rail palette, repointed at the hi-fi mock (AAASM-5134). Values from
+     design/v2/hi-fi/styles.css:62-69 (--rail-*), which v1 states identically;
+     the shell is their only consumer, so they live with it here and override
+     the pre-tokenisation slate/blue values still declared in styles.css :root.
+
+     Deliberately hex, not var(--ink): --ink flips to a near-white in the dark
+     theme, and the rail is the one surface the design keeps dark in BOTH
+     themes for continuity (see the note above styles.css's dark block, and the
+     "rail stays dark in both themes" assertion in tests/e2e/theme-visual). */
+  --shell-nav-bg: #0e0e0e;
+  --shell-nav-text: #e8e6dd;
+  --shell-nav-text-muted: #c8c5b8;
+  --shell-nav-text-dim: #8a8880;
+  --shell-nav-section-text: #6a6a60;
+  --shell-nav-num: #6a6a60;
+  --shell-nav-border: #2a2a2a;
+  --shell-nav-hover-bg: #1f1f1f;
+  --shell-nav-active-bg: #ffffff;
+  --shell-nav-active-text: #0e0e0e;
 }
 
 .appshell__nav {
@@ -38,8 +58,7 @@
   font-family: ui-monospace, monospace;
   font-size: 0.625rem;
   letter-spacing: 0.04em;
-  color: var(--shell-nav-text-muted);
-  opacity: 0.65;
+  color: var(--shell-nav-text-dim);
 }
 
 .appshell__nav-section {
@@ -48,26 +67,29 @@
   font-size: 0.6875rem;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  color: var(--shell-nav-text-muted);
-  opacity: 0.7;
+  color: var(--shell-nav-section-text);
 }
 
 .appshell__nav-link {
   display: flex;
   align-items: center;
   gap: 0.625rem;
-  padding: 0.5rem 1.25rem;
+  /* Pill geometry from the hi-fi .rail-item (8px 14px, 1px 8px, radius 3px):
+     the active state is a rounded pill inset from the rail edges, so the row
+     needs the inset and the radius even when it is not active (AAASM-5134). */
+  padding: 0.5rem 0.875rem;
+  margin: 1px 0.5rem;
+  border-radius: 3px;
   color: var(--shell-nav-text-muted);
   text-decoration: none;
   font-size: 0.875rem;
-  border-left: 3px solid transparent;
   transition: background 0.1s, color 0.1s;
 }
 
 .appshell__nav-num {
   font-family: ui-monospace, monospace;
   font-size: 0.6875rem;
-  opacity: 0.65;
+  color: var(--shell-nav-num);
   min-width: 1.5rem;
 }
 
@@ -87,10 +109,25 @@
 }
 
 .appshell__nav-link--active {
-  border-left-color: var(--shell-nav-active-border);
+  /* Solid white pill, no left-border accent — hi-fi .rail-item.active. */
   background: var(--shell-nav-active-bg);
   color: var(--shell-nav-active-text);
   font-weight: 600;
+}
+
+.appshell__nav-link--active:hover {
+  /* `:hover` outranks the single-class active rule, so without this the white
+     pill inverts to the dark hover fill under the cursor. The mock's hover and
+     active rules are equal-specificity and active is declared last, i.e. the
+     pill wins there too. */
+  background: var(--shell-nav-active-bg);
+  color: var(--shell-nav-active-text);
+}
+
+.appshell__nav-link--active .appshell__nav-num {
+  /* The rail-dim number is illegible on the white pill; the mock re-points it
+     at the pill's own foreground rather than dimming it further. */
+  color: var(--shell-nav-active-text);
 }
 
 .appshell__nav-star {
@@ -142,8 +179,7 @@
   font-family: ui-monospace, monospace;
   font-size: 0.625rem;
   letter-spacing: 0.02em;
-  color: var(--shell-nav-text-muted);
-  opacity: 0.85;
+  color: var(--shell-nav-text-dim);
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
