@@ -51,6 +51,15 @@ export function useTopologyOverviewQuery() {
 export function useTopologyAgentsQuery() {
   return useQuery({
     queryKey: ['topology', 'agents'],
+    // Matches `features/topology`'s hook over the same endpoint. This is the
+    // most expensive topology handler — it resolves a policy cascade and
+    // effective permissions per node plus a budget snapshot, and pages the edge
+    // set, nearly all of which this page discards — so it must not refetch on
+    // every mount and window focus. It also narrows the window in which this
+    // page holds two snapshots taken at different moments (see `TeamsPage`).
+    // The two hooks cannot share a cache entry: distinct keys are never deduped,
+    // and prefix matching applies to invalidation only.
+    staleTime: 5_000,
     queryFn: async (): Promise<AgentNode[]> => {
       const { data, error } = await api.GET('/api/v1/topology')
       if (error) throw new Error('Failed to fetch topology agents')
