@@ -180,6 +180,46 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByTestId('node-detail-suspend')).toBeInTheDocument()
   })
 
+  // AAASM-5140. Both buttons shipped enabled with `onClick={() => {}}`: clicking
+  // a governance control and getting nothing reads as a broken product, and
+  // leaves the operator unable to tell whether the policy was applied.
+  describe('governance actions with no production path', () => {
+    const DEAD_ACTIONS = ['node-detail-apply-policy', 'node-detail-shadow-mode'] as const
+
+    beforeEach(() => {
+      vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+        mockRecent({ data: [], isLoading: false, isError: false }),
+      )
+    })
+
+    it.each(DEAD_ACTIONS)('%s is disabled and says why', (testId) => {
+      renderPanel(NODE)
+      const button = screen.getByTestId(testId)
+      expect(button).toBeDisabled()
+      expect(button.getAttribute('title')).toMatch(/not available yet/i)
+    })
+
+    it.each(DEAD_ACTIONS)('%s cannot be activated by click or keyboard', async (testId) => {
+      renderPanel(NODE)
+      const button = screen.getByTestId(testId)
+
+      // `userEvent` refuses to dispatch a pointer event to a disabled control,
+      // which is the browser's own behaviour — proving the affordance is gone
+      // rather than merely that a handler was removed.
+      await userEvent.click(button)
+      button.focus()
+      expect(button).not.toHaveFocus()
+    })
+
+    it('leaves the real actions alongside them usable', () => {
+      // The fix must disable only the two dead controls — a panel where every
+      // action is inert would be a different kind of lie.
+      renderPanel(NODE)
+      expect(screen.getByTestId('node-detail-suspend')).toBeEnabled()
+      expect(screen.getByTestId('node-detail-view-trace')).toBeEnabled()
+    })
+  })
+
   // AAASM-5135. `budgetLimit: null` means no ceiling is configured. It used to
   // render `$4.10 / $0.00` at `aria-valuenow=0` — an unknown budget presented as
   // a measured, wholly-unburnt one.

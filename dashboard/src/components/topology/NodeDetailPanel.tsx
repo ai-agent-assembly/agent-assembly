@@ -18,6 +18,17 @@ const RECENT_EVENT_LIMIT = 5
 /** Why a budget ceiling can be missing, shown in the absence tooltip. */
 const NO_LIMIT_DETAIL = 'No daily budget limit is configured for this agent'
 
+/**
+ * Why the two governance buttons are inert (AAASM-5140).
+ *
+ * Cascade-apply and the enforcement-mode toggle have no write endpoint: the
+ * mutation-safety question is ADR-0021 / AAASM-5097 and is still `Proposed`.
+ * Until one exists, the honest affordance is a disabled control that says so —
+ * an enabled button whose handler does nothing reads as a broken product, and
+ * an operator who clicks it has no way to tell whether governance was applied.
+ */
+const NO_BACKEND_TITLE = 'Backend cascade-apply / mode toggle is not available yet'
+
 /** A cross-team relationship for the selected node: direction + peer. */
 interface CrossTeamEdge {
   readonly key: string
@@ -52,8 +63,8 @@ export interface NodeDetailPanelProps {
  * Hi-fi reference: design/v2/hi-fi/topology.jsx `TopoNodePanel` (authoritative
  * per ADR-0025). Lineage (from `GET /topology/lineage/{id}`), cross-team edges,
  * and real suspend/resume wiring landed in AAASM-5071. The Apply-policy /
- * Shadow-mode buttons remain stubs — those are backend-blocked (policy cascade /
- * shadow toggle).
+ * Shadow-mode buttons are backend-blocked and render disabled with a reason
+ * (AAASM-5140) rather than as enabled no-ops.
  */
 export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges = [], onAgentMutated }: NodeDetailPanelProps) {
   const recentEventsQuery = useTopologyNodeRecentEvents(node?.id ?? '')
@@ -337,12 +348,15 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
           >
             View trace →
           </button>
-          {/* Governance stubs — no-op handlers, real wiring lands in future tickets. */}
+          {/* Governance controls with no production path — disabled with a
+              reason, matching the View-trace button above. See NO_BACKEND_TITLE
+              for why they are not wired instead (AAASM-5140). */}
           <button
             type="button"
             className="node-detail-panel__action"
             data-testid="node-detail-apply-policy"
-            onClick={() => {}}
+            disabled
+            title={NO_BACKEND_TITLE}
           >
             ⚖ Apply team policy
           </button>
@@ -350,7 +364,8 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
             type="button"
             className="node-detail-panel__action"
             data-testid="node-detail-shadow-mode"
-            onClick={() => {}}
+            disabled
+            title={NO_BACKEND_TITLE}
           >
             ◐ Switch to shadow mode
           </button>
