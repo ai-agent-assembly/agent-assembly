@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
+import { absent, known } from '../../lib/truthfulness'
 import { OperationRow } from './OperationRow'
 import type { CallStackNode, LiveOperation } from './types'
 
@@ -20,11 +21,11 @@ const CALL_STACK: CallStackNode[] = [
 const FIXTURE: LiveOperation = {
   id: 'op-1',
   agent: 'support-agent',
-  opType: 'read',
-  resource: 'gmail.send',
+  opType: known('read'),
+  resource: known('gmail.send'),
   status: 'running',
   startedAt: '2026-05-13T14:23:01Z',
-  latencyMs: 834,
+  latencyMs: known(834),
   callStack: CALL_STACK,
 }
 
@@ -37,24 +38,92 @@ describe('OperationRow', () => {
     expect(row).toHaveAttribute('data-status', 'running')
     expect(screen.getByText('RUNNING')).toBeInTheDocument()
     expect(screen.getByText('support-agent')).toBeInTheDocument()
-    expect(screen.getByText('read')).toBeInTheDocument()
+    expect(screen.getByTestId('op-row-op-type')).toHaveTextContent('read')
     expect(screen.getByText('834ms')).toBeInTheDocument()
-    expect(screen.getByText('gmail.send')).toBeInTheDocument()
+    expect(screen.getByTestId('op-row-resource')).toHaveTextContent('gmail.send')
   })
 
   it('formats sub-millisecond and second-scale latency', () => {
     const { rerender } = render(
       <OperationRow
-        op={{ ...FIXTURE, id: 'op-tiny', latencyMs: 0.3, callStack: undefined }}
+        op={{ ...FIXTURE, id: 'op-tiny', latencyMs: known(0.3), callStack: undefined }}
       />,
     )
     expect(screen.getByText('<1ms')).toBeInTheDocument()
     rerender(
       <OperationRow
-        op={{ ...FIXTURE, id: 'op-slow', latencyMs: 4523, callStack: undefined }}
+        op={{ ...FIXTURE, id: 'op-slow', latencyMs: known(4523), callStack: undefined }}
       />,
     )
     expect(screen.getByText('4.52s')).toBeInTheDocument()
+  })
+
+  // ── AAASM-5129: no fabricated latency ────────────────────────────────────
+  //
+  // The regression these lock down: the mapper wrote `latencyMs: 0`
+  // unconditionally and `formatLatency` turned anything under 1 into `<1ms`,
+  // so every production row claimed a sub-millisecond duration that was never
+  // measured. If either half comes back, the first of these fails.
+
+  it('renders the absence, not "<1ms", when no latency was measured', () => {
+    render(
+      <OperationRow
+        op={{
+          ...FIXTURE,
+          id: 'op-unmeasured',
+          latencyMs: absent<number>('unknown', 'not recorded yet'),
+          callStack: undefined,
+        }}
+      />,
+    )
+    const latency = screen.getByTestId('op-row-latency')
+    expect(latency).toHaveAttribute('data-truth-state', 'unknown')
+    expect(latency).toHaveTextContent('—')
+    // The whole row must be free of a latency claim, not just this cell.
+    // Asserted as "no duration string is rendered" rather than "no `ms`
+    // substring": the absence carries a screen-reader sentence, and prose
+    // legitimately contains those letters.
+    expect(screen.queryByText('<1ms')).toBeNull()
+    expect(screen.queryByText('0ms')).toBeNull()
+    expect(screen.queryByText(/^\d+(\.\d+)?(ms|s)$/)).toBeNull()
+  })
+
+  it('renders a measured zero as 0ms, because a measured zero is an answer', () => {
+    render(
+      <OperationRow
+        op={{ ...FIXTURE, id: 'op-zero', latencyMs: known(0), callStack: undefined }}
+      />,
+    )
+    expect(screen.getByTestId('op-row-latency')).toHaveAttribute(
+      'data-truth-state',
+      'known',
+    )
+    expect(screen.getByText('0ms')).toBeInTheDocument()
+    expect(screen.queryByText('<1ms')).toBeNull()
+  })
+
+  it('renders the absence for a verb and resource the event never carried', () => {
+    render(
+      <OperationRow
+        op={{
+          ...FIXTURE,
+          id: 'op-ops-change',
+          opType: absent<string>('not-supported', 'not on ops_change'),
+          resource: absent<string>('not-supported', 'not on ops_change'),
+          callStack: undefined,
+        }}
+      />,
+    )
+    expect(screen.getByTestId('op-row-op-type')).toHaveAttribute(
+      'data-truth-state',
+      'not-supported',
+    )
+    const resource = screen.getByTestId('op-row-resource')
+    expect(resource).toHaveAttribute('data-truth-state', 'not-supported')
+    expect(resource).toHaveTextContent('—')
+    // The absent cell no longer renders as a blank chip the operator can read
+    // as "no resource involved".
+    expect(resource.textContent?.trim()).not.toBe('')
   })
 
   it('encodes status variants via class + data attribute', () => {

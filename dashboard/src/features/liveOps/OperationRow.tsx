@@ -1,4 +1,6 @@
 import { useId, useState } from 'react'
+import { TruthfulValue } from '../../components/truthfulness'
+import { isKnown, NO_DATA } from '../../lib/truthfulness'
 import { RowActionMenu } from './RowActionMenu'
 import type {
   CallStackNode,
@@ -44,7 +46,23 @@ function formatStartedAt(iso: string): string {
   return `${hh}:${mm}:${ss}`
 }
 
+/**
+ * Render a latency that was actually measured (AAASM-5129).
+ *
+ * Two rules this encodes:
+ *
+ *  - a measured `0` prints as `0ms`, not `<1ms`. `<1ms` is a claim about a
+ *    sub-millisecond duration; the wire reports whole milliseconds, so `0` is
+ *    "under the reporting resolution", and saying so is not the same as
+ *    inventing a bound. `<1ms` is kept only for the fractional values the
+ *    call-stack nodes can carry;
+ *  - a non-finite or negative input prints the shared `—`. The mapper already
+ *    rejects those into an absence, so this is the second line of defence for
+ *    any future caller that hands this function a raw wire value.
+ */
 function formatLatency(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return NO_DATA
+  if (ms === 0) return '0ms'
   if (ms < 1) return '<1ms'
   if (ms < 1000) return `${Math.round(ms)}ms`
   return `${(ms / 1000).toFixed(2)}s`
@@ -100,11 +118,25 @@ export function OperationRow({
         <span className="op-row__agent" title={op.agent}>
           {op.agent}
         </span>
-        <span className="op-row__op-type">{op.opType}</span>
+        <span className="op-row__op-type">
+          <TruthfulValue value={op.opType} testId="op-row-op-type" />
+        </span>
         <span className="op-row__started-at">{formatStartedAt(op.startedAt)}</span>
-        <span className="op-row__latency">{formatLatency(op.latencyMs)}</span>
-        <span className="op-row__resource" title={op.resource}>
-          {op.resource}
+        <span className="op-row__latency">
+          <TruthfulValue
+            value={op.latencyMs}
+            format={formatLatency}
+            testId="op-row-latency"
+          />
+        </span>
+        {/* The tooltip is dropped when the resource is absent — `AbsenceMarker`
+            installs its own `title` naming the state, and a wrapping `—` title
+            would shadow it. */}
+        <span
+          className="op-row__resource"
+          title={isKnown(op.resource) ? op.resource.value : undefined}
+        >
+          <TruthfulValue value={op.resource} testId="op-row-resource" />
         </span>
         {override && (
           <span className="op-row__override" data-testid="op-row-override">
