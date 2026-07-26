@@ -116,7 +116,12 @@ export interface OverrideRequest {
   agentIds: string[]
   resourceId: string
   verb: Verb
-  decision: Decision
+  /**
+   * Typed to the accepted subset, not to `Decision`. The optimistic edit the
+   * page paints is built from this same request, so a decision the endpoint
+   * would refuse cannot reach the grid even for the duration of the round-trip.
+   */
+  decision: OverridableDecision
 }
 
 export interface OverrideResponse {
