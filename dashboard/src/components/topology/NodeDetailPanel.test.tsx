@@ -234,7 +234,11 @@ describe('NodeDetailPanel — lineage, cross-team, suspend/resume', () => {
     // distinct from the no-data affordance below.
     expect(rows[1]).toHaveTextContent('team (support)')
     expect(rows[1]).toHaveTextContent('none')
+    // The agent tier's selector is this agent's own id — already in Identity,
+    // so the label stays a bare "agent" rather than repeating a UUID.
     expect(rows[2]).toHaveTextContent('agent-override')
+    expect(rows[2].textContent).toContain('agent')
+    expect(rows[2].textContent).not.toContain('agent:agent-001')
   })
 
   it('summarises the merged capability set in the effective row', () => {

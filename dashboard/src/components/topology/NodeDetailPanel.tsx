@@ -359,8 +359,15 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
   )
 }
 
-/** Row label for one cascade tier — the tier name plus its selector. */
+/**
+ * Row label for one cascade tier — the tier name plus its selector.
+ *
+ * The `agent` tier's selector is this agent's own UUID, which the Identity
+ * section already shows; repeating it here only overflows the label, so that one
+ * tier reads as a bare `agent`.
+ */
 function tierLabel(tier: PolicyChainTier): string {
+  if (tier.tier === 'agent') return 'agent'
   const [, selector] = tier.scope.split(':', 2)
   return selector ? `${tier.tier} (${selector})` : tier.tier
 }
