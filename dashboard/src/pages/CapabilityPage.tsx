@@ -2,7 +2,11 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { capabilityClient } from '../api/capability'
-import { CAPABILITY_MATRIX_KEY, useCapabilityMatrixQuery } from '../features/capability/api'
+import {
+  CAPABILITY_MATRIX_KEY,
+  cascadeEvidenceFromQuery,
+  useCapabilityMatrixQuery,
+} from '../features/capability/api'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingState } from '../components/LoadingState'
@@ -32,6 +36,15 @@ export function CapabilityPage() {
   // be copied into state (and cannot go stale behind a refetch).
   const [optimistic, setOptimistic] = useState<CapabilityMatrix | null>(null)
   const matrix = optimistic ?? data ?? null
+  // What the summary row is allowed to claim (AAASM-5173). Derived from the
+  // matrix actually on screen — optimistic edits included — so a bulk override
+  // cannot slip past the truthfulness normalisation the fetched matrix goes
+  // through.
+  const cascadeEvidence = cascadeEvidenceFromQuery({
+    isPending,
+    error: loadError ?? undefined,
+    data: matrix,
+  })
   const [filters, setFilters] = useState<CapabilityFilters>(EMPTY_FILTERS)
   const [sort, setSort] = useState<SortState>(NO_SORT)
   const [inspected, setInspected] = useState<CellSelection | null>(null)
@@ -236,7 +249,12 @@ export function CapabilityPage() {
           />
         )}
         {tab === 'matrix' && matrix && (
-          <CapabilitySummary agents={visibleAgents} resources={matrix.resources} verb={verb} />
+          <CapabilitySummary
+            agents={visibleAgents}
+            resources={matrix.resources}
+            verb={verb}
+            cascade={cascadeEvidence}
+          />
         )}
         {tab === 'resource' && matrix && (
           <PerResourceTab
