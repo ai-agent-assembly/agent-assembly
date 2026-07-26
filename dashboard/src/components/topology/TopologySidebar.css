@@ -43,6 +43,13 @@
   color: var(--ink-4);
 }
 
+/* "N not shown" — the gap between the fleet-wide cross-team count and what the
+   canvas is drawing (AAASM-5138). `--warn` is the `caution` tone the shared
+   truthfulness vocabulary uses for a value the operator has to act on to see. */
+.topo-sidebar__stat--hidden {
+  color: var(--warn);
+}
+
 .topo-sidebar__group {
   padding: 0.7rem 0.8rem 0.5rem;
   border-bottom: 1px solid var(--line);

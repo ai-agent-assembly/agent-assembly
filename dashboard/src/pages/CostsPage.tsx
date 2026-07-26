@@ -137,12 +137,18 @@ function TeamBudgetContent({ isError, isLoading, teamRows, onRetry }: TeamBudget
   }
   return (
     <div className="costs-team-bars">
+      {/* Both fields are passed through rather than defaulted: they are
+          genuinely nullable (`joinTeamRows` yields `null` for a team missing
+          from the cost breakdown, and for every team while `/costs` is
+          unresolved). The `?? 0` these replace rendered `$0 / $0 · 0%` at
+          `aria-valuenow=0` — an unmeasured budget shown as a wholly unburnt
+          one (AAASM-5135). */}
       {teamRows.map(row => (
         <TeamBudgetBar
           key={row.team_id}
           team={row.team_id}
-          spent={row.daily_spend_usd ?? 0}
-          limit={row.daily_limit_usd ?? 0}
+          spent={row.daily_spend_usd}
+          limit={row.daily_limit_usd}
         />
       ))}
     </div>

@@ -531,3 +531,191 @@ describe('TopologyGraph — pan/zoom, edge filter, team select', () => {
     expect(planner).toHaveAttribute('data-selected', 'true')
   })
 })
+
+// ── Unconfigured budget limits (AAASM-5135) ──────────────────────────────────
+// A `null` limit means no ceiling is configured. The card used to print
+// `$4.1 / $0` and the cluster tooltip `$5 / $0`, asserting a fully-burnt budget
+// on data that says nothing at all about the ceiling.
+describe('TopologyGraph — unconfigured budget limits', () => {
+  const NO_LIMIT: TopologyNode[] = [
+    { id: 'u1', name: 'unbudgeted', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 4.1, budgetLimit: null },
+  ]
+
+  it('never renders a $0 ceiling on the node card', () => {
+    render(<TopologyGraph nodes={NO_LIMIT} edges={[]} />)
+    const budget = screen.getByTestId('topology-node-budget')
+    expect(budget).toHaveTextContent('$4.1')
+    expect(budget.textContent).not.toContain('$0')
+    expect(budget).toHaveAttribute('data-truth-state', 'unconfigured')
+  })
+
+  it('gives assistive tech a sentence, not a stray dash', () => {
+    render(<TopologyGraph nodes={NO_LIMIT} edges={[]} />)
+    // SVG text cannot host the span-based TruthfulValue, so the announcement
+    // rides on a <title>; without it the `—` is silent to a screen reader.
+    const title = screen.getByTestId('topology-node-budget').querySelector('title')
+    expect(title?.textContent).toMatch(/Unconfigured/i)
+  })
+
+  it('keeps the card at the base size rather than inventing a burn ratio', () => {
+    render(<TopologyGraph nodes={NO_LIMIT} edges={[]} />)
+    expect(screen.getByTestId('topology-node')).toHaveAttribute('data-size-bucket', 'small')
+  })
+
+  it('makes a team total unknown when any member has no ceiling', () => {
+    // A sum over a set with a hole is not a sum: totalling only the members
+    // that happen to have a limit would understate the team's real budget.
+    const mixed: TopologyNode[] = [
+      { id: 'm1', name: 'm1', status: 'active', team: 'alpha', owner: 'a', policyCount: 0, budgetSpend: 3, budgetLimit: 10 },
+      { id: 'm2', name: 'm2', status: 'active', team: 'alpha', owner: 'a', policyCount: 0, budgetSpend: 2, budgetLimit: null },
+    ]
+    render(<TopologyGraph nodes={mixed} edges={[]} />)
+    const bar = screen.getByTestId('team-budget-bar')
+    expect(bar).toHaveAttribute('data-truth-state', 'unconfigured')
+    expect(bar).not.toHaveAttribute('aria-valuenow')
+    // The $10 that *is* configured must not be presented as the team ceiling.
+    expect(bar).not.toHaveTextContent('$10')
+  })
+
+  it('still totals a team whose members all have ceilings', () => {
+    const known: TopologyNode[] = [
+      { id: 'k1', name: 'k1', status: 'active', team: 'alpha', owner: 'a', policyCount: 0, budgetSpend: 3, budgetLimit: 10 },
+      { id: 'k2', name: 'k2', status: 'active', team: 'alpha', owner: 'a', policyCount: 0, budgetSpend: 2, budgetLimit: 10 },
+    ]
+    render(<TopologyGraph nodes={known} edges={[]} />)
+    const bar = screen.getByTestId('team-budget-bar')
+    expect(bar).toHaveAttribute('aria-valuenow', '25')
+    expect(bar).toHaveTextContent('$5 / $20 · 25%')
+  })
+})
+
+// ── Cross-team badge under a team filter (AAASM-5138) ────────────────────────
+// The page trims the canvas to edges whose endpoints are both visible, so a
+// team filter deleted the team's external relationships from the picture while
+// the sidebar went on counting them. The badge is what accounts for them.
+describe('TopologyGraph — cross-team badge', () => {
+  const ALL_NODES: TopologyNode[] = [
+    { id: 'p1', name: 'planner', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10, mode: 'enforce' },
+    { id: 'w1', name: 'worker', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10, mode: 'enforce' },
+    { id: 'x1', name: 'x-caller', status: 'active', team: 'beta', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10, mode: 'enforce' },
+    { id: 'x2', name: 'x-second', status: 'active', team: 'beta', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10, mode: 'enforce' },
+  ]
+  const ALL_EDGES: TopologyEdge[] = [
+    { source: 'p1', target: 'w1', kind: 'delegation' }, // intra-alpha
+    { source: 'p1', target: 'x1', kind: 'call' },       // cross-team
+    { source: 'p1', target: 'x2', kind: 'call' },       // cross-team
+    { source: 'w1', target: 'x1', kind: 'reads' },      // cross-team
+  ]
+  // What TopologyPage passes once "alpha" is selected.
+  const ALPHA_NODES = ALL_NODES.filter(n => n.team === 'alpha')
+  const ALPHA_EDGES = ALL_EDGES.filter(e => e.source !== 'x1' && e.target !== 'x1' && e.source !== 'x2' && e.target !== 'x2')
+
+  function renderFiltered() {
+    return render(
+      <TopologyGraph
+        nodes={ALPHA_NODES}
+        edges={ALPHA_EDGES}
+        allNodes={ALL_NODES}
+        allEdges={ALL_EDGES}
+        teamFilterActive
+      />,
+    )
+  }
+
+  it('badges each node with the cross-team edges the filter removed', () => {
+    renderFiltered()
+    const badges = screen.getAllByTestId('topology-node-crossteam')
+    // `data-count` is read rather than `textContent`, which in SVG also
+    // includes the badge's own <title> child.
+    expect(badges.map(b => b.getAttribute('data-count'))).toEqual(['2', '1'])
+    expect(badges[0].textContent).toContain('⇆2')
+    expect(badges[1].textContent).toContain('⇆1')
+  })
+
+  /**
+   * The agreement the whole ticket turns on: the sidebar's cross-team counter
+   * describes the fleet, the canvas draws a subset — and every crossing the
+   * canvas dropped is accounted for by a badge. Nothing vanishes silently.
+   */
+  it('accounts for every dropped crossing, so count and picture agree', () => {
+    renderFiltered()
+    const drawnCrossTeam = screen
+      .queryAllByTestId('topology-edge')
+      .filter(p => p.getAttribute('data-cross-team') === 'true').length
+    const badged = screen
+      .getAllByTestId('topology-node-crossteam')
+      .reduce((total, b) => total + Number(b.getAttribute('data-count')), 0)
+
+    // 3 of the 4 edges cross a boundary; the filtered canvas draws none of them.
+    expect(drawnCrossTeam).toBe(0)
+    expect(drawnCrossTeam + badged).toBe(3)
+  })
+
+  it('shows no badge when the whole fleet is on screen', () => {
+    // Unfiltered, every crossing is already drawn — a badge would restate what
+    // the operator can see.
+    render(<TopologyGraph nodes={ALL_NODES} edges={ALL_EDGES} allNodes={ALL_NODES} allEdges={ALL_EDGES} />)
+    expect(screen.queryAllByTestId('topology-node-crossteam')).toHaveLength(0)
+  })
+
+  it('mirrors the count onto data-cross-team-count for the filtered nodes', () => {
+    renderFiltered()
+    const cards = screen.getAllByTestId('topology-node')
+    expect(cards[0]).toHaveAttribute('data-cross-team-count', '2')
+    expect(cards[1]).toHaveAttribute('data-cross-team-count', '1')
+  })
+
+  it('renders the badge on a node carrying no enforcement mode', () => {
+    // The count must not depend on whether the mode badge happens to render.
+    const modeless = ALPHA_NODES.map(n => ({ ...n, mode: undefined }))
+    render(
+      <TopologyGraph nodes={modeless} edges={ALPHA_EDGES} allNodes={ALL_NODES} allEdges={ALL_EDGES} teamFilterActive />,
+    )
+    expect(screen.getAllByTestId('topology-node-crossteam')).toHaveLength(2)
+  })
+
+  it('explains the badge to assistive tech', () => {
+    renderFiltered()
+    const title = screen.getAllByTestId('topology-node-crossteam')[0].querySelector('title')
+    // Deliberately not "hidden by the team filter": the cross-team toggle and
+    // the edge-kind checkboxes drop edges too, so the badge does not attribute
+    // the omission to a cause it cannot know.
+    expect(title?.textContent).toMatch(/not drawn on this view/i)
+  })
+})
+
+// ── The unnamed-team cluster is not a dead affordance (AAASM-5140's rule) ────
+describe('TopologyGraph — cluster for agents with no team', () => {
+  const MIXED: TopologyNode[] = [
+    { id: 'g1', name: 'governed', status: 'active', team: 'support', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    { id: 'o1', name: 'teamless', status: 'active', team: '', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+  ]
+
+  it('renders the unnamed group as non-interactive', () => {
+    // `TopologyPage` gates its team panel on a truthy team, so clicking this
+    // cluster never opened anything. An affordance with no successful path is
+    // removed rather than left to look clickable.
+    render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={vi.fn()} />)
+    const blank = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === '')!
+    expect(blank).toHaveAttribute('data-selectable', 'false')
+    expect(blank).not.toHaveAttribute('role', 'button')
+    expect(blank).not.toHaveAttribute('tabindex')
+  })
+
+  it('does not fire onTeamClick for the unnamed group', async () => {
+    const onTeamClick = vi.fn()
+    render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={onTeamClick} />)
+    const blank = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === '')!
+    await userEvent.click(blank)
+    expect(onTeamClick).not.toHaveBeenCalled()
+  })
+
+  it('leaves real team clusters selectable', async () => {
+    const onTeamClick = vi.fn()
+    render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={onTeamClick} />)
+    const support = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === 'support')!
+    expect(support).toHaveAttribute('role', 'button')
+    await userEvent.click(support)
+    expect(onTeamClick).toHaveBeenCalledWith('support')
+  })
+})

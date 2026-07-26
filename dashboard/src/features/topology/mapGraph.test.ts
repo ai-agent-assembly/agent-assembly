@@ -31,7 +31,7 @@ describe('mapTopologyGraph', () => {
 
   it('defaults owner / policyCount / budget to neutral placeholders when absent', () => {
     const { nodes } = mapTopologyGraph({ nodes: [node()], edges: [] })
-    expect(nodes[0]).toMatchObject({ owner: '', policyCount: 0, budgetSpend: 0, budgetLimit: 0 })
+    expect(nodes[0]).toMatchObject({ owner: '', policyCount: 0, budgetSpend: 0, budgetLimit: null })
   })
 
   it('carries live owner / policy_count / budget through to the view model (AAASM-5045)', () => {
@@ -42,12 +42,27 @@ describe('mapTopologyGraph', () => {
     expect(nodes[0]).toMatchObject({ owner: 'platform-team', policyCount: 3, budgetSpend: 4.1, budgetLimit: 100 })
   })
 
-  it('keeps the budget-limit placeholder when the limit is null (no misleading ratio)', () => {
+  // AAASM-5135: a null `limit_usd` means "no limit is configured", which is not
+  // the same statement as "the limit is $0" — the latter reads as a budget that
+  // is fully burnt at any spend at all. The absence has to survive the mapper.
+  it('keeps a null budget limit null rather than collapsing it to 0', () => {
     const { nodes } = mapTopologyGraph({
       nodes: [node({ owner: null, policy_count: 0, budget: { spend_usd: 2.5, limit_usd: null } })],
       edges: [],
     })
-    expect(nodes[0]).toMatchObject({ owner: '', budgetSpend: 2.5, budgetLimit: 0 })
+    expect(nodes[0]).toMatchObject({ owner: '', budgetSpend: 2.5, budgetLimit: null })
+    expect(nodes[0].budgetLimit).not.toBe(0)
+  })
+
+  // A real, configured limit of zero is a different fact from an absent one, and
+  // the mapper must not merge the two — `?? null` would swallow a genuine 0 if
+  // it were written as a falsy check.
+  it('distinguishes a configured $0 limit from an unconfigured one', () => {
+    const { nodes } = mapTopologyGraph({
+      nodes: [node({ budget: { spend_usd: 0, limit_usd: 0 } })],
+      edges: [],
+    })
+    expect(nodes[0].budgetLimit).toBe(0)
   })
 
   it('drops an unrecognised mode to undefined so the badge stays hidden', () => {

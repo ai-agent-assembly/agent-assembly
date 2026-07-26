@@ -6,7 +6,17 @@ import './TopologySidebar.css'
 export interface TopologyStats {
   readonly active: number
   readonly flagged: number
+  /** Cross-team edges across the whole fleet — not the filtered view. */
   readonly crossTeam: number
+  /**
+   * How many of `crossTeam` the canvas is currently not drawing (AAASM-5138).
+   *
+   * The counter describes the fleet while the canvas draws a subset, so without
+   * this the two contradict each other and the operator has no way to tell.
+   * Rather than silently narrowing the count to match the picture — which would
+   * throw away the fleet-wide fact — the gap is stated outright.
+   */
+  readonly crossTeamHidden: number
   readonly hasCycles: boolean
 }
 
@@ -76,6 +86,21 @@ export function TopologySidebar({
         <span className="topo-sidebar__stat topo-sidebar__stat--muted" data-testid="topology-stat-crossteam">
           ⇆ {stats.crossTeam} cross-team
         </span>
+        {/* The count above is fleet-wide; when the canvas is showing fewer, say
+            so rather than leaving a number that contradicts the picture. */}
+        {stats.crossTeamHidden > 0 && (
+          <span
+            className="topo-sidebar__stat topo-sidebar__stat--hidden"
+            data-testid="topology-stat-crossteam-hidden"
+            data-hidden-count={stats.crossTeamHidden}
+            title={
+              `${stats.crossTeamHidden} of these cross-team ${stats.crossTeamHidden === 1 ? 'edge is' : 'edges are'} ` +
+              'not drawn — hidden by the team filter, the cross-team toggle, or an unchecked edge type.'
+            }
+          >
+            {stats.crossTeamHidden} not shown
+          </span>
+        )}
       </div>
 
       {/* Team filter */}

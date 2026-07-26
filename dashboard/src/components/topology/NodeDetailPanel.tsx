@@ -8,10 +8,44 @@ import type {
   TopologyNode,
 } from '../../features/topology/types'
 import { SuspendReasonDialog } from '../SuspendReasonDialog'
+import { AbsenceMarker, TruthfulValue } from '../truthfulness'
+import { certain, isKnown, type Certain } from '../../lib/truthfulness'
 import { bucketForRatio } from './budgetThreshold'
 import './NodeDetailPanel.css'
 
 const RECENT_EVENT_LIMIT = 5
+
+/** Why a budget ceiling can be missing, shown in the absence tooltip. */
+const NO_LIMIT_DETAIL = 'No daily budget limit is configured for this agent'
+
+/**
+ * Why the two governance buttons are inert (AAASM-5140).
+ *
+ * Cascade-apply and the enforcement-mode toggle have no write endpoint: the
+ * mutation-safety question is ADR-0021 / AAASM-5097 and is still `Proposed`.
+ * Until one exists, the honest affordance is a disabled control that says so —
+ * an enabled button whose handler does nothing reads as a broken product, and
+ * an operator who clicks it has no way to tell whether governance was applied.
+ */
+const NO_BACKEND_TITLE = 'Backend cascade-apply / mode toggle is not available yet'
+
+/**
+ * Budget burn as a 0–1 ratio, or `null` when there is no ratio to report.
+ *
+ * A burn ratio only exists once a ceiling does. With an unconfigured limit there
+ * is nothing to divide by, so this reports the absence rather than falling back
+ * to `0` — which would render a fully-unburnt budget the data never asserted
+ * (AAASM-5135).
+ *
+ * A *configured* ceiling of `$0` is a different case and keeps its prior
+ * behaviour: it is a real fact, so it still yields a ratio. `certain` draws the
+ * same line — it treats `0` as a value and only `null`/`undefined` as missing.
+ */
+function burnRatio(spend: number, limit: Certain<number>): number | null {
+  if (!isKnown(limit)) return null
+  if (limit.value <= 0) return 0
+  return Math.min(1, spend / limit.value)
+}
 
 /** A cross-team relationship for the selected node: direction + peer. */
 interface CrossTeamEdge {
@@ -44,10 +78,11 @@ export interface NodeDetailPanelProps {
  * `<TopologyPage>` (not as a route or overlay). Lazy-mounted — returns
  * `null` until `node !== null`.
  *
- * Hi-fi reference: design/v1/hi-fi/topology.jsx `TopoNodePanel`. Lineage
- * (from `GET /topology/lineage/{id}`), cross-team edges, and real suspend/
- * resume wiring landed in AAASM-5071. The Apply-policy / Shadow-mode buttons
- * remain stubs — those are backend-blocked (policy cascade / shadow toggle).
+ * Hi-fi reference: design/v2/hi-fi/topology.jsx `TopoNodePanel` (authoritative
+ * per ADR-0025). Lineage (from `GET /topology/lineage/{id}`), cross-team edges,
+ * and real suspend/resume wiring landed in AAASM-5071. The Apply-policy /
+ * Shadow-mode buttons are backend-blocked and render disabled with a reason
+ * (AAASM-5140) rather than as enabled no-ops.
  */
 export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges = [], onAgentMutated }: NodeDetailPanelProps) {
   const recentEventsQuery = useTopologyNodeRecentEvents(node?.id ?? '')
@@ -102,7 +137,10 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
 
   if (!node) return null
 
-  const ratio = node.budgetLimit > 0 ? Math.min(1, node.budgetSpend / node.budgetLimit) : 0
+  const budgetLimit = certain(node.budgetLimit, 'unconfigured', NO_LIMIT_DETAIL)
+  const ratio = burnRatio(node.budgetSpend, budgetLimit)
+  const percent = ratio === null ? null : Math.round(ratio * 100)
+  const ratioBucket = ratio === null ? undefined : bucketForRatio(ratio)
   const recent = (recentEventsQuery.data ?? []).slice(0, RECENT_EVENT_LIMIT)
   const lineageChain = lineageQuery.data?.ancestors ?? []
   const mutationBusy = suspendMutation.isPending || resumeMutation.isPending
@@ -174,24 +212,42 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
         <section className="node-detail-panel__section" data-testid="node-detail-budget">
           <div className="node-detail-panel__section-label">budget burn</div>
           <div className="node-detail-panel__budget-row">
-            <span>
-              ${node.budgetSpend.toFixed(2)} / ${node.budgetLimit.toFixed(2)}
+            <span data-testid="node-detail-budget-amount">
+              ${node.budgetSpend.toFixed(2)} /{' '}
+              <TruthfulValue
+                value={budgetLimit}
+                format={(v) => `$${v.toFixed(2)}`}
+                testId="node-detail-budget-limit"
+              />
             </span>
-            <span className="node-detail-panel__budget-percent">{Math.round(ratio * 100)}%</span>
+            <span className="node-detail-panel__budget-percent" data-testid="node-detail-budget-percent">
+              {percent === null ? (
+                <AbsenceMarker state="unconfigured" detail={NO_LIMIT_DETAIL} testId="node-detail-budget-percent-absent" />
+              ) : (
+                `${percent}%`
+              )}
+            </span>
           </div>
+          {/* An indeterminate progressbar omits `aria-valuenow` entirely; that
+              is ARIA's own encoding of "the value is unknown". Sending 0 would
+              announce an unburnt budget to a screen reader on no evidence. */}
           <div
             className="node-detail-panel__progress"
             role="progressbar"
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={Math.round(ratio * 100)}
+            aria-valuenow={percent ?? undefined}
+            aria-label={percent === null ? `Budget burn unknown — ${NO_LIMIT_DETAIL.toLowerCase()}` : undefined}
+            data-truth-state={percent === null ? 'unconfigured' : undefined}
             data-testid="node-detail-progress"
           >
-            <div
-              className="node-detail-panel__progress-fill"
-              style={{ width: `${Math.round(ratio * 100)}%` }}
-              data-ratio-bucket={bucketForRatio(ratio)}
-            />
+            {percent !== null && (
+              <div
+                className="node-detail-panel__progress-fill"
+                style={{ width: `${percent}%` }}
+                data-ratio-bucket={ratioBucket}
+              />
+            )}
           </div>
         </section>
 
@@ -299,12 +355,15 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
           >
             View trace →
           </button>
-          {/* Governance stubs — no-op handlers, real wiring lands in future tickets. */}
+          {/* Governance controls with no production path — disabled with a
+              reason, matching the View-trace button above. See NO_BACKEND_TITLE
+              for why they are not wired instead (AAASM-5140). */}
           <button
             type="button"
             className="node-detail-panel__action"
             data-testid="node-detail-apply-policy"
-            onClick={() => {}}
+            disabled
+            title={NO_BACKEND_TITLE}
           >
             ⚖ Apply team policy
           </button>
@@ -312,7 +371,8 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
             type="button"
             className="node-detail-panel__action"
             data-testid="node-detail-shadow-mode"
-            onClick={() => {}}
+            disabled
+            title={NO_BACKEND_TITLE}
           >
             ◐ Switch to shadow mode
           </button>

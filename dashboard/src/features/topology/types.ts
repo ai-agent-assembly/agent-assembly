@@ -74,10 +74,42 @@ export interface TopologyNode {
   readonly team: string
   /** Operator / engineer who owns the agent. Surfaced in the node detail panel (AAASM-1337). */
   readonly owner: string
-  /** Number of policies currently applied to this agent. Surfaced in the node detail panel. */
+  /**
+   * Number of policies whose scope cascade applies to this agent.
+   *
+   * Deliberately **not** nullable, even though `AgentNode.policy_count` is
+   * nullable on the wire. That nullability exists for the list / tree / team
+   * projections, which skip the policy-engine lookup; this view model is only
+   * ever built from `GET /api/v1/topology`, and that endpoint's
+   * `project_graph_nodes` assigns it unconditionally
+   * (`aa-api/src/routes/topology.rs:427`). A count that is always resolved is a
+   * measurement, so it stays a plain number.
+   */
   readonly policyCount: number
+  /**
+   * Spend recorded against this agent for the current day, in USD.
+   *
+   * Also not nullable: `NodeBudget.spend_usd` is a non-optional `f64` and the
+   * graph endpoint always emits a budget block
+   * (`aa-api/src/routes/topology.rs:434`). An agent absent from the tracker
+   * snapshot has genuinely spent nothing — the budget tracker is the authority
+   * on spend, so a `0` here is measured rather than inferred.
+   */
   readonly budgetSpend: number
-  readonly budgetLimit: number
+  /**
+   * Effective daily budget limit in USD, or `null` when none is configured
+   * (AAASM-5135).
+   *
+   * This is the field that *is* genuinely absent. The server resolves it as
+   * per-agent override → server-wide daily limit → `null`
+   * (`aa-api/src/routes/topology.rs:429-433`), and `openapi/v1.yaml` documents
+   * `limit_usd` as "null when no limit is configured". Collapsing that to `0`
+   * rendered an unconfigured budget as `$0.00 / $0.00` at `aria-valuenow=0` —
+   * a fully-burnt budget — which is precisely the absence-becomes-a-value decay
+   * the truthfulness contract forbids. Consumers must render the absence as
+   * `unconfigured`, never as a number.
+   */
+  readonly budgetLimit: number | null
   readonly framework?: string
   /**
    * Enforcement mode, surfaced as a badge on the node card. Carried by the

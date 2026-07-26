@@ -34,13 +34,25 @@ export interface RecentEvent {
  * `api.GET` client) is kept so the bearer-token wiring stays identical to the
  * sibling recent-events hook below, whose endpoint is still un-generated.
  *
- * `staleTime` is shorter than the trace hook (5s) because topology
- * reflects live agent state and benefits from periodic refresh.
+ * Polls every 5 seconds. That cadence is ADR-0017 item 3, which ratified a 5s
+ * poll as the honest stand-in for the live event feed that has no backend yet —
+ * but the ADR recorded it in the past tense, as already shipped, and it never
+ * was. Its own AAASM-5082 correction ("C2 — Item 3: the ratified 5s Topology
+ * polling was never implemented") established that `refetchInterval` appeared
+ * nowhere in `dashboard/src`, so the graph was frozen between mounts and window
+ * refocus: a suspend performed elsewhere never reached the operator. This
+ * implements the decision that was already on record (AAASM-5136).
+ *
+ * `staleTime` is the neighbouring 5s value and is *not* the poll — it is a
+ * cache-freshness window and schedules nothing. Confusing the two is what
+ * produced the ADR's error, so both are set explicitly rather than one being
+ * left to imply the other.
  */
 export function useTopologyQuery() {
   return useQuery<TopologyGraph>({
     queryKey: ['topology'],
     staleTime: 5_000,
+    refetchInterval: 5_000,
     queryFn: async () => {
       const base = import.meta.env.VITE_API_BASE_URL ?? ''
       const token = getToken()
