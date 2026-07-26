@@ -124,6 +124,36 @@ describe('summarizeMatrix — the AAASM-5106 guard', () => {
     expect(state(s.deny)).toBe('unavailable')
     expect(state(s.flaggedAgents)).toBe('unavailable')
   })
+
+  it('propagates a pending matrix as unknown, including the flag column', () => {
+    // The flag column must not hardcode a failure: with a request in flight
+    // that would put "Unavailable — the request failed" beside three stats
+    // reading "Unknown", tooltipped "Unavailable — Request in flight".
+    const s = summarizeMatrix(permissive, RESOURCES, VERB, absent('unknown', 'Request in flight'))
+    for (const field of [s.allow, s.narrow, s.deny, s.flaggedAgents]) {
+      expect(state(field)).toBe('unknown')
+    }
+  })
+})
+
+describe('summarizeMatrix — heterogeneous tool columns', () => {
+  it("counts a grid where a column is out of some agents' scope", () => {
+    // `project_matrix` emits a tool cell only for agents that declared it, so
+    // a column missing from one agent means "not in scope" (na), not "never
+    // evaluated". Treating it as the latter would suppress the summary for
+    // essentially every real fleet.
+    const resources = [...RESOURCES, { id: 'search', name: 'search', paths: [] }]
+    const agents = [
+      makeAgent({
+        id: 'a',
+        caps: { gmail: cell({ write: 'allow' }), search: cell({ write: 'deny' }) },
+      }),
+      makeAgent({ id: 'b', caps: { gmail: cell({ write: 'allow' }) } }),
+    ]
+    const s = summarizeMatrix(agents, resources, VERB, LOADED)
+    expect(count(s.allow)).toBe(2)
+    expect(count(s.deny)).toBe(1)
+  })
 })
 
 describe('summarizeMatrix — flagged agents', () => {
@@ -167,8 +197,12 @@ describe('cascadeEvidenceOf', () => {
   it.each([
     ['null', null],
     ['undefined', undefined],
-  ])('treats a %s policy list as unavailable', (_label, policies) => {
+  ])('treats a %s policy list as unknown, not as a failed request', (_label, policies) => {
+    // This function only sees a payload that already arrived, so the request
+    // did not fail. `openapi-fetch` does no runtime validation, so a 200 with
+    // the key missing is reachable — and the honest answer is "could not
+    // determine", not "the request failed".
     const evidence = cascadeEvidenceOf(policies)
-    expect(isAbsent(evidence) && evidence.state).toBe('unavailable')
+    expect(isAbsent(evidence) && evidence.state).toBe('unknown')
   })
 })

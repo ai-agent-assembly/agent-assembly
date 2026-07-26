@@ -58,6 +58,26 @@ describe('CapabilitySummary', () => {
     expect(flagged).toHaveTextContent('Not evaluated')
   })
 
+  it('renders one consistent state across the row while the matrix is pending', () => {
+    render(
+      <CapabilitySummary
+        agents={AGENTS}
+        resources={RESOURCES}
+        verb="write"
+        cascade={absent('unknown', 'Request in flight')}
+      />,
+    )
+    for (const id of [
+      'cap-summary-allow',
+      'cap-summary-narrow',
+      'cap-summary-deny',
+      'cap-summary-flagged',
+    ]) {
+      // No stat may claim a failure while the request is merely in flight.
+      expect(screen.getByTestId(id)).toHaveAttribute('data-truth-state', 'unknown')
+    }
+  })
+
   it('renders Unavailable when the matrix request failed', () => {
     render(
       <CapabilitySummary
