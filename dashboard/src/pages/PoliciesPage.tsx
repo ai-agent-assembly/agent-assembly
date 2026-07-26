@@ -101,6 +101,42 @@ function PolicySkeletonRow() {
   )
 }
 
+/** How many affected-agent chips a row shows before collapsing into `+N`. */
+const AFFECTS_CHIP_LIMIT = 3
+
+/**
+ * The agents a policy is in force for, as chips (`design/v1/hi-fi/policy.jsx`).
+ *
+ * `affects` is absent — not `[]` — whenever the version is not in force for any
+ * agent the caller may see, so absence folds to the shared `—` rather than to a
+ * misleading "0 agents".
+ */
+function PolicyRowAffects({ affects }: Readonly<{ affects: Policy['affects'] }>) {
+  if (affects == null) {
+    return (
+      <span className="policies-list__affects" data-testid="policy-row-affects-empty">
+        —
+      </span>
+    )
+  }
+  const shown = affects.slice(0, AFFECTS_CHIP_LIMIT)
+  const overflow = affects.length - shown.length
+  return (
+    <span className="policies-list__affects" data-testid="policy-row-affects">
+      {shown.map((agent) => (
+        <span key={agent} className="policies-list__affects-chip">
+          {agent}
+        </span>
+      ))}
+      {overflow > 0 && (
+        <span className="policies-list__affects-chip" data-testid="policy-row-affects-overflow">
+          +{overflow}
+        </span>
+      )}
+    </span>
+  )
+}
+
 function PolicyRow({ policy, onEdit }: Readonly<{ policy: Policy; onEdit: () => void }>) {
   const proposed = !policy.active
   // The aa-api `PolicyResponse` has no `scope` field, so recover it from the
@@ -124,6 +160,14 @@ function PolicyRow({ policy, onEdit }: Readonly<{ policy: Policy; onEdit: () => 
           <span className="policies-list__row-scope" data-testid="policy-row-scope">
             scope: {scope}
           </span>
+          <PolicyRowAffects affects={policy.affects} />
+        </span>
+        <span className="policies-list__row-hits" data-testid="policy-row-hits">
+          {/* Always `—` today: no audit record attributes a decision to a
+              policy document, so the count is absent on the wire rather than a
+              0 (AAASM-5107 owns capturing it). */}
+          <b>{policy.hits24h ?? '—'}</b>
+          <span>hits/24h</span>
         </span>
         <span className="policies-list__row-meta">
           v{policy.version} · {policy.rule_count} {policy.rule_count === 1 ? 'rule' : 'rules'}

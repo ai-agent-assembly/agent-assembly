@@ -107,6 +107,8 @@ fn protected_router() -> Router {
         .route("/policies", get(policies::list_policies).post(policies::create_policy))
         .route("/policies/active", get(policies::get_active_policy))
         .route("/policies/simulate", post(policies::simulate_policy))
+        // Policies in force for one team, for the Teams Active-policies card (AAASM-5096)
+        .route("/policies/team/{team_id}", get(policies::list_team_policies))
         // Approvals
         .route("/approvals", get(approvals::list_approvals))
         .route("/approvals/{id}", get(approvals::get_approval))

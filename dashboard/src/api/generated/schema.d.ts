@@ -1602,6 +1602,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/policies/team/{team_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/policies/team/{team_id}` — policies in force for one team.
+         * @description Read-only inverse of [`PolicyResponse::affects`]: the union of the policy
+         *     cascades of the team's agents, deduplicated by document. Backs the Teams
+         *     surface's Active-policies card (AAASM-5080 / AAASM-5096).
+         *
+         *     It is a separate path rather than a field on `GET /api/v1/policies` because
+         *     that endpoint is Admin-only — it discloses every tenant's raw policy YAML —
+         *     while a team's own operator must be able to read the policies governing its
+         *     team. This endpoint discloses no YAML, only document identities, so plain
+         *     Read plus membership in the requested team is the right gate.
+         *
+         *     Deny-by-default and tenant-scoped: a non-admin caller may only ask about its
+         *     own team, and each member is additionally filtered through the shared
+         *     `record_visible_to` org+team check, so no agent outside the caller's tenant
+         *     contributes a document.
+         *
+         *     Returns `policies: null` rather than `[]` when the team has agents but no
+         *     resolvable cascade — see [`TeamPoliciesResponse::policies`] for why the two
+         *     must not collapse.
+         */
+        get: operations["list_team_policies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tools": {
         parameters: {
             query?: never;
@@ -3752,8 +3789,9 @@ export interface components {
              * @description Number of times this policy fired in the last 24 hours.
              *
              *     Always absent here: attributing audit events back to the policy document
-             *     that produced them is the subject of its own story (AAASM-5096). A `0`
-             *     would be indistinguishable from "fired zero times".
+             *     that produced them needs the deciding document captured at the
+             *     enforcement boundary, which is owned by AAASM-5107. A `0` would be
+             *     indistinguishable from "fired zero times".
              */
             hits24h?: number | null;
             id: string;
@@ -3833,6 +3871,34 @@ export interface components {
         PolicyResponse: {
             /** @description Whether this is the currently active policy. */
             active: boolean;
+            /**
+             * @description Names of the agents this policy version is in force for — the agents
+             *     whose live policy cascade carries this document (AAASM-5096).
+             *
+             *     Absent, never `[]`, when the version is not in force for any agent the
+             *     caller may see: an archived version, or one whose document the running
+             *     engine does not carry. `[]` would assert "this policy targets nobody",
+             *     which is a different and stronger claim than "not currently loaded".
+             */
+            affects?: string[] | null;
+            /**
+             * Format: int64
+             * @description Number of times this policy fired in the last 24 hours.
+             *
+             *     **Always absent.** Nothing on the audit write path records which policy
+             *     document produced a decision: `AuditEntry` has no policy field, and the
+             *     payload's `policy_rule` is the free-text deny *reason*
+             *     (`aa_gateway::service::policy_service::evaluate_one`), empty on every
+             *     allow. `aa_gateway::engine::decision::PolicyDecision::Deny` does carry a
+             *     `source_scope`, but `into_policy_result` drops it before the audit write —
+             *     and it is scope-granular, not document-granular, so it could not name a
+             *     document even if it survived. Capturing the deciding document at decision
+             *     time is enforcement-boundary work owned by AAASM-5107; until it lands this
+             *     is reported absent rather than as a `0` that would be indistinguishable
+             *     from "fired zero times". The same field is absent for the same reason on
+             *     the capability matrix's `Policy`.
+             */
+            hits24h?: number | null;
             /** @description Policy name from metadata. */
             name: string;
             /**
@@ -4444,6 +4510,67 @@ export interface components {
             monthly_spend_usd?: string | null;
             /** @description Team identifier. */
             team_id: string;
+        };
+        /** @description Response body for `GET /api/v1/policies/team/{team_id}` (AAASM-5096). */
+        TeamPoliciesResponse: {
+            /**
+             * @description Every policy document in force for at least one visible agent in the
+             *     team, ordered by scope then name.
+             *
+             *     **`null`, never `[]`, when the mapping could not be resolved** — the same
+             *     absent-vs-empty discipline as [`PolicyResponse::affects`], and for a
+             *     sharper reason. `[]` is a positive governance claim: "nothing governs this
+             *     team". That claim is only true when the team has no agent this caller can
+             *     see, so there is nothing for a policy to be in force over — the one case
+             *     that serializes `[]`.
+             *
+             *     When the team *does* have visible agents but not one of them resolved a
+             *     cascade document, the honest answer is "unknown", not "none":
+             *     `PolicyEngine::evaluate` falls back to `evaluate_primary` for exactly
+             *     those agents, so the primary policy slot is still in force over them —
+             *     this projection just cannot name it. That is the state of **every shipped
+             *     aa-api deployment today**: `AppState::local_in_memory` loads the policy
+             *     through `load_from_file`, which populates the primary slot and leaves
+             *     `scope_index` empty, and nothing else in aa-api ever calls
+             *     `load_cascade_from_dir` (AAASM-5106). Emitting `[]` there would render as
+             *     "No policy is in force for this team" while a policy *is* being enforced.
+             */
+            policies: components["schemas"]["TeamPolicyResponse"][] | null;
+            /** @description The team the mapping was resolved for, echoed from the request. */
+            team_id: string;
+        };
+        /**
+         * @description One policy document in force for a team, as shown on the Teams surface's
+         *     Active-policies card (`design/v1/hi-fi/teams.jsx`).
+         */
+        TeamPolicyResponse: {
+            /**
+             * Format: int64
+             * @description Number of times this policy fired in the last 24 hours. **Always absent**
+             *     — see [`PolicyResponse::hits_24h`] for why no source exists.
+             */
+            hits24h?: number | null;
+            /**
+             * @description Scope-qualified document id (`"{scope}/{name}"`, or the bare scope for a
+             *     document declaring no `metadata.name`). Matches the id the capability
+             *     matrix emits for the same document.
+             */
+            id: string;
+            /**
+             * @description The document's `metadata.name`, falling back to its scope label when the
+             *     document declares none (the flat, non-envelope policy format).
+             */
+            name: string;
+            /**
+             * @description The document's declared scope (`global` / `org:x` / `team:x` / `agent:x`),
+             *     so the card can show which tier of the cascade the policy comes from.
+             */
+            scope: string;
+            /**
+             * @description Revision from the document's `metadata.version`. Absent for a document
+             *     that declares none.
+             */
+            version?: string | null;
         };
         /**
          * @description High-level statistics for a single team.
@@ -7763,6 +7890,36 @@ export interface operations {
                 };
             };
             /** @description Caller lacks read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_team_policies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Team identifier */
+                team_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Policies in force for the team */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamPoliciesResponse"];
+                };
+            };
+            /** @description Caller lacks admin scope or membership in this team */
             403: {
                 headers: {
                     [name: string]: unknown;
