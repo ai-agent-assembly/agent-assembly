@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { StatusState } from '../../components/truthfulness'
 import { isKnown, type Certain } from '../../lib/truthfulness'
@@ -56,16 +55,13 @@ function absenceTitle(pending: boolean): string {
  * panel, which is the worst possible reading of an approvals surface — an
  * operator cannot distinguish a clear queue from an outage that is hiding
  * decisions from them.
+ *
+ * A decided card leaves the queue because the decide mutations write the shared
+ * approvals cache (`features/approvals/api.ts`), not because this component
+ * remembers what was clicked. Keeping that memory here is what let the pane
+ * body, the pane-head count and the header bell disagree.
  */
 export function ApprovalPool({ approvals, onError, onRetry }: Readonly<ApprovalPoolProps>) {
-  // Ids the operator has already decided on this session; hidden immediately
-  // rather than waiting for the query invalidation / WS stream to drop them.
-  const [decided, setDecided] = useState<ReadonlySet<string>>(() => new Set())
-
-  function markDecided(id: string) {
-    setDecided((prev) => new Set(prev).add(id))
-  }
-
   return (
     <div className="approval-pool" data-testid="approval-pool">
       <header className="approval-pool__head">
@@ -77,29 +73,19 @@ export function ApprovalPool({ approvals, onError, onRetry }: Readonly<ApprovalP
           View in Approvals →
         </Link>
       </header>
-      <ApprovalPoolBody
-        approvals={approvals}
-        decided={decided}
-        onDecided={markDecided}
-        onError={onError}
-        onRetry={onRetry}
-      />
+      <ApprovalPoolBody approvals={approvals} onError={onError} onRetry={onRetry} />
     </div>
   )
 }
 
 interface ApprovalPoolBodyProps {
   approvals: Certain<readonly Approval[]>
-  decided: ReadonlySet<string>
-  onDecided: (id: string) => void
   onError?: (action: 'approve' | 'reject', detail: string) => void
   onRetry?: () => void
 }
 
 function ApprovalPoolBody({
   approvals,
-  decided,
-  onDecided,
   onError,
   onRetry,
 }: Readonly<ApprovalPoolBodyProps>) {
@@ -132,7 +118,7 @@ function ApprovalPoolBody({
     )
   }
 
-  const waiting = approvals.value.filter((a) => !decided.has(a.id))
+  const waiting = approvals.value
   if (waiting.length === 0) {
     // `state={null}`: a queue that loaded and came back empty is a real,
     // known answer, so it carries no absence badge and no fault tone.
@@ -165,8 +151,6 @@ function ApprovalPoolBody({
           <ApprovalActions
             approvalId={approval.id}
             size="sm"
-            onApproved={onDecided}
-            onRejected={onDecided}
             onError={(action, error) => {
               const detail = error instanceof Error ? error.message : 'unknown error'
               onError?.(action, detail)

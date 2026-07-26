@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { api } from '../../api/client'
 import { absent, known } from '../../lib/truthfulness'
-import type { Approval } from '../approvals/api'
+import { APPROVALS_QUERY_KEY, type Approval } from '../approvals/api'
 import { ApprovalPool } from './ApprovalPool'
 
 /** A real approval id: a UUID, which is what the decide endpoints parse. */
@@ -31,11 +31,14 @@ function renderPool(ui: React.ReactElement) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
-  return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter>{ui}</MemoryRouter>
-    </QueryClientProvider>,
-  )
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>{ui}</MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  }
 }
 
 let post: Mock
@@ -146,21 +149,52 @@ describe('ApprovalPool', () => {
     await userEvent.click(screen.getAllByTestId('approval-approve-btn')[0])
 
     await waitFor(() =>
-      expect(screen.getAllByTestId('approval-pool-item')).toHaveLength(1),
+      expect(post).toHaveBeenCalledWith('/api/v1/approvals/{id}/approve', {
+        params: { path: { id: UUID_1 } },
+        body: { by: undefined },
+      }),
     )
-    expect(post).toHaveBeenCalledWith('/api/v1/approvals/{id}/approve', {
-      params: { path: { id: UUID_1 } },
-      body: { by: undefined },
+  })
+
+  /*
+   * The decided row leaves the queue because the mutation writes the shared
+   * cache, not because this component remembers the click.
+   *
+   * That distinction is the whole point: local memory made the pane body shrink
+   * while the pane-head chip and the header bell — both of which read this
+   * cache — went on reporting the old count. Asserting the cache here is
+   * therefore asserting what every one of those surfaces will render.
+   */
+  it('writes the decision to the shared approvals cache', async () => {
+    post.mockResolvedValue({ data: { id: UUID_1, status: 'approved' } })
+    const { client } = renderPool(
+      <ApprovalPool approvals={known<readonly Approval[]>([approval(UUID_1), approval(UUID_2)])} />,
+    )
+    client.setQueryData(APPROVALS_QUERY_KEY, [approval(UUID_1), approval(UUID_2)])
+
+    await userEvent.click(screen.getAllByTestId('approval-approve-btn')[0])
+
+    await waitFor(() => {
+      const cached = client.getQueryData<Approval[]>(APPROVALS_QUERY_KEY)
+      expect(cached?.map((a) => a.id)).toEqual([UUID_2])
     })
   })
 
-  it('falls back to the empty state once the last card is decided', async () => {
-    post.mockResolvedValue({ data: { id: UUID_1, status: 'approved' } })
-    renderPool(<ApprovalPool approvals={known<readonly Approval[]>([approval(UUID_1)])} />)
+  it('leaves the cache untouched when the decision fails', async () => {
+    post.mockResolvedValue({ error: { message: 'boom' } })
+    const { client } = renderPool(
+      <ApprovalPool approvals={known<readonly Approval[]>([approval(UUID_1)])} onError={vi.fn()} />,
+    )
+    client.setQueryData(APPROVALS_QUERY_KEY, [approval(UUID_1)])
 
     await userEvent.click(screen.getByTestId('approval-approve-btn'))
 
-    expect(await screen.findByTestId('approval-pool-empty')).toBeInTheDocument()
+    // A refused decision leaves the approval pending; dropping it would hide a
+    // request that still needs one.
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(
+      client.getQueryData<Approval[]>(APPROVALS_QUERY_KEY)?.map((a) => a.id),
+    ).toEqual([UUID_1])
   })
 
   it('surfaces onError when an inline action rejects and keeps the card', async () => {
