@@ -47,10 +47,12 @@
   overflow: hidden;
 }
 
-/* No configured ceiling (AAASM-5135): the track carries no fill at all, so a
-   hatched pattern distinguishes "nothing is set" from a genuinely unburnt
-   budget. An empty flat track would look identical to 0% burn. */
-.team-budget-bar__track[data-truth-state='unconfigured'] {
+/* No measurable burn (AAASM-5135) — either no configured ceiling or no spend
+   figure. The track carries no fill at all, so a hatched pattern distinguishes
+   "we cannot compute this" from a genuinely unburnt budget; an empty flat track
+   would look identical to 0% burn. */
+.team-budget-bar__track[data-truth-state='unconfigured'],
+.team-budget-bar__track[data-truth-state='unknown'] {
   background: repeating-linear-gradient(
     135deg,
     var(--paper-3),

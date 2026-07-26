@@ -80,6 +80,56 @@ describe('TeamBudgetBar', () => {
     })
   })
 
+  // AAASM-5135. `spent` is nullable for the Costs call site: `joinTeamRows`
+  // yields `null` for a team missing from the cost breakdown and for *every*
+  // team while `/costs` is unresolved or failed. `$0 spent` would report a team
+  // that spent nothing when the truth is that nobody got an answer.
+  describe('with no spend figure', () => {
+    it('never renders $0 spent', () => {
+      render(<TeamBudgetBar team="support" spent={null} limit={20} />)
+      const bar = screen.getByTestId('team-budget-bar')
+      expect(bar).not.toHaveTextContent('$0')
+      expect(screen.getByTestId('team-budget-bar-no-spend')).toBeInTheDocument()
+    })
+
+    it('reports it as unknown, not unconfigured', () => {
+      // Different facts: nothing was configured vs. we asked and got no answer.
+      render(<TeamBudgetBar team="support" spent={null} limit={20} />)
+      expect(screen.getByTestId('team-budget-bar')).toHaveAttribute('data-truth-state', 'unknown')
+    })
+
+    it('computes no percentage and stays indeterminate', () => {
+      render(<TeamBudgetBar team="support" spent={null} limit={20} />)
+      const bar = screen.getByTestId('team-budget-bar')
+      expect(bar).not.toHaveAttribute('aria-valuenow')
+      expect(bar).not.toHaveTextContent('0%')
+      expect(bar).not.toHaveAttribute('data-threshold-bucket')
+      expect(document.querySelector('.team-budget-bar__fill')).toBeNull()
+    })
+
+    it('still shows the ceiling that is known', () => {
+      render(<TeamBudgetBar team="support" spent={null} limit={20} />)
+      expect(screen.getByTestId('team-budget-bar-amount')).toHaveTextContent('$20')
+    })
+  })
+
+  it('renders both absences when neither figure is available', () => {
+    render(<TeamBudgetBar team="support" spent={null} limit={null} />)
+    expect(screen.getByTestId('team-budget-bar-no-spend')).toBeInTheDocument()
+    expect(screen.getByTestId('team-budget-bar-no-limit')).toBeInTheDocument()
+    expect(screen.getByTestId('team-budget-bar')).not.toHaveAttribute('aria-valuenow')
+  })
+
+  it('treats a measured $0 spend as a measurement, not an absence', () => {
+    // The mirror of the $0-limit case: a team that genuinely spent nothing is a
+    // fact, and must not be merged with "no figure available".
+    render(<TeamBudgetBar team="t" spent={0} limit={20} />)
+    const bar = screen.getByTestId('team-budget-bar')
+    expect(bar).not.toHaveAttribute('data-truth-state')
+    expect(bar).toHaveAttribute('aria-valuenow', '0')
+    expect(bar).toHaveTextContent('$0 / $20 · 0%')
+  })
+
   // A configured ceiling of exactly $0 is a real fact and must keep behaving as
   // one — it is the case a naive falsy check would merge with the absent one.
   it('treats a configured $0 limit as a measurement, not an absence', () => {
