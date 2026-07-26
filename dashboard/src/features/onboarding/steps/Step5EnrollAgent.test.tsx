@@ -180,6 +180,22 @@ describe('Step5EnrollAgent — AAASM-5133 real enrollment', () => {
     }
   })
 
+  it('never shows the registered badge and the empty line together', async () => {
+    // The badge reads the registry `total`; the empty line used to read the
+    // page length, so a total that disagreed with page 1 rendered "agent
+    // registered" above "no agents registered yet".
+    apiGet.mockResolvedValue(page([], 3))
+    renderStep(EMPTY_STATE)
+
+    fireEvent.click(screen.getByTestId('onboarding-enroll-start'))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('onboarding-enroll-count-value')).toHaveTextContent('3'),
+    )
+    expect(screen.getByTestId('onboarding-enroll-connected')).toBeInTheDocument()
+    expect(screen.queryByTestId('onboarding-enroll-empty')).toBeNull()
+  })
+
   it('does not poll while idle', () => {
     apiGet.mockResolvedValue(page([AGENT], 1))
     renderStep(EMPTY_STATE)

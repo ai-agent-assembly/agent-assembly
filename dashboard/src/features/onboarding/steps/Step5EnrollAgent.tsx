@@ -123,7 +123,12 @@ export function Step5EnrollAgent({ state, onEnrolled }: Readonly<Step5EnrollAgen
             testId="onboarding-enroll-absent"
           />
         )}
-        {isKnown(registry) && agents.length === 0 && (
+        {/* Gated on the same `hasAgents` as the badge and the meter, not on
+            `agents.length`. Reading the page length here while the badge read
+            the registry `total` would let the two disagree — "agent registered"
+            above "no agents registered yet" — for any answer where the two
+            differ. */}
+        {isKnown(registry) && !hasAgents && (
           <div className="onb-enroll-pings-empty" data-testid="onboarding-enroll-empty">
             {'// the registry answered: no agents registered yet'}
           </div>
