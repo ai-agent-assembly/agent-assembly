@@ -29,3 +29,6 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0020](0020-rolling-monthly-budget-window.md) | Rolling vs Calendar Monthly Budget Windows — and the Missing Team Tier | Proposed |
 | [0021](0021-topology-enforcement-mode-mutation-safety.md) | Topology Enforcement-Mode Mutation — Authorization, Blast Radius & Reversibility | Proposed |
 | [0022](0022-agent-config-projection-and-quantified-recommendations.md) | Agent-Detail Config Projection & Quantified Posture Recommendations | Proposed |
+| [0024](0024-empty-cascade-semantics.md) | Semantics of an Empty or Unavailable Policy Cascade | Proposed |
+| [0025](0025-design-v2-authoritative-visual-spec.md) | `design/v2/` Is the Authoritative Visual Specification | Proposed |
+| [0026](0026-open-dashboard-product-semantics.md) | Seven Open Dashboard Product-Semantics Decisions | Proposed |
