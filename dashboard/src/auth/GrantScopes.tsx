@@ -29,9 +29,3 @@ export function GrantScopes({
   )
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
-
-/** Scopes a caller who may perform write-level mutations holds. */
-export const WRITE_SCOPES: Scope[] = ['read', 'write']
-
-/** Scopes a read-only caller holds — every write gate should be closed. */
-export const READ_ONLY_SCOPES: Scope[] = ['read']

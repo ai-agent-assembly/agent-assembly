@@ -7,7 +7,8 @@ import { ServiceIdentitiesPanel } from './ServiceIdentitiesPanel'
 import { ToastProvider } from '../../components/ToastProvider'
 import { _apiKeysInternal } from './apiKeys'
 import { REVEAL_AUTOCLOSE_MS } from './RevealOnceModal'
-import { GrantScopes, WRITE_SCOPES } from '../../auth/GrantScopes'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 
 function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })

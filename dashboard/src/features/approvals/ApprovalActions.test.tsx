@@ -6,7 +6,8 @@ import { api } from '../../api/client'
 import { AuthContext, type AuthContextValue, type Scope } from '../../auth/AuthContext'
 import { WRITE_REQUIRED_HINT } from '../../auth/usePermissions'
 import { ApprovalActions } from './ApprovalActions'
-import { GrantScopes, WRITE_SCOPES } from '../../auth/GrantScopes'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 
 function renderWithClient(ui: React.ReactElement) {
   const client = new QueryClient({

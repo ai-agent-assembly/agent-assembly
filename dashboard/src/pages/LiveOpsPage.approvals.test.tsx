@@ -25,7 +25,8 @@ import { useAgentsQuery } from '../features/agents/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
 import { LiveOpsPage } from './LiveOpsPage'
-import { GrantScopes, WRITE_SCOPES } from '../auth/GrantScopes'
+import { GrantScopes } from '../auth/GrantScopes'
+import { WRITE_SCOPES } from '../auth/testScopes'
 
 vi.mock('../features/agents/api', () => ({ useAgentsQuery: vi.fn() }))
 vi.mock('../features/analytics/useTeamsQuery', () => ({ useTeamsQuery: vi.fn() }))

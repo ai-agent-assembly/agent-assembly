@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import { api } from '../../api/client'
 import type { Approval } from '../../features/approvals/api'
 import { ApprovalDetailDrawer } from './ApprovalDetailDrawer'
-import { GrantScopes, WRITE_SCOPES } from '../../auth/GrantScopes'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 
 function renderWithClient(ui: React.ReactElement) {
   const client = new QueryClient({

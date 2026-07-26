@@ -1,7 +1,8 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DestinationManager } from './DestinationManager'
-import { GrantScopes, WRITE_SCOPES } from '../../auth/GrantScopes'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 import * as api from './api'
 import type { Destination } from './types'
 

@@ -12,7 +12,8 @@ import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import type { LiveOperation } from '../features/liveOps/types'
 import { LiveOpsPage } from './LiveOpsPage'
-import { GrantScopes, WRITE_SCOPES } from '../auth/GrantScopes'
+import { GrantScopes } from '../auth/GrantScopes'
+import { WRITE_SCOPES } from '../auth/testScopes'
 
 function renderWithProviders(ui: ReactElement) {
   const client = new QueryClient({
