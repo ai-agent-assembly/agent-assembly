@@ -30,14 +30,62 @@ use crate::state::AppState;
 // Policy reach — which agents a policy document is in force for (AAASM-5096)
 // ---------------------------------------------------------------------------
 
-/// Identity of a policy document as the live cascade sees it: its scope label
-/// plus its `metadata.name`.
+/// Grouping key for a policy document as the live cascade sees it: its scope
+/// label plus its `metadata.name`.
 ///
 /// Deliberately the same key `capability::collect_policy_rows` builds, so the
 /// Policy list, the capability matrix and the team view all name one document
 /// the same way. A runtime `PolicyDocument` carries no id or digest, so this
-/// pair is the only identity available — see [`policy_key`].
+/// pair is the only *nameable* handle available — see [`policy_key`].
+///
+/// It is explicitly **not** an identity. `policy_version` is not part of it (it
+/// is not part of `PolicyDocument`'s identity either), so every historical
+/// version of `global/baseline` shares one key with the live one, and in the
+/// flat/non-envelope format — where `name` is `None` — every unnamed document at
+/// a scope collapses to a single key. Anything that must know *which* document
+/// it is holding therefore compares whole documents, not keys: see [`DocSet`]
+/// and [`affects_for`].
 type PolicyKey = (String, Option<String>);
+
+/// The distinct live documents the cascade carries under one [`PolicyKey`].
+///
+/// Exists because a key is a grouping handle, not an identity: two different
+/// documents can share one. Keeping every distinct document lets a caller tell
+/// an unambiguous key from a colliding one instead of silently reporting
+/// whichever the registry walk happened to reach first.
+#[derive(Debug, Default)]
+struct DocSet(Vec<Arc<PolicyDocument>>);
+
+impl DocSet {
+    /// Record `doc` unless an equal document is already held. `PolicyDocument`
+    /// is `PartialEq` over its whole validated content, so equality here means
+    /// "the same document", not "the same name".
+    fn insert(&mut self, doc: Arc<PolicyDocument>) {
+        if !self.0.iter().any(|held| **held == *doc) {
+            self.0.push(doc);
+        }
+    }
+
+    /// The one document under this key, or `None` when the key is ambiguous —
+    /// either unused (impossible for an inserted key) or shared by two distinct
+    /// documents, in which case nothing derived from "the" document can be
+    /// stated truthfully.
+    fn unique(&self) -> Option<&Arc<PolicyDocument>> {
+        match self.0.as_slice() {
+            [only] => Some(only),
+            _ => None,
+        }
+    }
+}
+
+/// Which agents a cascade-carried policy document is in force for, together with
+/// the document(s) that claim it, so a caller can verify a stored snapshot really
+/// is the document the engine carries before inheriting its reach.
+#[derive(Debug, Default)]
+struct PolicyReach {
+    docs: DocSet,
+    agents: BTreeSet<String>,
+}
 
 /// The live policy cascade for one agent, resolved through an **explicit**
 /// lineage.
@@ -86,14 +134,16 @@ fn policy_display_id(key: &PolicyKey) -> String {
 ///
 /// Tenant-scoped: only agents the caller may see contribute, so the reach set can
 /// never name an agent the caller could not otherwise read.
-fn policy_reach(state: &AppState, caller: &AuthenticatedCaller) -> BTreeMap<PolicyKey, BTreeSet<String>> {
-    let mut reach: BTreeMap<PolicyKey, BTreeSet<String>> = BTreeMap::new();
+fn policy_reach(state: &AppState, caller: &AuthenticatedCaller) -> BTreeMap<PolicyKey, PolicyReach> {
+    let mut reach: BTreeMap<PolicyKey, PolicyReach> = BTreeMap::new();
     for record in state.agent_registry.list() {
         if !record_visible_to(caller, &record) {
             continue;
         }
         for doc in cascade_for(state, &record) {
-            reach.entry(policy_key(&doc)).or_default().insert(record.name.clone());
+            let entry = reach.entry(policy_key(&doc)).or_default();
+            entry.agents.insert(record.name.clone());
+            entry.docs.insert(doc);
         }
     }
     reach
@@ -118,12 +168,23 @@ fn document_from_yaml(yaml: &str) -> Option<PolicyDocument> {
     PolicyValidator::from_yaml(yaml).ok().map(|out| out.document)
 }
 
-/// The agents a stored policy version is in force for, or `None` when it is not.
-fn affects_for(yaml: &str, reach: &BTreeMap<PolicyKey, BTreeSet<String>>) -> Option<Vec<String>> {
+/// The agents a stored policy version is in force for, or `None` when that
+/// cannot be established.
+///
+/// The snapshot must parse **and** be equal to the one document the live cascade
+/// carries under its key. Matching on the key alone is not enough: the key omits
+/// `policy_version`, so with `include_archived=true` every superseded snapshot of
+/// e.g. `global/baseline` would key onto the live document and inherit its full
+/// reach — asserting that a retired version is in force. Comparing whole
+/// documents (`PolicyDocument: PartialEq`) is the strongest identity available,
+/// since a runtime document carries no id or digest; where it cannot decide —
+/// an unreadable snapshot, or a key shared by two distinct live documents — the
+/// answer is the conservative absent, never an inherited reach.
+fn affects_for(yaml: &str, reach: &BTreeMap<PolicyKey, PolicyReach>) -> Option<Vec<String>> {
     let doc = document_from_yaml(yaml)?;
-    reach
-        .get(&policy_key(&doc))
-        .map(|agents| agents.iter().cloned().collect())
+    let entry = reach.get(&policy_key(&doc))?;
+    let live = entry.docs.unique()?;
+    (**live == doc).then(|| entry.agents.iter().cloned().collect())
 }
 
 /// JSON representation of a governance policy version.
@@ -801,13 +862,19 @@ mod tests {
         }
     }
 
-    /// A policy document scoped to one team. Deliberately Team-scoped: a reach
-    /// walk that resolved the cascade without an explicit lineage would never
-    /// see it, so every assertion built on it is a regression guard for that.
-    fn team_scoped_yaml(name: &str, team: &str) -> String {
+    /// A policy document scoped to one team, at an explicit revision.
+    ///
+    /// Deliberately Team-scoped: a reach walk that resolved the cascade without
+    /// an explicit lineage would never see it, so every assertion built on it is
+    /// a regression guard for that.
+    fn versioned_team_yaml(name: &str, team: &str, version: &str, allow: bool) -> String {
         format!(
-            "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: {name}\n  version: \"1.0.0\"\nspec:\n  scope: team:{team}\n  tools:\n    bash:\n      allow: false\n"
+            "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: {name}\n  version: \"{version}\"\nspec:\n  scope: team:{team}\n  tools:\n    bash:\n      allow: {allow}\n"
         )
+    }
+
+    fn team_scoped_yaml(name: &str, team: &str) -> String {
+        versioned_team_yaml(name, team, "1.0.0", false)
     }
 
     fn state_with(records: Vec<AgentRecord>) -> AppState {
@@ -1019,6 +1086,52 @@ mod tests {
             body.policies.is_empty(),
             "an out-of-tenant member must not contribute its cascade: {:?}",
             body.policies
+        );
+    }
+
+    // ── document identity ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn affects_is_absent_for_a_superseded_version_of_the_live_policys_name() {
+        let mut state = state_with(vec![record(0x01, "checkout-agent", None, Some("team-alpha"))]);
+        // v1 is archived: recorded in history, never loaded. v2 is live. They
+        // share a `(scope, name)` key and differ only in `metadata.version`, so
+        // a key-only match would hand v1 the live document's whole reach.
+        state
+            .policy_history
+            .save(
+                &versioned_team_yaml("alpha-guard", "team-alpha", "1.0.0", false),
+                Some("test"),
+            )
+            .await
+            .expect("history accepts the snapshot");
+        install(
+            &mut state,
+            &versioned_team_yaml("alpha-guard", "team-alpha", "2.0.0", false),
+        )
+        .await;
+
+        let items = list_items(&state, admin()).await;
+        assert_eq!(items.len(), 2, "both versions are visible with include_archived");
+        // Selected by content, not by position: both snapshots land in the same
+        // history millisecond, so their relative order is not meaningful.
+        let find = |revision: &str| {
+            items
+                .iter()
+                .find(|item| item["policy_yaml"].as_str().unwrap_or_default().contains(revision))
+                .unwrap_or_else(|| panic!("the {revision} snapshot is listed"))
+                .clone()
+        };
+        let live = find("2.0.0");
+        let superseded = find("1.0.0");
+        assert_eq!(
+            live["affects"],
+            serde_json::json!(["checkout-agent"]),
+            "the live version reports its real reach: {live}"
+        );
+        assert!(
+            superseded.get("affects").is_none(),
+            "a superseded version of the SAME name must not inherit the live document's reach: {superseded}"
         );
     }
 
