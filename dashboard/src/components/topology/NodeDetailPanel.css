@@ -161,6 +161,19 @@
   overflow: hidden;
 }
 
+/* No configured ceiling (AAASM-5135): the bar carries no fill, so it is hatched
+   to distinguish "nothing is set" from a genuinely unburnt budget — an empty
+   flat track is indistinguishable from 0% burn. */
+.node-detail-panel__progress[data-truth-state='unconfigured'] {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--paper-3),
+    var(--paper-3) 3px,
+    var(--paper-2) 3px,
+    var(--paper-2) 6px
+  );
+}
+
 .node-detail-panel__progress-fill {
   height: 100%;
 }

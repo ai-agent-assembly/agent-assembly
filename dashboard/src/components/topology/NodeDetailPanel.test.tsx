@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { UseQueryResult } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NodeDetailPanel } from './NodeDetailPanel'
 import * as topologyApi from '../../features/topology/api'
 import * as agentMutations from '../../features/agents/mutations'
@@ -178,6 +178,64 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByTestId('node-detail-apply-policy')).toBeInTheDocument()
     expect(screen.getByTestId('node-detail-shadow-mode')).toBeInTheDocument()
     expect(screen.getByTestId('node-detail-suspend')).toBeInTheDocument()
+  })
+
+  // AAASM-5135. `budgetLimit: null` means no ceiling is configured. It used to
+  // render `$4.10 / $0.00` at `aria-valuenow=0` — an unknown budget presented as
+  // a measured, wholly-unburnt one.
+  describe('with no configured budget limit', () => {
+    const NO_LIMIT: TopologyNode = { ...NODE, budgetLimit: null }
+
+    beforeEach(() => {
+      vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+        mockRecent({ data: [], isLoading: false, isError: false }),
+      )
+    })
+
+    it('never renders a $0 limit or a 0% burn', () => {
+      renderPanel(NO_LIMIT)
+      const budget = screen.getByTestId('node-detail-budget')
+      expect(budget).toHaveTextContent('$4.10')
+      expect(budget).not.toHaveTextContent('$0.00')
+      expect(budget).not.toHaveTextContent('0%')
+    })
+
+    it('never renders aria-valuenow=0 on the progress bar', () => {
+      renderPanel(NO_LIMIT)
+      const progress = screen.getByTestId('node-detail-progress')
+      expect(progress).not.toHaveAttribute('aria-valuenow')
+      expect(progress).toHaveAttribute('data-truth-state', 'unconfigured')
+    })
+
+    it('marks the limit and the percentage as unconfigured, not merely blank', () => {
+      renderPanel(NO_LIMIT)
+      // A bare `—` with nothing behind it would leave assistive tech with a
+      // stray dash; the shared marker carries the announcement.
+      expect(screen.getByTestId('node-detail-budget-limit')).toHaveAttribute('data-truth-state', 'unconfigured')
+      expect(screen.getByTestId('node-detail-budget-percent-absent')).toBeInTheDocument()
+    })
+
+    it('draws no progress fill, since a zero-width fill still measures zero', () => {
+      renderPanel(NO_LIMIT)
+      expect(document.querySelector('.node-detail-panel__progress-fill')).toBeNull()
+    })
+
+    it('still reports the spend, which is a real measurement', () => {
+      // Only the ceiling is absent. Blanking the spend too would discard a fact
+      // the budget tracker does have.
+      renderPanel(NO_LIMIT)
+      expect(screen.getByTestId('node-detail-budget-amount')).toHaveTextContent('$4.10')
+    })
+  })
+
+  it('treats a configured $0 limit as a measurement, not an absence', () => {
+    vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+      mockRecent({ data: [], isLoading: false, isError: false }),
+    )
+    renderPanel({ ...NODE, budgetSpend: 0, budgetLimit: 0 })
+    const progress = screen.getByTestId('node-detail-progress')
+    expect(progress).toHaveAttribute('aria-valuenow', '0')
+    expect(progress).not.toHaveAttribute('data-truth-state')
   })
 })
 

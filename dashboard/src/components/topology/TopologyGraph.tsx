@@ -13,6 +13,7 @@ import {
 } from 'd3-force'
 import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
 import { computeHierarchy, detectDelegationCycles } from '../../features/topology/hierarchy'
+import { NO_DATA, TRUTH_STATE_META } from '../../lib/truthfulness'
 import { TeamBudgetBar } from './TeamBudgetBar'
 import { Tooltip } from '../Tooltip'
 import './TopologyGraph.css'
@@ -117,7 +118,15 @@ interface TeamLayoutEntry {
   readonly cx: number
   readonly cy: number
   readonly spent: number
-  readonly limit: number
+  /**
+   * Summed member ceilings, or `null` when any member has none configured.
+   *
+   * A total over a set with a hole in it is not a total. If one agent's limit is
+   * unknown, the team's ceiling is unknown too — summing only the members that
+   * happen to have one would understate the team's real budget and make the
+   * cluster look closer to its limit than it is (AAASM-5135).
+   */
+  readonly limit: number | null
   readonly memberCount: number
 }
 
@@ -190,11 +199,13 @@ export function TopologyGraph({
   // Per-team layout: centers laid out left-to-right, top-to-bottom in a
   // grid based on team count, plus aggregated spend/limit/member count.
   const teamLayout = useMemo<readonly TeamLayoutEntry[]>(() => {
-    const byTeam = new Map<string, { spent: number; limit: number; memberCount: number }>()
+    const byTeam = new Map<string, { spent: number; limit: number | null; memberCount: number }>()
     for (const n of nodes) {
       const entry = byTeam.get(n.team) ?? { spent: 0, limit: 0, memberCount: 0 }
       entry.spent += n.budgetSpend
-      entry.limit += n.budgetLimit
+      // One unconfigured member limit makes the whole team total unknown — see
+      // `TeamLayoutEntry.limit`. Once null it stays null.
+      entry.limit = entry.limit === null || n.budgetLimit === null ? null : entry.limit + n.budgetLimit
       entry.memberCount += 1
       byTeam.set(n.team, entry)
     }
@@ -503,7 +514,7 @@ export function TopologyGraph({
             height={TEAM_LABEL_HEIGHT + TEAM_BUDGET_BAR_HEIGHT}
           >
             <div className="topology-cluster__overlay" data-testid="team-cluster-overlay">
-              <Tooltip content={`${c.team} · ${c.memberCount} member${c.memberCount === 1 ? '' : 's'} · $${c.spent.toFixed(0)} / $${c.limit.toFixed(0)}`}>
+              <Tooltip content={`${c.team} · ${c.memberCount} member${c.memberCount === 1 ? '' : 's'} · $${c.spent.toFixed(0)} / ${formatLimit(c.limit, 0)}`}>
                 <span className="topology-cluster__label" data-testid="team-cluster-label">
                   {c.team}
                 </span>
@@ -611,8 +622,21 @@ export function TopologyGraph({
                 {dims.w >= SIZE_VARIANT.medium.w ? `${MODE_GLYPH[node.mode]} ${node.mode}` : MODE_GLYPH[node.mode]}
               </text>
             )}
-            <text className="topology-node__budget" x={11} y={dims.h - 8}>
-              ${node.budgetSpend.toFixed(1)} / ${node.budgetLimit.toFixed(0)}
+            {/* An unconfigured ceiling renders the shared `—` glyph rather than
+                `$0`. SVG `<text>` cannot host the `<span>`-based TruthfulValue,
+                so the glyph and the screen-reader sentence are placed by hand —
+                from the same vocabulary, never a locally-invented one. */}
+            <text
+              className="topology-node__budget"
+              data-testid="topology-node-budget"
+              data-truth-state={node.budgetLimit === null ? 'unconfigured' : undefined}
+              x={11}
+              y={dims.h - 8}
+            >
+              {node.budgetLimit === null && (
+                <title>{`Budget limit: ${TRUTH_STATE_META.unconfigured.announcement}`}</title>
+              )}
+              ${node.budgetSpend.toFixed(1)} / {formatLimit(node.budgetLimit, 0)}
             </text>
             {/* Trust badge (top-left): the agent's trust score. Rendered only
                 when `trust` is a number — the topology API carries the field but
@@ -659,12 +683,22 @@ export function TopologyGraph({
   )
 }
 
-function bucketForRatio(spend: number, limit: number): 'small' | 'medium' | 'large' {
-  if (limit <= 0) return 'small'
+/**
+ * Card size from budget burn. Purely a layout weighting, not a claim about the
+ * budget — an unconfigured limit (`null`) has no ratio, so the card takes the
+ * base size, exactly as a zero limit already did.
+ */
+function bucketForRatio(spend: number, limit: number | null): 'small' | 'medium' | 'large' {
+  if (limit === null || limit <= 0) return 'small'
   const ratio = spend / limit
   if (ratio < 0.5) return 'small'
   if (ratio <= 0.8) return 'medium'
   return 'large'
+}
+
+/** `$12` for a known ceiling, the shared absence glyph for an unconfigured one. */
+function formatLimit(limit: number | null, fractionDigits: number): string {
+  return limit === null ? NO_DATA : `$${limit.toFixed(fractionDigits)}`
 }
 
 function truncate(s: string, n: number): string {

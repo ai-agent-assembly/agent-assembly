@@ -531,3 +531,60 @@ describe('TopologyGraph — pan/zoom, edge filter, team select', () => {
     expect(planner).toHaveAttribute('data-selected', 'true')
   })
 })
+
+// ── Unconfigured budget limits (AAASM-5135) ──────────────────────────────────
+// A `null` limit means no ceiling is configured. The card used to print
+// `$4.1 / $0` and the cluster tooltip `$5 / $0`, asserting a fully-burnt budget
+// on data that says nothing at all about the ceiling.
+describe('TopologyGraph — unconfigured budget limits', () => {
+  const NO_LIMIT: TopologyNode[] = [
+    { id: 'u1', name: 'unbudgeted', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 4.1, budgetLimit: null },
+  ]
+
+  it('never renders a $0 ceiling on the node card', () => {
+    render(<TopologyGraph nodes={NO_LIMIT} edges={[]} />)
+    const budget = screen.getByTestId('topology-node-budget')
+    expect(budget).toHaveTextContent('$4.1')
+    expect(budget.textContent).not.toContain('$0')
+    expect(budget).toHaveAttribute('data-truth-state', 'unconfigured')
+  })
+
+  it('gives assistive tech a sentence, not a stray dash', () => {
+    render(<TopologyGraph nodes={NO_LIMIT} edges={[]} />)
+    // SVG text cannot host the span-based TruthfulValue, so the announcement
+    // rides on a <title>; without it the `—` is silent to a screen reader.
+    const title = screen.getByTestId('topology-node-budget').querySelector('title')
+    expect(title?.textContent).toMatch(/Unconfigured/i)
+  })
+
+  it('keeps the card at the base size rather than inventing a burn ratio', () => {
+    render(<TopologyGraph nodes={NO_LIMIT} edges={[]} />)
+    expect(screen.getByTestId('topology-node')).toHaveAttribute('data-size-bucket', 'small')
+  })
+
+  it('makes a team total unknown when any member has no ceiling', () => {
+    // A sum over a set with a hole is not a sum: totalling only the members
+    // that happen to have a limit would understate the team's real budget.
+    const mixed: TopologyNode[] = [
+      { id: 'm1', name: 'm1', status: 'active', team: 'alpha', owner: 'a', policyCount: 0, budgetSpend: 3, budgetLimit: 10 },
+      { id: 'm2', name: 'm2', status: 'active', team: 'alpha', owner: 'a', policyCount: 0, budgetSpend: 2, budgetLimit: null },
+    ]
+    render(<TopologyGraph nodes={mixed} edges={[]} />)
+    const bar = screen.getByTestId('team-budget-bar')
+    expect(bar).toHaveAttribute('data-truth-state', 'unconfigured')
+    expect(bar).not.toHaveAttribute('aria-valuenow')
+    // The $10 that *is* configured must not be presented as the team ceiling.
+    expect(bar).not.toHaveTextContent('$10')
+  })
+
+  it('still totals a team whose members all have ceilings', () => {
+    const known: TopologyNode[] = [
+      { id: 'k1', name: 'k1', status: 'active', team: 'alpha', owner: 'a', policyCount: 0, budgetSpend: 3, budgetLimit: 10 },
+      { id: 'k2', name: 'k2', status: 'active', team: 'alpha', owner: 'a', policyCount: 0, budgetSpend: 2, budgetLimit: 10 },
+    ]
+    render(<TopologyGraph nodes={known} edges={[]} />)
+    const bar = screen.getByTestId('team-budget-bar')
+    expect(bar).toHaveAttribute('aria-valuenow', '25')
+    expect(bar).toHaveTextContent('$5 / $20 · 25%')
+  })
+})

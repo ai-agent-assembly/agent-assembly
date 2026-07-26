@@ -218,6 +218,14 @@
   fill: var(--ink-3);
 }
 
+/* No configured ceiling (AAASM-5135). `--warn` is the `caution` tone the shared
+   truthfulness vocabulary assigns to `unconfigured`; the colour is duplicated
+   here rather than the class reused because `.truth-tone--caution` sets `color`,
+   which SVG text does not paint with. */
+.topology-node__budget[data-truth-state='unconfigured'] {
+  fill: var(--warn);
+}
+
 /* ── Relationship edges (AAASM-5019) ────────────────────────────
    Mirrors design/v1/hi-fi/topology.jsx TOPO_EC. Each of the six kinds maps
    to a token so lines re-theme in light/dark; the two structural ones:

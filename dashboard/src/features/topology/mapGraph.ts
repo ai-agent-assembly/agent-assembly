@@ -19,8 +19,9 @@ import type {
  * policy-engine cascade, and the budget tracker. AAASM-5099 adds each node's
  * `effective_permissions` (the policy-inheritance chain) and each edge's
  * `cross_team` flag. Those map straight onto the view model here; each stays
- * null-safe — a `null`/absent field falls back to the same neutral placeholder
- * the panel showed before (empty owner, 0 counts, `null` chain).
+ * null-safe — a `null`/absent field falls back to a neutral placeholder (empty
+ * owner, `null` chain, `null` budget limit) rather than to a number the payload
+ * never asserted.
  *
  * A pure function — no fetch, no React — so it is unit-testable on its own.
  */
@@ -80,9 +81,18 @@ function mapNode(n: ApiNode): TopologyNode {
     // Live values enriched by the graph endpoint (AAASM-5045); null-safe — an
     // absent field keeps the prior neutral placeholder (see module doc).
     owner: n.owner ?? '',
+    // `policy_count` and `budget` are nullable on the wire for the projections
+    // that skip their lookups, but `project_graph_nodes` sets both
+    // unconditionally (`aa-api/src/routes/topology.rs:427,434`), and this mapper
+    // only ever sees that endpoint's payload. The `?? 0` fallbacks are therefore
+    // unreachable rather than a defaulted absence.
     policyCount: n.policy_count ?? 0,
     budgetSpend: n.budget?.spend_usd ?? 0,
-    budgetLimit: n.budget?.limit_usd ?? 0,
+    // `limit_usd` is the one genuinely-absent number here: the server emits
+    // `null` when neither a per-agent nor a server-wide daily limit is
+    // configured. It stays `null` all the way to the render sites, which show
+    // the `unconfigured` absence rather than a `$0` limit (AAASM-5135).
+    budgetLimit: n.budget?.limit_usd ?? null,
     // Live badges (AAASM-5036).
     mode: toMode(n.mode),
     flagged: n.flagged,
