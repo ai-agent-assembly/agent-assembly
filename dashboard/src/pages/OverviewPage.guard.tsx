@@ -12,6 +12,27 @@ import { ignorePromise } from '../lib/ignorePromise'
  * PascalCase name + `ReactElement | null` return keep this a components-only
  * module (react-refresh `only-export-components`).
  */
+
+/**
+ * Destinations for the two secondary actions, whose labels come from the shared
+ * copy tables and name an external destination (AAASM-5168).
+ *
+ * These used to be in-app routes: "Open status page" navigated to `/audit` and
+ * "View install docs" to `/agents`, so a new operator on an empty install
+ * clicked through to an empty Fleet table. The copy tables are shared with
+ * every other page, so the fix belongs here in the handlers rather than in the
+ * labels. The status host is the one `ErrorState`'s own message tells the
+ * operator to check; the docs host matches the quickstart link Fleet already
+ * ships.
+ */
+const STATUS_PAGE_URL = 'https://status.agent-assembly.com'
+const INSTALL_DOCS_URL = 'https://docs.agent-assembly.com/quickstart'
+
+/** `noopener` keeps the opened tab from reaching back through `window.opener`. */
+function openExternal(url: string): void {
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
 export function OverviewGuard(
   args: Readonly<{
     isLoading: boolean
@@ -27,7 +48,7 @@ export function OverviewGuard(
       <ErrorState
         kind="generic"
         onRetry={() => ignorePromise(args.refetch())}
-        onSecondary={() => args.navigate('/audit')}
+        onSecondary={() => openExternal(STATUS_PAGE_URL)}
       />
     )
   }
@@ -36,7 +57,7 @@ export function OverviewGuard(
       <EmptyState
         page="overview"
         onCta={() => args.navigate('/onboarding')}
-        onSecondary={() => args.navigate('/agents')}
+        onSecondary={() => openExternal(INSTALL_DOCS_URL)}
       />
     )
   }
