@@ -42,7 +42,7 @@ const DESTINATION: Destination = {
   config: { url: 'https://hooks.internal/aaasm' },
 }
 
-function renderWithScopes(scopes: Scope[], route = '/alerts') {
+function renderWithScopes(scopes: Scope[], route = '/alerts', rules: AlertRule[] = [RULE]) {
   vi.spyOn(alertsApi, 'useAlertsPageQuery').mockReturnValue(
     q<AlertsPageResult>({
       data: { items: [], total: 0, page: 1, perPage: 50 },
@@ -52,7 +52,7 @@ function renderWithScopes(scopes: Scope[], route = '/alerts') {
     }),
   )
   vi.spyOn(alertsApi, 'useAlertRulesQuery').mockReturnValue(
-    q<readonly AlertRule[]>({ data: [RULE], isPending: false, isLoading: false, isError: false }),
+    q<readonly AlertRule[]>({ data: rules, isPending: false, isLoading: false, isError: false }),
   )
   vi.spyOn(alertsApi, 'useDestinationsQuery').mockReturnValue(
     q<readonly Destination[]>({
@@ -125,6 +125,21 @@ describe('AlertsPage RBAC reflection', () => {
     fireEvent.click(screen.getByTestId('alerts-open-destinations'))
     expect(screen.getByTestId('destination-form-submit')).toBeEnabled()
     expect(screen.getByTestId('destination-delete-d-1')).toBeEnabled()
+  })
+
+  // AAASM-5147: a zero-rule install is the only state that renders
+  // EmptyStateNoRules, and its CTA opens the same form as the gated header
+  // button. Every other case here seeds a rule, so this branch is otherwise
+  // unreachable — which is exactly why the bypass survived.
+  it('disables the zero-rule empty-state CTA for a read-only caller', () => {
+    renderWithScopes(['read'], '/alerts', [])
+    expect(screen.getByTestId('alerts-empty-no-rules')).toBeInTheDocument()
+    expect(screen.getByTestId('alerts-empty-create-cta')).toBeDisabled()
+  })
+
+  it('enables the zero-rule empty-state CTA for a write caller', () => {
+    renderWithScopes(['write'], '/alerts', [])
+    expect(screen.getByTestId('alerts-empty-create-cta')).toBeEnabled()
   })
 
   it('admin satisfies the write requirement', () => {
