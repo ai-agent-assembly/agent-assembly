@@ -73,7 +73,7 @@ export function TeamDetailPane({ teamId }: Readonly<TeamDetailPaneProps>) {
         <TeamBudgetCard budget={budget} isLoading={budgetTree.isLoading} />
         <TeamApprovalRoutingCard approvals={approvals} isLoading={approvalsQuery.isLoading} />
         <TeamActivePoliciesCard
-          policies={policiesQuery.data ?? []}
+          policies={policiesQuery.data ?? null}
           isLoading={policiesQuery.isLoading}
           isError={policiesQuery.isError}
         />

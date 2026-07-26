@@ -290,12 +290,33 @@ describe('useTeamPoliciesQuery', () => {
     expect(result.current.data).toBeUndefined()
   })
 
-  it('yields an empty list when the response carries no policies key', async () => {
-    get.mockResolvedValue({ data: { team_id: 'support' } } satisfies FetchResult)
+  it('preserves a genuinely empty mapping as an empty list', async () => {
+    get.mockResolvedValue({ data: { team_id: 'support', policies: [] } } satisfies FetchResult)
     const { wrapper } = makeWrapper()
     const { result } = renderHook(() => useTeamPoliciesQuery('support'), { wrapper })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(result.current.data).toEqual([])
+  })
+
+  // `policies: null` is the API saying it could not resolve the mapping. It must
+  // survive to the card as null: flattening it to `[]` here is what would make
+  // the card claim "no policy is in force" while the engine's primary slot is
+  // enforcing (AAASM-5106).
+  it('keeps an unresolved mapping as null rather than flattening it to an empty list', async () => {
+    get.mockResolvedValue({ data: { team_id: 'support', policies: null } } satisfies FetchResult)
+    const { wrapper } = makeWrapper()
+    const { result } = renderHook(() => useTeamPoliciesQuery('support'), { wrapper })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toBeNull()
+    expect(result.current.data).not.toEqual([])
+  })
+
+  it('treats a response with no policies key at all as unresolved', async () => {
+    get.mockResolvedValue({ data: { team_id: 'support' } } satisfies FetchResult)
+    const { wrapper } = makeWrapper()
+    const { result } = renderHook(() => useTeamPoliciesQuery('support'), { wrapper })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toBeNull()
   })
 
   it('does not fetch until a team is selected', () => {

@@ -19,13 +19,13 @@ const TEAM_POLICY: TeamPolicy = {
 
 describe('TeamActivePoliciesCard', () => {
   it('shows a loading state', () => {
-    render(<TeamActivePoliciesCard policies={[]} isLoading isError={false} />)
+    render(<TeamActivePoliciesCard policies={null} isLoading isError={false} />)
     expect(screen.getByTestId('team-policies-loading')).toBeInTheDocument()
     expect(screen.queryByTestId('team-policies-list')).not.toBeInTheDocument()
   })
 
   it('shows an error state instead of an empty one when the query failed', () => {
-    render(<TeamActivePoliciesCard policies={[]} isLoading={false} isError />)
+    render(<TeamActivePoliciesCard policies={null} isLoading={false} isError />)
     expect(screen.getByTestId('team-policies-error')).toHaveTextContent('Failed to load')
     // A failed load must not read as "no policy is in force" — that is a
     // governance claim the UI has no basis for making.
@@ -35,6 +35,35 @@ describe('TeamActivePoliciesCard', () => {
   it('renders an explicit empty state when no policy is in force', () => {
     render(<TeamActivePoliciesCard policies={[]} isLoading={false} isError={false} />)
     expect(screen.getByTestId('team-policies-empty')).toHaveTextContent('No policy is in force')
+  })
+
+  // The whole point of the null/[] split: `null` means the API could not resolve
+  // the mapping, and a policy may well be in force via the engine's primary slot
+  // (AAASM-5106). Saying "no policy is in force" there is a false governance
+  // claim, so these two states must never render the same words.
+  it('says the data is unavailable — not that no policy is in force — when the mapping is unresolved', () => {
+    render(<TeamActivePoliciesCard policies={null} isLoading={false} isError={false} />)
+    const unknown = screen.getByTestId('team-policies-unknown')
+    expect(unknown).toHaveTextContent('Policy data unavailable')
+    expect(unknown).not.toHaveTextContent('No policy is in force')
+    expect(screen.queryByTestId('team-policies-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('team-policies-list')).not.toBeInTheDocument()
+  })
+
+  it('folds the unresolved count to an em dash rather than to (0)', () => {
+    render(<TeamActivePoliciesCard policies={null} isLoading={false} isError={false} />)
+    const card = screen.getByTestId('team-policies-card')
+    expect(card).toHaveTextContent('Active policies (—)')
+    expect(card).not.toHaveTextContent('Active policies (0)')
+  })
+
+  it('keeps the unresolved and genuinely-empty states textually distinct', () => {
+    const { unmount } = render(<TeamActivePoliciesCard policies={null} isLoading={false} isError={false} />)
+    const unknownText = screen.getByTestId('team-policies-card').textContent
+    unmount()
+    render(<TeamActivePoliciesCard policies={[]} isLoading={false} isError={false} />)
+    const noneText = screen.getByTestId('team-policies-card').textContent
+    expect(unknownText).not.toEqual(noneText)
   })
 
   it('lists every in-force document with the cascade tier it comes from', () => {

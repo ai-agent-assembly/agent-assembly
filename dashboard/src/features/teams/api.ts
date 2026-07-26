@@ -51,17 +51,23 @@ export function useCostSummaryQuery() {
  *
  * Kept separate from `GET /api/v1/policies`, which requires Admin scope because
  * it discloses raw policy YAML; this one is readable by the team's own operator.
+ *
+ * Resolves to `null` — not `[]` — when the API reports the mapping as
+ * unresolvable. The two are different governance claims and the `?? []` that
+ * would flatten them is exactly the bug: `[]` renders as "no policy is in force
+ * for this team", which is false while the engine's primary policy slot is
+ * enforcing over the team's agents (AAASM-5106).
  */
 export function useTeamPoliciesQuery(teamId: string | undefined) {
   return useQuery({
     queryKey: ['policies', 'team', teamId],
     enabled: !!teamId,
-    queryFn: async () => {
+    queryFn: async (): Promise<TeamPolicy[] | null> => {
       const { data, error } = await api.GET('/api/v1/policies/team/{team_id}', {
         params: { path: { team_id: teamId! } },
       })
       if (error) throw new Error('Failed to fetch team policies')
-      return data?.policies ?? []
+      return data?.policies ?? null
     },
   })
 }
