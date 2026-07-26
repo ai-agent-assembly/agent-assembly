@@ -1201,21 +1201,55 @@ mod graph_tests {
         state
     }
 
+    /// Same agent as [`record`], but declaring tools at registration — the names
+    /// the tool-stage mirror can be asked about.
+    fn record_with_tools(id_byte: u8, name: &str, team_id: Option<&str>, tools: &[&str]) -> AgentRecord {
+        AgentRecord {
+            tool_names: tools.iter().map(|t| (*t).to_string()).collect(),
+            ..record(id_byte, name, team_id)
+        }
+    }
+
     /// A policy document carrying only the capability block the chain reads.
     fn policy_doc(name: &str, scope: PolicyScope, capabilities: aa_core::CapabilitySet) -> PolicyDocument {
+        enforcement_doc(name, scope, Some(capabilities), &[], None)
+    }
+
+    /// A policy document that can declare any of the three stages the permission
+    /// projection mirrors: capabilities, per-tool entries, and a network
+    /// allowlist (`Some(vec![])` being the declared-but-empty deny-all case).
+    fn enforcement_doc(
+        name: &str,
+        scope: PolicyScope,
+        capabilities: Option<aa_core::CapabilitySet>,
+        tools: &[(&str, bool)],
+        network_allowlist: Option<Vec<String>>,
+    ) -> PolicyDocument {
         PolicyDocument {
             name: Some(name.to_string()),
             policy_version: Some("1".to_string()),
             version: None,
             scope,
-            network: None,
+            network: network_allowlist.map(|allowlist| aa_gateway::policy::NetworkPolicy { allowlist }),
             schedule: None,
             budget: None,
             data: None,
             approval_timeout_secs: 300,
             approval_policy: None,
-            tools: Default::default(),
-            capabilities: Some(capabilities),
+            tools: tools
+                .iter()
+                .map(|(n, allow)| {
+                    (
+                        (*n).to_string(),
+                        aa_gateway::policy::ToolPolicy {
+                            allow: *allow,
+                            limit_per_hour: None,
+                            requires_approval_if: None,
+                        },
+                    )
+                })
+                .collect(),
+            capabilities,
         }
     }
 
@@ -1414,6 +1448,119 @@ mod graph_tests {
         let global_tier = &perms.chain[0];
         assert_eq!(global_tier.tier, "global");
         assert_eq!(global_tier.policies, vec!["global-rules".to_string()]);
+    }
+
+    // ── Enforcement stages the capability set alone cannot see ─────────────
+    //
+    // `evaluate_single_doc` returns on the first `Deny`, so `stage_network` and
+    // `stage_tool_allow` both run *before* the capability stage. Reading only the
+    // merged capability set reported `allow` for actions the gateway refuses —
+    // the AAASM-5090 fail-open, repeated in this projection.
+
+    /// A wildcard tool deny blocks every tool call, yet contributes no
+    /// `mcp_tool:` capability. Without the `stage_tool_allow` mirror this agent
+    /// reported an entirely empty permission set — the panel read "baseline, no
+    /// capability restriction" for an agent that cannot invoke a single tool.
+    #[tokio::test]
+    async fn a_wildcard_tool_deny_reaches_the_permission_set() {
+        let state = state_with_policies(
+            vec![record_with_tools(
+                0x01,
+                "a",
+                Some("team-alpha"),
+                &["search", "send_email"],
+            )],
+            vec![enforcement_doc(
+                "team-rules",
+                PolicyScope::Team("team-alpha".to_string()),
+                None,
+                &[("*", false)],
+                None,
+            )],
+        );
+
+        let graph = graph_for(admin(), &state).await;
+        let perms = graph.nodes[0].effective_permissions.as_ref().expect("chain present");
+
+        assert_eq!(
+            perms.deny,
+            vec!["mcp_tool:search".to_string(), "mcp_tool:send_email".to_string()],
+            "every declared tool the wildcard denies must be reported"
+        );
+        assert!(perms.allow.is_empty());
+    }
+
+    /// A `tools` deny and a `capabilities.allow` grant can contradict each other
+    /// across the cascade. The evaluator hits `stage_tool_allow` first, so the
+    /// tool is denied — reporting it in `allow` advertises a permission the
+    /// gateway refuses, the permissive direction of the drift.
+    #[tokio::test]
+    async fn a_tool_stage_deny_beats_a_capability_grant() {
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.allow.insert(aa_core::Capability::McpTool("search".to_string()));
+        caps.allow.insert(aa_core::Capability::McpTool("summarise".to_string()));
+
+        let state = state_with_policies(
+            vec![record(0x01, "a", Some("team-alpha"))],
+            vec![
+                enforcement_doc("global-grants", PolicyScope::Global, Some(caps), &[], None),
+                enforcement_doc(
+                    "team-rules",
+                    PolicyScope::Team("team-alpha".to_string()),
+                    None,
+                    &[("search", false)],
+                    None,
+                ),
+            ],
+        );
+
+        let graph = graph_for(admin(), &state).await;
+        let perms = graph.nodes[0].effective_permissions.as_ref().expect("chain present");
+
+        assert_eq!(
+            perms.allow,
+            vec!["mcp_tool:summarise".to_string()],
+            "a tool the tools stage denies must not be advertised as allowed"
+        );
+        assert!(
+            perms.deny.contains(&"mcp_tool:search".to_string()),
+            "and must be reported as denied: {:?}",
+            perms.deny
+        );
+    }
+
+    /// A declared-but-empty network allowlist is deny-all egress (AAASM-3127 /
+    /// AAASM-3730). It lives in the `network` block, so the capability set never
+    /// mentions `network_outbound` and the projection reported nothing at all.
+    #[tokio::test]
+    async fn an_empty_network_allowlist_denies_outbound_access() {
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.allow.insert(aa_core::Capability::NetworkOutbound);
+
+        let state = state_with_policies(
+            vec![record(0x01, "a", Some("team-alpha"))],
+            vec![enforcement_doc(
+                "team-rules",
+                PolicyScope::Team("team-alpha".to_string()),
+                Some(caps),
+                &[],
+                Some(Vec::new()),
+            )],
+        );
+
+        let graph = graph_for(admin(), &state).await;
+        let perms = graph.nodes[0].effective_permissions.as_ref().expect("chain present");
+
+        assert!(
+            perms.deny.contains(&"network_outbound".to_string()),
+            "an empty allowlist is deny-all egress: {:?}",
+            perms.deny
+        );
+        assert!(
+            !perms.allow.contains(&"network_outbound".to_string()),
+            "and the grant it overrides must not survive into allow: {:?}",
+            perms.allow
+        );
     }
 
     // ── Authorization / tenancy ────────────────────────────────────────────
