@@ -72,7 +72,11 @@ The eight that differ:
 | `topology.jsx` | 43 | 8 hard-coded hexes → tokens, **plus** a `TOPO_EC_DARK` edge palette selected at render time (SVG strokes cannot read CSS vars) |
 | `live-ops.jsx` | 70 | canvas fill/stroke hexes replaced by a `COL` palette object chosen on `data-theme` (canvas cannot read CSS vars) |
 | `shell.jsx` | 43 | adds the topbar **theme-toggle button** (sun/moon SVG + `MutationObserver` sync) |
-| `styles.css` | 221 | the `:root` / `:root[data-theme="dark"]` token system, `--rail-*` and `--code-*` tokens, a transition rule on major surfaces, and `.theme-toggle` styling. Every removed line is a hard-coded value replaced by a token reference. |
+| `styles.css` | 215 | the `:root` / `:root[data-theme="dark"]` token system, `--rail-*` and `--code-*` tokens, a transition rule on major surfaces, and `.theme-toggle` styling. Overwhelmingly hard-coded values replaced by token references — see the four exceptions below. |
+
+Counts are `diff … | grep -c '^[<>]'` (POSIX). A Myers/`difflib` word-level count gives
+slightly different figures for `styles.css` (217 / 221) because it splits some
+reflowed hunks differently; the discrepancy is in the counting method, not the content.
 
 ### The structural-equivalence claim, and its one honest caveat
 
@@ -80,7 +84,8 @@ The eight that differ:
 information architecture, state model, data shape, or affordance set differs.**
 
 Verified on far more than the three surfaces this audit committed to check — all 25
-files were diffed. Every single changed line falls into one of three buckets:
+files were diffed. The overwhelming majority of changed lines fall into one of three
+buckets:
 
 1. a hard-coded colour literal replaced by a token reference;
 2. a JS-side palette object introduced *because* the target is `<canvas>` or an SVG
@@ -88,13 +93,42 @@ files were diffed. Every single changed line falls into one of three buckets:
    (`live-ops.jsx`, `topology.jsx`);
 3. the theme control mechanism itself (`tweaks.jsx`, `shell.jsx`, `.theme-toggle`).
 
-**The caveat, stated plainly rather than hidden:** bucket 3 *is* a structural addition
-in the strict sense — v2's `shell.jsx` renders a topbar button that v1 does not, and
-v2's tweaks panel has a control v1's does not. This ADR does not pretend otherwise. It
-claims only that the addition is **the theme switch itself**, is confined to the app
-chrome, and touches **no governance surface** — not one of the ten audited pages gains,
-loses, or reshapes anything. No ADR 0017 item, and no per-surface audit verdict, is
-about the topbar's button inventory.
+**"Overwhelming majority", not "every line".** An earlier draft of this ADR claimed
+*every* changed line fell into those buckets and that *every* removed line was a
+literal replaced by a token. Review refuted both, and the exceptions are named here
+rather than smoothed over — an evidence document that overstates its evidence is worth
+less than one that doesn't:
+
+- **`.modal` border: `var(--line-3)` → `var(--line-2)`** (v1 `styles.css:573` → v2
+  `:656`). **Token→token**, not literal→token — and it changes the rendered colour in
+  light mode, from near-black `#1a1a1a` to the `#c4bfb0` beige hairline.
+- **`.modal` box-shadow: `rgba(0,0,0,0.18)` → `rgba(0,0,0,0.40)`**. Literal→**different
+  literal**, in none of the three buckets. A deeper modal shadow.
+- **`.rule-num` color: `var(--paper-2)` → `var(--paper)`** — token→token, same class of
+  change as the `.modal` border.
+- **`.layer-counter` gains a new `color: var(--ink)` declaration** (v1 `styles.css:1306`
+  block) alongside its `background` switching to `color-mix(…)` — a **new property**,
+  not a substitution.
+- **A `transition` rule is added to ~20 pre-existing selectors** (v2
+  `styles.css:117-121`: `body, .main, .topbar, .page, … .rail-item, .rail-foot,
+  .rail-brand`). This is a **motion** addition, and it fires on interactions that have
+  nothing to do with theming — `.rail-item:hover` now cross-fades where v1 switched
+  instantly.
+
+None of the five alters layout, component structure, or what a surface says; four are
+sub-pixel-to-hairline colour shifts and the fifth is easing. **They do not disturb the
+carry-over conclusion**, which is about structure — but the absolutes did not survive
+contact with the diff, so they are gone.
+
+**The one genuine structural difference**, stated plainly rather than hidden: v2's
+`shell.jsx` renders a topbar button that v1 does not, and v2's tweaks panel has a
+control v1's does not. This ADR does not pretend otherwise. It claims only that the
+addition is **the theme switch itself**, is confined to the app chrome, and touches
+**no governance surface** — not one of the ten audited pages gains, loses, or reshapes
+anything. No ADR 0017 item, and no per-surface audit verdict, is about the topbar's
+button inventory. An independent re-diff of all 25 files during review, plus a
+programmatic layout-property scan, confirmed this as the *only* structural difference
+and confirmed the carry-over conclusion.
 
 ### Therefore: every prior verdict stands
 
@@ -124,11 +158,18 @@ single most important sentence in this record.
 3. **Prior structural reconciliation carries over unchanged**, on the evidence above.
    A future contributor who wants to reopen a closed verdict needs a reason other than
    the v1→v2 re-anchor.
-4. **All future light/dark screenshots and visual-regression evidence use v2.** A
-   screenshot captured against v1 is evidence about the pre-theme prototype and does
-   not satisfy a visual-fidelity acceptance criterion. Where a surface is checked in
-   both themes, both captures come from v2 (`design/v2/screenshots/` holds the
-   reference set).
+4. **All future light/dark screenshots and visual-regression evidence are captured
+   against the v2 prototype**, not v1. A screenshot taken against v1 is evidence about
+   the pre-theme prototype and does not satisfy a visual-fidelity acceptance criterion.
+
+   **This is a forward requirement on capture, not a claim that a baseline already
+   exists.** `design/v2/screenshots/` holds **9** files — 1 light (`theme-light.png`)
+   and 8 dark — against **43** in `design/v1/screenshots/`. There is therefore **no
+   per-surface light/dark v2 baseline today**, and any acceptance criterion that
+   assumes one is unsatisfiable as written. Building that baseline is a companion
+   action this ADR names but does not schedule; until it exists, per-surface visual
+   evidence is captured fresh from the v2 prototype rather than diffed against a
+   stored reference.
 5. **Where a *new* deviation from v2 is found, it is recorded under ADR 0017's existing
    addendum convention** (as the AAASM-5099 addendum already does), not as a new
    parity programme.
