@@ -134,15 +134,22 @@ export function useAlertsPageQuery(): UseQueryResult<AlertsPageResult, Error> {
 /**
  * The alert rows alone, for callers that do not present a total.
  *
- * `filters` is accepted for call-site compatibility and deliberately not sent:
- * see `fetchAlertsPage`. It is not part of the cache key either, because every
- * filter selection produces the same request — keying on it only multiplied
- * identical cache entries and refired the query on each chip click.
+ * `filters` is accepted for call-site compatibility and deliberately **not**
+ * sent: see `fetchAlertsPage`. It is not part of the cache key either, because
+ * every filter selection produces the same request — keying on it only
+ * multiplied identical cache entries and refired the query on each chip click.
+ * Callers that need narrowing apply `applyClientFilters` to the result.
+ *
+ * Declared as an overload whose implementation binds no parameter, so the
+ * argument stays in the public signature (existing call sites keep compiling)
+ * without a discarded binding in the body. `void filters` would have done the
+ * same job, but this codebase avoids the `void` operator — see
+ * `src/lib/ignorePromise.ts`, written for the same reason.
  */
 export function useAlertsQuery(
   filters?: AlertFilters,
-): UseQueryResult<readonly Alert[], Error> {
-  void filters
+): UseQueryResult<readonly Alert[], Error>
+export function useAlertsQuery(): UseQueryResult<readonly Alert[], Error> {
   return useQuery({
     queryKey: ALERTS_LIST_KEY,
     queryFn: fetchAlertsPage,
