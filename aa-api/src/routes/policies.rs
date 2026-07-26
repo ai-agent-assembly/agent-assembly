@@ -76,6 +76,13 @@ impl DocSet {
             _ => None,
         }
     }
+
+    /// `metadata.version` of the unambiguous document under this key. Absent
+    /// when the key is shared, rather than reporting one colliding document's
+    /// revision as if it were the other's.
+    fn version(&self) -> Option<String> {
+        self.unique().and_then(|doc| doc.policy_version.clone())
+    }
 }
 
 /// Which agents a cascade-carried policy document is in force for, together with
@@ -631,7 +638,7 @@ pub async fn list_team_policies(
 
     // BTreeMap keyed by the cascade identity: one entry per document however
     // many of the team's agents carry it, ordered by scope then name.
-    let mut by_key: BTreeMap<PolicyKey, Arc<PolicyDocument>> = BTreeMap::new();
+    let mut by_key: BTreeMap<PolicyKey, DocSet> = BTreeMap::new();
     for member in state.agent_registry.team_members(&team_id) {
         let Some(record) = state.agent_registry.get(&member) else {
             continue;
@@ -640,17 +647,17 @@ pub async fn list_team_policies(
             continue;
         }
         for doc in cascade_for(&state, &record) {
-            by_key.entry(policy_key(&doc)).or_insert(doc);
+            by_key.entry(policy_key(&doc)).or_default().insert(doc);
         }
     }
 
     let policies = by_key
         .into_iter()
-        .map(|(key, doc)| TeamPolicyResponse {
+        .map(|(key, docs)| TeamPolicyResponse {
             id: policy_display_id(&key),
             name: key.1.clone().unwrap_or_else(|| key.0.clone()),
             scope: key.0.clone(),
-            version: doc.policy_version.clone(),
+            version: docs.version(),
             hits_24h: None,
         })
         .collect();
@@ -1086,6 +1093,36 @@ mod tests {
             body.policies.is_empty(),
             "an out-of-tenant member must not contribute its cascade: {:?}",
             body.policies
+        );
+    }
+
+    #[tokio::test]
+    async fn team_policy_version_is_absent_when_two_documents_share_one_key() {
+        let mut state = state_with(vec![record(0x01, "checkout-agent", None, Some("team-alpha"))]);
+        // Same scope and same metadata.name, different revisions — one
+        // `(scope, name)` key, two distinct live documents.
+        install(
+            &mut state,
+            &versioned_team_yaml("alpha-guard", "team-alpha", "1.0.0", false),
+        )
+        .await;
+        install(
+            &mut state,
+            &versioned_team_yaml("alpha-guard", "team-alpha", "2.0.0", false),
+        )
+        .await;
+
+        let body = team_policies(&state, admin(), "team-alpha").await;
+        let row = body
+            .policies
+            .iter()
+            .find(|p| p.id == "team:team-alpha/alpha-guard")
+            .expect("the colliding key still names one row");
+        assert!(
+            row.version.is_none(),
+            "with two documents under one key the revision is unknowable — reporting whichever \
+             was walked first would attribute one document's revision to the other: {:?}",
+            row.version
         );
     }
 
