@@ -156,3 +156,4 @@
   - [0020 - Rolling vs Calendar Monthly Budget Windows](adr/0020-rolling-monthly-budget-window.md)
   - [0021 - Topology Enforcement-Mode Mutation Safety](adr/0021-topology-enforcement-mode-mutation-safety.md)
   - [0022 - Agent-Detail Config Projection & Quantified Recommendations](adr/0022-agent-config-projection-and-quantified-recommendations.md)
+  - [0023 - Is aa-api Meant to Carry a Policy Cascade?](adr/0023-aa-api-policy-cascade-wiring.md)
