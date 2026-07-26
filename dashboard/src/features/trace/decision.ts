@@ -86,18 +86,18 @@ export const STATUS_META: Record<LayerStatus, StatusMeta> = {
  * it backwards would report a denial as a pass, so unrecognised values fall
  * through to an absence instead.
  */
-const VERDICT_BY_DECISION: Readonly<Record<string, Verdict>> = {
-  allow: 'allowed',
-  allowed: 'allowed',
-  deny: 'denied',
-  denied: 'denied',
-  narrow: 'narrowed',
-  narrowed: 'narrowed',
-  scrub: 'scrubbed',
-  scrubbed: 'scrubbed',
-  approval: 'pending',
-  pending: 'pending',
-}
+const VERDICT_BY_DECISION = new Map<string, Verdict>([
+  ['allow', 'allowed'],
+  ['allowed', 'allowed'],
+  ['deny', 'denied'],
+  ['denied', 'denied'],
+  ['narrow', 'narrowed'],
+  ['narrowed', 'narrowed'],
+  ['scrub', 'scrubbed'],
+  ['scrubbed', 'scrubbed'],
+  ['approval', 'pending'],
+  ['pending', 'pending'],
+])
 
 /**
  * Audit event types that are themselves a governance outcome.
@@ -114,17 +114,22 @@ const VERDICT_BY_DECISION: Readonly<Record<string, Verdict>> = {
  * it ruled, and budget / sandbox / lifecycle events are not per-action verdicts
  * at all. Mapping any of those to ALLOWED would manufacture a pass out of
  * silence.
+ *
+ * A `Map`, not an object literal: both this and {@link VERDICT_BY_DECISION} are
+ * keyed by strings that arrive over the wire, and a plain-object lookup would
+ * resolve inherited keys — `decision: "constructor"` returns `Object` from the
+ * prototype, which is `!== undefined` and would be handed back as a verdict.
  */
-const VERDICT_BY_OPERATION: Readonly<Record<string, Verdict>> = {
-  PolicyViolation: 'denied',
-  CredentialLeakBlocked: 'denied',
-  MessageBlocked: 'denied',
-  ApprovalDenied: 'denied',
-  ApprovalGranted: 'allowed',
-  ApprovalRequested: 'pending',
-  ApprovalRouted: 'pending',
-  ApprovalEscalated: 'pending',
-}
+const VERDICT_BY_OPERATION = new Map<string, Verdict>([
+  ['PolicyViolation', 'denied'],
+  ['CredentialLeakBlocked', 'denied'],
+  ['MessageBlocked', 'denied'],
+  ['ApprovalDenied', 'denied'],
+  ['ApprovalGranted', 'allowed'],
+  ['ApprovalRequested', 'pending'],
+  ['ApprovalRouted', 'pending'],
+  ['ApprovalEscalated', 'pending'],
+])
 
 /**
  * Derive the decision verdict, or say that none is derivable.
@@ -138,11 +143,11 @@ const VERDICT_BY_OPERATION: Readonly<Record<string, Verdict>> = {
  */
 export function deriveVerdict(event: TraceEvent): Certain<Verdict> {
   if (isKnown(event.decision)) {
-    const named = VERDICT_BY_DECISION[event.decision.value.trim().toLowerCase()]
+    const named = VERDICT_BY_DECISION.get(event.decision.value.trim().toLowerCase())
     if (named !== undefined) return known(named)
   }
 
-  const byOperation = VERDICT_BY_OPERATION[event.type]
+  const byOperation = VERDICT_BY_OPERATION.get(event.type)
   if (byOperation !== undefined) return known(byOperation)
 
   return absent<Verdict>(

@@ -85,6 +85,20 @@ describe('deriveVerdict', () => {
     const verdict = deriveVerdict({ ...BASE, type: 'PolicyViolation' })
     expect(isKnown(verdict) && verdict.value).toBe('denied')
   })
+
+  it.each(['constructor', 'toString', 'hasOwnProperty', '__proto__'])(
+    'does not resolve %s from the prototype as a verdict',
+    (poison) => {
+      // Both lookup tables are keyed by strings that arrive over the wire. As
+      // plain objects, `TABLE['constructor']` returns `Object` — which is
+      // `!== undefined` and would have been handed back as the verdict.
+      const fromDecision = deriveVerdict({ ...BASE, decision: known(poison) })
+      const fromOperation = deriveVerdict({ ...BASE, type: poison })
+
+      expect(isAbsent(fromDecision) && fromDecision.state).toBe('not-evaluated')
+      expect(isAbsent(fromOperation) && fromOperation.state).toBe('not-evaluated')
+    },
+  )
 })
 
 describe('buildLayerSteps', () => {

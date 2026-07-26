@@ -15,17 +15,21 @@ import './TraceTimeline.css'
  * names — `llm_call`, `policy_violation` — that the trace API never emits, so
  * every row fell through to the `·` default. Purely cosmetic: an unmapped
  * operation still renders `·` rather than guessing a meaning.
+ *
+ * A `Map` because the key arrives over the wire: an object lookup would resolve
+ * inherited keys, so an operation named `constructor` or `toString` would yield
+ * a function where a glyph belongs.
  */
-const ICON_BY_TYPE: Record<string, string> = {
-  ToolCallIntercepted: '⌗',
-  ToolDispatched: '⌬',
-  PolicyViolation: '⚠',
-  CredentialLeakBlocked: '⚿',
-  MessageBlocked: '⊘',
-  ApprovalRequested: '⏸',
-  ApprovalGranted: '✓',
-  ApprovalDenied: '✕',
-}
+const ICON_BY_TYPE = new Map<string, string>([
+  ['ToolCallIntercepted', '⌗'],
+  ['ToolDispatched', '⌬'],
+  ['PolicyViolation', '⚠'],
+  ['CredentialLeakBlocked', '⚿'],
+  ['MessageBlocked', '⊘'],
+  ['ApprovalRequested', '⏸'],
+  ['ApprovalGranted', '✓'],
+  ['ApprovalDenied', '✕'],
+])
 
 function severityKey(event: TraceEvent): TraceSeverity | 'neutral' {
   return isKnown(event.severity) ? event.severity.value : 'neutral'
@@ -84,7 +88,7 @@ function makeRowKeyDownHandler(
  */
 function TraceEventRow({ event, isLast, onSelectEvent }: TraceEventRowProps) {
   const sev = severityKey(event)
-  const icon = ICON_BY_TYPE[event.type] ?? '·'
+  const icon = ICON_BY_TYPE.get(event.type) ?? '·'
   const verdict = deriveVerdict(event)
   // The tooltip is attached only when a reason was actually recorded. It used
   // to be gated on a snake_case type name that never matched, and would have
