@@ -97,6 +97,56 @@ describe('useTopologyQuery', () => {
     expect(result.current.error?.message).toBe('Failed to fetch topology')
   })
 
+  /**
+   * AAASM-5136. ADR-0017 item 3 ratified a 5s poll and recorded it as *shipped*;
+   * its own AAASM-5082 correction established that nothing in `dashboard/src`
+   * set `refetchInterval` at all, so the graph was frozen between mounts. A
+   * suspend performed elsewhere never reached the operator.
+   *
+   * The timer is driven rather than the option inspected: reading the config
+   * back would only prove the value was passed, not that a second fetch ever
+   * happens.
+   */
+  it('re-fetches on the ratified 5s interval', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify(API_GRAPH), { status: 200 }),
+      )
+      const { result } = renderHook(() => useTopologyQuery(), { wrapper })
+
+      await vi.waitFor(() => expect(result.current.isSuccess).toBe(true))
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(5_000)
+      await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+
+      await vi.advanceTimersByTimeAsync(5_000)
+      await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not re-fetch before the interval elapses', async () => {
+    // Guards the cadence itself: a much shorter interval would hammer the
+    // gateway, and `staleTime` alone (which schedules nothing) would leave the
+    // count at 1 forever — the exact bug this replaces.
+    vi.useFakeTimers()
+    try {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify(API_GRAPH), { status: 200 }),
+      )
+      const { result } = renderHook(() => useTopologyQuery(), { wrapper })
+
+      await vi.waitFor(() => expect(result.current.isSuccess).toBe(true))
+      await vi.advanceTimersByTimeAsync(4_000)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('returns an empty graph shape without crashing', async () => {
     const empty: components['schemas']['TopologyGraphResponse'] = { nodes: [], edges: [] }
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
