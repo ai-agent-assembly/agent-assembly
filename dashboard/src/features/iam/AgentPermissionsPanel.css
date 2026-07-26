@@ -55,6 +55,22 @@
   gap: 0.25rem;
 }
 
+/* The merged verdict leads, so the authoritative answer is read before the
+   per-scope contributions that produced it. */
+.iam-agent-perm-effective {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--shell-border-subtle);
+}
+
+.iam-agent-perm-panel__contributions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
 .iam-agent-perm-group__title {
   margin: 0;
   font-size: 0.75rem;

@@ -15,6 +15,57 @@ import './AgentPermissionsPanel.css'
  */
 const GRANTED_AT_DETAIL = 'The capability cascade carries no grant timestamp'
 
+function CapabilityRow({ capability, verdict }: Readonly<{ capability: string; verdict: 'allow' | 'deny' }>) {
+  return (
+    <li className="iam-agent-perm-row">
+      <span className="iam-agent-perm-row__permission">{capability}</span>
+      <span className={`iam-agent-perm-row__verdict iam-agent-perm-row__verdict--${verdict}`}>
+        {verdict}
+      </span>
+    </li>
+  )
+}
+
+/**
+ * The answer the operator should read first.
+ *
+ * `effective_permissions` already merges the cascade most-restrictive-wins
+ * (`aa-api/src/routes/agents.rs:634-650`) and returns it as `allow` / `deny`
+ * alongside `sources`. Rendering only the per-scope contributions left the
+ * operator to perform that merge by eye — on a cascade where `global` allows
+ * `secrets.read` and `team:platform` denies it, they would see a green ALLOW
+ * chip and an amber DENY chip in separate sections and have to work out which
+ * wins, while the endpoint had already decided.
+ */
+function EffectiveSection({
+  allow,
+  deny,
+}: Readonly<{ allow: readonly string[]; deny: readonly string[] }>) {
+  const isSilent = allow.length === 0 && deny.length === 0
+  return (
+    <section className="iam-agent-perm-effective" data-testid="permission-effective">
+      <h4 className="iam-agent-perm-group__title">Effective (merged)</h4>
+      {isSilent ? (
+        // A resolved cascade that constrains nothing is a real, evaluated
+        // answer about this agent — unlike the empty-cascade case above, which
+        // never got as far as evaluating anything.
+        <p className="iam-agent-perm-group__note" data-testid="permission-effective-silent">
+          The cascade resolved, and allows or denies no capability.
+        </p>
+      ) : (
+        <ul className="iam-agent-perm-group__list">
+          {allow.map((capability) => (
+            <CapabilityRow key={`eff-allow-${capability}`} capability={capability} verdict="allow" />
+          ))}
+          {deny.map((capability) => (
+            <CapabilityRow key={`eff-deny-${capability}`} capability={capability} verdict="deny" />
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 function ScopeSection({ source }: Readonly<{ source: CascadeScopeGrants }>) {
   return (
     <section
@@ -29,12 +80,7 @@ function ScopeSection({ source }: Readonly<{ source: CascadeScopeGrants }>) {
       {source.allow.length > 0 && (
         <ul className="iam-agent-perm-group__list" data-testid="permission-allow-list">
           {source.allow.map((capability) => (
-            <li key={`allow-${capability}`} className="iam-agent-perm-row">
-              <span className="iam-agent-perm-row__permission">{capability}</span>
-              <span className="iam-agent-perm-row__verdict iam-agent-perm-row__verdict--allow">
-                allow
-              </span>
-            </li>
+            <CapabilityRow key={`allow-${capability}`} capability={capability} verdict="allow" />
           ))}
         </ul>
       )}
@@ -42,12 +88,7 @@ function ScopeSection({ source }: Readonly<{ source: CascadeScopeGrants }>) {
       {source.deny.length > 0 && (
         <ul className="iam-agent-perm-group__list" data-testid="permission-deny-list">
           {source.deny.map((capability) => (
-            <li key={`deny-${capability}`} className="iam-agent-perm-row">
-              <span className="iam-agent-perm-row__permission">{capability}</span>
-              <span className="iam-agent-perm-row__verdict iam-agent-perm-row__verdict--deny">
-                deny
-              </span>
-            </li>
+            <CapabilityRow key={`deny-${capability}`} capability={capability} verdict="deny" />
           ))}
         </ul>
       )}
@@ -141,9 +182,17 @@ export function AgentPermissionsPanel({ agent, onClose }: Readonly<AgentPermissi
         />
       )}
 
-      {data !== undefined &&
-        !cascadeEmpty &&
-        data.sources.map((source) => <ScopeSection key={source.scope} source={source} />)}
+      {data !== undefined && !cascadeEmpty && (
+        <>
+          <EffectiveSection allow={data.allow} deny={data.deny} />
+          <div className="iam-agent-perm-panel__contributions">
+            <h4 className="iam-agent-perm-group__title">Contributing scopes</h4>
+            {data.sources.map((source) => (
+              <ScopeSection key={source.scope} source={source} />
+            ))}
+          </div>
+        </>
+      )}
     </aside>
   )
 }

@@ -27,13 +27,18 @@ const FABRICATED_GRANT_SOURCES = [
   'agent.readonly',
 ]
 
+/**
+ * Statuses are the Rust `Debug` renderings `aa-api` emits
+ * (`format!("{:?}", r.status)`), including a suspension payload — a fixture
+ * using `'active'` / `'idle'` describes a response the gateway cannot produce.
+ */
 const AGENT_ROWS = [
   {
     id: 'a1',
     name: 'orchestrator',
     framework: 'langgraph',
     version: '1.0.0',
-    status: 'active',
+    status: 'Active',
     tool_names: [],
     metadata: {},
     session_count: 0,
@@ -48,7 +53,7 @@ const AGENT_ROWS = [
     name: 'etl-worker',
     framework: 'crewai',
     version: '1.0.0',
-    status: 'idle',
+    status: 'Suspended(Manual)',
     tool_names: [],
     metadata: {},
     session_count: 0,
@@ -60,12 +65,17 @@ const AGENT_ROWS = [
   },
 ]
 
-/** A real cascade: two scopes, each contributing a rule. */
+/**
+ * A real cascade where the two scopes **disagree**: `global` allows
+ * `secrets.read` and `team:platform` denies it. Most-restrictive-wins, so the
+ * backend's merged answer is `deny` — which is exactly the case that proves the
+ * panel surfaces the merge rather than leaving it to the operator's eye.
+ */
 const POPULATED_CASCADE = {
   allow: ['tools.invoke'],
   deny: ['secrets.read'],
   sources: [
-    { scope: 'global', allow: ['tools.invoke'], deny: [] },
+    { scope: 'global', allow: ['tools.invoke', 'secrets.read'], deny: [] },
     { scope: 'team:platform', allow: [], deny: ['secrets.read'] },
   ],
 }
@@ -186,13 +196,48 @@ describe('Roles tab — registry absences (AAASM-5110)', () => {
     expect(lastSeen).toHaveTextContent('2026-07-26 09:00')
   })
 
-  it('renders the registry status verbatim', async () => {
+  it('renders the registry status verbatim, payload included', async () => {
     mockApi({})
     renderPanel()
     await screen.findByTestId('agent-row-a1')
 
-    expect(screen.getByTestId('agent-status-a1')).toHaveTextContent('active')
-    expect(screen.getByTestId('agent-status-a2')).toHaveTextContent('idle')
+    expect(screen.getByTestId('agent-status-a1')).toHaveTextContent('Active')
+    // The suspension reason is operationally load-bearing and must not be
+    // trimmed away into a bare "Suspended".
+    expect(screen.getByTestId('agent-status-a2')).toHaveTextContent('Suspended(Manual)')
+  })
+
+  it('tones a suspended agent by its outer variant, not by exact match', async () => {
+    // `Suspended` carries a payload, so an exact-match tone lookup never hits
+    // it and every suspended agent silently falls through to the neutral tone.
+    mockApi({})
+    renderPanel()
+    await screen.findByTestId('agent-row-a2')
+
+    const chip = screen.getByTestId('agent-status-a2').querySelector('.iam-agent-status')
+    expect(chip).toHaveClass('iam-agent-status--suspended')
+    expect(chip).not.toHaveClass('iam-agent-status--other')
+  })
+
+  it('tones an active agent, so the tone map is not dead code', async () => {
+    mockApi({})
+    renderPanel()
+    await screen.findByTestId('agent-row-a1')
+
+    const chip = screen.getByTestId('agent-status-a1').querySelector('.iam-agent-status')
+    expect(chip).toHaveClass('iam-agent-status--active')
+  })
+
+  it('falls through to the neutral tone for a variant it does not know', async () => {
+    mockApi({
+      agents: { items: [{ ...AGENT_ROWS[0], id: 'a9', status: 'Quarantined' }] },
+    })
+    renderPanel()
+    await screen.findByTestId('agent-row-a9')
+
+    const chip = screen.getByTestId('agent-status-a9').querySelector('.iam-agent-status')
+    expect(chip).toHaveClass('iam-agent-status--other')
+    expect(chip).toHaveTextContent('Quarantined')
   })
 
   it('reports a failed registry request as unavailable, not as an empty registry', async () => {
@@ -217,6 +262,43 @@ describe('Roles tab — permission cascade (AAASM-5110 / AAASM-5106)', () => {
       '/api/v1/agents/{id}/capabilities',
       expect.anything(),
     )
+  })
+
+  it('surfaces the backend-computed merged verdict, not just the contributions', async () => {
+    // global allows secrets.read, team:platform denies it. Most-restrictive-wins
+    // makes the answer `deny`, and the endpoint already computed it. Without
+    // the merged section the operator sees an ALLOW chip and a DENY chip in
+    // separate scopes and has to resolve the conflict by eye.
+    const user = userEvent.setup()
+    mockApi({ capabilities: POPULATED_CASCADE })
+    renderPanel()
+    await user.click(await screen.findByTestId('agent-row-a1'))
+
+    const effective = await screen.findByTestId('permission-effective')
+    expect(effective).toHaveTextContent('tools.invoke')
+    expect(effective).toHaveTextContent('secrets.read')
+
+    // secrets.read appears in the merged section only as a denial.
+    const denied = within(effective).getByText('secrets.read').closest('li')
+    expect(denied).toHaveTextContent('deny')
+    expect(denied).not.toHaveTextContent('allow')
+  })
+
+  it('reports a resolved cascade that constrains nothing without calling it an absence', async () => {
+    const user = userEvent.setup()
+    mockApi({
+      capabilities: {
+        allow: [],
+        deny: [],
+        sources: [{ scope: 'global', allow: [], deny: [] }],
+      },
+    })
+    renderPanel()
+    await user.click(await screen.findByTestId('agent-row-a1'))
+
+    expect(await screen.findByTestId('permission-effective-silent')).toBeInTheDocument()
+    // Distinct from the empty-cascade case: this one did evaluate.
+    expect(screen.queryByTestId('agent-permissions-unconfigured')).not.toBeInTheDocument()
   })
 
   it('renders one section per cascade scope, with the real scope labels', async () => {
