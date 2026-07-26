@@ -1063,3 +1063,341 @@ mod tests {
         assert!(matches_status_filter(&status, "unknown_value"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Graph projection tests (AAASM-5099)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod graph_tests {
+    use super::*;
+    use crate::auth::{AuthenticatedCaller, Tenant};
+    use aa_core::topology::NewEdge;
+    use aa_gateway::policy::PolicyDocument;
+
+    /// A read-scoped caller confined to `org` / `team`. `None` / `None` with no
+    /// admin scope is the unscoped caller the deny-by-default guard rejects.
+    fn reader(scopes: Vec<Scope>, org_id: Option<&str>, team_id: Option<&str>) -> RequireRead {
+        RequireRead(AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes,
+            tenant: Tenant {
+                org_id: org_id.map(str::to_string),
+                team_id: team_id.map(str::to_string),
+            },
+        })
+    }
+
+    fn admin() -> RequireRead {
+        reader(vec![Scope::Admin], None, None)
+    }
+
+    /// Minimal registered agent. Only the fields the graph projection reads
+    /// carry meaningful values.
+    fn record(id_byte: u8, name: &str, team_id: Option<&str>) -> AgentRecord {
+        AgentRecord {
+            agent_id: [id_byte; 16],
+            name: name.to_string(),
+            framework: "langgraph".to_string(),
+            version: "0.1.0".to_string(),
+            risk_tier: 1,
+            tool_names: Vec::new(),
+            public_key: "pk".to_string(),
+            credential_token: "tok".to_string(),
+            metadata: BTreeMap::new(),
+            registered_at: Utc::now(),
+            last_heartbeat: Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: Vec::new(),
+            recent_events: std::collections::VecDeque::new(),
+            recent_traces: Vec::new(),
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: team_id.map(str::to_string),
+            org_id: None,
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some([id_byte; 16]),
+            children: Vec::new(),
+            parent_key: None,
+            enforcement_mode: None,
+        }
+    }
+
+    fn state_with(records: Vec<AgentRecord>) -> AppState {
+        let state = AppState::local_in_memory().expect("state builds");
+        for r in records {
+            state.agent_registry.register(r).expect("register");
+        }
+        state
+    }
+
+    /// A policy document carrying only the capability block the chain reads.
+    fn policy_doc(name: &str, scope: PolicyScope, capabilities: aa_core::CapabilitySet) -> PolicyDocument {
+        PolicyDocument {
+            name: Some(name.to_string()),
+            policy_version: Some("1".to_string()),
+            version: None,
+            scope,
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: Default::default(),
+            capabilities: Some(capabilities),
+        }
+    }
+
+    /// `state_with` plus real policy documents in the engine. The engine
+    /// `local_in_memory` builds is loaded from a budget-only file, so without
+    /// this every chain assertion would pass on an empty cascade.
+    fn state_with_policies(records: Vec<AgentRecord>, docs: Vec<PolicyDocument>) -> AppState {
+        let mut state = state_with(records);
+        let engine = Arc::get_mut(&mut state.policy_engine).expect("engine is unshared until the state is cloned");
+        for doc in docs {
+            engine.load_policy(doc);
+        }
+        state
+    }
+
+    async fn insert_edge(state: &AppState, source: u8, target: u8, edge_type: EdgeType) {
+        state
+            .edge_repo
+            .insert(NewEdge {
+                source: AgentId::from_bytes([source; 16]),
+                target: AgentId::from_bytes([target; 16]),
+                edge_type,
+                metadata: None,
+            })
+            .await
+            .expect("edge inserted");
+    }
+
+    async fn graph_for(caller: RequireRead, state: &AppState) -> TopologyGraphResponse {
+        let (status, Json(graph)) = get_topology_graph(caller, Extension(state.clone()))
+            .await
+            .expect("graph projects");
+        assert_eq!(status, StatusCode::OK);
+        graph
+    }
+
+    // ── Edge kinds ─────────────────────────────────────────────────────────
+
+    /// Every stored relation kind has to reach the graph. Before AAASM-5099 the
+    /// projection walked only `DelegatesTo` / `Calls`, so the dashboard's
+    /// reads / writes / approves / messages checkboxes had nothing to filter.
+    #[tokio::test]
+    async fn every_stored_edge_kind_reaches_the_graph() {
+        let state = state_with(vec![
+            record(0x01, "a", Some("team-alpha")),
+            record(0x02, "b", Some("team-alpha")),
+        ]);
+        for &edge_type in EdgeType::ALL {
+            insert_edge(&state, 0x01, 0x02, edge_type).await;
+        }
+
+        let graph = graph_for(admin(), &state).await;
+
+        let kinds: std::collections::BTreeSet<&str> = graph.edges.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            ["approves", "call", "delegation", "messages", "reads", "writes"]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            "all six stored kinds must be emitted, got {kinds:?}"
+        );
+        assert_eq!(graph.edges.len(), EdgeType::ALL.len());
+    }
+
+    /// The two structural kinds keep the wire vocabulary AAASM-5040 shipped —
+    /// renaming them would silently break the frontend's edge styling.
+    #[test]
+    fn the_structural_kinds_keep_their_graph_vocabulary() {
+        assert_eq!(graph_edge_kind(EdgeType::DelegatesTo), "delegation");
+        assert_eq!(graph_edge_kind(EdgeType::Calls), "call");
+        assert_eq!(graph_edge_kind(EdgeType::Reads), "reads");
+        assert_eq!(graph_edge_kind(EdgeType::Writes), "writes");
+        assert_eq!(graph_edge_kind(EdgeType::Approves), "approves");
+        assert_eq!(graph_edge_kind(EdgeType::Messages), "messages");
+    }
+
+    // ── cross_team ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn an_edge_between_two_teams_is_flagged_cross_team() {
+        let state = state_with(vec![
+            record(0x01, "a", Some("team-alpha")),
+            record(0x02, "b", Some("team-beta")),
+        ]);
+        insert_edge(&state, 0x01, 0x02, EdgeType::Messages).await;
+
+        let graph = graph_for(admin(), &state).await;
+        assert_eq!(graph.edges.len(), 1);
+        assert!(graph.edges[0].cross_team);
+    }
+
+    #[tokio::test]
+    async fn an_edge_inside_one_team_is_not_cross_team() {
+        let state = state_with(vec![
+            record(0x01, "a", Some("team-alpha")),
+            record(0x02, "b", Some("team-alpha")),
+        ]);
+        insert_edge(&state, 0x01, 0x02, EdgeType::Calls).await;
+
+        let graph = graph_for(admin(), &state).await;
+        assert!(!graph.edges[0].cross_team);
+    }
+
+    /// An endpoint with no team is not a boundary crossing — the same rule
+    /// `edges::compute_cross_team` applies, so the two surfaces agree.
+    #[test]
+    fn a_team_less_endpoint_is_never_cross_team() {
+        assert!(!is_cross_team(None, Some("team-alpha")));
+        assert!(!is_cross_team(Some("team-alpha"), None));
+        assert!(!is_cross_team(None, None));
+        assert!(is_cross_team(Some("team-alpha"), Some("team-beta")));
+    }
+
+    // ── Effective permissions ──────────────────────────────────────────────
+
+    /// Guards the explicit lineage in [`project_graph_nodes`]: the engine
+    /// `aa-api` builds is not registry-wired (AAASM-5102), so resolving the
+    /// cascade without a lineage silently walks only Global and Agent and drops
+    /// every Org- and Team-scoped allow AND deny. Regressing that call back to
+    /// `collect_cascade` / `effective_permissions` would leave this the only
+    /// failing test.
+    #[tokio::test]
+    async fn a_team_scoped_policy_reaches_the_permission_chain() {
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.deny.insert(aa_core::Capability::TerminalExec);
+
+        let state = state_with_policies(
+            vec![record(0x01, "a", Some("team-alpha"))],
+            vec![policy_doc(
+                "team-rules",
+                PolicyScope::Team("team-alpha".to_string()),
+                caps,
+            )],
+        );
+
+        let graph = graph_for(admin(), &state).await;
+        let perms = graph.nodes[0]
+            .effective_permissions
+            .as_ref()
+            .expect("the graph endpoint resolves the chain");
+
+        assert!(
+            perms.deny.iter().any(|c| c == "terminal_exec"),
+            "a Team-scoped deny must reach the merged set: {:?}",
+            perms.deny
+        );
+        let team_tier = perms
+            .chain
+            .iter()
+            .find(|t| t.tier == "team")
+            .expect("a team-scoped agent has a team tier");
+        assert_eq!(team_tier.scope, "team:team-alpha");
+        assert_eq!(team_tier.policies, vec!["team-rules".to_string()]);
+        assert_eq!(
+            graph.nodes[0].policy_count,
+            Some(1),
+            "policy_count reads off the same lineage-resolved cascade"
+        );
+    }
+
+    /// The chain lists only the tiers the agent actually has. An agent with no
+    /// `org_id` gets no Org row rather than an invented empty one, and no
+    /// parent row exists at all — `PolicyScope` has no parent tier.
+    #[tokio::test]
+    async fn the_chain_omits_tiers_the_agent_does_not_have() {
+        let state = state_with(vec![record(0x01, "a", None)]);
+
+        let graph = graph_for(admin(), &state).await;
+        let perms = graph.nodes[0].effective_permissions.as_ref().expect("chain present");
+
+        let tiers: Vec<&str> = perms.chain.iter().map(|t| t.tier.as_str()).collect();
+        assert_eq!(tiers, vec!["global", "agent"], "no org / team / parent rows");
+        assert!(perms.allow.is_empty());
+        assert!(perms.deny.is_empty());
+        assert!(!perms.allow_restricted);
+    }
+
+    /// An empty merged allow-list carrying a restriction is deny-all, not
+    /// "unrestricted" (AAASM-4154) — the flag must survive the projection or the
+    /// panel reads a fail-closed cascade as permissive.
+    #[tokio::test]
+    async fn an_allow_list_restriction_is_carried_through() {
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.allow.insert(aa_core::Capability::FileRead);
+
+        let state = state_with_policies(
+            vec![record(0x01, "a", Some("team-alpha"))],
+            vec![policy_doc("global-rules", PolicyScope::Global, caps)],
+        );
+
+        let graph = graph_for(admin(), &state).await;
+        let perms = graph.nodes[0].effective_permissions.as_ref().expect("chain present");
+
+        assert_eq!(perms.allow, vec!["file_read".to_string()]);
+        assert!(perms.allow_restricted);
+        let global_tier = &perms.chain[0];
+        assert_eq!(global_tier.tier, "global");
+        assert_eq!(global_tier.policies, vec!["global-rules".to_string()]);
+    }
+
+    // ── Authorization / tenancy ────────────────────────────────────────────
+
+    /// Deny-by-default: a non-admin caller with no tenant scope can never be
+    /// confined to a tenant, so it gets an empty graph, not a cross-tenant dump.
+    #[tokio::test]
+    async fn an_unscoped_caller_gets_an_empty_graph() {
+        let state = state_with(vec![
+            record(0x01, "a", Some("team-alpha")),
+            record(0x02, "b", Some("team-alpha")),
+        ]);
+        insert_edge(&state, 0x01, 0x02, EdgeType::Reads).await;
+
+        let graph = graph_for(reader(vec![Scope::Read], None, None), &state).await;
+        assert!(graph.nodes.is_empty());
+        assert!(graph.edges.is_empty());
+    }
+
+    /// An edge is emitted only when BOTH endpoints are visible nodes, so a
+    /// widened projection cannot leak an out-of-tenant peer through a kind the
+    /// old two-kind walk never looked at.
+    #[tokio::test]
+    async fn an_edge_to_an_out_of_tenant_peer_is_dropped() {
+        let state = state_with(vec![
+            record(0x01, "mine", Some("team-alpha")),
+            record(0x02, "theirs", Some("team-beta")),
+        ]);
+        for &edge_type in EdgeType::ALL {
+            insert_edge(&state, 0x01, 0x02, edge_type).await;
+        }
+
+        let graph = graph_for(reader(vec![Scope::Read], None, Some("team-alpha")), &state).await;
+        assert_eq!(graph.nodes.len(), 1, "only the caller's own team is visible");
+        assert_eq!(graph.nodes[0].name, "mine");
+        assert!(
+            graph.edges.is_empty(),
+            "every kind pointing at the other team must be dropped, got {:?}",
+            graph.edges
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_registry_projects_an_empty_graph() {
+        let state = state_with(vec![]);
+        let graph = graph_for(admin(), &state).await;
+        assert!(graph.nodes.is_empty());
+        assert!(graph.edges.is_empty());
+    }
+}
