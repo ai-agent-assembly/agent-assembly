@@ -25,3 +25,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0016](0016-default-branch-master-to-main-migration.md) | Organization-wide Default Branch — `master` → `main` | Accepted |
 | [0017](0017-dashboard-design-parity-ratified-evolutions.md) | Dashboard Design-Parity — Ratified Evolutions | Accepted |
 | [0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) | Canonical Runtime Verdict & Enriched Decision Record | Accepted |
+| [0019](0019-agent-trust-score-derivation.md) | Agent Trust-Score Derivation | Proposed |
