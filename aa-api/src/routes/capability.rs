@@ -523,6 +523,53 @@ fn project_mode(mode: Option<aa_core::EnforcementMode>) -> Option<AgentMode> {
     }
 }
 
+/// (scope label, document name). Keyed on both because one scope may carry
+/// several documents; collapsing them on scope alone would drop all but the first
+/// from the policies list.
+type PolicyKey = (String, Option<String>);
+
+/// Tool columns one agent contributes: what it declared at registration, plus any
+/// tool its own cascade names — whether by an `mcp_tool:` grant or by a per-tool
+/// policy. All three are real declarations about this agent, so all three earn it
+/// a cell.
+fn agent_tool_ids(
+    record: &aa_gateway::registry::AgentRecord,
+    caps: &aa_core::CapabilitySet,
+    cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
+) -> std::collections::BTreeSet<String> {
+    let mut agent_tools: std::collections::BTreeSet<String> = record.tool_names.iter().cloned().collect();
+    for cap in caps.allow.iter().chain(caps.deny.iter()) {
+        if let aa_core::Capability::McpTool(name) = cap {
+            agent_tools.insert(name.clone());
+        }
+    }
+    for doc in cascade {
+        agent_tools.extend(doc.tools.keys().cloned());
+    }
+    agent_tools
+}
+
+/// Fold one agent's cascade into the shared policy rows, recording the agent as
+/// affected by every document that declares capabilities or tools.
+///
+/// A document declaring neither contributes no rule, so it is skipped rather than
+/// listed as a policy row with an empty rule set.
+fn collect_policy_rows(
+    cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
+    id_hex: &str,
+    policy_rows: &mut BTreeMap<PolicyKey, (Arc<aa_gateway::policy::PolicyDocument>, Vec<String>)>,
+) {
+    for doc in cascade {
+        if doc.capabilities.is_none() && doc.tools.is_empty() {
+            continue;
+        }
+        let entry = policy_rows
+            .entry((doc.scope.to_string(), doc.name.clone()))
+            .or_insert_with(|| (Arc::clone(doc), Vec::new()));
+        entry.1.push(id_hex.to_string());
+    }
+}
+
 /// Project the capability matrix from the registry and the policy cascade.
 ///
 /// `records` is the caller-visible agent slice — tenant filtering happens before
@@ -540,10 +587,7 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
     // the column order is stable across requests.
     let mut tool_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut agents: Vec<CapabilityAgent> = Vec::with_capacity(records.len());
-    // (scope label, document name) -> (document, agent ids it applies to). Keyed
-    // on both because one scope may carry several documents; collapsing them on
-    // scope alone would drop all but the first from the policies list.
-    type PolicyKey = (String, Option<String>);
+    // Policy key -> (document, agent ids it applies to).
     let mut policy_rows: BTreeMap<PolicyKey, (Arc<aa_gateway::policy::PolicyDocument>, Vec<String>)> = BTreeMap::new();
 
     for record in records {
@@ -553,26 +597,8 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
         let cascade = state.policy_engine.collect_cascade_with_lineage(&agent_id, &lineage);
         let caps = aa_gateway::engine::PolicyEngine::collect_merged_capabilities(&cascade);
 
-        // Tool columns this agent contributes: what it declared at registration,
-        // plus any tool its own cascade names — whether by an `mcp_tool:` grant
-        // or by a per-tool policy. All three are real declarations about this
-        // agent, so all three earn it a cell.
-        let mut agent_tools: std::collections::BTreeSet<String> = record.tool_names.iter().cloned().collect();
-        for cap in caps.allow.iter().chain(caps.deny.iter()) {
-            if let C::McpTool(name) = cap {
-                agent_tools.insert(name.clone());
-            }
-        }
-        for doc in &cascade {
-            agent_tools.extend(doc.tools.keys().cloned());
-            if doc.capabilities.is_none() && doc.tools.is_empty() {
-                continue;
-            }
-            let entry = policy_rows
-                .entry((doc.scope.to_string(), doc.name.clone()))
-                .or_insert_with(|| (Arc::clone(doc), Vec::new()));
-            entry.1.push(id_hex.clone());
-        }
+        let agent_tools = agent_tool_ids(record, &caps, &cascade);
+        collect_policy_rows(&cascade, &id_hex, &mut policy_rows);
         tool_ids.extend(agent_tools.iter().cloned());
 
         let mut cells: BTreeMap<String, CapCell> = BTreeMap::new();
