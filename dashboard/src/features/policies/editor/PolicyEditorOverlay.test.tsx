@@ -405,3 +405,107 @@ describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
   })
 })
 
+describe('PolicyEditorOverlay — footer blast radius (AAASM-5141)', () => {
+  /** A four-rule policy, each rule distinguishable by id. */
+  function fourRuleDraft(): PolicyDraft {
+    return makeDraft({
+      status: 'active',
+      rules: [defaultRule(), defaultRule(), defaultRule(), defaultRule()],
+    })
+  }
+
+  it('reports one modified rule after one rule is edited in a four-rule policy', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={fourRuleDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      'Active · 4 rule(s)',
+    )
+
+    await user.click(screen.getByTestId('editor-rule-1-verb-write'))
+
+    // Exactly one rule card carries a dirty dot, and the footer must agree.
+    expect(screen.getAllByTitle('unsaved change')).toHaveLength(1)
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      '1 rule(s) modified',
+    )
+  })
+
+  it('counts a second edited rule without counting the untouched ones', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={fourRuleDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.click(screen.getByTestId('editor-rule-0-verb-write'))
+    await user.click(screen.getByTestId('editor-rule-3-verb-write'))
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      '2 rule(s) modified',
+    )
+  })
+
+  it('counts an added rule as one modification, not as the new total', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={fourRuleDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.click(screen.getByTestId('editor-add-rule'))
+    expect(screen.getByTestId('editor-rule-4')).toBeInTheDocument()
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      '1 rule(s) modified',
+    )
+  })
+
+  it('counts a removed rule as one modification, not as the shortened total', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={fourRuleDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.click(screen.getByTestId('editor-rule-1-remove'))
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      '1 rule(s) modified',
+    )
+  })
+
+  it('reports zero modified rules when only policy metadata changed', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={fourRuleDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.type(screen.getByTestId('editor-scope-input'), '!')
+    expect(screen.getByTestId('editor-dirty-chip')).toBeInTheDocument()
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      '0 rule(s) modified',
+    )
+  })
+})
