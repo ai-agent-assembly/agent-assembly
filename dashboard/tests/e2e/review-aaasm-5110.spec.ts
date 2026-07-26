@@ -11,16 +11,24 @@
  *  2. owner team folds to `—` under `not-supported` rather than naming a team,
  *     and a missing `last_event` folds to `—` under `unknown` rather than
  *     dating the sighting;
- *  3. the permissions panel renders the real cascade scopes, and attributes no
- *     grant to `support-agent-policy-v2`, `deploy-agent-policy-v1`,
- *     `agent.operator` or `agent.readonly` — none of which exist;
- *  4. an empty cascade renders `unconfigured`, never "no effective
+ *  3. the status renders verbatim — including the `Suspended(Manual)` payload
+ *     the endpoint actually emits — and still earns its tone, so the tone map
+ *     is live rather than dead code;
+ *  4. the panel leads with the merged verdict `effective_permissions` already
+ *     computed, on a cascade whose scopes disagree, rather than leaving the
+ *     operator to resolve two conflicting chips by eye;
+ *  5. it renders the real cascade scopes, and attributes no grant to
+ *     `support-agent-policy-v2`, `deploy-agent-policy-v1`, `agent.operator` or
+ *     `agent.readonly` — none of which exist;
+ *  6. an empty cascade renders `unconfigured`, never "no effective
  *     permissions": under AAASM-5106 an empty allow/deny over an empty cascade
  *     means nothing was evaluated, not that the agent holds nothing;
- *  5. the Access Log renders `not-supported` with no row, no verdict and no
+ *  7. a failed registry or capability request renders `unavailable`, never an
+ *     empty table and never the empty-cascade state;
+ *  8. the Access Log renders `not-supported` with no row, no verdict and no
  *     address-shaped text anywhere — and its filter is inert, so an empty
  *     surface can never be read as "no events matched";
- *  6. neither tab produces console errors or uncaught exceptions, in light and
+ *  9. neither tab produces console errors or uncaught exceptions, in light and
  *     dark.
  *
  * Screenshots land in dashboard/verify/5110/.
@@ -75,27 +83,40 @@ function rawAgent(over: Record<string, unknown>) {
 }
 
 /**
- * Two registered agents. `etl-worker` carries `last_event: null` — a freshly
- * registered agent that has not reported yet — so the `unknown` branch is
- * exercised alongside the known one. Neither carries a team: `AgentResponse`
- * has no field for one.
+ * Two registered agents, shaped exactly as `GET /api/v1/agents` emits them.
+ *
+ * `status` is the Rust `Debug` rendering `aa-api` produces
+ * (`format!("{:?}", r.status)` over `aa_gateway::registry::AgentStatus`), so
+ * `Active` and `Suspended(Manual)` — not a lowercase enum. A fixture using
+ * `active` / `idle` describes a response the gateway cannot produce, and would
+ * have legitimised a tone map that is dead in production.
+ *
+ * `etl-worker` carries `last_event: null` — a freshly registered agent that has
+ * not reported yet — so the `unknown` branch is exercised alongside the known
+ * one. Neither carries a team: `AgentResponse` has no field for one.
  */
 const AGENTS = {
   items: [
-    rawAgent({ id: 'a1', name: 'orchestrator', status: 'active', last_event: '2026-07-26T09:00:00Z' }),
-    rawAgent({ id: 'a2', name: 'etl-worker', status: 'idle', last_event: null }),
+    rawAgent({ id: 'a1', name: 'orchestrator', status: 'Active', last_event: '2026-07-26T09:00:00Z' }),
+    rawAgent({ id: 'a2', name: 'etl-worker', status: 'Suspended(Manual)', last_event: null }),
   ],
   page: 1,
   per_page: 100,
   total: 2,
 }
 
-/** A real cascade: two scopes, each contributing a rule. */
+/**
+ * A real cascade where the two scopes **disagree**: `global` allows
+ * `secrets.read` and `team:platform` denies it. Most-restrictive-wins makes the
+ * merged answer `deny`, and `effective_permissions` already computed it —
+ * so this is the payload that proves the panel surfaces the merge rather than
+ * leaving the operator to resolve two conflicting chips by eye.
+ */
 const POPULATED_CASCADE = {
   allow: ['tools.invoke'],
   deny: ['secrets.read'],
   sources: [
-    { scope: 'global', allow: ['tools.invoke'], deny: [] },
+    { scope: 'global', allow: ['tools.invoke', 'secrets.read'], deny: [] },
     { scope: 'team:platform', allow: [], deny: ['secrets.read'] },
   ],
 }
@@ -109,6 +130,8 @@ const EMPTY_CASCADE = { allow: [], deny: [], sources: [] }
 
 interface Harness {
   errors: string[]
+  /** URLs that reached the catch-all instead of an explicit fixture. */
+  unrouted: string[]
 }
 
 async function bootstrap(page: Page, theme: Theme): Promise<Harness> {
@@ -135,18 +158,43 @@ async function bootstrap(page: Page, theme: Theme): Promise<Harness> {
 
   // Permissive fallback first (least specific); specific fixtures registered
   // afterwards win, since Playwright matches most-recently-added first.
-  await page.route('**/api/**', (r) => r.fulfill({ json: {} }))
+  //
+  // It records what it absorbs rather than silently answering `{}` for
+  // everything: a blanket stub means the run can no longer notice that a
+  // surface under test started calling something unexpected. `unrouted` is
+  // asserted against below, so a new IAM/agents request fails the run instead
+  // of quietly receiving an empty object.
+  const unrouted: string[] = []
+  await page.route('**/api/**', (r) => {
+    unrouted.push(new URL(r.request().url()).pathname)
+    return r.fulfill({ json: {} })
+  })
   await page.route('**/api/v1/approvals**', (r) => r.fulfill({ json: { items: [] } }))
   await page.route('**/api/v1/iam/members**', (r) =>
     r.fulfill({ json: { items: [], page: 1, page_size: 20, total: 0 } }),
   )
   await page.route('**/api/v1/iam/roles**', (r) => r.fulfill({ json: [] }))
+  // Backs the Service-Identities tab count on the Identity page header. Found
+  // by the `unrouted` check above — it was previously absorbed by the blanket
+  // stub, which is precisely the blind spot that check exists to close.
+  await page.route('**/api/v1/iam/api-keys**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/v1/agents?**', (r) => r.fulfill({ json: AGENTS }))
   await page.route('**/api/v1/agents', (r) => r.fulfill({ json: AGENTS }))
   await page.route('**/api/v1/ws/events**', (r) => r.abort())
   await page.route('**/api/v1/alerts/ws**', (r) => r.abort())
 
-  return { errors }
+  return { errors, unrouted }
+}
+
+/**
+ * Nothing the surfaces under test depend on may reach the catch-all — if it
+ * does, the run is asserting against an empty object rather than a fixture.
+ */
+function expectFullyRouted(harness: Harness) {
+  const leaked = harness.unrouted.filter(
+    (p) => p.startsWith('/api/v1/agents') || p.startsWith('/api/v1/iam'),
+  )
+  expect(leaked, 'IAM/agents requests must hit an explicit fixture').toEqual([])
 }
 
 /** Register the capability fixture for whichever cascade this case needs. */
@@ -202,10 +250,65 @@ test.describe('AAASM-5110 / AAASM-5111 review — Identity truthfulness', () => 
       await expect(lastSeenKnown).toHaveAttribute('data-truth-state', 'known')
       await expect(lastSeenKnown).toContainText('2026-07-26 09:00')
 
+      // ── status renders verbatim, and a payload still earns its tone ──────
+      await expect(page.getByTestId('agent-status-a1')).toContainText('Active')
+      const suspended = page.getByTestId('agent-status-a2')
+      await expect(suspended).toContainText('Suspended(Manual)')
+      await expect(suspended.locator('.iam-agent-status')).toHaveClass(
+        /iam-agent-status--suspended/,
+      )
+
       expect(listText).not.toContain('undefined')
       expect(listText).not.toContain('NaN')
 
       await list.screenshot({ path: `${EVIDENCE_DIR}/roles-registry-${theme}.png` })
+      expectFullyRouted(harness)
+      expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
+    })
+
+    test(`a failed registry request reads as unavailable in ${theme}`, async ({ page }) => {
+      const harness = await bootstrap(page, theme)
+      await page.route('**/api/v1/agents?**', (r) => r.fulfill({ status: 503, json: {} }))
+      await page.route('**/api/v1/agents', (r) => r.fulfill({ status: 503, json: {} }))
+      await navigate(page, '/identity?tab=roles')
+
+      // A failed request supports no claim at all — least of all "no agents
+      // are registered", which is what an empty table would say.
+      //
+      // The app's QueryClient uses TanStack's default retry policy (3 attempts,
+      // exponential backoff), so settling into the error state takes longer
+      // than the 5s default assertion timeout. Waiting it out is the point:
+      // a slow failure must still land on `unavailable`, never on a benign
+      // empty state while the retries are in flight.
+      const error = page.getByTestId('agent-registry-error')
+      await expect(error).toBeVisible({ timeout: 20_000 })
+      await expect(error).toHaveAttribute('data-truth-state', 'unavailable')
+      await expect(page.getByTestId('agent-registry-empty')).toHaveCount(0)
+      await expect(page.locator('[data-testid^="agent-row-"]')).toHaveCount(0)
+
+      await error.screenshot({ path: `${EVIDENCE_DIR}/roles-registry-unavailable-${theme}.png` })
+      expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
+    })
+
+    test(`a failed capability request reads as unavailable in ${theme}`, async ({ page }) => {
+      const harness = await bootstrap(page, theme)
+      await page.route('**/api/v1/agents/*/capabilities', (r) =>
+        r.fulfill({ status: 503, json: {} }),
+      )
+      await navigate(page, '/identity?tab=roles')
+      await page.getByTestId('agent-row-a1').click()
+
+      // Same retry-backoff allowance as the registry case above.
+      const error = page.getByTestId('agent-permissions-error')
+      await expect(error).toBeVisible({ timeout: 20_000 })
+      await expect(error).toHaveAttribute('data-truth-state', 'unavailable')
+      // A failed cascade fetch is not the AAASM-5106 empty-cascade case.
+      await expect(page.getByTestId('agent-permissions-unconfigured')).toHaveCount(0)
+      await expect(page.getByTestId('permission-effective')).toHaveCount(0)
+
+      await page.getByTestId('agent-permissions-panel').screenshot({
+        path: `${EVIDENCE_DIR}/roles-cascade-unavailable-${theme}.png`,
+      })
       expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
     })
 
@@ -218,7 +321,17 @@ test.describe('AAASM-5110 / AAASM-5111 review — Identity truthfulness', () => 
       const panel = page.getByTestId('agent-permissions-panel')
       await expect(panel).toBeVisible()
 
-      // ── 3. the gateway's own scope labels, and no invented grant source ──
+      // ── 3a. the merged verdict the backend computed leads the panel ──────
+      // global allows secrets.read, team:platform denies it; most-restrictive
+      // -wins makes the answer deny, and the endpoint already resolved it.
+      const effective = page.getByTestId('permission-effective')
+      await expect(effective).toBeVisible()
+      const mergedDeny = effective.locator('li', { hasText: 'secrets.read' })
+      await expect(mergedDeny).toHaveCount(1)
+      await expect(mergedDeny).toContainText('deny')
+      await expect(mergedDeny).not.toContainText('allow')
+
+      // ── 3b. the gateway's own scope labels, and no invented grant source ─
       const scopes = page.getByTestId('permission-scope-label')
       await expect(scopes).toHaveCount(2)
       await expect(scopes.nth(0)).toHaveText('global')
@@ -235,6 +348,7 @@ test.describe('AAASM-5110 / AAASM-5111 review — Identity truthfulness', () => 
       await expect(granted).toContainText('Not supported')
 
       await panel.screenshot({ path: `${EVIDENCE_DIR}/roles-cascade-${theme}.png` })
+      expectFullyRouted(harness)
       expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
     })
 
