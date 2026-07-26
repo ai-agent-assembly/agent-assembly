@@ -1,8 +1,10 @@
 import {
   coverageStatement,
-  extractDecision,
+  extractVerdict,
+  isSuppressedDenial,
   payloadSummary,
   type AuditCoverage,
+  type AuditVerdict,
   type LogEntry,
 } from './logs'
 import { TRUTH_STATE_META, isKnown, type Certain } from '../../lib/truthfulness'
@@ -35,6 +37,8 @@ const CSV_HEADER = [
   'agent_id',
   'event_type',
   'decision',
+  'dry_run',
+  'suppressed_decision',
   'summary',
   'session_id',
   'export_scope',
@@ -56,6 +60,25 @@ function csvCell(value: unknown): string {
  */
 function csvCertain<T>(value: Certain<T>): string {
   return isKnown(value) ? String(value.value) : TRUTH_STATE_META[value.state].label
+}
+
+/**
+ * The `decision` cell for one row.
+ *
+ * A row whose denial was suppressed by observe mode does **not** render as a
+ * bare `ALLOW`. The suffix is deliberately inside the same cell rather than only
+ * in the neighbouring `suppressed_decision` column: the first thing anyone does
+ * with an audit CSV is filter or pivot on `decision`, and a naive
+ * `decision == "ALLOW"` must not silently sweep up suppressed denials. Failing
+ * that filter closed — the row simply does not match `ALLOW` — is the safe
+ * direction. The machine-readable split stays available in the two columns
+ * beside it.
+ */
+function csvDecision(verdict: AuditVerdict): string {
+  const enforced = csvCertain(verdict.enforced)
+  if (!isSuppressedDenial(verdict)) return enforced
+  const suppressed = csvCertain(verdict.suppressed as Certain<string>)
+  return `${enforced} (observe-mode; suppressed ${suppressed})`
 }
 
 /**
@@ -83,13 +106,16 @@ export function buildAuditCsv(rows: readonly LogEntry[], coverage: AuditCoverage
   const scope = coverageTag(coverage)
   const lines = [CSV_HEADER.join(',')]
   for (const e of rows) {
+    const verdict = extractVerdict(e.payload)
     lines.push(
       [
         e.seq,
         e.timestamp,
         e.agent_id,
         e.event_type,
-        csvCertain(extractDecision(e.payload)),
+        csvDecision(verdict),
+        String(verdict.dryRun),
+        verdict.suppressed ? csvCertain(verdict.suppressed) : '',
         csvCertain(payloadSummary(e.payload)),
         e.session_id,
         scope,
@@ -99,6 +125,12 @@ export function buildAuditCsv(rows: readonly LogEntry[], coverage: AuditCoverage
     )
   }
   return lines.join('\r\n')
+}
+
+/** One row's summary as report text, folding an absence to its state label. */
+function summaryText(entry: LogEntry): string {
+  const summary = payloadSummary(entry.payload)
+  return isKnown(summary) ? summary.value : TRUTH_STATE_META[summary.state].label
 }
 
 /** Describes the filters in effect when an export is triggered. */
@@ -128,29 +160,61 @@ export function buildComplianceReport(
   const typeCounts: Record<string, number> = {}
   const decisionCounts: Record<string, number> = {}
   const noVerdictCounts: Record<string, number> = {}
+  const suppressedCounts: Record<string, number> = {}
   const violations: LogEntry[] = []
+  const suppressed: { entry: LogEntry; verdict: AuditVerdict }[] = []
   for (const e of rows) {
     typeCounts[e.event_type] = (typeCounts[e.event_type] ?? 0) + 1
-    const decision = extractDecision(e.payload)
-    if (isKnown(decision)) {
-      decisionCounts[decision.value] = (decisionCounts[decision.value] ?? 0) + 1
+    const verdict = extractVerdict(e.payload)
+    const wasSuppressed = isSuppressedDenial(verdict)
+    if (isKnown(verdict.enforced)) {
+      // A suppressed denial is tallied under its own key rather than folded into
+      // the enforced ALLOW total. "ALLOW: 40" over an observe-mode window is the
+      // fabricated all-clear this report exists to prevent.
+      const key = wasSuppressed
+        ? `${verdict.enforced.value} (observe-mode; suppressed ${csvCertain(verdict.suppressed as Certain<string>)})`
+        : verdict.enforced.value
+      decisionCounts[key] = (decisionCounts[key] ?? 0) + 1
     } else {
-      const label = TRUTH_STATE_META[decision.state].label
+      const label = TRUTH_STATE_META[verdict.enforced.state].label
       noVerdictCounts[label] = (noVerdictCounts[label] ?? 0) + 1
     }
-    if (e.event_type === 'PolicyViolation') violations.push(e)
+    if (wasSuppressed) {
+      const label = csvCertain(verdict.suppressed as Certain<string>)
+      suppressedCounts[label] = (suppressedCounts[label] ?? 0) + 1
+      suppressed.push({ entry: e, verdict })
+    }
+    // A denial suppressed by observe mode IS a policy violation — the gateway
+    // simply recorded it under the rewritten event type
+    // (`policy_service.rs:891`). Counting only `PolicyViolation` rows would let
+    // this section report zero over a window full of blocked-but-permitted
+    // actions.
+    if (e.event_type === 'PolicyViolation' || wasSuppressed) violations.push(e)
   }
   // Explicit comparator so the agent list is ordered locale-safely and stably
   // rather than by raw UTF-16 code units (S2871).
   const agents = Array.from(new Set(rows.map((e) => e.agent_id))).sort((a, b) => a.localeCompare(b))
 
   const lines: string[] = []
+  const titleSuffix = [
+    coverage.complete ? null : 'PARTIAL WINDOW',
+    suppressed.length > 0 ? 'OBSERVE MODE' : null,
+  ].filter(Boolean)
   lines.push(
-    coverage.complete
+    titleSuffix.length === 0
       ? '# Audit Compliance Report'
-      : '# Audit Compliance Report — PARTIAL WINDOW',
+      : `# Audit Compliance Report — ${titleSuffix.join(', ')}`,
   )
   lines.push('')
+  if (suppressed.length > 0) {
+    lines.push(
+      `> **${suppressed.length} ${suppressed.length === 1 ? 'entry in this window was' : 'entries in this window were'} allowed only because enforcement was off.**`,
+    )
+    lines.push('> Observe mode rewrote the decision to ALLOW and recorded the verdict it')
+    lines.push('> suppressed. Those rows are NOT allows, and the actions they describe were')
+    lines.push('> not blocked. See "Suppressed by observe mode" below.')
+    lines.push('')
+  }
   if (!coverage.complete) {
     lines.push(
       '> **This report does not cover the complete audit trail.** It is derived',
@@ -194,24 +258,38 @@ export function buildComplianceReport(
     for (const [label, count] of noVerdictEntries) lines.push(`- ${label}: ${count}`)
   }
   lines.push('')
+  lines.push(`## Suppressed by observe mode (${suppressed.length})`)
+  if (suppressed.length === 0) {
+    lines.push('- No entry in this window had a verdict suppressed by observe mode.')
+  } else {
+    for (const [label, count] of Object.entries(suppressedCounts).sort((a, b) => b[1] - a[1])) {
+      lines.push(`- Would have been ${label}: ${count}`)
+    }
+    lines.push('')
+    for (const { entry, verdict } of suppressed) {
+      const why = verdict.suppressedReason ?? summaryText(entry)
+      lines.push(
+        `- [${entry.timestamp}] ${entry.agent_id} — recorded as ${entry.event_type}, would have been ${csvCertain(
+          verdict.suppressed as Certain<string>,
+        )}: ${why}`,
+      )
+    }
+  }
+  lines.push('')
   lines.push(`## Policy violations (${violations.length})`)
   if (violations.length === 0) {
     // "None" is a claim about the window, never about the trail — saying it
     // unqualified over a partial window is how a review concludes there were no
-    // violations when the window simply stopped short.
+    // violations when the window simply stopped short. It is also only sayable
+    // at all because suppressed denials are counted into `violations` above.
     lines.push(
       coverage.complete
-        ? '- None among the entries matching the current filter.'
+        ? '- None among the entries matching the current filter, and no verdict was suppressed by observe mode.'
         : '- None in the loaded window. This does NOT mean there were none in the trail.',
     )
   } else {
     for (const v of violations) {
-      const summary = payloadSummary(v.payload)
-      lines.push(
-        `- [${v.timestamp}] ${v.agent_id}: ${
-          isKnown(summary) ? summary.value : TRUTH_STATE_META[summary.state].label
-        }`,
-      )
+      lines.push(`- [${v.timestamp}] ${v.agent_id}: ${summaryText(v)}`)
     }
   }
   lines.push('')

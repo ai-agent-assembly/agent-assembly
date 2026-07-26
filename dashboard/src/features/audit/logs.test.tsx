@@ -12,9 +12,10 @@ import {
   auditEventHref,
   coverageStatement,
   eventGroupOf,
-  extractDecision,
   extractTraceId,
+  extractVerdict,
   isKnownEventType,
+  isSuppressedDenial,
   payloadSummary,
   useAuditLogQuery,
   type AuditLogWindow,
@@ -36,7 +37,7 @@ function value<T>(certain: Certain<T>): T {
   return certain.value
 }
 
-describe('extractDecision — proto enum wire shape', () => {
+describe('extractVerdict — proto enum wire shape', () => {
   // ── THE regression this whole ticket is about (AAASM-5117) ───────────────
   // `aa-gateway/src/service/policy_service.rs` writes `"decision":
   // response.decision`, and prost types a proto enum field as `i32`. Every
@@ -48,9 +49,9 @@ describe('extractDecision — proto enum wire shape', () => {
     [3, 'PENDING'],
     [4, 'REDACT'],
   ])('maps proto discriminant %i to %s', (discriminant, expected) => {
-    const decision = extractDecision(`{"decision":${discriminant}}`)
-    expect(isKnown(decision)).toBe(true)
-    expect(value(decision)).toBe(expected)
+    const { enforced } = extractVerdict(`{"decision":${discriminant}}`)
+    expect(isKnown(enforced)).toBe(true)
+    expect(value(enforced)).toBe(expected)
   })
 
   it('reads a real gateway payload verbatim', () => {
@@ -66,7 +67,10 @@ describe('extractDecision — proto enum wire shape', () => {
       org_id: 'acme',
       team_id: 'research',
     })
-    expect(value(extractDecision(payload))).toBe('DENY')
+    const verdict = extractVerdict(payload)
+    expect(value(verdict.enforced)).toBe('DENY')
+    expect(verdict.suppressed).toBeNull()
+    expect(verdict.dryRun).toBe(false)
   })
 
   it('reads a real runtime payload verbatim', () => {
@@ -78,58 +82,103 @@ describe('extractDecision — proto enum wire shape', () => {
       decision: 1,
       detail: { kind: 'tool_call', tool_name: 'pg.users', tool_source: 'mcp', succeeded: true },
     })
-    expect(value(extractDecision(payload))).toBe('ALLOW')
+    expect(value(extractVerdict(payload).enforced)).toBe('ALLOW')
   })
 
   it('treats DECISION_UNSPECIFIED (0) as unknown, never as a verdict', () => {
-    const decision = extractDecision('{"decision":0}')
-    expect(isKnown(decision)).toBe(false)
-    expect(decision).toMatchObject({ state: 'unknown' })
+    const { enforced } = extractVerdict('{"decision":0}')
+    expect(isKnown(enforced)).toBe(false)
+    expect(enforced).toMatchObject({ state: 'unknown' })
   })
 
   it('treats a discriminant this build does not know as unknown', () => {
-    const decision = extractDecision('{"decision":97}')
-    expect(isKnown(decision)).toBe(false)
-    expect(decision).toMatchObject({ state: 'unknown' })
-  })
-
-  it('still accepts the string form the shadow path emits', () => {
-    expect(value(extractDecision('{"shadow_decision":"deny"}'))).toBe('DENY')
-  })
-
-  it('prefers the enforced integer decision over the shadow string', () => {
-    // Observe mode rewrites `decision` to Allow and records what it would have
-    // done in `shadow_decision`. The column reports what actually happened.
-    const payload = '{"decision":1,"dry_run":true,"shadow_decision":"deny"}'
-    expect(value(extractDecision(payload))).toBe('ALLOW')
-  })
-
-  it('falls back to shadow_decision when the enforced field is absent', () => {
-    expect(value(extractDecision('{"shadow_decision":"redact"}'))).toBe('REDACT')
+    const { enforced } = extractVerdict('{"decision":97}')
+    expect(isKnown(enforced)).toBe(false)
+    expect(enforced).toMatchObject({ state: 'unknown' })
   })
 
   it('reports not-evaluated when the entry carries no decision at all', () => {
-    const decision = extractDecision('{"event_id":"x"}')
-    expect(isKnown(decision)).toBe(false)
-    expect(decision).toMatchObject({ state: 'not-evaluated' })
+    const { enforced } = extractVerdict('{"event_id":"x"}')
+    expect(isKnown(enforced)).toBe(false)
+    expect(enforced).toMatchObject({ state: 'not-evaluated' })
   })
 
   it('does not invent a verdict from an unrecognised string', () => {
-    const decision = extractDecision('{"decision":"probably-fine"}')
-    expect(isKnown(decision)).toBe(false)
-    expect(decision).toMatchObject({ state: 'unknown' })
+    const { enforced } = extractVerdict('{"decision":"probably-fine"}')
+    expect(isKnown(enforced)).toBe(false)
+    expect(enforced).toMatchObject({ state: 'unknown' })
   })
 
   it('reports unknown for malformed JSON', () => {
-    expect(extractDecision('not-json')).toMatchObject({ known: false, state: 'unknown' })
+    expect(extractVerdict('not-json').enforced).toMatchObject({ known: false, state: 'unknown' })
   })
 
   it('reports unknown for a non-object JSON payload', () => {
-    expect(extractDecision('"just-a-string"')).toMatchObject({ known: false, state: 'unknown' })
+    expect(extractVerdict('"just-a-string"').enforced).toMatchObject({
+      known: false,
+      state: 'unknown',
+    })
   })
 
   it('ignores an empty-string decision and falls through', () => {
-    expect(extractDecision('{"decision":""}')).toMatchObject({ known: false })
+    expect(extractVerdict('{"decision":""}').enforced).toMatchObject({ known: false })
+  })
+})
+
+// ── AAASM-5117 review blocker: observe mode ────────────────────────────────
+// `transform_for_observe_mode` (aa-gateway/src/engine/mod.rs:144-171) replaces a
+// Deny with Allow and returns a ShadowEvent, so the shipped payload is
+// `{"decision":1,"dry_run":true,"shadow_decision":"deny",...}`. Reporting only
+// the enforced value paints an observe-mode deployment — the recommended
+// onboarding posture — as a wall of green allows over suppressed denials.
+describe('extractVerdict — observe mode must never read as a bare allow', () => {
+  const SUPPRESSED_DENY = JSON.stringify({
+    action_type: 2,
+    decision: 1,
+    reason: '',
+    policy_rule: '',
+    latency_us: 300,
+    dry_run: true,
+    shadow_decision: 'deny',
+    shadow_reason: 'tool denied by policy',
+  })
+
+  it('surfaces the suppressed verdict alongside the enforced one', () => {
+    const verdict = extractVerdict(SUPPRESSED_DENY)
+    // The action really was allowed to proceed — that stays true...
+    expect(value(verdict.enforced)).toBe('ALLOW')
+    // ...but the suppressed denial travels with it, in the same value, so no
+    // consumer can render or count the allow without seeing it.
+    expect(verdict.dryRun).toBe(true)
+    expect(value(verdict.suppressed as Certain<string>)).toBe('DENY')
+    expect(verdict.suppressedReason).toBe('tool denied by policy')
+    expect(isSuppressedDenial(verdict)).toBe(true)
+  })
+
+  it('recognises a suppressed pending approval', () => {
+    // engine/mod.rs:155 maps RequiresApproval to shadow_decision "pending".
+    const verdict = extractVerdict('{"decision":1,"dry_run":true,"shadow_decision":"pending"}')
+    expect(value(verdict.suppressed as Certain<string>)).toBe('PENDING')
+    expect(isSuppressedDenial(verdict)).toBe(true)
+  })
+
+  it('does not mark an ordinary enforce-mode allow as suppressed', () => {
+    const verdict = extractVerdict('{"decision":1,"reason":"","policy_rule":""}')
+    expect(verdict.suppressed).toBeNull()
+    expect(verdict.dryRun).toBe(false)
+    expect(isSuppressedDenial(verdict)).toBe(false)
+  })
+
+  it('recovers the suppressed reason for the summary, which the rewrite empties', () => {
+    // convert.rs:194-201 blanks `reason` and `policy_rule` on the rewritten
+    // Allow response, so `shadow_reason` is the only surviving explanation.
+    expect(value(payloadSummary(SUPPRESSED_DENY))).toBe('tool denied by policy')
+  })
+
+  it('still reads a payload that carries only shadow_decision', () => {
+    const verdict = extractVerdict('{"shadow_decision":"deny"}')
+    expect(isKnown(verdict.enforced)).toBe(false)
+    expect(value(verdict.suppressed as Certain<string>)).toBe('DENY')
   })
 })
 

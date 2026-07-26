@@ -111,32 +111,94 @@ function readDecisionValue(raw: unknown): Certain<AuditDecision> | null {
 }
 
 /**
- * Pull the policy decision out of a `LogEntry.payload`.
+ * What a row's payload says about the policy verdict.
  *
- * Precedence: the enforced `decision` first, then `shadow_decision`. That order
- * matters in observe mode — the gateway rewrites `decision` to `ALLOW` and
- * records what it *would* have done in `shadow_decision`, and the column must
- * report what actually happened.
+ * There is deliberately **no** reader that returns the enforced verdict on its
+ * own. In observe mode the gateway rewrites the decision to `ALLOW` and records
+ * the verdict it suppressed alongside it, so a caller holding only `enforced`
+ * holds a value that reads as permission while a denial is what actually
+ * happened. Coupling the two in one type makes that mistake unrepresentable:
+ * every consumer that renders, exports or counts a verdict receives the
+ * suppression in the same value.
+ */
+export interface AuditVerdict {
+  /** The decision the gateway enforced — what actually happened to the action. */
+  readonly enforced: Certain<AuditDecision>
+  /** The payload's explicit `dry_run` flag (observe mode). */
+  readonly dryRun: boolean
+  /**
+   * The verdict observe mode suppressed, or `null` when nothing was suppressed.
+   *
+   * Non-null means `enforced` is **not** a governance outcome the operator can
+   * rely on: the action was allowed to proceed only because enforcement was off.
+   */
+  readonly suppressed: Certain<AuditDecision> | null
+  /** The explanation recorded for the suppressed verdict (`shadow_reason`). */
+  readonly suppressedReason: string | null
+}
+
+/**
+ * Read the policy verdict out of a `LogEntry.payload`.
+ *
+ * ── Why `enforced` and `suppressed` are read together (AAASM-5117 review) ────
+ *
+ * `aa-gateway/src/engine/mod.rs:144` `transform_for_observe_mode` replaces a
+ * `Deny` / `RequiresApproval` result with `PolicyResult::Allow` and returns a
+ * `ShadowEvent` carrying the original verdict. `record_audit`
+ * (`policy_service.rs:940-949`) then writes
+ * `{"decision": 1, "dry_run": true, "shadow_decision": "deny", "shadow_reason": …}`,
+ * and its own comment at `:855-857` says the payload carries those fields
+ * precisely "so the audit reader can render the would-be event distinctly from
+ * live enforcement records".
+ *
+ * The event type is rewritten too: `record_audit` derives it from the
+ * *post-transform* decision (`policy_service.rs:891` →
+ * `decision_to_event_type_from_response`, `:1039-1048`), so a suppressed denial
+ * is recorded as `ToolCallIntercepted`, not `PolicyViolation`. Nothing in the
+ * row's own `decision`, `event_type`, `reason` or `policy_rule` survives to say
+ * a denial happened — `reason` and `policy_rule` are emptied by the rewrite
+ * (`convert.rs:194-201`). Only `shadow_decision` / `shadow_reason` do.
+ *
+ * Reporting `enforced` alone would therefore paint an observe-mode deployment —
+ * the product's recommended onboarding posture — as a wall of green `allow`
+ * chips over suppressed denials.
  *
  * A row with neither field is not a policy decision at all (a budget or session
- * lifecycle event, say), so it reports `not-evaluated` rather than a verdict.
+ * lifecycle event, say), so `enforced` is `not-evaluated` rather than a verdict.
  */
-export function extractDecision(payload: string): Certain<AuditDecision> {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(payload)
-  } catch {
-    return absent('unknown', 'Payload is not valid JSON')
+export function extractVerdict(payload: string): AuditVerdict {
+  const parsed = parsePayload(payload)
+  if (!isKnown(parsed)) {
+    return {
+      enforced: propagateAbsence(parsed),
+      dryRun: false,
+      suppressed: null,
+      suppressedReason: null,
+    }
   }
-  if (typeof parsed !== 'object' || parsed === null) {
-    return absent('unknown', 'Payload is not a JSON object')
+  const p = parsed.value
+  const enforced =
+    readDecisionValue(p['decision']) ??
+    absent<AuditDecision>('not-evaluated', 'This entry records no policy decision')
+  return {
+    enforced,
+    dryRun: p['dry_run'] === true,
+    suppressed: readDecisionValue(p['shadow_decision']),
+    suppressedReason: str(p, 'shadow_reason'),
   }
-  const p = parsed as Record<string, unknown>
-  const direct = readDecisionValue(p['decision'])
-  if (direct) return direct
-  const shadow = readDecisionValue(p['shadow_decision'])
-  if (shadow) return shadow
-  return absent('not-evaluated', 'This entry records no policy decision')
+}
+
+/**
+ * Whether observe mode suppressed a *restrictive* verdict on this row.
+ *
+ * This is the predicate that decides whether a row may be counted as an allow,
+ * or listed under "no policy violations". A suppressed `ALLOW` would be
+ * meaningless (observe mode only ever suppresses `Deny` / `RequiresApproval` —
+ * `engine/mod.rs:152-156`), so an unknown or absent suppression does not
+ * disqualify the row.
+ */
+export function isSuppressedDenial(verdict: AuditVerdict): boolean {
+  return verdict.suppressed !== null && isKnown(verdict.suppressed) && verdict.suppressed.value !== 'ALLOW'
 }
 
 // ── Event types ─────────────────────────────────────────────────────────────
@@ -378,7 +440,15 @@ export function payloadSummary(payload: string): Certain<string> {
     if (summary) return known(summary)
   }
 
-  const gateway = joinParts([str(p, 'reason'), str(p, 'policy_rule')], ' — ')
+  // Observe mode empties `reason` and `policy_rule` on the rewritten Allow
+  // response (`aa-gateway/src/service/convert.rs:194-201`) and records the real
+  // explanation under `shadow_reason`. Without this fallback a suppressed
+  // denial's summary column is blank — the row would carry no trace at all of
+  // why the action would have been blocked.
+  const gateway = joinParts(
+    [str(p, 'reason') ?? str(p, 'shadow_reason'), str(p, 'policy_rule')],
+    ' — ',
+  )
   if (gateway) return known(gateway)
 
   // `action_type` is an integer on the gateway path and a string

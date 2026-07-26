@@ -515,7 +515,7 @@ describe('AuditLogPage — window coverage', () => {
     await screen.findByTestId('audit-row-1048')
 
     fireEvent.click(screen.getByTestId('audit-type-btn-approval'))
-    await waitFor(() => expect(screen.getByTestId('audit-count')).toHaveTextContent('1 / 3'))
+    await waitFor(() => expect(screen.getByTestId('audit-count')).toHaveTextContent('1 / 3 loaded'))
 
     fireEvent.click(screen.getByTestId('audit-export-csv'))
     expect(await screen.findByTestId('toast')).toHaveTextContent('Exported 1 row to CSV')
@@ -533,5 +533,72 @@ describe('AuditLogPage — window coverage', () => {
 
     expect(createSpy).toHaveBeenCalledTimes(1)
     expect(clickSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── AAASM-5117 review blocker: observe mode ────────────────────────────────
+describe('AuditLogPage — observe mode', () => {
+  // Exactly what a suppressed denial looks like on the wire: the decision is
+  // rewritten to ALLOW (1), the event type is rewritten to the benign
+  // ToolCallIntercepted, `reason`/`policy_rule` are emptied, and only the
+  // shadow fields record that anything was blocked.
+  const SUPPRESSED = entry({
+    seq: 2001,
+    event_type: 'ToolCallIntercepted',
+    payload: JSON.stringify({
+      action_type: 2,
+      decision: 1,
+      reason: '',
+      policy_rule: '',
+      dry_run: true,
+      shadow_decision: 'deny',
+      shadow_reason: 'gmail/send blocked for external recipients',
+    }),
+  })
+
+  beforeEach(() => {
+    get.mockResolvedValue({ data: page([SUPPRESSED]) })
+  })
+
+  it('never renders a suppressed denial as a bare allow', async () => {
+    renderPage()
+    const row = await screen.findByTestId('audit-row-2001')
+    // The enforced allow is still shown — the action did proceed...
+    expect(within(row).getByTestId('audit-decision-2001')).toHaveTextContent('allow')
+    // ...but the suppressed denial is on screen beside it.
+    const marker = within(row).getByTestId('audit-suppressed-2001')
+    expect(marker).toHaveTextContent('observe: deny')
+    expect(marker).toHaveAttribute(
+      'title',
+      expect.stringContaining('gmail/send blocked for external recipients'),
+    )
+  })
+
+  it('scans as a violation row despite the rewritten event type', async () => {
+    renderPage()
+    const row = await screen.findByTestId('audit-row-2001')
+    expect(row.className).toContain('audit-row--violation')
+  })
+
+  it('recovers the suppressed reason into the summary column', async () => {
+    renderPage()
+    await screen.findByTestId('audit-row-2001')
+    expect(screen.getByTestId('audit-summary-2001')).toHaveTextContent(
+      'gmail/send blocked for external recipients',
+    )
+  })
+
+  it('shows the suppression in the expanded detail too', async () => {
+    renderPage()
+    fireEvent.click(await screen.findByTestId('audit-row-2001'))
+    await screen.findByTestId('audit-detail-2001')
+    expect(screen.getByTestId('audit-suppressed--2001')).toHaveTextContent('observe: deny')
+  })
+
+  it('does not mark an ordinary enforce-mode allow as suppressed', async () => {
+    get.mockResolvedValue({ data: page(ENTRIES) })
+    renderPage()
+    await screen.findByTestId('audit-row-1047')
+    expect(screen.queryByTestId('audit-suppressed-1047')).toBeNull()
   })
 })

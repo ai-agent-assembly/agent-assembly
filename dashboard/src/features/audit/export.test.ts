@@ -89,7 +89,7 @@ describe('buildAuditCsv', () => {
     const lines = buildAuditCsv(ROWS, COMPLETE).split('\r\n')
     expect(lines).toHaveLength(3)
     expect(lines[0]).toBe(
-      'seq,timestamp,agent_id,event_type,decision,summary,session_id,export_scope',
+      'seq,timestamp,agent_id,event_type,decision,dry_run,suppressed_decision,summary,session_id,export_scope',
     )
   })
 
@@ -126,7 +126,7 @@ describe('buildAuditCsv', () => {
 
   it('produces only the header for an empty row set', () => {
     expect(buildAuditCsv([], COMPLETE)).toBe(
-      'seq,timestamp,agent_id,event_type,decision,summary,session_id,export_scope',
+      'seq,timestamp,agent_id,event_type,decision,dry_run,suppressed_decision,summary,session_id,export_scope',
     )
   })
 
@@ -136,9 +136,11 @@ describe('buildAuditCsv', () => {
       COMPLETE,
     )
     const cells = csv.split('\r\n')[1].split(',')
-    // Column order: seq,timestamp,agent_id,event_type,decision,summary,session_id,export_scope
+    // seq,timestamp,agent_id,event_type,decision,dry_run,suppressed_decision,summary,session_id,export_scope
     expect(cells[4]).toBe('Not evaluated')
-    expect(cells[5]).toBe('Unknown')
+    expect(cells[5]).toBe('false')
+    expect(cells[6]).toBe('')
+    expect(cells[7]).toBe('Unknown')
   })
 
   it('renders a null wire field as an empty cell rather than "null"', () => {
@@ -202,7 +204,9 @@ describe('buildComplianceReport', () => {
 
   it('states zero violations plainly only when the window is complete', () => {
     const report = buildComplianceReport([ROWS[1]], ctx, COMPLETE, now)
-    expect(report).toContain('- None among the entries matching the current filter.')
+    expect(report).toContain(
+      '- None among the entries matching the current filter, and no verdict was suppressed by observe mode.',
+    )
     expect(report).not.toContain('PARTIAL WINDOW')
   })
 
@@ -236,5 +240,87 @@ describe('buildComplianceReport', () => {
     expect(report).toContain('Entries in this report: 0')
     expect(report).toContain('Agents covered (audit id digests): (none)')
     expect(report).toContain('## Policy violations (0)')
+  })
+})
+
+// ── AAASM-5117 review blocker: observe mode ────────────────────────────────
+// The gateway rewrites a suppressed Deny to `decision: 1` and records the real
+// verdict under `shadow_decision` (aa-gateway/src/engine/mod.rs:144-171,
+// policy_service.rs:940-949). It also rewrites the event type to a benign
+// `ToolCallIntercepted` (policy_service.rs:891), so nothing but the shadow
+// fields marks the row as a denial.
+const SUPPRESSED_ROW: LogEntry = entry({
+  seq: 2001,
+  event_type: 'ToolCallIntercepted',
+  payload: JSON.stringify({
+    action_type: 2,
+    decision: 1,
+    reason: '',
+    policy_rule: '',
+    dry_run: true,
+    shadow_decision: 'deny',
+    shadow_reason: 'gmail/send blocked for external recipients',
+  }),
+})
+
+describe('buildAuditCsv — observe mode', () => {
+  it('never emits a bare ALLOW for a suppressed denial', () => {
+    const line = buildAuditCsv([SUPPRESSED_ROW], COMPLETE).split('\r\n')[1]
+    const cells = line.split(',')
+    // A naive `decision == "ALLOW"` pivot must not match this row.
+    expect(cells[4]).not.toBe('ALLOW')
+    expect(cells[4]).toContain('suppressed DENY')
+  })
+
+  it('carries the machine-readable split in its own columns', () => {
+    const cells = buildAuditCsv([SUPPRESSED_ROW], COMPLETE).split('\r\n')[1].split(',')
+    expect(cells[5]).toBe('true')
+    expect(cells[6]).toBe('DENY')
+  })
+
+  it('recovers the suppressed reason into the summary column', () => {
+    const csv = buildAuditCsv([SUPPRESSED_ROW], COMPLETE)
+    expect(csv).toContain('gmail/send blocked for external recipients')
+  })
+})
+
+describe('buildComplianceReport — observe mode', () => {
+  const ctx = { typeFilter: 'all', agentFilter: 'all', search: '' }
+  const now = new Date('2026-05-11T15:00:00Z')
+
+  it('cannot report zero policy violations over a suppressed denial', () => {
+    const report = buildComplianceReport([SUPPRESSED_ROW], ctx, COMPLETE, now)
+    expect(report).not.toContain('## Policy violations (0)')
+    expect(report).toContain('## Policy violations (1)')
+  })
+
+  it('does not fold a suppressed denial into the enforced ALLOW total', () => {
+    const report = buildComplianceReport([SUPPRESSED_ROW], ctx, COMPLETE, now)
+    expect(report).not.toMatch(/^- ALLOW: 1$/m)
+    expect(report).toContain('- ALLOW (observe-mode; suppressed DENY): 1')
+  })
+
+  it('flags observe mode in the title and opens with a warning', () => {
+    const report = buildComplianceReport([SUPPRESSED_ROW], ctx, COMPLETE, now)
+    expect(report.split('\n')[0]).toContain('OBSERVE MODE')
+    expect(report).toContain('allowed only because enforcement was off')
+  })
+
+  it('lists each suppressed entry with the verdict it would have been', () => {
+    const report = buildComplianceReport([SUPPRESSED_ROW], ctx, COMPLETE, now)
+    expect(report).toContain('## Suppressed by observe mode (1)')
+    expect(report).toContain('- Would have been DENY: 1')
+    expect(report).toContain('recorded as ToolCallIntercepted, would have been DENY')
+    expect(report).toContain('gmail/send blocked for external recipients')
+  })
+
+  it('states the observe-mode all-clear only when nothing was suppressed', () => {
+    // ROWS[1] is a plain enforce-mode ALLOW — no violation, no suppression.
+    const report = buildComplianceReport([ROWS[1]], ctx, COMPLETE, now)
+    expect(report).toContain('- No entry in this window had a verdict suppressed by observe mode.')
+    expect(report).toContain(
+      '- None among the entries matching the current filter, and no verdict was suppressed by observe mode.',
+    )
+    expect(report.split('\n')[0]).not.toContain('OBSERVE MODE')
   })
 })

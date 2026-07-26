@@ -443,6 +443,23 @@
   border-color: var(--scrub);
 }
 
+/* Observe-mode suppression (AAASM-5117 review). Danger-coloured because a
+   suppressed denial is a risk signal, but *dashed and unfilled* so it never
+   reads as an enforced deny — the whole point is that nothing was blocked. It
+   sits beside the enforced `allow` chip rather than replacing it. */
+.audit-chip--observe {
+  background: transparent;
+  color: var(--danger);
+  border: 1px dashed var(--danger);
+}
+
+.audit-decision-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+}
+
 /* ── Expanded detail row ─────────────────────────────────────────────── */
 .audit-detail-cell {
   padding: 0 !important;

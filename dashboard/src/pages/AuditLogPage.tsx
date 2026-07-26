@@ -7,11 +7,13 @@ import {
   auditEventHref,
   coverageStatement,
   eventGroupOf,
-  extractDecision,
   extractTraceId,
+  extractVerdict,
+  isSuppressedDenial,
   payloadSummary,
   useAuditLogQuery,
   type AuditDecision,
+  type AuditVerdict,
   type LogEntry,
 } from '../features/audit/logs'
 import { downloadAuditCsv, downloadComplianceReport } from '../features/audit/export'
@@ -91,7 +93,7 @@ function shortDigest(hex: string): string {
 }
 
 /** Render a verdict chip, or the shared absence affordance. */
-function DecisionCell({
+function VerdictChip({
   decision,
   testId,
 }: Readonly<{ decision: Certain<AuditDecision>; testId: string }>) {
@@ -102,6 +104,41 @@ function DecisionCell({
   return (
     <span className={chipClass(meta.chip)} data-testid={testId}>
       {meta.label}
+    </span>
+  )
+}
+
+/**
+ * The decision cell: what was enforced, plus what observe mode suppressed.
+ *
+ * The suppressed verdict is rendered as a second, restrictively-toned chip
+ * rather than folded into the first. An observe-mode row genuinely *was*
+ * allowed — the action proceeded — so hiding the `allow` would misreport what
+ * happened; but showing it alone reports a governance all-clear over a denial.
+ * Both facts are on screen, and the one that carries the risk is the one
+ * coloured. See `features/audit/logs.ts::extractVerdict` for the wire evidence.
+ */
+function DecisionCell({
+  verdict,
+  seq,
+  idPrefix,
+}: Readonly<{ verdict: AuditVerdict; seq: number; idPrefix: string }>) {
+  return (
+    <span className="audit-decision-cell">
+      <VerdictChip decision={verdict.enforced} testId={`${idPrefix}-${seq}`} />
+      {verdict.suppressed !== null && (
+        <span
+          className="audit-chip audit-chip--observe"
+          data-testid={`audit-suppressed-${seq}`}
+          title={
+            verdict.suppressedReason
+              ? `Observe mode suppressed this verdict — ${verdict.suppressedReason}`
+              : 'Observe mode suppressed this verdict; the action was allowed to proceed.'
+          }
+        >
+          ⊙ observe: {isKnown(verdict.suppressed) ? verdict.suppressed.value.toLowerCase() : 'unknown'}
+        </span>
+      )}
     </span>
   )
 }
@@ -252,11 +289,14 @@ export function AuditLogPage() {
                   chip: '',
                   icon: '·',
                 }
-                const decision = extractDecision(e.payload)
+                const verdict = extractVerdict(e.payload)
                 const summary = payloadSummary(e.payload)
                 const trace = extractTraceId(e.payload)
                 const isExp = expanded === e.seq
-                const isViolation = e.event_type === 'PolicyViolation'
+                // A denial observe mode suppressed still scans as a violation
+                // row: the gateway recorded it under a rewritten, benign event
+                // type, so the event type alone would let it pass unnoticed.
+                const isViolation = e.event_type === 'PolicyViolation' || isSuppressedDenial(verdict)
                 const group = eventGroupOf(e.event_type)
                 const rowCls = [
                   'audit-row',
@@ -300,7 +340,7 @@ export function AuditLogPage() {
                         </span>
                       </td>
                       <td>
-                        <DecisionCell decision={decision} testId={`audit-decision-${e.seq}`} />
+                        <DecisionCell verdict={verdict} seq={e.seq} idPrefix="audit-decision" />
                       </td>
                       <td>
                         {isKnown(summary) ? (
@@ -368,7 +408,11 @@ export function AuditLogPage() {
                                 </span>
                                 <span className="audit-kv__k">decision</span>
                                 <span className="audit-kv__v">
-                                  <DecisionCell decision={decision} testId={`audit-detail-decision-${e.seq}`} />
+                                  <DecisionCell
+                                    verdict={verdict}
+                                    seq={-e.seq}
+                                    idPrefix="audit-detail-decision"
+                                  />
                                 </span>
                               </div>
                             </div>
