@@ -187,6 +187,24 @@ describe('useRegisteredAgentsQuery', () => {
     expect(result.current.data).toBeUndefined()
   })
 
+  it('surfaces a failure on the first attempt rather than retrying behind a backoff', async () => {
+    // A retry chain would hold the step at "Request in flight" while the
+    // registry was already known to be failing. Asserted against a client that
+    // *would* retry, so the hook's own `retry: false` is what is under test.
+    const retryingClient = new QueryClient({ defaultOptions: { queries: { retry: 3 } } })
+    const retryingWrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={retryingClient}>{children}</QueryClientProvider>
+    )
+    apiGet.mockResolvedValue(failure(503, { detail: 'boom' }))
+
+    const { result } = renderHook(() => useRegisteredAgentsQuery(true), {
+      wrapper: retryingWrapper,
+    })
+
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(apiGet).toHaveBeenCalledTimes(1)
+  })
+
   it('throws when a 200 carries no payload, rather than coercing it to total 0', async () => {
     apiGet.mockResolvedValue({ data: undefined, error: undefined, response: res(200) })
 

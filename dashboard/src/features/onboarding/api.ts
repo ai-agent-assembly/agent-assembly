@@ -84,6 +84,12 @@ export function useRegisteredAgentsQuery(enabled: boolean) {
     queryKey: ['onboarding', 'registered-agents'],
     enabled,
     refetchInterval: enabled ? ENROLLED_AGENTS_POLL_MS : false,
+    // The client's default is three retries with exponential backoff, which
+    // would leave the step showing "Request in flight" for ~7s after the
+    // registry started failing — a poll that already re-asks every 3s gains
+    // nothing from that, and the delay is time the operator spends not knowing
+    // the read failed. Fail fast; the interval is the retry.
+    retry: false,
     queryFn: async () => {
       const { data, error } = await api.GET('/api/v1/agents', {
         params: { query: { per_page: 100 } },
