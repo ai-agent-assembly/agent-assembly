@@ -26,7 +26,23 @@ export interface CapabilitySummary extends VerdictTally {
   readonly flaggedAgents: Certain<number>
 }
 
-/** Flatten the visible grid into the per-cell decisions for one verb. */
+/**
+ * Flatten the visible grid into the per-cell decisions for one verb.
+ *
+ * A missing cell is yielded as `na`, not as `undefined`. That is a statement
+ * about this endpoint's contract, not a convenience: `project_matrix` emits a
+ * cell for every agent × system-resource pair and, beyond those, only for the
+ * tools an agent actually declared. A column present in `resources` but absent
+ * from `agent.caps` therefore means *this resource is not in that agent's
+ * scope* — which is `na` / not-supported, the same thing the grid itself
+ * renders — rather than *nothing evaluated it*.
+ *
+ * The distinction matters because `tallyVerdicts` disqualifies a whole tally on
+ * an unevaluated cell. Leaving these as `undefined` would suppress the summary
+ * for any fleet whose agents declare different tools, which is most of them —
+ * claiming to know nothing when we know almost everything is its own kind of
+ * dishonesty.
+ */
 function* cellDecisions(
   agents: CapabilityAgent[],
   resources: Resource[],
@@ -34,7 +50,7 @@ function* cellDecisions(
 ): Generator<CapabilityVerdict | undefined> {
   for (const agent of agents) {
     for (const resource of resources) {
-      yield agent.caps[resource.id]?.[verb]
+      yield agent.caps[resource.id]?.[verb] ?? 'na'
     }
   }
 }
@@ -78,7 +94,12 @@ export function summarizeMatrix(
     ...tally,
     // A cascade the dashboard could not load says nothing about flags either,
     // so only re-derive the flag column when the matrix itself is trustworthy.
-    flaggedAgents: isKnown(cascade) ? countFlagged(agents) : absent('unavailable', cascade.detail),
+    //
+    // The absence is propagated rather than relabelled `unavailable`: a pending
+    // matrix is `unknown`, and hardcoding a failure here would put "Unavailable
+    // — the request failed" next to three stats reading "Unknown", with the
+    // self-contradicting tooltip "Unavailable — Request in flight".
+    flaggedAgents: isKnown(cascade) ? countFlagged(agents) : propagateAbsence(cascade),
   }
 }
 
@@ -90,11 +111,18 @@ export function summarizeMatrix(
  * applies". `certain` is used rather than a bare length check so an absent
  * policy list stays distinguishable from an empty one — collapsing those two is
  * the same class of bug this lane exists to remove.
+ *
+ * A missing `policies` key maps to `unknown`, not `unavailable`: this function
+ * only ever sees a payload that already arrived, so the request did not fail.
+ * `openapi-fetch` performs no runtime validation, so a 200 whose body omits the
+ * key is reachable — and the honest answer to that is "we could not determine
+ * the cascade", not "the request failed". A genuinely failed request is
+ * classified upstream by `cascadeEvidenceFromQuery`.
  */
 export function cascadeEvidenceOf(
   policies: readonly unknown[] | null | undefined,
 ): Certain<CascadeEvidence> {
-  const resolved = certain(policies, 'unavailable', 'The matrix carried no policy list')
+  const resolved = certain(policies, 'unknown', 'The matrix carried no policy list')
   return isKnown(resolved)
     ? known({ documentCount: resolved.value.length })
     : propagateAbsence(resolved)
