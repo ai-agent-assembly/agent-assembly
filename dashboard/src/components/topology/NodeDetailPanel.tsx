@@ -9,7 +9,7 @@ import type {
 } from '../../features/topology/types'
 import { SuspendReasonDialog } from '../SuspendReasonDialog'
 import { AbsenceMarker, TruthfulValue } from '../truthfulness'
-import { certain, isKnown } from '../../lib/truthfulness'
+import { certain, isKnown, type Certain } from '../../lib/truthfulness'
 import { bucketForRatio } from './budgetThreshold'
 import './NodeDetailPanel.css'
 
@@ -28,6 +28,24 @@ const NO_LIMIT_DETAIL = 'No daily budget limit is configured for this agent'
  * an operator who clicks it has no way to tell whether governance was applied.
  */
 const NO_BACKEND_TITLE = 'Backend cascade-apply / mode toggle is not available yet'
+
+/**
+ * Budget burn as a 0–1 ratio, or `null` when there is no ratio to report.
+ *
+ * A burn ratio only exists once a ceiling does. With an unconfigured limit there
+ * is nothing to divide by, so this reports the absence rather than falling back
+ * to `0` — which would render a fully-unburnt budget the data never asserted
+ * (AAASM-5135).
+ *
+ * A *configured* ceiling of `$0` is a different case and keeps its prior
+ * behaviour: it is a real fact, so it still yields a ratio. `certain` draws the
+ * same line — it treats `0` as a value and only `null`/`undefined` as missing.
+ */
+function burnRatio(spend: number, limit: Certain<number>): number | null {
+  if (!isKnown(limit)) return null
+  if (limit.value <= 0) return 0
+  return Math.min(1, spend / limit.value)
+}
 
 /** A cross-team relationship for the selected node: direction + peer. */
 interface CrossTeamEdge {
@@ -119,19 +137,8 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
 
   if (!node) return null
 
-  // A burn ratio only exists once a ceiling does. With `budgetLimit === null`
-  // there is nothing to divide by, so the panel reports the absence rather than
-  // falling back to `0` — which would render a fully-unburnt budget the data
-  // never asserted (AAASM-5135).
-  //
-  // A *configured* ceiling of `$0` is a different case and keeps its existing
-  // behaviour: it is a real fact, so it still reports a ratio rather than an
-  // absence. `certain` draws the same line — it treats `0` as a value and only
-  // `null`/`undefined` as missing.
   const budgetLimit = certain(node.budgetLimit, 'unconfigured', NO_LIMIT_DETAIL)
-  const ratio = isKnown(budgetLimit)
-    ? (budgetLimit.value > 0 ? Math.min(1, node.budgetSpend / budgetLimit.value) : 0)
-    : null
+  const ratio = burnRatio(node.budgetSpend, budgetLimit)
   const percent = ratio === null ? null : Math.round(ratio * 100)
   const ratioBucket = ratio === null ? undefined : bucketForRatio(ratio)
   const recent = (recentEventsQuery.data ?? []).slice(0, RECENT_EVENT_LIMIT)
