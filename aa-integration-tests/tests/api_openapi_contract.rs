@@ -71,10 +71,12 @@ fn openapi_spec_loads_without_errors() {
     // AAASM-5046 added /api/v1/iam/roles (role->capability grant mapping), bringing it to 70.
     // AAASM-5058 added /api/v1/agents/{id}/decisions (recent per-agent decision stream),
     // bringing it to 71. AAASM-5084 added /api/v1/analytics/agent-enforcement (per-agent
-    // blocked + scrubbed 24h counts), bringing it to 72.
+    // blocked + scrubbed 24h counts), bringing it to 72. AAASM-5096 added
+    // /api/v1/policies/team/{team_id} (policies in force for one team — a separate
+    // path because /api/v1/policies is Admin-only), bringing it to 73.
     assert_eq!(
-        path_count, 72,
-        "openapi/v1.yaml must declare exactly 72 paths, found {path_count}"
+        path_count, 73,
+        "openapi/v1.yaml must declare exactly 73 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -169,6 +171,8 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/policies",
         "/api/v1/policies/active",
         "/api/v1/policies/simulate",
+        // AAASM-5096 — policies in force for one team (Teams Active-policies card).
+        "/api/v1/policies/team/{team_id}",
         "/api/v1/topology",
         "/api/v1/topology/edges",
         "/api/v1/topology/lineage/{agent_id}",

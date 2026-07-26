@@ -2766,6 +2766,43 @@ paths:
                 $ref: '#/components/schemas/SimulatePolicyResponse'
         '403':
           description: Caller lacks read scope
+  /api/v1/policies/team/{team_id}:
+    get:
+      tags:
+      - policies
+      summary: '`GET /api/v1/policies/team/{team_id}` — policies in force for one team.'
+      description: |-
+        Read-only inverse of [`PolicyResponse::affects`]: the union of the policy
+        cascades of the team's agents, deduplicated by document. Backs the Teams
+        surface's Active-policies card (AAASM-5080 / AAASM-5096).
+
+        It is a separate path rather than a field on `GET /api/v1/policies` because
+        that endpoint is Admin-only — it discloses every tenant's raw policy YAML —
+        while a team's own operator must be able to read the policies governing its
+        team. This endpoint discloses no YAML, only document identities, so plain
+        Read plus membership in the requested team is the right gate.
+
+        Deny-by-default and tenant-scoped: a non-admin caller may only ask about its
+        own team, and each member is additionally filtered through the shared
+        `record_visible_to` org+team check, so no agent outside the caller's tenant
+        contributes a document.
+      operationId: list_team_policies
+      parameters:
+      - name: team_id
+        in: path
+        description: Team identifier
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Policies in force for the team
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamPoliciesResponse'
+        '403':
+          description: Caller lacks admin scope or membership in this team
   /api/v1/tools:
     get:
       tags:
@@ -7322,6 +7359,66 @@ components:
         team_id:
           type: string
           description: Team identifier.
+    TeamPoliciesResponse:
+      type: object
+      description: Response body for `GET /api/v1/policies/team/{team_id}` (AAASM-5096).
+      required:
+      - team_id
+      - policies
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamPolicyResponse'
+          description: |-
+            Every policy document in force for at least one visible agent in the
+            team, ordered by scope then name. Empty when the team has no visible
+            agents or the engine carries no document for them.
+        team_id:
+          type: string
+          description: The team the mapping was resolved for, echoed from the request.
+    TeamPolicyResponse:
+      type: object
+      description: |-
+        One policy document in force for a team, as shown on the Teams surface's
+        Active-policies card (`design/v1/hi-fi/teams.jsx`).
+      required:
+      - id
+      - name
+      - scope
+      properties:
+        hits24h:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: |-
+            Number of times this policy fired in the last 24 hours. **Always absent**
+            — see [`PolicyResponse::hits_24h`] for why no source exists.
+          minimum: 0
+        id:
+          type: string
+          description: |-
+            Scope-qualified document id (`"{scope}/{name}"`, or the bare scope for a
+            document declaring no `metadata.name`). Matches the id the capability
+            matrix emits for the same document.
+        name:
+          type: string
+          description: |-
+            The document's `metadata.name`, falling back to its scope label when the
+            document declares none (the flat, non-envelope policy format).
+        scope:
+          type: string
+          description: |-
+            The document's declared scope (`global` / `org:x` / `team:x` / `agent:x`),
+            so the card can show which tier of the cascade the policy comes from.
+        version:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Revision from the document's `metadata.version`. Absent for a document
+            that declares none.
     TeamSummary:
       type: object
       description: |-

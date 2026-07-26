@@ -61,6 +61,16 @@ fn policy_key(doc: &PolicyDocument) -> PolicyKey {
     (doc.scope.to_string(), doc.name.clone())
 }
 
+/// Stable display id for a policy document — scope-qualified so two same-named
+/// documents at different tiers stay distinguishable. Matches the `id` the
+/// capability matrix emits for the same document.
+fn policy_display_id(key: &PolicyKey) -> String {
+    match &key.1 {
+        Some(name) => format!("{}/{name}", key.0),
+        None => key.0.clone(),
+    }
+}
+
 /// Map every policy document currently in force to the names of the agents it
 /// is in force for.
 ///
@@ -470,6 +480,110 @@ pub async fn get_active_policy(
             policy_yaml,
         }),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Team → policy mapping (AAASM-5096)
+// ---------------------------------------------------------------------------
+
+/// One policy document in force for a team, as shown on the Teams surface's
+/// Active-policies card (`design/v1/hi-fi/teams.jsx`).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct TeamPolicyResponse {
+    /// Scope-qualified document id (`"{scope}/{name}"`, or the bare scope for a
+    /// document declaring no `metadata.name`). Matches the id the capability
+    /// matrix emits for the same document.
+    pub id: String,
+    /// The document's `metadata.name`, falling back to its scope label when the
+    /// document declares none (the flat, non-envelope policy format).
+    pub name: String,
+    /// The document's declared scope (`global` / `org:x` / `team:x` / `agent:x`),
+    /// so the card can show which tier of the cascade the policy comes from.
+    pub scope: String,
+    /// Revision from the document's `metadata.version`. Absent for a document
+    /// that declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Number of times this policy fired in the last 24 hours. **Always absent**
+    /// — see [`PolicyResponse::hits_24h`] for why no source exists.
+    #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
+    pub hits_24h: Option<u64>,
+}
+
+/// Response body for `GET /api/v1/policies/team/{team_id}` (AAASM-5096).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct TeamPoliciesResponse {
+    /// The team the mapping was resolved for, echoed from the request.
+    pub team_id: String,
+    /// Every policy document in force for at least one visible agent in the
+    /// team, ordered by scope then name. Empty when the team has no visible
+    /// agents or the engine carries no document for them.
+    pub policies: Vec<TeamPolicyResponse>,
+}
+
+/// `GET /api/v1/policies/team/{team_id}` — policies in force for one team.
+///
+/// Read-only inverse of [`PolicyResponse::affects`]: the union of the policy
+/// cascades of the team's agents, deduplicated by document. Backs the Teams
+/// surface's Active-policies card (AAASM-5080 / AAASM-5096).
+///
+/// It is a separate path rather than a field on `GET /api/v1/policies` because
+/// that endpoint is Admin-only — it discloses every tenant's raw policy YAML —
+/// while a team's own operator must be able to read the policies governing its
+/// team. This endpoint discloses no YAML, only document identities, so plain
+/// Read plus membership in the requested team is the right gate.
+///
+/// Deny-by-default and tenant-scoped: a non-admin caller may only ask about its
+/// own team, and each member is additionally filtered through the shared
+/// `record_visible_to` org+team check, so no agent outside the caller's tenant
+/// contributes a document.
+#[utoipa::path(
+    get,
+    path = "/api/v1/policies/team/{team_id}",
+    params(("team_id" = String, Path, description = "Team identifier")),
+    responses(
+        (status = 200, description = "Policies in force for the team", body = TeamPoliciesResponse),
+        (status = 403, description = "Caller lacks admin scope or membership in this team")
+    ),
+    tag = "policies"
+)]
+pub async fn list_team_policies(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(team_id): axum::extract::Path<String>,
+) -> Result<(StatusCode, Json<TeamPoliciesResponse>), ProblemDetail> {
+    if !caller.can_access_team(&team_id) {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("reading a team's policies requires admin scope or membership in that team".to_string()));
+    }
+
+    // BTreeMap keyed by the cascade identity: one entry per document however
+    // many of the team's agents carry it, ordered by scope then name.
+    let mut by_key: BTreeMap<PolicyKey, Arc<PolicyDocument>> = BTreeMap::new();
+    for member in state.agent_registry.team_members(&team_id) {
+        let Some(record) = state.agent_registry.get(&member) else {
+            continue;
+        };
+        if !record_visible_to(&caller, &record) {
+            continue;
+        }
+        for doc in cascade_for(&state, &record) {
+            by_key.entry(policy_key(&doc)).or_insert(doc);
+        }
+    }
+
+    let policies = by_key
+        .into_iter()
+        .map(|(key, doc)| TeamPolicyResponse {
+            id: policy_display_id(&key),
+            name: key.1.clone().unwrap_or_else(|| key.0.clone()),
+            scope: key.0.clone(),
+            version: doc.policy_version.clone(),
+            hits_24h: None,
+        })
+        .collect();
+
+    Ok((StatusCode::OK, Json(TeamPoliciesResponse { team_id, policies })))
 }
 
 /// Request body for `POST /api/v1/policies/simulate` (AAASM-5037).
