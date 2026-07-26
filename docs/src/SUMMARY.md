@@ -157,3 +157,6 @@
   - [0021 - Topology Enforcement-Mode Mutation Safety](adr/0021-topology-enforcement-mode-mutation-safety.md)
   - [0022 - Agent-Detail Config Projection & Quantified Recommendations](adr/0022-agent-config-projection-and-quantified-recommendations.md)
   - [0023 - Is aa-api Meant to Carry a Policy Cascade?](adr/0023-aa-api-policy-cascade-wiring.md)
+  - [0024 - Semantics of an Empty or Unavailable Policy Cascade](adr/0024-empty-cascade-semantics.md)
+  - [0025 - `design/v2/` Is the Authoritative Visual Specification](adr/0025-design-v2-authoritative-visual-spec.md)
+  - [0026 - Seven Open Dashboard Product-Semantics Decisions](adr/0026-open-dashboard-product-semantics.md)
