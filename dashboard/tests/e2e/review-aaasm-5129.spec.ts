@@ -20,8 +20,11 @@
  *     id or a `trace:span` composite (AAASM-5128);
  *  5. a read-scope caller gets every mutating affordance disabled — halt-all,
  *     the row action menu, and approve/reject — and issues no write
- *     (AAASM-5148);
- *  6. neither theme produces console errors or uncaught exceptions.
+ *     (AAASM-5148), and `page on-call`, which has no production path at all,
+ *     is disabled for everyone;
+ *  6. deciding an approval leaves the pane body, the pane-head chip and the
+ *     header bell agreeing, rather than two of them asserting a stale count;
+ *  7. neither theme produces console errors or uncaught exceptions.
  *
  * `openapi-fetch` captures `globalThis.fetch` at module load, so the approvals
  * failure is injected with `page.route` and the token is seeded with
@@ -317,12 +320,20 @@ test.describe('AAASM-5129 review — Live-Ops claims only what it measured', () 
       await expect(page.getByTestId('approval-pool-empty')).toHaveCount(0)
       await expect(page.getByText('No pending approvals')).toHaveCount(0)
 
-      // …and the pane-head chip must not claim a clear queue either.
+      // …and neither the pane-head chip nor the header bell may claim a clear
+      // queue. The bell is on every route, so it is the widest reach of the
+      // same defect: `data?.length ?? 0` hid its badge on a failed request,
+      // making an outage look exactly like an empty queue.
       const count = page.getByTestId('live-ops-approvals-count')
       await expect(count).toHaveAttribute('data-truth-state', 'unavailable', {
         timeout: OUTAGE_SETTLE_MS,
       })
       await expect(count).toContainText('—')
+      await expect(page.getByTestId('approvals-bell-absent')).toHaveAttribute(
+        'data-truth-state',
+        'unavailable',
+      )
+      await expect(page.getByTestId('approvals-bell-badge')).toHaveCount(0)
 
       await shot(page, `approvals-outage-${theme}`)
       expect(harness.errors).toEqual([])
@@ -340,6 +351,10 @@ test.describe('AAASM-5129 review — Live-Ops claims only what it measured', () 
       // A zero from a request that succeeded is a real answer.
       await expect(page.getByTestId('live-ops-approvals-chip')).toContainText('0 waiting')
       await expect(page.getByTestId('approval-pool-retry')).toHaveCount(0)
+      // A clear queue leaves the header bell bare — which is only correct
+      // because a failed one no longer looks like this.
+      await expect(page.getByTestId('approvals-bell-badge')).toHaveCount(0)
+      await expect(page.getByTestId('approvals-bell-absent')).toHaveCount(0)
 
       await shot(page, `approvals-empty-${theme}`)
       expect(harness.errors).toEqual([])
@@ -358,6 +373,7 @@ test.describe('AAASM-5129 review — Live-Ops claims only what it measured', () 
       // expires_at came with the real approval, so the TTL countdown is live.
       await expect(page.getByTestId('approval-countdown')).toBeVisible()
       await expect(page.getByTestId('live-ops-approvals-chip')).toContainText('1 waiting')
+      await expect(page.getByTestId('approvals-bell-badge')).toHaveText('1')
 
       await shot(page, `approvals-queue-${theme}`)
 
@@ -374,8 +390,15 @@ test.describe('AAASM-5129 review — Live-Ops claims only what it measured', () 
       expect(id).toMatch(UUID_RE)
       expect(id).toBe(APPROVAL_ID)
 
-      // The decided card leaves the queue optimistically.
+      // Every surface reading the queue must agree afterwards. The body used
+      // to shrink from component-local state while the pane-head chip and the
+      // always-visible header bell went on reporting the old count, because
+      // those two read the shared cache and nothing wrote it.
       await expect(page.getByTestId('approval-pool-empty')).toBeVisible()
+      await expect(page.getByTestId('live-ops-approvals-chip')).toContainText('0 waiting')
+      await expect(page.getByTestId('approvals-bell-badge')).toHaveCount(0)
+
+      await shot(page, `approvals-decided-${theme}`)
       expect(harness.errors).toEqual([])
     })
 
@@ -390,6 +413,9 @@ test.describe('AAASM-5129 review — Live-Ops claims only what it measured', () 
       // ── the fleet-wide kill switch ────────────────────────────────────
       const halt = page.getByTestId('live-ops-halt-all')
       await expect(halt).toBeDisabled()
+
+      // ── the affordance with no production path at all ─────────────────
+      await expect(page.getByTestId('live-ops-page-oncall')).toBeDisabled()
 
       // ── the per-op controls ───────────────────────────────────────────
       await expect(page.getByTestId('op-row')).toHaveCount(1)
