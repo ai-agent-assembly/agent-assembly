@@ -196,13 +196,26 @@ pub struct CapabilityAgent {
     /// `org_id`). Absent when the agent registered without either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
-    /// Trust score on a 0–100 scale.
+    /// Trust score as an integer on a 0–100 scale, or `null` when no
+    /// trust-analytics source exists yet.
     ///
-    /// Always absent: no trust score is computed anywhere in the gateway today.
+    /// Always `null`: no trust score is computed anywhere in the gateway today.
     /// Deriving one would be a new scoring rule, which is the subject of its own
     /// story (AAASM-5083) — emitting a placeholder here would be indistinguishable
     /// from a real score to every consumer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    //
+    // AAASM-5104 — one representation and one null contract for `trust` across
+    // every schema that carries it ([`crate::models::topology::AgentNode`],
+    // [`crate::models::topology::AgentTree`], and here): an integer 0–100,
+    // required-but-nullable. Integer because the ratified mock renders a whole
+    // number (`design/v1/hi-fi/fleet.jsx:90`, `agent-detail.jsx:27`) and a float
+    // implies a precision no formula has agreed to. Required-but-nullable
+    // because an *absent* key invites `?? 0`, which silently turns "unmeasured"
+    // into "scored zero" — the worst possible misread for a trust score; an
+    // explicit `null` on an always-present key surfaces in TypeScript as a
+    // non-optional `| null` the consumer has to handle. Same discipline as
+    // `TeamPoliciesResponse::policies` (AAASM-5096).
+    #[schema(required = true, minimum = 0, maximum = 100)]
     pub trust: Option<u8>,
     /// Enforcement posture, from the agent's registered `enforcement_mode`
     /// override. Absent when the agent declared none (the effective mode is then

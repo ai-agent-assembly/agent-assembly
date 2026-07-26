@@ -271,12 +271,19 @@ pub struct AgentNode {
     /// above [`FLAGGED_VIOLATION_THRESHOLD`]. Drives the danger-tinted node card
     /// and ⚑ marker in the topology graph.
     pub flagged: bool,
-    /// Trust score (0–100), or `null` when no trust-analytics source exists yet.
+    /// Trust score as an integer on a 0–100 scale, or `null` when no
+    /// trust-analytics source exists yet.
     /// The registry does not compute a per-agent trust score today, so this is
     /// currently always `null` — the same placeholder the Fleet page uses. Kept
     /// present (not omitted) so the client renders an explicit "no data" state
     /// instead of inferring a misleading default.
-    pub trust: Option<f64>,
+    //
+    // AAASM-5104 — integer, not `f64`: the ratified mock renders a whole number
+    // and a float implies a precision no scoring formula has agreed to. See
+    // [`crate::models::capability::CapabilityAgent::trust`] for the full
+    // rationale behind the shared representation and null contract.
+    #[schema(required = true, minimum = 0, maximum = 100)]
+    pub trust: Option<u8>,
     /// Operator / engineer who owns this agent, read from the agent record's
     /// `metadata["owner"]` (AAASM-5045). `null` when the registrant supplied no
     /// owner tag — kept present (not omitted) so the node-detail panel renders an
@@ -442,9 +449,12 @@ pub struct AgentTree {
     /// Whether the agent is policy-flagged. Same derivation as
     /// [`AgentNode::flagged`].
     pub flagged: bool,
-    /// Trust score (0–100), or `null` when no trust-analytics source exists yet.
-    /// Same placeholder as [`AgentNode::trust`].
-    pub trust: Option<f64>,
+    /// Trust score as an integer on a 0–100 scale, or `null` when no
+    /// trust-analytics source exists yet.
+    /// Same representation, placeholder, and null contract as
+    /// [`AgentNode::trust`] (AAASM-5104).
+    #[schema(required = true, minimum = 0, maximum = 100)]
+    pub trust: Option<u8>,
     /// Direct children of this agent in the delegation tree.
     #[schema(schema_with = agent_tree_children_schema)]
     pub children: Vec<AgentTree>,
