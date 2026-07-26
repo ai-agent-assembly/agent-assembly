@@ -165,15 +165,21 @@ pub struct PolicyChainTier {
 /// The policy cascade that governs one agent, with per-tier provenance
 /// (AAASM-5099) — the data behind the node-detail Policy-Inheritance panel.
 ///
-/// `chain` is the `Global → Org → Team → Agent` walk, broadest first, and
-/// `allow` / `deny` / `allow_restricted` are the *merged* capability set that
-/// walk produces. The merge is `PolicyEngine::collect_merged_capabilities`, the
-/// same function `PolicyEngine::cascade_capability_guard` feeds into
-/// `capability_guard` (`aa-gateway/src/engine/mod.rs`), so this projection
-/// cannot disagree with what the gateway enforces at the capability stage.
+/// `chain` is the `Global → Org → Team → Agent` walk, broadest first. `allow` /
+/// `deny` are the capability set that walk produces after the *earlier*
+/// enforcement stages are folded in — a capability blocked by the network or
+/// tool stage appears in `deny` and never in `allow`, even though the merged
+/// capability set alone says nothing about it. See
+/// `routes::topology::project_effective_permissions` for exactly which stages are
+/// mirrored and which cannot be.
 ///
-/// `allow_restricted` must be read together with `allow`: an empty `allow` with
-/// `allow_restricted = true` is deny-all, not "unrestricted" (AAASM-4154).
+/// Two consequences for a reader of this payload:
+///
+/// * `allow_restricted` must be read together with `allow`: an empty `allow` with
+///   `allow_restricted = true` is deny-all, not "unrestricted" (AAASM-4154).
+/// * Absence from `deny` is **not** a grant. A `tools: { "*": { allow: false } }`
+///   cascade denies tools that have never been named, and no list can enumerate
+///   them.
 ///
 /// The hi-fi mock (`design/v1/hi-fi/topology.jsx`) additionally draws a
 /// "parent" row. There is no parent tier in the product's scope vocabulary

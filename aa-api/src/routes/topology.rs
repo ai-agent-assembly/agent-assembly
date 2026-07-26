@@ -28,6 +28,7 @@ pub use crate::models::topology::{
     AgentLineage, AgentNode, AgentTree, LineageStep, NodeBudget, NodeEffectivePermissions, PolicyChainTier,
     TeamSummary, TeamTopology, TopologyGraphEdge, TopologyGraphResponse, TopologyOverview, TopologyStats,
 };
+use crate::routes::enforcement_mirror::{agent_tool_ids, cascade_denies_all_egress, cascade_denies_tool};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -299,27 +300,89 @@ fn build_policy_chain(
         .collect()
 }
 
+/// Whether the cascade denies `cap`, folding in the enforcement stages that run
+/// *before* the capability stage.
+///
+/// `evaluate_single_doc` (`aa-gateway/src/engine/decision.rs`) returns on the
+/// first `Deny`, so an earlier stage's verdict is final and the capability set
+/// never gets consulted. Ordered here as the evaluator orders them:
+/// `stage_network` (via [`cascade_denies_all_egress`]), then `stage_tool_allow`
+/// (via [`cascade_denies_tool`]), then the capability stage itself — whose
+/// `file_write` ⇒ `file_delete` superset rule lives in
+/// [`aa_core::capability_is_denied`], not in this projection.
+fn cascade_denies(
+    cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
+    merged: &aa_core::CapabilitySet,
+    egress_denied: bool,
+    cap: &aa_core::Capability,
+) -> bool {
+    match cap {
+        aa_core::Capability::NetworkOutbound if egress_denied => true,
+        aa_core::Capability::McpTool(name) if cascade_denies_tool(cascade, name) => true,
+        _ => aa_core::capability_is_denied(&merged.deny, cap),
+    }
+}
+
 /// Project one agent's effective permissions from an already-resolved cascade.
 ///
-/// The merged set comes from `PolicyEngine::collect_merged_capabilities` and the
-/// restriction flag from `CapabilitySet::allow_is_restricted()` — the exact two
-/// values `PolicyEngine::capability_guard` (`aa-gateway/src/engine/mod.rs`)
-/// consults at the capability stage — so what the panel shows cannot drift from
-/// what the gateway enforces.
+/// **Mirrors three of the four stages `evaluate_single_doc`
+/// (`aa-gateway/src/engine/decision.rs`) runs**, and says so precisely because an
+/// earlier version claimed to mirror the gateway while reading only the last of
+/// them (AAASM-5090's fail-open, repeated here):
+///
+/// * `stage_network` — only its answerable case, [`cascade_denies_all_egress`]:
+///   a declared-but-empty allowlist is deny-all egress. A non-empty allowlist
+///   restricts egress *per host*, and a per-agent view has no host to test, so
+///   `network_outbound` keeps its capability-derived answer there.
+/// * `stage_tool_allow` — [`cascade_denies_tool`], over the tool names this agent
+///   is known to have ([`agent_tool_ids`]). A `tools: { "*": { allow: false } }`
+///   cascade also denies tools nobody has named yet; those cannot be listed, so
+///   absence from `deny` is not a grant.
+/// * `stage_capability` — `collect_merged_capabilities` plus
+///   `allow_is_restricted()`, the two values `PolicyEngine::capability_guard`
+///   (`aa-gateway/src/engine/mod.rs`) consults, with denies tested through
+///   [`aa_core::capability_is_denied`] rather than a bare set lookup.
+///
+/// `stage_approval` is **not** mirrored: it evaluates a tool's
+/// `requires_approval_if` CEL condition against a concrete action, which a
+/// per-agent projection has none of. It can only ever add friction to something
+/// already allowed here, never grant, so omitting it cannot make this permissive.
+///
+/// Deny wins at every stage, so `deny` is built first and filters `allow`: a
+/// capability an earlier stage blocks must never be reported as granted.
 fn project_effective_permissions(
+    record: &AgentRecord,
     cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
     agent_id: &AgentId,
     lineage: &Lineage,
 ) -> NodeEffectivePermissions {
+    use aa_core::Capability as C;
+
     let merged = aa_gateway::engine::PolicyEngine::collect_merged_capabilities(cascade);
-    let mut allow: Vec<String> = merged.allow.iter().map(ToString::to_string).collect();
-    let mut deny: Vec<String> = merged.deny.iter().map(ToString::to_string).collect();
+    let egress_denied = cascade_denies_all_egress(cascade);
+
+    let mut deny: std::collections::BTreeSet<String> = merged.deny.iter().map(ToString::to_string).collect();
+    if egress_denied {
+        deny.insert(C::NetworkOutbound.to_string());
+    }
+    for tool in agent_tool_ids(record, &merged, cascade) {
+        if cascade_denies_tool(cascade, &tool) {
+            deny.insert(C::McpTool(tool).to_string());
+        }
+    }
+
+    let mut allow: Vec<String> = merged
+        .allow
+        .iter()
+        .filter(|cap| !cascade_denies(cascade, &merged, egress_denied, cap))
+        .map(ToString::to_string)
+        .collect();
     allow.sort();
-    deny.sort();
+
     NodeEffectivePermissions {
         chain: build_policy_chain(cascade, agent_id, lineage),
         allow,
-        deny,
+        deny: deny.into_iter().collect(),
         allow_restricted: merged.allow_is_restricted(),
     }
 }
@@ -356,7 +419,7 @@ fn project_graph_nodes(records: &[AgentRecord], state: &AppState) -> Vec<AgentNo
             let lineage = state.agent_registry.lineage(&record.agent_id).unwrap_or_default();
             let cascade = state.policy_engine.collect_cascade_with_lineage(&agent_id, &lineage);
             node.policy_count = Some(cascade.len() as u32);
-            node.effective_permissions = Some(project_effective_permissions(&cascade, &agent_id, &lineage));
+            node.effective_permissions = Some(project_effective_permissions(record, &cascade, &agent_id, &lineage));
             let limit_usd = state
                 .budget_tracker
                 .agent_daily_limit_usd(&agent_id)
