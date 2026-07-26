@@ -354,63 +354,82 @@ function joinParts(parts: readonly (string | null)[], separator = ' · '): strin
 }
 
 /**
+ * Label a tri-state boolean payload field: present-and-true, present-and-false,
+ * or absent.
+ *
+ * Absent must stay distinguishable from `false` — "the producer did not record
+ * whether this succeeded" is not the same claim as "this failed", and folding
+ * the two would put an error marker on a row nothing went wrong on.
+ */
+function boolLabel(value: unknown, whenTrue: string, whenFalse: string): string | null {
+  if (typeof value !== 'boolean') return null
+  return value ? whenTrue : whenFalse
+}
+
+/**
+ * One summariser per `detail.kind`, keyed exactly as
+ * `aa-runtime/src/audit_publisher/conversion.rs::detail_summary` emits them.
+ *
+ * A table rather than a `switch` so each kind is an independently readable unit
+ * and adding a producer-side kind is a one-line change here.
+ */
+const DETAIL_SUMMARISERS: Readonly<
+  Record<string, (detail: Record<string, unknown>) => string | null>
+> = {
+  llm_call: (d) => joinParts([str(d, 'model'), str(d, 'provider')]),
+
+  tool_call: (d) => {
+    const name = str(d, 'tool_name')
+    const source = str(d, 'tool_source')
+    const named = name && source ? `${name} (${source})` : (name ?? source)
+    return joinParts([named, boolLabel(d['succeeded'], '✓ ok', '✕ error')])
+  },
+
+  file_op: (d) => {
+    const operation = str(d, 'operation')
+    const verb = operation ? operation.toUpperCase() : null
+    return joinParts([joinParts([verb, str(d, 'path')], ' '), str(d, 'source')])
+  },
+
+  network_call: (d) => {
+    const protocol = str(d, 'protocol')
+    const host = str(d, 'host')
+    if (!host) return protocol
+    const port = typeof d['port'] === 'number' ? String(d['port']) : null
+    const authority = port ? `${host}:${port}` : host
+    return protocol ? `${protocol}://${authority}` : authority
+  },
+
+  process_exec: (d) => {
+    const exitCode = d['exit_code']
+    const exit = typeof exitCode === 'number' ? `exit ${exitCode}` : null
+    return joinParts([str(d, 'command'), exit])
+  },
+
+  policy_violation: (d) => {
+    const head = joinParts([str(d, 'blocked_action'), str(d, 'reason')], ' — ')
+    const rule = str(d, 'policy_rule')
+    return joinParts([head, rule ? `rule ${rule}` : null])
+  },
+
+  approval: (d) =>
+    joinParts([str(d, 'approval_id'), boolLabel(d['approved'], 'approved', 'denied')], ' '),
+}
+
+/**
  * Summarise the runtime's `detail` object.
  *
  * Kinds and fields are taken verbatim from
  * `aa-runtime/src/audit_publisher/conversion.rs::detail_summary`, which copies
  * only non-secret metadata. Every field is treated as optional: the producer
  * emits whatever the proto oneof carried, and a missing field must shrink the
- * sentence rather than print `undefined`.
+ * sentence rather than print `undefined`. An unrecognised kind summarises to
+ * `null` so the caller reports an absence instead of guessing.
  */
 function summariseDetail(detail: Record<string, unknown>): string | null {
   const kind = str(detail, 'kind')
-  switch (kind) {
-    case 'llm_call':
-      return joinParts([str(detail, 'model'), str(detail, 'provider')])
-    case 'tool_call': {
-      const name = str(detail, 'tool_name')
-      const source = str(detail, 'tool_source')
-      const named = name && source ? `${name} (${source})` : (name ?? source)
-      const succeeded = detail['succeeded']
-      const outcome = typeof succeeded === 'boolean' ? (succeeded ? '✓ ok' : '✕ error') : null
-      return joinParts([named, outcome])
-    }
-    case 'file_op': {
-      const operation = str(detail, 'operation')
-      const path = str(detail, 'path')
-      const verb = operation ? operation.toUpperCase() : null
-      return joinParts([joinParts([verb, path], ' '), str(detail, 'source')])
-    }
-    case 'network_call': {
-      const protocol = str(detail, 'protocol')
-      const host = str(detail, 'host')
-      const port = typeof detail['port'] === 'number' ? String(detail['port']) : null
-      if (!host) return protocol
-      const authority = port ? `${host}:${port}` : host
-      return protocol ? `${protocol}://${authority}` : authority
-    }
-    case 'process_exec': {
-      const command = str(detail, 'command')
-      const exitCode = detail['exit_code']
-      const exit = typeof exitCode === 'number' ? `exit ${exitCode}` : null
-      return joinParts([command, exit])
-    }
-    case 'policy_violation': {
-      const reason = str(detail, 'reason')
-      const rule = str(detail, 'policy_rule')
-      const action = str(detail, 'blocked_action')
-      const head = joinParts([action, reason], ' — ')
-      return joinParts([head, rule ? `rule ${rule}` : null])
-    }
-    case 'approval': {
-      const id = str(detail, 'approval_id')
-      const approved = detail['approved']
-      const outcome = typeof approved === 'boolean' ? (approved ? 'approved' : 'denied') : null
-      return joinParts([id, outcome], ' ')
-    }
-    default:
-      return null
-  }
+  const summarise = kind === null ? undefined : DETAIL_SUMMARISERS[kind]
+  return summarise ? summarise(detail) : null
 }
 
 /**
