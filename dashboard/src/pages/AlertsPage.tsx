@@ -30,6 +30,7 @@ import {
   filtersToSearchParams,
 } from '../features/alerts/urlFilters'
 import type { Alert, AlertFilters, AlertRule, AlertStatus, Severity } from '../features/alerts/types'
+import { coversWholeFleet } from '../features/alerts/alertsCoverage'
 import { StatusState, TruthfulValue } from '../components/truthfulness'
 import {
   certainFromQuery,
@@ -193,8 +194,28 @@ export function AlertsPage() {
   const noAlertsInWindow =
     isKnown(alertsState) && visibleRows.length === 0 && !noRulesConfigured
 
+  // Whether this page is provably the whole fleet. Everything the page counts is
+  // derived from the page, so when this is false every figure must say so.
+  const pageIsWholeFleet = coversWholeFleet(alertsState, totalState)
   const truncated =
     isKnown(alertsState) && isKnown(totalState) && totalState.value > loadedAlerts.length
+
+  /**
+   * The row-count label.
+   *
+   * Numerator and denominator always describe the *same* population — the loaded
+   * page. Pairing the filtered row count against the fleet `total` produced a
+   * ratio over a population that was never queried ("7 of 214 alerts" when the
+   * 7 came from a filtered 50-row page). The fleet total is stated once, by the
+   * truncation notice, which is the only figure entitled to it.
+   */
+  function countLabel(): string {
+    const shown = visibleRows.length
+    const loaded = loadedAlerts.length
+    const scope = pageIsWholeFleet ? '' : ' on this page'
+    if (shown === loaded) return `${shown} alert${shown === 1 ? '' : 's'}${scope}`
+    return `${shown} of ${loaded} alerts${scope}`
+  }
 
   let alertsBody
   if (alertsUnavailable && !isKnown(alertsState)) {
@@ -205,17 +226,12 @@ export function AlertsPage() {
         description="The alerts list could not be loaded, so this page cannot say whether any alerts are firing."
         detail={alertsState.detail}
         testId="alerts-unavailable"
-        action={
-          <button type="button" onClick={() => ignorePromise(alertsQuery.refetch())}>
-            Retry
-          </button>
-        }
       />
     )
   } else if (noRulesConfigured) {
     alertsBody = <EmptyStateNoRules onCreateRule={() => setRuleFormOpen(true)} />
   } else if (noAlertsInWindow) {
-    alertsBody = <EmptyStateNoAlerts />
+    alertsBody = <EmptyStateNoAlerts pageScoped={!pageIsWholeFleet} />
   } else if (viewMode === 'cards') {
     alertsBody = (
       <AlertCardFeed rows={visibleRows} rulesById={rulesById} onSelect={setSelectedAlertId} />
@@ -385,11 +401,7 @@ export function AlertsPage() {
                 'Loading…'
               ) : (
                 <TruthfulValue
-                  value={mapCertain(alertsState, () =>
-                    truncated
-                      ? `${visibleRows.length} of ${isKnown(totalState) ? totalState.value : ''} alerts`
-                      : `${visibleRows.length} alert${visibleRows.length === 1 ? '' : 's'}`,
-                  )}
+                  value={mapCertain(alertsState, countLabel)}
                   showLabel
                   testId="alerts-count-value"
                 />

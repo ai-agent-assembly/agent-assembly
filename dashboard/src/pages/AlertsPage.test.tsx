@@ -148,7 +148,25 @@ describe('AlertsPage', () => {
   it('renders the no-alerts empty state when rules exist but no alerts match', () => {
     setup({ alerts: pageOf([]) })
     expect(screen.getByTestId('alerts-count')).toHaveTextContent('0 alerts')
-    expect(screen.getByTestId('alerts-empty-no-alerts')).toBeInTheDocument()
+    const empty = screen.getByTestId('alerts-empty-no-alerts')
+    expect(empty).toBeInTheDocument()
+    // The page is the fleet here, so the fleet-wide claim is earned.
+    expect(empty).toHaveAttribute('data-scope', 'fleet')
+    expect(empty).toHaveTextContent('No alerts in this window')
+  })
+
+  // The 24h default is applied client-side over one page (AAASM-5122), so a
+  // page whose rows all fall outside the window empties the feed while alerts
+  // may be firing beyond it. Claiming "No alerts in this window" there is the
+  // AAASM-5150 defect reached by another route.
+  it('scopes the empty state to the page when the page is not the whole fleet', () => {
+    const stale: Alert = { ...FIRING, firstFiredAt: '2026-04-01T09:00:00Z' }
+    setup({ alerts: pageOf([stale], 214) })
+    const empty = screen.getByTestId('alerts-empty-no-alerts')
+    expect(empty).toHaveAttribute('data-scope', 'page')
+    expect(empty).toHaveTextContent('No matching alerts on this page')
+    expect(empty).toHaveTextContent('others may be firing beyond it')
+    expect(empty).not.toHaveTextContent('No alerts in this window')
   })
 
   it('opens the destinations manager when the Destinations button is clicked', () => {
@@ -213,7 +231,9 @@ describe('AlertsPage', () => {
     setup()
     expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 alert')
     fireEvent.click(screen.getByTestId('alerts-category-anomaly'))
-    expect(screen.getByTestId('alerts-count')).toHaveTextContent('0 alerts')
+    // Narrowed: the label names both the shown and the loaded count, so a
+    // filtered zero can never read as an exhausted page.
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('0 of 1 alerts')
     fireEvent.click(screen.getByTestId('alerts-category-budget'))
     expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 alert')
   })
@@ -221,8 +241,8 @@ describe('AlertsPage', () => {
   it('switches tabs via the AlertsTabs control (setTab path)', () => {
     setup()
     fireEvent.click(screen.getByTestId('alerts-tab-incidents'))
-    // Incidents tab filters to RESOLVED; our single alert is FIRING → 0 rows.
-    expect(screen.getByTestId('alerts-count')).toHaveTextContent('0 alerts')
+    // Incidents tab filters to RESOLVED; our single alert is FIRING → 0 of 1.
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('0 of 1 alerts')
   })
 
   it('wires stream handlers that mutate the query cache without throwing', () => {
@@ -378,9 +398,34 @@ describe('AlertsPage when the server has more alerts than one page', () => {
     )
   })
 
-  it('reports the row count against the total rather than as a bare figure', () => {
+  it('scopes the row count to the page rather than pairing it with the fleet total', () => {
     setupTruncated()
-    expect(screen.getByTestId('alerts-count')).toHaveTextContent('2 of 214 alerts')
+    // Both figures the label could show describe the page. The fleet total is
+    // stated once, by the truncation notice.
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('2 alerts on this page')
+    expect(screen.getByTestId('alerts-count')).not.toHaveTextContent('214')
+  })
+
+  // The defect this guards: `visibleRows` is the page AFTER the client filters,
+  // while `total` is the whole fleet. Pairing them produced "1 of 214 alerts" —
+  // a ratio over a population that was never queried.
+  it('never pairs a filtered row count with the fleet total', () => {
+    setup({
+      alerts: pageOf([FIRING, { ...FIRING, id: 'a-2', severity: 'CRITICAL' }], 214),
+      route: '/alerts?severity=CRITICAL',
+    })
+    const count = screen.getByTestId('alerts-count')
+    expect(count).toHaveTextContent('1 of 2 alerts on this page')
+    expect(count).not.toHaveTextContent('214')
+  })
+
+  it('drops the page qualifier once the page provably covers the fleet', () => {
+    setup({
+      alerts: pageOf([FIRING, { ...FIRING, id: 'a-2', severity: 'CRITICAL' }], 2),
+      route: '/alerts?severity=CRITICAL',
+    })
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 of 2 alerts')
+    expect(screen.getByTestId('alerts-count')).not.toHaveTextContent('on this page')
   })
 
   it('says nothing about truncation when the page covers everything', () => {
@@ -404,7 +449,7 @@ describe('AlertsPage filter controls', () => {
 
   it('narrows the feed when a severity chip is pre-selected in the URL', () => {
     setup({ alerts: pageOf([FIRING, CRITICAL]), route: '/alerts?severity=CRITICAL' })
-    expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 alert')
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 of 2 alerts')
     expect(screen.getAllByTestId('alert-row')).toHaveLength(1)
   })
 
@@ -413,13 +458,14 @@ describe('AlertsPage filter controls', () => {
       alerts: pageOf([FIRING, { ...CRITICAL, agentId: 'agent-99' }]),
       route: '/alerts?agent=agent-99',
     })
-    expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 alert')
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 of 2 alerts')
   })
 
   it('narrows the feed by the selected time range', () => {
     const stale: Alert = { ...CRITICAL, firstFiredAt: '2026-04-01T09:00:00Z' }
     setup({ alerts: pageOf([FIRING, stale]) })
     // The 24h default excludes the April alert from the 14 May window.
-    expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 alert')
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('1 of 2 alerts')
+    expect(screen.getAllByTestId('alert-row')).toHaveLength(1)
   })
 })
