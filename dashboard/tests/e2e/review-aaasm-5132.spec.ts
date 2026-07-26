@@ -119,6 +119,29 @@ async function bootstrap(page: Page, theme: Theme, fixtures: Fixtures = {}): Pro
   })
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`))
 
+  // The step-5 listener pill pulses (`onb-pulse`, 1.4s infinite) and each ping
+  // slides in, so a screenshot taken at an arbitrary moment lands on an
+  // arbitrary animation frame — two identical runs then produce different PNGs
+  // and the committed evidence churns for no reason. Freezing motion keeps the
+  // artifact reproducible; the states themselves are unaffected. Mirrors
+  // `disableTransitions` in onboarding-design-fidelity.spec.ts.
+  await page.addInitScript(() => {
+    // An init script runs at document-start, where `documentElement` is still
+    // null — hence the readiness guard rather than a bare appendChild.
+    const inject = () => {
+      const style = document.createElement('style')
+      style.setAttribute('data-test-freeze-motion', '')
+      style.textContent =
+        '*, *::before, *::after { animation: none !important; transition: none !important; }'
+      ;(document.head ?? document.documentElement).appendChild(style)
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', inject, { once: true })
+    } else {
+      inject()
+    }
+  })
+
   // Seeded before any module executes: `openapi-fetch` captures
   // `globalThis.fetch` at module load, so an in-page shim installed afterwards
   // is never consulted — which is also why the fixtures below are `page.route`
