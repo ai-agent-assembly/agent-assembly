@@ -10,11 +10,15 @@
  *  2. a row whose version is not in force carries no `affects` key at all and
  *     folds to the shared `—` — never to "0 agents";
  *  3. `hits24h` is absent on every row and folds to `—`, never to `0` (there is
- *     no audit source for it — AAASM-5100 / ADR 0018);
+ *     no audit source for it — AAASM-5107);
  *  4. the Teams Active-policies card lists the documents in force for the
- *     selected team with the cascade tier each comes from, and a team with no
- *     document in force says so explicitly rather than showing an empty list;
- *  5. neither page produces console errors or uncaught exceptions.
+ *     selected team with the cascade tier each comes from;
+ *  5. the card keeps the API's two empty answers apart — `policies: []` (no
+ *     agent to govern) says "no policy is in force", while `policies: null`
+ *     (the engine could not resolve the mapping) says the data is unavailable.
+ *     Collapsing them would make the card assert that nothing governs a team
+ *     while the engine's primary policy slot is enforcing (AAASM-5106);
+ *  6. neither page produces console errors or uncaught exceptions.
  *
  * Screenshots land in dashboard/verify/5096/.
  */
@@ -70,16 +74,28 @@ const DATA_PLATFORM_POLICIES = {
   ],
 }
 
-/** A team the engine carries no document for — an explicit statement, not a blank. */
+/**
+ * A team with no agent for a policy to be in force over — `[]`. The one case
+ * where "no policy is in force" is a claim the API can actually make.
+ */
 const GROWTH_POLICIES = { team_id: 'growth', policies: [] as unknown[] }
 
+/**
+ * A team whose mapping the engine could not resolve — `null`. This is what
+ * every shipped deployment returns until the policy cascade is wired
+ * (AAASM-5106): a policy IS in force via the engine's primary slot, it just
+ * cannot be named. The card must not render this as "no policy is in force".
+ */
+const UNWIRED_POLICIES = { team_id: 'unwired', policies: null }
+
 const TOPOLOGY_OVERVIEW = {
-  root_agent_count: 2,
-  team_count: 2,
-  total_agent_count: 4,
+  root_agent_count: 3,
+  team_count: 3,
+  total_agent_count: 5,
   teams: [
     { team_id: 'data-platform', agent_count: 3, root_agent_count: 1 },
     { team_id: 'growth', agent_count: 1, root_agent_count: 1 },
+    { team_id: 'unwired', agent_count: 1, root_agent_count: 1 },
   ],
   standalone_root_agents: [] as unknown[],
 }
@@ -136,6 +152,7 @@ async function bootstrap(page: Page, theme: Theme): Promise<Harness> {
   await page.route('**/api/v1/policies', (r) => r.fulfill({ json: POLICIES }))
   await page.route('**/api/v1/policies/team/data-platform**', (r) => r.fulfill({ json: DATA_PLATFORM_POLICIES }))
   await page.route('**/api/v1/policies/team/growth**', (r) => r.fulfill({ json: GROWTH_POLICIES }))
+  await page.route('**/api/v1/policies/team/unwired**', (r) => r.fulfill({ json: UNWIRED_POLICIES }))
   await page.route('**/api/v1/ws/events**', (r) => r.abort())
   await page.route('**/api/v1/alerts/ws**', (r) => r.abort())
 
@@ -219,13 +236,36 @@ test.describe('AAASM-5096 review — enriched policy contract', () => {
 
       await card.screenshot({ path: `${EVIDENCE_DIR}/teams-active-policies-${theme}.png` })
 
-      // A team the engine carries no document for says so, rather than
-      // rendering a blank list that reads as a load failure.
+      // ── 5a. `[]` — no agent to govern, so "none" is a true claim ─────────
       await page.getByTestId('team-list-row').filter({ hasText: 'growth' }).first().click()
-      await expect(page.getByTestId('team-policies-empty')).toContainText('No policy is in force')
+      const noneState = page.getByTestId('team-policies-empty')
+      await expect(noneState).toContainText('No policy is in force')
       await expect(page.getByTestId('team-policies-card')).toContainText('Active policies (0)')
+      // The unknown state must not be what rendered here.
+      await expect(page.getByTestId('team-policies-unknown')).toHaveCount(0)
+      const noneText = await page.getByTestId('team-policies-card').textContent()
       await page.getByTestId('team-policies-card').screenshot({
         path: `${EVIDENCE_DIR}/teams-active-policies-empty-${theme}.png`,
+      })
+
+      // ── 5b. `null` — unresolvable, so the card must NOT claim "none" ─────
+      await page.getByTestId('team-list-row').filter({ hasText: 'unwired' }).first().click()
+      const unknownState = page.getByTestId('team-policies-unknown')
+      await expect(unknownState).toContainText('Policy data unavailable')
+      await expect(unknownState).not.toContainText('No policy is in force')
+      await expect(page.getByTestId('team-policies-empty')).toHaveCount(0)
+      await expect(page.getByTestId('team-policies-list')).toHaveCount(0)
+      // Folds to `—` like every other absent value, never to a `(0)` that would
+      // read as a counted, confirmed zero.
+      const unknownCard = page.getByTestId('team-policies-card')
+      await expect(unknownCard).toContainText('Active policies (—)')
+      await expect(unknownCard).not.toContainText('Active policies (0)')
+      await expect(unknownCard).not.toContainText('undefined')
+      await expect(unknownCard).not.toContainText('null')
+      // The two empty answers are visibly different, not just differently keyed.
+      expect(await unknownCard.textContent()).not.toEqual(noneText)
+      await unknownCard.screenshot({
+        path: `${EVIDENCE_DIR}/teams-active-policies-unknown-${theme}.png`,
       })
 
       expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
