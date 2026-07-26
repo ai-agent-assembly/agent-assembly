@@ -18,7 +18,11 @@ that the projections mis-modelled, is the decision this ADR asks for.
 
 It complements ADR 0004 (governance enforcement flow), ADR 0017 (which ratified the
 Capability Matrix and Topology surfaces that read the cascade) and ADR 0018 (whose
-"honestly-null until sourced" discipline the interim mitigation below extends).
+"honestly-null until sourced" discipline the interim mitigation below extends). It
+is also the companion to **ADR 0024, "Semantics of an Empty or Unavailable Policy
+Cascade"** — same ticket, authored independently, currently open on PR #1706 —
+which owns the mechanism for the interim mitigation this ADR calls for. The two are
+orthogonal and should be decided separately; see Traceability.
 
 All line references were re-verified at `main` @ `7174c640`.
 
@@ -49,8 +53,9 @@ stays that way for the life of the process.
 `aa-gateway` routes on the shape of the path it is given:
 
 ```rust
-// aa-gateway/src/server.rs:223-233 (fn load_policy_engine)
+// aa-gateway/src/server.rs:224-234 (fn load_policy_engine)
 if policy_path.is_dir() {
+    tracing::info!(dir = %policy_path.display(), "loading policy cascade from directory");
     PolicyEngine::load_cascade_from_dir_with_budget(policy_path, tracker)
 } else {
     PolicyEngine::load_from_file_with_budget(policy_path, tracker)
@@ -58,12 +63,18 @@ if policy_path.is_dir() {
 ```
 
 Operators reach it through `aa-gateway --policy <FILE|DIR>`, or through
-`aasm gateway start`, which resolves `--policy` → `$AA_POLICY` →
-`~/.aasm/policy.yaml` and forwards the value verbatim
-(`aa-cli/src/commands/gateway/start.rs:209-213`, forwarded at `:94`). This is the
-capability documented in `docs/src/operations/policy-cascade-loader.md` — a
-document that names `aa-gateway` and `aasm gateway start` only (`:38-53`) and
-never mentions `aa-api`.
+`aasm gateway start`, whose full resolution order is `--policy` → `$AA_POLICY` →
+`~/.aasm/policy.yaml` → **`~/.aasm/policies/`** → `/etc/aasm/policy.yaml` →
+**`/etc/aasm/policies/`** (`aa-cli/src/commands/gateway/start.rs:209-210`,
+implemented at `:217-246`, forwarded verbatim at `:94`). Two of those six defaults
+are cascade **directories**, and the function's own documentation says why: "The
+default `policies/` directory locations let an operator drop scoped `*.yaml`
+documents into a well-known path without any flag" (`start.rs:214-216`).
+
+So the gateway does not merely *accept* a cascade — it looks for one by default,
+with zero configuration. This is the capability documented in
+`docs/src/operations/policy-cascade-loader.md` — a document that names
+`aa-gateway` and `aasm gateway start` only (`:38-53`) and never mentions `aa-api`.
 
 `aa-api` has **no equivalent**. Grepping its entire source for environment reads
 returns `AA_API_ADDR` (`aa-api/src/bin/aa-api-server.rs:41`, `config.rs:36`),
@@ -133,10 +144,34 @@ if cascade.is_empty() {
 
 (The ticket cites `mod.rs:813-816`; at `7174c640` the fallback is at `:845-846`.)
 
-The sharper point: **`aa-api` never calls `evaluate` at all.** Searching
-`aa-api/src` for `.evaluate(` returns zero hits. Its `PolicyEngine` is used purely
-as a projection source. Enforcement happens in `aa-runtime`/`aa-gateway`, in a
-different process, against a policy loaded by a different code path.
+The sharper point: **`aa-api` reaches `evaluate` only through the dry-run path,
+which mutates nothing.** Searching `aa-api/src` for `.evaluate(` returns zero
+hits, but that grep answers the wrong question — the call is one level of
+indirection away. `POST /api/v1/policies/simulate`
+(`aa-api/src/routes/mod.rs:109` → `policies.rs:788`) calls
+`state.policy_engine.simulate(&ctx, &action)` at `policies.rs:841`, and
+`simulate` is:
+
+```rust
+// aa-gateway/src/engine/mod.rs:880-882
+pub fn simulate(&self, ctx: &aa_core::AgentContext, action: &aa_core::GovernanceAction) -> EvaluationResult {
+    self.ephemeral_for_simulation().evaluate(ctx, action)
+}
+```
+
+`ephemeral_for_simulation` (`mod.rs:894`) shares the live `cascade` by `Arc`
+(`mod.rs:905`), so the dry-run sees exactly the rules a real request would — the
+in-tree comment at `policies.rs:838` says so directly: *"`simulate` runs the same
+pipeline as the live `evaluate`"*.
+
+**The conclusion survives, but for a narrower reason than "it never evaluates".**
+The ephemeral engine gets its own `rate_state`, `decision_cache`, and a fresh
+zero-spend budget tracker; it "writes no audit entry and applies no enforcement —
+this method only *returns* a verdict; the caller performs no side effect from it"
+(`mod.rs:873-874`). So `aa-api` runs the evaluator but never enforces with it, and
+the surface that does run it is itself a cascade *consumer* — see the fourth item
+in the blast radius below. Actual enforcement happens in `aa-runtime`/`aa-gateway`,
+in a different process, against a policy loaded by a different code path.
 
 That refines the ticket's framing — "the gateway denies and the dashboard says
 there is nothing to deny with" is true, but the two are not the same engine
@@ -185,7 +220,8 @@ is itself part of why this ADR exists.
 
 ## Blast radius
 
-All three are shipped, all three read an index that is empty in every deployment.
+All four are shipped, all four read an index that is empty in every deployment.
+The ticket enumerates the first three; the fourth is added here.
 
 ### 1. Capability Matrix (AAASM-5090) — a fail-open on the page whose job is "what can this agent do"
 
@@ -238,8 +274,32 @@ does not render the "no policy" copy
 (`TeamActivePoliciesCard.test.tsx:48`). The ticket describes a state of affairs
 that the PR which surfaced the ticket had already remedied on that one surface.
 
-The other two surfaces have **not** been given that treatment. That asymmetry —
-one surface honest, two surfaces asserting — is the concrete harm today.
+The other three surfaces have **not** been given that treatment. That asymmetry —
+one surface honest, three surfaces asserting — is the concrete harm today.
+
+### 4. Policy simulation (`POST /api/v1/policies/simulate`) — the oracle answers from a stub
+
+Not named in the ticket, and arguably the worst of the four, because it is the one
+surface whose entire purpose is to answer *"what would happen if?"* with authority.
+
+`simulate_policy` (`policies.rs:788`, routed at `routes/mod.rs:109`) calls
+`PolicyEngine::simulate` (`mod.rs:880-882`), which evaluates against a throwaway
+engine sharing the live cascade by `Arc` (`mod.rs:905`). With an empty cascade the
+shared `evaluate` hits the same fallback as everything else
+(`mod.rs:845-846`) and answers from `evaluate_primary` — which, in `aa-api`, means
+the **synthesised budget-only bootstrap document** the process wrote to a temp file
+at startup (`state.rs:266-290`).
+
+So an operator asking "would this tool call be denied?" receives a confident,
+correctly-computed verdict derived from a policy nobody authored. Unlike the
+capability matrix, this surface has no notion of a cell it could mark unknown — it
+returns a verdict, a matched rule, and a reason. It is the surface where "empty
+cascade" is least visible and most consequential.
+
+This also means the interim mitigation has a fourth consumer, and one that needs a
+different treatment from the other three: a matrix cell can decline to answer, but
+a simulate response either carries a caveat that the cascade was unavailable or it
+misleads.
 
 ---
 
@@ -253,7 +313,7 @@ its bootstrap policy *into a directory* (`state.rs:266`), so the mechanical chan
 is small — `load_cascade_from_dir(&policy_dir, budget_alert_tx)` is signature-
 compatible (`mod.rs:438-441`) with the existing call at `state.rs:302`.
 
-- **Fixes:** all three projections, at the source, for operators who supply a
+- **Fixes:** all four cascade consumers, at the source, for operators who supply a
   cascade directory. Restores the symmetry the docs already promise.
 - **Does not fix:** deployments that supply no directory — the synthesised
   budget-only bootstrap would load as a one-document Global cascade, making the
@@ -290,12 +350,16 @@ on policy.
 - **Migration/compat — the real cost:** this changes `PolicyEngine` semantics, not
   just `aa-api` behaviour. A non-empty index flips `evaluate` from
   `evaluate_primary` to `evaluate_with_cascade` (`mod.rs:845-846`) for *any*
-  embedder. Today that risk is latent, not active — the only non-test caller of
-  `apply_yaml` is `aa-api/src/routes/policies.rs:469`, and `aa-api` never calls
-  `evaluate`. But it converts a reporting fix into an engine-semantics change, and
-  it needs an answer to "when the engine was loaded from a cascade directory, does
-  an applied Global document *replace* the directory's Global tier or stack on top
-  of it?"
+  embedder — **and `aa-api` has such a caller today**. `POST /api/v1/policies/simulate`
+  routes through `simulate` → `ephemeral_for_simulation().evaluate(...)`
+  (`mod.rs:880-882`), sharing the same cascade `Arc` (`mod.rs:905`). So the first
+  `POST /api/v1/policies` under Option B would silently switch every subsequent
+  simulation from the primary path to the cascade path. The verdicts should agree
+  for a single Global document, but "should agree" is an assertion that needs a
+  test, not an assumption — and it converts a reporting fix into a change in how a
+  live endpoint computes its answer. It also needs an answer to "when the engine was
+  loaded from a cascade directory, does an applied Global document *replace* the
+  directory's Global tier or stack on top of it?"
 - Also requires resolving the `&mut self` constraint on the insert path
   (`mod.rs:1873`) versus the `Arc<PolicyEngine>` the state holds — `apply_yaml` is
   `&self` and swaps through `ArcSwap`, so the cascade's `ArcSwap` (`mod.rs:1870-1872`)
@@ -321,8 +385,16 @@ projections to read `self.policy` instead of `collect_cascade_with_lineage`.
   would also leave AAASM-3499's own analysis (which named `aa-api`) standing as an
   unexplained loose end.
 - **Note:** if C is chosen, `collect_cascade_with_lineage`'s three `aa-api` call
-  sites should be removed rather than left dormant, so the next reader does not
-  re-derive this ticket.
+  sites (`policies.rs:121`, `topology.rs:426`, `capability.rs:608`) should be
+  removed rather than left dormant, so the next reader does not re-derive this
+  ticket. The fourth consumer, `POST /api/v1/policies/simulate`, is **not** a
+  call-site removal: it reaches the cascade indirectly through
+  `PolicyEngine::simulate` (`mod.rs:880-882`), which shares `cascade` by `Arc`
+  (`mod.rs:905`). Under Option C that path becomes permanently equivalent to
+  `evaluate_primary` in `aa-api`, which is consistent — but it means the
+  simulation endpoint silently behaves differently in `aa-api` than in a
+  cascade-loaded `aa-gateway`, and that divergence should be documented rather
+  than discovered.
 
 ---
 
@@ -386,9 +458,12 @@ the cascade is a gateway-side enforcement feature with no dashboard
 representation.
 
 **Under every option:** enforcement is unchanged. `evaluate` has always fallen
-back to `evaluate_primary` on an empty cascade (`mod.rs:845-846`), and `aa-api`
-has never evaluated anything. Nothing in this ADR's option space makes the product
-more or less permissive at runtime; the entire dispute is about what operators are
+back to `evaluate_primary` on an empty cascade (`mod.rs:845-846`), and the only
+evaluator `aa-api` reaches is the dry-run one, which writes no audit entry and
+applies no enforcement (`mod.rs:873-874`). Nothing in this ADR's option space
+makes the product more or less permissive at runtime — though Option B would
+change what `POST /api/v1/policies/simulate` *reports*, which is why it carries a
+test obligation the other two do not. The entire dispute is about what operators are
 *told*.
 
 ---
@@ -408,10 +483,10 @@ state (`TeamActivePoliciesCard.tsx:73-77`). ADR 0018 established the same
 "present in the schema, honestly `null` until sourced" discipline for the enriched
 decision record.
 
-Two surfaces have **not** been given it:
+Three surfaces have **not** been given it:
 
-- **Capability Matrix (AAASM-5090)** — the higher-severity of the two, because it
-  does not merely blank: it asserts `allow`. `decide` (`capability.rs:480-488`)
+- **Capability Matrix (AAASM-5090)** — the highest-severity of the three, because
+  it does not merely blank: it asserts `allow`. `decide` (`capability.rs:480-488`)
   cannot distinguish an empty cascade from a genuinely permissive one, and the
   `Decision` vocabulary has no unknown member (`na` means "no such cell", per
   ADR 0018). Some signal has to be added — a nullable cascade-loaded flag on the
@@ -422,10 +497,25 @@ Two surfaces have **not** been given it:
   the affirmative `0`. `policy_count` and `effective_permissions` are already
   `Option`-typed (`aa-api/src/models/topology.rs:291`), so `None` is expressible
   on the wire today; the handler simply always populates them.
+- **Policy simulation (`POST /api/v1/policies/simulate`)** — needs a different
+  shape of fix from the other two, because it returns a verdict rather than a
+  cell: there is nothing to leave `null`. Either the response carries an explicit
+  "cascade unavailable" caveat alongside the verdict, or the endpoint declines to
+  answer. Silently returning a bootstrap-derived verdict is the one behaviour that
+  should not survive.
+
+**The mechanism for all of this is specified in
+[ADR 0024](0024-empty-cascade-semantics.md) — "Semantics of an Empty or
+Unavailable Policy Cascade" — which was authored independently against the same
+ticket and owns the remedy in detail.** This ADR states *that* the distinction
+must be drawn and enumerates the surfaces that need it; 0024 decides *how* it is
+represented. The two are orthogonal by construction: 0024's rule is required under
+every one of this ADR's Options A/B/C, and nothing in 0024 depends on which is
+chosen. They should be decided separately and must not be merged into one record.
 
 Whether that mitigation is a schema change (and therefore an `openapi/v1.yaml`
 regeneration plus dashboard codegen) is an implementation question for the
-follow-up ticket, not for this ADR.
+follow-up ticket, and is treated in ADR 0024 rather than here.
 
 ---
 
@@ -441,7 +531,9 @@ follow-up ticket, not for this ADR.
 3. **Should `apply_yaml` populate the scope index (Option B)?** This is a
    `PolicyEngine` semantics change, not an `aa-api` change. If yes: when the
    engine was loaded from a cascade directory, does an applied Global document
-   replace that directory's Global tier or stack on it?
+   replace that directory's Global tier or stack on it? And is the resulting
+   switch of `POST /api/v1/policies/simulate` from the primary path to the
+   cascade path acceptable without a verdict-equivalence test?
 4. **Does the scoped-installation follow-up named at `policies.rs:448-452`
    (AAASM-4933) get opened now**, or does `POST /api/v1/policies` stay
    Global-only indefinitely?
@@ -449,7 +541,8 @@ follow-up ticket, not for this ADR.
    permission chain ratified in ADR 0017 still the promise, given it would render
    a single tier in every `aa-api` deployment?
 6. **Is the interim mitigation approved to proceed immediately**, decoupled from
-   items 1–5? (Recommended yes — the capability matrix fail-open is live.)
+   items 1–5? (Recommended yes — the capability matrix fail-open is live.) Its
+   *mechanism* is not decided here — that is ADR 0024's question, on PR #1706.
 
 Until items 1 and 2 are answered, **no implementation ticket should be opened
 against Options A or B.** Merging this ADR authorises no implementation and
@@ -464,8 +557,10 @@ changes no behaviour.
 - A SaaS control-plane policy source (`cloud`) becoming the cascade's origin
   instead of a local directory, which would make Option A's directory input the
   wrong shape.
-- Enforcement moving into `aa-api` — today it never calls `evaluate`, and the
-  whole "reporting-only" framing depends on that staying true.
+- Enforcement moving into `aa-api` — today the only evaluator it reaches is the
+  dry-run path, which mutates nothing (`mod.rs:873-874`). The whole
+  "reporting-only" framing depends on that staying true; a second, non-ephemeral
+  `evaluate` caller in `aa-api` would invalidate it.
 
 ## Traceability
 
@@ -487,7 +582,16 @@ changes no behaviour.
   [AAASM-5099](https://lightning-dust-mite.atlassian.net/browse/AAASM-5099)
   (topology permission chain),
   [AAASM-5096](https://lightning-dust-mite.atlassian.net/browse/AAASM-5096)
-  (`affects[]` / team active-policies).
+  (`affects[]` / team active-policies); plus `POST /api/v1/policies/simulate`,
+  identified here rather than in the ticket.
+- **[ADR 0024](0024-empty-cascade-semantics.md) — "Semantics of an Empty or
+  Unavailable Policy Cascade"** owns the *mechanism* for the interim mitigation
+  this ADR calls for. Same ticket (AAASM-5106), authored independently, postdating
+  this record, and **open on PR #1706 — this link resolves once that merges.**
+  **Orthogonal, and to be decided separately:** 0023
+  decides *whether `aa-api` loads a cascade*; 0024 decides *what the product says
+  when it has none* — a rule required under every one of 0023's options. Neither
+  supersedes the other.
 - Surfaces ratified in ADR 0017; the "honestly-null until sourced" discipline is
   ADR 0018's; enforcement-flow context is ADR 0004.
 - Operator documentation for the cascade:
