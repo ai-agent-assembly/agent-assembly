@@ -49,6 +49,20 @@ const HEALTHY = {
   checks: { storage: 'ok', policy_engine: 'ok' },
 }
 
+/**
+ * What a gateway with a broken storage backend actually puts on the wire.
+ *
+ * `aa-api/src/routes/health.rs` derives the 503 and the `"degraded"` status
+ * string from the same `all_ok` boolean, so this pairing — 503 *with* a
+ * complete body naming the subsystem — is the only degraded answer the gateway
+ * can produce. An `abort()` fixture never exercises it.
+ */
+const DEGRADED = {
+  ...HEALTHY,
+  status: 'degraded',
+  checks: { storage: 'degraded', policy_engine: 'ok' },
+}
+
 const AGENT = {
   id: 'agent-1',
   name: 'research-bot',
@@ -82,8 +96,11 @@ interface Harness {
 }
 
 interface Fixtures {
-  /** 'up' answers 200; 'down' aborts the request the way an offline gateway does. */
-  health?: 'up' | 'down'
+  /**
+   * 'up' answers 200; 'degraded' answers a real 503 *with* a HealthResponse;
+   * 'down' aborts the request the way an offline gateway does.
+   */
+  health?: 'up' | 'degraded' | 'down'
   /** 'agent' → one registered; 'empty' → answered with none; 'fail' → 503. */
   registry?: 'agent' | 'empty' | 'fail'
   /** Remove `navigator.clipboard`, i.e. the non-secure-context case. */
@@ -133,6 +150,8 @@ async function bootstrap(page: Page, theme: Theme, fixtures: Fixtures = {}): Pro
 
   if (health === 'up') {
     await page.route('**/api/v1/health**', (r) => r.fulfill({ json: HEALTHY }))
+  } else if (health === 'degraded') {
+    await page.route('**/api/v1/health**', (r) => r.fulfill({ status: 503, json: DEGRADED }))
   } else {
     await page.route('**/api/v1/health**', (r) => r.abort('connectionrefused'))
   }
@@ -225,6 +244,65 @@ test.describe('AAASM-5132 review — onboarding stops claiming what it never obs
 
       await page.getByTestId('onboarding-step-install').screenshot({
         path: `${EVIDENCE_DIR}/step2-gateway-up-${theme}.png`,
+      })
+      expect(harness.errors).toEqual([])
+    })
+
+    test(`step 2 renders a real 503 as a named degradation, not as silence, in ${theme}`, async ({
+      page,
+    }) => {
+      const harness = await bootstrap(page, theme, { health: 'degraded' })
+      await gotoStep(page, 'install')
+
+      await page.getByTestId('onboarding-install-verify').click()
+
+      // ── 2b. a 503 with a body is an ANSWER — the operator is told what broke ─
+      const warn = page.getByTestId('onboarding-install-warn')
+      await expect(warn).toBeVisible()
+      await expect(warn).toContainText('storage')
+      const terminal = page.getByTestId('onboarding-install-terminal')
+      await expect(terminal).toContainText('storage=degraded')
+      // Not "the gateway did not answer" — it answered, in detail.
+      await expect(terminal).not.toContainText('did not answer')
+      await expect(page.getByTestId('onboarding-install-err')).toHaveCount(0)
+      await expect(page.getByTestId('onboarding-install-absent')).toHaveCount(0)
+      // Reachable is not healthy: the step still does not pass.
+      await expect(page.getByTestId('onboarding-install-ok')).toHaveCount(0)
+      await expect(page.getByTestId('onboarding-continue')).toBeDisabled()
+      await expectNoFabrications(page)
+
+      await page.getByTestId('onboarding-step-install').screenshot({
+        path: `${EVIDENCE_DIR}/step2-gateway-degraded-${theme}.png`,
+      })
+      expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
+    })
+
+    test(`step 2 withdraws a healthy verdict when a re-check fails in ${theme}`, async ({
+      page,
+    }) => {
+      const harness = await bootstrap(page, theme, { health: 'up' })
+      await gotoStep(page, 'install')
+
+      await page.getByTestId('onboarding-install-verify').click()
+      await expect(page.getByTestId('onboarding-install-ok')).toBeVisible()
+      await expect(page.getByTestId('onboarding-continue')).toBeEnabled()
+
+      // The gateway goes away between probes.
+      await page.unroute('**/api/v1/health**')
+      await page.route('**/api/v1/health**', (r) => r.abort('connectionrefused'))
+      await page.getByTestId('onboarding-install-verify').click()
+
+      // ── 2c. the verdict is withdrawn: no green footer over a red transcript ─
+      await expect(page.getByTestId('onboarding-install-absent')).toHaveAttribute(
+        'data-truth-state',
+        'unavailable',
+      )
+      await expect(page.getByTestId('onboarding-install-ok')).toHaveCount(0)
+      await expect(page.getByTestId('onboarding-continue')).toBeDisabled()
+      await expect(page.locator('.onb-foot-meta')).not.toContainText('ready to continue')
+
+      await page.getByTestId('onboarding-wizard').screenshot({
+        path: `${EVIDENCE_DIR}/step2-verdict-withdrawn-${theme}.png`,
       })
       expect(harness.errors).toEqual([])
     })
