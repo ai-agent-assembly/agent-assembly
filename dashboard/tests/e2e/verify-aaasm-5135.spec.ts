@@ -77,17 +77,24 @@ const GRAPH = {
     agentNode('s2', 'has-ceiling', 'support', { spend_usd: 2, limit_usd: 10 }, 1),
     agentNode('a1', 'analyst-one', 'analytics', { spend_usd: 4, limit_usd: 10 }),
     agentNode('a2', 'analyst-two', 'analytics', { spend_usd: 1, limit_usd: 10 }, 1),
+    // A third team, reachable only from `analytics`. Filtering to `support`
+    // leaves this crossing counted, undrawn, and touching no visible node — the
+    // case a per-node badge structurally cannot represent.
+    agentNode('p1', 'payments-one', 'payments', { spend_usd: 2, limit_usd: 10 }),
   ],
   edges: [
     { source: 's1', target: 's2', kind: 'delegation', cross_team: false },
     { source: 's1', target: 'a1', kind: 'call', cross_team: true },
     { source: 's1', target: 'a2', kind: 'call', cross_team: true },
     { source: 's2', target: 'a1', kind: 'reads', cross_team: true },
+    { source: 'a1', target: 'p1', kind: 'call', cross_team: true },
   ],
 }
 
 /** Cross-team edges in the fixture; the sidebar must report exactly this. */
-const CROSS_TEAM_TOTAL = 3
+const CROSS_TEAM_TOTAL = 4
+/** Crossings that touch `support` — the three the badges can account for. */
+const SUPPORT_CROSSINGS = 3
 
 interface Harness {
   errors: string[]
@@ -95,7 +102,7 @@ interface Harness {
   graphRequests: () => number
 }
 
-async function bootstrap(page: Page, theme: Theme): Promise<Harness> {
+async function bootstrap(page: Page, theme: Theme, options: { drift?: boolean } = {}): Promise<Harness> {
   const errors: string[] = []
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(m.text())
@@ -127,11 +134,32 @@ async function bootstrap(page: Page, theme: Theme): Promise<Harness> {
     (u) => u.pathname.startsWith('/api/v1/topology/lineage/'),
     (r) => r.fulfill({ json: { ancestors: [] } }),
   )
+  // With `drift`, every poll returns *different* spend figures.
+  //
+  // That matters: serving byte-identical JSON lets TanStack Query's structural
+  // sharing hand back the previous object, so the re-render path a live fleet
+  // actually takes would never be exercised and a re-scattering graph would
+  // still look green. Only the polling test needs it — the assertions about
+  // specific budget figures want a stable payload.
   await page.route(
     (u) => u.pathname === '/api/v1/topology',
     (r) => {
       graphRequests += 1
-      return r.fulfill({ json: GRAPH })
+      if (options.drift !== true) return r.fulfill({ json: GRAPH })
+      // Small enough that no card crosses a size-bucket threshold: the card
+      // grows with burn ratio, so a larger nudge would legitimately change the
+      // `transform` (position minus half the new width) and the stability
+      // assertion would be measuring a resize rather than a re-scatter.
+      const nudge = graphRequests * 0.05
+      return r.fulfill({
+        json: {
+          ...GRAPH,
+          nodes: GRAPH.nodes.map((n) => ({
+            ...n,
+            budget: { ...n.budget, spend_usd: Number((n.budget.spend_usd + nudge).toFixed(2)) },
+          })),
+        },
+      })
     },
   )
 
@@ -252,41 +280,65 @@ test.describe('AAASM-5135 — Topology asserts only the budgets it was given', (
       const harness = await bootstrap(page, theme)
       await openTopology(page)
 
-      // Unfiltered: the sidebar's count and the canvas agree directly.
       const crossTeamStat = page.getByTestId('topology-stat-crossteam')
+      const hiddenStat = page.getByTestId('topology-stat-crossteam-hidden')
+      const drawnCrossings = page.locator('[data-testid="topology-edge"][data-cross-team="true"]')
+
+      // Unfiltered: the count and the canvas agree directly, so there is nothing
+      // to disclose.
       await expect(crossTeamStat).toContainText(`${CROSS_TEAM_TOTAL} cross-team`)
-      await expect(page.locator('[data-testid="topology-edge"][data-cross-team="true"]')).toHaveCount(
-        CROSS_TEAM_TOTAL,
-      )
+      await expect(drawnCrossings).toHaveCount(CROSS_TEAM_TOTAL)
+      await expect(hiddenStat).toHaveCount(0)
       await expect(page.getByTestId('topology-node-crossteam')).toHaveCount(0)
 
       await page.screenshot({ path: `${EVIDENCE_DIR}/topology-unfiltered-${theme}.png`, fullPage: true })
 
-      // Filter to `support`, whose two agents hold all three crossings.
+      // ── The ≥3-team break ────────────────────────────────────────────────
+      // Filter to `support`. Three crossings touch it; the fourth (analytics →
+      // payments) touches no visible node at all, so no badge can represent it.
+      // An earlier revision of this lane claimed badges reconciled the counter;
+      // this is the shape that disproves it.
       await page.locator('[data-testid="team-filter-item"][data-team="support"]').click()
       await expect(page.getByTestId('topology-node')).toHaveCount(2)
+      await expect(drawnCrossings).toHaveCount(0)
 
-      // The canvas can no longer draw any crossing — each has a hidden endpoint.
-      await expect(page.locator('[data-testid="topology-edge"][data-cross-team="true"]')).toHaveCount(0)
-      // The counter still reports all three, and all three are still on screen
-      // as badges. This is the agreement the ticket is about.
+      // The fleet-wide count is not narrowed to match the picture...
       await expect(crossTeamStat).toContainText(`${CROSS_TEAM_TOTAL} cross-team`)
+      // ...the gap is stated instead, and it covers all four — including the one
+      // the badges cannot reach.
+      await expect(hiddenStat).toHaveAttribute('data-hidden-count', String(CROSS_TEAM_TOTAL))
+      await expect(hiddenStat).toContainText(`${CROSS_TEAM_TOTAL} not shown`)
 
-      const badges = page.getByTestId('topology-node-crossteam')
-      await expect(badges).toHaveCount(2)
-      const badged = await badges.evaluateAll((els) =>
-        els.reduce((total, el) => total + Number(el.getAttribute('data-count')), 0),
-      )
-      expect(badged, 'every hidden crossing is accounted for by a badge').toBe(CROSS_TEAM_TOTAL)
-
-      // Before the fix this view showed no cross-team edges and no badges —
-      // indistinguishable from a team with no external dependencies at all.
+      // The badges keep their own narrower job: which *visible* agents have
+      // relationships the view is not drawing.
+      const badged = await page
+        .getByTestId('topology-node-crossteam')
+        .evaluateAll((els) => els.reduce((total, el) => total + Number(el.getAttribute('data-count')), 0))
+      expect(badged, 'badges cover only the filtered team’s own crossings').toBe(SUPPORT_CROSSINGS)
       await expect(nodeCard(page, 'unbudgeted').getByTestId('topology-node-crossteam')).toContainText('⇆2')
 
       await page.getByTestId('topology-graph-wrap').screenshot({
         path: `${EVIDENCE_DIR}/topology-filtered-crossteam-badges-${theme}.png`,
       })
       await page.screenshot({ path: `${EVIDENCE_DIR}/topology-filtered-${theme}.png`, fullPage: true })
+
+      // ── The `showCrossTeam` break ────────────────────────────────────────
+      // Back to the whole fleet, then uncheck the toggle sitting directly beside
+      // the counter. Every node is on screen and every curve is gone, so no
+      // badge renders at all — verbatim the defect this ticket set out to fix,
+      // reachable without any team filter.
+      await page.locator('[data-testid="team-filter-item"][data-team="all"]').click()
+      await expect(drawnCrossings).toHaveCount(CROSS_TEAM_TOTAL)
+      await page.getByTestId('topology-crossteam-toggle').locator('input').uncheck()
+
+      await expect(drawnCrossings).toHaveCount(0)
+      await expect(page.getByTestId('topology-node-crossteam')).toHaveCount(0)
+      await expect(crossTeamStat).toContainText(`${CROSS_TEAM_TOTAL} cross-team`)
+      await expect(hiddenStat).toHaveAttribute('data-hidden-count', String(CROSS_TEAM_TOTAL))
+
+      await page.getByTestId('topology-stats').screenshot({
+        path: `${EVIDENCE_DIR}/topology-crossteam-hidden-toggle-${theme}.png`,
+      })
 
       expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
     })
@@ -306,6 +358,57 @@ test.describe('AAASM-5135 — Topology asserts only the budgets it was given', (
         timeout: 20_000,
       })
       .toBeGreaterThanOrEqual(3)
+
+    expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
+  })
+
+  test('polling updates the figures without re-scattering the graph', async ({ page }) => {
+    // The route above serves a *different* payload each poll, so this exercises
+    // the path a live fleet actually takes. Re-simulating on every changed
+    // payload would move every card — and therefore every click target — under
+    // the operator every five seconds.
+    const harness = await bootstrap(page, 'light', { drift: true })
+    await openTopology(page)
+
+    const cards = page.getByTestId('topology-node')
+    await expect(cards).toHaveCount(GRAPH.nodes.length)
+
+    // Let the force layout settle before sampling, so the comparison is against
+    // a resting graph rather than one still finding its shape.
+    const positions = async () =>
+      cards.evaluateAll((els) => els.map((el) => el.getAttribute('transform')))
+    const buckets = async () =>
+      cards.evaluateAll((els) => els.map((el) => el.getAttribute('data-size-bucket')))
+    let previous = await positions()
+    await expect
+      .poll(async () => {
+        const current = await positions()
+        const stable = JSON.stringify(current) === JSON.stringify(previous)
+        previous = current
+        return stable
+      }, { message: 'force layout settles', timeout: 15_000 })
+      .toBe(true)
+
+    const settled = await positions()
+    const budgetText = async () =>
+      page.getByTestId('topology-node-budget').evaluateAll((els) => els.map((el) => el.textContent ?? ''))
+    const budgetsBefore = await budgetText()
+    const bucketsBefore = await buckets()
+    const requestsBefore = harness.graphRequests()
+
+    // Span at least two polls.
+    await expect
+      .poll(() => harness.graphRequests(), { timeout: 20_000 })
+      .toBeGreaterThanOrEqual(requestsBefore + 2)
+
+    // Guard the guard: if a card had resized, `transform` would change for a
+    // legitimate reason and this assertion would be meaningless.
+    expect(await buckets(), 'no card resized during the run').toEqual(bucketsBefore)
+    expect(await positions(), 'cards do not move when only the figures change').toEqual(settled)
+
+    // And the figures really did move — "stop re-scattering" must not have
+    // become "stop updating".
+    expect(await budgetText(), 'spend figures advanced').not.toEqual(budgetsBefore)
 
     expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
   })
