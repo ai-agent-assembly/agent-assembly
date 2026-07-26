@@ -106,7 +106,7 @@ export function OnboardingWizard({
           )}
           {current === 'install' && (
             <Step2InstallSdk
-              onReachable={() => patchState({ gatewayReachable: true })}
+              onProbed={(healthy) => patchState({ gatewayHealthy: healthy })}
             />
           )}
           {/* Takes no callback: there is nothing for it to report (AAASM-5179). */}

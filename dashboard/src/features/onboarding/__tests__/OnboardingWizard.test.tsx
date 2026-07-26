@@ -16,7 +16,7 @@ function wrapper({ children }: { children: ReactNode }) {
 
 const FILLED_STATE: WizardState = {
   framework: 'langchain',
-  gatewayReachable: true,
+  gatewayHealthy: true,
   policyPreset: 'read-only',
   enrolled: true,
 }

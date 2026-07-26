@@ -6,8 +6,17 @@ import { buildProbeLines } from './probeLines'
 import './Steps.css'
 
 export interface Step2InstallSdkProps {
-  /** Fired only after the gateway itself answered `200` with `status: "ok"`. */
-  onReachable: () => void
+  /**
+   * The finding of the *most recent* probe: `true` only when the gateway itself
+   * answered `status: "ok"`.
+   *
+   * Reported on every probe, including the failures. An earlier revision fired
+   * only on success, which latched the wizard's flag `true` for good: a failing
+   * re-check then rendered the red UNAVAILABLE transcript while the footer
+   * still read "✓ ready to continue" and the stale `true` was persisted to
+   * localStorage. A flag named for an observation may not outlive it.
+   */
+  onProbed: (healthy: boolean) => void
 }
 
 type PackageManager = 'pip' | 'npm' | 'go'
@@ -33,7 +42,7 @@ const COMMANDS: Record<PackageManager, string> = {
 
 const COPY_RESET_MS = 1400
 
-export function Step2InstallSdk({ onReachable }: Readonly<Step2InstallSdkProps>) {
+export function Step2InstallSdk({ onProbed }: Readonly<Step2InstallSdkProps>) {
   const [pkg, setPkg] = useState<PackageManager>('pip')
   const [copyState, setCopyState] = useState<CopyState>('idle')
   const [phase, setPhase] = useState<Phase>('idle')
@@ -64,9 +73,9 @@ export function Step2InstallSdk({ onReachable }: Readonly<Step2InstallSdkProps>)
     const certain = certainFromQuery(await probeGatewayHealth())
     setResult(certain)
     setPhase('answered')
-    if (isKnown(certain) && certain.value.status === 'ok') {
-      onReachable()
-    }
+    // Reported in both directions — a degraded or unreachable gateway clears
+    // the flag that an earlier successful probe set.
+    onProbed(isKnown(certain) && certain.value.status === 'ok')
   }
 
   let probeButtonLabel: string

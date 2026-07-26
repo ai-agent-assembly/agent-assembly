@@ -19,9 +19,19 @@ vi.mock('../api', async (importOriginal) => ({
 const apiGet = api.GET as unknown as ReturnType<typeof vi.fn>
 const probe = vi.mocked(probeGatewayHealth)
 
+const HEALTHY = {
+  status: 'ok',
+  version: '0.0.1',
+  api_version: 'v1',
+  uptime_secs: 1,
+  active_connections: 0,
+  pipeline_lag_ms: 0,
+  checks: { storage: 'ok' },
+}
+
 const FILLED_STATE: WizardState = {
   framework: 'langchain',
-  gatewayReachable: true,
+  gatewayHealthy: true,
   policyPreset: 'read-only',
   enrolled: true,
 }
@@ -46,17 +56,7 @@ beforeEach(() => {
     response: { ok: true, status: 200 } as Response,
   })
   probe.mockReset()
-  probe.mockResolvedValue({
-    data: {
-      status: 'ok',
-      version: '0.0.1',
-      api_version: 'v1',
-      uptime_secs: 1,
-      active_connections: 0,
-      pipeline_lag_ms: 0,
-      checks: { storage: 'ok' },
-    },
-  })
+  probe.mockResolvedValue({ data: HEALTHY })
 })
 
 describe('OnboardingWizard step rendering', () => {
@@ -121,7 +121,7 @@ describe('OnboardingWizard step rendering', () => {
 })
 
 describe('OnboardingWizard step → state patching', () => {
-  it('patches gatewayReachable only after the gateway itself answered ok', async () => {
+  it('patches gatewayHealthy only after the gateway itself answered ok', async () => {
     const onPersist = vi.fn()
     renderWizard({ initialStep: 'install', initialState: EMPTY_STATE, onPersist })
 
@@ -130,11 +130,33 @@ describe('OnboardingWizard step → state patching', () => {
     })
 
     expect(onPersist).toHaveBeenLastCalledWith(
-      expect.objectContaining({ state: expect.objectContaining({ gatewayReachable: true }) }),
+      expect.objectContaining({ state: expect.objectContaining({ gatewayHealthy: true }) }),
     )
   })
 
-  it('leaves gatewayReachable false when the probe fails', async () => {
+  it('clears gatewayHealthy when a re-check fails after a good probe', async () => {
+    // The footer must not still read "✓ ready to continue" over a red
+    // UNAVAILABLE transcript, and the stale `true` must not reach localStorage.
+    probe.mockResolvedValueOnce({ data: HEALTHY })
+    probe.mockResolvedValueOnce({ isError: true, error: new TypeError('Failed to fetch') })
+    const onPersist = vi.fn()
+    renderWizard({ initialStep: 'install', initialState: EMPTY_STATE, onPersist })
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-install-verify'))
+    })
+    expect(screen.getByTestId('onboarding-continue')).not.toBeDisabled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('onboarding-install-verify'))
+    })
+
+    const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
+    expect(last.state.gatewayHealthy).toBe(false)
+    expect(screen.getByTestId('onboarding-continue')).toBeDisabled()
+  })
+
+  it('leaves gatewayHealthy false when the probe fails', async () => {
     probe.mockResolvedValue({ isError: true, error: new TypeError('Failed to fetch') })
     const onPersist = vi.fn()
     renderWizard({ initialStep: 'install', initialState: EMPTY_STATE, onPersist })
@@ -144,7 +166,7 @@ describe('OnboardingWizard step → state patching', () => {
     })
 
     const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
-    expect(last.state.gatewayReachable).toBe(false)
+    expect(last.state.gatewayHealthy).toBe(false)
     expect(screen.getByTestId('onboarding-continue')).toBeDisabled()
   })
 

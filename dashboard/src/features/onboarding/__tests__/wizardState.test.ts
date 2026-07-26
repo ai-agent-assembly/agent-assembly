@@ -27,7 +27,7 @@ describe('wizardState helpers', () => {
     it('unblocks each step when its slice of state is set', () => {
       const filled: WizardState = {
         framework: 'langchain',
-        gatewayReachable: true,
+        gatewayHealthy: true,
         policyPreset: 'read-only',
         enrolled: true,
       }
