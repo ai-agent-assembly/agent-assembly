@@ -596,6 +596,10 @@ fn agent_tool_ids(
     for doc in cascade {
         agent_tools.extend(doc.tools.keys().cloned());
     }
+    // `"*"` is the tool stage's fallback pattern, not a tool. Left in, it became
+    // a resource column literally named `*` whose cell read `allow` — the exact
+    // inverse of what `tools: { "*": { allow: false } }` declares.
+    agent_tools.remove(TOOL_WILDCARD);
     agent_tools
 }
 
@@ -1093,6 +1097,24 @@ mod tests {
         // Unconstrained families are still allowed — the deny is not blanket.
         assert_eq!(cells["filesystem"].read, Decision::Allow);
         assert_eq!(cells["terminal"].exec, Decision::Allow);
+    }
+
+    /// The `"*"` tools key is a fallback pattern, not a tool. A column named `*`
+    /// reading `allow` is the exact inverse of what `"*": { allow: false }` says.
+    #[tokio::test]
+    async fn the_tool_wildcard_never_becomes_a_resource_column() {
+        let state = state_with_policies(
+            vec![record(0x01, "a", &[])],
+            vec![policy_doc("strict", PolicyScope::Global, None, &[("*", false)], None)],
+        );
+        let m = matrix_for(&state).await;
+
+        assert!(
+            m.resources.iter().all(|r| r.id != TOOL_WILDCARD),
+            "wildcard leaked into the resource columns: {:?}",
+            m.resources.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
+        assert!(!m.agents[0].caps.contains_key(TOOL_WILDCARD));
     }
 
     #[test]
