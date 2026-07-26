@@ -1,19 +1,34 @@
 import type React from 'react'
 import type { TraceEvent, TraceSeverity } from '../../features/trace/types'
 import { deriveVerdict } from '../../features/trace/decision'
+import { isKnown } from '../../lib/truthfulness'
+import { AbsenceMarker, TruthfulValue } from '../truthfulness'
 import { VerdictChip } from './VerdictChip'
 import { Tooltip } from '../Tooltip'
 import './TraceTimeline.css'
 
+/**
+ * Row glyph by operation.
+ *
+ * Keyed on `AuditEventType::as_str()` (`aa-core/src/audit.rs`), which is what
+ * the wire `operation` actually contains. The previous map used snake_case
+ * names — `llm_call`, `policy_violation` — that the trace API never emits, so
+ * every row fell through to the `·` default. Purely cosmetic: an unmapped
+ * operation still renders `·` rather than guessing a meaning.
+ */
 const ICON_BY_TYPE: Record<string, string> = {
-  llm_call: '⌬',
-  tool_call: '⌗',
-  policy_violation: '⚠',
-  credential_leak: '⚿',
+  ToolCallIntercepted: '⌗',
+  ToolDispatched: '⌬',
+  PolicyViolation: '⚠',
+  CredentialLeakBlocked: '⚿',
+  MessageBlocked: '⊘',
+  ApprovalRequested: '⏸',
+  ApprovalGranted: '✓',
+  ApprovalDenied: '✕',
 }
 
 function severityKey(event: TraceEvent): TraceSeverity | 'neutral' {
-  return event.severity ?? 'neutral'
+  return isKnown(event.severity) ? event.severity.value : 'neutral'
 }
 
 function formatTime(iso: string): string {
@@ -26,6 +41,11 @@ function truncatePreview(text: string): string {
   return text.length > MAX_PREVIEW_CHARS
     ? `${text.slice(0, MAX_PREVIEW_CHARS)}…`
     : text
+}
+
+/** A non-breaking space keeps the number and its unit on one line. */
+function formatDuration(ms: number): string {
+  return `${ms}\u00a0ms`
 }
 
 export interface TraceTimelineProps {
@@ -65,8 +85,11 @@ function makeRowKeyDownHandler(
 function TraceEventRow({ event, isLast, onSelectEvent }: TraceEventRowProps) {
   const sev = severityKey(event)
   const icon = ICON_BY_TYPE[event.type] ?? '·'
-  const tooltipReason =
-    event.type === 'policy_violation' ? event.violationReason : undefined
+  const verdict = deriveVerdict(event)
+  // The tooltip is attached only when a reason was actually recorded. It used
+  // to be gated on a snake_case type name that never matched, and would have
+  // rendered an empty tooltip if it had.
+  const tooltipReason = isKnown(event.violationReason) ? event.violationReason.value : undefined
   const iconNode = (
     <div className="trace-event__icon-circle" aria-hidden="true">{icon}</div>
   )
@@ -95,11 +118,33 @@ function TraceEventRow({ event, isLast, onSelectEvent }: TraceEventRowProps) {
       <div className="trace-event__body">
         <div className="trace-event__head">
           <span className="trace-event__label">{event.type}</span>
-          <VerdictChip verdict={deriveVerdict(event)} variant="compact" shape="square" />
+          {/* No chip at all when no verdict was recorded — a chip is an
+              assertion, and the absence marker is the honest stand-in. */}
+          {isKnown(verdict) ? (
+            <VerdictChip verdict={verdict.value} variant="compact" shape="square" />
+          ) : (
+            <AbsenceMarker
+              state={verdict.state}
+              detail={verdict.detail}
+              testId="trace-event-verdict-absent"
+            />
+          )}
           <span className="trace-event__time">{formatTime(event.timestamp)}</span>
-          <span className="trace-event__duration">{event.durationMs}&nbsp;ms</span>
+          <span className="trace-event__duration">
+            <TruthfulValue
+              value={event.durationMs}
+              format={formatDuration}
+              testId="trace-event-duration"
+            />
+          </span>
         </div>
-        <div className="trace-event__detail">{truncatePreview(event.payloadPreview)}</div>
+        <div className="trace-event__detail">
+          <TruthfulValue
+            value={event.payloadPreview}
+            format={truncatePreview}
+            testId="trace-event-detail"
+          />
+        </div>
         <div className="trace-event__meta">{event.agent}</div>
       </div>
     </li>

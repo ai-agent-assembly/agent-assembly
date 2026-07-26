@@ -1,4 +1,7 @@
 import { useMemo, type ReactNode } from 'react'
+import { isKnown, type Certain } from '../../lib/truthfulness'
+import { AbsenceMarker } from '../truthfulness'
+import { previewJson } from './previewJson'
 import './RedactionPreview.css'
 
 // Provably linear (no overlapping quantifiers): a single greedy `(.*)` to
@@ -43,8 +46,8 @@ function renderLines(formatted: string, redactedSet: ReadonlySet<string>): React
 }
 
 export interface RedactionPreviewProps {
-  readonly payload: unknown
-  readonly redactedFields?: readonly string[]
+  readonly payload: Certain<unknown>
+  readonly redactedFields?: Certain<readonly string[]>
   /** Payload kind label shown in the section header (e.g. the event type). */
   readonly kind?: string
 }
@@ -52,25 +55,51 @@ export interface RedactionPreviewProps {
 /**
  * Redaction-block payload preview (hi-fi `trace.jsx` `PayloadBlock`).
  *
- * Replaces the old raw-JSON + 🔒 modal for scrubbed content: redacted field
- * values render as `█` blocks (their real values are never emitted to the DOM),
- * and the redacted keys are listed as tags below. Non-redacted fields show
- * their values so the preview is still a useful payload view.
+ * Redacted field values render as `█` blocks (their real values are never
+ * emitted to the DOM) and the redacted keys are listed as tags below;
+ * non-redacted fields show their values so the preview is still a useful
+ * payload view. ADR-0017 item 12 ratifies this *generic* block as authoritative
+ * over the mock's per-type semantic templates — those would fabricate payload
+ * content the backend does not emit — so the block stays type-agnostic.
  */
 export function RedactionPreview({ payload, redactedFields, kind }: RedactionPreviewProps) {
-  const redacted = redactedFields ?? []
-  const redactedSet = useMemo(() => new Set(redactedFields ?? []), [redactedFields])
-  const formatted = useMemo(() => JSON.stringify(payload, null, 2) ?? 'null', [payload])
-  const lines = useMemo(() => renderLines(formatted, redactedSet), [formatted, redactedSet])
+  const redacted = useMemo(
+    () => (redactedFields !== undefined && isKnown(redactedFields) ? redactedFields.value : []),
+    [redactedFields],
+  )
+  const redactedSet = useMemo(() => new Set(redacted), [redacted])
+  const formatted = useMemo(() => previewJson(payload), [payload])
+  // Narrowed once, up front, so the absence branch keeps its `state` and
+  // `detail` without a fallback that could never be reached.
+  const absence = isKnown(formatted) ? null : formatted
+  const lines = useMemo(
+    () => (isKnown(formatted) ? renderLines(formatted.value, redactedSet) : null),
+    [formatted, redactedSet],
+  )
 
   return (
     <div className="redaction-preview" data-testid="redaction-preview">
       <div className="redaction-preview__eyebrow">
         payload preview{kind ? <span className="redaction-preview__kind"> · {kind}</span> : null}
       </div>
-      <pre className="redaction-preview__body" data-testid="redaction-preview-body">
-        {lines}
-      </pre>
+      {absence === null ? (
+        <pre className="redaction-preview__body" data-testid="redaction-preview-body">
+          {lines}
+        </pre>
+      ) : (
+        <div
+          className="redaction-preview__body redaction-preview__body--absent"
+          data-testid="redaction-preview-body"
+        >
+          <AbsenceMarker
+            state={absence.state}
+            detail={absence.detail}
+            showLabel
+            testId="redaction-preview-absent"
+          />
+          <span className="redaction-preview__absent-caption">no payload recorded</span>
+        </div>
+      )}
       {redacted.length > 0 && (
         <div className="redaction-preview__tags" data-testid="redaction-tags">
           <span className="redaction-preview__tag redaction-preview__tag--label">redacted</span>

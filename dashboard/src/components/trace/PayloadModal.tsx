@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react'
 import type { TraceEvent } from '../../features/trace/types'
 import { deriveVerdict } from '../../features/trace/decision'
+import { isKnown } from '../../lib/truthfulness'
+import { AbsenceMarker, TruthfulValue } from '../truthfulness'
 import { VerdictChip } from './VerdictChip'
 import { DecisionExplainer } from './DecisionExplainer'
 import './PayloadModal.css'
@@ -8,6 +10,11 @@ import './PayloadModal.css'
 export interface PayloadModalProps {
   readonly event: TraceEvent | null
   readonly onClose: () => void
+}
+
+/** Duration in the modal subtitle, rendered only when one was measured. */
+function formatDuration(ms: number): string {
+  return `${ms} ms`
 }
 
 /**
@@ -59,7 +66,7 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
 
   const verdict = useMemo(() => (event ? deriveVerdict(event) : null), [event])
 
-  if (!event || !verdict) return null
+  if (!event || verdict === null) return null
 
   return (
     <div
@@ -90,10 +97,26 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
           <div>
             <div className="payload-modal__eyebrow">trace decision explainer</div>
             <h2 className="payload-modal__title">
-              <VerdictChip verdict={verdict} shape="square" />{' '}
+              {isKnown(verdict) ? (
+                <VerdictChip verdict={verdict.value} shape="square" />
+              ) : (
+                <AbsenceMarker
+                  state={verdict.state}
+                  detail={verdict.detail}
+                  showLabel
+                  testId="payload-modal-verdict-absent"
+                />
+              )}{' '}
               <code>{event.type}</code> · <span className="payload-modal__time">{event.timestamp}</span>
             </h2>
-            <div className="payload-modal__subtitle">{event.agent} · {event.durationMs}&nbsp;ms</div>
+            <div className="payload-modal__subtitle">
+              {event.agent} ·{' '}
+              <TruthfulValue
+                value={event.durationMs}
+                format={formatDuration}
+                testId="payload-modal-duration"
+              />
+            </div>
           </div>
           <div className="payload-modal__actions">
             <button
