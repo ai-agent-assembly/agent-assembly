@@ -227,6 +227,103 @@ fn build_tree(
 }
 
 // ---------------------------------------------------------------------------
+// Graph projection helpers
+// ---------------------------------------------------------------------------
+
+/// Per-edge-type page size for the graph projection. Matches the `EdgeRepo`
+/// contract's own cap, so the request never asks for more than a store can
+/// return.
+const EDGE_BATCH_LIMIT: u32 = 1000;
+
+/// Wire `kind` for a stored [`EdgeType`] — the graph vocabulary the dashboard
+/// renders (`delegates_to` -> `delegation`, `calls` -> `call`).
+fn graph_edge_kind(edge_type: EdgeType) -> &'static str {
+    match edge_type {
+        EdgeType::DelegatesTo => "delegation",
+        EdgeType::Calls => "call",
+        other => other.as_str(),
+    }
+}
+
+/// Enrich the caller-visible records into graph nodes, resolving each agent's
+/// policy count and daily budget.
+fn project_graph_nodes(records: &[AgentRecord], state: &AppState) -> Vec<AgentNode> {
+    // Budget: snapshot once (not per node) and index today's per-agent spend by
+    // the same 32-char hex the node id uses, mirroring the `/api/v1/costs`
+    // per-agent breakdown that reads the identical tracker state.
+    let budget_snapshot = state.budget_tracker.snapshot();
+    let spend_by_id: HashMap<String, f64> = budget_snapshot
+        .per_agent
+        .iter()
+        .map(|e| (e.agent_id_hex.clone(), e.state.spent_usd.to_f64().unwrap_or(0.0)))
+        .collect();
+    // Effective daily limit = per-agent override, else the server-wide daily
+    // limit; `null` when neither is configured (the panel then shows the
+    // "no limit" placeholder rather than a misleading 0).
+    let global_daily_limit = state.budget_tracker.daily_limit_usd();
+
+    let mut nodes: Vec<AgentNode> = records
+        .iter()
+        .map(|record| {
+            let mut node = AgentNode::from(record);
+            let agent_id = AgentId::from_bytes(record.agent_id);
+            node.policy_count = Some(state.policy_engine.collect_cascade(&agent_id).len() as u32);
+            let limit_usd = state
+                .budget_tracker
+                .agent_daily_limit_usd(&agent_id)
+                .or(global_daily_limit)
+                .and_then(|d| d.to_f64());
+            node.budget = Some(NodeBudget {
+                spend_usd: spend_by_id.get(&node.id).copied().unwrap_or(0.0),
+                limit_usd,
+            });
+            node
+        })
+        .collect();
+    nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    nodes
+}
+
+/// Collect the graph edges whose endpoints are both visible nodes.
+///
+/// An edge touching an id outside `visible_ids` is dropped, so an edge can never
+/// cross the tenant boundary or point at a node the client wasn't given (mirrors
+/// the edges.rs BFS tenant boundary, AAASM-3825).
+async fn collect_graph_edges(
+    state: &AppState,
+    visible_ids: &HashSet<[u8; 16]>,
+) -> Result<Vec<TopologyGraphEdge>, ProblemDetail> {
+    let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_default();
+    let mut edges: Vec<TopologyGraphEdge> = Vec::new();
+    // The graph models exactly two relation kinds; the other stored kinds
+    // (reads/writes/approves/messages) are relationships it doesn't render.
+    for &edge_type in &[EdgeType::DelegatesTo, EdgeType::Calls] {
+        let batch = state
+            .edge_repo
+            .list_by_type(edge_type, epoch, EDGE_BATCH_LIMIT)
+            .await
+            .map_err(|e| {
+                // Mirror the edges.rs 500 mapping (AAASM-4950): log the underlying
+                // store error server-side, return a generic body.
+                tracing::error!(error = %e, "failed to list topology graph edges by type");
+                ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .with_detail("Failed to list topology edges".to_string())
+            })?;
+        let kind = graph_edge_kind(edge_type);
+        for edge in batch {
+            if visible_ids.contains(edge.source.as_bytes()) && visible_ids.contains(edge.target.as_bytes()) {
+                edges.push(TopologyGraphEdge {
+                    source: format_id(edge.source.as_bytes()),
+                    target: format_id(edge.target.as_bytes()),
+                    kind: kind.to_owned(),
+                });
+            }
+        }
+    }
+    Ok(edges)
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -797,74 +894,10 @@ pub async fn get_topology_graph(
     // registry, policy-engine, and budget-tracker state so the node-detail panel
     // renders real values instead of neutral placeholders. `owner` is set by the
     // `From<&AgentRecord>` impl (a pure metadata read); `policy_count` and
-    // `budget` need the two stores below, which only this whole-fleet handler
-    // reaches — the list / tree endpoints leave them `null`.
-    //
-    // Budget: snapshot once (not per node) and index today's per-agent spend by
-    // the same 32-char hex the node id uses, mirroring the `/api/v1/costs`
-    // per-agent breakdown that reads the identical tracker state.
-    let budget_snapshot = state.budget_tracker.snapshot();
-    let spend_by_id: HashMap<String, f64> = budget_snapshot
-        .per_agent
-        .iter()
-        .map(|e| (e.agent_id_hex.clone(), e.state.spent_usd.to_f64().unwrap_or(0.0)))
-        .collect();
-    // Effective daily limit = per-agent override, else the server-wide daily
-    // limit; `null` when neither is configured (the panel then shows the
-    // "no limit" placeholder rather than a misleading 0).
-    let global_daily_limit = state.budget_tracker.daily_limit_usd();
-
-    let mut nodes: Vec<AgentNode> = records
-        .iter()
-        .map(|r| {
-            let mut node = AgentNode::from(r);
-            let agent_id = AgentId::from_bytes(r.agent_id);
-            node.policy_count = Some(state.policy_engine.collect_cascade(&agent_id).len() as u32);
-            let limit_usd = state
-                .budget_tracker
-                .agent_daily_limit_usd(&agent_id)
-                .or(global_daily_limit)
-                .and_then(|d| d.to_f64());
-            node.budget = Some(NodeBudget {
-                spend_usd: spend_by_id.get(&node.id).copied().unwrap_or(0.0),
-                limit_usd,
-            });
-            node
-        })
-        .collect();
-    nodes.sort_by(|a, b| a.id.cmp(&b.id));
-
-    // Edges: the graph models exactly two relation kinds — `delegation`
-    // (`delegates_to`) and `call` (`calls`) — so only those two edge types are
-    // gathered. The other stored kinds (reads/writes/approves/messages) are
-    // relationships the dashboard graph doesn't render. An edge is kept only
-    // when both endpoints are visible nodes, so it can never cross the tenant
-    // boundary or point at a node the client wasn't given.
-    let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_default();
-    let mut edges: Vec<TopologyGraphEdge> = Vec::new();
-    for &et in &[EdgeType::DelegatesTo, EdgeType::Calls] {
-        let batch = state.edge_repo.list_by_type(et, epoch, 1000).await.map_err(|e| {
-            // Mirror the edges.rs 500 mapping (AAASM-4950): log the underlying
-            // store error server-side, return a generic body.
-            tracing::error!(error = %e, "failed to list topology graph edges by type");
-            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
-                .with_detail("Failed to list topology edges".to_string())
-        })?;
-        let kind = if matches!(et, EdgeType::DelegatesTo) {
-            "delegation"
-        } else {
-            "call"
-        };
-        for edge in batch {
-            if visible_ids.contains(edge.source.as_bytes()) && visible_ids.contains(edge.target.as_bytes()) {
-                edges.push(TopologyGraphEdge {
-                    source: format_id(edge.source.as_bytes()),
-                    target: format_id(edge.target.as_bytes()),
-                    kind: kind.to_owned(),
-                });
-            }
-        }
-    }
+    // `budget` need the two stores only this whole-fleet handler reaches — the
+    // list / tree endpoints leave them `null`.
+    let nodes = project_graph_nodes(&records, &state);
+    let edges = collect_graph_edges(&state, &visible_ids).await?;
 
     Ok((StatusCode::OK, Json(TopologyGraphResponse { nodes, edges })))
 }
