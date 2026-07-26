@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { TopologySidebar, type TopologyStats } from './TopologySidebar'
 import { defaultVisibleKinds } from '../../features/topology/edgeKinds'
 
-const STATS: TopologyStats = { active: 3, flagged: 1, crossTeam: 2, hasCycles: false }
+const STATS: TopologyStats = { active: 3, flagged: 1, crossTeam: 2, crossTeamHidden: 0, hasCycles: false }
 
 function renderSidebar(overrides: Partial<Parameters<typeof TopologySidebar>[0]> = {}) {
   const props = {
@@ -96,5 +96,32 @@ describe('TopologySidebar', () => {
     const legend = screen.getByTestId('topology-status-legend')
     expect(legend).toHaveTextContent('active')
     expect(legend).toHaveTextContent('suspended')
+  })
+})
+
+// AAASM-5138. The `⇆ N cross-team` stat is fleet-wide while the canvas draws a
+// subset, so when they differ the sidebar has to say so — otherwise the number
+// beside the picture is simply wrong.
+describe('TopologySidebar — hidden cross-team crossings', () => {
+  it('says nothing extra when the canvas is drawing every counted crossing', () => {
+    renderSidebar({ stats: { ...STATS, crossTeam: 2, crossTeamHidden: 0 } })
+    expect(screen.queryByTestId('topology-stat-crossteam-hidden')).toBeNull()
+  })
+
+  it('states how many counted crossings are not drawn', () => {
+    renderSidebar({ stats: { ...STATS, crossTeam: 3, crossTeamHidden: 2 } })
+    const hidden = screen.getByTestId('topology-stat-crossteam-hidden')
+    expect(hidden).toHaveTextContent('2 not shown')
+    expect(hidden).toHaveAttribute('data-hidden-count', '2')
+    // The fleet-wide count is not quietly narrowed to match the picture.
+    expect(screen.getByTestId('topology-stat-crossteam')).toHaveTextContent('3 cross-team')
+  })
+
+  it('explains why they are missing rather than just flagging a number', () => {
+    renderSidebar({ stats: { ...STATS, crossTeam: 3, crossTeamHidden: 1 } })
+    const title = screen.getByTestId('topology-stat-crossteam-hidden').getAttribute('title') ?? ''
+    expect(title).toMatch(/team filter/i)
+    expect(title).toMatch(/cross-team toggle/i)
+    expect(title).toMatch(/edge type/i)
   })
 })

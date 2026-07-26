@@ -177,95 +177,112 @@ describe('TopologyPage', () => {
 })
 
 // ── Sidebar count vs. rendered canvas (AAASM-5138) ───────────────────────────
+//
 // The sidebar counts cross-team edges across the whole fleet; the canvas draws
-// only edges whose two endpoints are both visible. Under a team filter those
-// two disagreed, and the filtered view read as "this team has no external
-// dependencies". The badges are what close the gap.
-describe('TopologyPage — cross-team count agrees with the canvas', () => {
+// only a subset. An earlier revision of this lane claimed the per-node `⇆N`
+// badges reconciled the two — `drawn + badged == counted` — and tested it on a
+// 2-team fixture where every crossing touched the filtered team, a shape in
+// which the claim cannot fail. It is false in general. The fixture below is
+// three teams in a chain precisely so it can fail, and the shipped behaviour is
+// that the sidebar *states the gap* rather than asserting a reconciled number.
+describe('TopologyPage — the cross-team count never contradicts the canvas', () => {
   afterEach(() => { vi.restoreAllMocks() })
 
-  // support × 2 and analytics × 2, with three crossings and one intra-team edge.
-  const MESH: TopologyGraph = {
+  // alpha–beta and beta–gamma. Filter to alpha and the beta–gamma crossing is
+  // counted, undrawn, and touches no visible node — so no badge can represent it.
+  const CHAIN: TopologyGraph = {
     nodes: [
-      { id: 's1', name: 'support-1', status: 'active', team: 'support', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
-      { id: 's2', name: 'support-2', status: 'active', team: 'support', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
-      { id: 'n1', name: 'analyst-1', status: 'active', team: 'analytics', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
-      { id: 'n2', name: 'analyst-2', status: 'active', team: 'analytics', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+      { id: 'a1', name: 'alpha-1', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+      { id: 'b1', name: 'beta-1', status: 'active', team: 'beta', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+      { id: 'c1', name: 'gamma-1', status: 'active', team: 'gamma', owner: 'c', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
     ],
     edges: [
-      { source: 's1', target: 's2', kind: 'delegation' },
-      { source: 's1', target: 'n1', kind: 'call' },
-      { source: 's1', target: 'n2', kind: 'call' },
-      { source: 's2', target: 'n1', kind: 'reads' },
+      { source: 'a1', target: 'b1', kind: 'delegation' },
+      { source: 'b1', target: 'c1', kind: 'delegation' },
     ],
   }
 
-  function drawnCrossTeamCount() {
-    return screen
-      .queryAllByTestId('topology-edge')
-      .filter(p => p.getAttribute('data-cross-team') === 'true').length
-  }
-
-  function badgedCount() {
-    return screen
-      .queryAllByTestId('topology-node-crossteam')
-      .reduce((total, b) => total + Number(b.getAttribute('data-count')), 0)
-  }
-
-  function sidebarCount() {
-    const text = screen.getByTestId('topology-stat-crossteam').textContent ?? ''
-    return Number(/(\d+) cross-team/.exec(text)![1])
-  }
-
-  async function filterTo(team: string) {
-    const option = screen.getAllByTestId('team-filter-item').find(i => i.dataset.team === team)!
-    await userEvent.click(option)
-    await waitFor(() => expect(screen.getAllByTestId('topology-node')).toHaveLength(2))
-  }
-
-  it('draws every counted crossing when the whole fleet is shown', () => {
+  function mountChain() {
     vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
-      mockQuery({ data: MESH, isLoading: false, isError: false, refetch: vi.fn() }),
+      mockQuery({ data: CHAIN, isLoading: false, isError: false, refetch: vi.fn() }),
     )
     renderPage()
-    expect(sidebarCount()).toBe(3)
-    expect(drawnCrossTeamCount()).toBe(3)
-    expect(badgedCount()).toBe(0)
+  }
+
+  function counted() {
+    return Number(/(\d+) cross-team/.exec(screen.getByTestId('topology-stat-crossteam').textContent ?? '')![1])
+  }
+  function drawn() {
+    return screen.queryAllByTestId('topology-edge').filter(p => p.getAttribute('data-cross-team') === 'true').length
+  }
+  function hidden() {
+    const el = screen.queryByTestId('topology-stat-crossteam-hidden')
+    return el === null ? 0 : Number(el.getAttribute('data-hidden-count'))
+  }
+
+  it('reports nothing hidden when the canvas draws every counted crossing', () => {
+    mountChain()
+    expect(counted()).toBe(2)
+    expect(drawn()).toBe(2)
+    expect(hidden()).toBe(0)
   })
 
-  it('accounts for every crossing the team filter removes from the canvas', async () => {
-    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
-      mockQuery({ data: MESH, isLoading: false, isError: false, refetch: vi.fn() }),
-    )
-    renderPage()
-    await filterTo('support')
+  /**
+   * The ≥3-team break. Filtering to `alpha` leaves the beta–gamma crossing
+   * counted but entirely unrepresented on the canvas — it has no endpoint on
+   * screen, so the `⇆N` badges cannot account for it. Reverting the
+   * `crossTeamHidden` wiring fails this test.
+   */
+  it('states the gap when a crossing between two off-screen teams is dropped', async () => {
+    mountChain()
+    await userEvent.click(screen.getAllByTestId('team-filter-item').find(i => i.dataset.team === 'alpha')!)
+    await waitFor(() => expect(screen.getAllByTestId('topology-node')).toHaveLength(1))
 
-    // The canvas can no longer draw any crossing — both have a hidden endpoint.
-    expect(drawnCrossTeamCount()).toBe(0)
-    // All three are still counted by the sidebar, and all three are still
-    // represented on screen, as badges on the team's own cards. This is the
-    // agreement the ticket is about: nothing is silently deleted.
-    expect(sidebarCount()).toBe(3)
-    expect(drawnCrossTeamCount() + badgedCount()).toBe(sidebarCount())
+    expect(drawn()).toBe(0)
+    // The fleet-wide count is not narrowed to match the picture...
+    expect(counted()).toBe(2)
+    // ...instead the discrepancy is stated, and it covers *both* crossings —
+    // including the one no badge touches.
+    expect(hidden()).toBe(2)
+    expect(drawn() + hidden()).toBe(counted())
   })
 
-  it('leaves the filtered team looking connected, not isolated', async () => {
-    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
-      mockQuery({ data: MESH, isLoading: false, isError: false, refetch: vi.fn() }),
-    )
-    renderPage()
-    await filterTo('support')
-    // Before the fix this was zero badges over a canvas with no cross-team
-    // edges — indistinguishable from a team with no external dependencies.
-    expect(screen.queryAllByTestId('topology-node-crossteam').length).toBeGreaterThan(0)
+  /**
+   * The `showCrossTeam` break, reachable from the checkbox sitting directly
+   * beside the counter with no team filter at all. Every node is on screen and
+   * every curve is gone, so `teamFilterActive` is false and no badge renders.
+   */
+  it('states the gap when the cross-team toggle hides every curve', async () => {
+    mountChain()
+    await userEvent.click(screen.getByTestId('topology-crossteam-toggle').querySelector('input')!)
+
+    await waitFor(() => expect(drawn()).toBe(0))
+    expect(screen.queryAllByTestId('topology-node-crossteam')).toHaveLength(0)
+    expect(counted()).toBe(2)
+    expect(hidden()).toBe(2)
   })
 
-  it('keeps the intra-team edge drawn, so the filter still declutters', async () => {
-    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
-      mockQuery({ data: MESH, isLoading: false, isError: false, refetch: vi.fn() }),
-    )
-    renderPage()
-    await filterTo('support')
-    await waitFor(() => expect(screen.queryAllByTestId('topology-edge')).toHaveLength(1))
+  it('states the gap when an edge kind is unchecked', async () => {
+    mountChain()
+    const delegation = screen
+      .getAllByTestId('topology-edge-toggle')
+      .find(l => l.dataset.kind === 'delegates_to')!
+    await userEvent.click(delegation.querySelector('input')!)
+
+    await waitFor(() => expect(drawn()).toBe(0))
+    expect(counted()).toBe(2)
+    expect(hidden()).toBe(2)
+  })
+
+  // The per-node badge keeps its own, narrower job: telling the operator which
+  // visible agents have relationships the filtered view is not drawing.
+  it('still badges the visible team’s own crossings', async () => {
+    mountChain()
+    await userEvent.click(screen.getAllByTestId('team-filter-item').find(i => i.dataset.team === 'beta')!)
+    await waitFor(() => expect(screen.getAllByTestId('topology-node')).toHaveLength(1))
+    // beta touches both crossings.
+    const badges = screen.getAllByTestId('topology-node-crossteam')
+    expect(badges).toHaveLength(1)
+    expect(badges[0]).toHaveAttribute('data-count', '2')
   })
 })

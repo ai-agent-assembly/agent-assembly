@@ -15,7 +15,7 @@
  * Pure functions — no React, no fetch — so the agreement between count and
  * canvas is unit-testable without rendering anything.
  */
-import type { TopologyEdge, TopologyNode } from './types'
+import type { TopologyEdge, TopologyEdgeKind, TopologyNode } from './types'
 
 /** Team lookup keyed by node id, built once per graph. */
 export function teamById(nodes: readonly TopologyNode[]): ReadonlyMap<string, string> {
@@ -43,6 +43,67 @@ export function crossTeamEdges(
   teams: ReadonlyMap<string, string>,
 ): readonly TopologyEdge[] {
   return edges.filter((e) => isCrossTeamEdge(e, teams))
+}
+
+/** The canvas controls that can remove an edge from the drawing. */
+export interface EdgeVisibility {
+  /** Edge kinds the operator has left checked. `undefined` means all kinds. */
+  readonly visibleKinds?: ReadonlySet<TopologyEdgeKind>
+  /** The sidebar's "show cross-team" checkbox. Defaults to `true`. */
+  readonly showCrossTeam?: boolean
+}
+
+/**
+ * Whether the canvas will actually draw this edge.
+ *
+ * This is the **single** statement of what reaches the screen, used both by
+ * `TopologyGraph` to build its geometry and by `TopologyPage` to work out how
+ * many counted crossings the picture is not showing. Keeping the two in one
+ * place is the whole point: the AAASM-5138 defect was a counter and a canvas
+ * that each decided independently what was visible and then disagreed.
+ *
+ * Four things stop an edge being drawn, and all four must be accounted for by
+ * anything that claims a number about the graph:
+ *
+ *  1. its kind is unchecked in the sidebar;
+ *  2. an endpoint is off-screen (the team filter trimmed it);
+ *  3. it is a self-edge, which has no geometry;
+ *  4. it crosses a boundary while "show cross-team" is unchecked.
+ */
+export function isEdgeDrawn(
+  edge: TopologyEdge,
+  visibleNodeIds: ReadonlySet<string>,
+  teams: ReadonlyMap<string, string>,
+  visibility: EdgeVisibility = {},
+): boolean {
+  const { visibleKinds, showCrossTeam = true } = visibility
+  if (visibleKinds && !visibleKinds.has(edge.kind)) return false
+  if (!visibleNodeIds.has(edge.source) || !visibleNodeIds.has(edge.target)) return false
+  if (edge.source === edge.target) return false
+  if (!showCrossTeam && isCrossTeamEdge(edge, teams)) return false
+  return true
+}
+
+/**
+ * How many cross-team edges the sidebar counts but the canvas is not drawing.
+ *
+ * The counter is a fleet-wide fact and stays one; this is the gap between it and
+ * the picture, which the sidebar renders rather than leaving the operator to
+ * infer. Deriving it as `counted − drawn` means it is correct for *every* reason
+ * an edge can vanish, including the ones a per-node badge cannot express: a
+ * crossing between two teams that are both off-screen belongs to neither visible
+ * node, and unchecking "show cross-team" hides every curve while no team filter
+ * is active at all.
+ */
+export function hiddenCrossTeamCount(
+  edges: readonly TopologyEdge[],
+  visibleNodeIds: ReadonlySet<string>,
+  teams: ReadonlyMap<string, string>,
+  visibility: EdgeVisibility = {},
+): number {
+  const crossings = crossTeamEdges(edges, teams)
+  const drawn = crossings.filter((e) => isEdgeDrawn(e, visibleNodeIds, teams, visibility)).length
+  return crossings.length - drawn
 }
 
 /**

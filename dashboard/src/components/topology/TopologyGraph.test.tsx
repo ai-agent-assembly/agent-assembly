@@ -677,6 +677,45 @@ describe('TopologyGraph — cross-team badge', () => {
   it('explains the badge to assistive tech', () => {
     renderFiltered()
     const title = screen.getAllByTestId('topology-node-crossteam')[0].querySelector('title')
-    expect(title?.textContent).toMatch(/hidden by the team filter/i)
+    // Deliberately not "hidden by the team filter": the cross-team toggle and
+    // the edge-kind checkboxes drop edges too, so the badge does not attribute
+    // the omission to a cause it cannot know.
+    expect(title?.textContent).toMatch(/not drawn on this view/i)
+  })
+})
+
+// ── The unnamed-team cluster is not a dead affordance (AAASM-5140's rule) ────
+describe('TopologyGraph — cluster for agents with no team', () => {
+  const MIXED: TopologyNode[] = [
+    { id: 'g1', name: 'governed', status: 'active', team: 'support', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    { id: 'o1', name: 'teamless', status: 'active', team: '', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+  ]
+
+  it('renders the unnamed group as non-interactive', () => {
+    // `TopologyPage` gates its team panel on a truthy team, so clicking this
+    // cluster never opened anything. An affordance with no successful path is
+    // removed rather than left to look clickable.
+    render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={vi.fn()} />)
+    const blank = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === '')!
+    expect(blank).toHaveAttribute('data-selectable', 'false')
+    expect(blank).not.toHaveAttribute('role', 'button')
+    expect(blank).not.toHaveAttribute('tabindex')
+  })
+
+  it('does not fire onTeamClick for the unnamed group', async () => {
+    const onTeamClick = vi.fn()
+    render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={onTeamClick} />)
+    const blank = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === '')!
+    await userEvent.click(blank)
+    expect(onTeamClick).not.toHaveBeenCalled()
+  })
+
+  it('leaves real team clusters selectable', async () => {
+    const onTeamClick = vi.fn()
+    render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={onTeamClick} />)
+    const support = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === 'support')!
+    expect(support).toHaveAttribute('role', 'button')
+    await userEvent.click(support)
+    expect(onTeamClick).toHaveBeenCalledWith('support')
   })
 })

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { crossTeamDegreeByNode, crossTeamEdges, isCrossTeamEdge, teamById } from './crossTeam'
+import {
+  crossTeamDegreeByNode,
+  crossTeamEdges,
+  hiddenCrossTeamCount,
+  isCrossTeamEdge,
+  isEdgeDrawn,
+  teamById,
+} from './crossTeam'
 import type { TopologyEdge, TopologyNode } from './types'
 
 function node(id: string, team: string): TopologyNode {
@@ -100,5 +107,90 @@ describe('teamById', () => {
   it('maps every node id to its team', () => {
     expect(teamById(NODES).get('a2')).toBe('analytics')
     expect(teamById([]).size).toBe(0)
+  })
+})
+
+// ── The reconciliation the sidebar depends on (AAASM-5138) ───────────────────
+//
+// An earlier revision of this lane claimed `drawn + badged == counted` and
+// tested it on a 2-team fixture in which every crossing touched the filtered
+// team — a shape in which the claim cannot fail. It is false in general, and
+// these are the cases that break it. The shipped counter therefore reports
+// `counted − drawn`, which is what these lock down.
+describe('hiddenCrossTeamCount', () => {
+  const THREE_TEAM_NODES: readonly TopologyNode[] = [
+    node('a1', 'alpha'),
+    node('b1', 'beta'),
+    node('c1', 'gamma'),
+  ]
+  const THREE_TEAMS = teamById(THREE_TEAM_NODES)
+  // alpha–beta and beta–gamma. Filtering to alpha leaves beta–gamma counted but
+  // touching no visible node at all, so no badge can ever represent it.
+  const CHAIN = [edge('a1', 'b1'), edge('b1', 'c1')]
+
+  it('counts a crossing between two off-screen teams as hidden', () => {
+    const visible = new Set(['a1'])
+    expect(crossTeamEdges(CHAIN, THREE_TEAMS)).toHaveLength(2)
+    expect(hiddenCrossTeamCount(CHAIN, visible, THREE_TEAMS)).toBe(2)
+
+    // The badges over the visible team account for only one of the two — which
+    // is precisely why the counter cannot be reconciled from badges alone.
+    const degree = crossTeamDegreeByNode(CHAIN, THREE_TEAMS)
+    expect(degree.get('a1')).toBe(1)
+  })
+
+  it('counts every crossing as hidden when the cross-team toggle is off', () => {
+    // Reachable with no team filter at all, from the checkbox sitting directly
+    // beside the counter: all three nodes visible, yet no curve is drawn.
+    const visible = new Set(['a1', 'b1', 'c1'])
+    expect(hiddenCrossTeamCount(CHAIN, visible, THREE_TEAMS, { showCrossTeam: false })).toBe(2)
+  })
+
+  it('counts crossings whose edge kind is unchecked', () => {
+    const visible = new Set(['a1', 'b1', 'c1'])
+    const mixed = [edge('a1', 'b1', { kind: 'delegation' }), edge('b1', 'c1', { kind: 'call' })]
+    expect(hiddenCrossTeamCount(mixed, visible, THREE_TEAMS, {
+      visibleKinds: new Set<TopologyEdge['kind']>(['delegation']),
+    })).toBe(1)
+  })
+
+  it('is zero when the whole fleet is drawn', () => {
+    const visible = new Set(['a1', 'b1', 'c1'])
+    expect(hiddenCrossTeamCount(CHAIN, visible, THREE_TEAMS)).toBe(0)
+  })
+
+  it('ignores intra-team edges entirely', () => {
+    const intra = [edge('a1', 'a1'), ...CHAIN]
+    expect(hiddenCrossTeamCount(intra, new Set(['a1', 'b1', 'c1']), THREE_TEAMS)).toBe(0)
+  })
+})
+
+describe('isEdgeDrawn', () => {
+  const NODES3: readonly TopologyNode[] = [node('a1', 'alpha'), node('b1', 'beta')]
+  const T = teamById(NODES3)
+  const ALL = new Set(['a1', 'b1'])
+
+  it('draws an ordinary edge with both endpoints on screen', () => {
+    expect(isEdgeDrawn(edge('a1', 'b1'), ALL, T)).toBe(true)
+  })
+
+  it('drops an edge whose far endpoint the team filter removed', () => {
+    expect(isEdgeDrawn(edge('a1', 'b1'), new Set(['a1']), T)).toBe(false)
+  })
+
+  it('drops an unchecked edge kind', () => {
+    expect(isEdgeDrawn(edge('a1', 'b1', { kind: 'call' }), ALL, T, {
+      visibleKinds: new Set<TopologyEdge['kind']>(['delegation']),
+    })).toBe(false)
+  })
+
+  it('drops a cross-team edge when the toggle is off, but keeps intra-team ones', () => {
+    expect(isEdgeDrawn(edge('a1', 'b1'), ALL, T, { showCrossTeam: false })).toBe(false)
+    const intra = teamById([node('a1', 'alpha'), node('a2', 'alpha')])
+    expect(isEdgeDrawn(edge('a1', 'a2'), new Set(['a1', 'a2']), intra, { showCrossTeam: false })).toBe(true)
+  })
+
+  it('drops a self-edge, which has no geometry', () => {
+    expect(isEdgeDrawn(edge('a1', 'a1'), ALL, T)).toBe(false)
   })
 })

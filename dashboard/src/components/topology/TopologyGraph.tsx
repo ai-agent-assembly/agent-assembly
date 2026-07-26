@@ -13,7 +13,7 @@ import {
 } from 'd3-force'
 import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
 import { computeHierarchy, detectDelegationCycles } from '../../features/topology/hierarchy'
-import { crossTeamDegreeByNode, isCrossTeamEdge, teamById } from '../../features/topology/crossTeam'
+import { crossTeamDegreeByNode, isCrossTeamEdge, isEdgeDrawn, teamById } from '../../features/topology/crossTeam'
 import { NO_DATA, TRUTH_STATE_META } from '../../lib/truthfulness'
 import { TeamBudgetBar } from './TeamBudgetBar'
 import { Tooltip } from '../Tooltip'
@@ -235,8 +235,51 @@ export function TopologyGraph({
     return `${nodeIds}|${edgeIds}`
   }, [nodes, edges])
 
-  // Per-team layout: centers laid out left-to-right, top-to-bottom in a
-  // grid based on team count, plus aggregated spend/limit/member count.
+  // Distinct teams, as a *string* key rather than an array identity.
+  //
+  // The force simulation is keyed off this (via `teamCenters`) so that a poll
+  // carrying new spend figures for the same agents does not look like a new
+  // layout. Before AAASM-5136 the graph only re-simulated on focus or a
+  // mutation; a 5s poll made that recurring, and re-running the simulation
+  // re-scatters every card from an un-positioned start — moving click targets
+  // under the operator every 5 seconds on a live fleet.
+  const teamsKey = useMemo(() => [...new Set(nodes.map(n => n.team))].join(' '), [nodes])
+
+  /**
+   * Live node data by id.
+   *
+   * Because the simulation is no longer rebuilt on a metrics-only update, the
+   * `source` object each `PositionedNode` closed over is the one from the
+   * payload that built the sim — and would go stale the moment spend or status
+   * changed. Every read of node *data* therefore goes through this map, while
+   * `positions` supplies only geometry. Getting this wrong is how "stop
+   * re-scattering the graph" would silently have become "stop updating it".
+   */
+  const nodeById = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes])
+
+  /** Team lookup for edge classification. Hoisted so it is not rebuilt per tick. */
+  const nodeTeams = useMemo(() => teamById(nodes), [nodes])
+
+  // Cluster centers: a grid laid out left-to-right, top-to-bottom. Depends only
+  // on *which* teams exist and the canvas size — never on their budgets — so it
+  // stays referentially stable across a metrics-only payload update.
+  const teamCenters = useMemo<ReadonlyMap<string, { cx: number; cy: number }>>(() => {
+    const teams = teamsKey === '' ? [] : teamsKey.split(' ')
+    let cols = 4
+    if (teams.length <= 2) cols = teams.length
+    else if (teams.length <= 6) cols = 3
+    const rows = Math.max(1, Math.ceil(teams.length / cols))
+    const cellW = width / Math.max(1, cols)
+    const cellH = height / rows
+    const m = new Map<string, { cx: number; cy: number }>()
+    teams.forEach((team, i) => {
+      m.set(team, { cx: cellW * ((i % cols) + 0.5), cy: cellH * (Math.floor(i / cols) + 0.5) })
+    })
+    return m
+  }, [teamsKey, width, height])
+
+  // Per-team aggregates for the cluster label and budget bar. These *do* change
+  // with every payload, which is why they are kept out of the layout memo above.
   const teamLayout = useMemo<readonly TeamLayoutEntry[]>(() => {
     const byTeam = new Map<string, { spent: number; limit: number | null; memberCount: number }>()
     for (const n of nodes) {
@@ -248,33 +291,19 @@ export function TopologyGraph({
       entry.memberCount += 1
       byTeam.set(n.team, entry)
     }
-    const teams = [...byTeam.keys()]
-    let cols = 4
-    if (teams.length <= 2) cols = teams.length
-    else if (teams.length <= 6) cols = 3
-    const rows = Math.max(1, Math.ceil(teams.length / cols))
-    const cellW = width / Math.max(1, cols)
-    const cellH = height / rows
-    return teams.map((team, i) => {
-      const col = i % cols
-      const row = Math.floor(i / cols)
+    return [...byTeam.keys()].map((team) => {
       const meta = byTeam.get(team)!
+      const center = teamCenters.get(team) ?? { cx: width / 2, cy: height / 2 }
       return {
         team,
-        cx: cellW * (col + 0.5),
-        cy: cellH * (row + 0.5),
+        cx: center.cx,
+        cy: center.cy,
         spent: meta.spent,
         limit: meta.limit,
         memberCount: meta.memberCount,
       }
     })
-  }, [nodes, width, height])
-
-  const teamCenterById = useMemo(() => {
-    const m = new Map<string, TeamLayoutEntry>()
-    for (const t of teamLayout) m.set(t.team, t)
-    return m
-  }, [teamLayout])
+  }, [nodes, teamCenters, width, height])
 
   // Delegation-tree analysis (AAASM-5033): per-node depth + root ids feed the
   // depth-informed layout and the root/depth badges; cycle ids drive the cycle
@@ -289,16 +318,16 @@ export function TopologyGraph({
       .force('link', forceLink<PositionedNode, PositionedEdge>(links).id(d => d.id).distance(120))
       .force('charge', forceManyBody().strength(-220))
       .force('center', forceCenter(width / 2, height / 2).strength(0.05))
-      // `teamCenterById` is derived from the same `nodes` as the simulation's
+      // `teamCenters` is derived from the same `nodes` as the simulation's
       // nodes, so every node's team is always present — the `?? width/2` /
       // `?? height/2` fallbacks are unreachable defensive guards (dead branch),
       // so the two lines are excluded from coverage.
       /* v8 ignore start */
-      .force('teamX', forceX<PositionedNode>(d => teamCenterById.get(d.source.team)?.cx ?? width / 2).strength(0.12))
+      .force('teamX', forceX<PositionedNode>(d => teamCenters.get(d.source.team)?.cx ?? width / 2).strength(0.12))
       // Depth-informed vertical target: team center shifted down by the node's
       // delegation depth so roots sit above their delegates within the cluster.
       .force('teamY', forceY<PositionedNode>(d =>
-        (teamCenterById.get(d.source.team)?.cy ?? height / 2) + (depthById.get(d.id) ?? 0) * DEPTH_ROW_GAP,
+        (teamCenters.get(d.source.team)?.cy ?? height / 2) + (depthById.get(d.id) ?? 0) * DEPTH_ROW_GAP,
       ).strength(0.12))
       /* v8 ignore stop */
       // Keep same-team cards from stacking: the teamX/teamY centers pull all
@@ -309,8 +338,14 @@ export function TopologyGraph({
         .radius(d => SIZE_VARIANT[bucketForRatio(d.source.budgetSpend, d.source.budgetLimit)].w / 2 + 10)
         .strength(0.85))
       .stop()
+    // Deps are deliberately the *structural* identity (`identityKey`, and
+    // `teamCenters`, which is memoised on `teamsKey`) rather than the `nodes` /
+    // `edges` array identities. A poll that reports new spend for the same
+    // agents must not rebuild the simulation: doing so restarts it at
+    // `alpha(1)` over freshly-constructed, un-positioned nodes and re-scatters
+    // the whole graph (AAASM-5136).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [identityKey, width, height, teamCenterById])
+  }, [identityKey, width, height, teamCenters])
 
   const [positions, setPositions] = useState<readonly PositionedNode[]>(
     () => (simulation.nodes() as PositionedNode[]).map(n => ({ ...n })),
@@ -331,13 +366,16 @@ export function TopologyGraph({
     }
   }, [simulation])
 
-  // Cluster bounding boxes derived from current positions per team.
+  // Cluster bounding boxes derived from current positions per team. Node data
+  // is read live (see `nodeById`) because `p.source` predates the last poll.
   const clusters = useMemo(() => {
+    const liveNode = (p: PositionedNode) => nodeById.get(p.id) ?? p.source
     const byTeam = new Map<string, PositionedNode[]>()
     for (const p of positions) {
-      const arr = byTeam.get(p.source.team) ?? []
+      const team = liveNode(p).team
+      const arr = byTeam.get(team) ?? []
       arr.push(p)
-      byTeam.set(p.source.team, arr)
+      byTeam.set(team, arr)
     }
     return teamLayout.map(t => {
       const members = byTeam.get(t.team) ?? []
@@ -346,7 +384,8 @@ export function TopologyGraph({
       }
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
       for (const p of members) {
-        const dims = SIZE_VARIANT[bucketForRatio(p.source.budgetSpend, p.source.budgetLimit)]
+        const member = liveNode(p)
+        const dims = SIZE_VARIANT[bucketForRatio(member.budgetSpend, member.budgetLimit)]
         const cx = p.x ?? t.cx
         const cy = p.y ?? t.cy
         minX = Math.min(minX, cx - dims.w / 2)
@@ -362,7 +401,7 @@ export function TopologyGraph({
         h: maxY - minY + CLUSTER_PADDING * 2 + TEAM_LABEL_HEIGHT + TEAM_BUDGET_BAR_HEIGHT,
       }
     })
-  }, [positions, teamLayout])
+  }, [positions, teamLayout, nodeById])
 
   // Edge geometry derived from settled node positions. Intra-team edges are
   // straight lines; cross-team edges bow out along a quadratic curve so they
@@ -372,23 +411,23 @@ export function TopologyGraph({
   const edgeGeometries = useMemo<readonly EdgeGeometry[]>(() => {
     const posById = new Map<string, PositionedNode>()
     for (const p of positions) posById.set(p.id, p)
-    const localTeams = teamById(positions.map((p) => p.source))
+    const drawnIds = new Set(posById.keys())
 
     const geoms: EdgeGeometry[] = []
     edges.forEach((edge, i) => {
-      // Sidebar edge-type filter: skip kinds the operator has hidden.
-      if (visibleKinds && !visibleKinds.has(edge.kind)) return
+      // One shared predicate decides what reaches the screen, so the sidebar's
+      // hidden-crossing count and this canvas cannot disagree (AAASM-5138).
+      if (!isEdgeDrawn(edge, drawnIds, nodeTeams, { visibleKinds, showCrossTeam })) return
       const src = posById.get(String(edge.source))
       const tgt = posById.get(String(edge.target))
-      if (!src || !tgt || src === tgt) return
-      // Cross-team toggle: hide long-range curves when disabled. The predicate
-      // is the shared one (AAASM-5138) so the canvas, the sidebar counter and
-      // `/topology/edges` cannot disagree about what crosses a boundary.
-      const crossTeam = isCrossTeamEdge(edge, localTeams)
-      if (!showCrossTeam && crossTeam) return
+      /* v8 ignore next -- `isEdgeDrawn` already required both ids in `drawnIds`. */
+      if (!src || !tgt) return
+      const crossTeam = isCrossTeamEdge(edge, nodeTeams)
 
-      const sDims = SIZE_VARIANT[bucketForRatio(src.source.budgetSpend, src.source.budgetLimit)]
-      const tDims = SIZE_VARIANT[bucketForRatio(tgt.source.budgetSpend, tgt.source.budgetLimit)]
+      const srcNode = nodeById.get(src.id) ?? src.source
+      const tgtNode = nodeById.get(tgt.id) ?? tgt.source
+      const sDims = SIZE_VARIANT[bucketForRatio(srcNode.budgetSpend, srcNode.budgetLimit)]
+      const tDims = SIZE_VARIANT[bucketForRatio(tgtNode.budgetSpend, tgtNode.budgetLimit)]
       const scx = src.x ?? width / 2
       const scy = src.y ?? height / 2
       const tcx = tgt.x ?? width / 2
@@ -416,7 +455,7 @@ export function TopologyGraph({
       geoms.push({ key: `${edge.source}->${edge.target}-${edge.kind}-${i}`, kind: edge.kind, crossTeam, d })
     })
     return geoms
-  }, [edges, positions, width, height, visibleKinds, showCrossTeam])
+  }, [edges, positions, width, height, visibleKinds, showCrossTeam, nodeTeams, nodeById])
 
   // ── Pan + zoom (AAASM-5071) ────────────────────────────────────────────────
   // Wheel zooms, drag pans, and the overlay buttons step/reset — the same
@@ -522,19 +561,28 @@ export function TopologyGraph({
         transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}
       >
       {/* Team clusters (drawn under nodes) */}
-      {clusters.map(c => (
+      {clusters.map(c => {
+        // Agents with no `team_id` are grouped under the empty-string team.
+        // That group is not selectable: `TopologyPage` gates its detail panel on
+        // a truthy team, so a click here has never opened anything. Rather than
+        // leave an affordance with no successful path, the cluster renders
+        // inert (AAASM-5140's rule). Naming and properly surfacing the group is
+        // a separate, design-specified piece of work — see AAASM-5192.
+        const selectable = onTeamClick !== undefined && c.team !== ''
+        return (
         <g
           key={`cluster-${c.team}`}
           className="topology-cluster"
           data-testid="team-cluster"
           data-team={c.team}
+          data-selectable={selectable ? undefined : 'false'}
           data-selected={selectedTeam === c.team ? 'true' : undefined}
-          role={onTeamClick ? 'button' : undefined}
-          tabIndex={onTeamClick ? 0 : undefined}
-          aria-label={onTeamClick ? `Inspect team ${c.team}` : undefined}
-          style={onTeamClick ? { cursor: 'pointer' } : undefined}
-          onClick={onTeamClick ? (e) => { e.stopPropagation(); if (!consumePanClick()) onTeamClick(c.team) } : undefined}
-          onKeyDown={onTeamClick ? (e: KeyboardEvent<SVGGElement>) => {
+          role={selectable ? 'button' : undefined}
+          tabIndex={selectable ? 0 : undefined}
+          aria-label={selectable ? `Inspect team ${c.team}` : undefined}
+          style={selectable ? { cursor: 'pointer' } : undefined}
+          onClick={selectable ? (e) => { e.stopPropagation(); if (!consumePanClick()) onTeamClick(c.team) } : undefined}
+          onKeyDown={selectable ? (e: KeyboardEvent<SVGGElement>) => {
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onTeamClick(c.team) }
           } : undefined}
         >
@@ -562,7 +610,8 @@ export function TopologyGraph({
             </div>
           </foreignObject>
         </g>
-      ))}
+        )
+      })}
 
       {/* Relationship edges — above the cluster fills, under the node cards so
           nodes sit on top and arrowheads land on the target card border. */}
@@ -582,7 +631,8 @@ export function TopologyGraph({
       ))}
 
       {positions.map(pos => {
-        const node = pos.source
+        // Live data, not `pos.source` — see `nodeById`.
+        const node = nodeById.get(pos.id) ?? pos.source
         const bucket = bucketForRatio(node.budgetSpend, node.budgetLimit)
         const dims = SIZE_VARIANT[bucket]
         const x = (pos.x ?? width / 2) - dims.w / 2
@@ -754,11 +804,15 @@ function CrossTeamBadge({ count, leadingSpace = false }: Readonly<{ count: numbe
       className="topology-node__crossteam"
       data-testid="topology-node-crossteam"
       data-count={count}
+      // Gap via `dx`, not literal spaces: SVG collapses whitespace under the
+      // default `xml:space`, so padding the string left the badge abutting the
+      // mode glyph.
+      dx={leadingSpace ? 5 : 0}
     >
       <title>
-        {`${count} cross-team ${count === 1 ? 'relationship is' : 'relationships are'} hidden by the team filter.`}
+        {`${count} cross-team ${count === 1 ? 'relationship is' : 'relationships are'} not drawn on this view.`}
       </title>
-      {`${leadingSpace ? '  ' : ''}⇆${count}`}
+      {`\u21c6${count}`}
     </tspan>
   )
 }

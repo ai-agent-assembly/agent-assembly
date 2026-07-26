@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { useTopologyQuery } from '../features/topology/api'
 import { detectDelegationCycles } from '../features/topology/hierarchy'
-import { crossTeamEdges, teamById } from '../features/topology/crossTeam'
+import { crossTeamEdges, hiddenCrossTeamCount, teamById } from '../features/topology/crossTeam'
 import { defaultVisibleKinds } from '../features/topology/edgeKinds'
 import { exportGraphJson, exportGraphSvg } from '../features/topology/exportGraph'
 import { TopologyGraph } from '../components/topology/TopologyGraph'
@@ -30,7 +30,16 @@ export function TopologyPage() {
   const { data, isLoading, isError, refetch } = useTopologyQuery()
   const { open: openTraceDrawer } = useTraceDrawer()
 
-  const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null)
+  // The selection is held as an *id*, not as the node object.
+  //
+  // Storing the object froze the panel at the moment of the click: neither the
+  // 5s poll nor `onAgentMutated -> refetch()` reached it, so the surface an
+  // operator is actually reading kept showing the spend and status from
+  // whenever they clicked. That directly undercut the point of polling
+  // (AAASM-5136), so the node is re-derived from the latest payload on every
+  // render. If the agent leaves the fleet the panel closes, which is the honest
+  // outcome — better than presenting a record that no longer exists.
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [selectedTeam, setSelectedTeam] = useState<string | null>(null)
   const [filterTeam, setFilterTeam] = useState<string>(ALL_TEAMS)
   const [visibleKinds, setVisibleKinds] = useState<Set<TopologyEdgeKind>>(() => defaultVisibleKinds())
@@ -44,6 +53,12 @@ export function TopologyPage() {
   const teams = useMemo(() => [...new Set(allNodes.map((n) => n.team))].sort((a, b) => a.localeCompare(b)), [allNodes])
   const teamCount = teams.length
   const agentCount = allNodes.length
+
+  /** The selected agent as of the latest payload — see `selectedNodeId`. */
+  const selectedNode = useMemo(
+    () => (selectedNodeId === null ? null : allNodes.find((n) => n.id === selectedNodeId) ?? null),
+    [allNodes, selectedNodeId],
+  )
 
   // Graph shows the whole forest, or one team when a filter is applied. Edges
   // are trimmed to those whose endpoints are both visible so depth/cycle badges
@@ -60,31 +75,43 @@ export function TopologyPage() {
 
   // Header/sidebar stats reflect the whole graph, not the filtered view.
   //
-  // That is deliberate — `⇆ N cross-team` is a fleet-wide fact — but it is also
-  // how the counter and the canvas came to disagree: under a team filter the
-  // canvas drops every edge with a hidden endpoint, so the sidebar counted
-  // relationships the picture no longer showed (AAASM-5138). The count is not
-  // narrowed to match; instead each visible card carries a `⇆N` badge for the
-  // edges the filter removed, so nothing goes unrepresented. Both surfaces
-  // classify edges with the same shared predicate so they cannot drift again.
+  // `⇆ N cross-team` is deliberately a fleet-wide fact — but that is also how it
+  // came to contradict the canvas, which draws only a subset (AAASM-5138). The
+  // count is not narrowed to match; instead the sidebar states the gap outright,
+  // as `crossTeamHidden`.
+  //
+  // The gap is derived as `counted − drawn` rather than from the per-node `⇆N`
+  // badges, because badges cannot express every way a crossing disappears. Three
+  // reachable cases they miss: a crossing between two teams that are *both*
+  // off-screen belongs to no visible node; unchecking "show cross-team" hides
+  // every curve while no team filter is active, so no badge renders at all; and
+  // unchecking an edge kind removes those edges too. Only `counted − drawn`
+  // covers all of them, and it uses the same `isEdgeDrawn` predicate the canvas
+  // itself uses, so the two cannot drift apart again.
   const stats = useMemo(() => {
+    const teamsById = teamById(allNodes)
+    const visibleNodeIds = new Set(visibleNodes.map((n) => n.id))
     const active = allNodes.filter((n) => n.status === 'active').length
     const flagged = allNodes.filter((n) => n.flagged).length
-    const crossTeam = crossTeamEdges(allEdges, teamById(allNodes)).length
+    const crossTeam = crossTeamEdges(allEdges, teamsById).length
+    const crossTeamHidden = hiddenCrossTeamCount(allEdges, visibleNodeIds, teamsById, {
+      visibleKinds,
+      showCrossTeam,
+    })
     const hasCycles = detectDelegationCycles(allEdges).size > 0
-    return { active, flagged, crossTeam, hasCycles }
-  }, [allNodes, allEdges])
+    return { active, flagged, crossTeam, crossTeamHidden, hasCycles }
+  }, [allNodes, allEdges, visibleNodes, visibleKinds, showCrossTeam])
 
   const handleNodeClick = useCallback((node: TopologyNode) => {
-    setSelectedNode(node)
+    setSelectedNodeId(node.id)
     setSelectedTeam(null)
   }, [])
   const handleTeamClick = useCallback((team: string) => {
     setSelectedTeam(team)
-    setSelectedNode(null)
+    setSelectedNodeId(null)
   }, [])
   const clearSelection = useCallback(() => {
-    setSelectedNode(null)
+    setSelectedNodeId(null)
     setSelectedTeam(null)
   }, [])
   const handleFilterTeam = useCallback((team: string) => {
@@ -122,7 +149,7 @@ export function TopologyPage() {
         node={selectedNode}
         nodes={allNodes}
         edges={allEdges}
-        onClose={() => setSelectedNode(null)}
+        onClose={() => setSelectedNodeId(null)}
         onViewTrace={handleViewTrace}
         onAgentMutated={() => ignorePromise(refetch())}
       />
