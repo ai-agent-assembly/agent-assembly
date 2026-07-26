@@ -21,7 +21,10 @@
  *     or a raw JSON dump (AAASM-5119);
  *  5. the agent column presents the hex as the unresolvable audit-id digest it
  *     is, and offers no link to an agent page it cannot reach (AAASM-5151);
- *  6. neither theme produces console errors or uncaught exceptions.
+ *  6. an observe-mode row — decision rewritten to ALLOW, event type rewritten to
+ *     ToolCallIntercepted — never renders as a bare allow: the suppressed DENY
+ *     is on screen and the row still scans as a violation (AAASM-5117 review);
+ *  7. neither theme produces console errors or uncaught exceptions.
  *
  * Screenshots land in dashboard/verify/5117/.
  */
@@ -116,6 +119,27 @@ const ROWS = [
     }),
   },
   {
+    // Observe mode: `transform_for_observe_mode` rewrote a Deny to Allow, and
+    // `record_audit` rewrote the event type to the benign ToolCallIntercepted.
+    // Only `shadow_decision` / `shadow_reason` record that anything was blocked
+    // — `reason` and `policy_rule` are emptied by the rewrite.
+    seq: 1043,
+    timestamp: '2026-07-26T14:01:02Z',
+    agent_id: RESEARCH_AGENT,
+    session_id: 'a41f9c22',
+    event_type: 'ToolCallIntercepted',
+    payload: JSON.stringify({
+      action_type: 2,
+      decision: 1, // ALLOW — rewritten
+      reason: '',
+      policy_rule: '',
+      latency_us: 288,
+      dry_run: true,
+      shadow_decision: 'deny',
+      shadow_reason: 'gmail/send blocked for external recipients',
+    }),
+  },
+  {
     // No decision field at all — a sandbox lifecycle event.
     seq: 1042,
     timestamp: '2026-07-26T14:00:55Z',
@@ -126,7 +150,7 @@ const ROWS = [
   },
 ]
 
-/** 6 loaded rows out of 4820 matching the filter — a deliberately short window. */
+/** 7 loaded rows out of 4820 matching the filter — a deliberately short window. */
 const LOGS = { items: ROWS, page: 1, per_page: 100, total: 4820 }
 
 const COST_SUMMARY = {
@@ -205,6 +229,24 @@ test.describe('AAASM-5117 review — audit-log contract and truncation', () => {
       await expect(noVerdict).toHaveAttribute('data-truth-state', 'not-evaluated')
       await expect(noVerdict).not.toHaveText('allow')
 
+      // ── 6. observe mode never reads as a clean allow ──────────────────────
+      // The enforced allow is true — the action proceeded — but the suppressed
+      // denial is beside it, and the row still scans red despite the gateway
+      // having rewritten the event type to a benign ToolCallIntercepted.
+      await expect(page.getByTestId('audit-decision-1043')).toHaveText('allow')
+      const suppressedChip = page.getByTestId('audit-suppressed-1043')
+      await expect(suppressedChip).toHaveText('⊙ observe: deny')
+      await expect(suppressedChip).toHaveAttribute(
+        'title',
+        /gmail\/send blocked for external recipients/,
+      )
+      await expect(page.getByTestId('audit-row-1043')).toHaveClass(/audit-row--violation/)
+      // The rewrite empties `reason`; the real explanation survives only in
+      // `shadow_reason` and must reach the summary column.
+      await expect(page.getByTestId('audit-summary-1043')).toHaveText(
+        'gmail/send blocked for external recipients',
+      )
+
       // ── 4. summaries come from the real payload, with no undefined ────────
       await expect(page.getByTestId('audit-summary-1048')).toHaveText(
         'External recipient requires explicit approval — deny-external-mail',
@@ -236,11 +278,11 @@ test.describe('AAASM-5117 review — audit-log contract and truncation', () => {
       // ── 2. truncation is never presented as completeness ─────────────────
       const banner = page.getByTestId('audit-coverage')
       await expect(banner).toBeVisible()
-      await expect(banner).toContainText('Partial — 6 of 4820')
+      await expect(banner).toContainText('Partial — 7 of 4820')
       await expect(banner).toContainText('This is not the complete trail')
       await expect(banner).not.toContainText('Complete —')
       await expect(page.getByTestId('audit-load-more')).toBeVisible()
-      await expect(page.getByTestId('audit-count')).toContainText('6 / 6 loaded')
+      await expect(page.getByTestId('audit-count')).toContainText('7 / 4820')
 
       await banner.screenshot({ path: `${EVIDENCE_DIR}/audit-coverage-partial-${theme}.png` })
 
@@ -251,7 +293,7 @@ test.describe('AAASM-5117 review — audit-log contract and truncation', () => {
       }
       await expect(page.getByTestId('audit-stat-policy')).toContainText('2')
       await expect(page.getByTestId('audit-stat-approval')).toContainText('2')
-      await expect(page.getByTestId('audit-stat-tool')).toContainText('1')
+      await expect(page.getByTestId('audit-stat-tool')).toContainText('2')
       await expect(page.getByTestId('audit-stat-sandbox')).toContainText('1')
 
       // The filter actually selects rows, rather than emptying the table.
