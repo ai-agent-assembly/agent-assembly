@@ -1378,4 +1378,136 @@ mod tests {
         let err = parse_agent_id("aabb").unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST.as_u16());
     }
+
+    // ── AAASM-5102: the cascade this endpoint reports must be tenancy-aware ──
+
+    fn admin() -> RequireRead {
+        RequireRead(AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes: vec![Scope::Admin],
+            tenant: crate::auth::Tenant {
+                org_id: None,
+                team_id: None,
+            },
+        })
+    }
+
+    /// Minimal registered agent owned by `team_id`. Only the fields the
+    /// capabilities path reads (id, tenancy) carry meaningful values.
+    fn record(id_byte: u8, team_id: Option<&str>) -> aa_gateway::registry::AgentRecord {
+        aa_gateway::registry::AgentRecord {
+            agent_id: [id_byte; 16],
+            name: "a".to_string(),
+            framework: "langgraph".to_string(),
+            version: "0.1.0".to_string(),
+            risk_tier: 1,
+            tool_names: Vec::new(),
+            public_key: "pk".to_string(),
+            credential_token: "tok".to_string(),
+            metadata: BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            policy_violations_count: 0,
+            active_sessions: Vec::new(),
+            recent_events: std::collections::VecDeque::new(),
+            recent_traces: Vec::new(),
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: team_id.map(str::to_string),
+            org_id: None,
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some([id_byte; 16]),
+            children: Vec::new(),
+            parent_key: None,
+            enforcement_mode: None,
+        }
+    }
+
+    /// A policy document carrying only the capability block the cascade reads.
+    fn policy_doc(
+        name: &str,
+        scope: aa_gateway::policy::PolicyScope,
+        capabilities: aa_core::CapabilitySet,
+    ) -> aa_gateway::policy::PolicyDocument {
+        aa_gateway::policy::PolicyDocument {
+            name: Some(name.to_string()),
+            policy_version: Some("1".to_string()),
+            version: None,
+            scope,
+            network: None,
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: Default::default(),
+            capabilities: Some(capabilities),
+        }
+    }
+
+    /// `AppState::local_in_memory` loads a budget-only policy file, so the
+    /// documents under test have to be pushed into the engine directly.
+    fn state_with_policies(
+        records: Vec<aa_gateway::registry::AgentRecord>,
+        docs: Vec<aa_gateway::policy::PolicyDocument>,
+    ) -> AppState {
+        let mut state = AppState::local_in_memory().expect("state builds");
+        for r in records {
+            state.agent_registry.register(r).expect("register");
+        }
+        let engine =
+            std::sync::Arc::get_mut(&mut state.policy_engine).expect("engine is unshared until the state is cloned");
+        for doc in docs {
+            engine.load_policy(doc);
+        }
+        state
+    }
+
+    /// Regression guard for AAASM-5102. `AppState::local_in_memory` never called
+    /// `PolicyEngine::with_registry`, so `effective_permissions` resolved
+    /// `Lineage::default()` and walked only Global and Agent — this endpoint
+    /// dropped every Org- and Team-scoped allow *and* deny, reporting a
+    /// team-denied capability as permitted (a reporting fail-open). Enforcement
+    /// was never affected; it resolves tenancy itself (AAASM-3729).
+    #[tokio::test]
+    async fn a_team_scoped_deny_reaches_the_capabilities_response() {
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.deny.insert(aa_core::Capability::TerminalExec);
+
+        let state = state_with_policies(
+            vec![record(0x01, Some("team-alpha"))],
+            vec![policy_doc(
+                "team-rules",
+                aa_gateway::policy::PolicyScope::Team("team-alpha".to_string()),
+                caps,
+            )],
+        );
+
+        let (status, Json(body)) = get_agent_capabilities(
+            admin(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+        )
+        .await
+        .expect("admin may read a registered agent's capabilities");
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.deny.iter().any(|c| c == "terminal_exec"),
+            "a Team-scoped deny must reach the merged set: {:?}",
+            body.deny
+        );
+        assert!(
+            body.sources.iter().any(|s| s.scope == "team:team-alpha"),
+            "the Team tier must appear in the cascade provenance: {:?}",
+            body.sources.iter().map(|s| &s.scope).collect::<Vec<_>>()
+        );
+    }
 }
