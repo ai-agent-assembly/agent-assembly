@@ -102,7 +102,9 @@ describe('AlertDetailContent', () => {
     expect(screen.getByTestId('alert-detail-suppression-status')).toHaveTextContent(
       'Not silenced',
     )
-    // FIRING (non-resolved) → SilenceAction renders.
+    // FIRING (non-resolved) → both write affordances render (AAASM-5121).
+    expect(screen.getByTestId('resolve-action')).toBeInTheDocument()
+    expect(screen.getByTestId('silence-action')).toBeInTheDocument()
     expect(screen.getByText('No deliveries recorded.')).toBeInTheDocument()
   })
 
@@ -146,7 +148,9 @@ describe('AlertDetailContent', () => {
     const log = screen.getByTestId('alert-detail-routing-log')
     expect(log).toHaveTextContent('dest-1')
     expect(log).toHaveTextContent('timeout')
-    // Resolved → SilenceAction is not rendered.
+    // Resolved → neither write affordance is offered.
+    expect(screen.queryByTestId('resolve-action')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('silence-action')).not.toBeInTheDocument()
     expect(screen.getByText(/Resolved/)).toBeInTheDocument()
   })
 })
