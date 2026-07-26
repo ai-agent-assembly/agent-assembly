@@ -4,7 +4,7 @@
 //! membership, ancestry lineage, and aggregate statistics — all backed by
 //! the in-memory `AgentRegistry`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query};
@@ -235,14 +235,27 @@ fn build_tree(
 /// return.
 const EDGE_BATCH_LIMIT: u32 = 1000;
 
-/// Wire `kind` for a stored [`EdgeType`] — the graph vocabulary the dashboard
-/// renders (`delegates_to` -> `delegation`, `calls` -> `call`).
+/// Wire `kind` for a stored [`EdgeType`].
+///
+/// The two structural kinds keep the graph vocabulary the dashboard already
+/// renders (`delegates_to` -> `delegation`, `calls` -> `call`, unchanged since
+/// AAASM-5040); the other four pass their canonical wire string through.
 fn graph_edge_kind(edge_type: EdgeType) -> &'static str {
     match edge_type {
         EdgeType::DelegatesTo => "delegation",
         EdgeType::Calls => "call",
         other => other.as_str(),
     }
+}
+
+/// Whether an edge crosses a team boundary.
+///
+/// True only when both endpoints carry a team and the two differ. Mirrors
+/// `edges::compute_cross_team` (the rule `/topology/edges` reports as
+/// `is_cross_team`) so the graph and the edge list can never disagree about the
+/// same edge — an endpoint with no team is not a boundary crossing.
+fn is_cross_team(source_team: Option<&str>, target_team: Option<&str>) -> bool {
+    matches!((source_team, target_team), (Some(a), Some(b)) if a != b)
 }
 
 /// Enrich the caller-visible records into graph nodes, resolving each agent's
@@ -284,20 +297,19 @@ fn project_graph_nodes(records: &[AgentRecord], state: &AppState) -> Vec<AgentNo
     nodes
 }
 
-/// Collect the graph edges whose endpoints are both visible nodes.
+/// Collect every stored edge whose endpoints are both visible graph nodes.
 ///
-/// An edge touching an id outside `visible_ids` is dropped, so an edge can never
-/// cross the tenant boundary or point at a node the client wasn't given (mirrors
-/// the edges.rs BFS tenant boundary, AAASM-3825).
+/// `teams_by_id` doubles as the visibility set and the team lookup: an edge
+/// touching an id it does not contain is dropped, so an edge can never cross the
+/// tenant boundary or point at a node the client wasn't given (mirrors the
+/// edges.rs BFS tenant boundary, AAASM-3825).
 async fn collect_graph_edges(
     state: &AppState,
-    visible_ids: &HashSet<[u8; 16]>,
+    teams_by_id: &HashMap<[u8; 16], Option<String>>,
 ) -> Result<Vec<TopologyGraphEdge>, ProblemDetail> {
     let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_default();
     let mut edges: Vec<TopologyGraphEdge> = Vec::new();
-    // The graph models exactly two relation kinds; the other stored kinds
-    // (reads/writes/approves/messages) are relationships it doesn't render.
-    for &edge_type in &[EdgeType::DelegatesTo, EdgeType::Calls] {
+    for &edge_type in EdgeType::ALL {
         let batch = state
             .edge_repo
             .list_by_type(edge_type, epoch, EDGE_BATCH_LIMIT)
@@ -311,13 +323,18 @@ async fn collect_graph_edges(
             })?;
         let kind = graph_edge_kind(edge_type);
         for edge in batch {
-            if visible_ids.contains(edge.source.as_bytes()) && visible_ids.contains(edge.target.as_bytes()) {
-                edges.push(TopologyGraphEdge {
-                    source: format_id(edge.source.as_bytes()),
-                    target: format_id(edge.target.as_bytes()),
-                    kind: kind.to_owned(),
-                });
-            }
+            let (Some(source_team), Some(target_team)) = (
+                teams_by_id.get(edge.source.as_bytes()),
+                teams_by_id.get(edge.target.as_bytes()),
+            ) else {
+                continue;
+            };
+            edges.push(TopologyGraphEdge {
+                source: format_id(edge.source.as_bytes()),
+                target: format_id(edge.target.as_bytes()),
+                kind: kind.to_owned(),
+                cross_team: is_cross_team(source_team.as_deref(), target_team.as_deref()),
+            });
         }
     }
     Ok(edges)
@@ -846,8 +863,8 @@ pub async fn get_stats(
 /// Returns every agent the caller's tenant may see as a graph node — reusing
 /// the same [`AgentNode`] projection as `/topology/overview`, so the per-node
 /// enforcement-mode / flagged / trust badges added in AAASM-5036 flow through
-/// end-to-end — plus the `delegation` and `call` edges between those nodes from
-/// the topology edge store.
+/// end-to-end — plus every stored edge between those nodes, in all six relation
+/// kinds with a `cross_team` flag (AAASM-5099).
 ///
 /// Unlike the sibling `/topology/*` routes, this handler additionally enriches
 /// each node's `owner` / `policy_count` / `budget` (AAASM-5045) from registry
@@ -888,7 +905,9 @@ pub async fn get_topology_graph(
         .filter(|r| record_visible_to(&caller, r))
         .collect();
 
-    let visible_ids: HashSet<[u8; 16]> = records.iter().map(|r| r.agent_id).collect();
+    // Doubles as the edge-visibility set and the `cross_team` team lookup.
+    let teams_by_id: HashMap<[u8; 16], Option<String>> =
+        records.iter().map(|r| (r.agent_id, r.team_id.clone())).collect();
 
     // AAASM-5045 — enrich each node's owner / policy_count / budget from live
     // registry, policy-engine, and budget-tracker state so the node-detail panel
@@ -897,7 +916,7 @@ pub async fn get_topology_graph(
     // `budget` need the two stores only this whole-fleet handler reaches — the
     // list / tree endpoints leave them `null`.
     let nodes = project_graph_nodes(&records, &state);
-    let edges = collect_graph_edges(&state, &visible_ids).await?;
+    let edges = collect_graph_edges(&state, &teams_by_id).await?;
 
     Ok((StatusCode::OK, Json(TopologyGraphResponse { nodes, edges })))
 }

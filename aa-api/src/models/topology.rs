@@ -231,36 +231,49 @@ impl From<&AgentRecord> for AgentNode {
     }
 }
 
-/// One directed edge in the dashboard topology graph (AAASM-5040).
+/// One directed edge in the dashboard topology graph (AAASM-5040, widened in
+/// AAASM-5099).
 ///
-/// A slim projection of a stored [`aa_core::topology::Edge`] carrying only what
-/// the dashboard graph renders: the two hex-encoded endpoints and the relation
-/// `kind`. `kind` is one of the two kinds the graph models — `delegation`
-/// (from a `delegates_to` edge) or `call` (from a `calls` edge) — matching the
-/// frontend `TopologyEdge` 1:1 so the client consumes edges without remapping.
+/// A slim projection of a stored [`aa_core::topology::Edge`] carrying what the
+/// dashboard graph renders: the two hex-encoded endpoints, the relation `kind`,
+/// and whether the edge crosses a team boundary.
+///
+/// `kind` covers all six stored [`aa_core::topology::EdgeType`] variants. The
+/// two structural kinds keep the graph vocabulary the frontend already renders
+/// (`delegates_to` -> `delegation`, `calls` -> `call`); the other four pass the
+/// stored wire string through unchanged (`reads`, `writes`, `approves`,
+/// `messages`), matching the frontend `TopologyEdge` 1:1 so the client consumes
+/// edges without remapping.
 ///
 /// # Example JSON
 /// ```json
-/// { "source": "0102030405060708090a0b0c0d0e0f10", "target": "aabbccdd00112233aabbccdd00112233", "kind": "delegation" }
+/// { "source": "0102030405060708090a0b0c0d0e0f10", "target": "aabbccdd00112233aabbccdd00112233", "kind": "delegation", "cross_team": false }
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
     "source": "0102030405060708090a0b0c0d0e0f10",
     "target": "aabbccdd00112233aabbccdd00112233",
-    "kind": "delegation"
+    "kind": "delegation",
+    "cross_team": false
 }))]
 pub struct TopologyGraphEdge {
     /// Hex-encoded UUID of the source (delegating / calling) agent.
     pub source: String,
     /// Hex-encoded UUID of the target agent.
     pub target: String,
-    /// Relation kind rendered by the graph: `delegation` or `call`.
+    /// Relation kind rendered by the graph: `delegation`, `call`, `reads`,
+    /// `writes`, `approves`, or `messages`.
     pub kind: String,
+    /// Whether the two endpoints belong to different teams. Matches the
+    /// `is_cross_team` rule `/topology/edges` uses (`edges::compute_cross_team`):
+    /// true only when both endpoints carry a `team_id` and the two differ — an
+    /// endpoint with no team is never counted as crossing a boundary.
+    pub cross_team: bool,
 }
 
 /// The whole-fleet topology graph rendered by the dashboard Topology page
-/// (AAASM-5040): every agent visible to the caller as a node, plus the
-/// delegation / call edges between those nodes.
+/// (AAASM-5040): every agent visible to the caller as a node, plus every stored
+/// edge between those nodes (all six relation kinds, AAASM-5099).
 ///
 /// Nodes reuse the [`AgentNode`] projection (so the per-node enforcement-mode,
 /// flagged, and trust badges from AAASM-5036 are carried through), letting the
@@ -275,7 +288,8 @@ pub struct TopologyGraphEdge {
 pub struct TopologyGraphResponse {
     /// All agents visible to the caller, one graph node each (sorted by id).
     pub nodes: Vec<AgentNode>,
-    /// Delegation / call edges whose endpoints are both visible nodes.
+    /// Edges of every stored relation kind whose endpoints are both visible
+    /// nodes.
     pub edges: Vec<TopologyGraphEdge>,
 }
 
@@ -765,6 +779,7 @@ mod tests {
             source: "0102030405060708090a0b0c0d0e0f10".to_string(),
             target: "aabbccdd00112233aabbccdd00112233".to_string(),
             kind: "delegation".to_string(),
+            cross_team: false,
         });
     }
 
@@ -783,6 +798,7 @@ mod tests {
                 source: "aa".to_string(),
                 target: "bb".to_string(),
                 kind: "call".to_string(),
+                cross_team: true,
             }],
         });
     }
