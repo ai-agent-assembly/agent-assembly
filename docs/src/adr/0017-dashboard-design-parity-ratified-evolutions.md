@@ -325,6 +325,12 @@ so it is fitting that the programme's first finding is in its own governance rec
   build, not a description of current behaviour. Any subsequent audit, screenshot, or
   status report that treated Topology as having a live/5s feed was reading this record,
   not the product.
+  > **Resolved (AAASM-5136).** The poll was subsequently built — `refetchInterval:
+  > 5_000` in `dashboard/src/features/topology/api.ts` — so from that change onward
+  > item 3 describes shipped behaviour again and the "awaiting build" reading above
+  > is itself historical. Recorded here rather than by editing the paragraph, for the
+  > same reason the paragraph did not edit item 3: the record shows what was believed
+  > and shows it being corrected.
 - **Consequence beyond Topology.** Because no query polls, **no dashboard surface
   refreshes on a timer.** Surfaces that update without operator action do so by
   **push**, not by poll, and there are three of them, not one: Live-Ops
