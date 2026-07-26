@@ -155,3 +155,4 @@
   - [0019 - Agent Trust-Score Derivation](adr/0019-agent-trust-score-derivation.md)
   - [0020 - Rolling vs Calendar Monthly Budget Windows](adr/0020-rolling-monthly-budget-window.md)
   - [0021 - Topology Enforcement-Mode Mutation Safety](adr/0021-topology-enforcement-mode-mutation-safety.md)
+  - [0022 - Agent-Detail Config Projection & Quantified Recommendations](adr/0022-agent-config-projection-and-quantified-recommendations.md)

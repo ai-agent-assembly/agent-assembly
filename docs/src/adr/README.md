@@ -28,3 +28,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0019](0019-agent-trust-score-derivation.md) | Agent Trust-Score Derivation | Proposed |
 | [0020](0020-rolling-monthly-budget-window.md) | Rolling vs Calendar Monthly Budget Windows — and the Missing Team Tier | Proposed |
 | [0021](0021-topology-enforcement-mode-mutation-safety.md) | Topology Enforcement-Mode Mutation — Authorization, Blast Radius & Reversibility | Proposed |
+| [0022](0022-agent-config-projection-and-quantified-recommendations.md) | Agent-Detail Config Projection & Quantified Posture Recommendations | Proposed |
