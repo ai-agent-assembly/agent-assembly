@@ -1026,7 +1026,9 @@ export interface paths {
          * @description Returns the subset of agent rows that actually changed — the dashboard
          *     uses this to drive an optimistic-UI rollback when an override fails.
          *     An unknown `agentId` rejects the request with 400 and leaves the store
-         *     untouched; an unknown `resourceId` on an agent is silently skipped.
+         *     untouched; an unknown `resourceId` on an agent is silently skipped. A
+         *     `narrow` or `approval` decision is also rejected with 400 — the projection
+         *     emits only allow / deny / na, so no revoke could restore such a cell.
          *
          *     When `ttlSeconds` is present the override is automatically reverted after
          *     that many seconds and the response status is **201 Created**. Without a
@@ -6649,7 +6651,7 @@ export interface operations {
                     "application/json": components["schemas"]["CapabilityOverrideResponse"];
                 };
             };
-            /** @description Unknown agent id */
+            /** @description Unknown agent id, or a decision the projection cannot express (narrow / approval) */
             400: {
                 headers: {
                     [name: string]: unknown;

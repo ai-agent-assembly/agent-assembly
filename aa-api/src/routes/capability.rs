@@ -270,7 +270,9 @@ pub async fn get_matrix(
 /// Returns the subset of agent rows that actually changed — the dashboard
 /// uses this to drive an optimistic-UI rollback when an override fails.
 /// An unknown `agentId` rejects the request with 400 and leaves the store
-/// untouched; an unknown `resourceId` on an agent is silently skipped.
+/// untouched; an unknown `resourceId` on an agent is silently skipped. A
+/// `narrow` or `approval` decision is also rejected with 400 — the projection
+/// emits only allow / deny / na, so no revoke could restore such a cell.
 ///
 /// When `ttlSeconds` is present the override is automatically reverted after
 /// that many seconds and the response status is **201 Created**. Without a
@@ -282,7 +284,7 @@ pub async fn get_matrix(
     responses(
         (status = 200, description = "Updated agent rows (no TTL)", body = CapabilityOverrideResponse),
         (status = 201, description = "Updated agent rows with TTL scheduled", body = CapabilityOverrideResponse),
-        (status = 400, description = "Unknown agent id"),
+        (status = 400, description = "Unknown agent id, or a decision the projection cannot express (narrow / approval)"),
         (status = 403, description = "Caller lacks the role required to mutate capability state")
     ),
     tag = "capability"
@@ -297,6 +299,20 @@ pub async fn apply_override(
         .map_err(OverrideHandlerError::Forbidden)?;
 
     let has_ttl = body.ttl_seconds.is_some();
+
+    // The projection emits only allow / deny / na (see the module docs: `narrow`
+    // and `approval` are products of stages this endpoint does not run). An
+    // override that wrote one of those would put a decision in the grid that no
+    // projection can ever produce or restore.
+    if matches!(body.decision, Decision::Narrow | Decision::Approval) {
+        return Err(OverrideHandlerError::BadRequest(
+            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(
+                "Capability overrides accept only allow, deny or na; narrow and approval are \
+                 decided per action by other policy stages"
+                    .to_string(),
+            ),
+        ));
+    }
 
     // Validate every requested agent against the live projection before
     // recording anything, so one unknown id rejects the whole request rather
@@ -1390,6 +1406,33 @@ mod tests {
         }
         // Nothing was recorded.
         assert!(state.capability_store.list_overrides(None).await.is_empty());
+    }
+
+    /// The projection emits only allow / deny / na, so an override may not
+    /// write a decision no revoke could ever restore.
+    #[tokio::test]
+    async fn override_rejects_a_decision_the_projection_cannot_express() {
+        for decision in [Decision::Narrow, Decision::Approval] {
+            let state = state_with(vec![record(0x01, "a", &[])]);
+            let err = apply_override(
+                org_admin_writer(),
+                Extension(state.clone()),
+                Json(CapabilityOverrideRequest {
+                    agent_ids: vec![hex_id(0x01)],
+                    resource_id: "filesystem".into(),
+                    verb: Verb::Read,
+                    decision,
+                    ttl_seconds: None,
+                }),
+            )
+            .await
+            .expect_err("narrow / approval are rejected");
+            match err {
+                OverrideHandlerError::BadRequest(p) => assert_eq!(p.status, StatusCode::BAD_REQUEST.as_u16()),
+                other => panic!("expected 400 for {decision:?}, got {other:?}"),
+            }
+            assert!(state.capability_store.list_overrides(None).await.is_empty());
+        }
     }
 
     #[tokio::test]
