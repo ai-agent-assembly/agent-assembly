@@ -220,6 +220,8 @@ use crate::routes::{
         topology::TeamSummary,
         topology::AgentNode,
         topology::NodeBudget,
+        topology::NodeEffectivePermissions,
+        topology::PolicyChainTier,
         topology::AgentTree,
         topology::TeamTopology,
         topology::AgentLineage,

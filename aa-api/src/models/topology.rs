@@ -181,6 +181,12 @@ pub struct PolicyChainTier {
 /// Tool`) — a parent agent's own `agent:`-scoped policies are not inherited by
 /// its children — so no parent row is emitted rather than fabricating one.
 ///
+/// Distinct from `agents::EffectivePermissionsResponse`
+/// (`GET /api/v1/agents/{id}/capabilities`), which lists one row per *document*
+/// that declares capabilities. This one lists one row per *tier* — including a
+/// tier that carries no policy, which is what the panel renders as "no team
+/// policy" — and is embedded per node so the graph needs no per-agent fan-out.
+///
 /// # Example JSON
 /// ```json
 /// {
@@ -197,7 +203,7 @@ pub struct PolicyChainTier {
     "deny": ["terminal_exec"],
     "allow_restricted": true
 }))]
-pub struct EffectivePermissions {
+pub struct NodeEffectivePermissions {
     /// Cascade tiers that apply to this agent, broadest → narrowest.
     pub chain: Vec<PolicyChainTier>,
     /// Capabilities the merged cascade explicitly allows, canonical wire names
@@ -287,7 +293,7 @@ pub struct AgentNode {
     /// endpoint resolves it — the list / tree / team endpoints leave it `null`
     /// so the client renders "no data" rather than an empty-but-authoritative
     /// chain.
-    pub effective_permissions: Option<EffectivePermissions>,
+    pub effective_permissions: Option<NodeEffectivePermissions>,
 }
 
 impl From<&AgentRecord> for AgentNode {

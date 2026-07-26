@@ -25,8 +25,8 @@ use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::models::topology::{agent_flagged, agent_mode, format_id, status_str};
 pub use crate::models::topology::{
-    AgentLineage, AgentNode, AgentTree, EffectivePermissions, LineageStep, NodeBudget, PolicyChainTier, TeamSummary,
-    TeamTopology, TopologyGraphEdge, TopologyGraphResponse, TopologyOverview, TopologyStats,
+    AgentLineage, AgentNode, AgentTree, LineageStep, NodeBudget, NodeEffectivePermissions, PolicyChainTier,
+    TeamSummary, TeamTopology, TopologyGraphEdge, TopologyGraphResponse, TopologyOverview, TopologyStats,
 };
 use crate::state::AppState;
 
@@ -310,13 +310,13 @@ fn project_effective_permissions(
     cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
     agent_id: &AgentId,
     lineage: &Lineage,
-) -> EffectivePermissions {
+) -> NodeEffectivePermissions {
     let merged = aa_gateway::engine::PolicyEngine::collect_merged_capabilities(cascade);
     let mut allow: Vec<String> = merged.allow.iter().map(ToString::to_string).collect();
     let mut deny: Vec<String> = merged.deny.iter().map(ToString::to_string).collect();
     allow.sort();
     deny.sort();
-    EffectivePermissions {
+    NodeEffectivePermissions {
         chain: build_policy_chain(cascade, agent_id, lineage),
         allow,
         deny,
