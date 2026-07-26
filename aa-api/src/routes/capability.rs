@@ -642,8 +642,11 @@ fn collect_policy_rows(
 
 /// Project the capability matrix from the registry and the policy cascade.
 ///
-/// `records` is the caller-visible agent slice — tenant filtering happens before
-/// this point so the projection never has to re-derive who may see what.
+/// `records` is the whole fleet: the endpoint is admin-global by design
+/// (AAASM-4841), and its only caller passes `agent_registry.list()`. The
+/// projection therefore does no tenant filtering of its own — the `team_id`
+/// query parameter narrows the result afterwards, it is not an authorization
+/// boundary.
 ///
 /// The cascade is collected with an explicit lineage rather than via
 /// `PolicyEngine::effective_permissions`, because the engine `aa-api` builds is
@@ -1212,8 +1215,8 @@ mod tests {
         assert_eq!(system_cell(&caps, "terminal", true).exec, Decision::Allow);
     }
 
-    /// Pins the rule flattening directly: the endpoint tests build an in-memory
-    /// engine that loads no documents, so no projection path reaches it.
+    /// Pins the rule flattening directly, covering the capability variants no
+    /// projection test declares.
     #[test]
     fn project_rules_flattens_capabilities_and_tools() {
         use aa_core::Capability as C;

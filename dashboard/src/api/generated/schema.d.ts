@@ -3504,8 +3504,10 @@ export interface components {
          */
         OverrideRecord: {
             /**
-             * @description Whether the override is still active. Always `true` in the current
-             *     implementation (no TTL or explicit delete support yet).
+             * @description Whether the override is still replayed over the projection. Set to
+             *     `false` by an explicit `DELETE /capability/override/{id}` or by the TTL
+             *     timer firing; entries are never removed, so a revoked override stays
+             *     visible in the log with `active: false`.
              */
             active: boolean;
             /** @description Agent identifiers this override was applied to. */

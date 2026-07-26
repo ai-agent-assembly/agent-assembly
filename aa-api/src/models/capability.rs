@@ -275,8 +275,10 @@ pub struct OverrideRecord {
     pub decision: Decision,
     /// ISO 8601 UTC timestamp when the override was applied.
     pub created_at: String,
-    /// Whether the override is still active. Always `true` in the current
-    /// implementation (no TTL or explicit delete support yet).
+    /// Whether the override is still replayed over the projection. Set to
+    /// `false` by an explicit `DELETE /capability/override/{id}` or by the TTL
+    /// timer firing; entries are never removed, so a revoked override stays
+    /// visible in the log with `active: false`.
     pub active: bool,
 }
 
