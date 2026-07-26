@@ -44,6 +44,43 @@ function renderPage() {
 
 const FIXTURE = CAPABILITY_MATRIX_FIXTURE
 
+/**
+ * The matrix shaped the way the live endpoint actually shapes it.
+ *
+ * `GET /capability/matrix` projects a static capability set, so every cell it
+ * emits is `allow`, `deny` or `na` — `narrow` and `approval` are decided by
+ * policy stages the projection does not run. The design fixture still carries
+ * all five for the legend's sake, which would mask a `narrow` cell painted by
+ * the override path, so the optimistic-render run below folds it down first.
+ */
+const PROJECTION_MATRIX: CapabilityMatrix = {
+  ...FIXTURE,
+  agents: FIXTURE.agents.map((agent) => ({
+    ...agent,
+    caps: Object.fromEntries(
+      Object.entries(agent.caps).map(([resourceId, cell]) => [
+        resourceId,
+        Object.fromEntries(
+          Object.entries(cell).map(([key, value]) =>
+            value === 'narrow' || value === 'approval' ? [key, 'allow'] : [key, value],
+          ),
+        ),
+      ]),
+    ) as typeof agent.caps,
+  })),
+}
+
+/**
+ * The first resource column of the grid — the column the run overrides.
+ *
+ * The matrix is one flat CSS grid, so its cells come back in row-major order
+ * with `resources.length` of them per agent row.
+ */
+function firstColumn(): HTMLElement[] {
+  const width = PROJECTION_MATRIX.resources.length
+  return screen.getAllByRole('gridcell').filter((_, i) => i % width === 0)
+}
+
 beforeEach(() => {
   getMatrix.mockReset()
   applyOverride.mockReset()
@@ -201,6 +238,45 @@ describe('CapabilityPage', () => {
     fireEvent.click(screen.getByLabelText('select all agents'))
     fireEvent.click(screen.getByRole('button', { name: 'Apply override' }))
     expect(await screen.findByText(/rollback: gateway said no/)).toBeInTheDocument()
+  })
+
+  it('never paints a decision the projection cannot produce, in flight or after', async () => {
+    // The page applies the override optimistically — `setOptimistic(...)` runs
+    // *before* the POST is answered — so whatever the bulk bar can submit is on
+    // screen for the length of the round-trip. When the bar defaulted to
+    // `narrow` that meant the grid rendered `narrow` cells the gateway was about
+    // to 400, then rolled them back (AAASM-5124).
+    getMatrix.mockResolvedValue(PROJECTION_MATRIX)
+    let settle!: () => void
+    applyOverride.mockReturnValue(new Promise<void>((r) => (settle = () => r())))
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+
+    const impossibleCells = () =>
+      screen
+        .getAllByRole('gridcell')
+        .filter((c) => c.dataset.decision === 'narrow' || c.dataset.decision === 'approval')
+
+    expect(impossibleCells()).toHaveLength(0)
+    // Something in the column has to change, or "every cell reads deny" below
+    // would hold without the optimistic edit ever running.
+    expect(firstColumn().some((c) => c.dataset.decision !== 'deny')).toBe(true)
+
+    fireEvent.click(screen.getByLabelText('select all agents'))
+    fireEvent.change(screen.getByLabelText('resource'), {
+      target: { value: PROJECTION_MATRIX.resources[0].id },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply override' }))
+
+    // In flight: the optimistic edit is on screen — so this run really does
+    // exercise the pre-POST paint — and it is a decision the projection emits.
+    await waitFor(() => expect(applyOverride).toHaveBeenCalledTimes(1))
+    expect(impossibleCells()).toHaveLength(0)
+    expect(firstColumn().every((c) => c.dataset.decision === 'deny')).toBe(true)
+
+    settle()
+    await waitFor(() => expect(getMatrix).toHaveBeenCalledTimes(2))
+    expect(impossibleCells()).toHaveLength(0)
   })
 
   it('clears the selection via the bulk Clear button', async () => {
