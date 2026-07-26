@@ -33,6 +33,33 @@ export function useTopologyOverviewQuery() {
   })
 }
 
+/**
+ * Every agent the caller's tenant may see, as `AgentNode` records
+ * (`GET /api/v1/topology`, AAASM-5040) — no depth, status, or team filter.
+ *
+ * The Teams page needs the whole fleet, not `/topology/overview`'s
+ * `standalone_root_agents`, to answer "which agents does no team govern?"
+ * (AAASM-5157). The overview's field is root-only, so a spawned agent with no
+ * team fell out of every grouping on the page.
+ *
+ * Deliberately not `features/topology`'s `useTopologyQuery`, which fetches the
+ * same endpoint: that hook maps the response onto the graph view model, which
+ * drops `depth` and folds any unrecognised `status` to `idle`. The orphan rows
+ * render both verbatim, and a governance list is the wrong place to show a
+ * lossy projection of an agent's real state.
+ */
+export function useTopologyAgentsQuery() {
+  return useQuery({
+    queryKey: ['topology', 'agents'],
+    queryFn: async (): Promise<AgentNode[]> => {
+      const { data, error } = await api.GET('/api/v1/topology')
+      if (error) throw new Error('Failed to fetch topology agents')
+      if (!data) throw new Error('Topology response was empty')
+      return data.nodes
+    },
+  })
+}
+
 export function useCostSummaryQuery() {
   return useQuery({
     queryKey: ['costs', 'summary'],
