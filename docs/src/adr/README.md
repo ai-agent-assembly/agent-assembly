@@ -27,3 +27,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) | Canonical Runtime Verdict & Enriched Decision Record | Accepted |
 | [0019](0019-agent-trust-score-derivation.md) | Agent Trust-Score Derivation | Proposed |
 | [0020](0020-rolling-monthly-budget-window.md) | Rolling vs Calendar Monthly Budget Windows — and the Missing Team Tier | Proposed |
+| [0021](0021-topology-enforcement-mode-mutation-safety.md) | Topology Enforcement-Mode Mutation — Authorization, Blast Radius & Reversibility | Proposed |
