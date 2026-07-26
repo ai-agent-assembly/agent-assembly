@@ -179,6 +179,14 @@
   fill: var(--ink-4);
 }
 
+/* Cross-team badge (⇆N) — relationships the active team filter is hiding from
+   the canvas (AAASM-5138). Carries its own fill so it stays legible when it sits
+   inside the mode badge's per-mode colour. */
+.topology-node__crossteam {
+  fill: var(--ink-3);
+  font-weight: 700;
+}
+
 /* Trust badge (top-left) — the agent's trust score. Only rendered when a real
    trust value is present (currently always null server-side, AAASM-5036). */
 .topology-node__trust {

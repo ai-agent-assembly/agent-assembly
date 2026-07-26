@@ -13,6 +13,7 @@ import {
 } from 'd3-force'
 import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
 import { computeHierarchy, detectDelegationCycles } from '../../features/topology/hierarchy'
+import { crossTeamDegreeByNode, isCrossTeamEdge, teamById } from '../../features/topology/crossTeam'
 import { NO_DATA, TRUTH_STATE_META } from '../../lib/truthfulness'
 import { TeamBudgetBar } from './TeamBudgetBar'
 import { Tooltip } from '../Tooltip'
@@ -163,6 +164,32 @@ export interface TopologyGraphProps {
   readonly onTeamClick?: (team: string) => void
   /** Fired when empty canvas is clicked (clears any open panel). */
   readonly onBackgroundClick?: () => void
+  /**
+   * The *unfiltered* edge set, used only to compute each visible node's
+   * cross-team degree for the `⇆N` badge (AAASM-5138).
+   *
+   * `edges` above is the drawable set — already trimmed to edges whose two
+   * endpoints are both on screen. That trimming is what silently deleted a
+   * team's external relationships from the canvas while the sidebar went on
+   * counting them, so the badge needs the untrimmed set to say how many were
+   * dropped. Defaults to `edges`, which makes the badge zero everywhere when no
+   * filter is applied — the correct answer, since nothing was dropped.
+   */
+  readonly allEdges?: readonly TopologyEdge[]
+  /**
+   * All graph nodes, unfiltered — needed to classify an edge whose far endpoint
+   * is hidden. Defaults to `nodes`.
+   */
+  readonly allNodes?: readonly TopologyNode[]
+  /**
+   * Whether a team filter is currently narrowing the canvas.
+   *
+   * The badge is only shown while filtering, per `design/v2/hi-fi/topology.jsx`
+   * (`crossTeamBadge={filterTeam !== 'all' ? … : 0}`): with the whole fleet on
+   * screen every cross-team edge is already drawn, so a badge would restate
+   * what the operator can see.
+   */
+  readonly teamFilterActive?: boolean
 }
 
 /**
@@ -187,7 +214,19 @@ export function TopologyGraph({
   selectedNodeId,
   onTeamClick,
   onBackgroundClick,
+  allEdges,
+  allNodes,
+  teamFilterActive = false,
 }: TopologyGraphProps) {
+  // Cross-team degree over the *whole* graph (AAASM-5138). Computed even when
+  // no filter is active so the memo identity is stable; the badge itself is
+  // gated on `teamFilterActive` at render time.
+  const crossTeamDegree = useMemo(() => {
+    const edgeSet = allEdges ?? edges
+    const nodeSet = allNodes ?? nodes
+    return crossTeamDegreeByNode(edgeSet, teamById(nodeSet))
+  }, [allEdges, allNodes, edges, nodes])
+
   // Stable identity key — restart the sim only when the *set* of node/edge
   // ids changes, not on every parent re-render.
   const identityKey = useMemo(() => {
@@ -333,6 +372,7 @@ export function TopologyGraph({
   const edgeGeometries = useMemo<readonly EdgeGeometry[]>(() => {
     const posById = new Map<string, PositionedNode>()
     for (const p of positions) posById.set(p.id, p)
+    const localTeams = teamById(positions.map((p) => p.source))
 
     const geoms: EdgeGeometry[] = []
     edges.forEach((edge, i) => {
@@ -341,11 +381,10 @@ export function TopologyGraph({
       const src = posById.get(String(edge.source))
       const tgt = posById.get(String(edge.target))
       if (!src || !tgt || src === tgt) return
-      // Cross-team toggle: hide long-range curves when disabled. Prefer the
-      // server's `crossTeam` flag (AAASM-5099) so the canvas, the sidebar
-      // counter, and `/topology/edges` all agree on what crosses a boundary;
-      // fall back to comparing the endpoints' teams for a payload without it.
-      const crossTeam = edge.crossTeam ?? src.source.team !== tgt.source.team
+      // Cross-team toggle: hide long-range curves when disabled. The predicate
+      // is the shared one (AAASM-5138) so the canvas, the sidebar counter and
+      // `/topology/edges` cannot disagree about what crosses a boundary.
+      const crossTeam = isCrossTeamEdge(edge, localTeams)
       if (!showCrossTeam && crossTeam) return
 
       const sDims = SIZE_VARIANT[bucketForRatio(src.source.budgetSpend, src.source.budgetLimit)]
@@ -553,6 +592,10 @@ export function TopologyGraph({
         const depth = depthById.get(node.id) ?? 0
         const isRoot = rootIds.has(node.id)
         const inCycle = cycleNodeIds.has(node.id)
+        // Cross-team relationships the filtered canvas is not drawing
+        // (AAASM-5138). Only meaningful while a team filter is narrowing the
+        // view — see the `teamFilterActive` prop.
+        const crossTeamCount = teamFilterActive ? (crossTeamDegree.get(node.id) ?? 0) : 0
 
         const handleClick = onNodeClick ? () => onNodeClick(node) : undefined
         const handleKeyDown = onNodeClick
@@ -576,6 +619,7 @@ export function TopologyGraph({
             data-root={isRoot ? 'true' : undefined}
             data-in-cycle={inCycle ? 'true' : undefined}
             data-flagged={node.flagged ? 'true' : undefined}
+            data-cross-team-count={crossTeamCount > 0 ? String(crossTeamCount) : undefined}
             data-mode={node.mode}
             data-trust={node.trust != null ? String(node.trust) : undefined}
             transform={`translate(${x}, ${y})`}
@@ -620,6 +664,19 @@ export function TopologyGraph({
                 textAnchor="end"
               >
                 {dims.w >= SIZE_VARIANT.medium.w ? `${MODE_GLYPH[node.mode]} ${node.mode}` : MODE_GLYPH[node.mode]}
+                {crossTeamCount > 0 && <CrossTeamBadge count={crossTeamCount} leadingSpace />}
+              </text>
+            )}
+            {/* Same badge, standalone, for a node carrying no mode — the count
+                must not depend on whether the mode badge happens to render. */}
+            {!node.mode && crossTeamCount > 0 && (
+              <text
+                className="topology-node__mode"
+                x={dims.w - 6}
+                y={35}
+                textAnchor="end"
+              >
+                <CrossTeamBadge count={crossTeamCount} />
               </text>
             )}
             {/* An unconfigured ceiling renders the shared `—` glyph rather than
@@ -680,6 +737,29 @@ export function TopologyGraph({
       <div className="topology-graph__zoom-readout" data-testid="topology-zoom-readout">{Math.round(zoom * 100)}%</div>
     </div>
     </div>
+  )
+}
+
+/**
+ * The `⇆N` card badge: how many cross-team relationships this agent has that
+ * the filtered canvas is not drawing (AAASM-5138).
+ *
+ * Mirrors `design/v2/hi-fi/topology.jsx:260`. It carries a `<title>` because the
+ * glyph alone is not a sentence — an operator using assistive tech has to be
+ * told that edges are missing from the picture, not just shown a symbol.
+ */
+function CrossTeamBadge({ count, leadingSpace = false }: Readonly<{ count: number; leadingSpace?: boolean }>) {
+  return (
+    <tspan
+      className="topology-node__crossteam"
+      data-testid="topology-node-crossteam"
+      data-count={count}
+    >
+      <title>
+        {`${count} cross-team ${count === 1 ? 'relationship is' : 'relationships are'} hidden by the team filter.`}
+      </title>
+      {`${leadingSpace ? '  ' : ''}⇆${count}`}
+    </tspan>
   )
 }
 

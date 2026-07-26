@@ -588,3 +588,95 @@ describe('TopologyGraph — unconfigured budget limits', () => {
     expect(bar).toHaveTextContent('$5 / $20 · 25%')
   })
 })
+
+// ── Cross-team badge under a team filter (AAASM-5138) ────────────────────────
+// The page trims the canvas to edges whose endpoints are both visible, so a
+// team filter deleted the team's external relationships from the picture while
+// the sidebar went on counting them. The badge is what accounts for them.
+describe('TopologyGraph — cross-team badge', () => {
+  const ALL_NODES: TopologyNode[] = [
+    { id: 'p1', name: 'planner', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10, mode: 'enforce' },
+    { id: 'w1', name: 'worker', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10, mode: 'enforce' },
+    { id: 'x1', name: 'x-caller', status: 'active', team: 'beta', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10, mode: 'enforce' },
+    { id: 'x2', name: 'x-second', status: 'active', team: 'beta', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10, mode: 'enforce' },
+  ]
+  const ALL_EDGES: TopologyEdge[] = [
+    { source: 'p1', target: 'w1', kind: 'delegation' }, // intra-alpha
+    { source: 'p1', target: 'x1', kind: 'call' },       // cross-team
+    { source: 'p1', target: 'x2', kind: 'call' },       // cross-team
+    { source: 'w1', target: 'x1', kind: 'reads' },      // cross-team
+  ]
+  // What TopologyPage passes once "alpha" is selected.
+  const ALPHA_NODES = ALL_NODES.filter(n => n.team === 'alpha')
+  const ALPHA_EDGES = ALL_EDGES.filter(e => e.source !== 'x1' && e.target !== 'x1' && e.source !== 'x2' && e.target !== 'x2')
+
+  function renderFiltered() {
+    return render(
+      <TopologyGraph
+        nodes={ALPHA_NODES}
+        edges={ALPHA_EDGES}
+        allNodes={ALL_NODES}
+        allEdges={ALL_EDGES}
+        teamFilterActive
+      />,
+    )
+  }
+
+  it('badges each node with the cross-team edges the filter removed', () => {
+    renderFiltered()
+    const badges = screen.getAllByTestId('topology-node-crossteam')
+    // `data-count` is read rather than `textContent`, which in SVG also
+    // includes the badge's own <title> child.
+    expect(badges.map(b => b.getAttribute('data-count'))).toEqual(['2', '1'])
+    expect(badges[0].textContent).toContain('⇆2')
+    expect(badges[1].textContent).toContain('⇆1')
+  })
+
+  /**
+   * The agreement the whole ticket turns on: the sidebar's cross-team counter
+   * describes the fleet, the canvas draws a subset — and every crossing the
+   * canvas dropped is accounted for by a badge. Nothing vanishes silently.
+   */
+  it('accounts for every dropped crossing, so count and picture agree', () => {
+    renderFiltered()
+    const drawnCrossTeam = screen
+      .queryAllByTestId('topology-edge')
+      .filter(p => p.getAttribute('data-cross-team') === 'true').length
+    const badged = screen
+      .getAllByTestId('topology-node-crossteam')
+      .reduce((total, b) => total + Number(b.getAttribute('data-count')), 0)
+
+    // 3 of the 4 edges cross a boundary; the filtered canvas draws none of them.
+    expect(drawnCrossTeam).toBe(0)
+    expect(drawnCrossTeam + badged).toBe(3)
+  })
+
+  it('shows no badge when the whole fleet is on screen', () => {
+    // Unfiltered, every crossing is already drawn — a badge would restate what
+    // the operator can see.
+    render(<TopologyGraph nodes={ALL_NODES} edges={ALL_EDGES} allNodes={ALL_NODES} allEdges={ALL_EDGES} />)
+    expect(screen.queryAllByTestId('topology-node-crossteam')).toHaveLength(0)
+  })
+
+  it('mirrors the count onto data-cross-team-count for the filtered nodes', () => {
+    renderFiltered()
+    const cards = screen.getAllByTestId('topology-node')
+    expect(cards[0]).toHaveAttribute('data-cross-team-count', '2')
+    expect(cards[1]).toHaveAttribute('data-cross-team-count', '1')
+  })
+
+  it('renders the badge on a node carrying no enforcement mode', () => {
+    // The count must not depend on whether the mode badge happens to render.
+    const modeless = ALPHA_NODES.map(n => ({ ...n, mode: undefined }))
+    render(
+      <TopologyGraph nodes={modeless} edges={ALPHA_EDGES} allNodes={ALL_NODES} allEdges={ALL_EDGES} teamFilterActive />,
+    )
+    expect(screen.getAllByTestId('topology-node-crossteam')).toHaveLength(2)
+  })
+
+  it('explains the badge to assistive tech', () => {
+    renderFiltered()
+    const title = screen.getAllByTestId('topology-node-crossteam')[0].querySelector('title')
+    expect(title?.textContent).toMatch(/hidden by the team filter/i)
+  })
+})

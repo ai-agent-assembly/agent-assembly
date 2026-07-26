@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { useTopologyQuery } from '../features/topology/api'
 import { detectDelegationCycles } from '../features/topology/hierarchy'
+import { crossTeamEdges, teamById } from '../features/topology/crossTeam'
 import { defaultVisibleKinds } from '../features/topology/edgeKinds'
 import { exportGraphJson, exportGraphSvg } from '../features/topology/exportGraph'
 import { TopologyGraph } from '../components/topology/TopologyGraph'
@@ -58,20 +59,18 @@ export function TopologyPage() {
   }, [allEdges, visibleNodes, filterTeam])
 
   // Header/sidebar stats reflect the whole graph, not the filtered view.
+  //
+  // That is deliberate — `⇆ N cross-team` is a fleet-wide fact — but it is also
+  // how the counter and the canvas came to disagree: under a team filter the
+  // canvas drops every edge with a hidden endpoint, so the sidebar counted
+  // relationships the picture no longer showed (AAASM-5138). The count is not
+  // narrowed to match; instead each visible card carries a `⇆N` badge for the
+  // edges the filter removed, so nothing goes unrepresented. Both surfaces
+  // classify edges with the same shared predicate so they cannot drift again.
   const stats = useMemo(() => {
     const active = allNodes.filter((n) => n.status === 'active').length
     const flagged = allNodes.filter((n) => n.flagged).length
-    // Cross-team count comes from the server's own `crossTeam` flag
-    // (AAASM-5099) so this badge, the canvas curves, and `/topology/edges` agree
-    // on one definition. Falls back to comparing endpoint teams for a payload
-    // that predates the flag.
-    const teamById = new Map(allNodes.map((n) => [n.id, n.team]))
-    const crossTeam = allEdges.filter((e) => {
-      if (e.crossTeam !== undefined) return e.crossTeam
-      const s = teamById.get(e.source)
-      const t = teamById.get(e.target)
-      return s !== undefined && t !== undefined && s !== t
-    }).length
+    const crossTeam = crossTeamEdges(allEdges, teamById(allNodes)).length
     const hasCycles = detectDelegationCycles(allEdges).size > 0
     return { active, flagged, crossTeam, hasCycles }
   }, [allNodes, allEdges])
@@ -203,6 +202,9 @@ export function TopologyPage() {
               showCrossTeam={showCrossTeam}
               selectedNodeId={selectedNode?.id ?? null}
               selectedTeam={selectedTeam}
+              allNodes={allNodes}
+              allEdges={allEdges}
+              teamFilterActive={filterTeam !== ALL_TEAMS}
             />
           </section>
 

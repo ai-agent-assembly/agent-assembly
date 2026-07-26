@@ -175,3 +175,97 @@ describe('TopologyPage', () => {
     expect(screen.getByTestId('topology-node')).toHaveTextContent('analyst')
   })
 })
+
+// ── Sidebar count vs. rendered canvas (AAASM-5138) ───────────────────────────
+// The sidebar counts cross-team edges across the whole fleet; the canvas draws
+// only edges whose two endpoints are both visible. Under a team filter those
+// two disagreed, and the filtered view read as "this team has no external
+// dependencies". The badges are what close the gap.
+describe('TopologyPage — cross-team count agrees with the canvas', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  // support × 2 and analytics × 2, with three crossings and one intra-team edge.
+  const MESH: TopologyGraph = {
+    nodes: [
+      { id: 's1', name: 'support-1', status: 'active', team: 'support', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+      { id: 's2', name: 'support-2', status: 'active', team: 'support', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+      { id: 'n1', name: 'analyst-1', status: 'active', team: 'analytics', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+      { id: 'n2', name: 'analyst-2', status: 'active', team: 'analytics', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    ],
+    edges: [
+      { source: 's1', target: 's2', kind: 'delegation' },
+      { source: 's1', target: 'n1', kind: 'call' },
+      { source: 's1', target: 'n2', kind: 'call' },
+      { source: 's2', target: 'n1', kind: 'reads' },
+    ],
+  }
+
+  function drawnCrossTeamCount() {
+    return screen
+      .queryAllByTestId('topology-edge')
+      .filter(p => p.getAttribute('data-cross-team') === 'true').length
+  }
+
+  function badgedCount() {
+    return screen
+      .queryAllByTestId('topology-node-crossteam')
+      .reduce((total, b) => total + Number(b.getAttribute('data-count')), 0)
+  }
+
+  function sidebarCount() {
+    const text = screen.getByTestId('topology-stat-crossteam').textContent ?? ''
+    return Number(/(\d+) cross-team/.exec(text)![1])
+  }
+
+  async function filterTo(team: string) {
+    const option = screen.getAllByTestId('team-filter-item').find(i => i.dataset.team === team)!
+    await userEvent.click(option)
+    await waitFor(() => expect(screen.getAllByTestId('topology-node')).toHaveLength(2))
+  }
+
+  it('draws every counted crossing when the whole fleet is shown', () => {
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: MESH, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+    expect(sidebarCount()).toBe(3)
+    expect(drawnCrossTeamCount()).toBe(3)
+    expect(badgedCount()).toBe(0)
+  })
+
+  it('accounts for every crossing the team filter removes from the canvas', async () => {
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: MESH, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+    await filterTo('support')
+
+    // The canvas can no longer draw any crossing — both have a hidden endpoint.
+    expect(drawnCrossTeamCount()).toBe(0)
+    // All three are still counted by the sidebar, and all three are still
+    // represented on screen, as badges on the team's own cards. This is the
+    // agreement the ticket is about: nothing is silently deleted.
+    expect(sidebarCount()).toBe(3)
+    expect(drawnCrossTeamCount() + badgedCount()).toBe(sidebarCount())
+  })
+
+  it('leaves the filtered team looking connected, not isolated', async () => {
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: MESH, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+    await filterTo('support')
+    // Before the fix this was zero badges over a canvas with no cross-team
+    // edges — indistinguishable from a team with no external dependencies.
+    expect(screen.queryAllByTestId('topology-node-crossteam').length).toBeGreaterThan(0)
+  })
+
+  it('keeps the intra-team edge drawn, so the filter still declutters', async () => {
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: MESH, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+    await filterTo('support')
+    await waitFor(() => expect(screen.queryAllByTestId('topology-edge')).toHaveLength(1))
+  })
+})
