@@ -225,4 +225,70 @@ describe('OperationRow', () => {
     expect(chevron).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByTestId('op-row-tree')).toBeInTheDocument()
   })
+
+  // ── AAASM-5129 review follow-up: the call-stack path ─────────────────────
+
+  it('renders a call-stack step latency of 0 as 0ms, not "<1ms"', () => {
+    render(
+      <OperationRow
+        op={{
+          ...FIXTURE,
+          callStack: [{ id: 'n0', kind: 'llm', label: 'gpt-4o', latencyMs: 0 }],
+        }}
+        defaultExpanded
+      />,
+    )
+    expect(screen.getByTestId('op-row-tree-latency')).toHaveTextContent('0ms')
+    expect(screen.queryByText('<1ms')).toBeNull()
+  })
+
+  it('keeps "<1ms" for the fractional durations a call-stack step can carry', () => {
+    render(
+      <OperationRow
+        op={{
+          ...FIXTURE,
+          callStack: [{ id: 'n0', kind: 'llm', label: 'gpt-4o', latencyMs: 0.4 }],
+        }}
+        defaultExpanded
+      />,
+    )
+    expect(screen.getByTestId('op-row-tree-latency')).toHaveTextContent('<1ms')
+  })
+
+  /*
+   * A dash rendered from `formatLatency` into a plain span carried no state, no
+   * tone and no screen-reader sentence — the one thing the vocabulary forbids,
+   * since assistive tech would receive a bare "—" or nothing at all.
+   */
+  it('renders an uninterpretable step latency through the absence vocabulary', () => {
+    render(
+      <OperationRow
+        op={{
+          ...FIXTURE,
+          callStack: [{ id: 'n0', kind: 'llm', label: 'gpt-4o', latencyMs: Number.NaN }],
+        }}
+        defaultExpanded
+      />,
+    )
+    const latency = screen.getByTestId('op-row-tree-latency')
+    expect(latency).toHaveAttribute('data-truth-state', 'unknown')
+    expect(latency).toHaveTextContent('—')
+    expect(latency.querySelector('.truth-sr-only')?.textContent).toMatch(/unknown/i)
+    expect(screen.queryByText('NaNms')).toBeNull()
+  })
+
+  it('renders no latency element for a step that carries no duration', () => {
+    render(
+      <OperationRow
+        op={{
+          ...FIXTURE,
+          callStack: [{ id: 'n0', kind: 'llm', label: 'gpt-4o' }],
+        }}
+        defaultExpanded
+      />,
+    )
+    // A tree row is a label, not a table cell — there is no column left blank
+    // for an operator to read as a zero.
+    expect(screen.queryByTestId('op-row-tree-latency')).toBeNull()
+  })
 })
