@@ -30,17 +30,16 @@ export interface PolicyPreset {
   risk: PolicyRisk
 }
 
-export interface AgentIdentity {
-  did: string
-  alg: string
-  fingerprint: string
-  issuedAt: string
-}
-
+/**
+ * What the wizard has actually observed.
+ *
+ * There is deliberately no `identity` field: the browser cannot issue one, so an
+ * `AgentIdentity` here could only ever hold fabricated key material. Removing it
+ * is what makes the AAASM-5179 fiction untypeable rather than merely unrendered.
+ */
 export interface WizardState {
   framework: FrameworkId | null
   installVerified: boolean
-  identity: AgentIdentity | null
   policyPreset: PolicyPresetId | null
   enrolled: boolean
 }
@@ -48,7 +47,6 @@ export interface WizardState {
 export const EMPTY_STATE: WizardState = {
   framework: null,
   installVerified: false,
-  identity: null,
   policyPreset: null,
   enrolled: false,
 }

@@ -6,7 +6,6 @@ import type { WizardState } from '../types'
 const FILLED_STATE: WizardState = {
   framework: 'langchain',
   installVerified: true,
-  identity: { did: 'did:aa:abc', alg: 'Ed25519', fingerprint: 'AA', issuedAt: 'x' },
   policyPreset: 'read-only',
   enrolled: true,
 }

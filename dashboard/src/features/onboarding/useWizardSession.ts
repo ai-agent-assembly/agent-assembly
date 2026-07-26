@@ -18,10 +18,12 @@ function isStepId(value: unknown): value is StepId {
 function isWizardState(value: unknown): value is WizardState {
   if (!value || typeof value !== 'object') return false
   const v = value as Record<string, unknown>
+  // `identity` is deliberately absent: a session persisted by a pre-AAASM-5179
+  // build carries a fabricated identity, so it is rejected here and the wizard
+  // restarts rather than rehydrating a claim it cannot support.
   return (
     'framework' in v &&
     'installVerified' in v &&
-    'identity' in v &&
     'policyPreset' in v &&
     'enrolled' in v
   )

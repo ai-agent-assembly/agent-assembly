@@ -1,103 +1,67 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
 import { Step3IssueIdentity } from './Step3IssueIdentity'
-import { EMPTY_STATE, type WizardState } from '../types'
 
-const ISSUED_STATE: WizardState = {
-  ...EMPTY_STATE,
-  identity: {
-    did: 'did:aa:deadbeef',
-    alg: 'Ed25519',
-    fingerprint: 'AA:BB:CC',
-    issuedAt: '2026-05-01 10:00:00Z',
-  },
-}
-
-beforeEach(() => {
-  vi.useFakeTimers()
-})
-
-afterEach(() => {
-  vi.runOnlyPendingTimers()
-  vi.useRealTimers()
-  vi.restoreAllMocks()
-})
+/**
+ * Every claim the step used to make about key material (AAASM-5179). None of it
+ * was true: no `crypto.subtle` call exists anywhere in the dashboard, the value
+ * shown was 24 random bytes, and a browser cannot write to a filesystem path.
+ */
+const REMOVED_CLAIMS = [
+  '~/.aa/keys/',
+  'do not commit',
+  'generate keypair',
+  'deriving curve point',
+  'signing CSR',
+  'publishing to registry',
+  'private key',
+  'identity issued',
+  'Ed25519',
+  'fingerprint',
+  'did:aa:',
+]
 
 describe('Step3IssueIdentity', () => {
-  it('renders the generate button in the idle phase', () => {
-    render(<Step3IssueIdentity state={EMPTY_STATE} onIssued={vi.fn()} />)
-    expect(screen.getByTestId('onboarding-identity-generate')).toBeInTheDocument()
+  it('renders the step as not-supported rather than issuing anything', () => {
+    render(<Step3IssueIdentity />)
+
+    const state = screen.getByTestId('onboarding-identity-unsupported')
+    expect(state).toHaveAttribute('data-truth-state', 'not-supported')
+    expect(state).toHaveTextContent('Not supported')
+    expect(state).toHaveTextContent(/not available from the dashboard/i)
   })
 
-  it('shows the issued identity immediately when state already has one', () => {
-    render(<Step3IssueIdentity state={ISSUED_STATE} onIssued={vi.fn()} />)
-    expect(screen.getByTestId('onboarding-identity-issued')).toBeInTheDocument()
-    expect(screen.getByTestId('onboarding-identity-did')).toHaveTextContent('did:aa:deadbeef')
+  it('offers no action, because there is no successful production path', () => {
+    render(<Step3IssueIdentity />)
+
+    expect(screen.queryByTestId('onboarding-identity-generate')).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
   })
 
-  it('generates an identity and calls onIssued after the spinner resolves', () => {
-    const onIssued = vi.fn()
-    render(<Step3IssueIdentity state={EMPTY_STATE} onIssued={onIssued} />)
+  it('makes none of the removed key-material claims', () => {
+    const { container } = render(<Step3IssueIdentity />)
+    const text = container.textContent ?? ''
 
-    fireEvent.click(screen.getByTestId('onboarding-identity-generate'))
-    // Spinning phase shows the disabled generating button.
-    expect(screen.getByText('generating…')).toBeInTheDocument()
-
-    act(() => {
-      vi.advanceTimersByTime(800)
-    })
-
-    expect(onIssued).toHaveBeenCalledTimes(1)
-    const identity = onIssued.mock.calls[0][0]
-    expect(identity.alg).toBe('Ed25519')
-    expect(identity.did).toMatch(/^did:aa:[0-9a-f]{32}$/)
-    expect(identity.fingerprint).toMatch(/^([0-9A-F]{2}:){7}[0-9A-F]{2}$/)
-    // The done glyph (✓) renders once the phase flips, independent of the
-    // parent feeding the issued identity back through props.
-    expect(screen.getByText('✓')).toBeInTheDocument()
+    for (const claim of REMOVED_CLAIMS) {
+      expect(text.toLowerCase()).not.toContain(claim.toLowerCase())
+    }
   })
 
-  it('renders the issued summary when the parent feeds the identity back', () => {
-    const onIssued = vi.fn()
-    const { rerender } = render(
-      <Step3IssueIdentity state={EMPTY_STATE} onIssued={onIssued} />,
+  it('states plainly that no key material is produced by the browser', () => {
+    render(<Step3IssueIdentity />)
+
+    expect(screen.getByTestId('onboarding-identity-unsupported')).toHaveTextContent(
+      /no key material is created, transmitted, or written to disk/i,
     )
-    fireEvent.click(screen.getByTestId('onboarding-identity-generate'))
-    act(() => {
-      vi.advanceTimersByTime(800)
-    })
-    const identity = onIssued.mock.calls[0][0]
-    rerender(
-      <Step3IssueIdentity state={{ ...EMPTY_STATE, identity }} onIssued={onIssued} />,
-    )
-    expect(screen.getByTestId('onboarding-identity-issued')).toBeInTheDocument()
-    expect(screen.getByTestId('onboarding-identity-did')).toHaveTextContent(identity.did)
   })
 
-  it('marks the glyph as spinning while the keypair derives, then done', () => {
-    render(<Step3IssueIdentity state={EMPTY_STATE} onIssued={vi.fn()} />)
-    fireEvent.click(screen.getByTestId('onboarding-identity-generate'))
-    const glyph = screen.getByTestId('onboarding-identity-glyph')
-    expect(glyph).toHaveClass('is-spinning')
-    expect(glyph).not.toHaveClass('is-done')
+  it('announces the absence to assistive tech rather than reading as a healthy step', () => {
+    render(<Step3IssueIdentity />)
 
-    act(() => {
-      vi.advanceTimersByTime(800)
-    })
-
-    expect(glyph).not.toHaveClass('is-spinning')
-    expect(glyph).toHaveClass('is-done')
-  })
-
-  it('ignores a second generate click while spinning', () => {
-    const onIssued = vi.fn()
-    render(<Step3IssueIdentity state={EMPTY_STATE} onIssued={onIssued} />)
-    const btn = screen.getByTestId('onboarding-identity-generate')
-    fireEvent.click(btn)
-    fireEvent.click(btn)
-    act(() => {
-      vi.advanceTimersByTime(800)
-    })
-    expect(onIssued).toHaveBeenCalledTimes(1)
+    const state = screen.getByTestId('onboarding-identity-unsupported')
+    // `not-supported` is a permanent, benign gap, so it is a polite status —
+    // never an alert (see StatusState.roleFor).
+    expect(state).toHaveAttribute('role', 'status')
+    expect(state).toHaveTextContent('Not supported — the backend cannot provide this value.')
   })
 })

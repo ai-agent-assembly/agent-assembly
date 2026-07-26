@@ -8,7 +8,11 @@ export function canAdvance(state: WizardState, step: StepId): boolean {
     case 'install':
       return state.installVerified
     case 'identity':
-      return state.identity !== null
+      // Identity issuance has no path from the browser (AAASM-5179/5176), so the
+      // step asks nothing of the operator and gates nothing. Keeping the old
+      // `state.identity !== null` gate would leave a permanently-disabled
+      // Continue button behind a step that cannot be completed.
+      return true
     case 'policy':
       return state.policyPreset !== null
     case 'enroll':

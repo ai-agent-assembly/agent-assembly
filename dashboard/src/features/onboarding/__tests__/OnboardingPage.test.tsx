@@ -48,12 +48,6 @@ describe('OnboardingPage', () => {
         ...EMPTY_STATE,
         framework: 'langchain',
         installVerified: true,
-        identity: {
-          did: 'did:aa:abc',
-          alg: 'Ed25519',
-          fingerprint: 'AA:BB',
-          issuedAt: 'x',
-        },
       },
     })
     renderAt('/onboarding')
@@ -81,12 +75,6 @@ describe('OnboardingPage', () => {
       state: {
         framework: 'langchain',
         installVerified: true,
-        identity: {
-          did: 'did:aa:abc',
-          alg: 'Ed25519',
-          fingerprint: 'AA:BB',
-          issuedAt: 'x',
-        },
         policyPreset: 'read-only',
         enrolled: true,
       },

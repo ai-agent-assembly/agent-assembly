@@ -242,64 +242,13 @@
   letter-spacing: 0.6px;
 }
 
-/* ── Step 3: identity ───────────────────────────────────────────────────── */
-.onb-id-card {
-  background: var(--paper-2);
-  border: 1px solid var(--line-2);
-  border-radius: 3px;
-  padding: 22px;
-  text-align: center;
-  min-height: 220px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-}
-
-.onb-id-glyph {
-  position: relative;
-  width: 80px;
-  height: 80px;
-  border: 2px solid var(--line);
-  border-radius: 999px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 16px;
-  background: var(--paper);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 32px;
-  color: var(--ink-4);
-}
-
-/* While the keypair is being derived, a ring sweeps the glyph so the ~0.8s
-   wait reads as active work rather than a frozen UI. Pure decoration — gated
-   off under prefers-reduced-motion below. */
-.onb-id-glyph.is-spinning {
-  border-color: var(--accent, var(--ink));
-}
-
-.onb-id-glyph.is-spinning::before {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  border: 2px solid transparent;
-  border-top-color: var(--accent, var(--ink));
-  border-radius: 999px;
-  animation: onb-id-spin 0.8s linear infinite;
-}
-
-@keyframes onb-id-spin {
-  to { transform: rotate(360deg); }
-}
-
-.onb-id-glyph.is-done {
-  color: var(--ok);
-  font-size: 36px;
-  font-weight: bold;
-  border-color: var(--ok);
-}
-
+/* ── Step 5: listener status pill ───────────────────────────────────────── */
+/* Everything that dressed step 3's fake keypair ceremony — the card, the
+   spinning derive-glyph, the DID/fingerprint output block and the
+   "private key stored in ~/.aa/keys/" hint — is gone with the fiction it
+   presented (AAASM-5179). Step 3 now renders the shared StatusState. What
+   remains here is the `.onb-id-action-btn` family, which step 5 still uses for
+   its listener pill. */
 .onb-id-action-btn {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
@@ -346,46 +295,6 @@
   0%,
   100% { opacity: 1; }
   50% { opacity: 0.3; }
-}
-
-.onb-id-out {
-  margin-top: 20px;
-  padding: 14px 16px;
-  background: var(--term-bg);
-  color: var(--term-text);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  line-height: 1.7;
-  border-radius: 3px;
-  text-align: left;
-  width: 100%;
-}
-
-.onb-id-row { display: flex; gap: 10px; }
-.onb-id-key { color: var(--term-key); min-width: 90px; }
-.onb-id-val { color: var(--term-text); word-break: break-all; }
-.onb-id-val.is-fp { color: var(--term-ok); }
-
-.onb-id-hint {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: var(--ink-4);
-  margin-top: 12px;
-  letter-spacing: 0.4px;
-}
-
-.onb-id-hint code {
-  background: var(--paper);
-  padding: 1px 4px;
-  border: 1px solid var(--line-2);
-  border-radius: 2px;
-}
-
-.onb-id-issued {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  color: var(--ok);
-  letter-spacing: 0.5px;
 }
 
 /* ── Step 4: policy preset ──────────────────────────────────────────────── */
@@ -585,7 +494,6 @@
 
 /* Honour users who ask for reduced motion: keep the states, drop the movement. */
 @media (prefers-reduced-motion: reduce) {
-  .onb-id-glyph.is-spinning::before { animation: none; }
   .onb-enroll-ping { animation: none; }
   .onb-id-action-btn.live::before { animation: none; }
 }

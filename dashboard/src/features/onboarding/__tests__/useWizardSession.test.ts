@@ -21,7 +21,6 @@ class MemoryStorage implements Storage {
 const FILLED_STATE: WizardState = {
   framework: 'langchain',
   installVerified: true,
-  identity: { did: 'did:aa:abc', alg: 'Ed25519', fingerprint: 'AA:BB', issuedAt: 'x' },
   policyPreset: 'read-only',
   enrolled: false,
 }

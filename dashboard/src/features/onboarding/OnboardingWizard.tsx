@@ -110,12 +110,8 @@ export function OnboardingWizard({
               onVerified={() => patchState({ installVerified: true })}
             />
           )}
-          {current === 'identity' && (
-            <Step3IssueIdentity
-              state={state}
-              onIssued={(identity) => patchState({ identity })}
-            />
-          )}
+          {/* Takes no callback: there is nothing for it to report (AAASM-5179). */}
+          {current === 'identity' && <Step3IssueIdentity />}
           {current === 'policy' && (
             <Step4BaselinePolicy
               state={state}

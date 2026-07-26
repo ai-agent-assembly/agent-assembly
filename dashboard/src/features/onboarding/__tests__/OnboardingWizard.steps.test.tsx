@@ -6,13 +6,12 @@ import { EMPTY_STATE, type WizardState } from '../types'
 const FILLED_STATE: WizardState = {
   framework: 'langchain',
   installVerified: true,
-  identity: { did: 'did:aa:abc', alg: 'Ed25519', fingerprint: 'AA', issuedAt: 'x' },
   policyPreset: 'read-only',
   enrolled: true,
 }
 
 describe('OnboardingWizard step rendering', () => {
-  it('renders the identity step when the wizard starts there', () => {
+  it('renders the identity step as an explicit not-supported surface', () => {
     render(
       <OnboardingWizard
         initialStep="identity"
@@ -22,7 +21,24 @@ describe('OnboardingWizard step rendering', () => {
       />,
     )
     expect(screen.getByTestId('onboarding-step-identity')).toBeInTheDocument()
-    expect(screen.getByTestId('onboarding-identity-issued')).toBeInTheDocument()
+    expect(screen.getByTestId('onboarding-identity-unsupported')).toHaveAttribute(
+      'data-truth-state',
+      'not-supported',
+    )
+  })
+
+  it('lets the operator past the identity step, which asks nothing of them', () => {
+    // AAASM-5179: the step can never be "completed", so gating Continue on it
+    // would strand the wizard behind a permanently-disabled button.
+    render(
+      <OnboardingWizard
+        initialStep="identity"
+        initialState={EMPTY_STATE}
+        onFinish={vi.fn()}
+        onSkipAll={vi.fn()}
+      />,
+    )
+    expect(screen.getByTestId('onboarding-continue')).not.toBeDisabled()
   })
 
   it('renders the policy step', () => {
@@ -128,26 +144,6 @@ describe('OnboardingWizard step → state patching', () => {
     expect(onPersist).toHaveBeenLastCalledWith(
       expect.objectContaining({ state: expect.objectContaining({ installVerified: true }) }),
     )
-  })
-
-  it('patches the generated identity into state on the identity step', () => {
-    const onPersist = vi.fn()
-    render(
-      <OnboardingWizard
-        initialStep="identity"
-        initialState={EMPTY_STATE}
-        onFinish={vi.fn()}
-        onSkipAll={vi.fn()}
-        onPersist={onPersist}
-      />,
-    )
-    fireEvent.click(screen.getByTestId('onboarding-identity-generate'))
-    act(() => {
-      vi.advanceTimersByTime(800)
-    })
-    const last = onPersist.mock.calls.at(-1)![0]
-    expect(last.state.identity).not.toBeNull()
-    expect(last.state.identity.alg).toBe('Ed25519')
   })
 
   it('patches enrolled into state when the enroll step completes', () => {
