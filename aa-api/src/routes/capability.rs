@@ -1117,6 +1117,42 @@ mod tests {
         assert!(!m.agents[0].caps.contains_key(TOOL_WILDCARD));
     }
 
+    /// Guards the explicit lineage at the top of [`project_matrix`]: the engine
+    /// `aa-api` builds is not registry-wired, so resolving the cascade without a
+    /// lineage silently drops every Org- and Team-scoped document. Regressing
+    /// that call would leave this the only failing test.
+    #[tokio::test]
+    async fn a_team_scoped_deny_reaches_the_projection() {
+        use aa_core::Capability as C;
+
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.deny.insert(C::TerminalExec);
+
+        // `record` registers the agent under team-alpha.
+        let state = state_with_policies(
+            vec![record(0x01, "a", &[])],
+            vec![policy_doc(
+                "team-rules",
+                PolicyScope::Team("team-alpha".to_string()),
+                Some(caps),
+                &[],
+                None,
+            )],
+        );
+        let m = matrix_for(&state).await;
+
+        assert_eq!(
+            m.agents[0].caps["terminal"].exec,
+            Decision::Deny,
+            "a Team-scoped policy must reach the cascade"
+        );
+        assert!(
+            m.policies.iter().any(|p| p.scope == "team:team-alpha"),
+            "and be listed as a responsible policy: {:?}",
+            m.policies.iter().map(|p| &p.scope).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn decide_honours_the_guard_fail_closed_rules() {
         use aa_core::Capability as C;
