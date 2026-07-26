@@ -8,7 +8,7 @@ import { TeamsPage } from './TeamsPage'
 import * as teamsApi from '../features/teams/api'
 import * as costsApi from '../features/costs/api'
 import * as approvalsApi from '../features/approvals/api'
-import type { CostSummary, TeamTopology, TopologyOverview } from '../features/teams/api'
+import type { AgentNode, CostSummary, TeamTopology, TopologyOverview } from '../features/teams/api'
 import type { BudgetTree } from '../features/costs/api'
 import type { Approval } from '../features/approvals/api'
 
@@ -25,23 +25,48 @@ function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   )
 }
 
-function makeOverview(teamCount: number, orphans: TopologyOverview['standalone_root_agents'] = []): TopologyOverview {
+/**
+ * `standalone_root_agents` carries only the *root* orphans on purpose: that is
+ * what the gateway actually sends (`depth == 0 && team_id.is_none()`), so any
+ * test that finds a spawned orphan on the page proves the page stopped sourcing
+ * the list from this field (AAASM-5157).
+ */
+function makeOverview(teamCount: number, orphans: AgentNode[] = []): TopologyOverview {
+  const teams = Array.from({ length: teamCount }, (_, i) => ({
+    team_id: `team-${String(i).padStart(3, '0')}`,
+    agent_count: teamCount - i,
+    root_agent_count: 1,
+  }))
+  const inTeams = teams.reduce((sum, t) => sum + t.agent_count, 0)
   return {
     root_agent_count: teamCount,
-    standalone_root_agents: orphans,
+    standalone_root_agents: orphans.filter(a => a.depth === 0),
     team_count: teamCount,
-    total_agent_count: teamCount * 3,
-    teams: Array.from({ length: teamCount }, (_, i) => ({
-      team_id: `team-${String(i).padStart(3, '0')}`,
-      agent_count: teamCount - i,
-      root_agent_count: 1,
-    })),
+    total_agent_count: inTeams + orphans.length,
+    teams,
   }
 }
 
-const ORPHANS: TopologyOverview['standalone_root_agents'] = [
-  { id: 'o1', name: 'lonely-scraper', status: 'active', depth: 0, flagged: false, mode: 'off', trust: null },
-  { id: 'o2', name: 'rogue-bot', status: 'active', depth: 0, flagged: true, mode: 'off', trust: null },
+function agentNode(over: Partial<AgentNode> & Pick<AgentNode, 'id' | 'name'>): AgentNode {
+  return { status: 'active', depth: 0, flagged: false, mode: 'off', trust: null, ...over }
+}
+
+/** A root agent no team claims — visible under the old root-only predicate too. */
+const ORPHAN_ROOT = agentNode({ id: 'o1', name: 'lonely-scraper' })
+
+/**
+ * The agent AAASM-5157 is about: spawned by a parent (`depth > 0`) and claimed
+ * by no team, so the root-only predicate placed it in no grouping at all.
+ */
+const ORPHAN_SPAWNED = agentNode({ id: 'o2', name: 'spawned-rogue', depth: 2, flagged: true, team_id: null })
+
+const ORPHANS: AgentNode[] = [ORPHAN_ROOT, ORPHAN_SPAWNED]
+
+/** Agents that a team does claim; they must never appear in the unclaimed list. */
+const TEAM_MEMBERS: AgentNode[] = [
+  agentNode({ id: 't1', name: 'orchestrator', mode: 'enforce', team_id: 'team-000' }),
+  agentNode({ id: 't2', name: 'router', mode: 'enforce', team_id: 'team-001' }),
+  agentNode({ id: 't3', name: 'worker', depth: 1, mode: 'enforce', team_id: 'team-000' }),
 ]
 
 const COSTS: CostSummary = {
@@ -78,9 +103,12 @@ function topologyFor(teamId: string): TeamTopology {
   return { team_id: teamId, agent_count: members.length, members }
 }
 
-function setupMocks(overview: TopologyOverview, costs: CostSummary | undefined = COSTS) {
+function setupMocks(overview: TopologyOverview, nodes: AgentNode[] = [], costs: CostSummary | undefined = COSTS) {
   vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
     mockQuery<TopologyOverview>({ data: overview, isLoading: false, isError: false, refetch: vi.fn() }),
+  )
+  vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
+    mockQuery<AgentNode[]>({ data: nodes, isPending: false, isError: false, error: null }),
   )
   vi.spyOn(teamsApi, 'useCostSummaryQuery').mockReturnValue(
     mockQuery<CostSummary>({ data: costs, isLoading: false, isError: false, refetch: vi.fn() }),
@@ -113,6 +141,9 @@ describe('TeamsPage (two-pane)', () => {
     vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
       mockQuery<TopologyOverview>({ data: undefined, isLoading: false, isError: true, refetch }),
     )
+    vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
+      mockQuery<AgentNode[]>({ data: [], isPending: false, isError: false, error: null }),
+    )
     vi.spyOn(teamsApi, 'useCostSummaryQuery').mockReturnValue(mockQuery<CostSummary>({ data: undefined, isLoading: false, isError: false }))
     vi.spyOn(teamsApi, 'useTeamTopologyQuery').mockReturnValue({ data: undefined, notFound: false, isLoading: false, isError: false })
     vi.spyOn(costsApi, 'useBudgetTreeQuery').mockReturnValue(mockQuery<BudgetTree>({ data: undefined, isLoading: false }))
@@ -124,14 +155,14 @@ describe('TeamsPage (two-pane)', () => {
   })
 
   it('renders one list row per team with a burn mini-bar', async () => {
-    setupMocks(makeOverview(2))
+    setupMocks(makeOverview(2), TEAM_MEMBERS)
     render(<TeamsPage />, { wrapper: Wrapper })
     await waitFor(() => expect(screen.getAllByTestId('team-list-row')).toHaveLength(2))
     expect(screen.getByTestId('team-list-count')).toHaveTextContent('2 groups')
   })
 
   it('defaults the detail pane to the first team and renders its three cards', async () => {
-    setupMocks(makeOverview(2))
+    setupMocks(makeOverview(2), TEAM_MEMBERS)
     render(<TeamsPage />, { wrapper: Wrapper })
     await waitFor(() => expect(screen.getByTestId('team-detail-header')).toHaveTextContent('team-000'))
     expect(screen.getByTestId('team-budget-card')).toBeInTheDocument()
@@ -144,7 +175,7 @@ describe('TeamsPage (two-pane)', () => {
 
   it('selecting a different team updates the detail cards', async () => {
     const user = userEvent.setup()
-    setupMocks(makeOverview(2))
+    setupMocks(makeOverview(2), TEAM_MEMBERS)
     render(<TeamsPage />, { wrapper: Wrapper })
     await waitFor(() => expect(screen.getByTestId('team-detail-header')).toHaveTextContent('team-000'))
 
@@ -159,7 +190,7 @@ describe('TeamsPage (two-pane)', () => {
   })
 
   it('renders the unclaimed orphan section with a count chip', async () => {
-    setupMocks(makeOverview(2, ORPHANS))
+    setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
     render(<TeamsPage />, { wrapper: Wrapper })
     await screen.findByTestId('team-list-orphan-section')
     expect(screen.getByTestId('team-list-orphan-count')).toHaveTextContent('2')
@@ -167,7 +198,7 @@ describe('TeamsPage (two-pane)', () => {
 
   it('selecting the orphan section shows the no-governance callout and orphan agents', async () => {
     const user = userEvent.setup()
-    setupMocks(makeOverview(2, ORPHANS))
+    setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
     render(<TeamsPage />, { wrapper: Wrapper })
     // Defaults to the first team detail, not the orphan view.
     await waitFor(() => expect(screen.getByTestId('team-detail-header')).toHaveTextContent('team-000'))

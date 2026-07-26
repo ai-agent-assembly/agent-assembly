@@ -1,10 +1,13 @@
 import { useMemo, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
+import { certainFromQuery, mapCertain } from '../lib/truthfulness'
 import {
   joinTeamRows,
   useCostSummaryQuery,
+  useTopologyAgentsQuery,
   useTopologyOverviewQuery,
 } from '../features/teams/api'
+import { reconcileAgentCensus, selectOrphanAgents } from '../features/teams/orphans'
 import { TeamListPane } from '../features/teams/TeamListPane'
 import { TeamDetailPane } from '../features/teams/TeamDetailPane'
 import { TeamOrphanDetail } from '../features/teams/TeamOrphanDetail'
@@ -15,22 +18,34 @@ import './TeamsPage.css'
 const ORPHAN_ID = '__orphan__'
 
 /**
- * Teams page — two-pane view (AAASM-5044, per `design/v1/hi-fi/teams.jsx`):
- * a selectable team list on the left and the selected team's detail cards
- * (budget usage, approval routing, members) on the right. Assembled entirely
- * from existing endpoints (topology overview, cost rollup, budget tree,
- * approvals queue); no new backend surface.
+ * Teams page — two-pane view (AAASM-5044, per `design/v2/hi-fi/teams.jsx`,
+ * authoritative under ADR 0025): a selectable team list on the left and the
+ * selected team's detail cards (budget usage, approval routing, members) on the
+ * right. Assembled entirely from existing endpoints (topology graph, topology
+ * overview, cost rollup, budget tree, approvals queue); no new backend surface.
+ *
+ * Every agent must be reachable from exactly one grouping here — a team row or
+ * the unclaimed section. That invariant is the page's whole purpose, so it is
+ * cross-checked against the registry's own tally rather than assumed
+ * (AAASM-5157).
  */
 export function TeamsPage() {
   const overviewQuery = useTopologyOverviewQuery()
   const costsQuery = useCostSummaryQuery()
+  const agentsQuery = useTopologyAgentsQuery()
   const [picked, setPicked] = useState<string | undefined>(undefined)
 
   const rows = useMemo(
     () => joinTeamRows(overviewQuery.data, costsQuery.data),
     [overviewQuery.data, costsQuery.data],
   )
-  const orphans = overviewQuery.data?.standalone_root_agents ?? []
+
+  // Orphans come from the whole fleet, not the overview's root-only
+  // `standalone_root_agents` (AAASM-5157) — see `orphans.ts` for why. Kept as a
+  // `Certain` all the way to the chip and the pane so a failed topology request
+  // renders as "unavailable" rather than as a reassuring `0 unclaimed`.
+  const orphans = mapCertain(certainFromQuery(agentsQuery), selectOrphanAgents)
+  const census = reconcileAgentCensus(overviewQuery.data, orphans)
 
   // Derive the effective selection rather than syncing it into state from an
   // effect: default to the first team until the operator picks one, and fall
@@ -63,11 +78,13 @@ export function TeamsPage() {
           onSelect={setPicked}
           isLoading={overviewQuery.isLoading}
           isError={isError}
-          orphanCount={orphans.length}
+          orphanCount={mapCertain(orphans, list => list.length)}
           isOrphanSelected={orphanPicked}
           onSelectOrphan={() => setPicked(ORPHAN_ID)}
         />
-        {orphanPicked ? <TeamOrphanDetail orphans={orphans} /> : <TeamDetailPane teamId={selected} />}
+        {orphanPicked
+          ? <TeamOrphanDetail orphans={orphans} census={census} />
+          : <TeamDetailPane teamId={selected} />}
       </div>
     </main>
   )

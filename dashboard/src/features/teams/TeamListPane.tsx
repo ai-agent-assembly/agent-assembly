@@ -1,4 +1,6 @@
 import { bucketForRatio } from '../../components/topology/budgetThreshold'
+import { TruthfulValue } from '../../components/truthfulness/TruthfulValue'
+import { isKnown, type Certain } from '../../lib/truthfulness'
 import { budgetBucketColor } from './budgetColor'
 import type { TeamListRow } from './api'
 
@@ -8,7 +10,13 @@ interface TeamListPaneProps {
   onSelect: (teamId: string) => void
   isLoading: boolean
   isError: boolean
-  orphanCount: number
+  /**
+   * How many agents no team claims — or why that is not known. A failed
+   * topology request must not render as `0` here: an empty-looking unclaimed
+   * chip reads as "everything is governed", which is the one claim this page
+   * may never make without evidence (AAASM-5157).
+   */
+  orphanCount: Certain<number>
   isOrphanSelected: boolean
   onSelectOrphan: () => void
 }
@@ -95,28 +103,30 @@ export function TeamListPane({
           </button>
         ))}
 
-        {!isLoading && !isError && (
-          <div className="teams-list-orphan" data-testid="team-list-orphan-section">
-            <div className="teams-list-orphan__label">unclaimed</div>
-            <button
-              type="button"
-              className={`teams-list-row teams-list-orphan__row${isOrphanSelected ? ' is-active' : ''}`}
-              data-testid="team-list-orphan-row"
-              aria-current={isOrphanSelected}
-              onClick={onSelectOrphan}
-            >
-              <div className="teams-list-row__top">
-                <span className="teams-list-row__name">orphan agents</span>
-                <span
-                  className={`teams-chip${orphanCount > 0 ? ' is-warn' : ''}`}
-                  data-testid="team-list-orphan-count"
-                >
-                  {orphanCount}
-                </span>
-              </div>
-            </button>
-          </div>
-        )}
+        {/* Rendered unconditionally: the unclaimed section has its own data
+            source, so hiding it behind the team list's loading/error state
+            would once again make ungoverned agents unreachable exactly when
+            something is wrong. */}
+        <div className="teams-list-orphan" data-testid="team-list-orphan-section">
+          <div className="teams-list-orphan__label">unclaimed</div>
+          <button
+            type="button"
+            className={`teams-list-row teams-list-orphan__row${isOrphanSelected ? ' is-active' : ''}`}
+            data-testid="team-list-orphan-row"
+            aria-current={isOrphanSelected}
+            onClick={onSelectOrphan}
+          >
+            <div className="teams-list-row__top">
+              <span className="teams-list-row__name">orphan agents</span>
+              <span
+                className={`teams-chip${isKnown(orphanCount) && orphanCount.value > 0 ? ' is-warn' : ''}`}
+                data-testid="team-list-orphan-count"
+              >
+                <TruthfulValue value={orphanCount} testId="team-list-orphan-count-value" />
+              </span>
+            </div>
+          </button>
+        </div>
       </div>
     </div>
   )
