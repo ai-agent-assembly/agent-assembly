@@ -80,6 +80,18 @@ describe('ResolveAction', () => {
     expect(calls).toHaveLength(0)
   })
 
+  it('surfaces a failed resolve rather than reporting success', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) }) as Response),
+    )
+    renderAction()
+    await user.click(screen.getByTestId('resolve-action-submit'))
+    // The toast carries the failure; the button never claims the alert resolved.
+    expect(await screen.findByText(/failed: 503/)).toBeInTheDocument()
+  })
+
   it('is enabled for an admin caller', () => {
     renderAction(['admin'])
     expect(screen.getByTestId('resolve-action-submit')).toBeEnabled()
