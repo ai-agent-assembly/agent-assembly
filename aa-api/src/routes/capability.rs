@@ -443,6 +443,11 @@ const SYSTEM_RESOURCES: [(&str, &str, ResourceGroup); 3] = [
     ("network_outbound", "Network (outbound)", ResourceGroup::Infra),
 ];
 
+/// The `tools` key that means "every tool without an explicit entry"
+/// (AAASM-4152). It is a fallback pattern, never a tool name, so it must never
+/// reach the matrix as a resource column.
+const TOOL_WILDCARD: &str = "*";
+
 /// Whether `id` is one of the reserved system-family column ids.
 ///
 /// A tool may legally be *named* `filesystem`; without this guard it would
@@ -450,6 +455,43 @@ const SYSTEM_RESOURCES: [(&str, &str, ResourceGroup); 3] = [
 /// filesystem cell.
 fn is_system_resource(id: &str) -> bool {
     SYSTEM_RESOURCES.iter().any(|(sid, _, _)| *sid == id)
+}
+
+/// Whether the cascade's tool stage would deny `tool`.
+///
+/// **Mirrors `stage_tool_allow` in `aa-gateway/src/engine/decision.rs`** — an
+/// exact `tools` entry wins, otherwise the `"*"` fallback applies, and
+/// `allow: false` denies. Any deny anywhere in the cascade is final, matching
+/// the evaluator's short-circuit on the first `Deny`.
+///
+/// The capability set alone cannot answer this: a tool denied by
+/// `tools: { "*": { allow: false } }` contributes no `mcp_tool:` capability, so
+/// reading only the merged capabilities reported `allow` for a tool the gateway
+/// blocks — and contradicted the rule rows [`project_rules`] emits from the very
+/// same `tools` map.
+fn cascade_denies_tool(cascade: &[Arc<aa_gateway::policy::PolicyDocument>], tool: &str) -> bool {
+    cascade.iter().any(|doc| {
+        doc.tools
+            .get(tool)
+            .or_else(|| doc.tools.get(TOOL_WILDCARD))
+            .is_some_and(|tp| !tp.allow)
+    })
+}
+
+/// Whether the cascade's network stage denies *every* outbound host.
+///
+/// **Mirrors `stage_network` in `aa-gateway/src/engine/decision.rs`** for the one
+/// case a single cell can state without a concrete URL: a document that declares
+/// a `network` section with an empty allowlist is deny-all (the fail-closed
+/// matcher — AAASM-3127/AAASM-3730).
+///
+/// A present, non-empty allowlist is deliberately *not* treated as a deny: egress
+/// is permitted, just host-restricted, and the cell has no host to test. Such an
+/// agent keeps its capability-derived decision.
+fn cascade_denies_all_egress(cascade: &[Arc<aa_gateway::policy::PolicyDocument>]) -> bool {
+    cascade
+        .iter()
+        .any(|doc| doc.network.as_ref().is_some_and(|np| np.allowlist.is_empty()))
 }
 
 /// Resolve one capability to a matrix decision using the same public helpers as
@@ -473,7 +515,11 @@ fn decide(caps: &aa_core::CapabilitySet, cap: &aa_core::Capability) -> Decision 
 /// Build the cell for a system capability family. Verbs the family does not
 /// model stay `Na` — the capability enum draws no read/write/delete distinction
 /// for terminal or network access, so reporting anything else would invent one.
-fn system_cell(caps: &aa_core::CapabilitySet, resource_id: &str) -> CapCell {
+///
+/// `egress_denied` carries the network stage's verdict (see
+/// [`cascade_denies_all_egress`]); the capability set alone cannot see an
+/// allowlist-based deny.
+fn system_cell(caps: &aa_core::CapabilitySet, resource_id: &str, egress_denied: bool) -> CapCell {
     use aa_core::Capability as C;
     let na = Decision::Na;
     match resource_id {
@@ -495,7 +541,11 @@ fn system_cell(caps: &aa_core::CapabilitySet, resource_id: &str) -> CapCell {
             read: na,
             write: na,
             delete: na,
-            exec: decide(caps, &C::NetworkOutbound),
+            exec: if egress_denied {
+                Decision::Deny
+            } else {
+                decide(caps, &C::NetworkOutbound)
+            },
             flag: None,
         },
     }
@@ -601,20 +651,30 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
         collect_policy_rows(&cascade, &id_hex, &mut policy_rows);
         tool_ids.extend(agent_tools.iter().cloned());
 
+        let egress_denied = cascade_denies_all_egress(&cascade);
         let mut cells: BTreeMap<String, CapCell> = BTreeMap::new();
         for (rid, _, _) in SYSTEM_RESOURCES {
-            cells.insert(rid.to_string(), system_cell(&caps, rid));
+            cells.insert(rid.to_string(), system_cell(&caps, rid, egress_denied));
         }
         for tool in agent_tools.iter().filter(|t| !is_system_resource(t)) {
             // A tool is invoked, never read/written/deleted — the capability
             // model has one grant per tool, so only `exec` is meaningful.
+            //
+            // Most-restrictive wins across the two stages that can block a tool:
+            // the `tools` map (stage 3) and the capability set (stage 3.5). The
+            // evaluator returns on the first `Deny`, so either one is final.
+            let exec = if cascade_denies_tool(&cascade, tool) {
+                Decision::Deny
+            } else {
+                decide(&caps, &C::McpTool(tool.clone()))
+            };
             cells.insert(
                 tool.clone(),
                 CapCell {
                     read: Decision::Na,
                     write: Decision::Na,
                     delete: Decision::Na,
-                    exec: decide(&caps, &C::McpTool(tool.clone())),
+                    exec,
                     flag: None,
                 },
             );
@@ -839,6 +899,56 @@ mod tests {
         state
     }
 
+    /// A policy document carrying only the sections the projection reads.
+    fn policy_doc(
+        name: &str,
+        scope: PolicyScope,
+        capabilities: Option<aa_core::CapabilitySet>,
+        tools: &[(&str, bool)],
+        network_allowlist: Option<Vec<String>>,
+    ) -> aa_gateway::policy::PolicyDocument {
+        aa_gateway::policy::PolicyDocument {
+            name: Some(name.to_string()),
+            policy_version: Some("1".to_string()),
+            version: None,
+            scope,
+            network: network_allowlist.map(|allowlist| aa_gateway::policy::NetworkPolicy { allowlist }),
+            schedule: None,
+            budget: None,
+            data: None,
+            approval_timeout_secs: 300,
+            approval_policy: None,
+            tools: tools
+                .iter()
+                .map(|(n, allow)| {
+                    (
+                        (*n).to_string(),
+                        aa_gateway::policy::ToolPolicy {
+                            allow: *allow,
+                            limit_per_hour: None,
+                            requires_approval_if: None,
+                        },
+                    )
+                })
+                .collect(),
+            capabilities,
+        }
+    }
+
+    /// `state_with` plus real policy documents in the engine.
+    ///
+    /// The engine `local_in_memory` builds is loaded from a budget-only file, so
+    /// without this every projection test asserts cells that are `allow` purely
+    /// because nothing constrains them.
+    fn state_with_policies(records: Vec<AgentRecord>, docs: Vec<aa_gateway::policy::PolicyDocument>) -> AppState {
+        let mut state = state_with(records);
+        let engine = Arc::get_mut(&mut state.policy_engine).expect("engine is unshared until the state is cloned");
+        for doc in docs {
+            engine.load_policy(doc);
+        }
+        state
+    }
+
     fn hex_id(b: u8) -> String {
         hex::encode([b; 16])
     }
@@ -942,6 +1052,49 @@ mod tests {
         );
     }
 
+    /// Every deny the enforcement stages would produce has to reach the grid.
+    /// Before AAASM-5090's review pass the tool and network cells were read off
+    /// the merged capability set alone, so a tool denied by `tools:` and an
+    /// agent with a deny-all egress allowlist both reported `allow`.
+    #[tokio::test]
+    async fn every_stage_that_denies_is_visible_in_the_cells() {
+        use aa_core::Capability as C;
+
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.deny.insert(C::FileWrite);
+
+        let state = state_with_policies(
+            vec![record(0x01, "a", &["send_email", "read_file"])],
+            vec![policy_doc(
+                "strict",
+                PolicyScope::Global,
+                Some(caps),
+                // Wildcard denies every unlisted tool; the exact entry wins.
+                &[("*", false), ("read_file", true)],
+                // Declared-but-empty allowlist is deny-all egress.
+                Some(Vec::new()),
+            )],
+        );
+        let m = matrix_for(&state).await;
+        let cells = &m.agents[0].caps;
+
+        assert_eq!(cells["filesystem"].write, Decision::Deny, "capability stage");
+        assert_eq!(cells["send_email"].exec, Decision::Deny, "tool wildcard fallback");
+        assert_eq!(
+            cells["read_file"].exec,
+            Decision::Allow,
+            "exact tool entry beats the wildcard"
+        );
+        assert_eq!(
+            cells["network_outbound"].exec,
+            Decision::Deny,
+            "empty allowlist is deny-all"
+        );
+        // Unconstrained families are still allowed — the deny is not blanket.
+        assert_eq!(cells["filesystem"].read, Decision::Allow);
+        assert_eq!(cells["terminal"].exec, Decision::Allow);
+    }
+
     #[test]
     fn decide_honours_the_guard_fail_closed_rules() {
         use aa_core::Capability as C;
@@ -969,15 +1122,20 @@ mod tests {
     #[test]
     fn system_cell_leaves_unmodelled_verbs_na() {
         let caps = aa_core::CapabilitySet::default();
-        let fs = system_cell(&caps, "filesystem");
+        let fs = system_cell(&caps, "filesystem", false);
         assert_eq!(fs.exec, Decision::Na, "the capability model has no filesystem exec");
         assert_eq!(fs.read, Decision::Allow);
 
-        let term = system_cell(&caps, "terminal");
+        let term = system_cell(&caps, "terminal", false);
         assert_eq!(term.read, Decision::Na);
         assert_eq!(term.write, Decision::Na);
         assert_eq!(term.delete, Decision::Na);
         assert_eq!(term.exec, Decision::Allow);
+
+        // The egress verdict only reaches the network family.
+        let net = system_cell(&caps, "network_outbound", true);
+        assert_eq!(net.exec, Decision::Deny);
+        assert_eq!(system_cell(&caps, "terminal", true).exec, Decision::Allow);
     }
 
     /// Pins the rule flattening directly: the endpoint tests build an in-memory
