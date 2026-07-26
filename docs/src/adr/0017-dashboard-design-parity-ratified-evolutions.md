@@ -297,7 +297,7 @@ so it is fitting that the programme's first finding is in its own governance rec
   'live' stand-in. **Shipped** treats a 5-second poll as the 'live' feed"*, and ratifies
   it as authoritative over the mock's implied WebSocket push feed. The claim is stated
   in the past tense, as shipped behaviour.
-- **What is actually true.** **The dashboard does not poll anything, anywhere.**
+- **What is actually true.** **No dashboard query polls.**
   `grep -rn "refetchInterval" dashboard/src` returns **zero matches**. React Query does
   not poll unless `refetchInterval` is set — its default is `false` — and the app's
   client is constructed with no default options at all
@@ -305,6 +305,12 @@ so it is fitting that the programme's first finding is in its own governance rec
   view issues a single `useQuery` (`dashboard/src/features/topology/api.ts:40-42`, used
   at `dashboard/src/pages/TopologyPage.tsx:29`) which fetches on mount and then only on
   remount or window refocus.
+
+  Stated precisely, because an imprecise correction is worse than the error it
+  corrects: the claim is about **polling**, not about updates in general. One
+  `setInterval` does exist in `dashboard/src` — `AppShell.tsx:103`, a 1-second clock
+  tick that re-renders the "last sync" relative timestamp and **fetches nothing**. It is
+  not a poll.
 - **The likely origin of the error.** `dashboard/src/features/topology/api.ts:43`
   carries `staleTime: 5_000`, and its doc-comment (`api.ts:37-38`) says the shorter
   `staleTime` is chosen because "topology reflects live agent state and benefits from
@@ -319,10 +325,13 @@ so it is fitting that the programme's first finding is in its own governance rec
   build, not a description of current behaviour. Any subsequent audit, screenshot, or
   status report that treated Topology as having a live/5s feed was reading this record,
   not the product.
-- **Consequence beyond Topology.** Because there is no polling primitive anywhere in
-  `dashboard/src`, **no** dashboard surface auto-refreshes. Only the Live-Ops WebSocket
-  stream updates without operator action. Any other ratified item that assumed periodic
-  refresh should be re-checked against that fact before it is relied on.
+- **Consequence beyond Topology.** Because no query polls, **no dashboard surface
+  refreshes on a timer.** Surfaces that update without operator action do so by
+  **push**, not by poll, and there are three of them, not one: Live-Ops
+  (`useOpsStream`), Approvals (`useApprovalsStream()`, `ApprovalsPage.tsx:141`) and
+  Alerts (`useAlertsStream({…})`, `AlertsPage.tsx:123`). Every other surface — Topology
+  included — is static between mounts and window refocus. Any ratified item that assumed
+  *periodic* refresh should be re-checked against that fact before it is relied on.
 
 ### What this correction does *not* change
 
