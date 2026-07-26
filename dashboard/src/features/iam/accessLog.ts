@@ -1,15 +1,36 @@
-import { useQuery, type UseQueryResult } from '@tanstack/react-query'
-import { iamQueryKeys } from './queryKeys'
-
 /**
- * Access Log data layer (AAASM-1398).
+ * Access Log data layer.
  *
- * Until the OpenAPI surface for `/api/v1/audit/...` lands with the
- * identity-scoped filter we need, the panel reads from a process-local
- * seed via the same in-memory + override-seam pattern used by
- * `apiKeys.ts` and `api.ts` (members). Hook signature is built around
- * the eventual server filter so the swap is a one-function change.
+ * ── Why there is no fetcher here (AAASM-5111) ───────────────────────────────
+ *
+ * This module used to hold `SEED_ACCESS_LOG`: ten events attributed to named
+ * identities (`alice@agent-assembly.dev`, `gateway-ci`) from invented source
+ * IPs (`10.0.0.42`, `10.0.0.99`), including **failed** logins. Their timestamps
+ * were computed with `isoMinusHours()` against a module-load `new Date()`, so
+ * the feed re-based itself on every page load and always looked current. The
+ * table was filterable and paginated exactly like a real one. This is the
+ * surface an operator opens during an incident review, which makes a fabricated
+ * failed login from a fabricated IP the most damaging form of the defect.
+ *
+ * No endpoint replaces it. `GET /api/v1/logs` — the only audit surface the API
+ * exposes — is the per-agent governance log: `LogEntry` carries `agent_id`,
+ * `session_id`, `event_type`, `seq`, `timestamp` and an opaque `payload`. It
+ * has no human or service **identity**, no **source IP**, no success/failure
+ * **result**, and no notion of `login` / `logout` / `member_invite`. Wiring
+ * this panel to it would mean synthesising every column the tab is about, which
+ * is the defect rather than the fix.
+ *
+ * So the panel reports `not-supported` and shows nothing. The backend gaps that
+ * would make this tab answerable are tracked as **AAASM-5176** (real agent
+ * identity issuance — without issued identities there is nothing to attribute
+ * an access event *to*) and **AAASM-5177** (API-token expiry lifecycle, which
+ * owns the token-rotation events this tab claimed to show).
+ *
+ * The types below are kept deliberately: they are the contract a future
+ * identity-scoped endpoint has to satisfy, and the filter bar is typed against
+ * them. What is gone is every value that pretended to be a fact.
  */
+import { absent, type AbsentValue } from '../../lib/truthfulness'
 
 export type AccessLogEventType =
   | 'login'
@@ -38,7 +59,7 @@ export interface AccessLogEvent {
   /** Free-form target description — e.g. `role:service:admin`, `key:gateway-ci`. */
   readonly target: string
   readonly result: 'success' | 'failure'
-  /** IPv4 / IPv6 source address; placeholder for v1 seed data. */
+  /** IPv4 / IPv6 source address. */
   readonly source_ip: string
 }
 
@@ -52,180 +73,18 @@ export interface AccessLogFilter {
   readonly timeRange?: AccessLogTimeRange
 }
 
-// Fixed "now" the seed timestamps are anchored to. The default useQuery call
-// applies the time-range filter relative to *real* `Date.now()` at fetch
-// time, so seed events stay in-range as long as they're authored close to
-// today. The seed below uses live `new Date()` arithmetic at module-load —
-// adequate for the dashboard demo seed pattern (mirrors apiKeys.ts).
-const NOW = new Date()
-
-function isoMinusHours(hours: number): string {
-  return new Date(NOW.getTime() - hours * 60 * 60 * 1000).toISOString()
-}
-
-const SEED_ACCESS_LOG: AccessLogEvent[] = [
-  {
-    id: 'evt-1',
-    timestamp: isoMinusHours(1),
-    identity: 'alice@agent-assembly.dev',
-    event_type: 'login',
-    target: 'dashboard',
-    result: 'success',
-    source_ip: '10.0.0.42',
-  },
-  {
-    id: 'evt-2',
-    timestamp: isoMinusHours(3),
-    identity: 'alice@agent-assembly.dev',
-    event_type: 'policy_change',
-    target: 'policy:read-only-baseline',
-    result: 'success',
-    source_ip: '10.0.0.42',
-  },
-  {
-    id: 'evt-3',
-    timestamp: isoMinusHours(6),
-    identity: 'gateway-ci',
-    event_type: 'key_rotate',
-    target: 'key:gateway-ci',
-    result: 'success',
-    source_ip: '10.0.0.7',
-  },
-  {
-    id: 'evt-4',
-    timestamp: isoMinusHours(20),
-    identity: 'carol@agent-assembly.dev',
-    event_type: 'member_invite',
-    target: 'invite:dave@example.com',
-    result: 'success',
-    source_ip: '10.0.0.51',
-  },
-  {
-    id: 'evt-5',
-    timestamp: isoMinusHours(48),
-    identity: 'carol@agent-assembly.dev',
-    event_type: 'permission_grant',
-    target: 'role:service:observer',
-    result: 'success',
-    source_ip: '10.0.0.51',
-  },
-  {
-    id: 'evt-6',
-    timestamp: isoMinusHours(72),
-    identity: 'observability-exporter',
-    event_type: 'login',
-    target: 'gateway',
-    result: 'failure',
-    source_ip: '10.0.0.99',
-  },
-  {
-    id: 'evt-7',
-    timestamp: isoMinusHours(120),
-    identity: 'bob@agent-assembly.dev',
-    event_type: 'policy_change',
-    target: 'policy:admin-baseline',
-    result: 'failure',
-    source_ip: '10.0.0.8',
-  },
-  {
-    id: 'evt-8',
-    timestamp: isoMinusHours(168),
-    identity: 'bob@agent-assembly.dev',
-    event_type: 'logout',
-    target: 'dashboard',
-    result: 'success',
-    source_ip: '10.0.0.8',
-  },
-  {
-    id: 'evt-9',
-    timestamp: isoMinusHours(360),
-    identity: 'alice@agent-assembly.dev',
-    event_type: 'key_rotate',
-    target: 'key:retired-runner',
-    result: 'success',
-    source_ip: '10.0.0.42',
-  },
-  {
-    id: 'evt-10',
-    timestamp: isoMinusHours(720),
-    identity: 'retired-runner',
-    event_type: 'login',
-    target: 'gateway',
-    result: 'failure',
-    source_ip: '10.0.0.250',
-  },
-]
-
-interface EventStore {
-  events: AccessLogEvent[]
-}
-
-const eventStore: EventStore = { events: [...SEED_ACCESS_LOG] }
-
-let _fetchOverride: ((filter: AccessLogFilter) => Promise<AccessLogEvent[]>) | null = null
-
-function timeRangeCutoffIso(range: AccessLogTimeRange | undefined): string | null {
-  if (!range) return null
-  if (range.kind === '24h') return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-  if (range.kind === '7d') return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-  if (range.kind === '30d') return new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-  return null
-}
-
 /**
- * In-process filter applied to the seed. Mirrors the eventual server
- * contract: identity exact match, event-type exact match, time-range
- * cutoff (custom = inclusive from/to range, presets = "since N ago").
+ * What the dashboard can currently say about identity-attributed access events.
+ *
+ * `not-supported` rather than `unavailable`: nothing was requested and nothing
+ * failed. There is no endpoint to request, so retrying, refreshing, or waiting
+ * for a slow response changes nothing — and `unavailable` would tell an
+ * operator mid-incident that an audit source exists and is merely down.
+ *
+ * Exported as a value (not re-derived in the component) so the panel and its
+ * tests read the same single statement of the gap.
  */
-function applyFilter(events: readonly AccessLogEvent[], filter: AccessLogFilter): AccessLogEvent[] {
-  let out = events.slice()
-  if (filter.identity) {
-    out = out.filter((e) => e.identity === filter.identity)
-  }
-  if (filter.eventType) {
-    out = out.filter((e) => e.event_type === filter.eventType)
-  }
-  if (filter.timeRange?.kind === 'custom') {
-    const { from, to } = filter.timeRange
-    out = out.filter((e) => e.timestamp >= from && e.timestamp <= to)
-  } else {
-    const cutoff = timeRangeCutoffIso(filter.timeRange)
-    if (cutoff) out = out.filter((e) => e.timestamp >= cutoff)
-  }
-  // Newest first — the AC's "paginated table" expects natural reverse-chron order.
-  out.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))
-  return out
-}
-
-function fetchAccessLog(filter: AccessLogFilter): Promise<AccessLogEvent[]> {
-  if (_fetchOverride) return _fetchOverride(filter)
-  return Promise.resolve(applyFilter(eventStore.events, filter))
-}
-
-export function useAccessLogQuery(
-  filter: AccessLogFilter,
-): UseQueryResult<AccessLogEvent[]> {
-  return useQuery({
-    queryKey: iamQueryKeys.accessLog(filter),
-    queryFn: () => fetchAccessLog(filter),
-  })
-}
-
-export const _accessLogInternal: {
-  reset: () => void
-  snapshot: () => readonly AccessLogEvent[]
-  setFetchOverride: (
-    fn: ((filter: AccessLogFilter) => Promise<AccessLogEvent[]>) | null,
-  ) => void
-} = {
-  reset(): void {
-    eventStore.events = [...SEED_ACCESS_LOG]
-    _fetchOverride = null
-  },
-  snapshot(): readonly AccessLogEvent[] {
-    return eventStore.events
-  },
-  setFetchOverride(fn) {
-    _fetchOverride = fn
-  },
-}
+export const ACCESS_LOG_AVAILABILITY: AbsentValue<readonly AccessLogEvent[]> = absent(
+  'not-supported',
+  'No endpoint reports identity-attributed access events with a source address',
+)
