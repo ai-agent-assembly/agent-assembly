@@ -4,7 +4,12 @@ import { useToast } from '../components/Toast'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/states'
+import { TruthfulValue } from '../components/truthfulness'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
+import { certainFromQuery, mapCertain } from '../lib/truthfulness'
 import { useAgentsQuery } from '../features/agents/api'
+import { useApprovalsQuery, type Approval } from '../features/approvals/api'
+import { useApprovalsStream } from '../features/approvals/useApprovalsStream'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import {
   haltAgent,
@@ -34,6 +39,17 @@ import {
   type OperationStatus,
 } from '../features/liveOps/types'
 import './LiveOpsPage.css'
+
+/**
+ * Why "page on-call" is inert (AAASM-5148 review follow-up).
+ *
+ * It has never had a production path — the handler only raised a toast saying
+ * so. An enabled, danger-styled control on an incident surface asserts that
+ * paging happened; the operator has no way to tell that nobody was paged.
+ * Matching the AAASM-5140 treatment of the topology governance buttons: a
+ * disabled control that states the reason is the honest affordance.
+ */
+const NO_PAGING_BACKEND_TITLE = 'On-call paging is not available yet — no integration is wired'
 
 const OVERRIDE_VERB: Record<OperationOverride, string> = {
   pausing: 'pause',
@@ -124,6 +140,16 @@ export function LiveOpsPage() {
 
   const agentsQuery = useAgentsQuery()
   const teamsQuery = useTeamsQuery()
+  const { canWrite } = usePermissions()
+
+  // AAASM-5128: the approval queue is its own data source, not a slice of the
+  // ops ring. The query supplies the rows (with the UUID ids the decide
+  // endpoints require) and the `types=approval` socket keeps them current —
+  // the ops socket subscribes to `violation,ops_change` and never sees one.
+  const approvalsQuery = useApprovalsQuery()
+  const { connected: approvalsLive } = useApprovalsStream()
+  const approvals = certainFromQuery<Approval[]>(approvalsQuery)
+  const waitingCount = mapCertain(approvals, (list) => list.length)
 
   // Derived map: every override whose WS-reported status already matches
   // its intent is hidden from the UI. The raw `overrides` state still
@@ -143,11 +169,16 @@ export function LiveOpsPage() {
     return pruned ?? overrides
   }, [ops, overrides])
 
+  // The menu items that reach these are already gated, so the guard is
+  // unreachable today — it is here because `handleHaltAll` has one and a
+  // dispatcher that POSTs without checking is the asymmetry a later caller
+  // trips over.
   async function runAction(
     opId: string,
     intent: OperationOverride,
     call: (id: string) => Promise<void>,
   ) {
+    if (!canWrite) return
     setOverrides((prev) => new Map(prev).set(opId, intent))
     try {
       await call(opId)
@@ -215,15 +246,12 @@ export function LiveOpsPage() {
     setIntensity((i) => Math.min(INTENSITY_MAX, i + INTENSITY_STEP))
   }
 
-  function handlePageOnCall() {
-    toast('Paging on-call — mock action')
-  }
-
   // Halt the agent owning `opId` — fleet-scoped for one agent. Unlike
   // pause/resume/terminate this is not a single-op lifecycle transition, so it
   // takes no optimistic row override; the WS stream reflects the agent's ops
   // settling on their own.
   async function handleHaltAgent(opId: string) {
+    if (!canWrite) return
     try {
       await haltAgent(opId)
       toast(`Halting agent for op ${opId}`)
@@ -235,6 +263,7 @@ export function LiveOpsPage() {
 
   async function handleHaltAll() {
     setConfirmingHaltAll(false)
+    if (!canWrite) return
     try {
       await haltGlobal()
       toast('Halt-all issued — every agent operation is stopping', 'error')
@@ -329,7 +358,8 @@ export function LiveOpsPage() {
           <button
             type="button"
             className="live-page__btn live-page__btn--danger"
-            onClick={handlePageOnCall}
+            disabled
+            title={NO_PAGING_BACKEND_TITLE}
             data-testid="live-ops-page-oncall"
           >
             page on-call
@@ -377,6 +407,8 @@ export function LiveOpsPage() {
           type="button"
           className="live-page__halt-all"
           onClick={() => setConfirmingHaltAll(true)}
+          disabled={!canWrite}
+          title={canWrite ? undefined : WRITE_REQUIRED_HINT}
           data-testid="live-ops-halt-all"
         >
           ⏹ halt all
@@ -490,20 +522,45 @@ export function LiveOpsPage() {
         >
           <header className="live-page__pane-head">
             <h2 className="live-page__pane-title">⚑ approval queue</h2>
+            {/* AAASM-5167: the count is `Certain`, so a failed queue request
+                renders the shared absence marker here rather than "0 waiting"
+                — which would read as a clear queue. */}
+            <span className="live-page__pane-chip" data-testid="live-ops-approvals-chip">
+              <TruthfulValue value={waitingCount} testId="live-ops-approvals-count" />{' '}
+              waiting
+            </span>
+            {/* The count is only as fresh as the socket feeding it. The ops
+                stream states its connection in the header pill; this queue had
+                no equivalent, so a dead approvals socket left a stale count
+                looking live. */}
+            {!approvalsLive && (
+              <span
+                className="live-page__pane-note"
+                data-testid="live-ops-approvals-stale"
+                title="Live approval updates are not arriving; the count refreshes only on reload."
+              >
+                not live
+              </span>
+            )}
           </header>
           <div className="live-page__pane-body">
             <ApprovalPool
-              ops={ops}
+              approvals={approvals}
               onError={(action, detail) =>
                 toast(`Failed to ${action} approval: ${detail}`, 'error')
               }
+              onRetry={() => void approvalsQuery.refetch()}
             />
           </div>
         </section>
       </div>
 
+      {/* AAASM-5148: the fleet-wide kill switch is the highest-blast-radius
+          control on the page, so the gate is applied to the dialog as well as
+          the button that opens it — a scope that lapses while the dialog is
+          open must close it, not leave a live "Halt all" behind. */}
       <ConfirmDialog
-        open={confirmingHaltAll}
+        open={confirmingHaltAll && canWrite}
         title="Halt all operations?"
         body={
           <p>

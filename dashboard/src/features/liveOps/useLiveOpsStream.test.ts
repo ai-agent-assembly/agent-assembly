@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WsTicketError } from '../../auth/wsTicket'
+import { known } from '../../lib/truthfulness'
 import { MockWebSocket, resetMockWebSockets } from '../../test/mockWebSocket'
 import { useLiveOpsStream } from './useLiveOpsStream'
 
@@ -91,15 +92,23 @@ describe('useLiveOpsStream', () => {
       id: '1',
       agent: 'support-agent',
       team: 'support',
-      opType: 'tool_call',
-      resource: 'web_search',
+      opType: known('tool_call'),
+      resource: known('web_search'),
       status: 'running',
       startedAt: '2026-05-13T14:23:01Z',
-      latencyMs: 41,
+      latencyMs: known(41),
     })
   })
 
-  it('falls back to safe defaults when the payload is missing op fields', async () => {
+  // ── AAASM-5129: absences stay absences ───────────────────────────────────
+  //
+  // The mapper used to coerce these three to `'unknown'` / `''` / `0`. The
+  // zero was the damaging one: `formatLatency` turned it into `<1ms`, so every
+  // production row asserted a sub-millisecond duration that was never
+  // measured. `latency_ms` is documented as not populated today
+  // (`aa-api/src/models/ws_payloads.rs`), which makes that the *normal* case.
+
+  it('records an absence, never 0, when the payload carries no latency', async () => {
     const { result } = renderHook(() => useLiveOpsStream(opts))
     await flushMint()
     act(() => {
@@ -109,13 +118,58 @@ describe('useLiveOpsStream', () => {
         payload: { kind: 'audit', received_at_ms: 0, sequence_number: 1, source: 'sdk' },
       })
     })
-    expect(result.current.ops[0]).toMatchObject({
-      opType: 'unknown',
-      resource: '',
-      status: 'running',
-      latencyMs: 0,
-      team: undefined,
+    const op = result.current.ops[0]
+    expect(op.latencyMs.known).toBe(false)
+    expect(op.opType.known).toBe(false)
+    expect(op.resource.known).toBe(false)
+    // The field exists on the wire and will be populated later, so this is
+    // `unknown` — not `not-supported`, which would tell the operator to stop
+    // looking for a value that is coming.
+    expect(op.latencyMs).toMatchObject({ known: false, state: 'unknown' })
+    expect(op.status).toBe('running')
+    expect(op.team).toBeUndefined()
+  })
+
+  it('keeps a measured zero latency as a known value', async () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit({
+        ...VIOLATION_EVENT,
+        payload: { ...VIOLATION_EVENT.payload, latency_ms: 0 },
+      })
     })
+    expect(result.current.ops[0].latencyMs).toEqual(known(0))
+  })
+
+  it('rejects an uninterpretable latency rather than rendering it', async () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit({
+        ...VIOLATION_EVENT,
+        payload: { ...VIOLATION_EVENT.payload, latency_ms: -5 },
+      })
+    })
+    expect(result.current.ops[0].latencyMs).toMatchObject({
+      known: false,
+      state: 'unknown',
+    })
+  })
+
+  it('treats a blank resource as an absence, not as a blank cell', async () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit({
+        ...VIOLATION_EVENT,
+        payload: { ...VIOLATION_EVENT.payload, resource: '' },
+      })
+    })
+    expect(result.current.ops[0].resource.known).toBe(false)
   })
 
   it('maps a wire call_stack into LiveOperation.callStack with camelCase fields', async () => {
@@ -427,6 +481,21 @@ describe('useLiveOpsStream', () => {
     },
   }
 
+  it('marks the three columns ops_change cannot carry as not-supported', async () => {
+    const { result } = renderHook(() => useLiveOpsStream(opts))
+    await flushMint()
+    act(() => {
+      MockWebSocket.instances[0].open()
+      MockWebSocket.instances[0].emit(OPS_CHANGE_EVENT)
+    })
+    const op = result.current.ops[0]
+    // `OpsChangePayload` has no field for any of these, so waiting will not
+    // produce one — a stronger statement than `unknown`.
+    for (const value of [op.opType, op.resource, op.latencyMs]) {
+      expect(value).toMatchObject({ known: false, state: 'not-supported' })
+    }
+  })
+
   it('subscribes to both violation and ops_change events in the WS URL', async () => {
     renderHook(() => useLiveOpsStream(opts))
     await flushMint()
@@ -518,8 +587,8 @@ describe('useLiveOpsStream', () => {
     expect(result.current.ops).toHaveLength(1)
     expect(result.current.ops[0]).toMatchObject({
       id: 'trace-abc:span-1',
-      opType: 'tool_call', // from the violation event
-      resource: 'web_search', // from the violation event
+      opType: known('tool_call'), // from the violation event
+      resource: known('web_search'), // from the violation event
       status: 'running', // from the ops_change event
     })
   })

@@ -253,8 +253,15 @@
   white-space: nowrap;
 }
 
-.live-page__halt-all:hover {
+.live-page__halt-all:hover:enabled {
   filter: brightness(1.08);
+}
+
+/* AAASM-5148: a read-scope caller must see the kill switch is not theirs to
+   pull, not discover it from a 403 after the confirmation dialog. */
+.live-page__halt-all:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .live-page__halt-all:focus-visible {
@@ -360,6 +367,38 @@
   letter-spacing: 1px;
   text-transform: uppercase;
   color: var(--ink-3);
+}
+
+/* "not live" note beside the waiting count: the approvals socket is down, so
+   the count refreshes only on reload. Deliberately quiet — it qualifies the
+   number next to it rather than competing with it. */
+.live-page__pane-note {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--warn);
+  cursor: help;
+}
+
+/* Waiting-count chip in the approvals pane head (AAASM-5167). Mirrors the
+   hi-fi's `{approvals.length} waiting` chip. It hosts a TruthfulValue, so it
+   must not assume its content is a number — the absence marker renders a `—`
+   with its own tone here. */
+.live-page__pane-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--info);
+  background: var(--info-bg);
+  border: 1px solid var(--info);
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 /* ── Pipeline / castle-moat view toggle (AAASM-5074) ───────────
