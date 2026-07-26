@@ -606,9 +606,32 @@ pub struct TeamPoliciesResponse {
     /// The team the mapping was resolved for, echoed from the request.
     pub team_id: String,
     /// Every policy document in force for at least one visible agent in the
-    /// team, ordered by scope then name. Empty when the team has no visible
-    /// agents or the engine carries no document for them.
-    pub policies: Vec<TeamPolicyResponse>,
+    /// team, ordered by scope then name.
+    ///
+    /// **`null`, never `[]`, when the mapping could not be resolved** — the same
+    /// absent-vs-empty discipline as [`PolicyResponse::affects`], and for a
+    /// sharper reason. `[]` is a positive governance claim: "nothing governs this
+    /// team". That claim is only true when the team has no agent this caller can
+    /// see, so there is nothing for a policy to be in force over — the one case
+    /// that serializes `[]`.
+    ///
+    /// When the team *does* have visible agents but not one of them resolved a
+    /// cascade document, the honest answer is "unknown", not "none":
+    /// `PolicyEngine::evaluate` falls back to `evaluate_primary` for exactly
+    /// those agents, so the primary policy slot is still in force over them —
+    /// this projection just cannot name it. That is the state of **every shipped
+    /// aa-api deployment today**: `AppState::local_in_memory` loads the policy
+    /// through `load_from_file`, which populates the primary slot and leaves
+    /// `scope_index` empty, and nothing else in aa-api ever calls
+    /// `load_cascade_from_dir` (AAASM-5106). Emitting `[]` there would render as
+    /// "No policy is in force for this team" while a policy *is* being enforced.
+    //
+    // Required-but-nullable, not optional: the key is always on the wire, so a
+    // client reads an explicit `null` it has to handle rather than a missing
+    // field it can shrug off with `?? []` — which is precisely how "unknown"
+    // would decay back into "none".
+    #[schema(required = true)]
+    pub policies: Option<Vec<TeamPolicyResponse>>,
 }
 
 /// `GET /api/v1/policies/team/{team_id}` — policies in force for one team.
@@ -627,6 +650,10 @@ pub struct TeamPoliciesResponse {
 /// own team, and each member is additionally filtered through the shared
 /// `record_visible_to` org+team check, so no agent outside the caller's tenant
 /// contributes a document.
+///
+/// Returns `policies: null` rather than `[]` when the team has agents but no
+/// resolvable cascade — see [`TeamPoliciesResponse::policies`] for why the two
+/// must not collapse.
 #[utoipa::path(
     get,
     path = "/api/v1/policies/team/{team_id}",
@@ -647,33 +674,54 @@ pub async fn list_team_policies(
             .with_detail("reading a team's policies requires admin scope or membership in that team".to_string()));
     }
 
-    // BTreeMap keyed by the cascade identity: one entry per document however
-    // many of the team's agents carry it, ordered by scope then name.
+    let (by_key, visible_members) = team_cascade(&state, &caller, &team_id);
+
+    // Absent, not empty, when the team has agents whose cascade resolved nothing:
+    // those agents fall back to the primary policy slot, which this projection
+    // cannot enumerate (AAASM-5106). `[]` is reserved for the one case where
+    // "nothing is in force" is actually true — no visible agent to govern.
+    let policies = if by_key.is_empty() && visible_members > 0 {
+        None
+    } else {
+        Some(
+            by_key
+                .into_iter()
+                .map(|(key, docs)| TeamPolicyResponse {
+                    id: policy_display_id(&key),
+                    name: key.1.clone().unwrap_or_else(|| key.0.clone()),
+                    scope: key.0.clone(),
+                    version: docs.version(),
+                    hits_24h: None,
+                })
+                .collect(),
+        )
+    };
+
+    Ok((StatusCode::OK, Json(TeamPoliciesResponse { team_id, policies })))
+}
+
+/// Union the cascades of every agent in `team_id` the caller may see.
+///
+/// Returns the documents grouped by [`PolicyKey`] (ordered by scope then name,
+/// one entry per key however many members carry it) **and** the number of
+/// visible members walked — the caller needs the latter to tell "no agent to
+/// govern" from "agents whose cascade resolved nothing".
+fn team_cascade(state: &AppState, caller: &AuthenticatedCaller, team_id: &str) -> (BTreeMap<PolicyKey, DocSet>, usize) {
     let mut by_key: BTreeMap<PolicyKey, DocSet> = BTreeMap::new();
-    for member in state.agent_registry.team_members(&team_id) {
+    let mut visible_members = 0usize;
+    for member in state.agent_registry.team_members(team_id) {
         let Some(record) = state.agent_registry.get(&member) else {
             continue;
         };
-        if !record_visible_to(&caller, &record) {
+        if !record_visible_to(caller, &record) {
             continue;
         }
-        for doc in cascade_for(&state, &record) {
+        visible_members += 1;
+        for doc in cascade_for(state, &record) {
             by_key.entry(policy_key(&doc)).or_default().insert(doc);
         }
     }
-
-    let policies = by_key
-        .into_iter()
-        .map(|(key, docs)| TeamPolicyResponse {
-            id: policy_display_id(&key),
-            name: key.1.clone().unwrap_or_else(|| key.0.clone()),
-            scope: key.0.clone(),
-            version: docs.version(),
-            hits_24h: None,
-        })
-        .collect();
-
-    Ok((StatusCode::OK, Json(TeamPoliciesResponse { team_id, policies })))
+    (by_key, visible_members)
 }
 
 /// Request body for `POST /api/v1/policies/simulate` (AAASM-5037).
@@ -951,6 +999,12 @@ mod tests {
         body
     }
 
+    /// The serialized team-policies body, so the unknown/none distinction is
+    /// asserted on the wire a client actually sees, not on the Rust `Option`.
+    async fn team_policies_json(state: &AppState, who: RequireRead, team: &str) -> serde_json::Value {
+        serde_json::to_value(team_policies(state, who, team).await).expect("body serializes")
+    }
+
     // ── affects[] ───────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -1034,26 +1088,28 @@ mod tests {
 
         let body = team_policies(&state, admin(), "team-alpha").await;
         assert_eq!(body.team_id, "team-alpha");
-        let ids: Vec<&str> = body.policies.iter().map(|p| p.id.as_str()).collect();
+        let policies = body
+            .policies
+            .as_ref()
+            .expect("the cascade resolved, so the mapping is known");
+        let ids: Vec<&str> = policies.iter().map(|p| p.id.as_str()).collect();
         assert!(
             ids.contains(&"team:team-alpha/alpha-guard"),
             "the team tier must appear — it is dropped entirely by an unlineaged cascade: {ids:?}"
         );
-        let row = body
-            .policies
-            .iter()
-            .find(|p| p.id == "team:team-alpha/alpha-guard")
-            .unwrap();
+        let row = policies.iter().find(|p| p.id == "team:team-alpha/alpha-guard").unwrap();
         assert_eq!(row.name, "alpha-guard");
         assert_eq!(row.scope, "team:team-alpha");
         assert_eq!(row.version.as_deref(), Some("1.0.0"));
         assert!(row.hits_24h.is_none());
 
-        // The other team does not inherit it.
+        // The other team does not inherit it. team-beta's agent resolves no
+        // cascade document at all, so the honest answer there is "unknown".
         let beta = team_policies(&state, admin(), "team-beta").await;
         assert!(
-            !beta.policies.iter().any(|p| p.id == "team:team-alpha/alpha-guard"),
-            "a team-scoped document must not leak into another team"
+            beta.policies.is_none(),
+            "a team-scoped document must not leak into another team: {:?}",
+            beta.policies
         );
     }
 
@@ -1062,10 +1118,30 @@ mod tests {
         let mut state = state_with(vec![]);
         install(&mut state, &team_scoped_yaml("alpha-guard", "team-alpha")).await;
 
-        let body = team_policies(&state, admin(), "team-alpha").await;
-        assert!(
-            body.policies.is_empty(),
-            "no visible member means no cascade to union, not an invented one"
+        // No visible member means nothing for a policy to be in force over, so
+        // "none" is a claim the endpoint can actually make — `[]`, not `null`.
+        let body = team_policies_json(&state, admin(), "team-alpha").await;
+        assert_eq!(
+            body["policies"],
+            serde_json::json!([]),
+            "no visible member means no cascade to union, not an invented one: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_policies_are_unknown_not_empty_when_the_engine_carries_no_cascade() {
+        // A registered, visible team member — but nothing loaded into the
+        // engine's scope index. This is every shipped aa-api deployment
+        // (AAASM-5106): `evaluate` falls back to the primary policy slot, so a
+        // policy IS in force over this agent; it just cannot be named here.
+        let state = state_with(vec![record(0x01, "checkout-agent", None, Some("team-alpha"))]);
+
+        let body = team_policies_json(&state, admin(), "team-alpha").await;
+        assert_eq!(
+            body["policies"],
+            serde_json::Value::Null,
+            "an unresolvable mapping must be null — `[]` would assert that nothing governs \
+             this team while the primary slot is enforcing: {body}"
         );
     }
 
@@ -1093,17 +1169,19 @@ mod tests {
         install(&mut state, &team_scoped_yaml("alpha-guard", "team-alpha")).await;
 
         // Same team name, different org: the member is out of tenant, so it
-        // contributes nothing and the caller learns nothing about it.
-        let body = team_policies(
+        // contributes nothing and the caller learns nothing about it — not even
+        // that it exists, which is why this reads as "no visible agent" (`[]`)
+        // and not as the unknown state.
+        let body = team_policies_json(
             &state,
             caller(vec![Scope::Read], Some("acme"), Some("team-alpha")),
             "team-alpha",
         )
         .await;
-        assert!(
-            body.policies.is_empty(),
-            "an out-of-tenant member must not contribute its cascade: {:?}",
-            body.policies
+        assert_eq!(
+            body["policies"],
+            serde_json::json!([]),
+            "an out-of-tenant member must not contribute its cascade: {body}"
         );
     }
 
@@ -1124,8 +1202,8 @@ mod tests {
         .await;
 
         let body = team_policies(&state, admin(), "team-alpha").await;
-        let row = body
-            .policies
+        let policies = body.policies.expect("the cascade resolved");
+        let row = policies
             .iter()
             .find(|p| p.id == "team:team-alpha/alpha-guard")
             .expect("the colliding key still names one row");

@@ -2786,6 +2786,10 @@ paths:
         own team, and each member is additionally filtered through the shared
         `record_visible_to` org+team check, so no agent outside the caller's tenant
         contributes a document.
+
+        Returns `policies: null` rather than `[]` when the team has agents but no
+        resolvable cascade — see [`TeamPoliciesResponse::policies`] for why the two
+        must not collapse.
       operationId: list_team_policies
       parameters:
       - name: team_id
@@ -7369,13 +7373,32 @@ components:
       - policies
       properties:
         policies:
-          type: array
+          type:
+          - array
+          - 'null'
           items:
             $ref: '#/components/schemas/TeamPolicyResponse'
           description: |-
             Every policy document in force for at least one visible agent in the
-            team, ordered by scope then name. Empty when the team has no visible
-            agents or the engine carries no document for them.
+            team, ordered by scope then name.
+
+            **`null`, never `[]`, when the mapping could not be resolved** — the same
+            absent-vs-empty discipline as [`PolicyResponse::affects`], and for a
+            sharper reason. `[]` is a positive governance claim: "nothing governs this
+            team". That claim is only true when the team has no agent this caller can
+            see, so there is nothing for a policy to be in force over — the one case
+            that serializes `[]`.
+
+            When the team *does* have visible agents but not one of them resolved a
+            cascade document, the honest answer is "unknown", not "none":
+            `PolicyEngine::evaluate` falls back to `evaluate_primary` for exactly
+            those agents, so the primary policy slot is still in force over them —
+            this projection just cannot name it. That is the state of **every shipped
+            aa-api deployment today**: `AppState::local_in_memory` loads the policy
+            through `load_from_file`, which populates the primary slot and leaves
+            `scope_index` empty, and nothing else in aa-api ever calls
+            `load_cascade_from_dir` (AAASM-5106). Emitting `[]` there would render as
+            "No policy is in force for this team" while a policy *is* being enforced.
         team_id:
           type: string
           description: The team the mapping was resolved for, echoed from the request.
