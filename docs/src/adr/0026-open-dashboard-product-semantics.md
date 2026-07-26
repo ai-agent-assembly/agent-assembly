@@ -14,6 +14,15 @@ recommendation, and the single question a decision-maker must answer.
 **Nothing in this ADR is implemented and nothing may be implemented from it.** Merging
 it changes no code and authorises no work.
 
+Because that sentence has to mean something, note how the recommendations below are
+worded. They are **recommendations to a decision-maker**, never instructions to an
+implementer. Where an earlier draft said a remedy "must ship", was safe "today, with no
+product decision required", or set an ordering between workstreams, those were
+authorisation and scheduling claims a `Proposed` record cannot make; they have been
+rewritten as what they always were — *engineering's advice about what the cheapest
+honest answer looks like*. Anything acted on is scheduled through the normal ticket
+route, on the sign-off this ADR asks for.
+
 ### Why one ADR and not seven
 
 The repo has precedent for both shapes: ADR 0017 enumerates 21 items in one record;
@@ -82,11 +91,22 @@ page — where it silently contributes a third of the value. An operator with a 
 clean fleet sees "overall 97"; an operator whose scrubbing is catastrophically broken
 sees the same 91 contribution.
 
-The two "real" scores are also weaker than they look. Both are arbitrary curves
-(`*0.5`, `-3` per flagged agent) with no stated derivation, and both return **100** for
-an empty fleet — a gateway with zero agents registered reports perfect health. The
+The two "real" scores are also weaker than they look: both are arbitrary curves
+(`*0.5`, `-3` per flagged agent) with no stated derivation anywhere in-tree. The
 function's own doc-comment (`kpis.ts:33-43`) is honest that these are "headline
 indicators, not the authoritative per-layer audit", but that caveat is not on screen.
+
+There is a **second untruth on the same ring**, found in review: the overall ring is
+labelled `sublabel="weighted across all layers"` (`OverviewPage.tsx:327`) over an
+**unweighted arithmetic mean** (`kpis.ts:61`). The word "weighted" implies a
+deliberate, reviewable weighting scheme; there isn't one.
+
+*(Correction, also from review: both curves return `100` for an empty fleet, but that
+branch is unreachable in the UI — `OverviewPage.tsx:218` sets
+`isEmpty: fleet.length === 0`, `:222` returns the guard, and
+`OverviewPage.guard.tsx:34-42` renders an `<EmptyState>` instead. **The rings never
+render on an empty fleet.** The `total > 0 ? … : 100` fallback is therefore a property
+of the KPI function's unit surface only, and is out of scope for this decision.)*
 
 ### Options
 
@@ -106,10 +126,11 @@ indicators, not the authoritative per-layer audit", but that caveat is not on sc
 ### Recommendation
 
 **(B) now, (C) as the target.** (A) is the purist answer but sacrifices two scores that
-are at least functions of live data to punish one that is not. The hardcoded `91` must
-go in any case, and it must not be replaced by a different hardcoded number.
-Independently of which option is chosen, the empty-fleet 100 should become `—`: a
-gateway with no agents has no posture, good or bad.
+are at least functions of live data to punish one that is not. Whichever is chosen, the
+hardcoded `91` should not survive it, and should not be replaced by a different
+hardcoded number. The `sublabel="weighted across all layers"` copy should be corrected
+in the same change — either to describe the mean honestly, or by ratifying an actual
+weighting.
 
 ### Consequences
 
@@ -145,11 +166,24 @@ The API is consistent with itself: `POST /api/v1/capability/override` **400s** o
 such an override "would put a decision in the grid that no projection can ever produce
 or restore."
 
-The dashboard is not. Besides the legend, `BulkActionBar.tsx:13` offers all four of
+The dashboard is not. `BulkActionBar.tsx:13` offers all four of
 `allow | narrow | approval | deny` as bulk-override options and **defaults the
 selector to `narrow`** (`BulkActionBar.tsx:17`) — so the most likely single click an
-operator makes on that bar submits a request the server is guaranteed to reject. The
-filter bar likewise offers filters for two states no cell can hold.
+operator makes on that bar submits a request the server is guaranteed to reject.
+
+And the rejection is not even immediately visible, because the override is applied
+**optimistically**: `CapabilityPage.tsx:74` calls
+`setOptimistic(applyOverrideLocal(...))` *before* the POST, so the grid visibly renders
+`narrow` cells — a state the projection can never produce — until the request fails and
+`:87-89` rolls the shadow back with a `rollback:` toast. For the duration of the
+round-trip the matrix displays a decision that does not exist.
+
+*(Scope note, corrected in review: the filter bar does **not** offer decision filters.
+`CapabilityFilters` is `{ search, framework, owner, mode, trustMax }`
+(`features/capability/filters.ts:3-9`), and the legend is a static non-interactive
+`<ul>` with no click handler (`CapabilityFilterBar.tsx:127-137`). The problem is that
+the legend **advertises** two states, and that the bulk bar **offers** them — not that
+anything is filterable by them.)*
 
 Separately, ADR 0024 proposes a **sixth** state — unconfigured — for the empty-cascade
 case, which the current vocabulary cannot express at all.
@@ -157,10 +191,12 @@ case, which the current vocabulary cannot express at all.
 ### Options
 
 - **(A) Narrow the FE to what the projection emits** (`allow`/`deny`/`n/a`), plus the
-  new unconfigured state. Remove `narrow`/`approval` from the legend, the filters and
-  the bulk-action options. *Cost:* the grid stops advertising two governance concepts
-  that do exist in the product, just not on this page. *Benefit:* every state on screen
-  is one the page can actually show, and the bulk bar stops offering a guaranteed 400.
+  new unconfigured state. Remove `narrow`/`approval` from the legend and from the
+  bulk-action options, and re-default the bulk selector away from `narrow`. *Cost:* the
+  grid stops advertising two governance concepts that do exist in the product, just not
+  on this page. *Benefit:* every state on screen is one the page can actually show, the
+  bulk bar stops offering a guaranteed 400, and the optimistic render of an impossible
+  state disappears with it.
 - **(B) Build a backend stage that computes per-cell `narrow`/`approval`.** This is the
   policy-replay/simulation oracle already scoped as
   [AAASM-5094](https://lightning-dust-mite.atlassian.net/browse/AAASM-5094) — the
@@ -216,8 +252,15 @@ alongside `credential_action` which selects redact / alert behaviour. The built-
 credential detectors are a **compile-time constant** — `AC_PATTERNS`
 (`aa-security/src/scanner.rs:14`), an ordered Aho-Corasick literal set whose ordering is
 load-bearing (the comment at `scanner.rs:10-12` notes `sk-ant-` must precede `sk-` or
-Anthropic keys are misclassified). There is no per-detector enable flag anywhere in the
-scanner, and no API to set one.
+Anthropic keys are misclassified). The scanner *is* configurable, but not per-detector:
+`ScannerConfig` (`aa-security/src/scanner.rs:358-366`) carries exactly two knobs —
+`disabled: bool`, an **all-or-nothing** kill switch that makes `scan` always return an
+empty result, and `custom_patterns: Vec<String>`, **additive** literal prefixes compiled
+into the automaton alongside the built-ins as `CredentialKind::Custom`. So the product
+already has "turn scanning off entirely" and "add your own pattern"; what it has no
+representation for is "keep scanning, but not with detector *N*" — which is precisely
+what the toggle in the UI claims to do. There is no API to set either knob from the
+dashboard.
 
 So the toggle is not merely unwired — **it toggles a concept the product does not
 have.**
@@ -225,27 +268,31 @@ have.**
 ### Options
 
 - **(A) Build a real per-detector enable/disable capability.** Requires a persisted
-  per-detector state, a policy or config surface to hold it, an API, and scanner
-  support for skipping a built-in. *Cost:* the largest of the three, and it introduces
+  per-detector state, a policy or config surface to hold it, an API, and — the part
+  `ScannerConfig` does not give you — scanner support for skipping an individual
+  built-in while the rest keep running (`disabled` is global, not per-pattern). *Cost:* the largest of the three, and it introduces
   a way to silently disable a credential detector — which is a governance-relevant
   action needing authorisation and an audit trail, per ADR 0015's trust-boundary
   reasoning.
 - **(B) Replace the toggle with policy-authored `sensitive_patterns` CRUD over a
   read-only built-in list.** The built-ins render as an informational, non-interactive
-  list ("these always run"); the editable surface becomes the policy's
-  `sensitive_patterns`, which already exists, is already validated
+  list ("these always run") — which is what `ScannerConfig.custom_patterns` already
+  implies: the built-in set is a floor you add to, not a menu you subtract from. The
+  editable surface becomes the policy's `sensitive_patterns`, which already exists, is
+  already validated
   (`aa-gateway/src/policy/validator.rs`), is already versioned with the policy, and is
   already authorised through the policy-mutation path. *Cost:* the page becomes less
   directly interactive and users must think in policies.
 - **(C) Disable the toggle with a "coming soon" affordance,** matching the two buttons
-  beside it. *Cost:* leaves a dead control; *benefit:* removes the lie in one line,
-  today, with no product decision required.
+  beside it. *Cost:* leaves a dead control; *benefit:* it is a one-line change that
+  removes the untruth without prejudging which of (A) or (B) wins.
 
 ### Recommendation
 
-**(B), with (C) as the immediate stop-gap.** (B) aligns the UI with the model the
-enforcement path actually has, and inherits policy versioning, validation and
-authorisation for free instead of inventing a parallel mutation surface. (A) should be
+**(B), with (C) as a recommended stop-gap if (B) is not scheduled promptly.** (B)
+aligns the UI with the model the enforcement path actually has, and inherits policy
+versioning, validation and authorisation for free instead of inventing a parallel
+mutation surface. (A) should be
 considered only if there is a real operator need to suppress a *built-in* credential
 detector — and that need should be scrutinised, because a built-in detector that can be
 switched off is a governance downgrade with no audit story.
@@ -270,12 +317,10 @@ or the page is only half-corrected.
 ### Context
 
 `parseMode` (`dashboard/src/features/agents/fleetTypes.ts:76-81`) reads the mode from
-agent metadata and, when it is missing or unrecognised, **returns `'enforce'`**:
-
-```ts
-if (raw && MODE_VALUES.includes(raw)) { return raw }
-return 'enforce'
-```
+agent metadata and, when it is missing or unrecognised, **returns `'enforce'`** — the
+function guards on `MODE_VALUES` membership and falls through to a literal `'enforce'`
+(`fleetTypes.ts:80`). *(Paraphrased, not quoted: read the four lines at
+`fleetTypes.ts:76-81` for the exact form.)*
 
 The Fleet chip therefore says `● enforce` for an agent that declared no mode at all.
 ADR 0021 already identified the shape of this problem in the mutation context, and
@@ -285,7 +330,8 @@ the agent runs unpoliced … is a security-relevant lie."*
 ADR 0021 stopped short of settling the absent-vs-defaulted case, and it also recorded
 the deeper inconsistency this rides on: the Fleet and Topology surfaces read
 `metadata["mode"]`, while the Capability Matrix reads the **real** field
-(`project_mode(record.enforcement_mode)`, `aa-api/src/routes/capability.rs:646`). Two
+(`project_mode(record.enforcement_mode)`, `aa-api/src/routes/capability.rs:650` —
+note ADR 0021 cites this as `:646`, which is now stale). Two
 surfaces are consistent with each other but not with enforcement; the third is
 consistent with enforcement. The `enforce` default is what papers over the difference.
 
@@ -375,10 +421,11 @@ mapping**, or an owner for it. The preset `blocks` entries are prose
 
 ### Recommendation
 
-**(C), with (B)'s copy correction shipped immediately** and not blocked on it. (C)
-gets the guided experience without a wizard silently creating governance state, and
-showing the generated YAML is itself the best possible check on whether the mapping is
-right.
+**(C), and (B)'s copy correction is worth doing whichever option wins** — the sentence
+"Every agent starts under this policy" is false under (B) and (C) alike, and correcting
+it does not prejudge the decision. (C) gets the guided experience without a wizard
+silently creating governance state, and showing the generated YAML is itself the best
+possible check on whether the mapping is right.
 
 Whichever is chosen, **ownership of the preset→policy mapping must be assigned to a
 named owner.** An unowned mapping between marketing-toned preset copy and enforced
@@ -403,9 +450,10 @@ SDK and enrol an agent" — which it does do truthfully.
 ### Context
 
 There is **no auto-launch today.** `/onboarding` is a plain route
-(`dashboard/src/App.tsx:72`) reached only by an explicit click: the Overview empty-state
-CTA "Start setup wizard" (`dashboard/src/pages/OverviewPage.guard.test.tsx:43-48`) and
-the Capability page's empty state (`dashboard/src/pages/CapabilityPage.tsx:123-124`).
+(`dashboard/src/App.tsx:72`) reached only by an explicit click, from three empty-state
+CTAs: Overview (`dashboard/src/pages/OverviewPage.guard.tsx:38`), Capability
+(`dashboard/src/pages/CapabilityPage.tsx:123-124`) and Live-Ops
+(`dashboard/src/pages/LiveOpsPage.tsx:261`).
 
 Two different signals are already in play, and they mean different things:
 
@@ -446,9 +494,10 @@ off the thing it is trying to fix — an unconfigured gateway — and localStora
 do only what it can honestly do: remember that *this browser* already saw the prompt.
 `isGatewayConfigured` must stop claiming to describe the gateway.
 
-Note the ordering dependency: auto-launching a wizard that authors nothing (Decision 5)
-would show it repeatedly to an operator who has completed it. **Decision 5 should be
-settled before (B) is built.**
+Note the ordering dependency, offered as input to sequencing rather than as a
+directive: auto-launching a wizard that authors nothing (Decision 5) would show it
+repeatedly to an operator who has completed it — so (B) reads better as a decision taken
+after Decision 5 than before it.
 
 ### Consequences
 
@@ -510,8 +559,9 @@ know the feed died underneath them.
 ### Recommendation
 
 **(B), reconciled with auto-scroll into a single freeze control** — that is what the
-label already promises and the mechanism already exists. If (B) is not scheduled, **(A)
-must ship**, because it is a label change and removes the contradiction immediately.
+label already promises and the mechanism already exists. If (B) is not chosen, (A) is
+the recommended fallback: it is a label change, and it removes the contradiction at
+close to zero cost.
 
 Independently of both: the pill must not let a local pause hide a dead wire. Either
 render the wire state alongside `PAUSED`, or surface on resume that the stream dropped
@@ -537,9 +587,9 @@ state.
   record, so an implementer no longer has to guess product intent — or, worse, preserve
   a placeholder because removing it looked like a regression.
 - **Positive.** Each recommendation is reversible and none requires an enforcement-path
-  change. The three stop-gaps (Decision 3's (C), Decision 5's copy fix, Decision 7's
-  (A)) are label-and-copy changes that can ship immediately without prejudging the
-  decision.
+  change. Three of them (Decision 3's (C), Decision 5's copy fix, Decision 7's (A)) are
+  label-and-copy changes that would not prejudge the underlying decision — which makes
+  them cheap to schedule early, if the sign-off chooses to.
 - **Negative / accepted.** Every recommendation makes the dashboard show *less*.
   Hardcoded scores, aspirational legend entries, and working-looking toggles all read
   as capability; replacing them with `—` reads as regression. This is the deliberate
