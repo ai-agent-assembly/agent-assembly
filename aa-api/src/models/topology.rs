@@ -271,12 +271,19 @@ pub struct AgentNode {
     /// above [`FLAGGED_VIOLATION_THRESHOLD`]. Drives the danger-tinted node card
     /// and ⚑ marker in the topology graph.
     pub flagged: bool,
-    /// Trust score (0–100), or `null` when no trust-analytics source exists yet.
+    /// Trust score as an integer on a 0–100 scale, or `null` when no
+    /// trust-analytics source exists yet.
     /// The registry does not compute a per-agent trust score today, so this is
     /// currently always `null` — the same placeholder the Fleet page uses. Kept
     /// present (not omitted) so the client renders an explicit "no data" state
     /// instead of inferring a misleading default.
-    pub trust: Option<f64>,
+    //
+    // AAASM-5104 — integer, not `f64`: the ratified mock renders a whole number
+    // and a float implies a precision no scoring formula has agreed to. See
+    // [`crate::models::capability::CapabilityAgent::trust`] for the full
+    // rationale behind the shared representation and null contract.
+    #[schema(required = true, minimum = 0, maximum = 100)]
+    pub trust: Option<u8>,
     /// Operator / engineer who owns this agent, read from the agent record's
     /// `metadata["owner"]` (AAASM-5045). `null` when the registrant supplied no
     /// owner tag — kept present (not omitted) so the node-detail panel renders an
@@ -442,9 +449,12 @@ pub struct AgentTree {
     /// Whether the agent is policy-flagged. Same derivation as
     /// [`AgentNode::flagged`].
     pub flagged: bool,
-    /// Trust score (0–100), or `null` when no trust-analytics source exists yet.
-    /// Same placeholder as [`AgentNode::trust`].
-    pub trust: Option<f64>,
+    /// Trust score as an integer on a 0–100 scale, or `null` when no
+    /// trust-analytics source exists yet.
+    /// Same representation, placeholder, and null contract as
+    /// [`AgentNode::trust`] (AAASM-5104).
+    #[schema(required = true, minimum = 0, maximum = 100)]
+    pub trust: Option<u8>,
     /// Direct children of this agent in the delegation tree.
     #[schema(schema_with = agent_tree_children_schema)]
     pub children: Vec<AgentTree>,
@@ -690,6 +700,9 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&node).unwrap()).unwrap();
         assert!(json.get("trust").is_some(), "trust key must be present");
         assert!(json["trust"].is_null(), "trust must serialize as null");
+        // AAASM-5104 — an unmeasured score must be unreadable as a real one.
+        assert!(!json["trust"].is_number(), "an unmeasured trust must not be a number");
+        assert_ne!(json["trust"], 0, "trust must never fold to a scored zero");
         assert_eq!(json["mode"], "enforce");
         assert_eq!(json["flagged"], false);
         // AAASM-5045 — owner / policy_count / budget follow the same "present
@@ -824,6 +837,55 @@ mod tests {
             children: vec![leaf],
         };
         roundtrip(&root);
+    }
+
+    /// AAASM-5104 — `AgentTree` carries the same trust contract as `AgentNode`:
+    /// present-and-`null` when unmeasured, and a whole number when scored.
+    #[test]
+    fn agent_tree_emits_trust_null_not_omitted_and_scores_as_an_integer() {
+        let mut tree = AgentTree {
+            id: "aa".to_string(),
+            name: "root".to_string(),
+            depth: 0,
+            status: "active".to_string(),
+            team_id: None,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            governance_level: None,
+            mode: "enforce".to_string(),
+            flagged: false,
+            trust: None,
+            children: vec![],
+        };
+        let json = serde_json::to_value(&tree).unwrap();
+        assert!(json.get("trust").is_some(), "trust key must be present");
+        assert!(json["trust"].is_null(), "trust must serialize as null");
+        assert!(!json["trust"].is_number(), "an unmeasured trust must not be a number");
+        assert_ne!(json["trust"], 0, "trust must never fold to a scored zero");
+
+        tree.trust = Some(78);
+        let scored = serde_json::to_value(&tree).unwrap();
+        assert_eq!(scored["trust"], 78);
+        assert!(
+            scored["trust"].is_u64(),
+            "a score is a whole number on a 0–100 scale, not a float: {}",
+            scored["trust"]
+        );
+    }
+
+    /// Same integer contract on `AgentNode`, so one agent cannot serialize as
+    /// `78` on one topology projection and `78.0` on the other.
+    #[test]
+    fn agent_node_scores_as_an_integer() {
+        let mut node = make_agent_node();
+        node.trust = Some(78);
+        let json = serde_json::to_value(&node).unwrap();
+        assert_eq!(json["trust"], 78);
+        assert!(
+            json["trust"].is_u64(),
+            "a score is a whole number on a 0–100 scale, not a float: {}",
+            json["trust"]
+        );
     }
 
     #[test]

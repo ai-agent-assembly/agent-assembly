@@ -162,7 +162,7 @@ function RowGroup({
           <span className="cap-mx-row-h-trust">trust {orNoData(agent.trust)}</span>
         </div>
         {/* No trust score means no bar to draw — an empty bar would read as 0. */}
-        {agent.trust !== undefined && (
+        {agent.trust != null && (
           <div className="cap-trust-bar" aria-hidden>
             <div
               className={`cap-trust-bar-fill ${trustToneClass(agent.trust)}`}

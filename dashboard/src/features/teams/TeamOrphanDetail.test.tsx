@@ -5,7 +5,17 @@ import { TeamOrphanDetail } from './TeamOrphanDetail'
 import type { AgentNode } from './api'
 
 function agent(over: Partial<AgentNode>): AgentNode {
-  return { id: 'a1', name: 'scraper', status: 'active', depth: 0, flagged: false, mode: 'enforce', ...over }
+  return {
+    id: 'a1',
+    name: 'scraper',
+    status: 'active',
+    depth: 0,
+    flagged: false,
+    mode: 'enforce',
+    // AAASM-5104 — required-but-nullable: an unmeasured score is stated, not omitted.
+    trust: null,
+    ...over,
+  }
 }
 
 function renderOrphan(orphans: AgentNode[]) {

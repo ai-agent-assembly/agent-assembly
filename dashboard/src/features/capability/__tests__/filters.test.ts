@@ -29,4 +29,18 @@ describe('applyFilters', () => {
     expect(lowTrust.every((a) => (a.trust ?? Infinity) <= 60)).toBe(true)
     expect(lowTrust.length).toBeGreaterThan(0)
   })
+
+  // AAASM-5104 — the wire now sends `trust: null` (required-but-nullable) rather
+  // than omitting the key. An unmeasured agent is not "below" any ceiling, so the
+  // trust filter must exclude it outright instead of treating `null` as 0.
+  it('excludes an unmeasured agent from every trustMax ceiling', () => {
+    const unmeasured = { ...AGENTS[0], id: 'unmeasured', name: 'unmeasured', trust: null }
+    const agents = [...AGENTS, unmeasured]
+    for (const trustMax of [0, 1, 60, 100]) {
+      const kept = applyFilters(agents, { ...EMPTY_FILTERS, trustMax })
+      expect(kept.map((a) => a.id)).not.toContain('unmeasured')
+    }
+    // …and it is still present when no trust ceiling is applied.
+    expect(applyFilters(agents, EMPTY_FILTERS).map((a) => a.id)).toContain('unmeasured')
+  })
 })

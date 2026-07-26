@@ -166,16 +166,23 @@ async fn capability_matrix_projects_registered_agents() {
     }
 }
 
-/// Fields with no source in the gateway are omitted from the wire entirely, so a
+/// Fields with no source in the gateway never reach the wire as a value, so a
 /// consumer can tell "unmeasured" apart from a real zero.
+///
+/// Most are omitted entirely. `trust` is the exception (AAASM-5104): it is
+/// required-but-nullable, so the key is always present carrying an explicit
+/// `null` — a missing key is the thing that invites `?? 0`.
 #[tokio::test(flavor = "multi_thread")]
-async fn capability_matrix_omits_fields_with_no_real_source() {
+async fn capability_matrix_never_fakes_a_field_with_no_real_source() {
     let env = env_with_agents().await;
     let body = matrix_json(&env.base_url(), "").await;
 
     for agent in body["agents"].as_array().unwrap() {
         let id = agent["id"].as_str().unwrap();
-        assert!(agent.get("trust").is_none(), "agent {id} must not carry a fake trust");
+        assert!(agent.get("trust").is_some(), "agent {id} must carry the trust key");
+        assert!(agent["trust"].is_null(), "agent {id} must carry trust as null");
+        assert!(!agent["trust"].is_number(), "agent {id} must not carry a fake trust");
+        assert_ne!(agent["trust"], 0, "agent {id} must not fold trust to a scored zero");
         assert!(agent.get("flagged").is_none(), "agent {id} must not carry a fake flag");
         assert!(agent.get("note").is_none(), "agent {id} must not carry a fake note");
         // No enforcement_mode override was registered for either agent.

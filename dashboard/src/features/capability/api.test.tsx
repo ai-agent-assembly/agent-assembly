@@ -14,8 +14,17 @@ function wrapper() {
   )
 }
 
-/** A projection whose optional columns are absent, as the live endpoint sends. */
-const SPARSE_MATRIX = {
+/**
+ * A projection shaped like the live endpoint: the columns it has no source for
+ * are omitted (`mode`, `flagged`, a tool column's `group`, a policy's `hits24h`)
+ * — except `trust`, which is required-but-nullable and so is always on the wire
+ * carrying an explicit `null` (AAASM-5104).
+ *
+ * Typed rather than cast through `unknown`, so a future contract change that
+ * adds or requires a field fails type-check here instead of silently leaving
+ * this fixture describing a wire shape the endpoint can no longer produce.
+ */
+const SPARSE_MATRIX: CapabilityMatrix = {
   resources: [
     { id: 'filesystem', name: 'Filesystem', group: 'files', paths: [] },
     // A tool column carries no group.
@@ -29,12 +38,13 @@ const SPARSE_MATRIX = {
       owner: 'team-alpha',
       status: 'active',
       lastSeen: '2026-07-25T11:59:30Z',
+      trust: null,
       caps: { filesystem: { read: 'allow', write: 'deny', delete: 'deny', exec: 'na' } },
     },
   ],
   policies: [{ id: 'global', name: 'global', scope: 'global', status: 'active', affects: [], rules: [] }],
   sampleCalls: [],
-} as unknown as CapabilityMatrix
+}
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -54,11 +64,26 @@ describe('useCapabilityMatrixQuery', () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
     const agent = result.current.data!.agents[0]
-    expect(agent.trust).toBeUndefined()
     expect(agent.mode).toBeUndefined()
     expect(agent.flagged).toBeUndefined()
     expect(result.current.data!.policies[0].hits24h).toBeUndefined()
     expect(result.current.data!.resources[1].group).toBeUndefined()
+  })
+
+  // AAASM-5104 — `trust` is not in the list above: it is required-but-nullable,
+  // so an unmeasured score arrives as an explicit `null` the consumer has to
+  // handle, never as a missing key it could shrug off with `?? 0`.
+  it('surfaces an unmeasured trust as null, never as undefined or 0', async () => {
+    vi.spyOn(capabilityClient, 'getMatrix').mockResolvedValue(SPARSE_MATRIX)
+
+    const { result } = renderHook(() => useCapabilityMatrixQuery(), { wrapper: wrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    const agent = result.current.data!.agents[0]
+    expect(agent.trust).toBeNull()
+    expect(agent.trust).not.toBeUndefined()
+    expect(agent.trust).not.toBe(0)
+    expect('trust' in agent).toBe(true)
   })
 
   it('rejects when the matrix fetch fails', async () => {
