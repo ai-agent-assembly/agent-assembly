@@ -151,39 +151,59 @@ export interface AuditExportContext {
  * data — it is not, and does not claim to be, the complete governance record,
  * because no server-side compliance endpoint exists to produce one.
  */
-export function buildComplianceReport(
-  rows: readonly LogEntry[],
-  ctx: AuditExportContext,
-  coverage: AuditCoverage,
-  now: Date = new Date(),
-): string {
+/**
+ * Everything the report needs, derived from the rows in one pass.
+ *
+ * Kept as a single tally rather than recomputed per section so the sections
+ * cannot disagree — a "Policy violations (0)" heading over a body listing two
+ * suppressed denials would be a worse failure than either number alone.
+ */
+interface ReportTally {
+  readonly typeCounts: Record<string, number>
+  readonly decisionCounts: Record<string, number>
+  readonly noVerdictCounts: Record<string, number>
+  readonly suppressedCounts: Record<string, number>
+  readonly violations: LogEntry[]
+  readonly suppressed: { entry: LogEntry; verdict: AuditVerdict }[]
+  readonly agents: string[]
+}
+
+/** The verdict key a row is counted under in the "Decision verdicts" table. */
+function verdictTallyKey(verdict: AuditVerdict, enforced: string): string {
+  // A suppressed denial is tallied under its own key rather than folded into the
+  // enforced ALLOW total. "ALLOW: 40" over an observe-mode window is the
+  // fabricated all-clear this report exists to prevent.
+  if (!isSuppressedDenial(verdict)) return enforced
+  return `${enforced} (observe-mode; suppressed ${csvCertain(verdict.suppressed as Certain<string>)})`
+}
+
+function tallyRows(rows: readonly LogEntry[]): ReportTally {
   const typeCounts: Record<string, number> = {}
   const decisionCounts: Record<string, number> = {}
   const noVerdictCounts: Record<string, number> = {}
   const suppressedCounts: Record<string, number> = {}
   const violations: LogEntry[] = []
   const suppressed: { entry: LogEntry; verdict: AuditVerdict }[] = []
+
   for (const e of rows) {
     typeCounts[e.event_type] = (typeCounts[e.event_type] ?? 0) + 1
     const verdict = extractVerdict(e.payload)
     const wasSuppressed = isSuppressedDenial(verdict)
+
     if (isKnown(verdict.enforced)) {
-      // A suppressed denial is tallied under its own key rather than folded into
-      // the enforced ALLOW total. "ALLOW: 40" over an observe-mode window is the
-      // fabricated all-clear this report exists to prevent.
-      const key = wasSuppressed
-        ? `${verdict.enforced.value} (observe-mode; suppressed ${csvCertain(verdict.suppressed as Certain<string>)})`
-        : verdict.enforced.value
+      const key = verdictTallyKey(verdict, verdict.enforced.value)
       decisionCounts[key] = (decisionCounts[key] ?? 0) + 1
     } else {
       const label = TRUTH_STATE_META[verdict.enforced.state].label
       noVerdictCounts[label] = (noVerdictCounts[label] ?? 0) + 1
     }
+
     if (wasSuppressed) {
       const label = csvCertain(verdict.suppressed as Certain<string>)
       suppressedCounts[label] = (suppressedCounts[label] ?? 0) + 1
       suppressed.push({ entry: e, verdict })
     }
+
     // A denial suppressed by observe mode IS a policy violation — the gateway
     // simply recorded it under the rewritten event type
     // (`policy_service.rs:891`). Counting only `PolicyViolation` rows would let
@@ -191,109 +211,181 @@ export function buildComplianceReport(
     // actions.
     if (e.event_type === 'PolicyViolation' || wasSuppressed) violations.push(e)
   }
-  // Explicit comparator so the agent list is ordered locale-safely and stably
-  // rather than by raw UTF-16 code units (S2871).
-  const agents = Array.from(new Set(rows.map((e) => e.agent_id))).sort((a, b) => a.localeCompare(b))
 
-  const lines: string[] = []
-  const titleSuffix = [
+  return {
+    typeCounts,
+    decisionCounts,
+    noVerdictCounts,
+    suppressedCounts,
+    violations,
+    suppressed,
+    // Explicit comparator so the agent list is ordered locale-safely and stably
+    // rather than by raw UTF-16 code units (S2871).
+    agents: Array.from(new Set(rows.map((e) => e.agent_id))).sort((a, b) => a.localeCompare(b)),
+  }
+}
+
+/** Descending by count — the order every tally table in the report uses. */
+function byCountDesc(counts: Record<string, number>): [string, number][] {
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])
+}
+
+/**
+ * The title carries every caveat that applies, so a reader who sees only the
+ * first line of the file still knows what they are holding.
+ */
+function reportTitle(coverage: AuditCoverage, tally: ReportTally): string {
+  const caveats = [
     coverage.complete ? null : 'PARTIAL WINDOW',
-    suppressed.length > 0 ? 'OBSERVE MODE' : null,
+    tally.suppressed.length > 0 ? 'OBSERVE MODE' : null,
   ].filter(Boolean)
-  lines.push(
-    titleSuffix.length === 0
-      ? '# Audit Compliance Report'
-      : `# Audit Compliance Report — ${titleSuffix.join(', ')}`,
-  )
-  lines.push('')
-  if (suppressed.length > 0) {
-    lines.push(
-      `> **${suppressed.length} ${suppressed.length === 1 ? 'entry in this window was' : 'entries in this window were'} allowed only because enforcement was off.**`,
-    )
-    lines.push('> Observe mode rewrote the decision to ALLOW and recorded the verdict it')
-    lines.push('> suppressed. Those rows are NOT allows, and the actions they describe were')
-    lines.push('> not blocked. See "Suppressed by observe mode" below.')
-    lines.push('')
-  }
-  if (!coverage.complete) {
-    lines.push(
-      '> **This report does not cover the complete audit trail.** It is derived',
-    )
-    lines.push(
-      '> from the entries currently loaded in the dashboard, not from the whole',
-    )
-    lines.push('> immutable record. Every count below is scoped accordingly.')
-    lines.push('')
-  }
-  lines.push(`Generated: ${now.toISOString()}`)
-  lines.push(
+  if (caveats.length === 0) return '# Audit Compliance Report'
+  return `# Audit Compliance Report — ${caveats.join(', ')}`
+}
+
+function observeModeBanner(tally: ReportTally): string[] {
+  const n = tally.suppressed.length
+  if (n === 0) return []
+  const subject = n === 1 ? 'entry in this window was' : 'entries in this window were'
+  return [
+    `> **${n} ${subject} allowed only because enforcement was off.**`,
+    '> Observe mode rewrote the decision to ALLOW and recorded the verdict it',
+    '> suppressed. Those rows are NOT allows, and the actions they describe were',
+    '> not blocked. See "Suppressed by observe mode" below.',
+    '',
+  ]
+}
+
+function partialWindowBanner(coverage: AuditCoverage): string[] {
+  if (coverage.complete) return []
+  return [
+    '> **This report does not cover the complete audit trail.** It is derived',
+    '> from the entries currently loaded in the dashboard, not from the whole',
+    '> immutable record. Every count below is scoped accordingly.',
+    '',
+  ]
+}
+
+function reportHeader(
+  rows: readonly LogEntry[],
+  ctx: AuditExportContext,
+  coverage: AuditCoverage,
+  tally: ReportTally,
+  now: Date,
+): string[] {
+  const filterTotal = isKnown(coverage.total)
+    ? String(coverage.total.value)
+    : 'unknown (the gateway reported no total)'
+  return [
+    `Generated: ${now.toISOString()}`,
     `Scope: type=${ctx.typeFilter}, agent=${ctx.agentFilter}, search=${ctx.search || '(none)'}`,
+    `Coverage: ${coverageStatement(coverage)}`,
+    `Entries in this report: ${rows.length}`,
+    `Entries loaded from the gateway: ${coverage.loaded}`,
+    `Entries matching the server-side filter: ${filterTotal}`,
+    `Agents covered (audit id digests): ${tally.agents.length ? tally.agents.join(', ') : '(none)'}`,
+  ]
+}
+
+function eventsByTypeSection(tally: ReportTally): string[] {
+  return [
+    '## Events by type',
+    ...byCountDesc(tally.typeCounts).map(([type, count]) => `- ${type}: ${count}`),
+  ]
+}
+
+function decisionVerdictsSection(tally: ReportTally): string[] {
+  const decisions = byCountDesc(tally.decisionCounts)
+  const body =
+    decisions.length === 0
+      ? ['- (no entry in this window carries a policy verdict)']
+      : decisions.map(([decision, count]) => `- ${decision}: ${count}`)
+
+  const noVerdict = byCountDesc(tally.noVerdictCounts)
+  const noVerdictBlock =
+    noVerdict.length === 0
+      ? []
+      : [
+          '',
+          '### Entries carrying no verdict',
+          ...noVerdict.map(([label, count]) => `- ${label}: ${count}`),
+        ]
+
+  return ['## Decision verdicts', ...body, ...noVerdictBlock]
+}
+
+function suppressedSection(tally: ReportTally): string[] {
+  const heading = `## Suppressed by observe mode (${tally.suppressed.length})`
+  if (tally.suppressed.length === 0) {
+    return [heading, '- No entry in this window had a verdict suppressed by observe mode.']
+  }
+  const counts = byCountDesc(tally.suppressedCounts).map(
+    ([label, count]) => `- Would have been ${label}: ${count}`,
   )
-  lines.push(`Coverage: ${coverageStatement(coverage)}`)
-  lines.push(`Entries in this report: ${rows.length}`)
-  lines.push(`Entries loaded from the gateway: ${coverage.loaded}`)
-  lines.push(
-    `Entries matching the server-side filter: ${
-      isKnown(coverage.total) ? coverage.total.value : 'unknown (the gateway reported no total)'
-    }`,
-  )
-  lines.push(`Agents covered (audit id digests): ${agents.length ? agents.join(', ') : '(none)'}`)
-  lines.push('')
-  lines.push('## Events by type')
-  for (const [type, count] of Object.entries(typeCounts).sort((a, b) => b[1] - a[1])) {
-    lines.push(`- ${type}: ${count}`)
+  const entries = tally.suppressed.map(({ entry, verdict }) => {
+    const why = verdict.suppressedReason ?? summaryText(entry)
+    const wouldHaveBeen = csvCertain(verdict.suppressed as Certain<string>)
+    return `- [${entry.timestamp}] ${entry.agent_id} — recorded as ${entry.event_type}, would have been ${wouldHaveBeen}: ${why}`
+  })
+  return [heading, ...counts, '', ...entries]
+}
+
+function violationsSection(tally: ReportTally, coverage: AuditCoverage): string[] {
+  const heading = `## Policy violations (${tally.violations.length})`
+  if (tally.violations.length > 0) {
+    return [heading, ...tally.violations.map((v) => `- [${v.timestamp}] ${v.agent_id}: ${summaryText(v)}`)]
   }
-  lines.push('')
-  lines.push('## Decision verdicts')
-  const decisionEntries = Object.entries(decisionCounts).sort((a, b) => b[1] - a[1])
-  if (decisionEntries.length === 0) {
-    lines.push('- (no entry in this window carries a policy verdict)')
-  } else {
-    for (const [decision, count] of decisionEntries) lines.push(`- ${decision}: ${count}`)
-  }
-  const noVerdictEntries = Object.entries(noVerdictCounts).sort((a, b) => b[1] - a[1])
-  if (noVerdictEntries.length > 0) {
-    lines.push('')
-    lines.push('### Entries carrying no verdict')
-    for (const [label, count] of noVerdictEntries) lines.push(`- ${label}: ${count}`)
-  }
-  lines.push('')
-  lines.push(`## Suppressed by observe mode (${suppressed.length})`)
-  if (suppressed.length === 0) {
-    lines.push('- No entry in this window had a verdict suppressed by observe mode.')
-  } else {
-    for (const [label, count] of Object.entries(suppressedCounts).sort((a, b) => b[1] - a[1])) {
-      lines.push(`- Would have been ${label}: ${count}`)
-    }
-    lines.push('')
-    for (const { entry, verdict } of suppressed) {
-      const why = verdict.suppressedReason ?? summaryText(entry)
-      lines.push(
-        `- [${entry.timestamp}] ${entry.agent_id} — recorded as ${entry.event_type}, would have been ${csvCertain(
-          verdict.suppressed as Certain<string>,
-        )}: ${why}`,
-      )
-    }
-  }
-  lines.push('')
-  lines.push(`## Policy violations (${violations.length})`)
-  if (violations.length === 0) {
-    // "None" is a claim about the window, never about the trail — saying it
-    // unqualified over a partial window is how a review concludes there were no
-    // violations when the window simply stopped short. It is also only sayable
-    // at all because suppressed denials are counted into `violations` above.
-    lines.push(
-      coverage.complete
-        ? '- None among the entries matching the current filter, and no verdict was suppressed by observe mode.'
-        : '- None in the loaded window. This does NOT mean there were none in the trail.',
-    )
-  } else {
-    for (const v of violations) {
-      lines.push(`- [${v.timestamp}] ${v.agent_id}: ${summaryText(v)}`)
-    }
-  }
-  lines.push('')
-  return lines.join('\n')
+  // "None" is a claim about the window, never about the trail — saying it
+  // unqualified over a partial window is how a review concludes there were no
+  // violations when the window simply stopped short. It is also only sayable at
+  // all because suppressed denials are counted into `violations` above.
+  return [
+    heading,
+    coverage.complete
+      ? '- None among the entries matching the current filter, and no verdict was suppressed by observe mode.'
+      : '- None in the loaded window. This does NOT mean there were none in the trail.',
+  ]
+}
+
+/**
+ * Build a human-readable compliance summary over the currently-filtered rows:
+ * the window's event-type breakdown, decision verdicts, suppressed verdicts, and
+ * the full list of policy violations.
+ *
+ * Every count in it is scoped to the loaded window, which the report says in its
+ * title, in its first section, and again above each count that a partial window
+ * could make misleading. The report is a real derivation of the loaded data — it
+ * is not, and does not claim to be, the complete governance record, because no
+ * server-side compliance endpoint exists to produce one.
+ *
+ * Assembled by composing section builders rather than by appending to a buffer:
+ * each section is independently readable and testable, and the document's shape
+ * is visible in one place instead of having to be reconstructed by following
+ * fifty `push` calls through two levels of branching.
+ */
+export function buildComplianceReport(
+  rows: readonly LogEntry[],
+  ctx: AuditExportContext,
+  coverage: AuditCoverage,
+  now: Date = new Date(),
+): string {
+  const tally = tallyRows(rows)
+  return [
+    reportTitle(coverage, tally),
+    '',
+    ...observeModeBanner(tally),
+    ...partialWindowBanner(coverage),
+    ...reportHeader(rows, ctx, coverage, tally, now),
+    '',
+    ...eventsByTypeSection(tally),
+    '',
+    ...decisionVerdictsSection(tally),
+    '',
+    ...suppressedSection(tally),
+    '',
+    ...violationsSection(tally, coverage),
+    '',
+  ].join('\n')
 }
 
 /** Trigger a browser download of `text` under `filename` with the given MIME. */
