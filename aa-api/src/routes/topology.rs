@@ -81,7 +81,7 @@ fn matches_status_filter(status: &AgentStatus, filter: &str) -> bool {
 /// its team scope (when it has one). A record carrying no `org_id` / `team_id`
 /// never matches a scoped non-admin caller — untagged records are not exposed
 /// across the tenant boundary.
-fn record_visible_to(caller: &AuthenticatedCaller, record: &AgentRecord) -> bool {
+pub(crate) fn record_visible_to(caller: &AuthenticatedCaller, record: &AgentRecord) -> bool {
     if caller.scopes.contains(&Scope::Admin) {
         return true;
     }

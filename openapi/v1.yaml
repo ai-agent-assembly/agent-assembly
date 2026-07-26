@@ -6344,6 +6344,40 @@ components:
         active:
           type: boolean
           description: Whether this is the currently active policy.
+        affects:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: |-
+            Names of the agents this policy version is in force for — the agents
+            whose live policy cascade carries this document (AAASM-5096).
+
+            Absent, never `[]`, when the version is not in force for any agent the
+            caller may see: an archived version, or one whose document the running
+            engine does not carry. `[]` would assert "this policy targets nobody",
+            which is a different and stronger claim than "not currently loaded".
+        hits24h:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: |-
+            Number of times this policy fired in the last 24 hours.
+
+            **Always absent.** Nothing on the audit write path records which policy
+            document produced a decision: `AuditEntry` has no policy field, and the
+            payload's `policy_rule` is the free-text deny *reason*
+            (`aa_gateway::service::policy_service::evaluate_one`), empty on every
+            allow. `aa_gateway::engine::decision::PolicyDecision::Deny` does carry a
+            `source_scope`, but `into_policy_result` drops it before the audit write.
+            Capturing the deciding document at decision time is enforcement-boundary
+            work owned by AAASM-5100 / ADR 0018; until it lands this is reported
+            absent rather than as a `0` that would be indistinguishable from "fired
+            zero times". The same field is absent for the same reason on the
+            capability matrix's `Policy`.
+          minimum: 0
         name:
           type: string
           description: Policy name from metadata.

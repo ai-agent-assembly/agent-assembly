@@ -1,6 +1,7 @@
 //! Policy management endpoints.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -13,14 +14,96 @@ use aa_core::time::Timestamp;
 use aa_core::{AgentContext, GovernanceAction};
 use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
-use aa_gateway::policy::PolicyValidator;
+use aa_gateway::policy::{PolicyDocument, PolicyValidator};
+use aa_gateway::registry::AgentRecord;
 use aa_gateway::service::convert::hash_to_16;
 
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
 use crate::auth::scope::{RequireRead, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::pagination::PaginationParams;
+use crate::routes::topology::record_visible_to;
 use crate::state::AppState;
+
+// ---------------------------------------------------------------------------
+// Policy reach — which agents a policy document is in force for (AAASM-5096)
+// ---------------------------------------------------------------------------
+
+/// Identity of a policy document as the live cascade sees it: its scope label
+/// plus its `metadata.name`.
+///
+/// Deliberately the same key `capability::collect_policy_rows` builds, so the
+/// Policy list, the capability matrix and the team view all name one document
+/// the same way. A runtime `PolicyDocument` carries no id or digest, so this
+/// pair is the only identity available — see [`policy_key`].
+type PolicyKey = (String, Option<String>);
+
+/// The live policy cascade for one agent, resolved through an **explicit**
+/// lineage.
+///
+/// `PolicyEngine::collect_cascade` resolves the lineage through the engine's own
+/// registry handle. aa-api's engine is built without one (AAASM-5102), so that
+/// path yields a default `Lineage` and silently walks only the Global and Agent
+/// tiers — every Org- and Team-scoped document drops out and any projection
+/// built on it under-reports. Resolving the lineage from the registry here and
+/// passing it in keeps all four tiers present regardless of how the engine was
+/// constructed. `capability::project_matrix` and `topology::project_graph_nodes`
+/// apply the same workaround for the same reason.
+fn cascade_for(state: &AppState, record: &AgentRecord) -> Vec<Arc<PolicyDocument>> {
+    let agent_id = AgentId::from_bytes(record.agent_id);
+    let lineage = state.agent_registry.lineage(&record.agent_id).unwrap_or_default();
+    state.policy_engine.collect_cascade_with_lineage(&agent_id, &lineage)
+}
+
+/// The cascade-visible identity of `doc`.
+fn policy_key(doc: &PolicyDocument) -> PolicyKey {
+    (doc.scope.to_string(), doc.name.clone())
+}
+
+/// Map every policy document currently in force to the names of the agents it
+/// is in force for.
+///
+/// Membership only: a document is reported for an agent because it sits in that
+/// agent's cascade, which is what "this policy targets that agent" means. It is
+/// **not** a claim that the policy blocks anything for that agent — deciding
+/// that needs an action to evaluate, and `aa_gateway::engine::decision`'s
+/// `evaluate_single_doc` runs `stage_network` → `stage_tool_allow` →
+/// `stage_capability` → `stage_approval` and returns on the first deny, so an
+/// allow/deny answer is per-action, not per-document. No stage of that evaluator
+/// is mirrored here precisely because nothing on this surface asserts a verdict;
+/// the mirrors in `super::enforcement_mirror` exist for the surfaces that do.
+///
+/// Tenant-scoped: only agents the caller may see contribute, so the reach set can
+/// never name an agent the caller could not otherwise read.
+fn policy_reach(state: &AppState, caller: &AuthenticatedCaller) -> BTreeMap<PolicyKey, BTreeSet<String>> {
+    let mut reach: BTreeMap<PolicyKey, BTreeSet<String>> = BTreeMap::new();
+    for record in state.agent_registry.list() {
+        if !record_visible_to(caller, &record) {
+            continue;
+        }
+        for doc in cascade_for(state, &record) {
+            reach.entry(policy_key(&doc)).or_default().insert(record.name.clone());
+        }
+    }
+    reach
+}
+
+/// Parse a stored policy snapshot back into the document the engine would load.
+///
+/// Returns `None` for an empty or invalid snapshot: the row then reports no
+/// reach at all rather than guessing one from a document it could not read.
+fn document_from_yaml(yaml: &str) -> Option<PolicyDocument> {
+    PolicyValidator::from_yaml(yaml).ok().map(|out| out.document)
+}
+
+/// The agents a stored policy version is in force for, or `None` when it is not.
+fn affects_for(yaml: &str, reach: &BTreeMap<PolicyKey, BTreeSet<String>>) -> Option<Vec<String>> {
+    let doc = document_from_yaml(yaml)?;
+    reach
+        .get(&policy_key(&doc))
+        .map(|agents| agents.iter().cloned().collect())
+}
 
 /// JSON representation of a governance policy version.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -37,6 +120,30 @@ pub struct PolicyResponse {
     /// underlying snapshot is not retrievable from the history store
     /// (e.g. a policy loaded at startup before any history entry exists).
     pub policy_yaml: String,
+    /// Names of the agents this policy version is in force for — the agents
+    /// whose live policy cascade carries this document (AAASM-5096).
+    ///
+    /// Absent, never `[]`, when the version is not in force for any agent the
+    /// caller may see: an archived version, or one whose document the running
+    /// engine does not carry. `[]` would assert "this policy targets nobody",
+    /// which is a different and stronger claim than "not currently loaded".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affects: Option<Vec<String>>,
+    /// Number of times this policy fired in the last 24 hours.
+    ///
+    /// **Always absent.** Nothing on the audit write path records which policy
+    /// document produced a decision: `AuditEntry` has no policy field, and the
+    /// payload's `policy_rule` is the free-text deny *reason*
+    /// (`aa_gateway::service::policy_service::evaluate_one`), empty on every
+    /// allow. `aa_gateway::engine::decision::PolicyDecision::Deny` does carry a
+    /// `source_scope`, but `into_policy_result` drops it before the audit write.
+    /// Capturing the deciding document at decision time is enforcement-boundary
+    /// work owned by AAASM-5100 / ADR 0018; until it lands this is reported
+    /// absent rather than as a `0` that would be indistinguishable from "fired
+    /// zero times". The same field is absent for the same reason on the
+    /// capability matrix's `Policy`.
+    #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
+    pub hits_24h: Option<u64>,
 }
 
 /// Additional filter parameters for `GET /api/v1/policies`.
@@ -119,6 +226,10 @@ pub async fn list_policies(
         .take(params.per_page() as usize)
         .collect();
 
+    // Resolved once per request, not per row: the walk is O(visible agents) and
+    // every row looks its document up in the same map.
+    let reach = policy_reach(&state, &caller);
+
     let mut items: Vec<PolicyResponse> = Vec::with_capacity(paged.len());
     for (i, meta) in paged.into_iter().enumerate() {
         // Fetch the YAML body for this version. If the history store cannot
@@ -135,6 +246,8 @@ pub async fn list_policies(
             version: meta.timestamp,
             active: i == 0 && params.page() == 1,
             rule_count: 0,
+            affects: affects_for(&yaml, &reach),
+            hits_24h: None,
             policy_yaml: yaml,
         });
     }
@@ -268,6 +381,12 @@ pub async fn create_policy(
             version: meta.timestamp,
             active: true,
             rule_count: 0,
+            // `apply_yaml` swaps the primary slot only — it never inserts into
+            // the engine's scope index — so the version just applied is in no
+            // agent's cascade yet and has no reach to report. The list endpoint
+            // resolves it once the engine carries the document.
+            affects: None,
+            hits_24h: None,
             policy_yaml: body.policy_yaml,
         }),
     ))
@@ -346,6 +465,8 @@ pub async fn get_active_policy(
             version,
             active: true,
             rule_count: info.rule_count,
+            affects: affects_for(&policy_yaml, &policy_reach(&state, &caller)),
+            hits_24h: None,
             policy_yaml,
         }),
     ))
