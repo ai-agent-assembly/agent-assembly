@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { capabilityClient } from '../api/capability'
-import { useCapabilityMatrixQuery } from '../features/capability/api'
+import { CAPABILITY_MATRIX_KEY, useCapabilityMatrixQuery } from '../features/capability/api'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingState } from '../components/LoadingState'
@@ -39,6 +40,7 @@ export function CapabilityPage() {
   const [perAgentId, setPerAgentId] = useState<string | null>(null)
   const { toast } = useToast()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   // Route to the Policy editor. A policy id (from a per-policy edit link) is
   // passed as a `?policy=` hint the editor can consume; without one we open the
@@ -74,6 +76,12 @@ export function CapabilityPage() {
     try {
       await capabilityClient.applyOverride({ agentIds, resourceId, verb, decision })
       toast(`override applied to ${agentIds.length} agent${agentIds.length === 1 ? '' : 's'}`, 'success')
+      // The server replays the override onto its own projection, so once the
+      // refetch lands the fetched matrix already carries the edit. Drop the
+      // optimistic shadow then — left in place it wins over `data` forever, and
+      // every later refetch (window focus, remount, retry) is silently discarded.
+      await queryClient.invalidateQueries({ queryKey: CAPABILITY_MATRIX_KEY })
+      setOptimistic(null)
     } catch (e) {
       // Drop the optimistic edit; the fetched projection becomes visible again.
       setOptimistic(prev)

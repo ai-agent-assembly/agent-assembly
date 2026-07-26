@@ -11,9 +11,11 @@ import type { CapabilityMatrix } from './types'
  * no source in the gateway yet and arrive absent; consumers must fold those to
  * a `—` placeholder rather than substituting a zero.
  */
+export const CAPABILITY_MATRIX_KEY = ['capability', 'matrix'] as const
+
 export function useCapabilityMatrixQuery() {
   return useQuery<CapabilityMatrix>({
-    queryKey: ['capability', 'matrix'],
+    queryKey: CAPABILITY_MATRIX_KEY,
     queryFn: () => capabilityClient.getMatrix(),
   })
 }
