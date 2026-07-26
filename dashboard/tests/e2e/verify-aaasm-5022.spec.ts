@@ -5,6 +5,14 @@
 // with the paginated `{ items, total }` shape (per AAASM-4892). Captures
 // light + dark, exercises the type-filter button row, an expanded row (trace
 // row), and both header exports. Local visual gate only — not a CI lane.
+//
+// AAASM-5117: retargeted onto the real schema. The fixture below used to carry
+// the hi-fi mock's invented `event_type`s (`LLMCall` / `ToolCall`) and a string
+// `decision`, and clicked `audit-type-btn-ToolCall` — a filter keyed to a type
+// the backend never emits. The capture is unchanged in intent; it now drives
+// the `aa_core::audit::AuditEventType` variants the gateway actually writes and
+// the integer `assembly.common.v1.Decision` discriminant, so the screenshots
+// show what an operator really sees.
 
 import { test, type Page } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
@@ -18,44 +26,48 @@ const LOGS = [
   {
     seq: 1048,
     timestamp: '2026-05-11T14:02:11Z',
-    agent_id: 'research-bot-04',
-    session_id: 'sess-9a4f',
+    agent_id: '9f2c1a7b4d8e0f3a6b5c4d3e2f1a0b9c',
+    session_id: 'a41f9c22',
     event_type: 'PolicyViolation',
     payload: JSON.stringify({
-      decision: 'DENY',
+      action_type: 2,
+      decision: 2,
       trace_id: 'trc-7f3a91',
-      blocked_action: 'gmail/send → ext@vendor.com',
       reason: 'External recipient requires explicit approval',
+      policy_rule: 'deny-external-mail',
     }),
   },
   {
     seq: 1047,
     timestamp: '2026-05-11T14:01:58Z',
-    agent_id: 'research-bot-04',
-    session_id: 'sess-9a4f',
-    event_type: 'LLMCall',
+    agent_id: '9f2c1a7b4d8e0f3a6b5c4d3e2f1a0b9c',
+    session_id: 'a41f9c22',
+    event_type: 'ApprovalRequested',
     payload: JSON.stringify({
-      decision: 'ALLOW',
+      action_type: 1,
+      decision: 3,
       trace_id: 'trc-7f3a90',
-      model: 'claude-3-5-sonnet',
-      prompt_tokens: 2840,
-      completion_tokens: 412,
-      latency_ms: 1840,
+      reason: 'Spend above the per-call ceiling',
+      policy_rule: 'approve-high-cost-llm',
     }),
   },
   {
     seq: 1044,
     timestamp: '2026-05-11T14:01:09Z',
-    agent_id: 'support-triage',
-    session_id: 'sess-6d44',
-    event_type: 'ToolCall',
+    agent_id: '00112233445566778899aabbccddeeff',
+    session_id: '6d44be01',
+    event_type: 'ToolCallIntercepted',
     payload: JSON.stringify({
-      decision: 'ALLOW',
+      action_type: 'TOOL_CALL',
+      decision: 1,
+      source: 'sdk',
       trace_id: 'trc-6d4401',
-      tool_name: 'zendesk_search',
-      tool_source: 'mcp',
-      latency_ms: 142,
-      succeeded: true,
+      detail: {
+        kind: 'tool_call',
+        tool_name: 'zendesk_search',
+        tool_source: 'mcp',
+        succeeded: true,
+      },
     }),
   },
 ]
@@ -105,8 +117,8 @@ test.describe('AAASM-5022 — Audit Log filters + exports verification', () => {
       // Full page — header exports + type-filter button row visible.
       await page.screenshot({ path: `${OUT}/audit-${theme}-01-overview.png`, fullPage: true })
 
-      // Exercise the type-filter button row: narrow to ToolCall.
-      await page.getByTestId('audit-type-btn-ToolCall').click()
+      // Exercise the type-filter button row: narrow to the Tool Calls family.
+      await page.getByTestId('audit-type-btn-tool').click()
       await page.getByTestId('audit-row-1044').waitFor()
       await page.screenshot({
         path: `${OUT}/audit-${theme}-02-type-filter-toolcall.png`,

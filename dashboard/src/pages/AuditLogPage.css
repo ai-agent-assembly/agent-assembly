@@ -74,6 +74,45 @@
   background: var(--ink);
 }
 
+/* ── Coverage banner ─────────────────────────────────────────────────────
+   States how much of the trail is loaded (AAASM-5120). The partial variant
+   carries the warn token rather than danger: a short window is a limitation of
+   the read, not a fault — but it must never be visually quiet enough to skim
+   past, because every count below it is scoped to that window. */
+.audit-coverage {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.45rem 1.5rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  color: var(--ink-3);
+  font-size: 0.74rem;
+  flex-shrink: 0;
+}
+
+.audit-coverage--partial {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-bottom-color: var(--warn);
+}
+
+.audit-coverage__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.audit-coverage__more {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  padding: 0.25rem 0.6rem;
+}
+
+.audit-coverage__more:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* ── Stats strip — clickable type filters ────────────────────────────── */
 .audit-stats {
   display: grid;
@@ -306,18 +345,14 @@
   color: var(--ink-5);
 }
 
-.audit-agent-link {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+/* The audit agent id is a digest, not a name and not a link — it is styled as
+   inert data (no underline, no pointer) so nothing suggests it navigates to an
+   agent page it cannot resolve. See AAASM-5151. */
+.audit-agent-id {
   font-size: 0.72rem;
   font-weight: 600;
-  color: var(--ink);
-  cursor: pointer;
-  text-decoration: underline dotted;
-  text-underline-offset: 2px;
+  color: var(--ink-2);
+  cursor: help;
 }
 
 .audit-summary {
@@ -406,6 +441,23 @@
   background: var(--scrub-bg);
   color: var(--scrub);
   border-color: var(--scrub);
+}
+
+/* Observe-mode suppression (AAASM-5117 review). Danger-coloured because a
+   suppressed denial is a risk signal, but *dashed and unfilled* so it never
+   reads as an enforced deny — the whole point is that nothing was blocked. It
+   sits beside the enforced `allow` chip rather than replacing it. */
+.audit-chip--observe {
+  background: transparent;
+  color: var(--danger);
+  border: 1px dashed var(--danger);
+}
+
+.audit-decision-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
 }
 
 /* ── Expanded detail row ─────────────────────────────────────────────── */
