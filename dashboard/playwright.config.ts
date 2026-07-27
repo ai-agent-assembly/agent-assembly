@@ -1,5 +1,12 @@
 import { defineConfig, devices } from '@playwright/test'
 
+// Side-effect import: evaluates the quarantine ratchet (AAASM-5192). It lives
+// here rather than only in `playwright.ci.config.ts` because the local
+// `pnpm test:e2e` path never loads that file — so the earlier claim that the
+// ratchet ran "on every config load, local and CI" was only half true. This
+// makes it true. Nothing from the module is used here on purpose.
+import './playwright.quarantine'
+
 export default defineConfig({
   testDir: 'tests/e2e',
   fullyParallel: true,
