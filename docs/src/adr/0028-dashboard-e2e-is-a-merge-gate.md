@@ -69,10 +69,12 @@ this*. Any answer that only honours one of them is wrong.
 
 3. **The gate is credible only if it is green, so known-red specs are quarantined
    explicitly, not skipped.** `dashboard/playwright.ci.config.ts` is the normal
-   config plus a `testIgnore` quarantine list. **Specs are gated by default** — a
-   file must be named to be excluded — so a spec added by anyone else is covered
-   automatically and cannot opt out by accident. The list only ever shrinks;
-   removing an entry needs no approval.
+   config plus a `testIgnore` quarantine list, which lives with its ratchet in
+   `dashboard/playwright.quarantine.ts`. **Specs are gated by default** — a file
+   must be named to be excluded — so a spec added by anyone else is covered
+   automatically and cannot opt out by accident. Removing an entry needs no
+   approval; adding or swapping one fails the run until the frozen baseline is
+   edited in the same commit.
 
 4. **Quarantine is not deletion and not `.skip`.** Every quarantined spec remains
    intact and runs on `pnpm test:e2e` locally. The exclusion lives in one
@@ -92,14 +94,26 @@ this*. Any answer that only honours one of them is wrong.
 Stating this precisely matters more than stating it flatteringly — an
 overclaiming gate is how "green CI" quietly stops meaning anything.
 
-- **It is not an API-contract check.** 43 of the 44 gated specs stub every
-  network call with `page.route(...)`. The gate compares the frontend against
-  *its own hand-written mocks*, so it cannot observe the real API and cannot
-  detect backend contract drift. The pagination-envelope breakage
-  (AAASM-4892) is the proof: the app had already been updated and the **mocks**
-  were what went stale. The one spec that does assert a genuine round-trip
-  against a live `aa-api` — `hitl-approval` — is quarantined precisely because
-  this job does not provision a Rust toolchain to boot it.
+- **It is not an API-contract check, and its real-backend coverage is exactly
+  zero.** **All 44** gated specs stub every network call — 43 via `page.route`
+  directly, `violations-heatmap-design-fidelity` via the shared `mockApi()`
+  helper in `_fixtures/aaasm-1432`. The gate compares the frontend against *its
+  own hand-written mocks*, so it cannot observe the real API and cannot detect
+  backend contract drift. The pagination-envelope breakage (AAASM-4892) is the
+  proof: the app had already been updated and the **mocks** were what went stale.
+
+  Of all 86 specs in the suite, exactly one asserts a genuine round-trip against
+  a live gateway: `hitl-approval` is the only spec that uses `route.fetch` to
+  proxy `/api/v1/**` to a real server, and the only one that spawns a child
+  process — `hitl-fixture.ts:43` runs `cargo test --test e2e_hitl_approval` to
+  boot an `aa-api`. The `dashboard-e2e` job body contains **zero** matches for
+  `rust`, `cargo` or `toolchain`, so it cannot run it.
+
+  **That single exclusion — not the other 41 — is what caps this gate's
+  ceiling.** The quarantined-for-rot specs cost coverage of surfaces the gate
+  otherwise watches; excluding `hitl-approval` takes an entire *category* of
+  verification to zero, and no amount of working AAASM-5195 down will restore
+  it. Recovering it needs a Rust-side e2e lane, not a shorter quarantine list.
 - **It does not enforce ADR 0025.** Ten gated specs pin values sourced from
   `design/v1/` (ADR 0017, Accepted). Exactly one — `review-aaasm-5149` — cites
   `design/v2/`, and even that asserts three literal RGB constants committed in
@@ -118,8 +132,10 @@ overclaiming gate is how "green CI" quietly stops meaning anything.
   that everyone learns to bypass, which is strictly worse than a smaller check
   that is believed. The quarantine is tracked in AAASM-5195 and shrinks.
   *Assumption:* the list is actually worked down rather than becoming permanent
-  furniture. `QUARANTINE_CEILING` (below) turns the "only shrinks" half of that
-  assumption into a check; the "is worked down" half remains a commitment.
+  furniture. `QUARANTINE_BASELINE` turns the "never grows" half of that
+  assumption into a check — including the 1-for-1 swap a mere count would have
+  let through — while the "is actually worked down" half remains a commitment
+  that no mechanism can enforce.
 - **Two quarantine entries pass locally.** `review-aaasm-5150` (Linux-red only,
   AAASM-5199) and `hitl-approval` (needs `cargo` on the runner) are excluded for
   stated environmental reasons rather than for failing. They are the two cases
@@ -212,8 +228,8 @@ names the mechanism that enforces it, or is marked as a manual check.
 | `playwright.ci.config.ts` selects every spec not named in its quarantine list | `playwright test --config=playwright.ci.config.ts --list` |
 | The gated set passes with no failures on a Linux runner | the `dashboard-e2e` job itself |
 | No gated spec calls `toHaveScreenshot` | manual (`grep -rl toHaveScreenshot tests/e2e/` must return only the two quarantined snapshot specs) |
-| **No spec seeds `aa_token` into `localStorage`** | **`pnpm e2e:check-seeds`**, run as its own step in `dashboard-e2e` |
-| **The quarantine list never grows** | **`QUARANTINE_CEILING` in `playwright.ci.config.ts`**, evaluated on every config load, local and CI |
+| **No spec writes the auth token to `localStorage`** | **`pnpm e2e:check-seeds`** (`scripts/check-e2e-seeds.mjs`), its own step in `dashboard-e2e` — matches every write *shape*, allowlists reviewed keys, and fails closed if the spec tree is missing or empty |
+| **The quarantine list never grows or swaps** | **`QUARANTINE_BASELINE` in `playwright.quarantine.ts`** — asserts the live list is a subset of a frozen baseline; loaded by both `playwright.config.ts` and `playwright.ci.config.ts`, so it runs on `pnpm test:e2e` as well as in CI |
 
 ## Reconsideration triggers
 
