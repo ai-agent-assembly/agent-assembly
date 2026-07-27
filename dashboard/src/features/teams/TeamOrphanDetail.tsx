@@ -4,12 +4,7 @@ import { TruthfulValue } from '../../components/truthfulness/TruthfulValue'
 import { isKnown, mapCertain, type Certain } from '../../lib/truthfulness'
 import type { AgentNode } from './api'
 import type { AgentCensus } from './orphans'
-
-const STATUS_CHIP: Record<string, string> = {
-  active: 'is-ok',
-  suspended: 'is-warn',
-  deregistered: '',
-}
+import { statusChip } from './statusChip'
 
 interface TeamOrphanDetailProps {
   /**
@@ -151,7 +146,7 @@ export function TeamOrphanDetail({ orphans, census }: Readonly<TeamOrphanDetailP
                   {agent.flagged && (
                     <span className="teams-chip is-danger" data-testid="orphan-agent-flagged">flagged</span>
                   )}
-                  <span className={`teams-chip ${STATUS_CHIP[agent.status] ?? ''}`} data-testid="orphan-agent-status">
+                  <span className={`teams-chip ${statusChip(agent.status) ?? ''}`} data-testid="orphan-agent-status">
                     {agent.status}
                   </span>
                 </div>
