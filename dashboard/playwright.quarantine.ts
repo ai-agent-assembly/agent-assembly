@@ -25,9 +25,9 @@
  * exclusion lives in this one reviewable file rather than hidden in the specs.
  *
  * TO REMOVE AN ENTRY: fix the spec (or the product bug it exposes), confirm it
- * passes, delete the line, and lower `QUARANTINE_CEILING` below by the same
- * amount. No approval needed — shrinking this list is always the desired
- * direction.
+ * passes, and delete the line. Nothing else — the baseline below is a ceiling,
+ * not a target, so a shorter list needs no other edit. No approval needed;
+ * shrinking this list is always the desired direction.
  *
  * EVERY ENTRY WAS RE-MEASURED on 2026-07-27 (review follow-up), individually
  * and as a group. That pass removed `review-aaasm-5110.spec.ts`, which was

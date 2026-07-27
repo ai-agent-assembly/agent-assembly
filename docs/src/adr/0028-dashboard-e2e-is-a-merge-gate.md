@@ -228,8 +228,31 @@ names the mechanism that enforces it, or is marked as a manual check.
 | `playwright.ci.config.ts` selects every spec not named in its quarantine list | `playwright test --config=playwright.ci.config.ts --list` |
 | The gated set passes with no failures on a Linux runner | the `dashboard-e2e` job itself |
 | No gated spec calls `toHaveScreenshot` | manual (`grep -rl toHaveScreenshot tests/e2e/` must return only the two quarantined snapshot specs) |
-| **No spec writes the auth token to `localStorage`** | **`pnpm e2e:check-seeds`** (`scripts/check-e2e-seeds.mjs`), its own step in `dashboard-e2e` — matches every write *shape*, allowlists reviewed keys, and fails closed if the spec tree is missing or empty |
+| **No spec writes the auth token to `localStorage`** | **`pnpm e2e:check-seeds`** (`scripts/check-e2e-seeds.mjs`), its own step in `dashboard-e2e`. Fails closed on **both** axes: an unreviewed *key* fails, and — since v3 — any `localStorage` access no modelled pattern consumed fails as an unmodelled *shape*. Also fails if the spec tree is missing or empty. See the note below on why the shape half had to be added |
 | **The quarantine list never grows or swaps** | **`QUARANTINE_BASELINE` in `playwright.quarantine.ts`** — asserts the live list is a subset of a frozen baseline; loaded by both `playwright.config.ts` and `playwright.ci.config.ts`, so it runs on `pnpm test:e2e` as well as in CI |
+
+### A guard fails open on whatever it does not model
+
+The seed guard took three attempts, and the second failure is the one worth
+remembering, because it looked finished.
+
+- **v1** was a fixed-string grep. It caught 3 of 16 known write forms, and
+  `grep -r` on a missing directory exits 2 — which the shell read as "no match"
+  and reported as a pass.
+- **v2** modelled the write shapes and allowlisted the keys. It looked
+  fail-closed, and was — *on keys only*. An unrecognised key failed; an
+  unrecognised **shape** matched no pattern, so the key check never ran and it
+  failed **open**. Five further forms wrote the token straight past it, and the
+  two that mattered needed no intent to evade: `localStorage?.setItem(...)` is
+  idiomatic defensive style and `const ls = localStorage` is ordinary
+  refactoring.
+- **v3** inverts the default on both axes: every `localStorage` occurrence in
+  executable code must be consumed by a modelled pattern, or it fails.
+
+The generalisable rule: **when a check enumerates what is allowed, verify that
+everything it does not recognise reaches the failure path.** A guard silently
+declines to inspect what it cannot parse, and silence is indistinguishable from
+approval. That is the same defect as an advisory e2e job, one layer down.
 
 ## Reconsideration triggers
 
