@@ -33,3 +33,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0024](0024-empty-cascade-semantics.md) | Semantics of an Empty or Unavailable Policy Cascade | Proposed |
 | [0025](0025-design-v2-authoritative-visual-spec.md) | `design/v2/` Is the Authoritative Visual Specification | Proposed |
 | [0026](0026-open-dashboard-product-semantics.md) | Seven Open Dashboard Product-Semantics Decisions | Proposed (Decision 2 Accepted) |
+| [0027](0027-accessibility-floor-overrides-visual-spec.md) | The Accessibility Floor Overrides the Visual Specification | Accepted |

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { mintWsTicket, WsTicketError } from '../../auth/wsTicket'
 import { alertsEndpoints } from './endpoints'
+import { normaliseAlert } from './parseAlert'
 import type { Alert, Silence } from './types'
 
 // ── Wire protocol ─────────────────────────────────────────────────────────
@@ -112,18 +113,31 @@ export function useAlertsStream(
           return
         }
         const h = handlersRef.current
+        if (frame.type === 'heartbeat') return
+        // The socket carries the same `alert_response_from_stored` payload the
+        // REST list does, so it needs the same canonicalisation (AAASM-5149).
+        // Without it a single pushed frame would write a raw wire-vocabulary row
+        // straight into the shared alerts cache and silently undo the parse the
+        // list boundary just performed — the nav badge reads that cache.
+        //
+        // An unreadable frame is dropped rather than thrown, matching the
+        // malformed-JSON arm above: a push is an increment, not an answer, and
+        // the next list refetch is what re-establishes ground truth.
+        let alert: Alert
+        try {
+          alert = normaliseAlert(frame.alert)
+        } catch {
+          return
+        }
         switch (frame.type) {
           case 'alert.fire':
-            h.onFire?.(frame.alert)
+            h.onFire?.(alert)
             break
           case 'alert.resolve':
-            h.onResolve?.(frame.alert)
+            h.onResolve?.(alert)
             break
           case 'alert.silence':
-            h.onSilence?.(frame.alert, frame.silence)
-            break
-          case 'heartbeat':
-            // no-op
+            h.onSilence?.(alert, frame.silence)
             break
         }
       }

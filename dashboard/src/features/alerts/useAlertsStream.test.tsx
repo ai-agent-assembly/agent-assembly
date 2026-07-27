@@ -59,6 +59,60 @@ describe('useAlertsStream', () => {
     expect(onFire).toHaveBeenCalledWith(ALERT)
   })
 
+  it('canonicalises a frame written in the backend vocabulary (AAASM-5149)', async () => {
+    // The socket carries the same payload shape as the REST list. If it were
+    // forwarded raw, one pushed frame would write wire-vocabulary rows into the
+    // shared alerts cache and undo the list boundary's parse — and the nav
+    // badge reads that cache.
+    const onFire = vi.fn()
+    renderHook(() => useAlertsStream({ onFire }, defaultOpts))
+    await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0))
+
+    act(() => {
+      MockWebSocket.instances[0].emit({
+        type: 'alert.fire',
+        ts: '2026-05-14T09:00:00Z',
+        alert: {
+          id: 'a-9',
+          severity: 'critical',
+          status: 'unresolved',
+          category: 'budget',
+          message: 'Budget threshold 90% crossed',
+          timestamp: '2026-05-14T09:00:00Z',
+          agent_id: 'aa-002',
+        },
+      })
+    })
+
+    expect(onFire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'a-9',
+        severity: 'CRITICAL',
+        status: 'FIRING',
+        agentId: 'aa-002',
+        firstFiredAt: '2026-05-14T09:00:00Z',
+      }),
+    )
+  })
+
+  it('drops a frame it cannot read rather than forwarding a half-built alert', async () => {
+    // Dropping matches the existing malformed-JSON arm: a push is an increment,
+    // not an answer, and the next list refetch re-establishes ground truth.
+    const onFire = vi.fn()
+    renderHook(() => useAlertsStream({ onFire }, defaultOpts))
+    await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0))
+
+    act(() => {
+      MockWebSocket.instances[0].emit({
+        type: 'alert.fire',
+        ts: '2026-05-14T09:00:00Z',
+        alert: { id: 'a-9', severity: 'catastrophic', status: 'acknowledged' },
+      })
+    })
+
+    expect(onFire).not.toHaveBeenCalled()
+  })
+
   it('forwards RESOLVED and SILENCE frames to the matching handlers', async () => {
     const onResolve = vi.fn()
     const onSilence = vi.fn()
