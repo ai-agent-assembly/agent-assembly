@@ -16,11 +16,16 @@ const mockState = vi.hoisted(() => ({
     isError: boolean
     dataUpdatedAt: number
   },
-  policies: { data: undefined as { active: boolean }[] | undefined },
-  // The alerts holder mirrors the query-result shape the shell now reads
-  // (AAASM-5149): the badge is derived from the outcome — pending, errored, or
-  // resolved — not from `data` alone, so a test can no longer describe a failed
-  // query by simply omitting `data`.
+  // Both count holders mirror the query-result shape the shell now reads
+  // (AAASM-5149 for alerts, AAASM-5186 for policies): each badge is derived
+  // from the outcome — pending, errored, or resolved — not from `data` alone,
+  // so a test can no longer describe a failed query by simply omitting `data`.
+  policies: { data: undefined, isPending: false, isError: false, error: null } as {
+    data: { active: boolean }[] | undefined
+    isPending: boolean
+    isError: boolean
+    error: unknown
+  },
   alerts: { data: undefined, isPending: false, isError: false, error: null } as {
     data: { severity: string; status: string }[] | undefined
     isPending: boolean
@@ -55,7 +60,7 @@ function renderShellAt(path: string) {
 describe('AppShell chrome — count badges (AAASM-5021)', () => {
   beforeEach(() => {
     mockState.agents = { data: undefined, isError: false, dataUpdatedAt: 0 }
-    mockState.policies = { data: undefined }
+    mockState.policies = { data: [], isPending: false, isError: false, error: null }
     mockState.alerts = { data: [], isPending: false, isError: false, error: null }
   })
 
@@ -70,7 +75,12 @@ describe('AppShell chrome — count badges (AAASM-5021)', () => {
       isError: false,
       error: null,
     }
-    mockState.policies = { data: [{ active: false }, { active: true }, { active: false }] }
+    mockState.policies = {
+      data: [{ active: false }, { active: true }, { active: false }],
+      isPending: false,
+      isError: false,
+      error: null,
+    }
     renderShellAt('/overview')
 
     // Two CRITICAL alerts and two inactive policies → each badge shows its count.
@@ -86,7 +96,12 @@ describe('AppShell chrome — count badges (AAASM-5021)', () => {
       isError: false,
       error: null,
     }
-    mockState.policies = { data: [{ active: true }] }
+    mockState.policies = {
+      data: [{ active: true }],
+      isPending: false,
+      isError: false,
+      error: null,
+    }
     renderShellAt('/overview')
 
     expect(screen.queryByTestId('nav-badge-alerts')).toBeNull()
@@ -114,7 +129,7 @@ describe('AppShell chrome — count badges (AAASM-5021)', () => {
 describe('AppShell chrome — the Alerts badge never invents a zero (AAASM-5149)', () => {
   beforeEach(() => {
     mockState.agents = { data: undefined, isError: false, dataUpdatedAt: 0 }
-    mockState.policies = { data: undefined }
+    mockState.policies = { data: [], isPending: false, isError: false, error: null }
     mockState.alerts = { data: [], isPending: false, isError: false, error: null }
   })
 
@@ -155,14 +170,104 @@ describe('AppShell chrome — the Alerts badge never invents a zero (AAASM-5149)
     )
   })
 
-  it('leaves the Policy badge a plain count — only Alerts carries provenance', () => {
-    // Guards the narrow wiring: the shared NavBadge must not start rendering
-    // absence markers for a route whose count is still a plain number.
+  it('reports one badge as absent without disturbing the other', () => {
+    // The two counts are independent queries: an alerts outage must not erase
+    // a Policy count that loaded fine.
     mockState.alerts = { data: undefined, isPending: false, isError: true, error: new Error('x') }
-    mockState.policies = { data: [{ active: false }] }
+    mockState.policies = {
+      data: [{ active: false }],
+      isPending: false,
+      isError: false,
+      error: null,
+    }
     renderShellAt('/overview')
 
     expect(screen.getByTestId('nav-badge-policy')).toHaveTextContent('1')
+    expect(screen.queryByTestId('nav-badge-absent-policy')).toBeNull()
+    expect(screen.getByTestId('nav-badge-absent-alerts')).toHaveAttribute(
+      'data-truth-state',
+      'unavailable',
+    )
+  })
+})
+
+describe('AppShell chrome — the Policy badge never invents a zero (AAASM-5186)', () => {
+  beforeEach(() => {
+    mockState.agents = { data: undefined, isError: false, dataUpdatedAt: 0 }
+    mockState.policies = { data: [], isPending: false, isError: false, error: null }
+    mockState.alerts = { data: [], isPending: false, isError: false, error: null }
+  })
+
+  it('renders an explicit "unavailable" marker when the policies query fails', () => {
+    // The defect this ticket exists to remove: `policies.data ?? []` counted an
+    // outage to zero, the zero suppressed the badge, and an operator read the
+    // bare Policy rail item as "nothing needs attention here".
+    mockState.policies = {
+      data: undefined,
+      isPending: false,
+      isError: true,
+      error: new Error('HTTP 503'),
+    }
+    renderShellAt('/overview')
+
+    const marker = screen.getByTestId('nav-badge-absent-policy')
+    expect(marker).toHaveAttribute('data-truth-state', 'unavailable')
+    // What an operator sees is the shared marker and nothing else — no count,
+    // and specifically no zero. (The screen-reader sentence is separated out;
+    // it legitimately carries the HTTP status.)
+    const visible = Array.from(marker.children)
+      .filter((el) => !el.classList.contains('truth-sr-only'))
+      .map((el) => el.textContent)
+      .join('')
+    expect(visible).toBe('—')
+    expect(marker).toHaveTextContent('the request for this value failed')
+    expect(marker).toHaveTextContent('HTTP 503')
+  })
+
+  it('carries the absence in the nav link name without announcing it', () => {
+    // The rail is persistent chrome that mounts with the session, so no
+    // `role="alert"`: it would fire on every cold boot. The sentence rides the
+    // link's accessible name instead, via the clip-hidden `.truth-sr-only`
+    // span inside it.
+    mockState.policies = {
+      data: undefined,
+      isPending: false,
+      isError: true,
+      error: new Error('HTTP 503'),
+    }
+    renderShellAt('/overview')
+
+    const marker = screen.getByTestId('nav-badge-absent-policy')
+    expect(marker.closest('[role="alert"]')).toBeNull()
+    expect(marker.querySelector('.truth-sr-only')).not.toBeNull()
+    expect(marker.closest('a')).toHaveTextContent('the request for this value failed')
+  })
+
+  it('reports an in-flight query as unknown rather than as a clean rail', () => {
+    // Pending is not a fault, but it is not a zero either: pre-fix `?? []`
+    // rendered a cold boot as a settled, badge-free Policy item.
+    mockState.policies = { data: undefined, isPending: true, isError: false, error: null }
+    renderShellAt('/overview')
+
+    expect(screen.getByTestId('nav-badge-absent-policy')).toHaveAttribute(
+      'data-truth-state',
+      'unknown',
+    )
+  })
+
+  it('still renders no badge at all for a *known* zero', () => {
+    // Guards the over-correction: only an absence earns the marker. A resolved
+    // query that genuinely found no inactive policy is a real answer, and the
+    // honest rendering of it is an unadorned rail item.
+    mockState.policies = {
+      data: [{ active: true }],
+      isPending: false,
+      isError: false,
+      error: null,
+    }
+    renderShellAt('/overview')
+
+    expect(screen.queryByTestId('nav-badge-policy')).toBeNull()
     expect(screen.queryByTestId('nav-badge-absent-policy')).toBeNull()
   })
 })
@@ -170,7 +275,7 @@ describe('AppShell chrome — the Alerts badge never invents a zero (AAASM-5149)
 describe('AppShell chrome — rail foot runtime status (AAASM-5021)', () => {
   beforeEach(() => {
     mockState.agents = { data: undefined, isError: false, dataUpdatedAt: 0 }
-    mockState.policies = { data: undefined }
+    mockState.policies = { data: [], isPending: false, isError: false, error: null }
     mockState.alerts = { data: [], isPending: false, isError: false, error: null }
   })
 
@@ -203,7 +308,7 @@ describe('AppShell chrome — rail foot runtime status (AAASM-5021)', () => {
 describe('AppShell chrome — last-sync clock (AAASM-5021)', () => {
   beforeEach(() => {
     mockState.agents = { data: undefined, isError: false, dataUpdatedAt: 0 }
-    mockState.policies = { data: undefined }
+    mockState.policies = { data: [], isPending: false, isError: false, error: null }
     mockState.alerts = { data: [], isPending: false, isError: false, error: null }
   })
 
@@ -231,7 +336,7 @@ describe('AppShell chrome — last-sync clock (AAASM-5021)', () => {
 describe('AppShell chrome — breadcrumb label (AAASM-5021)', () => {
   beforeEach(() => {
     mockState.agents = { data: undefined, isError: false, dataUpdatedAt: 0 }
-    mockState.policies = { data: undefined }
+    mockState.policies = { data: [], isPending: false, isError: false, error: null }
     mockState.alerts = { data: [], isPending: false, isError: false, error: null }
   })
 
@@ -264,7 +369,7 @@ describe('AppShell chrome — breadcrumb label (AAASM-5021)', () => {
 describe('AppShell chrome — Escape closes the mobile nav (AAASM-5021)', () => {
   beforeEach(() => {
     mockState.agents = { data: undefined, isError: false, dataUpdatedAt: 0 }
-    mockState.policies = { data: undefined }
+    mockState.policies = { data: [], isPending: false, isError: false, error: null }
     mockState.alerts = { data: [], isPending: false, isError: false, error: null }
   })
 
