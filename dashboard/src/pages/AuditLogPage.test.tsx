@@ -173,7 +173,12 @@ describe('AuditLogPage', () => {
 
   it('routes an unrecognised event type into the Unrecognised tile', async () => {
     get.mockResolvedValue({
-      data: page([entry({ seq: 901, event_type: 'SomeFutureVariant', payload: '{}' })]),
+      // A variant outside the closed `LogEventType` enum — deliberately cast to
+      // exercise the UI's runtime fallback for a value a future backend could
+      // emit before the generated schema catches up (the "Unrecognised" tile).
+      data: page([
+        entry({ seq: 901, event_type: 'SomeFutureVariant' as LogEntry['event_type'], payload: '{}' }),
+      ]),
     })
     renderPage()
     const row = await screen.findByTestId('audit-row-901')
@@ -399,14 +404,17 @@ describe('AuditLogPage', () => {
 // ── AAASM-5120 ─────────────────────────────────────────────────────────────
 describe('AuditLogPage — window coverage', () => {
   function fullPage(pageNumber: number, total: number): { data: ReturnType<typeof page> } {
-    const items = Array.from({ length: AUDIT_PAGE_SIZE }, (_, i) => ({
-      seq: (pageNumber - 1) * AUDIT_PAGE_SIZE + i,
-      timestamp: '2026-05-11T14:02:11Z',
-      agent_id: RESEARCH_AGENT,
-      session_id: 'sess-9a4f',
-      event_type: 'ToolCallIntercepted',
-      payload: '{"decision":1}',
-    }))
+    const items = Array.from(
+      { length: AUDIT_PAGE_SIZE },
+      (_, i): LogEntry => ({
+        seq: (pageNumber - 1) * AUDIT_PAGE_SIZE + i,
+        timestamp: '2026-05-11T14:02:11Z',
+        agent_id: RESEARCH_AGENT,
+        session_id: 'sess-9a4f',
+        event_type: 'ToolCallIntercepted',
+        payload: '{"decision":1}',
+      }),
+    )
     return { data: page(items, total, pageNumber) }
   }
 
