@@ -54,11 +54,15 @@ severity: CRITICAL
 `
 
 describe('RuleYamlViewer', () => {
-  it('registers the npm-bundled Monaco with the loader so it never hits the CDN (AAASM-5199)', () => {
-    // The module-level loader.config in RuleYamlViewer runs on import, before
-    // any render. It must receive the bundled `monaco-editor` package so
-    // @monaco-editor/react uses the local runtime instead of fetching Monaco
-    // from jsDelivr — a fetch index.html's `script-src 'self'` CSP forbids.
+  it('registers the npm-bundled Monaco with the loader so it never hits the CDN (AAASM-5199)', async () => {
+    // loader.config is deferred into the same dynamic-import boundary as the
+    // Editor itself, so importing this module never eagerly loads Monaco —
+    // only rendering (and resolving the lazy Editor) does. It must receive
+    // the bundled `monaco-editor` package so @monaco-editor/react uses the
+    // local runtime instead of fetching Monaco from jsDelivr — a fetch
+    // index.html's `script-src 'self'` CSP forbids.
+    render(<RuleYamlViewer yaml={YAML_SAMPLE} />)
+    await screen.findByTestId('monaco-editor-mock')
     expect(loaderConfig).toHaveBeenCalledWith({ monaco: bundledMonaco })
   })
 
