@@ -101,6 +101,20 @@ describe('transformBuckets', () => {
     expect(rows[0]).toEqual({ label: 'Jan', 'agent-a': 120, 'agent-b': 80 })
     expect(rows[1]).toEqual({ label: 'Feb', 'agent-a': 200, 'agent-b': 60 })
   })
+
+  it('retains a "__proto__" segment as an own property instead of silently dropping it', () => {
+    // With a plain-object row, `row['__proto__'] = value` is a silent no-op:
+    // it reassigns the prototype slot rather than creating an own property, so
+    // the segment vanishes from the chart with no crash and no wrong value.
+    const rows = transformBuckets([
+      {
+        label: 'Jan',
+        segments: [{ key: '__proto__', name: 'Sneaky', value: 42 }],
+      },
+    ])
+    expect(Object.prototype.hasOwnProperty.call(rows[0], '__proto__')).toBe(true)
+    expect(rows[0]['__proto__']).toBe(42)
+  })
 })
 
 describe('formatUsd', () => {
