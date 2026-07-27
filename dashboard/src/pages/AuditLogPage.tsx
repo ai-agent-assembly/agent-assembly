@@ -29,30 +29,30 @@ import './AuditLogPage.css'
  * previous table listed six names invented by the hi-fi fixture, of which only
  * `PolicyViolation` exists on the backend.
  */
-const EVENT_META: Record<string, { label: string; chip: string; icon: string }> = {
-  ToolCallIntercepted: { label: 'Tool Call', chip: 'info', icon: '⚙' },
-  ToolDispatched: { label: 'Tool Dispatched', chip: 'info', icon: '⚙' },
-  PolicyViolation: { label: 'Policy Violation', chip: 'danger', icon: '⚑' },
-  MessageBlocked: { label: 'Message Blocked', chip: 'danger', icon: '⊘' },
-  CredentialLeakBlocked: { label: 'Credential Blocked', chip: 'danger', icon: '⊘' },
-  ApprovalRequested: { label: 'Approval Requested', chip: 'info', icon: '◷' },
-  ApprovalGranted: { label: 'Approval Granted', chip: 'ok', icon: '✓' },
-  ApprovalDenied: { label: 'Approval Denied', chip: 'danger', icon: '✕' },
-  ApprovalTimedOut: { label: 'Approval Timed Out', chip: 'warn', icon: '◷' },
-  ApprovalRouted: { label: 'Approval Routed', chip: 'info', icon: '⇄' },
-  ApprovalEscalated: { label: 'Approval Escalated', chip: 'warn', icon: '⇄' },
-  BudgetLimitApproached: { label: 'Budget Warning', chip: 'warn', icon: '◈' },
-  BudgetLimitExceeded: { label: 'Budget Exceeded', chip: 'danger', icon: '◈' },
-  AgentForceDeregistered: { label: 'Agent Deregistered', chip: 'warn', icon: '⊘' },
-  A2ACallIntercepted: { label: 'A2A Call', chip: 'info', icon: '⇥' },
-  A2AImpersonationAttempted: { label: 'A2A Impersonation', chip: 'danger', icon: '⚑' },
-  SandboxStarted: { label: 'Sandbox Started', chip: '', icon: '▣' },
-  SandboxFilesystemBlocked: { label: 'Sandbox FS Blocked', chip: 'danger', icon: '▣' },
-  SandboxCpuTimeout: { label: 'Sandbox CPU Timeout', chip: 'warn', icon: '▣' },
-  SandboxOomKilled: { label: 'Sandbox OOM Killed', chip: 'warn', icon: '▣' },
-  SandboxTerminated: { label: 'Sandbox Terminated', chip: '', icon: '▣' },
-  SandboxHostFnRateLimited: { label: 'Sandbox Rate Limited', chip: 'warn', icon: '▣' },
-}
+const EVENT_META = new Map<string, { label: string; chip: string; icon: string }>([
+  ['ToolCallIntercepted', { label: 'Tool Call', chip: 'info', icon: '⚙' }],
+  ['ToolDispatched', { label: 'Tool Dispatched', chip: 'info', icon: '⚙' }],
+  ['PolicyViolation', { label: 'Policy Violation', chip: 'danger', icon: '⚑' }],
+  ['MessageBlocked', { label: 'Message Blocked', chip: 'danger', icon: '⊘' }],
+  ['CredentialLeakBlocked', { label: 'Credential Blocked', chip: 'danger', icon: '⊘' }],
+  ['ApprovalRequested', { label: 'Approval Requested', chip: 'info', icon: '◷' }],
+  ['ApprovalGranted', { label: 'Approval Granted', chip: 'ok', icon: '✓' }],
+  ['ApprovalDenied', { label: 'Approval Denied', chip: 'danger', icon: '✕' }],
+  ['ApprovalTimedOut', { label: 'Approval Timed Out', chip: 'warn', icon: '◷' }],
+  ['ApprovalRouted', { label: 'Approval Routed', chip: 'info', icon: '⇄' }],
+  ['ApprovalEscalated', { label: 'Approval Escalated', chip: 'warn', icon: '⇄' }],
+  ['BudgetLimitApproached', { label: 'Budget Warning', chip: 'warn', icon: '◈' }],
+  ['BudgetLimitExceeded', { label: 'Budget Exceeded', chip: 'danger', icon: '◈' }],
+  ['AgentForceDeregistered', { label: 'Agent Deregistered', chip: 'warn', icon: '⊘' }],
+  ['A2ACallIntercepted', { label: 'A2A Call', chip: 'info', icon: '⇥' }],
+  ['A2AImpersonationAttempted', { label: 'A2A Impersonation', chip: 'danger', icon: '⚑' }],
+  ['SandboxStarted', { label: 'Sandbox Started', chip: '', icon: '▣' }],
+  ['SandboxFilesystemBlocked', { label: 'Sandbox FS Blocked', chip: 'danger', icon: '▣' }],
+  ['SandboxCpuTimeout', { label: 'Sandbox CPU Timeout', chip: 'warn', icon: '▣' }],
+  ['SandboxOomKilled', { label: 'Sandbox OOM Killed', chip: 'warn', icon: '▣' }],
+  ['SandboxTerminated', { label: 'Sandbox Terminated', chip: '', icon: '▣' }],
+  ['SandboxHostFnRateLimited', { label: 'Sandbox Rate Limited', chip: 'warn', icon: '▣' }],
+])
 
 /**
  * Chip variant + lowercased label for the decision verdict carried in the
@@ -284,7 +284,7 @@ export function AuditLogPage() {
               </tr>
             ) : (
               filtered.map((e) => {
-                const meta = EVENT_META[e.event_type] ?? {
+                const meta = EVENT_META.get(e.event_type) ?? {
                   label: e.event_type,
                   chip: '',
                   icon: '·',
