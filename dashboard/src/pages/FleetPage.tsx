@@ -179,7 +179,7 @@ const baseColumns: ColumnDef<FleetAgent>[] = [
     header: '',
     cell: (info) => (
       <Link
-        to={`/agents/${info.row.original.id}`}
+        to={`/agents/${info.row.original.id}?tab=capability`}
         className="fleet-table__action"
         data-testid="fleet-row-action"
       >

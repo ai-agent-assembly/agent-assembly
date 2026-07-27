@@ -309,6 +309,25 @@ describe('FleetPage table interactions', () => {
     expect(nameLink.getAttribute('href')).toBe('/agents/abc-123')
   })
 
+  it('deep-links the caps → row action to the capability tab, not the agent name target (AAASM-5162)', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [makeAgent({ id: 'abc-123', name: 'alpha' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+    const capsAction = await screen.findByTestId('fleet-row-action')
+    expect(capsAction.tagName).toBe('A')
+    expect(capsAction.getAttribute('href')).toBe('/agents/abc-123?tab=capability')
+    // The label's promise must differ from the plain agent-name link's target.
+    expect(capsAction.getAttribute('href')).not.toBe(
+      screen.getByTestId('fleet-row-name').getAttribute('href'),
+    )
+  })
+
   it('toggles individual row selection via the row checkbox', async () => {
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
       mockQuery<Agent[]>({

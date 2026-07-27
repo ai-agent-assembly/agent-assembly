@@ -140,6 +140,17 @@ const TABS: ReadonlyArray<{ id: AgentDetailTab; label: string }> = [
   { id: 'config',     label: 'Config' },
 ]
 
+/**
+ * The tab a deep link asks for via `?tab=`, or `overview` when the param is
+ * absent or names no known tab. Lets affordances like the Fleet "caps →" row
+ * action open the drawer directly on the capability surface. `close` already
+ * preserves `location.search`, so the parameter round-trips unchanged.
+ */
+function initialTabFromSearch(search: string): AgentDetailTab {
+  const requested = new URLSearchParams(search).get('tab')
+  return TABS.some((t) => t.id === requested) ? (requested as AgentDetailTab) : 'overview'
+}
+
 export function AgentDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -147,7 +158,7 @@ export function AgentDetailPage() {
   const { toast } = useToast()
   const { data: agent, isLoading: agentLoading, isError: agentError, refetch: refetchAgent } = useAgentQuery(id ?? '')
   const { data: events, isLoading: eventsLoading, isError: eventsError } = useAgentEventsQuery(id ?? '')
-  const [tab, setTab] = useState<AgentDetailTab>('overview')
+  const [tab, setTab] = useState<AgentDetailTab>(() => initialTabFromSearch(location.search))
   const [showSuspendDialog, setShowSuspendDialog] = useState(false)
   const [sandboxOnly, setSandboxOnly] = useState(false)
 

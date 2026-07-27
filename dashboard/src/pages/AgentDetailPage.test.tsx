@@ -321,6 +321,29 @@ describe('AgentDetailPage tab navigation', () => {
     expect(screen.queryByTestId('agent-detail-posture')).not.toBeInTheDocument()
   })
 
+  it('opens on the Capability tab when ?tab=capability is present (AAASM-5162)', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123?tab=capability')
+    expect(await screen.findByTestId('agent-capability-tab')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-detail-tab-capability')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByTestId('agent-detail-posture')).not.toBeInTheDocument()
+  })
+
+  it('defaults to Overview when ?tab= is absent', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    await screen.findByTestId('agent-detail')
+    expect(screen.getByTestId('agent-detail-tab-overview')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('agent-detail-tab-capability')).toHaveAttribute('aria-selected', 'false')
+  })
+
+  it('falls back to Overview when ?tab= names an unknown tab', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123?tab=bogus')
+    await screen.findByTestId('agent-detail')
+    expect(screen.getByTestId('agent-detail-tab-overview')).toHaveAttribute('aria-selected', 'true')
+  })
+
   it('mounts the live Traffic / Policies / Lineage tabs when selected', async () => {
     mockHappyPath()
     renderApp('/agents/abc123')
