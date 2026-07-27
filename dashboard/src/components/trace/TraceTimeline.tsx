@@ -1,6 +1,8 @@
 import type React from 'react'
+import { useMemo } from 'react'
 import type { TraceEvent, TraceSeverity } from '../../features/trace/types'
 import { deriveVerdict } from '../../features/trace/decision'
+import { MAX_INDENT_DEPTH, computeSpanDepths } from '../../features/trace/nesting'
 import { isKnown } from '../../lib/truthfulness'
 import { AbsenceMarker, TruthfulValue } from '../truthfulness'
 import { VerdictChip } from './VerdictChip'
@@ -60,6 +62,8 @@ export interface TraceTimelineProps {
 interface TraceEventRowProps {
   readonly event: TraceEvent
   readonly isLast: boolean
+  /** Nesting depth from `computeSpanDepths`; 0 is a root span. */
+  readonly depth: number
   readonly onSelectEvent?: (event: TraceEvent) => void
 }
 
@@ -86,7 +90,7 @@ function makeRowKeyDownHandler(
  * keep the parent's cognitive complexity low (SonarCloud typescript:S3776);
  * rendering and interaction wiring for one event live here.
  */
-function TraceEventRow({ event, isLast, onSelectEvent }: TraceEventRowProps) {
+function TraceEventRow({ event, isLast, depth, onSelectEvent }: TraceEventRowProps) {
   const sev = severityKey(event)
   const icon = ICON_BY_TYPE.get(event.type) ?? '·'
   const verdict = deriveVerdict(event)
@@ -106,6 +110,11 @@ function TraceEventRow({ event, isLast, onSelectEvent }: TraceEventRowProps) {
       data-testid="trace-event"
       data-severity={sev}
       data-event-type={event.type}
+      // The true depth is reported however deep the chain runs; only the drawn
+      // offset is clamped, so `data-depth` stays a fact about the data rather
+      // than a description of the layout.
+      data-depth={depth}
+      style={{ '--trace-depth': Math.min(depth, MAX_INDENT_DEPTH) } as React.CSSProperties}
       role={onSelectEvent ? 'button' : undefined}
       tabIndex={onSelectEvent ? 0 : undefined}
       onClick={handleClick}
@@ -163,8 +172,14 @@ function TraceEventRow({ event, isLast, onSelectEvent }: TraceEventRowProps) {
  * left (`.trace-event__rail`), and a 3-line body on the right
  * (`.trace-event__head` / `.__detail` / `.__meta`). The rail line is
  * omitted on the final event so the timeline visually terminates.
+ *
+ * Rows are indented by `parent_span_id` depth (AAASM-5109) so a tool call made
+ * *by* another action reads as subordinate to it rather than as the next thing
+ * that happened. The order is left exactly as the gateway sorted it (by
+ * `start_time`) — indentation shows lineage, it does not regroup the timeline.
  */
 export function TraceTimeline({ events, onSelectEvent }: TraceTimelineProps) {
+  const depths = useMemo(() => computeSpanDepths(events), [events])
   return (
     <ol className="trace-timeline" data-testid="trace-timeline">
       {events.map((event, index) => (
@@ -172,6 +187,7 @@ export function TraceTimeline({ events, onSelectEvent }: TraceTimelineProps) {
           key={event.id}
           event={event}
           isLast={index === events.length - 1}
+          depth={depths[index]}
           onSelectEvent={onSelectEvent}
         />
       ))}
