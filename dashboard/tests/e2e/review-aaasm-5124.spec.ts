@@ -360,6 +360,12 @@ test.describe('AAASM-5124 review — the bulk override writes only on a delibera
 
       const grid = page.getByRole('grid', { name: 'capability matrix' })
       await expect(grid).toBeVisible()
+      // Since AAASM-5125 the page lands on the verb the projection populates
+      // most; this fixture ties read/write/delete at four cells each, so it
+      // opens on READ (first in VERBS order). This override lane is about the
+      // gmail *write* policy (`inbox-scope` denies gmail write), so select WRITE
+      // explicitly: gmail is then two allow and pg two deny → two allow cells.
+      await page.getByRole('radio', { name: 'write' }).click()
       await expect(grid.locator('.cap-mx-cell[data-decision="allow"]')).toHaveCount(2)
 
       await page.getByRole('checkbox', { name: 'select all agents' }).check()
