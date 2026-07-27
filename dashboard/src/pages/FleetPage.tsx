@@ -10,7 +10,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import { useAgentsQuery, useActiveSessionsQuery, useAgentEnforcementQuery } from '../features/agents/api'
+import { useAgentsQuery, useActiveSessionsQuery, useAgentEnforcementQuery, type Agent } from '../features/agents/api'
 import { ActiveSessionsView } from './ActiveSessionsView'
 import { toFleetAgent, formatLastSeen, type FleetAgent } from '../features/agents/fleetTypes'
 import {
@@ -18,8 +18,10 @@ import {
   fleetFiltersFromParams,
   fleetFiltersToParamsRecord,
   frameworkOptions,
+  DEFAULT_FLEET_FILTERS,
   type FleetFilters,
 } from '../features/agents/fleetFilters'
+import { certainFromQuery, certainText, isKnown, NO_DATA, type Certain } from '../lib/truthfulness'
 import { StatusChip } from '../components/fleet/StatusChip'
 import { ModeChip } from '../components/fleet/ModeChip'
 import { TrustBar } from '../components/fleet/TrustBar'
@@ -190,6 +192,36 @@ const baseColumns: ColumnDef<FleetAgent>[] = [
 type FleetView = 'agents' | 'sessions'
 
 /**
+ * Why the agents view has no rows — the four cases a bare headers-only table
+ * used to conflate (AAASM-5130, ADR-0017 correction C1).
+ *
+ * They are genuinely different facts and must never render alike:
+ * `filter-empty` and `fleet-empty` are *successful, known* results with
+ * different remedies (clear the filter vs. onboard an agent), while
+ * `unavailable` and `loading` have established nothing at all.
+ */
+type FleetTableState = 'loading' | 'unavailable' | 'fleet-empty' | 'filter-empty' | 'rows'
+
+/**
+ * Classify the agents view from the query outcome plus the post-filter count.
+ *
+ * The absence branch comes first and is deliberately terminal: a failed or
+ * in-flight request has not established that the fleet is empty, so it may not
+ * borrow either empty-state copy. Only once the list is `known` — where `[]` is
+ * a real answer, not a missing one — does the filtered count decide which of
+ * the two empty results applies.
+ */
+function fleetTableState(
+  agents: Certain<Agent[]>,
+  isLoading: boolean,
+  filteredCount: number,
+): FleetTableState {
+  if (!isKnown(agents)) return isLoading ? 'loading' : 'unavailable'
+  if (agents.value.length === 0) return 'fleet-empty'
+  return filteredCount === 0 ? 'filter-empty' : 'rows'
+}
+
+/**
  * `true` when the click landed on an interactive element inside the row
  * (link, button, input, label). Used to suppress the row-level navigation
  * so the inner control's own handler stays authoritative.
@@ -297,8 +329,16 @@ export function FleetPage() {
     getSortedRowModel: getSortedRowModel(),
   })
 
-  const totalAgents = agents?.length ?? 0
+  const agentsCertain = useMemo<Certain<Agent[]>>(
+    () => certainFromQuery<Agent[]>({ isError, isPending: isLoading, data: agents }),
+    [isError, isLoading, agents],
+  )
   const filteredCount = filteredFleet.length
+  const tableState = fleetTableState(agentsCertain, isLoading, filteredCount)
+  // Counts are claims about the fleet, so they fold to `—` rather than `0`
+  // whenever the fleet size is not yet a known fact.
+  const totalAgentsText = certainText(agentsCertain, (list) => String(list.length))
+  const filteredCountText = isKnown(agentsCertain) ? String(filteredCount) : NO_DATA
 
   const suspend = useSuspendAgent()
   const resume = useResumeAgent()
@@ -358,7 +398,7 @@ export function FleetPage() {
         <div className="fleet-page__heading">
           <h1 className="fleet-page__title">
             Fleet{' '}<span className="fleet-page__count" data-testid="fleet-page-count">
-              · {filteredCount} of {totalAgents} agents
+              · {filteredCountText} of {totalAgentsText} agents
             </span>
           </h1>
           <p className="fleet-page__sub">
@@ -384,7 +424,7 @@ export function FleetPage() {
           onClick={() => setView('agents')}
           data-testid="fleet-tab-agents"
         >
-          Agents<span className="fleet-tabs__count" data-testid="fleet-tab-agents-count">{totalAgents}</span>
+          Agents<span className="fleet-tabs__count" data-testid="fleet-tab-agents-count">{totalAgentsText}</span>
         </button>
         <button
           type="button"
@@ -462,14 +502,14 @@ export function FleetPage() {
         />
       )}
 
-      {view === 'agents' && isError && (
-        <div className="fleet-error" data-testid="agents-error">
+      {view === 'agents' && tableState === 'unavailable' && (
+        <div className="fleet-error" data-testid="agents-error" role="alert">
           <span>Failed to load agents.</span>
           <button type="button" onClick={() => ignorePromise(refetch())}>Retry</button>
         </div>
       )}
 
-      {view === 'agents' && !isLoading && !isError && agents?.length === 0 && (
+      {view === 'agents' && tableState === 'fleet-empty' && (
         <p className="fleet-empty fleet-empty--inline" data-testid="agents-empty">
           No agents registered yet.{' '}
           <a href="https://docs.agent-assembly.com/quickstart" target="_blank" rel="noreferrer">
@@ -478,7 +518,12 @@ export function FleetPage() {
         </p>
       )}
 
-      {view === 'agents' && (
+      {/* The table is suppressed for every state that has no rows *and* no
+          rows to hope for: an empty grid under an error banner or an
+          onboarding callout reads as "the fleet is empty", which is exactly
+          the claim neither state is entitled to make. `filter-empty` keeps
+          it — the columns are still meaningful there. */}
+      {view === 'agents' && tableState !== 'unavailable' && tableState !== 'fleet-empty' && (
         <div className="fleet-table__wrap">
           <table className="fleet-table" data-testid="agents-table">
             <thead>
@@ -510,7 +555,7 @@ export function FleetPage() {
               ))}
             </thead>
             <tbody>
-              {isLoading ? (
+              {tableState === 'loading' ? (
                 <SkeletonRows />
               ) : (
                 table.getRowModel().rows.map((row) => (
@@ -533,6 +578,25 @@ export function FleetPage() {
               )}
             </tbody>
           </table>
+          {tableState === 'filter-empty' && (
+            <div className="fleet-empty fleet-empty--filtered" data-testid="fleet-filter-empty" role="status">
+              <p className="fleet-empty__title">no agents match these filters</p>
+              <p className="fleet-empty__body">
+                All {totalAgentsText} registered agents were excluded by the current filters.
+                They are URL-persisted, so a shared or bookmarked link can arrive already narrowed.
+              </p>
+              <div className="fleet-empty__action">
+                <button
+                  type="button"
+                  className="fleet-page__btn"
+                  onClick={() => setFilters(DEFAULT_FLEET_FILTERS)}
+                  data-testid="fleet-filter-empty-clear"
+                >
+                  Clear filters
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
