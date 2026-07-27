@@ -25,6 +25,16 @@ class ResizeObserverStub {
 }
 globalThis.ResizeObserver = ResizeObserverStub
 
+/**
+ * A query result shaped the way TanStack Query v5 actually shapes one.
+ *
+ * `isPending` is derived from `isLoading` unless given explicitly, because the
+ * two are not interchangeable — `isLoading === isPending && isFetching` — and
+ * the code under test reads **`isPending`** (`certainFromQuery`). Mocks that set
+ * only `isLoading` therefore left every in-flight assertion exercising a state
+ * TanStack never produces, so the genuine in-flight rendering went uncovered
+ * (AAASM-5185).
+ */
 function mockQuery<T>(p: Record<string, unknown>): UseQueryResult<T, Error> {
   return p as unknown as UseQueryResult<T, Error>
 }
@@ -79,7 +89,13 @@ function mockTopology(nodes: readonly TopologyNode[] = []) {
 function setupMocks(
   overview: TopologyOverview | undefined = OVERVIEW,
   costs: CostSummary | undefined = COSTS,
-  opts: { isLoading?: boolean; isError?: boolean; nodes?: readonly TopologyNode[] } = {},
+  opts: {
+    isLoading?: boolean
+    /** Defaults to `isLoading`; set explicitly only to drive the two apart. */
+    isPending?: boolean
+    isError?: boolean
+    nodes?: readonly TopologyNode[]
+  } = {},
 ) {
   vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
     mockQuery<TopologyOverview>({
@@ -191,7 +207,12 @@ describe('CostsPage — KPI strip', () => {
     expect(within(util).getByTestId('costs-kpi-utilisation-value').dataset.truthState).toBe(
       'unconfigured',
     )
-    expect(within(util).getByText('no daily budget limit set')).toBeInTheDocument()
+    // …and the caption may not describe a budget that was never read. The
+    // summary carried no payload, so whether a limit exists is unknown — the
+    // "no daily budget limit set" this replaces asserted it does not.
+    expect(within(util).queryByText('no daily budget limit set')).not.toBeInTheDocument()
+    expect(within(util).getByText('no daily budget was reported')).toBeInTheDocument()
+    expect(within(daily).getByText('no daily budget was reported')).toBeInTheDocument()
 
     // The regression: an unresolved summary reported `0 across 0 teams`, which
     // is a measurement nobody took.
@@ -559,6 +580,50 @@ describe('CostsPage — AAASM-5185: the strip never reports 0 for what it did no
     expect(within(blocked).getByText('no teams over the daily limit')).toBeInTheDocument()
     expect(within(blocked).getByTestId('costs-kpi-blocked-value').dataset.truthState).toBe('known')
   })
+})
+
+describe('CostsPage — AAASM-5185: a caption never describes a budget it did not read', () => {
+  it('replaces every "no limit set" caption with the outage on a failed /costs', async () => {
+    // The half-fix: the *value* became `Unavailable` while its own caption went
+    // on asserting "no daily limit set" — a config fact derived from a null
+    // that only means the request failed. Three of five cards told the operator
+    // to configure a budget that may already exist, beside a section reading
+    // "Failed to load cost data".
+    setupMocks(OVERVIEW, undefined, { isError: true })
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const daily = await screen.findByTestId('costs-kpi-daily')
+    expect(within(daily).queryByText('no daily limit set')).not.toBeInTheDocument()
+    expect(within(daily).getByText('daily budget could not be loaded')).toBeInTheDocument()
+
+    const monthly = screen.getByTestId('costs-kpi-monthly')
+    expect(within(monthly).queryByText('no monthly limit set')).not.toBeInTheDocument()
+    expect(within(monthly).getByText('monthly budget could not be loaded')).toBeInTheDocument()
+
+    const util = screen.getByTestId('costs-kpi-utilisation')
+    expect(within(util).queryByText('no daily budget limit set')).not.toBeInTheDocument()
+    expect(within(util).getByText('daily budget could not be loaded')).toBeInTheDocument()
+  })
+
+  it('still describes the budget when the summary genuinely resolved without one', async () => {
+    // The guard must not swallow the real case: a 200 carrying spend and no
+    // ceiling *is* entitled to say the limit is unset.
+    const noLimits: CostSummary = {
+      date: '2026-05-13',
+      daily_spend_usd: '150.00',
+      per_agent: [],
+      per_team: [],
+    }
+    setupMocks(OVERVIEW, noLimits)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const util = await screen.findByTestId('costs-kpi-utilisation')
+    expect(within(util).getByText('no daily budget limit set')).toBeInTheDocument()
+    expect(within(screen.getByTestId('costs-kpi-daily')).getByText('no daily limit set')).toBeInTheDocument()
+  })
+
 })
 
 describe('CostsPage — AAASM-5185: a configured $0 ceiling gets one answer, not three', () => {

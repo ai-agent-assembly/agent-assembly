@@ -98,27 +98,58 @@ function KpiCard({ label, value, sub, valueClass = '', footer, testId }: KpiCard
   )
 }
 
+/**
+ * Caption for a card whose figure comes from the cost summary.
+ *
+ * A caption may only describe the budget configuration when the summary that
+ * would carry it actually resolved. `limit == null` means "nothing is
+ * configured" *only* on a resolved payload; on a failed or in-flight request it
+ * means nothing was read at all, and captioning that "no daily limit set" tells
+ * the operator to go configure a budget that may well already exist. That left
+ * the value saying `Unavailable` while its own caption asserted a configuration
+ * fact — the same self-contradiction on one card that AAASM-5185 found between
+ * two (`— · no daily budget limit set` beside `Failed to load cost data`).
+ *
+ * The absent branch stays a `known` sentence rather than a second `—`: the
+ * operator is better served by being told why the figure is missing than by a
+ * row of dashes. What it may never do is describe a configuration it did not
+ * read.
+ */
+function summarySub(
+  summary: Certain<CostSummary>,
+  subject: string,
+  describe: () => string,
+): Certain<ReactNode> {
+  if (isKnown(summary)) return known(describe())
+  if (summary.state === 'unavailable') return known(`${subject} could not be loaded`)
+  if (summary.state === 'unknown') return known(`waiting for the ${subject}`)
+  return known(`no ${subject} was reported`)
+}
+
 interface SpendKpiCardProps {
   readonly label: string
   readonly period: string
   readonly spend: PeriodSpend
   /**
-   * Which absence an unfilled spend figure is — resolved by the caller from the
-   * `/costs` query, because only it can tell an outage from an unset budget.
+   * The cost summary this card's figures came from.
+   *
+   * Passed whole rather than as a pre-resolved `TruthState` because the card
+   * needs it twice: to say which absence an unfilled figure is, and to know
+   * whether it is entitled to describe the budget at all.
    */
-  readonly whenMissing: TruthState
+  readonly summary: Certain<CostSummary>
   readonly testId: string
 }
 
 /** Daily / Monthly spend card: value, "of $limit" sub, mini budget bar + % used. */
-function SpendKpiCard({ label, period, spend, whenMissing, testId }: SpendKpiCardProps) {
+function SpendKpiCard({ label, period, spend, summary, testId }: SpendKpiCardProps) {
   return (
     <KpiCard
       testId={testId}
       label={label}
-      value={certainUsd(spend.spend, whenMissing)}
+      value={certainUsd(spend.spend, isKnown(summary) ? 'unconfigured' : summary.state)}
       valueClass={burnValueClass(spend.pct)}
-      sub={known(
+      sub={summarySub(summary, `${period} budget`, () =>
         spend.limit == null
           ? `no ${period} limit set`
           : `of ${usd(spend.limit)} ${period} limit`,
@@ -323,14 +354,14 @@ export function CostsPage() {
           label="Daily spend"
           period="daily"
           spend={kpis.daily}
-          whenMissing={spendState}
+          summary={costsCertain}
         />
         <SpendKpiCard
           testId="costs-kpi-monthly"
           label="Monthly spend"
           period="monthly"
           spend={kpis.monthly}
-          whenMissing={spendState}
+          summary={costsCertain}
         />
         {/* `0 across 0 teams` was the same false negative as the Blocked count:
             an absent breakdown is not a measured emptiness. A resolved summary
@@ -356,7 +387,7 @@ export function CostsPage() {
           // as the one affordance for "no production value" and forbids the
           // ad-hoc variants precisely so an operator learns to read it once.
           value={mapCertain(certain(kpis.daily.pct, spendState), pct => `${pct.toFixed(1)}%`)}
-          sub={known(
+          sub={summarySub(costsCertain, 'daily budget', () =>
             kpis.daily.limit == null
               ? 'no daily budget limit set'
               : `daily · of ${usd(kpis.daily.limit)} limit`,
