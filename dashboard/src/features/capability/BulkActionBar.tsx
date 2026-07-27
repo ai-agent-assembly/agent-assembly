@@ -117,8 +117,13 @@ export function BulkActionBar({ count, resources, verb, onApply, onClear }: Read
         </button>
       </div>
 
+      {/* `role="group"` so the label is actually exposed — an aria-label on a
+          role-less div is ignored by assistive tech, which would leave the
+          disclosure invisible to exactly the operator it protects. Not
+          `alertdialog`: that promises modal focus management this does not
+          implement. */}
       {confirming && decision !== NO_DECISION && (
-        <div className="cap-bulk-confirm" aria-label="confirm override">
+        <div className="cap-bulk-confirm" role="group" aria-label="confirm override">
           <p className="cap-bulk-confirm-q">
             Record <strong>{decision}</strong> for <strong>{verb}</strong> on{' '}
             <strong>{resourceName}</strong> across <strong>{agentsLabel}</strong>?
