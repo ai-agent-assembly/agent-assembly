@@ -166,7 +166,11 @@ test.describe('AAASM-5173 — truthfulness primitives', () => {
       )
       await openCapability(page)
 
-      for (const id of ['cap-summary-allow', 'cap-summary-narrow', 'cap-summary-deny']) {
+      // AAASM-5187 (ADR 0026 Decision 2) removed the `narrowed` tile: `narrow`
+      // is a state `GET /capability/matrix` cannot emit, so there is no
+      // `cap-summary-narrow` surface to assert. The unconfigured contract holds
+      // for the two tiles the summary actually renders.
+      for (const id of ['cap-summary-allow', 'cap-summary-deny']) {
         const stat = page.getByTestId(id)
         await expect(stat).toHaveAttribute('data-truth-state', 'unconfigured')
         await expect(stat).toContainText('—')
@@ -196,8 +200,11 @@ test.describe('AAASM-5173 — truthfulness primitives', () => {
 
       const allow = page.getByTestId('cap-summary-allow')
       await expect(allow).toHaveAttribute('data-truth-state', 'known')
-      // Two agents × filesystem-write allow = 2 for the default `write` verb.
-      await expect(allow).toHaveText('2')
+      // Since AAASM-5125 the page lands on the verb the projection populates
+      // most, not a hard-coded `write`: these agents each carry exec=allow on
+      // Terminal and Network (four cells) against filesystem write's two, so the
+      // summary opens on EXEC and counts two agents × two exec-allow resources.
+      await expect(allow).toHaveText('4')
 
       // The guard is not a blanket suppression: a zero backed by loaded rules
       // is a real measurement and is asserted as one.

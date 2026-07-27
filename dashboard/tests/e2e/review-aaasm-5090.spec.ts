@@ -145,20 +145,25 @@ test.describe('AAASM-5090 review — capability matrix page', () => {
       // One header per resource, plus the corner cell.
       await expect(grid.getByRole('columnheader')).toHaveCount(MATRIX.resources.length + 1)
       await expect(grid.getByRole('rowheader')).toHaveCount(MATRIX.agents.length)
-      // 2 agents × 4 resources of cells, all three decisions represented on the
-      // default WRITE verb (allow / deny from filesystem, na from the rest).
+      // 2 agents × 4 resources of cells. Since AAASM-5125 the page lands on the
+      // verb the loaded projection populates most, not a hard-coded WRITE: EXEC
+      // has 6 non-na cells (Terminal/Network/send_email carry exec) against
+      // WRITE's 2 (Filesystem alone), so this fixture opens on EXEC — allow on
+      // A/terminal, B/network, B/send_email; deny on A/network, A/send_email,
+      // B/terminal; na on both Filesystem exec cells.
       await expect(grid.getByRole('gridcell')).toHaveCount(
         MATRIX.agents.length * MATRIX.resources.length,
       )
+      await expect(grid.locator('[data-decision="allow"]')).toHaveCount(3)
+      await expect(grid.locator('[data-decision="deny"]')).toHaveCount(3)
+      await expect(grid.locator('[data-decision="na"]')).toHaveCount(2)
+
+      // WRITE is where the Filesystem column carries the only decisions: one
+      // allow (refund-agent) and one deny (checkout-agent), the rest na.
+      await page.getByRole('radio', { name: 'write' }).click()
       await expect(grid.locator('[data-decision="allow"]')).toHaveCount(1)
       await expect(grid.locator('[data-decision="deny"]')).toHaveCount(1)
       await expect(grid.locator('[data-decision="na"]')).toHaveCount(6)
-
-      // The EXEC verb is where the tool column carries a real decision.
-      await page.getByRole('radio', { name: 'exec' }).click()
-      await expect(grid.locator('[data-decision="allow"]')).toHaveCount(3)
-      await expect(grid.locator('[data-decision="deny"]')).toHaveCount(3)
-      await page.getByRole('radio', { name: 'write' }).click()
 
       // ── 2. absent fields fold to `—`, never to 0 ────────────────────────
       // trust: absent on both agents.
