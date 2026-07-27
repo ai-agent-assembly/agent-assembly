@@ -13,14 +13,14 @@ import {
 import { useCanManageTeam } from '../features/teams/permissions'
 import { NotFoundPage } from './NotFoundPage'
 
-const STATUS_COLOR: Record<string, string> = {
-  active: 'var(--status-success-solid)',
-  suspended: 'var(--status-warning-solid)',
-  deregistered: 'var(--text-muted)',
-}
+const STATUS_COLOR = new Map<string, string>([
+  ['active', 'var(--status-success-solid)'],
+  ['suspended', 'var(--status-warning-solid)'],
+  ['deregistered', 'var(--text-muted)'],
+])
 
 function StatusBadge({ status }: Readonly<{ status: string }>) {
-  const color = STATUS_COLOR[status] ?? 'var(--text-muted)'
+  const color = STATUS_COLOR.get(status) ?? 'var(--text-muted)'
   return (
     <span
       data-testid="team-member-status"

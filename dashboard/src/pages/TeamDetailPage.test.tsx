@@ -139,6 +139,35 @@ describe('TeamDetailPage', () => {
     expect(screen.getByTestId('location')).toHaveTextContent(`/topology?root=${rootId}`)
   })
 
+  it('colors known statuses from the map and unknown statuses fall to the muted color', async () => {
+    // 'constructor' and 'toString' are inherited Object.prototype members: a
+    // plain-object lookup returns the inherited function for these key names and
+    // defeats the `?? var(--text-muted)` fallback. A Map returns only the
+    // explicitly-set entries, so both fall through to the muted color.
+    const team: TeamTopology = {
+      team_id: 'team-proto',
+      agent_count: 4,
+      members: [
+        { id: 'a'.repeat(32), name: 'known-active', status: 'active', depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
+        { id: 'b'.repeat(32), name: 'known-suspended', status: 'suspended', depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
+        { id: 'c'.repeat(32), name: 'proto-constructor', status: 'constructor', depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
+        { id: 'd'.repeat(32), name: 'proto-tostring', status: 'toString', depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
+      ],
+    }
+    mockTeam({ data: team })
+    mockCosts()
+    mockLineage('a'.repeat(32))
+    render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-proto']}>{children}</Wrapper> })
+    const badges = await screen.findAllByTestId('team-member-status')
+    expect(badges).toHaveLength(4)
+    // Known statuses resolve to their mapped colors.
+    expect(badges[0]).toHaveStyle({ background: 'var(--status-success-solid)' })
+    expect(badges[1]).toHaveStyle({ background: 'var(--status-warning-solid)' })
+    // Inherited prototype member names must fall to the muted color, not a function.
+    expect(badges[2]).toHaveStyle({ background: 'var(--text-muted)' })
+    expect(badges[3]).toHaveStyle({ background: 'var(--text-muted)' })
+  })
+
   it('falls back to the member id when lineage is unavailable', async () => {
     const user = userEvent.setup()
     mockTeam({ data: FIVE_MEMBER_TEAM })
