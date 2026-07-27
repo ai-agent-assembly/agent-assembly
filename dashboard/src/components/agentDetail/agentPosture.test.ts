@@ -56,9 +56,7 @@ function state(value: Certain<number>): string | undefined {
 function shape(posture: AgentPosture) {
   return {
     allow: count(posture.allow) ?? state(posture.allow),
-    narrow: count(posture.narrow) ?? state(posture.narrow),
     deny: count(posture.deny) ?? state(posture.deny),
-    approval: count(posture.approval) ?? state(posture.approval),
   }
 }
 
@@ -102,35 +100,22 @@ describe('deriveAgentPosture — allow and deny come from the matrix', () => {
   })
 })
 
-describe('deriveAgentPosture — narrow and approval are never a number', () => {
-  const scenarios: ReadonlyArray<[string, Parameters<typeof deriveAgentPosture>[0]]> = [
-    ['a healthy, fully populated matrix', success(loaded({ gmail: cell({ read: 'allow', write: 'deny' }) }))],
-    ['an empty policy cascade', success(loaded({ gmail: cell({ read: 'allow' }) }, []))],
-    ['an agent missing from the matrix', success({ agent: null, resources: RESOURCES, policies: POLICIES, sampleCalls: [] })],
-    ['a failed request', { isPending: false, isError: true, error: new Error('boom') }],
-    ['a request still in flight', { isPending: true, isError: false, error: null }],
-  ]
-
-  // The regression guard for AAASM-5131: the panel hardcoded `value={0}` for
-  // both rows. If a literal — or a tally's structurally-zero `narrow` — ever
-  // comes back, these fail on the *type* of the figure, not on its value, so no
-  // amount of arithmetic can sneak past them.
-  it.each(scenarios)('reports not-supported for narrow and approval given %s', (_name, outcome) => {
-    const posture = deriveAgentPosture(outcome)
-    expect(isKnown(posture.narrow)).toBe(false)
-    expect(isKnown(posture.approval)).toBe(false)
-    expect(state(posture.narrow)).toBe('not-supported')
-    expect(state(posture.approval)).toBe('not-supported')
+describe('deriveAgentPosture — narrow and approval carry no figure at all', () => {
+  // AAASM-5197 (per ADR-0026 Decision 2, Accepted). `AgentPosture` used to carry
+  // Narrow and Approval as a permanent `not-supported` absence. They are
+  // unreachable by construction — nothing can emit either verdict — so the
+  // posture shape no longer models them; the type itself is the guard.
+  it('exposes only allow and deny on the posture shape', () => {
+    const posture = deriveAgentPosture(success(loaded({ gmail: cell({ read: 'allow', write: 'deny' }) })))
+    expect(Object.keys(posture).sort()).toEqual(['allow', 'deny'])
   })
 
-  it('explains why, so the dash is legible rather than merely blank', () => {
+  it('never lets a structurally-zero narrow tally reach the posture', () => {
+    // With a loaded cascade `tallyVerdicts` returns a typed `known(0)` for
+    // narrow; it must be discarded, not surfaced as a measured `0`.
     const posture = deriveAgentPosture(success(loaded({ gmail: cell({ read: 'allow' }) })))
-    expect(isAbsent(posture.narrow) && posture.narrow.detail).toContain('requires_approval_if')
-  })
-
-  it('gives the two figures independent identity', () => {
-    const posture = deriveAgentPosture(success(loaded({ gmail: cell({ read: 'allow' }) })))
-    expect(posture.narrow).not.toBe(posture.approval)
+    expect('narrow' in posture).toBe(false)
+    expect('approval' in posture).toBe(false)
   })
 })
 
@@ -139,9 +124,7 @@ describe('deriveAgentPosture — absence of a trustworthy matrix', () => {
     const posture = deriveAgentPosture({ isPending: false, isError: true, error: new Error('boom') })
     expect(shape(posture)).toEqual({
       allow: 'unavailable',
-      narrow: 'not-supported',
       deny: 'unavailable',
-      approval: 'not-supported',
     })
   })
 
@@ -167,9 +150,7 @@ describe('deriveAgentPosture — absence of a trustworthy matrix', () => {
     )
     expect(shape(posture)).toEqual({
       allow: 'not-evaluated',
-      narrow: 'not-supported',
       deny: 'not-evaluated',
-      approval: 'not-supported',
     })
   })
 

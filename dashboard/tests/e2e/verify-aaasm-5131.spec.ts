@@ -195,15 +195,12 @@ test.describe('AAASM-5131 — agent-detail posture asserts only what it measured
       await expect(posture).not.toContainText('63')
 
       // ── The two the projection can never emit ────────────────────────────
-      for (const row of ['agent-posture-narrow', 'agent-posture-approval']) {
-        await expect(page.getByTestId(row)).toHaveAttribute('data-truth-state', 'not-supported')
-        expect(await visibleText(page, row)).toBe('—')
-      }
-      // No bar is drawn for them either — a zero-width fill is what a measured
-      // zero looks like.
-      await expect(
-        page.getByTestId('agent-posture-narrow-row').locator('.ad-minibar__fill'),
-      ).toHaveCount(0)
+      // AAASM-5197 (ADR-0026 D2) removed the narrow/approval rows entirely —
+      // they are unreachable by construction, not a contingent absence — so
+      // there is no `agent-posture-narrow`/`agent-posture-approval` row to
+      // assert here. Only the caption's explanation of why survives.
+      await expect(page.getByTestId('agent-posture-narrow-row')).toHaveCount(0)
+      await expect(page.getByTestId('agent-posture-approval-row')).toHaveCount(0)
       await expect(posture).toContainText('decided per action by other policy stages')
 
       await expect(posture).not.toContainText('undefined')
@@ -248,7 +245,9 @@ test.describe('AAASM-5131 — agent-detail posture asserts only what it measured
       )
 
       // Every figure is a dash, no bar is drawn, and the failure is announced.
-      for (const row of ['allow', 'narrow', 'deny', 'approval']) {
+      // AAASM-5197 removed the narrow/approval rows entirely — only allow/deny
+      // remain to assert.
+      for (const row of ['allow', 'deny']) {
         expect(await visibleText(page, `agent-posture-${row}`)).toBe('—')
       }
       await expect(posture.locator('.ad-minibar__fill')).toHaveCount(0)

@@ -301,9 +301,11 @@ describe('AgentDetailPage tab navigation', () => {
     expect(screen.getByTestId('agent-posture-deny')).toHaveTextContent('1')
     expect(screen.getByTestId('agent-detail-posture')).not.toHaveTextContent(/\b(6|4)\b/)
 
-    // The two figures the projection can never emit stay explicitly absent.
+    // AAASM-5197 (per ADR-0026 Decision 2, Accepted): the two figures the
+    // projection can never emit are unreachable by construction, so the panel
+    // carries no row for them at all rather than a permanent absence.
     for (const row of ['agent-posture-narrow', 'agent-posture-approval']) {
-      expect(screen.getByTestId(row)).toHaveAttribute('data-truth-state', 'not-supported')
+      expect(screen.queryByTestId(row)).toBeNull()
     }
   })
 

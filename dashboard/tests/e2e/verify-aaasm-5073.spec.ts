@@ -143,6 +143,14 @@ for (const theme of ['light', 'dark'] as const) {
     await openAgentDetail(page, theme)
     await page.getByTestId('agent-detail-tab-capability').click()
     await expect(page.getByTestId('agent-capability-tab-matrix')).toBeVisible()
+
+    // Since AAASM-5125/5197 the matrix opens on the verb the loaded grid
+    // populates most, not a hard-coded verb: this fixture's 5 resources tie
+    // read/write at 5 populated cells each, so it lands on READ (first in
+    // VERBS order) — every cell allow, no deny cell to inspect. This capture
+    // is specifically about the pg×write deny cell, so select WRITE
+    // explicitly before screenshotting and inspecting it.
+    await page.getByRole('radio', { name: 'write' }).click()
     await shot(page, `capability-matrix-${theme}.png`)
 
     // Inspect the pg×write (deny) cell to show the folded cascade provenance.
