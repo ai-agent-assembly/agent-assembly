@@ -69,6 +69,15 @@ describe('TeamOrphanDetail', () => {
     expect(screen.getByTestId('orphan-detail-header')).toHaveTextContent('1 flagged')
   })
 
+  it('renders an unrecognised agent status with no chip modifier', () => {
+    // `status` is a raw wire string: an unmapped value must fall back to the bare
+    // `teams-chip` class (the `?? ''` at the call site), never leak a stray token.
+    renderOrphan(known([agent({ id: 'a1', status: 'retired' })]))
+    const chip = screen.getByTestId('orphan-agent-status')
+    expect(chip).toHaveTextContent('retired')
+    expect(chip).toHaveAttribute('class', 'teams-chip ')
+  })
+
   it('renders an absent set as its state, never as an empty roster', () => {
     renderOrphan(absent<readonly AgentNode[]>('unavailable', 'HTTP 503'), absent('unknown'))
     expect(screen.getByTestId('orphan-detail-agent-count-value')).toHaveAttribute(
