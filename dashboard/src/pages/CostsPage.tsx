@@ -1,7 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { CostBreakdownPanel } from '../features/analytics/CostBreakdownPanel'
-import { SegmentedControl } from '../features/analytics/SegmentedControl'
 import { TeamBudgetBar } from '../components/topology/TeamBudgetBar'
 import {
   joinTeamRows,
@@ -10,7 +9,7 @@ import {
   type TeamListRow,
 } from '../features/teams/api'
 import { useTopologyQuery } from '../features/topology/api'
-import { deriveCostKpis, type BudgetPeriod, type PeriodSpend } from '../features/costs/costKpis'
+import { deriveCostKpis, type PeriodSpend } from '../features/costs/costKpis'
 import { buildPerAgentRows } from '../features/costs/perAgentRows'
 import { useCostHistoryQuery, useBudgetTreeQuery } from '../features/costs/api'
 import { HistoryChart } from '../components/costs/HistoryChart'
@@ -21,11 +20,6 @@ import { CostTabs, type CostTab } from '../components/costs/CostTabs'
 import { PerAgentTable } from '../components/costs/PerAgentTable'
 import '../features/analytics/CostBreakdownPanel.css'
 import './CostsPage.css'
-
-const PERIOD_OPTIONS: { value: BudgetPeriod; label: string }[] = [
-  { value: 'daily', label: 'Daily' },
-  { value: 'monthly', label: 'Monthly' },
-]
 
 /** Map a utilisation percentage to its KPI-value severity modifier. */
 function utilisationClass(pct: number | null): string {
@@ -89,7 +83,12 @@ function SpendKpiCard({ label, period, spend, testId }: SpendKpiCardProps) {
       sub={spend.limit == null ? `no ${period} limit set` : `of ${usd(spend.limit)} ${period} limit`}
       footer={
         <div className="costs-kpi__bar">
-          <BudgetBar used={spend.spend ?? 0} limit={spend.limit} label={`${period} budget burn`} />
+          {/* Spend is passed through, not defaulted: `monthly_spend_usd` is
+              absent from the wire until a monthly limit is configured, and the
+              `?? 0` this replaces drew a full-width empty track reading "0%" —
+              a month of measured zero spend that was never measured
+              (AAASM-5127). */}
+          <BudgetBar used={spend.spend} limit={spend.limit} label={`${period} budget burn`} />
           {spend.pct != null && <div className="costs-kpi__used">{spend.pct.toFixed(1)}% used</div>}
         </div>
       }
@@ -174,9 +173,19 @@ function TeamBudgetContent({ isError, isLoading, teamRows, onRetry }: TeamBudget
  * budget) rather than a per-team configured limit, which the OSS API does not
  * expose. The mock's per-agent 7-day sparkline and per-team monthly limit are
  * omitted — neither has a backing endpoint yet (AAASM-5076).
+ *
+ * There is no Daily/Monthly period control (AAASM-5126). Both mocks
+ * (`design/v1/hi-fi/costs.jsx`, and `design/v2` per ADR-0025) show the two
+ * windows side by side and neither has a toggle, and the shipped one could not
+ * honour the switch: the per-team bars, the blocked-by-budget count and the
+ * burn callouts are all daily and stayed daily under "Monthly" — the wire has
+ * no per-team ceiling of any window (`TeamCostEntry` carries spend only, and
+ * adding a team-tier monthly limit is sign-off-gated on ADR-0020 /
+ * AAASM-5087), and the org-monthly figure it *could* move was already printed
+ * verbatim on the Monthly-spend card beside it. An affordance with no
+ * successful path is removed, not relabelled.
  */
 export function CostsPage() {
-  const [period, setPeriod] = useState<BudgetPeriod>('daily')
   const [tab, setTab] = useState<CostTab>('agents')
   const overviewQuery = useTopologyOverviewQuery()
   const costsQuery = useCostSummaryQuery()
@@ -186,10 +195,7 @@ export function CostsPage() {
     () => joinTeamRows(overviewQuery.data, costsQuery.data),
     [overviewQuery.data, costsQuery.data],
   )
-  const kpis = useMemo(
-    () => deriveCostKpis(costsQuery.data, teamRows, period),
-    [costsQuery.data, teamRows, period],
-  )
+  const kpis = useMemo(() => deriveCostKpis(costsQuery.data, teamRows), [costsQuery.data, teamRows])
 
   // Agent → team map for the per-agent table, resolved from the topology graph
   // (the cost summary's per-agent rows carry no team). Best-effort: agents with
@@ -211,7 +217,6 @@ export function CostsPage() {
 
   const isLoading = costsQuery.isLoading || overviewQuery.isLoading
   const isError = costsQuery.isError
-  const utilisationLimitPeriod = period === 'daily' ? 'daily' : 'monthly'
 
   return (
     <div className="costs-page" data-testid="costs-page">
@@ -223,12 +228,6 @@ export function CostsPage() {
             budget limits.
           </p>
         </div>
-        <SegmentedControl
-          options={PERIOD_OPTIONS}
-          value={period}
-          onChange={setPeriod}
-          testIdPrefix="costs-period"
-        />
       </header>
 
       <div className="costs-kpis" data-testid="costs-kpis">
@@ -245,22 +244,31 @@ export function CostsPage() {
           value={String(kpis.agentsTracked)}
           sub={`across ${kpis.teamsTracked} ${kpis.teamsTracked === 1 ? 'team' : 'teams'}`}
         />
+        {/* Both of these describe the *daily* window, and both now say so.
+            Utilisation used to follow the period toggle while its neighbour
+            stayed hard-wired to daily, so the two silently disagreed about
+            which window they were reporting (AAASM-5126). The monthly window
+            is not hidden by this — it has its own card, above, permanently. */}
         <KpiCard
           testId="costs-kpi-utilisation"
           label="Budget utilisation"
-          value={kpis.utilisationPct == null ? 'N/A' : `${kpis.utilisationPct.toFixed(1)}%`}
+          value={kpis.daily.pct == null ? 'N/A' : `${kpis.daily.pct.toFixed(1)}%`}
           sub={
-            kpis.limit == null
-              ? 'no budget limit set'
-              : `${utilisationLimitPeriod} · of ${usd(kpis.limit)} limit`
+            kpis.daily.limit == null
+              ? 'no daily budget limit set'
+              : `daily · of ${usd(kpis.daily.limit)} limit`
           }
-          valueClass={utilisationClass(kpis.utilisationPct)}
+          valueClass={utilisationClass(kpis.daily.pct)}
         />
         <KpiCard
           testId="costs-kpi-blocked"
           label="Blocked by budget"
           value={String(kpis.blockedByBudget)}
-          sub={kpis.blockedByBudget === 0 ? 'no teams over limit' : 'teams at ≥95% of org limit'}
+          sub={
+            kpis.blockedByBudget === 0
+              ? 'no teams over the daily limit'
+              : 'teams at ≥95% of the org daily limit'
+          }
           valueClass={kpis.blockedByBudget > 0 ? ' costs-kpi__value--danger' : ''}
         />
       </div>
@@ -295,9 +303,12 @@ export function CostsPage() {
         <section className="costs-section" data-testid="costs-team-budgets">
           <div className="costs-section__head">
             <h2 className="costs-section__title">Per-team budget</h2>
-            <span className="costs-section__hint">
-              {period === 'daily' ? 'daily' : 'monthly'} spend vs org limit · green &lt;80% · amber
-              80–95% · red ≥95%
+            {/* States the window the bars are actually drawn from. The hint
+                used to interpolate the toggled period while `TeamBudgetContent`
+                passed `daily_spend_usd` / `daily_limit_usd` regardless, so
+                "monthly" was a label over daily bars (AAASM-5126). */}
+            <span className="costs-section__hint" data-testid="costs-team-hint">
+              daily spend vs org daily limit · green &lt;80% · amber 80–95% · red ≥95%
             </span>
           </div>
           <TeamBudgetContent
