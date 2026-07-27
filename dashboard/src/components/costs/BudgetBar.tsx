@@ -1,4 +1,5 @@
-import { bucketForBudget } from '../topology/budgetThreshold'
+import { bucketForBudget, type BudgetThresholdBucket } from '../topology/budgetThreshold'
+import type { TruthState } from '../../lib/truthfulness'
 import './BudgetBar.css'
 
 export interface BudgetBarProps {
@@ -46,28 +47,48 @@ export interface BudgetBarProps {
  * bar resolves that case itself rather than reaching into the shared threshold
  * helper, which topology's node-detail panel also depends on.
  */
-export function BudgetBar({ used, limit, label }: BudgetBarProps) {
-  const measurable = used !== null && limit !== null
-  const exhausted = measurable && limit <= 0
-  const pct = !measurable ? null : exhausted ? 100 : Math.min(100, (used / limit) * 100)
-  let bucket: string | undefined
-  if (measurable) bucket = exhausted ? 'danger' : bucketForBudget(used, limit)
+/** Burn percentage, or `null` when either number is missing. */
+function burnPct(used: number | null, limit: number | null): number | null {
+  if (used === null || limit === null) return null
+  if (limit <= 0) return 100
+  return Math.min(100, (used / limit) * 100)
+}
 
-  let truthState: string | undefined
-  if (used === null) truthState = 'unknown'
-  else if (limit === null) truthState = 'unconfigured'
+/** Threshold bucket, or `undefined` when the burn is unmeasured. */
+function burnBucket(
+  used: number | null,
+  limit: number | null,
+): BudgetThresholdBucket | undefined {
+  if (used === null || limit === null) return undefined
+  if (limit <= 0) return 'danger'
+  return bucketForBudget(used, limit)
+}
+
+/** Which absence this is, or `undefined` when both numbers are present. */
+function burnTruthState(used: number | null, limit: number | null): TruthState | undefined {
+  if (used === null) return 'unknown'
+  if (limit === null) return 'unconfigured'
+  return undefined
+}
+
+/** Screen-reader label: the measured burn, or which half of it is missing. */
+function burnLabel(label: string, used: number | null, pct: number | null): string {
+  if (pct !== null) return `${label} ${Math.round(pct)}%`
+  const detail = used === null ? 'no spend figure is available' : 'no limit is configured'
+  return `${label} unknown — ${detail}`
+}
+
+export function BudgetBar({ used, limit, label }: BudgetBarProps) {
+  const pct = burnPct(used, limit)
+  const bucket = burnBucket(used, limit)
 
   return (
     <div
       className="costs-budget-bar"
       data-testid="costs-budget-bar"
       data-threshold-bucket={bucket}
-      data-truth-state={truthState}
-      aria-label={
-        pct === null
-          ? `${label} unknown — ${used === null ? 'no spend figure is available' : 'no limit is configured'}`
-          : `${label} ${Math.round(pct)}%`
-      }
+      data-truth-state={burnTruthState(used, limit)}
+      aria-label={burnLabel(label, used, pct)}
     >
       {pct !== null && (
         <div
