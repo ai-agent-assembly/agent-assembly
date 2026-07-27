@@ -33,6 +33,14 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test-setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    // Vitest stubs CSS imports by default, and that silently extends to
+    // `./x.css?raw`: the import resolves to an empty string rather than
+    // failing, so any test asserting over stylesheet text passes vacuously.
+    // AppShell.contrast.test.ts enforces a WCAG floor by reading the shipped
+    // token values (ADR-0027) and has to see the real file. Turning this on
+    // also revived OverviewPage's `?raw` colour-token assertion, which had
+    // been reading '' since it was written.
+    css: true,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

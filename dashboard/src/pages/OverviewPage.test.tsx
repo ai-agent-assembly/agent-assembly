@@ -505,9 +505,16 @@ describe('OverviewPage', () => {
   // :root[data-theme="dark"]. Hardcoded hex / white / black colours would
   // break dark mode — guard against reintroducing that class of bug.
   it('uses only theme tokens — no hardcoded colours in the page CSS', () => {
-    expect(overviewCss).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
-    expect(overviewCss).not.toMatch(/\b(?:white|black)\b/)
-    expect(overviewCss).not.toMatch(/\brgb\(/)
+    // Declarations only. This assertion read '' until vite.config.ts enabled
+    // `test.css` (AAASM-5149 / ADR-0027) — vitest stubs CSS imports, `?raw`
+    // included — so it had never actually run. Against the real file it tripped
+    // on its own header comment, which describes the rule in prose ("no
+    // hardcoded hex / white / black"). Comments are not declarations; strip
+    // them before matching so the guard tests the stylesheet, not its prose.
+    const declarations = overviewCss.replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(declarations).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
+    expect(declarations).not.toMatch(/\b(?:white|black)\b/)
+    expect(declarations).not.toMatch(/\brgb\(/)
   })
 
   it('uses only theme tokens — no hardcoded colours in the page TSX', () => {
