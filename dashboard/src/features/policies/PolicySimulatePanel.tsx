@@ -8,16 +8,21 @@ interface PolicySimulatePanelProps {
   readonly onClose: () => void
 }
 
-/** Verdict → design-token modifier, matching the hi-fi policy simulator. */
-const VERDICT_CLASS: Record<string, string> = {
-  allow: 'policy-simulate__verdict--allow',
-  narrow: 'policy-simulate__verdict--narrow',
-  approval: 'policy-simulate__verdict--approval',
-  deny: 'policy-simulate__verdict--deny',
-}
+/**
+ * Verdict → design-token modifier, matching the hi-fi policy simulator.
+ * A Map (not a plain object) so an arbitrary string verdict — its schema type
+ * is `string`, not an enum — cannot resolve to an inherited prototype member
+ * (`toString`, `constructor`, …) and defeat the `?? --na` fallback below.
+ */
+const VERDICT_CLASS = new Map<string, string>([
+  ['allow', 'policy-simulate__verdict--allow'],
+  ['narrow', 'policy-simulate__verdict--narrow'],
+  ['approval', 'policy-simulate__verdict--approval'],
+  ['deny', 'policy-simulate__verdict--deny'],
+])
 
 function VerdictResult({ result }: Readonly<{ result: SimulatePolicyResponse }>) {
-  const verdictClass = VERDICT_CLASS[result.verdict] ?? 'policy-simulate__verdict--na'
+  const verdictClass = VERDICT_CLASS.get(result.verdict) ?? 'policy-simulate__verdict--na'
   return (
     <div className="policy-simulate__result" data-testid="simulate-result" aria-live="polite">
       <div className="policy-simulate__verdict-row">
