@@ -26,15 +26,25 @@ describe('teamKeyOf', () => {
     ['null', null],
     ['undefined', undefined],
     ['blank', ''],
+    ['whitespace-only', '   '],
+    ['tab-only', '\t'],
   ])('groups a %s team_id under the unclaimed key', (_label, teamId) => {
     expect(teamKeyOf(node({ team_id: teamId }))).toBe(UNCLAIMED_TEAM)
   })
 
-  it('never yields the empty string', () => {
-    // The whole defect was `'' `escaping into the view model and being read
-    // downstream as a team whose name happened to be blank (AAASM-5184).
-    for (const teamId of [null, undefined, '', 'support']) {
-      expect(teamKeyOf(node({ team_id: teamId }))).not.toBe('')
+  it('keeps a padded real team id exactly as registered', () => {
+    // Emptiness is what the trim decides; it never rewrites the key. `aa-api`'s
+    // `team_of` returns the registered id unchanged too, so the two group on
+    // the same string (AAASM-5182).
+    expect(teamKeyOf(node({ team_id: ' support ' }))).toBe(' support ')
+  })
+
+  it('never yields a blank-looking key', () => {
+    // The whole defect was `''` escaping into the view model and being read
+    // downstream as a team whose name happened to be blank (AAASM-5184). A
+    // whitespace-only id renders just as blank, so it must not escape either.
+    for (const teamId of [null, undefined, '', '   ', '\t', 'support']) {
+      expect(teamKeyOf(node({ team_id: teamId })).trim()).not.toBe('')
     }
   })
 
@@ -42,7 +52,7 @@ describe('teamKeyOf', () => {
     // The point of the module: one definition of "unclaimed", shared with the
     // Teams page (AAASM-5157). If these ever disagree, two surfaces are giving
     // the operator different answers about the same agent.
-    for (const teamId of [null, undefined, '', 'support', 'ops']) {
+    for (const teamId of [null, undefined, '', '   ', '\t', '\n', ' support ', 'support', 'ops']) {
       const n = node({ team_id: teamId })
       expect(isUnclaimedTeam(teamKeyOf(n))).toBe(isOrphanAgent(n))
     }
