@@ -28,11 +28,13 @@
  * `{ items, page, per_page, total }` `PaginatedPolicyResponse` (AAASM-4892).
  *
  * There *is* a separate structural defect, pinned by case 4 rather than fixed
- * here: `usePoliciesQuery` sends no `include_archived`, and `list_policies`
- * then returns only the most-recent version with `active: true`, so the
- * inactive count is 0 for every live response. What the badge should count
- * instead is a product question (the hi-fi rail carries a hardcoded `badge:
- * '1'` with no semantics), so it is reported, not silently redefined.
+ * here and tracked as **AAASM-5196**: `usePoliciesQuery` sends no
+ * `include_archived`, and `list_policies` then returns only the most-recent
+ * version with `active: true`, so for the admin callers who can reach the
+ * endpoint at all the inactive count is 0 for every live response. What the
+ * badge should count instead is a product question (the hi-fi rail carries a
+ * hardcoded `badge: '1'` with no semantics), so it is reported, not silently
+ * redefined.
  *
  * `openapi-fetch` captures `globalThis.fetch` at module load, so interception
  * has to happen at the network layer via `page.route` — an in-page shim
@@ -115,12 +117,14 @@ interface Fixture {
   failPolicies?: boolean
   /** Body for a successful policies list. */
   policies?: unknown
+  /** Scopes on the seeded token. Admin unless a case is about the boundary. */
+  scopes?: string[]
 }
 
 /** Minimal unsigned JWT; the dashboard never verifies it — the gateway does. */
-function makeToken(): string {
+function makeToken(scopes: string[] = ['read', 'write', 'admin']): string {
   const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
-  return `${b64({ alg: 'none' })}.${b64({ sub: 'e2e-5186', scope: ['read', 'write', 'admin'] })}.`
+  return `${b64({ alg: 'none' })}.${b64({ sub: 'e2e-5186', scope: scopes })}.`
 }
 
 async function bootstrap(page: Page, theme: Theme, fixture: Fixture = {}): Promise<Harness> {
@@ -140,7 +144,7 @@ async function bootstrap(page: Page, theme: Theme, fixture: Fixture = {}): Promi
       sessionStorage.setItem('aa_token', opts.token)
       localStorage.setItem(opts.themeKey, opts.theme)
     },
-    { themeKey: THEME_KEY, theme, token: makeToken() },
+    { themeKey: THEME_KEY, theme, token: makeToken(fixture.scopes) },
   )
 
   // Permissive fallback first (least specific); later routes win because
@@ -262,11 +266,12 @@ test.describe('AAASM-5186 — the Policy badge claims only what it knows', () =>
   }
 
   test('records the live-shaped response the shell actually asks for', async ({ page }) => {
-    // Not a fix, a pin. `list_policies` returns only the most-recent version
-    // unless `include_archived=true`, and marks it `active`. The shell sends no
-    // such parameter, so its inactive count is 0 for every live response — the
-    // badge is unreachable in production. Captured here so the follow-up has
-    // evidence rather than an argument.
+    // Not a fix, a pin — AAASM-5196. `list_policies` returns only the
+    // most-recent version unless `include_archived=true`, and marks it
+    // `active`. The shell sends no such parameter, so its inactive count is 0
+    // for every live response an admin can obtain — the numeric badge is
+    // unreachable in production. Captured here so the follow-up has evidence
+    // rather than an argument.
     const harness = await bootstrap(page, 'light', { policies: POLICIES_ALL_ACTIVE })
     await navigate(page, '/agents')
     await expect(page.getByTestId('nav-badge-policy')).toHaveCount(0)
@@ -277,6 +282,30 @@ test.describe('AAASM-5186 — the Policy badge claims only what it knows', () =>
     }
 
     await railShot(page, 'policy-live-shaped-rail')
+    expect(harness.errors).toEqual([])
+  })
+
+  test('asks for nothing when the operator may not list policies', async ({ page }) => {
+    // The authorisation boundary end-to-end. `list_policies` requires
+    // cross-tenant admin scope (AAASM-3995(a)), so a read/write operator would
+    // otherwise spend a guaranteed 403 on every page load and wear a permanent
+    // fault marker announcing "the request for this value failed" — a
+    // fail-*wrong* in place of this ticket's fail-open. The honest rendering of
+    // a question the operator may not ask is no claim at all.
+    const harness = await bootstrap(page, 'light', {
+      scopes: ['read', 'write'],
+      policies: POLICIES_MIXED,
+    })
+    await navigate(page, '/agents')
+
+    // Even though the fixture would have supplied two inactive versions.
+    expect(harness.policyRequests).toEqual([])
+    await expect(page.getByTestId('nav-badge-policy')).toHaveCount(0)
+    await expect(page.getByTestId('nav-badge-absent-policy')).toHaveCount(0)
+    // The route stays navigable — this withholds a claim, not the nav item.
+    await expect(page.getByTestId('nav-link-policy')).toBeVisible()
+
+    await railShot(page, 'policy-no-admin-rail')
     expect(harness.errors).toEqual([])
   })
 })
