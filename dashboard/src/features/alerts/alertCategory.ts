@@ -23,12 +23,20 @@ export type AlertCategory =
   | 'approval'
   | 'uncategorized'
 
-const METRIC_CATEGORY: Record<AlertMetric, AlertCategory> = {
-  policy_violation_count: 'policy_violation',
-  budget_spent_pct: 'budget',
-  anomaly_score: 'anomaly',
-  approval_pending_age: 'approval',
-}
+// A `Map`, not a plain object: `rule.metric` is raw wire data wearing an
+// unenforced `AlertMetric` annotation (the alerts client casts the response
+// with a bare `as T` — see `api.ts`), so a hostile payload can send
+// `"__proto__"` or `"constructor"`. A plain-object lookup would then resolve to
+// an inherited prototype member instead of `undefined`, and `?? 'uncategorized'`
+// would never fire. A `Map` only ever holds its own keys, so an unknown key is
+// a clean miss.
+const METRIC_CATEGORY: ReadonlyMap<AlertMetric, AlertCategory> = new Map([
+  ['policy_violation_count', 'policy_violation'],
+  ['budget_spent_pct', 'budget'],
+  ['anomaly_score', 'anomaly'],
+  ['approval_pending_age', 'approval'],
+])
+
 
 /**
  * User-selectable category filter chips, in display order. `uncategorized` is
@@ -92,7 +100,7 @@ export function deriveCategory(
 ): AlertCategory {
   const rule = byId.get(alert.ruleId)
   if (!rule) return 'uncategorized'
-  return METRIC_CATEGORY[rule.metric] ?? 'uncategorized'
+  return METRIC_CATEGORY.get(rule.metric) ?? 'uncategorized'
 }
 
 /** Count alerts per category (only the four user-selectable categories). */
