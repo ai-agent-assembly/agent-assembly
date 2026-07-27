@@ -20,8 +20,25 @@ import type { CapabilityAgent, Resource, Verb } from './types'
  * denials* when the truth is often *nothing was ever evaluated*. Consumers must
  * narrow through `isKnown` before rendering, which is what stops an absence
  * reaching the screen as a zero.
+ *
+ * `VerdictTally`'s `narrow` count is deliberately dropped (AAASM-5187). ADR 0026
+ * Decision 2 — Accepted, option (A) — removes `narrow` from every surface of
+ * this page "until a real backend computation can produce them", and a summary
+ * tile is such a surface. The distinction against `flaggedAgents` is the whole
+ * argument: `flagged` is a field the wire contract *has* and nothing populates
+ * yet, so its absence is contingent and it becomes a measurement the day one
+ * agent carries a boolean. `narrow` is unreachable by construction — `decide()`
+ * (`aa-api/src/routes/capability.rs:480-488`) returns only `Allow`/`Deny`, and
+ * unmodelled verbs are `Na` — so no cell can ever be counted and the tile could
+ * only ever read as an absence. Reporting a permanent absence of an impossible
+ * quantity is the aspirational pattern the ADR rejects, not the honest-absence
+ * pattern it endorses.
+ *
+ * `tallyVerdicts` still computes `narrow`; it is the shared vocabulary and other
+ * surfaces may legitimately consume it. Re-adding the tile is one destructured
+ * name and one `<SummaryStat>` if AAASM-5094 ever computes those cells.
  */
-export interface CapabilitySummary extends VerdictTally {
+export interface CapabilitySummary extends Omit<VerdictTally, 'narrow'> {
   /** Distinct agents carrying a recent over-permission flag (verb-independent). */
   readonly flaggedAgents: Certain<number>
 }
@@ -89,9 +106,12 @@ export function summarizeMatrix(
   verb: Verb,
   cascade: Certain<CascadeEvidence>,
 ): CapabilitySummary {
-  const tally = tallyVerdicts(cellDecisions(agents, resources, verb), cascade)
+  // `narrow` is destructured off rather than spread through: see the note on
+  // `CapabilitySummary` for why this page does not report it (AAASM-5187).
+  const { allow, deny } = tallyVerdicts(cellDecisions(agents, resources, verb), cascade)
   return {
-    ...tally,
+    allow,
+    deny,
     // A cascade the dashboard could not load says nothing about flags either,
     // so only re-derive the flag column when the matrix itself is trustworthy.
     //

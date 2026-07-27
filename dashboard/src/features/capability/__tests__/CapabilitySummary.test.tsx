@@ -43,12 +43,35 @@ describe('CapabilitySummary', () => {
     // because no policy constrained it must not be summarised as a measured
     // permission total.
     render(<CapabilitySummary agents={AGENTS} resources={RESOURCES} verb="write" cascade={EMPTY} />)
-    for (const id of ['cap-summary-allow', 'cap-summary-narrow', 'cap-summary-deny']) {
+    for (const id of ['cap-summary-allow', 'cap-summary-deny']) {
       const stat = screen.getByTestId(id)
       expect(stat).toHaveAttribute('data-truth-state', 'unconfigured')
       expect(stat).toHaveTextContent('—')
       expect(stat).not.toHaveTextContent(/\d/)
     }
+  })
+
+  /**
+   * AAASM-5187. The tile reported a real `0` for a state
+   * `GET /capability/matrix` cannot emit — `decide()` returns only
+   * `Allow`/`Deny`, unmodelled verbs are `Na` — so the number measured an
+   * impossible quantity. ADR 0026 Decision 2 (Accepted) removes `narrow` from
+   * this page's surfaces rather than keeping an aspirational placeholder, so
+   * the tile is gone rather than relabelled.
+   *
+   * Pinned closed on both a loaded and an empty cascade: relabelling it as an
+   * absence would have kept it on screen in exactly the empty-cascade case,
+   * which is every shipped deployment.
+   */
+  it.each([
+    ['a loaded cascade', LOADED],
+    ['an empty cascade', EMPTY],
+  ])('reports no narrowed count at all under %s', (_label, cascade) => {
+    const { container } = render(
+      <CapabilitySummary agents={AGENTS} resources={RESOURCES} verb="write" cascade={cascade} />,
+    )
+    expect(screen.queryByTestId('cap-summary-narrow')).toBeNull()
+    expect(container.textContent).not.toMatch(/narrow/i)
   })
 
   it('renders Not evaluated for the flag column the backend never populates', () => {
@@ -67,12 +90,7 @@ describe('CapabilitySummary', () => {
         cascade={absent('unknown', 'Request in flight')}
       />,
     )
-    for (const id of [
-      'cap-summary-allow',
-      'cap-summary-narrow',
-      'cap-summary-deny',
-      'cap-summary-flagged',
-    ]) {
+    for (const id of ['cap-summary-allow', 'cap-summary-deny', 'cap-summary-flagged']) {
       // No stat may claim a failure while the request is merely in flight.
       expect(screen.getByTestId(id)).toHaveAttribute('data-truth-state', 'unknown')
     }

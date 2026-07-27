@@ -1,11 +1,12 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { MemoryRouter, Outlet, Routes, Route, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CapabilityPage } from './CapabilityPage'
 import { ToastProvider } from '../components/ToastProvider'
 import { capabilityClient } from '../api/capability'
 import { CAPABILITY_MATRIX_FIXTURE } from '../features/capability/fixtures'
+import { defaultVerb } from '../features/capability/verb'
 import type { CapabilityMatrix } from '../features/capability/types'
 
 vi.mock('../api/capability', () => ({
@@ -34,6 +35,13 @@ function renderPage() {
         <Routes>
           <Route path="/capability" element={<CapabilityPage />} />
           <Route path="/policies" element={<div>policy editor route</div>} />
+          {/* Mirrors App.tsx: the agent drawer is a child route of Fleet, so a
+              link that only matched a flat `/agents/:id` would still 404 in the
+              app. Nesting it here means the run proves the URL the page emits
+              resolves against the shape the router actually declares. */}
+          <Route path="/agents" element={<Outlet />}>
+            <Route path=":id" element={<div>agent detail route</div>} />
+          </Route>
         </Routes>
         <LocationProbe />
       </MemoryRouter>
@@ -68,6 +76,36 @@ const PROJECTION_MATRIX: CapabilityMatrix = {
       ]),
     ) as typeof agent.caps,
   })),
+}
+
+/**
+ * The matrix shaped the way `project_matrix` shapes a real fleet: read/write/
+ * delete on the Filesystem family only, `exec` on Terminal, Network-outbound
+ * and every MCP-tool column (`aa-api/src/routes/capability.rs:497-524`).
+ */
+const EXEC_HEAVY_MATRIX: CapabilityMatrix = {
+  resources: [
+    { id: 'filesystem', name: 'Filesystem', group: 'files', paths: [] },
+    { id: 'terminal', name: 'Terminal', group: 'infra', paths: [] },
+    { id: 'network-outbound', name: 'Network', group: 'infra', paths: [] },
+  ],
+  agents: [
+    {
+      id: 'a1',
+      name: 'research-bot',
+      framework: 'langgraph',
+      trust: null,
+      status: 'active',
+      lastSeen: '2026-07-26T00:00:00Z',
+      caps: {
+        filesystem: { read: 'allow', write: 'allow', delete: 'deny', exec: 'na' },
+        terminal: { read: 'na', write: 'na', delete: 'na', exec: 'allow' },
+        'network-outbound': { read: 'na', write: 'na', delete: 'na', exec: 'allow' },
+      },
+    },
+  ],
+  policies: FIXTURE.policies,
+  sampleCalls: [],
 }
 
 /**
@@ -157,13 +195,64 @@ describe('CapabilityPage', () => {
     expect(
       screen.getByText(`${FIXTURE.agents.length} × ${FIXTURE.resources.length}`),
     ).toBeInTheDocument()
-    // Summary row with the four stat tiles.
+    // Summary row. Three tiles, not four: the `narrowed` tile was removed with
+    // AAASM-5187 because the projection cannot emit a narrowed cell, so its
+    // count could only ever be a fabricated zero (ADR 0026 Decision 2).
     const summary = screen.getByLabelText('matrix summary')
     expect(summary).toBeInTheDocument()
-    expect(summary).toHaveTextContent('narrowed')
+    expect(summary).not.toHaveTextContent('narrowed')
     expect(summary).toHaveTextContent('denied')
     expect(summary).toHaveTextContent('flagged agents')
-    expect(summary).toHaveTextContent('total "allow" cells (write)')
+    // The verb in the label is the one the page landed on, derived from the
+    // fixture rather than hard-coded (AAASM-5125).
+    expect(summary).toHaveTextContent(
+      `total "allow" cells (${defaultVerb(FIXTURE.agents, FIXTURE.resources)})`,
+    )
+  })
+
+  /**
+   * AAASM-5125. The page opened on `write`, which the live projection models on
+   * the Filesystem column alone — every other column is `exec`-only — so the
+   * flagship governance page landed on one populated column and a wall of n/a.
+   */
+  it('lands on the verb the loaded matrix populates, not on write', async () => {
+    getMatrix.mockResolvedValue(EXEC_HEAVY_MATRIX)
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+    expect(screen.getByRole('radio', { name: 'exec' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'write' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByLabelText('matrix summary')).toHaveTextContent(
+      'total "allow" cells (exec)',
+    )
+  })
+
+  it("keeps the operator's chosen verb even though the default is derived", async () => {
+    // The derivation is a landing default, not a constraint: an explicit choice
+    // must survive, including a choice of the verb the data does not favour.
+    getMatrix.mockResolvedValue(EXEC_HEAVY_MATRIX)
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+    fireEvent.click(screen.getByRole('radio', { name: 'write' }))
+    expect(screen.getByRole('radio', { name: 'write' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('matrix summary')).toHaveTextContent(
+      'total "allow" cells (write)',
+    )
+  })
+
+  /**
+   * AAASM-5154 — the matrix is where an over-permissioned agent is spotted, and
+   * the row header had no way to reach that agent. The destination is asserted
+   * to *resolve*, not merely to be pushed: the Trace surface shipped a row link
+   * to a route that 404'd (AAASM-5109), which a URL-only assertion would miss.
+   */
+  it('opens the agent detail route from a matrix row header', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+    const first = FIXTURE.agents[0]
+    fireEvent.click(screen.getByRole('button', { name: `open agent ${first.name}` }))
+    expect(await screen.findByText('agent detail route')).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent(`/agents/${first.id}`)
   })
 
   it('navigates to the policy editor from the Open Policy editor button', async () => {
