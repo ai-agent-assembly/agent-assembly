@@ -80,8 +80,11 @@
   opacity: 0.5;
 }
 
+/* A `<fieldset>` (see BulkActionBar.tsx) — so the UA's default border, margin
+   and `min-inline-size: min-content` are reset before the panel's own styling. */
 .cap-bulk-confirm {
-  margin-top: 10px;
+  min-width: 0;
+  margin: 10px 0 0;
   padding: 10px 12px;
   border: 1px solid var(--warn);
   border-radius: 3px;
