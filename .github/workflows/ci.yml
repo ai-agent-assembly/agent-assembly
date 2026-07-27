@@ -1162,6 +1162,80 @@ jobs:
           flags: dashboard
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  # AAASM-5192: the dashboard Playwright suite had no CI job at all, so the
+  # 31-file breakage in AAASM-5191 sat undetected for 19 days — every e2e result
+  # in the programme was author-run evidence that nothing re-checked. This job
+  # is the thing that was missing.
+  #
+  # It runs `playwright.ci.config.ts`, which is the normal config plus a
+  # quarantine list (see that file for why, and AAASM-5195 for the backlog).
+  # Specs are gated by default and must be named to opt out, so a spec added by
+  # anyone else is covered automatically.
+  #
+  # It consumes `dashboard-build`'s dist artifact rather than rebuilding: a
+  # failed build then cannot leave `vite preview` serving a stale bundle that
+  # the suite passes against, because the artifact only exists if the build
+  # succeeded.
+  dashboard-e2e:
+    name: Dashboard e2e (Playwright)
+    needs: [changes, dashboard-build]
+    if: needs.changes.outputs.dashboard == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.9.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # AAASM-5191: the whole outage was specs seeding `aa_token` into
+      # localStorage while `tokenStorage.ts` reads sessionStorage. Worse than
+      # the timeouts: localStorage is a state production cannot reach, because
+      # AAASM-4322 removed the token from it as XSS-exfiltration hardening — so
+      # a spec seeding both stores would keep passing if that hardening were
+      # ever reverted, and the gate would certify the vulnerability. Cheap grep,
+      # runs before the browser is even provisioned.
+      - name: Guard — aa_token is seeded into sessionStorage only
+        run: pnpm e2e:check-seeds
+      - name: Generate API types from OpenAPI spec
+        run: pnpm generate:api
+      - name: Download dashboard dist artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dashboard-dist
+          path: dashboard/dist/
+      - name: Install Playwright chromium + OS deps
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run e2e suite
+        run: pnpm exec playwright test --config=playwright.ci.config.ts
+      # `always()` so a red run still publishes its evidence — the HTML report,
+      # the failure screenshots, the retry traces and the JUnit XML. A failure
+      # that can only be understood by reproducing it locally is the failure
+      # mode this gate is meant to remove.
+      - name: Upload Playwright HTML report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-e2e-report
+          path: dashboard/playwright-report/
+          retention-days: 14
+      - name: Upload Playwright traces, screenshots + JUnit XML
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-e2e-results
+          path: dashboard/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
   dashboard-codegen-drift:
     name: Dashboard codegen drift check
     needs: [changes]
@@ -1412,6 +1486,20 @@ jobs:
       - dashboard-typecheck
       - dashboard-build
       - dashboard-test
+      # AAASM-5192: gated here deliberately, not left advisory. The exclusions
+      # above are quality/acceptance signals; this one asserts functional
+      # behaviour (routes render, client-side behaviour holds, the rendered app
+      # still works against a stubbed backend) exactly as `dashboard-test` does,
+      # so it belongs in the same bucket. Note what it does NOT assert: all 44
+      # gated specs stub every call, so this is not an API-contract check and
+      # cannot see backend drift; real-backend coverage is zero because the one
+      # spec that talks to a live gateway needs `cargo` (dashboard/tests/e2e/
+      # README.md, "What this gate does not prove"). An advisory e2e job would reproduce the condition
+      # that caused AAASM-5191 — a suite nothing acts on — with extra steps. It
+      # is credible as a gate only because its config quarantines the known-red
+      # specs (AAASM-5195) and ratchets that list against a frozen baseline
+      # (QUARANTINE_BASELINE in playwright.quarantine.ts).
+      - dashboard-e2e
       - dashboard-codegen-drift
       - aa-cli-compat
     steps:

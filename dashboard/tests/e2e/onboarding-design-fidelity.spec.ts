@@ -32,7 +32,7 @@ const ONBOARDING_SESSION_KEY = 'aa.onboarding.session'
 
 async function injectToken(page: Page) {
   await page.addInitScript(() =>
-    localStorage.setItem('aa_token', 'onboarding-fidelity-token'),
+    sessionStorage.setItem('aa_token', 'onboarding-fidelity-token'),
   )
 }
 

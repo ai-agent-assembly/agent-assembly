@@ -177,10 +177,12 @@ const ALERTS = {
 async function seed(page: Page, theme: Theme) {
   await page.addInitScript(
     (opts: { key: string; theme: string }) => {
-      // Token has lived in sessionStorage since AAASM-4322; set localStorage too
-      // to be robust across shell versions. Theme lives in localStorage.
+      // `aa_token` goes in sessionStorage ONLY. AAASM-4322 removed it from
+      // localStorage as XSS-exfiltration hardening, so seeding localStorage too
+      // is not "robustness" — it asserts against a state production cannot
+      // reach, and would keep passing if that hardening were ever reverted.
+      // The theme key does legitimately live in localStorage.
       sessionStorage.setItem('aa_token', 'qa-visual-token')
-      localStorage.setItem('aa_token', 'qa-visual-token')
       localStorage.setItem(opts.key, opts.theme)
     },
     { key: THEME_KEY, theme },

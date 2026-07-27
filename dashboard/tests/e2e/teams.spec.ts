@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 
 async function injectAuth(page: Page) {
   await page.addInitScript(() => {
-    localStorage.setItem('aa_token', 'e2e-test-token')
+    sessionStorage.setItem('aa_token', 'e2e-test-token')
     localStorage.setItem('aa_team_admin', '1')
   })
 }
