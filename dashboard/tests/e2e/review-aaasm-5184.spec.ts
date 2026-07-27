@@ -68,6 +68,17 @@ const MIXED_NODES = [
   agent({ id: 'teamless-1', name: 'teamless-1', team_id: null }),
 ]
 
+/**
+ * The registry also accepts a *blank* team id — `validate_tenant_id`
+ * (AAASM-4190) rejects control characters only — and the gateway folds it to no
+ * team (`team_of`, AAASM-5182). It must reach the same group here, or the
+ * nameless cluster returns through the other door.
+ */
+const WHITESPACE_TEAM_NODES = [
+  agent({ id: 'support-1', name: 'support-1', team_id: 'support' }),
+  agent({ id: 'blank-team-1', name: 'blank-team-1', team_id: '   ' }),
+]
+
 /** No agent belongs to a team at all — the count must be 0, not 1. */
 const ALL_UNCLAIMED_NODES = [
   agent({ id: 'teamless-1', name: 'teamless-1', team_id: null }),
@@ -184,6 +195,24 @@ for (const theme of THEMES) {
       await expect(unclaimedCluster(page)).toBeVisible()
 
       await page.screenshot({ path: `${EVIDENCE_DIR}/all-unclaimed-${theme}.png`, fullPage: true })
+
+      expect(harness.errors).toEqual([])
+    })
+
+    test('a whitespace-only team_id lands in the unclaimed group, not a nameless team', async ({ page }) => {
+      const harness = await bootstrap(page, theme, WHITESPACE_TEAM_NODES)
+      await gotoTopology(page)
+
+      // One real team, not two — and no cluster whose label renders as blank.
+      await expect(page.getByTestId('topology-meta')).toContainText('2 agents · 1 team')
+      await expect(page.getByTestId('topology-stat-unclaimed')).toContainText('1 unclaimed')
+      await expect(unclaimedFilterRow(page)).toContainText(/unclaimed/i)
+      await expect(unclaimedCluster(page).getByTestId('team-cluster-label')).toContainText(/unclaimed/i)
+
+      // Every cluster on the canvas carries a visible name.
+      for (const label of await page.getByTestId('team-cluster-label').allInnerTexts()) {
+        expect(label.replace(/[⚠\s]/g, '')).not.toBe('')
+      }
 
       expect(harness.errors).toEqual([])
     })
