@@ -75,39 +75,29 @@ describe('AgentPostureSummary — a loaded matrix', () => {
     expect(figure('agent-posture-deny')).toBe('3')
   })
 
-  it('never renders a zero for narrow or approval', async () => {
-    // AAASM-5131 regression guard. The panel hardcoded `value={0}` for both
-    // rows, which read as "nothing narrowed, no approvals needed" on the
-    // surface an operator opens to investigate a single agent.
+  it('carries no narrow or approval row at all', async () => {
+    // AAASM-5197 (per ADR-0026 Decision 2, Accepted). The panel used to carry
+    // both rows as a permanent `not-supported` absence to match the mock. But
+    // nothing can ever emit either verdict — they are unreachable by
+    // construction, not a contingent absence — so the rows are removed rather
+    // than relabelled, matching the Capability page under AAASM-5187.
     vi.spyOn(capabilityClient, 'getMatrix').mockResolvedValue(MATRIX)
     renderPanel()
     await settled('agent-posture-allow', 'known')
-    for (const row of ['agent-posture-narrow', 'agent-posture-approval']) {
-      expect(screen.getByTestId(row)).toHaveAttribute('data-truth-state', 'not-supported')
-      expect(figure(row)).toBe('—')
-      expect(figure(row)).not.toContain('0')
-    }
+    expect(screen.queryByTestId('agent-posture-narrow')).toBeNull()
+    expect(screen.queryByTestId('agent-posture-approval')).toBeNull()
+    expect(screen.queryByTestId('agent-posture-narrow-row')).toBeNull()
+    expect(screen.queryByTestId('agent-posture-approval-row')).toBeNull()
   })
 
   it('draws a fill only for the rows it measured', async () => {
     vi.spyOn(capabilityClient, 'getMatrix').mockResolvedValue(MATRIX)
     const { container } = renderPanel()
     await settled('agent-posture-allow', 'known')
-    // A zero-width bar is what a measured zero looks like; an unmeasured row
-    // must have no bar at all.
+    // Two measured rows (allow, deny), each with a fill; no unmeasured rows
+    // remain to guard against a zero-width bar.
     expect(container.querySelectorAll('.ad-minibar__fill')).toHaveLength(2)
-    expect(
-      screen.getByTestId('agent-posture-narrow-row').querySelector('.ad-minibar__fill'),
-    ).toBeNull()
-  })
-
-  it('announces each absence rather than leaving a bare dash', async () => {
-    vi.spyOn(capabilityClient, 'getMatrix').mockResolvedValue(MATRIX)
-    renderPanel()
-    await settled('agent-posture-narrow', 'not-supported')
-    expect(screen.getByTestId('agent-posture-narrow').querySelector('.truth-sr-only')?.textContent).toContain(
-      'the backend cannot provide this value',
-    )
+    expect(container.querySelectorAll('.ad-minibar')).toHaveLength(2)
   })
 
   it('states on the surface why two rows can never carry a number', async () => {
@@ -128,7 +118,7 @@ describe('AgentPostureSummary — the matrix is not trustworthy', () => {
       'data-truth-state',
       'unavailable',
     )
-    for (const row of ['allow', 'deny', 'narrow', 'approval']) {
+    for (const row of ['allow', 'deny']) {
       expect(figure(`agent-posture-${row}`)).toBe('—')
     }
     expect(screen.getByTestId('agent-detail-posture').textContent).toContain(
