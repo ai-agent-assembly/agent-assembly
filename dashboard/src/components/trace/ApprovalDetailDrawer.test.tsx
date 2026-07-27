@@ -162,6 +162,23 @@ describe('ApprovalDetailDrawer', () => {
       expect(screen.getByTestId('verdict-chip')).toHaveAttribute('data-verdict', verdict)
       expect(screen.queryByTestId('approval-detail-verdict-absent')).not.toBeInTheDocument()
     })
+
+    // The head's honesty is only half the fix; the other half is that an
+    // uninterpretable status must not be *actionable*. The footer gates on
+    // `status !== 'pending'`, so this holds today — but it held only by code
+    // reading until now. Rewriting that guard as an allow-list of decided
+    // statuses (`=== 'approved' || === 'rejected'`) reads like a tidy-up and
+    // would silently re-enable approve/reject for a status nobody can read.
+    // `renderWithClient` already grants WRITE_SCOPES, so `actionsDisabled`
+    // collapses to exactly the status gate under test rather than to scope.
+    it('leaves the decision footer disabled for an uninterpretable status', () => {
+      renderWithClient(
+        <ApprovalDetailDrawer approval={makeApproval({ status: 'escalated' })} onClose={vi.fn()} />,
+      )
+
+      expect(screen.getByTestId('approval-approve-btn')).toBeDisabled()
+      expect(screen.getByTestId('approval-reject-btn')).toBeDisabled()
+    })
   })
 
   it('forwards the extraActions seam into the footer', () => {
