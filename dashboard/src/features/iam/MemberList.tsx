@@ -4,12 +4,22 @@ import { RoleSelect } from './RoleSelect'
 import type { Member, Role } from './types'
 import './MemberList.css'
 
-const ROLE_BADGE_TONE: Record<Role, string> = {
-  org_admin: 'iam-role-badge--owner',
-  team_admin: 'iam-role-badge--admin',
-  developer: 'iam-role-badge--member',
-  viewer: 'iam-role-badge--viewer',
-  auditor: 'iam-role-badge--viewer',
+// A Map, not an object literal: `.get()` returns undefined for inherited
+// names like `constructor`/`toString`/`__proto__`, so an attacker-controlled
+// role id can never resolve to a prototype method's class name. An object
+// literal indexed as `ROLE_BADGE_TONE[role]` would resolve those inherited
+// keys and let a crafted role reach a value that is not a real tone class.
+const ROLE_BADGE_TONE = new Map<string, string>([
+  ['org_admin', 'iam-role-badge--owner'],
+  ['team_admin', 'iam-role-badge--admin'],
+  ['developer', 'iam-role-badge--member'],
+  ['viewer', 'iam-role-badge--viewer'],
+  ['auditor', 'iam-role-badge--viewer'],
+])
+
+/** Badge tone class for a role id, defaulting when the role is unrecognised. */
+function badgeTone(role: string): string {
+  return ROLE_BADGE_TONE.get(role) ?? 'iam-role-badge--viewer'
 }
 
 function Avatar({ name }: Readonly<{ name: string }>) {
@@ -17,8 +27,11 @@ function Avatar({ name }: Readonly<{ name: string }>) {
   return <div className="iam-avatar" aria-hidden="true">{initial}</div>
 }
 
-function RoleBadge({ role }: Readonly<{ role: Role }>) {
-  return <span className={`iam-role-badge ${ROLE_BADGE_TONE[role]}`}>{role}</span>
+// `role` is typed as `string`, not `Role`: the tone lookup must be safe for
+// any role id the API might send, including one that collides with an
+// inherited object key. `badgeTone` defaults unrecognised ids to a real tone.
+export function RoleBadge({ role }: Readonly<{ role: string }>) {
+  return <span className={`iam-role-badge ${badgeTone(role)}`}>{role}</span>
 }
 
 function StatusCell({ status }: Readonly<{ status: Member['status'] }>) {
