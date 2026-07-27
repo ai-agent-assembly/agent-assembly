@@ -11,17 +11,28 @@
  * What each run re-derives:
  *
  *  1. the decision dropdown offers nothing `POST /capability/override` answers
- *     with a 400, and what it pre-selects is a value the endpoint accepts — so
- *     applying without touching the dropdown is a request that can succeed;
- *  2. across the whole override flow — before, during and after the round-trip
+ *     with a 400, **and pre-selects nothing at all** — the primary control is
+ *     disabled, with its reason on it, until an operator chooses a decision. An
+ *     earlier revision defaulted to `deny` to avoid the guaranteed 400, which
+ *     turned the same unconsidered click into a successful bulk write with no
+ *     undo in the UI (AAASM-5124 review);
+ *  2. the write is gated behind a confirmation that names how many agents it
+ *     affects and which decision it records — and dismissing that confirmation
+ *     sends no request at all;
+ *  3. the legend keys only the states the projection can emit; `narrow` and
+ *     `approval` appear in no legend entry and no control (ADR 0026 Decision 2);
+ *  4. neither the control nor the success toast claims an enforcement change:
+ *     the override store has never fed enforcement, so both must read as a
+ *     dashboard annotation (AAASM-5178);
+ *  5. across the whole override flow — before, during and after the round-trip
  *     — no cell ever carries `narrow` or `approval`. This is recorded by a
  *     `MutationObserver` installed before any app code runs, so a decision that
  *     existed only for one frame is still caught; polling alone could step over
  *     it;
- *  3. the optimistic edit really does run — `deny` is observed on the grid while
- *     the POST is still unanswered — so (2) is a property of what the page can
+ *  6. the optimistic edit really does run — `deny` is observed on the grid while
+ *     the POST is still unanswered — so (5) is a property of what the page can
  *     paint, not of a page that painted nothing;
- *  4. neither theme produces console errors or uncaught exceptions.
+ *  7. neither theme produces console errors or uncaught exceptions.
  *
  * `openapi-fetch` captures `globalThis.fetch` at module load, so the matrix and
  * the override are injected with `page.route` and the token is seeded with
@@ -228,13 +239,17 @@ function seenDecisions(page: Page): Promise<string[]> {
   return page.evaluate(() => window.__seenDecisions ?? [])
 }
 
-test.describe('AAASM-5124 review — the bulk override only offers decisions the gateway accepts', () => {
+const APPLY = 'Record display-only override'
+
+test.describe('AAASM-5124 review — the bulk override writes only on a deliberate, disclosed choice', () => {
   test.beforeAll(async () => {
     await mkdir(EVIDENCE_DIR, { recursive: true })
   })
 
   for (const theme of THEMES) {
-    test(`the decision dropdown offers no guaranteed rejection — ${theme}`, async ({ page }) => {
+    test(`nothing is pre-selected and the write is unreachable until it is — ${theme}`, async ({
+      page,
+    }) => {
       const harness = await bootstrap(page, theme)
       await page.goto('/capability')
       await expect(page.getByTestId('capability-page')).toBeVisible()
@@ -247,22 +262,96 @@ test.describe('AAASM-5124 review — the bulk override only offers decisions the
       const offered = await select.locator('option').evaluateAll((os) =>
         os.map((o) => (o as HTMLOptionElement).value),
       )
-      // The regression: `narrow` and `approval` were both offered, and `narrow`
-      // was pre-selected — one click on Apply was a guaranteed 400.
-      expect(offered).toEqual(['allow', 'deny', 'na'])
+      // First regression: `narrow` and `approval` were offered and `narrow` was
+      // pre-selected — one click was a guaranteed 400. Second: pre-selecting
+      // `deny` instead made that same click a real bulk write.
+      expect(offered).toEqual(['', 'allow', 'deny', 'na'])
       for (const rejected of REJECTED_BY_GATEWAY) {
         expect(offered).not.toContain(rejected)
       }
-      await expect(select).not.toHaveValue('narrow')
-      await expect(select).not.toHaveValue('approval')
-      expect(offered).toContain(await select.inputValue())
+      await expect(select).toHaveValue('')
 
-      await shot(page, `bulk-options-${theme}`)
+      const apply = bar.getByRole('button', { name: APPLY })
+      await expect(apply).toBeDisabled()
+      await expect(apply).toHaveAttribute('title', /select a decision/i)
+      await shot(page, `bulk-no-selection-${theme}`)
+
+      // A disabled control cannot be clicked into a request; force the click
+      // past the pointer-events guard to prove the handler itself writes nothing.
+      await apply.click({ force: true })
+      expect(harness.overrideBody()).toBeNull()
+
+      await select.selectOption('deny')
+      await expect(apply).toBeEnabled()
+
       harness.releaseOverride()
       expect(harness.errors).toEqual([])
     })
 
-    test(`no impossible decision is ever painted during an override — ${theme}`, async ({
+    test(`the confirmation names the count and the decision, and cancelling writes nothing — ${theme}`, async ({
+      page,
+    }) => {
+      const harness = await bootstrap(page, theme)
+      await page.goto('/capability')
+      await expect(page.getByTestId('capability-page')).toBeVisible()
+
+      await page.getByRole('checkbox', { name: 'select all agents' }).check()
+      const bar = page.getByRole('region', { name: 'bulk override' })
+      await bar.getByLabel('decision').selectOption('deny')
+      await bar.getByLabel('resource').selectOption('gmail')
+      await bar.getByRole('button', { name: APPLY }).click()
+
+      const confirm = bar.getByLabel('confirm override')
+      await expect(confirm).toBeVisible()
+      await expect(confirm).toContainText('deny')
+      await expect(confirm).toContainText('2 agents')
+      // AAASM-5178: the disclosure sits at the point of action, not in a footnote.
+      await expect(confirm).toContainText(/does not change what the gateway enforces/i)
+      await shot(page, `override-confirm-${theme}`)
+
+      // Opening the confirmation is not the write.
+      expect(harness.overrideBody()).toBeNull()
+      await confirm.getByRole('button', { name: 'Cancel' }).click()
+      await expect(confirm).toBeHidden()
+      expect(harness.overrideBody()).toBeNull()
+
+      harness.releaseOverride()
+      expect(harness.errors).toEqual([])
+    })
+
+    test(`the legend keys only the states the projection emits — ${theme}`, async ({ page }) => {
+      const harness = await bootstrap(page, theme)
+      await page.goto('/capability')
+      await expect(page.getByTestId('capability-page')).toBeVisible()
+
+      const legend = page.getByRole('list', { name: 'decision legend' })
+      await expect(legend).toBeVisible()
+      expect(
+        await legend.locator('.cap-legend-item').evaluateAll((ls) =>
+          ls.map((l) => l.textContent?.trim()),
+        ),
+      ).toEqual(['allow', 'deny', 'n/a'])
+
+      // ADR 0026 Decision 2: neither removed state survives anywhere on the page
+      // as a legend entry, a swatch, or a selectable control value.
+      await page.getByRole('checkbox', { name: 'select all agents' }).check()
+      const decisionOptions = await page
+        .getByRole('region', { name: 'bulk override' })
+        .getByLabel('decision')
+        .locator('option')
+        .evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value))
+      for (const removed of REJECTED_BY_GATEWAY) {
+        await expect(legend.getByText(removed, { exact: true })).toHaveCount(0)
+        await expect(legend.locator(`.cap-legend-sw--${removed}`)).toHaveCount(0)
+        expect(decisionOptions).not.toContain(removed)
+      }
+      await shot(page, `legend-${theme}`)
+
+      harness.releaseOverride()
+      expect(harness.errors).toEqual([])
+    })
+
+    test(`a confirmed override paints no impossible decision and reports only what changed — ${theme}`, async ({
       page,
     }) => {
       const harness = await bootstrap(page, theme)
@@ -271,16 +360,14 @@ test.describe('AAASM-5124 review — the bulk override only offers decisions the
 
       const grid = page.getByRole('grid', { name: 'capability matrix' })
       await expect(grid).toBeVisible()
-      const gmailWrite = grid.locator('.cap-mx-cell[data-decision="allow"]')
-      await expect(gmailWrite).toHaveCount(2)
+      await expect(grid.locator('.cap-mx-cell[data-decision="allow"]')).toHaveCount(2)
 
       await page.getByRole('checkbox', { name: 'select all agents' }).check()
       const bar = page.getByRole('region', { name: 'bulk override' })
+      await bar.getByLabel('decision').selectOption('deny')
       await bar.getByLabel('resource').selectOption('gmail')
-
-      // Apply without touching the decision dropdown — the interaction that
-      // used to submit `narrow`.
-      await bar.getByRole('button', { name: 'Apply override' }).click()
+      await bar.getByRole('button', { name: APPLY }).click()
+      await bar.getByLabel('confirm override').getByRole('button', { name: 'Confirm' }).click()
 
       // ── inside the optimistic window ──────────────────────────────────
       // The POST is held open, so the page is showing its pre-answer edit.
@@ -294,7 +381,11 @@ test.describe('AAASM-5124 review — the bulk override only offers decisions the
 
       // ── after the gateway answers and the refetch lands ───────────────
       harness.releaseOverride()
-      await expect(page.getByText(/override applied to 2 agents/)).toBeVisible()
+      // AAASM-5178: the report says the annotation landed and says enforcement
+      // did not follow it. `override applied to 2 agents` said neither.
+      const toast = page.getByText(/display-only override recorded for 2 agents/)
+      await expect(toast).toBeVisible()
+      await expect(toast).toContainText(/gateway enforcement did not/)
       for (const rejected of REJECTED_BY_GATEWAY) {
         await expect(grid.locator(`[data-decision="${rejected}"]`)).toHaveCount(0)
       }
