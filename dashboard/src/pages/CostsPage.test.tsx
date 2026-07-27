@@ -704,6 +704,48 @@ describe('CostsPage — AAASM-5185: a configured $0 ceiling gets one answer, not
     expect(bar.dataset.thresholdBucket).toBe('danger')
     expect(bar).toHaveAttribute('aria-valuenow', '100')
   })
+
+  it('does not render Utilisation as unconfigured while its own caption quotes the limit', async () => {
+    // The fourth $0-sensitive surface: `periodSpend`'s `limit > 0` guard left
+    // `pct` null, so the value read "— Unconfigured — nothing is configured to
+    // produce this value" beside a sub reading "daily · of $0.00 limit". The
+    // value denied the very number the caption quoted.
+    setupMocks(OVERVIEW, ZERO_CEILING)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const util = await screen.findByTestId('costs-kpi-utilisation')
+    const value = within(util).getByTestId('costs-kpi-utilisation-value')
+
+    expect(value.dataset.truthState).toBe('known')
+    expect(within(util).getByText('100.0%')).toBeInTheDocument()
+    expect(within(util).getByText('daily · of $0.00 limit')).toBeInTheDocument()
+    // The severity must agree with the other three surfaces, not stay neutral.
+    expect(value.closest('.costs-kpi__value')?.className).toContain('costs-kpi__value--danger')
+  })
+
+  it('still sounds the critical burn banner for a ceiling that denies everything', async () => {
+    // `BurnCallouts` returns null on a null `dailyPct`, so the `limit > 0`
+    // guard silenced the loudest warning on the page for the one configuration
+    // that blocks every agent.
+    setupMocks(OVERVIEW, ZERO_CEILING)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const banner = await screen.findByTestId('costs-callout-danger')
+    expect(banner).toHaveTextContent('Daily budget critical — 100.0%')
+  })
+
+  it('keeps reporting a real overrun above zero as its true percentage', async () => {
+    // Guard against over-correcting into the clamp: 210/200 is 105%, and
+    // flattening it to 100% would understate a live overrun.
+    setupMocks()
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const util = await screen.findByTestId('costs-kpi-utilisation')
+    expect(within(util).getByText('105.0%')).toBeInTheDocument()
+  })
 })
 
 describe('CostsPage — AAASM-5160: the per-team tab is a table with Agents and Monthly spend', () => {

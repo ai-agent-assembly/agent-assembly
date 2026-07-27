@@ -3,6 +3,7 @@ import {
   bucketForBudget,
   bucketForConfiguredBudget,
   burnPercentForConfiguredBudget,
+  utilisationPercentForConfiguredBudget,
 } from './budgetThreshold'
 
 describe('bucketForConfiguredBudget — AAASM-5185: one rule for a configured ceiling', () => {
@@ -32,6 +33,25 @@ describe('bucketForConfiguredBudget — AAASM-5185: one rule for a configured ce
     // The divergence from the shared helper is the whole point of this module:
     // `bucketForBudget` paints the same case green for topology's benefit.
     expect(bucketForBudget(spent, limit)).toBe('ok')
+  })
+})
+
+describe('utilisationPercentForConfiguredBudget', () => {
+  it('reports a real overrun rather than flattening it to exhausted', () => {
+    // The clamped burn percentage exists for bar widths; the utilisation KPI
+    // prints the number, and 105% is a different fact from 100%.
+    expect(utilisationPercentForConfiguredBudget(210, 200)).toBe(105)
+    expect(burnPercentForConfiguredBudget(210, 200)).toBe(100)
+  })
+
+  it.each([
+    [500, 0],
+    [0, 0],
+  ] as const)('reads a configured $%s / $%s ceiling as 100, not as no percentage', (spent, limit) => {
+    // The `limit > 0` guard this replaces yielded `null` here, which the
+    // Utilisation card rendered as "nothing is configured" beside a caption
+    // quoting `of $0.00 limit`, and which silenced the critical burn banner.
+    expect(utilisationPercentForConfiguredBudget(spent, limit)).toBe(100)
   })
 })
 

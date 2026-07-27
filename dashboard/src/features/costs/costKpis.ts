@@ -1,4 +1,7 @@
-import { bucketForConfiguredBudget } from '../../components/topology/budgetThreshold'
+import {
+  bucketForConfiguredBudget,
+  utilisationPercentForConfiguredBudget,
+} from '../../components/topology/budgetThreshold'
 import {
   absent,
   certain,
@@ -81,7 +84,14 @@ function periodSpend(
 ): PeriodSpend {
   const spend = parseUsd(spendRaw)
   const limit = parseUsd(limitRaw)
-  const pct = spend != null && limit != null && limit > 0 ? (spend / limit) * 100 : null
+  // `limit > 0` was the same false negative the burn bars carried: it collapsed
+  // a *configured* `$0` ceiling into "no percentage exists", so Utilisation
+  // rendered `—` "nothing is configured to produce this value" while its own
+  // caption quoted `of $0.00 limit`, and `BurnCallouts` — which returns null on
+  // a null pct — suppressed the critical banner for the one ceiling that denies
+  // everything (AAASM-5185).
+  const pct =
+    spend != null && limit != null ? utilisationPercentForConfiguredBudget(spend, limit) : null
   return { spend, limit, pct }
 }
 

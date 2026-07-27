@@ -26,19 +26,34 @@ export function bucketForBudget(spent: number, limit: number): BudgetThresholdBu
 }
 
 /**
- * Burn percentage against a *configured* ceiling, `$0` included.
+ * Utilisation percentage against a *configured* ceiling, `$0` included.
  *
  * A configured `$0` ceiling is fully consumed at any spend, including none: the
  * gateway denies on `spent >= limit`, so `0 >= 0` already blocks. It therefore
- * reads 100%, not the `0%` a `limit > 0` guard falls back to — `0%` is a claim
- * of untouched headroom against a budget that permits nothing.
+ * reads 100, not the `null`/`0` that a `limit > 0` guard falls back to — both
+ * of which claim untouched headroom against a budget permitting nothing.
  *
- * Clamped to 100 so an over-budget period pins its bar full rather than
- * overflowing the track.
+ * 100 rather than infinity: the ratio is genuinely undefined at a zero divisor,
+ * so "fully consumed" is the strongest thing that can honestly be said. It is a
+ * floor — a `$0` ceiling with spend against it is *at least* exhausted.
+ *
+ * **Unclamped above zero**, so a genuinely over-budget period reads its real
+ * `105.0%` rather than being flattened to 100 and reported as merely
+ * exhausted. Use `burnPercentForConfiguredBudget` for bar widths, which need
+ * the clamp.
+ */
+export function utilisationPercentForConfiguredBudget(spent: number, limit: number): number {
+  if (limit <= 0) return 100
+  return (spent / limit) * 100
+}
+
+/**
+ * Burn percentage for a bar *width* — `utilisationPercentForConfiguredBudget`
+ * clamped to 100, so an over-budget period pins its track full rather than
+ * overflowing it.
  */
 export function burnPercentForConfiguredBudget(spent: number, limit: number): number {
-  if (limit <= 0) return 100
-  return Math.min(100, (spent / limit) * 100)
+  return Math.min(100, utilisationPercentForConfiguredBudget(spent, limit))
 }
 
 /**
