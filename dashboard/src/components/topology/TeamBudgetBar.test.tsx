@@ -136,7 +136,21 @@ describe('TeamBudgetBar', () => {
     render(<TeamBudgetBar team="t" spent={0} limit={0} />)
     const bar = screen.getByTestId('team-budget-bar')
     expect(bar).not.toHaveAttribute('data-truth-state')
-    expect(bar).toHaveAttribute('aria-valuenow', '0')
-    expect(bar).toHaveTextContent('$0 / $0 · 0%')
+    expect(bar).toHaveAttribute('aria-valuenow', '100')
+    expect(bar).toHaveTextContent('$0 / $0 · 100%')
+  })
+
+  // AAASM-5185: the bar sits in the per-team table beside a spend cell that
+  // buckets the same two numbers. Reporting `ok` at 0% here while that cell
+  // reads `danger` made one row give two answers — and announced untouched
+  // headroom, over assistive tech, against a ceiling that permits nothing.
+  it('reports a configured $0 ceiling as fully burnt rather than untouched', () => {
+    render(<TeamBudgetBar team="t" spent={400} limit={0} />)
+    const bar = screen.getByTestId('team-budget-bar')
+
+    expect(bar.dataset.thresholdBucket).toBe('danger')
+    expect(bar).toHaveAttribute('aria-valuenow', '100')
+    expect(bar).toHaveAttribute('aria-label', 't budget burn 100%')
+    expect(bar).toHaveTextContent('$400 / $0 · 100%')
   })
 })

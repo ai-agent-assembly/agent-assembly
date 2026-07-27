@@ -1,4 +1,8 @@
-import { bucketForBudget, type BudgetThresholdBucket } from '../topology/budgetThreshold'
+import {
+  bucketForConfiguredBudget,
+  burnPercentForConfiguredBudget,
+  type BudgetThresholdBucket,
+} from '../topology/budgetThreshold'
 import type { TruthState } from '../../lib/truthfulness'
 import './BudgetBar.css'
 
@@ -30,8 +34,7 @@ export interface BudgetBarProps {
 /** Burn percentage, or `null` when either number is missing. */
 function burnPct(used: number | null, limit: number | null): number | null {
   if (used === null || limit === null) return null
-  if (limit <= 0) return 100
-  return Math.min(100, (used / limit) * 100)
+  return burnPercentForConfiguredBudget(used, limit)
 }
 
 /** Threshold bucket, or `undefined` when the burn is unmeasured. */
@@ -40,8 +43,7 @@ function burnBucket(
   limit: number | null,
 ): BudgetThresholdBucket | undefined {
   if (used === null || limit === null) return undefined
-  if (limit <= 0) return 'danger'
-  return bucketForBudget(used, limit)
+  return bucketForConfiguredBudget(used, limit)
 }
 
 /** Which absence this is, or `undefined` when both numbers are present. */
@@ -74,9 +76,11 @@ function burnLabel(label: string, used: number | null, pct: number | null): stri
  * zero, so none is drawn.
  *
  * `bucketForBudget` maps `limit <= 0` to `ok`, which is the same false-green
- * for the *configured* `$0` ceiling: it is fully consumed, not untouched. The
- * bar resolves that case itself rather than reaching into the shared threshold
- * helper, which topology's node-detail panel also depends on.
+ * for the *configured* `$0` ceiling: it is fully consumed, not untouched. That
+ * case is resolved by `bucketForConfiguredBudget` — shared with the per-team
+ * table and the Blocked-by-budget count so a row cannot report one bucket in
+ * one cell and another beside it (AAASM-5185) — rather than by the plain
+ * threshold helper, which topology's node-detail panel also depends on.
  */
 export function BudgetBar({ used, limit, label }: BudgetBarProps) {
   const pct = burnPct(used, limit)

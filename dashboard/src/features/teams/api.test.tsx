@@ -227,6 +227,21 @@ describe('joinTeamRows', () => {
     expect(rows[0].daily_spend_usd).toBeNull()
     expect(rows[0].burn_pct).toBeNull()
   })
+
+  it('carries the per-team monthly spend through, null when absent (AAASM-5160)', () => {
+    const withMonthly: CostSummary = {
+      daily_limit_usd: '100.00',
+      per_team: [
+        { team_id: 'research', daily_spend_usd: '25.00', monthly_spend_usd: '640.00' },
+        // Monthly tracking off for this team — absent, not zero.
+        { team_id: 'support', daily_spend_usd: '10.00' },
+      ],
+    } as unknown as CostSummary
+
+    const rows = joinTeamRows(MOCK_OVERVIEW, withMonthly)
+    expect(rows.find(r => r.team_id === 'research')!.monthly_spend_usd).toBe(640)
+    expect(rows.find(r => r.team_id === 'support')!.monthly_spend_usd).toBeNull()
+  })
 })
 
 describe('teamCostFor', () => {

@@ -1,0 +1,88 @@
+/*
+ * Per-team cost table (design/v1/hi-fi/costs.jsx Per-team tab, AAASM-5160).
+ * Theme tokens only so it inverts under dark mode — never hardcode hex/white/
+ * black here (the bug class fixed in AAASM-3506/3507).
+ */
+
+.costs-team-table__scroll {
+  overflow-x: auto;
+}
+
+.costs-team-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.costs-team-table thead th {
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line-2);
+  padding: 8px 12px;
+  text-align: left;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.costs-team-table tbody td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.costs-team-table tbody tr:hover {
+  background: var(--paper-3);
+}
+
+.costs-team-table__id {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.costs-team-table__agents {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  border-radius: 2px;
+  color: var(--ink-2);
+}
+
+.costs-team-table__daily {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.costs-team-table__daily[data-threshold-bucket='ok'] {
+  color: var(--ok);
+}
+
+.costs-team-table__daily[data-threshold-bucket='warn'] {
+  color: var(--warn);
+}
+
+.costs-team-table__daily[data-threshold-bucket='danger'] {
+  color: var(--danger);
+}
+
+/* The bar cell carries the mock's 180px minimum so the track stays readable. */
+.costs-team-table__bar-col {
+  min-width: 180px;
+}
+
+.costs-team-table__monthly {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--ink-2);
+}

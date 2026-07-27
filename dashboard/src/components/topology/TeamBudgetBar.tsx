@@ -1,5 +1,5 @@
 import { AbsenceMarker } from '../truthfulness'
-import { bucketForBudget } from './budgetThreshold'
+import { bucketForConfiguredBudget, burnPercentForConfiguredBudget } from './budgetThreshold'
 import './TeamBudgetBar.css'
 
 /** What the operator is told when no ceiling has been configured. */
@@ -39,8 +39,13 @@ export interface TeamBudgetBarProps {
  *   - `warn`   0.80 ≤ ratio < 0.95 → `--warn`
  *   - `danger` ratio ≥ 0.95   → `--danger`
  *
- * Same threshold contract as the AAASM-1337 node-detail-panel progress bar
- * (`bucketForBudget` is the shared source of truth).
+ * Same threshold contract as the AAASM-1337 node-detail-panel progress bar,
+ * except at a *configured* `$0` ceiling: `bucketForConfiguredBudget` reports
+ * that fully burnt rather than `ok`, because the gateway denies on
+ * `spent >= limit`, so `$0` permits nothing. The plain `bucketForBudget` still
+ * backs topology, where a non-positive divisor means a missing ceiling instead.
+ * Sharing the rule with the spend cell beside this bar is what stops one team
+ * row reporting `danger` in one cell and `ok` in the next (AAASM-5185).
  *
  * A percentage needs *both* numbers. Missing either makes the bar an
  * *indeterminate* progressbar: it carries no `aria-valuenow`, which is ARIA's
@@ -57,8 +62,8 @@ export function TeamBudgetBar({ team, spent, limit }: TeamBudgetBarProps) {
   const hasSpend = spent !== null
   const hasLimit = limit !== null
   const measurable = hasSpend && hasLimit
-  const bucket = measurable ? bucketForBudget(spent, limit) : undefined
-  const percent = measurable && limit > 0 ? Math.round(Math.min(1, spent / limit) * 100) : 0
+  const bucket = measurable ? bucketForConfiguredBudget(spent, limit) : undefined
+  const percent = measurable ? Math.round(burnPercentForConfiguredBudget(spent, limit)) : 0
 
   let truthState: string | undefined
   if (!hasSpend) truthState = 'unknown'
