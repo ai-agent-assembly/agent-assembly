@@ -176,6 +176,7 @@ use crate::routes::{
         agents::ChildSpendResponse,
         agents::DailyBurnPointResponse,
         agents::SubtreeBurnResponse,
+        logs::LogEventType,
         logs::LogEntry,
         TraceResponse,
         TraceSpan,
