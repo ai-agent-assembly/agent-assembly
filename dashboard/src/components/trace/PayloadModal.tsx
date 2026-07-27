@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react'
+import { useEffect, useRef, type KeyboardEvent } from 'react'
 import type { TraceEvent } from '../../features/trace/types'
 import { deriveVerdict } from '../../features/trace/decision'
 import { isKnown } from '../../lib/truthfulness'
@@ -64,9 +64,15 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
     }
   }
 
-  const verdict = useMemo(() => (event ? deriveVerdict(event) : null), [event])
+  if (!event) return null
 
-  if (!event || verdict === null) return null
+  // Derived after the guard rather than in a `useMemo` above it. Memoising it
+  // forced the value to be `Certain<Verdict> | null` so the hook could run on a
+  // closed modal, which in turn forced a `verdict === null` check that could
+  // never be true once `event` was non-null — a branch no test can reach
+  // because no input produces it. `deriveVerdict` is two map lookups; it does
+  // not need memoising, and not memoising it removes the dead branch entirely.
+  const verdict = deriveVerdict(event)
 
   return (
     <div
