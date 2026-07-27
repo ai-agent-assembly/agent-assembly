@@ -317,6 +317,9 @@
    callout supplies the sentence the bare headers could not. */
 
 .fleet-empty--filtered {
+  /* `<output>` (implicit role="status", preferred over role="status" per
+     typescript:S6819) is inline by default. */
+  display: block;
   padding: 48px 24px 60px;
   border-top: 1px solid var(--line);
 }

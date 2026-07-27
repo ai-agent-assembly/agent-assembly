@@ -579,7 +579,7 @@ export function FleetPage() {
             </tbody>
           </table>
           {tableState === 'filter-empty' && (
-            <div className="fleet-empty fleet-empty--filtered" data-testid="fleet-filter-empty" role="status">
+            <output className="fleet-empty fleet-empty--filtered" data-testid="fleet-filter-empty">
               <p className="fleet-empty__title">no agents match these filters</p>
               <p className="fleet-empty__body">
                 All {totalAgentsText} registered agents were excluded by the current filters.
@@ -595,7 +595,7 @@ export function FleetPage() {
                   Clear filters
                 </button>
               </div>
-            </div>
+            </output>
           )}
         </div>
       )}
