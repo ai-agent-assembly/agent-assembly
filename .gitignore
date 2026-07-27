@@ -35,6 +35,7 @@ codecov.xml
 # Node / dashboard
 node_modules/
 dashboard/dist/
+dashboard/storybook-static/
 dashboard/playwright-report/
 dashboard/test-results/
 dashboard/package-lock.json

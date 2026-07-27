@@ -8,14 +8,36 @@ export type CreatePolicyRequest = components['schemas']['CreatePolicyRequest']
 export type SimulatePolicyRequest = components['schemas']['SimulatePolicyRequest']
 export type SimulatePolicyResponse = components['schemas']['SimulatePolicyResponse']
 
-export function usePoliciesQuery() {
+export interface PoliciesQueryOptions {
+  /**
+   * Skip the request entirely.
+   *
+   * `GET /api/v1/policies` requires cross-tenant **admin** scope by design
+   * (AAASM-3995(a) — a policy version spans every tenant's cascade, so a plain
+   * read caller must not be able to dump it). A caller without that scope has
+   * no question to ask, and asking anyway costs a guaranteed 403 per session
+   * plus a stream of authorisation failures from legitimate users in the audit
+   * log (AAASM-5186).
+   */
+  readonly enabled?: boolean
+}
+
+export function usePoliciesQuery({ enabled = true }: PoliciesQueryOptions = {}) {
   return useQuery({
     queryKey: ['policies'],
+    enabled,
     queryFn: async () => {
       const { data, error } = await api.GET('/api/v1/policies', {})
       if (error) throw new Error('Failed to fetch policies')
       // AAASM-4892: /policies returns a paginated { items, total } object.
-      return data?.items ?? []
+      // AAASM-5186: a 200 whose body carries no `items` is a malformed
+      // response, not an empty policy set — `?? []` here turned it into a
+      // confident "nothing is inactive" that no consumer could tell apart from
+      // a real empty list. Throwing keeps the fetch boundary's contract (a
+      // hook reports absence by failing, never by substituting a default) so
+      // `certainFromQuery` can render it as the absence it is.
+      if (!data?.items) throw new Error('Policies response carried no items')
+      return data.items
     },
   })
 }

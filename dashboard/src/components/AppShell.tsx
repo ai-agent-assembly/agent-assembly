@@ -1,6 +1,7 @@
 import { useEffect, useState, Component, type ReactNode, type ErrorInfo } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { useCan } from '../auth/usePermissions'
 import { getSubject } from '../auth/jwtScopes'
 import { OverlayProvider } from './OverlayProvider'
 import { OVERLAY_NAMES } from './OverlayContext'
@@ -11,7 +12,7 @@ import { usePoliciesQuery } from '../features/policies/api'
 import { useAlertsQuery } from '../features/alerts/api'
 import { criticalFiringBadge } from '../features/alerts/alertBadge'
 import { DEFAULT_ALERT_FILTERS } from '../features/alerts/types'
-import { certainFromQuery, isKnown, known, type Certain } from '../lib/truthfulness'
+import { certainFromQuery, isKnown, mapCertain, type Certain } from '../lib/truthfulness'
 import { AbsenceMarker } from './truthfulness'
 import { TraceDrawerProvider } from './trace/TraceDrawerProvider'
 import { TraceDrawer } from './trace/TraceDrawer'
@@ -130,6 +131,19 @@ function LastSyncStatus({ updatedAt }: Readonly<{ updatedAt: number }>) {
  * that mounts with the session, so the role would fire an announcement on every
  * cold boot. The absence is announced by the marker's own sentence instead.
  */
+/**
+ * Drop the badge for a *known* zero, keep it for an absence (AAASM-5149/5186).
+ *
+ * An unadorned rail item is the honest rendering of "we asked, and nothing is
+ * firing / nothing is inactive". An absence is not a zero: it has no count to
+ * suppress, so it keeps its badge and renders the marker instead. Shared by
+ * every rail count so no future badge can re-derive the distinction and get it
+ * the other way round.
+ */
+function suppressKnownZero(badge: Certain<number>): Certain<number> | null {
+  return isKnown(badge) && badge.value === 0 ? null : badge
+}
+
 function NavBadge({ routeId, badge }: Readonly<{ routeId: string; badge: Certain<number> }>) {
   if (isKnown(badge)) {
     return (
@@ -167,7 +181,19 @@ export function AppShell() {
   // once for the session, so this adds no per-navigation fetch. Every count is
   // rendered only when a real value is present; nothing is fabricated.
   const agents = useAgentsQuery()
-  const policies = usePoliciesQuery()
+  // AAASM-5186. `GET /api/v1/policies` requires cross-tenant admin scope by
+  // deliberate design (AAASM-3995(a)), so for a read- or write-only operator
+  // this request is a guaranteed 403 on every page load — the rail is
+  // persistent chrome, so that is once per session, forever, for the majority
+  // of callers. Asking anyway and rendering the refusal as `unavailable` would
+  // be a *worse* lie than the fail-open this ticket removes: `unavailable`
+  // announces "the request for this value failed", and nothing failed. None of
+  // the six truthfulness states honestly encodes "you may not have this" —
+  // `not-supported` claims the backend cannot produce it, `unconfigured`
+  // claims nothing is set up — so the honest move is not to ask and to make no
+  // claim, which for this rail is no badge at all. See `badgeFor`.
+  const canListPolicies = useCan('admin')
+  const policies = usePoliciesQuery({ enabled: canListPolicies })
   const alerts = useAlertsQuery(DEFAULT_ALERT_FILTERS)
 
   const agentCount = agents.data?.length
@@ -179,20 +205,38 @@ export function AppShell() {
   // query *outcome* is carried through instead, so an outage stays an outage
   // all the way to the DOM.
   const criticalAlerts = criticalFiringBadge(certainFromQuery(alerts))
-  // Still fail-open on a failed policies query (`?? []` → 0 → no badge). Out of
-  // this ticket's scope, which is the alerts badge; the `known()` here is
-  // truthful for every value this expression can produce, since a count above
-  // zero can only come from a loaded list.
-  const inactivePolicies = (policies.data ?? []).filter((p) => !p.active).length
+  // AAASM-5186. The sibling of the defect above, left in place by 5149's scope
+  // discipline and flagged in code at the time: `policies.data ?? []` turned a
+  // failed or in-flight policies request into an empty list, counted it to
+  // zero, and rendered the zero as an unadorned rail item — a calm, measured
+  // Policy entry indistinguishable from "policy is fine". Carrying the query
+  // outcome means an outage reaches the DOM as an outage.
+  //
+  // Known caveat, deliberately NOT papered over here — tracked as AAASM-5196:
+  // for the admin callers who *can* reach this endpoint, the count is
+  // structurally always 0, because `usePoliciesQuery` sends no
+  // `include_archived` and `aa-api`'s `list_policies` then returns only the
+  // most-recent version, with `active: true`. (For everyone else the request
+  // is never made at all — see `canListPolicies` above.) Making the number
+  // mean something needs a product decision about what the Policy badge should
+  // count — the hi-fi rail has a hardcoded `badge: '1'` with no semantics, and
+  // "superseded versions" would only grow forever. That is a separate defect
+  // from this ticket's fail-open, and is reported rather than silently
+  // redefined.
+  const inactivePolicies = mapCertain(certainFromQuery(policies), (list) =>
+    list.filter((p) => !p.active).length,
+  )
 
   const badgeFor = (routeId: string): Certain<number> | null => {
-    // A *known* zero earns no badge: an unadorned rail item is the honest
-    // rendering of "nothing is firing". An absence is not a zero and does earn
-    // one — see NavBadge.
-    if (routeId === 'alerts') {
-      return isKnown(criticalAlerts) && criticalAlerts.value === 0 ? null : criticalAlerts
+    if (routeId === 'alerts') return suppressKnownZero(criticalAlerts)
+    if (routeId === 'policy') {
+      // No scope to list policies means no question was asked, so there is
+      // nothing to report — not an absence to mark. A disabled query reads as
+      // `isPending`, so this has to short-circuit *before* `certainFromQuery`,
+      // which would otherwise paint a permanent `unknown` marker.
+      if (!canListPolicies) return null
+      return suppressKnownZero(inactivePolicies)
     }
-    if (routeId === 'policy') return inactivePolicies ? known(inactivePolicies) : null
     return null
   }
 
