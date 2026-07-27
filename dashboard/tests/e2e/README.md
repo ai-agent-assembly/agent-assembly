@@ -68,4 +68,28 @@ pnpm exec playwright test theme-visual --update-snapshots
 
 ### CI lane
 
-The dashboard has **no Playwright CI job** — every visual/e2e spec here (this one, `responsive-viewport-visual`, and all the `*-design-fidelity` specs) runs locally only. CI covers the dashboard via `dashboard-typecheck`, `dashboard-build`, and `dashboard-test` (vitest). This spec is therefore a **local visual gate**; run it before landing theme changes. That keeps the platform-specific (`-darwin`) baselines stable instead of churning against Linux runners.
+The **snapshot** specs — this one and `responsive-viewport-visual` — remain a **local visual gate**. Their baselines are platform-specific (`-chromium-darwin`) and no `-chromium-linux` baselines exist, so running them on a Linux runner would churn rather than verify. Run them before landing theme changes.
+
+Everything else now runs in CI. See [Authentication](#authentication) and [CI gate](#ci-gate) below.
+
+## Authentication
+
+Seed the token into **`sessionStorage`**, never `localStorage`:
+
+```ts
+await page.addInitScript(() => sessionStorage.setItem('aa_token', 'e2e-test-token'))
+```
+
+`dashboard/src/auth/tokenStorage.ts` has read from `sessionStorage` only since AAASM-4322. A spec that seeds `localStorage` does not authenticate — it times out before the app mounts, with no hint that auth was the cause. That mistake silently killed 31 files for 19 days (AAASM-5191).
+
+Note that the **theme** (`aa-dashboard-theme`) does legitimately live in `localStorage`. Only `aa_token` moved.
+
+## CI gate
+
+The `dashboard-e2e` job in `.github/workflows/ci.yml` runs this suite on any change matching the `dashboard` path filter, and is part of the `ci-success` aggregate — a red e2e run is a **merge blocker**, not an advisory signal.
+
+It runs `dashboard/playwright.ci.config.ts`: the normal config plus a quarantine list. **Specs are gated by default** — a file must be named in that list to be excluded — so anything you add here is covered without doing anything.
+
+If your spec is quarantined, it is because it was already failing when the gate was introduced (AAASM-5195) or is a known race (AAASM-5198). Nothing is `.skip`-ed or deleted: `pnpm test:e2e` still runs the whole suite locally, quarantined specs included. Fix a spec, confirm it passes, delete its line — the list only shrinks.
+
+Failures publish the HTML report, failure screenshots, retry traces and JUnit XML as build artifacts, so a CI-only failure can be diagnosed without reproducing it locally.
