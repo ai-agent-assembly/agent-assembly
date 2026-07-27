@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-query'
 import { getToken } from '../../auth/tokenStorage'
 import { ALERTS_LIST_KEY, alertDetailKey, alertsEndpoints, alertsQueryKeys } from './endpoints'
+import { parseAlertList } from './parseAlert'
 import type {
   Alert,
   AlertDetail,
@@ -92,13 +93,21 @@ function finiteOrNull(value: unknown): number | null {
 /**
  * Normalise the envelope without inventing anything.
  *
- * A non-array `items` yields an empty page rather than a throw — the request
- * itself succeeded — but every count the UI derives from it is then reported
- * against a `total` of `null`, so the surface says "unknown", not "0 of 0".
+ * `items` is *parsed*, not cast (AAASM-5149). It used to be
+ * `Array.isArray(body?.items) ? (body.items as readonly Alert[]) : []`, which
+ * asserted the dashboard's vocabulary over whatever the wire happened to send
+ * and folded a malformed envelope to an empty fleet. Both halves were the same
+ * fail-open: `severity`/`status` never matched a live payload, so every derived
+ * count was zero, and zero is a confident claim that nothing is wrong.
+ *
+ * `parseAlertList` throws `AlertShapeError` on anything it cannot read. The
+ * throw is the point — it reaches `certainFromQuery` as `unavailable`, which is
+ * what an unreadable answer actually is. `total` / `page` / `perPage` keep their
+ * nullable treatment: a missing count still reports "unknown", never "0 of 0".
  */
 function readAlertsPage(body: RawAlertsPage | null | undefined): AlertsPageResult {
   return {
-    items: Array.isArray(body?.items) ? (body.items as readonly Alert[]) : [],
+    items: parseAlertList(body?.items),
     total: finiteOrNull(body?.total),
     page: finiteOrNull(body?.page),
     perPage: finiteOrNull(body?.per_page),
