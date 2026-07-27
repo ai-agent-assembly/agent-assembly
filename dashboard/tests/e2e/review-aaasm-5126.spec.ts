@@ -275,8 +275,13 @@ test.describe('AAASM-5126/5127 review — Costs claims only the window it measur
       await navigate(page, '/costs')
 
       // Utilisation has no denominator and says so, rather than reading 0%.
+      // The marker replaced a locally-invented `N/A` in AAASM-5185; the
+      // guarantee is unchanged, only its vocabulary.
       const util = page.getByTestId('costs-kpi-utilisation')
-      await expect(util).toContainText('N/A')
+      await expect(util.getByTestId('costs-kpi-utilisation-value')).toHaveAttribute(
+        'data-truth-state',
+        'unconfigured',
+      )
       await expect(util).toContainText('no daily budget limit set')
 
       await openTeamsTab(page)
@@ -314,7 +319,9 @@ test.describe('AAASM-5126/5127 review — Costs claims only the window it measur
       const daily = page.getByTestId('costs-kpi-daily')
       await expect(daily).toContainText('—')
       await expect(daily).not.toContainText('$0.00')
-      await expect(page.getByTestId('costs-kpi-utilisation')).toContainText('N/A')
+      await expect(
+        page.getByTestId('costs-kpi-utilisation').getByTestId('costs-kpi-utilisation-value'),
+      ).toHaveAttribute('data-truth-state', 'unavailable')
 
       // Neither mini bar may claim a burn it never measured.
       for (const id of ['costs-kpi-daily', 'costs-kpi-monthly']) {
