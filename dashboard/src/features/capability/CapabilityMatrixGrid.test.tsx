@@ -203,4 +203,40 @@ describe('CapabilityMatrixGrid', () => {
     expect(meta.textContent).not.toMatch(/\b(0|NaN|undefined|null)\b/)
     expect(container.querySelector('.cap-trust-bar')).toBeNull()
   })
+
+  /**
+   * AAASM-5154 — the matrix is where an operator spots an over-permissioned
+   * agent, and the row header had no way to get from that row to the agent: the
+   * slot was taken by the bulk-select checkbox alone.
+   */
+  describe('row-header navigation', () => {
+    it('opens the agent from its row header, alongside the select checkbox', () => {
+      const onOpenAgent = vi.fn()
+      const onToggleSelect = vi.fn()
+      render(
+        <CapabilityMatrixGrid
+          agents={AGENTS}
+          resources={RESOURCES}
+          verb="write"
+          selectedIds={new Set()}
+          onToggleSelect={onToggleSelect}
+          onOpenAgent={onOpenAgent}
+        />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'open agent agent-b' }))
+      expect(onOpenAgent).toHaveBeenCalledWith(AGENTS[1])
+      // The checkbox it sits beside is untouched — the ticket restores the
+      // navigation *alongside* bulk selection, not instead of it.
+      expect(screen.getByLabelText('select agent-b')).toBeInTheDocument()
+      expect(onToggleSelect).not.toHaveBeenCalled()
+    })
+
+    it('renders the name as plain text when no handler is supplied', () => {
+      // A control that looks navigable but goes nowhere is worse than none —
+      // the affordance only appears when something can act on it.
+      render(<CapabilityMatrixGrid agents={AGENTS} resources={RESOURCES} verb="write" />)
+      expect(screen.queryByRole('button', { name: /open agent/ })).toBeNull()
+      expect(screen.getByText('agent-b')).toBeInTheDocument()
+    })
+  })
 })

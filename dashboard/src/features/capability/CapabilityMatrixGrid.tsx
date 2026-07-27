@@ -14,6 +14,15 @@ export interface CapabilityMatrixGridProps {
   selectedIds?: Set<string>
   onToggleSelect?: (agentId: string) => void
   onToggleSelectAll?: (next: boolean) => void
+  /**
+   * Open the agent named by a row header (AAASM-5154).
+   *
+   * A callback rather than a `<Link>` so the grid stays router-free, matching
+   * `onCellClick` and `onSortChange`. Omitting it renders the name as plain
+   * text: a row header that looks navigable but goes nowhere is worse than one
+   * that never offered.
+   */
+  onOpenAgent?: (agent: CapabilityAgent) => void
 }
 
 export interface CellSelection {
@@ -39,6 +48,7 @@ export function CapabilityMatrixGrid({
   selectedIds,
   onToggleSelect,
   onToggleSelectAll,
+  onOpenAgent,
 }: Readonly<CapabilityMatrixGridProps>) {
   const selectable = Boolean(selectedIds && onToggleSelect)
   const allSelected =
@@ -108,6 +118,7 @@ export function CapabilityMatrixGrid({
             onCellClick={onCellClick}
             selected={selectedIds?.has(agent.id) ?? false}
             onToggleSelect={onToggleSelect}
+            onOpenAgent={onOpenAgent}
           />
         ))}
       </div>
@@ -122,6 +133,7 @@ interface RowGroupProps {
   onCellClick?: (cell: CellSelection) => void
   selected?: boolean
   onToggleSelect?: (agentId: string) => void
+  onOpenAgent?: (agent: CapabilityAgent) => void
 }
 
 function RowGroup({
@@ -131,6 +143,7 @@ function RowGroup({
   onCellClick,
   selected,
   onToggleSelect,
+  onOpenAgent,
 }: Readonly<RowGroupProps>) {
   return (
     <>
@@ -148,7 +161,21 @@ function RowGroup({
               className="cap-mx-row-select"
             />
           )}
-          {agent.name}
+          {onOpenAgent ? (
+            <button
+              type="button"
+              className="cap-mx-row-h-link"
+              // The visible text is the agent name alone, as the mock draws it;
+              // the accessible name says where the control goes, so the row
+              // header is not announced as an unexplained button.
+              aria-label={`open agent ${agent.name}`}
+              onClick={() => onOpenAgent(agent)}
+            >
+              {agent.name}
+            </button>
+          ) : (
+            agent.name
+          )}
           {agent.flagged && (
             <span className="cap-flag-dot" aria-label="agent flagged">
               ●

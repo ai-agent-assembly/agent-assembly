@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { MemoryRouter, Outlet, Routes, Route, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CapabilityPage } from './CapabilityPage'
 import { ToastProvider } from '../components/ToastProvider'
@@ -35,6 +35,13 @@ function renderPage() {
         <Routes>
           <Route path="/capability" element={<CapabilityPage />} />
           <Route path="/policies" element={<div>policy editor route</div>} />
+          {/* Mirrors App.tsx: the agent drawer is a child route of Fleet, so a
+              link that only matched a flat `/agents/:id` would still 404 in the
+              app. Nesting it here means the run proves the URL the page emits
+              resolves against the shape the router actually declares. */}
+          <Route path="/agents" element={<Outlet />}>
+            <Route path=":id" element={<div>agent detail route</div>} />
+          </Route>
         </Routes>
         <LocationProbe />
       </MemoryRouter>
@@ -230,6 +237,22 @@ describe('CapabilityPage', () => {
     expect(screen.getByLabelText('matrix summary')).toHaveTextContent(
       'total "allow" cells (write)',
     )
+  })
+
+  /**
+   * AAASM-5154 — the matrix is where an over-permissioned agent is spotted, and
+   * the row header had no way to reach that agent. The destination is asserted
+   * to *resolve*, not merely to be pushed: the Trace surface shipped a row link
+   * to a route that 404'd (AAASM-5109), which a URL-only assertion would miss.
+   */
+  it('opens the agent detail route from a matrix row header', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+    const first = FIXTURE.agents[0]
+    fireEvent.click(screen.getByRole('button', { name: `open agent ${first.name}` }))
+    expect(await screen.findByText('agent detail route')).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent(`/agents/${first.id}`)
   })
 
   it('navigates to the policy editor from the Open Policy editor button', async () => {

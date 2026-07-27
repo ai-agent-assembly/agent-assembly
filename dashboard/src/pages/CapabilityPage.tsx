@@ -79,6 +79,18 @@ export function CapabilityPage() {
   const openPolicyEditor = (policyId?: string) =>
     navigate(policyId ? `/policies?policy=${encodeURIComponent(policyId)}` : '/policies')
 
+  /**
+   * Open the agent detail drawer from a matrix row header (AAASM-5154).
+   *
+   * `/agents/:id` is a real route (`App.tsx`) — the drawer overlaid on Fleet,
+   * the same destination Fleet's own rows link to — and the id is the same
+   * value: both this projection and `GET /agents/{id}` key on the registry's
+   * hex-encoded 16-byte agent id, and the matrix is admin-gated, so every
+   * caller who can see a row can also read that agent.
+   */
+  const openAgent = (agent: { id: string }) =>
+    navigate(`/agents/${encodeURIComponent(agent.id)}`)
+
   const toggleSelect = (agentId: string) => {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -278,6 +290,7 @@ export function CapabilityPage() {
             selectedIds={selected}
             onToggleSelect={toggleSelect}
             onToggleSelectAll={(next) => (next ? selectAllAgents() : clearSelectedAgents())}
+            onOpenAgent={openAgent}
           />
         )}
         {tab === 'matrix' && matrix && (
