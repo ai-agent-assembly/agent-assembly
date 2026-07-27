@@ -82,16 +82,19 @@ this*. Any answer that only honours one of them is wrong.
 
 ## Accepted risks
 
-- **The gate covers 44 of 86 files (242 of 433 tests).** A regression in a
+- **The gate covers 43 of 86 files (228 of 433 tests).** A regression in a
   quarantined spec is not caught. This is accepted because the alternative —
   gating on a suite with 131 known failures — produces a permanently red check
   that everyone learns to bypass, which is strictly worse than a smaller check
   that is believed. The quarantine is tracked in AAASM-5195 and shrinks.
   *Assumption:* the list is actually worked down rather than becoming permanent
   furniture.
-- **The green set was verified on macOS.** Linux runner behaviour is confirmed
-  only by the first CI run on the introducing PR. Mitigated by `retries: 2` in CI
-  and by no gated spec depending on pixel baselines.
+- **A macOS-green spec can still be Linux-red.** The first CI run proved this:
+  `review-aaasm-5150` passed locally and failed 3/3 on the runner, because its
+  console-error assertion caught a CSP violation whose lazy import had not fired
+  in time on faster hardware (AAASM-5199 — a real product defect, not test rot).
+  Timing-sensitive assertions can therefore hide platform-independent bugs. The
+  gate is the mitigation; this is it working on day one.
 - **Blocking is not yet enforced end to end.** Branch protection requires no
   status contexts today, so this ADR makes the job blocking *within* `ci-success`;
   making `ci-success` a required check is a repo-admin action outside this change.
@@ -168,6 +171,7 @@ this*. Any answer that only honours one of them is wrong.
 | [AAASM-5191](https://lightning-dust-mite.atlassian.net/browse/AAASM-5191) | The 19-day silent breakage that motivated it |
 | [AAASM-5195](https://lightning-dust-mite.atlassian.net/browse/AAASM-5195) | The 41 quarantined files; the backlog this decision depends on shrinking |
 | [AAASM-5198](https://lightning-dust-mite.atlassian.net/browse/AAASM-5198) | The one quarantined spec that is racy rather than rotten |
+| [AAASM-5199](https://lightning-dust-mite.atlassian.net/browse/AAASM-5199) | The live CSP/Monaco defect this gate caught on its first run |
 | [AAASM-4322](https://lightning-dust-mite.atlassian.net/browse/AAASM-4322) | The `localStorage` → `sessionStorage` migration that broke the seeds |
 | [AAASM-2599](https://lightning-dust-mite.atlassian.net/browse/AAASM-2599) | Established `ci-success` as the single required aggregate check |
 | [ADR 0016](0016-default-branch-master-to-main-migration.md) | Branch-protection required-check handling |
