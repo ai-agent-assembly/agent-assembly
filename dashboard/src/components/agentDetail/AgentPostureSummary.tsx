@@ -53,11 +53,13 @@ export interface AgentPostureSummaryProps {
  *
  * Reads the same agent-scoped capability matrix the Overview's capability panel
  * renders below it — one shared query key, so mounting both costs one request —
- * and reports only what that projection can support. See `agentPosture.ts` for
- * why Narrow and Approval are permanently absent here rather than counted.
+ * and reports only what that projection can support: Allow and Deny. See
+ * `agentPosture.ts` for why Narrow and Approval carry no row here at all, per
+ * ADR-0026 Decision 2.
  *
- * The caption is not decoration: with two of four rows showing `—`, an operator
- * who cannot see *why* will read the panel as broken rather than as honest.
+ * The caption is not decoration: it names why the two states the mock also drew
+ * are absent, so an operator does not read the panel as missing rows rather than
+ * as honest about what the projection can measure.
  *
  * The row labels say "decisions" where `design/v2/hi-fi/agent-detail.jsx` says
  * "resources". The mock counts a *resource* as allowed when either its read or
@@ -81,25 +83,11 @@ export function AgentPostureSummary({ agentId, agentName }: Readonly<AgentPostur
         testId="agent-posture-allow"
       />
       <PostureBar
-        label="narrow decisions"
-        value={posture.narrow}
-        scale={scale}
-        tone="warn"
-        testId="agent-posture-narrow"
-      />
-      <PostureBar
         label="deny decisions"
         value={posture.deny}
         scale={scale}
         tone="deny"
         testId="agent-posture-deny"
-      />
-      <PostureBar
-        label="approval decisions"
-        value={posture.approval}
-        scale={scale}
-        tone="info"
-        testId="agent-posture-approval"
       />
       <p className="ad-posture__caption" data-testid="agent-posture-caption">
         Counted over this agent&rsquo;s capability-matrix cells (resource × verb). Narrow and

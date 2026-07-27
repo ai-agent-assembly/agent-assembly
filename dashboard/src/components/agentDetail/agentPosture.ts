@@ -35,17 +35,14 @@
  * `Approval` because such an override "would put a decision in the grid that no
  * projection can ever produce or restore".
  *
- * So the honest rendering for those two is a vocabulary state, not a number.
- * `not-supported` specifically: the backend genuinely cannot provide it and
- * waiting will not help — which is exactly what `TRUTH_STATE_META` promises the
- * operator that word means. Re-deriving them from the matrix would produce a
- * measured-looking `0` on every deployment: the same lie with a citation.
- *
- * This is the display-side counterpart of ADR 0026 Decision 2, which asks
- * product whether the Capability page's legend should narrow to the three states
- * the projection can emit. That ADR is `Proposed` and authorises nothing, so
- * nothing here *decides* it — a surface may always decline to assert what it
- * cannot measure, and that is all this module does.
+ * Because those two are unreachable *by construction* — not a contingent
+ * absence like `flagged`, which becomes a real number the moment one agent
+ * carries a boolean — ADR-0026 Decision 2 (Accepted) rejects preserving them:
+ * a row permanently reading an absence for a state nothing can emit is the
+ * aspirational pattern that decision exists to remove. So this module no longer
+ * derives Narrow or Approval at all (the drawer drops both rows to match the
+ * Capability page under AAASM-5187), rather than deriving them only to render a
+ * measured-looking `0` — the same lie with a citation.
  */
 
 import { cascadeEvidenceOf } from '../../features/capability/summary'
@@ -63,29 +60,21 @@ import {
 import type { ScopedCapabilityMatrix } from './useAgentCapabilityMatrix'
 
 /**
- * The four posture figures, each either a count this page measured or an
- * explicit absence. There is deliberately no `number` anywhere in this type:
+ * The two posture figures this projection can measure, each either a count or
+ * an explicit absence. There is deliberately no `number` anywhere in this type:
  * a consumer cannot render one of these without first narrowing through
  * `isKnown`, which is what stops a fallback zero reaching the screen.
+ *
+ * Narrow and Approval are absent by construction — no matrix cell can carry
+ * either verdict (`decide()` returns only Allow/Deny; unmodelled verbs are
+ * `Na`) — so per ADR-0026 Decision 2 they are not carried here at all rather
+ * than carried as a permanent absence. `tallyVerdicts` still computes `narrow`
+ * as shared vocabulary, so restoring a Narrow row is one destructured name if
+ * AAASM-5094 delivers a real Narrow computation.
  */
 export interface AgentPosture {
   readonly allow: Certain<number>
-  readonly narrow: Certain<number>
   readonly deny: Certain<number>
-  readonly approval: Certain<number>
-}
-
-const UNREACHABLE_DETAIL =
-  'Decided per action by credential scrubbing and requires_approval_if, which the capability projection does not run'
-
-/**
- * The permanent absence carried by Narrow and Approval.
- *
- * A fresh object per call rather than a shared constant, so no consumer can
- * identity-compare two posture figures and conclude they are the same figure.
- */
-function unreachable(): Certain<number> {
-  return absent<number>('not-supported', UNREACHABLE_DETAIL)
 }
 
 /**
@@ -129,7 +118,7 @@ export function deriveAgentPosture(outcome: QueryOutcome<ScopedCapabilityMatrix>
   const matrix = certainFromQuery(outcome)
   if (!isKnown(matrix)) {
     const carried = propagateAbsence<ScopedCapabilityMatrix, number>(matrix)
-    return { allow: carried, narrow: unreachable(), deny: carried, approval: unreachable() }
+    return { allow: carried, deny: carried }
   }
 
   const { agent, resources, policies } = matrix.value
@@ -141,15 +130,15 @@ export function deriveAgentPosture(outcome: QueryOutcome<ScopedCapabilityMatrix>
       'not-evaluated',
       'This agent has no row in the capability matrix',
     )
-    return { allow: noRow, narrow: unreachable(), deny: noRow, approval: unreachable() }
+    return { allow: noRow, deny: noRow }
   }
 
   const tally = tallyVerdicts(agentCells(agent, resources), cascadeEvidenceOf(policies))
-  // `tally.narrow` is deliberately discarded. With a loaded cascade it is a
-  // perfectly typed `known(0)` — and it is `0` for the structural reason above,
-  // not because zero cells were narrowed. Rendering it would reintroduce the
-  // exact claim this module exists to remove, laundered through a shared helper.
-  return { allow: tally.allow, narrow: unreachable(), deny: tally.deny, approval: unreachable() }
+  // `tally.narrow` is deliberately discarded: with a loaded cascade it is a
+  // perfectly typed `known(0)`, and it is `0` for the structural reason in the
+  // module header, not because zero cells were narrowed. There is no Narrow row
+  // to carry it into — see the `AgentPosture` type doc.
+  return { allow: tally.allow, deny: tally.deny }
 }
 
 /**
@@ -162,7 +151,7 @@ export function deriveAgentPosture(outcome: QueryOutcome<ScopedCapabilityMatrix>
  * case has no fill anyway.
  */
 export function postureScale(posture: AgentPosture): number {
-  const total = [posture.allow, posture.narrow, posture.deny, posture.approval]
+  const total = [posture.allow, posture.deny]
     .filter(isKnown)
     .reduce((sum, figure) => sum + figure.value, 0)
   return Math.max(total, 1)
