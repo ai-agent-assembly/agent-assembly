@@ -19,6 +19,17 @@ export interface TeamListRow {
   root_agent_count: number
   daily_spend_usd: number | null
   daily_limit_usd: number | null
+  /**
+   * Month-to-date spend for the team in USD, or `null` when none is on the wire
+   * (AAASM-5160).
+   *
+   * `TeamCostEntry.monthly_spend_usd` is optional: the gateway only accumulates
+   * a monthly figure once monthly tracking is enabled, and a team absent from
+   * the cost breakdown has none at all. There is deliberately no companion
+   * limit — `TeamCostEntry` carries no ceiling of any window, and a team-tier
+   * monthly one is sign-off-gated on ADR-0020 / AAASM-5087.
+   */
+  monthly_spend_usd: number | null
   burn_pct: number | null
 }
 
@@ -179,6 +190,7 @@ export function joinTeamRows(overview: TopologyOverview | undefined, costs: Cost
       root_agent_count: team.root_agent_count,
       daily_spend_usd: dailySpend,
       daily_limit_usd: dailyLimit,
+      monthly_spend_usd: parseUsd(cost?.monthly_spend_usd),
       burn_pct: burnPct,
     }
   })

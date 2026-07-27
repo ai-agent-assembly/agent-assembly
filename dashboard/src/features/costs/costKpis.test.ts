@@ -18,7 +18,7 @@ const COSTS: CostSummary = {
 }
 
 const TEAM_ROWS: readonly TeamListRow[] = [
-  { team_id: 'team-hot', agent_count: 2, root_agent_count: 1, daily_spend_usd: 150, daily_limit_usd: 200, burn_pct: 75 },
+  { team_id: 'team-hot', agent_count: 2, root_agent_count: 1, daily_spend_usd: 150, daily_limit_usd: 200, monthly_spend_usd: 3200, burn_pct: 75 },
 ]
 
 describe('deriveCostKpis — daily / monthly / tracked figures', () => {
@@ -77,9 +77,9 @@ describe('deriveCostKpis — daily / monthly / tracked figures', () => {
       // figure is daily and is labelled daily rather than following a toggle.
       const rows: readonly TeamListRow[] = [
         // 195/200 = 97.5% — danger.
-        { team_id: 'team-hot', agent_count: 2, root_agent_count: 1, daily_spend_usd: 195, daily_limit_usd: 200, burn_pct: 97.5 },
+        { team_id: 'team-hot', agent_count: 2, root_agent_count: 1, daily_spend_usd: 195, daily_limit_usd: 200, monthly_spend_usd: null, burn_pct: 97.5 },
         // 20/200 = 10% — ok.
-        { team_id: 'team-cool', agent_count: 1, root_agent_count: 1, daily_spend_usd: 20, daily_limit_usd: 200, burn_pct: 10 },
+        { team_id: 'team-cool', agent_count: 1, root_agent_count: 1, daily_spend_usd: 20, daily_limit_usd: 200, monthly_spend_usd: null, burn_pct: 10 },
       ]
 
       expect(deriveCostKpis(COSTS, rows).blockedByBudget).toBe(1)
@@ -90,9 +90,9 @@ describe('deriveCostKpis — daily / monthly / tracked figures', () => {
       // count reports what it measured — one blocked team out of the one it
       // could measure — rather than absorbing the unmeasured rows as compliant.
       const rows: readonly TeamListRow[] = [
-        { team_id: 'team-unknown', agent_count: 2, root_agent_count: 1, daily_spend_usd: null, daily_limit_usd: null, burn_pct: null },
-        { team_id: 'team-nolimit', agent_count: 2, root_agent_count: 1, daily_spend_usd: 900, daily_limit_usd: null, burn_pct: null },
-        { team_id: 'team-hot', agent_count: 2, root_agent_count: 1, daily_spend_usd: 195, daily_limit_usd: 200, burn_pct: 97.5 },
+        { team_id: 'team-unknown', agent_count: 2, root_agent_count: 1, daily_spend_usd: null, daily_limit_usd: null, monthly_spend_usd: null, burn_pct: null },
+        { team_id: 'team-nolimit', agent_count: 2, root_agent_count: 1, daily_spend_usd: 900, daily_limit_usd: null, monthly_spend_usd: null, burn_pct: null },
+        { team_id: 'team-hot', agent_count: 2, root_agent_count: 1, daily_spend_usd: 195, daily_limit_usd: 200, monthly_spend_usd: null, burn_pct: 97.5 },
       ]
 
       expect(deriveCostKpis(COSTS, rows).blockedByBudget).toBe(1)
