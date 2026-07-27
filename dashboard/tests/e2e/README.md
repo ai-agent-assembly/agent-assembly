@@ -84,12 +84,16 @@ await page.addInitScript(() => sessionStorage.setItem('aa_token', 'e2e-test-toke
 
 Note that the **theme** (`aa-dashboard-theme`) does legitimately live in `localStorage`. Only `aa_token` moved.
 
+**Do not seed both stores "to be safe."** `localStorage` is a state production cannot reach — AAASM-4322 removed the token from it as XSS-exfiltration hardening — so a spec seeding both would keep passing if that hardening were ever reverted, and the gate would certify the vulnerability. `pnpm e2e:check-seeds` enforces this and runs as its own step in `dashboard-e2e`.
+
 ## CI gate
 
 The `dashboard-e2e` job in `.github/workflows/ci.yml` runs this suite on any change matching the `dashboard` path filter, and is part of the `ci-success` aggregate — a red e2e run is a **merge blocker**, not an advisory signal.
 
 It runs `dashboard/playwright.ci.config.ts`: the normal config plus a quarantine list. **Specs are gated by default** — a file must be named in that list to be excluded — so anything you add here is covered without doing anything.
 
-If your spec is quarantined, it is because it was already failing when the gate was introduced (AAASM-5195) or is a known race (AAASM-5198). Nothing is `.skip`-ed or deleted: `pnpm test:e2e` still runs the whole suite locally, quarantined specs included. Fix a spec, confirm it passes, delete its line — the list only shrinks.
+If your spec is quarantined, it is because it was already failing when the gate was introduced (AAASM-5195), is a known race (AAASM-5198), or needs something the job does not provision (`hitl-approval` boots a real `aa-api` via `cargo`). Nothing is `.skip`-ed or deleted: `pnpm test:e2e` still runs the whole suite locally, quarantined specs included. Fix a spec, confirm it passes, delete its line, and lower `QUARANTINE_CEILING` by one — the list only shrinks, and that ceiling is what enforces it rather than merely asserting it.
+
+**What the gate does not prove:** 43 of the 44 gated specs stub every network call with `page.route`, so it compares the frontend against its own mocks — it is not an API-contract check and cannot see backend drift. See ADR-0028 for the full list of non-claims.
 
 Failures publish the HTML report, failure screenshots, retry traces and JUnit XML as build artifacts, so a CI-only failure can be diagnosed without reproducing it locally.
