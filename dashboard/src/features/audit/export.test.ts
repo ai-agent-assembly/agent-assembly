@@ -284,6 +284,38 @@ describe('buildAuditCsv — observe mode', () => {
   })
 })
 
+// ── AAASM-5236: `event_type` is raw wire input, so the type-count tally must ──
+// survive an attacker- or client-supplied key that collides with `Object.prototype`.
+// With a plain-object accumulator, `constructor` reads back `Object` (yielding a
+// fabricated string count) and `__proto__` writes through the prototype setter
+// (the tally silently vanishes). A Map treats both as ordinary keys.
+describe('buildComplianceReport — prototype-polluting event types', () => {
+  const ctx = { typeFilter: 'all', agentFilter: 'all', search: '' }
+  const now = new Date('2026-05-11T15:00:00Z')
+
+  it('tallies a __proto__ event_type instead of silently dropping it', () => {
+    const rows = [
+      entry({ seq: 1, event_type: '__proto__', payload: '{"event_id":"a"}' }),
+      entry({ seq: 2, event_type: '__proto__', payload: '{"event_id":"b"}' }),
+    ]
+    const report = buildComplianceReport(rows, ctx, COMPLETE, now)
+    expect(report).toContain('- __proto__: 2')
+  })
+
+  it('gives a constructor event_type a real numeric count, not a fabricated string', () => {
+    const rows = [
+      entry({ seq: 1, event_type: 'constructor', payload: '{"event_id":"a"}' }),
+      entry({ seq: 2, event_type: 'constructor', payload: '{"event_id":"b"}' }),
+    ]
+    const report = buildComplianceReport(rows, ctx, COMPLETE, now)
+    expect(report).toMatch(/^- constructor: 2$/m)
+    // The old object accumulator produced `(Object ?? 0) + 1` = a string like
+    // `function Object() { [native code] }1`. Guard against that regression.
+    expect(report).not.toContain('native code')
+    expect(report).not.toContain('constructor: function')
+  })
+})
+
 describe('buildComplianceReport — observe mode', () => {
   const ctx = { typeFilter: 'all', agentFilter: 'all', search: '' }
   const now = new Date('2026-05-11T15:00:00Z')
