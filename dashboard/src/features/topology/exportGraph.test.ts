@@ -6,6 +6,7 @@ import {
   triggerDownload,
 } from './exportGraph'
 import type { TopologyEdge, TopologyNode } from './types'
+import { UNCLAIMED_TEAM } from './unclaimed'
 
 const NODES: TopologyNode[] = [
   { id: 'a', name: 'a', status: 'active', team: 't', owner: 'o', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
@@ -17,6 +18,20 @@ describe('buildGraphJson', () => {
     const json = buildGraphJson(NODES, EDGES)
     expect(json).toContain('\n  ') // pretty-printed (2-space indent)
     expect(JSON.parse(json)).toEqual({ nodes: NODES, edges: EDGES })
+  })
+
+  it('exports an unclaimed agent as team: null, not as the sentinel key', () => {
+    // The sentinel is a rendering device. Writing `"team": "__orphan__"` into
+    // an export would hand a downstream consumer a team id no API asserted
+    // (AAASM-5184).
+    const unclaimed: TopologyNode[] = [{ ...NODES[0], team: UNCLAIMED_TEAM }]
+    const parsed = JSON.parse(buildGraphJson(unclaimed, EDGES)) as { nodes: { team: unknown }[] }
+    expect(parsed.nodes[0].team).toBeNull()
+  })
+
+  it('leaves a real team id in the export untouched', () => {
+    const parsed = JSON.parse(buildGraphJson(NODES, EDGES)) as { nodes: { team: unknown }[] }
+    expect(parsed.nodes[0].team).toBe('t')
   })
 })
 

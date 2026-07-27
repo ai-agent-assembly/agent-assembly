@@ -1,4 +1,5 @@
 import type { TopologyEdge, TopologyNode } from './types'
+import { isUnclaimedTeam } from './unclaimed'
 
 /**
  * Client-side graph export for the topology view (AAASM-5071).
@@ -12,12 +13,21 @@ import type { TopologyEdge, TopologyNode } from './types'
  * {@link triggerDownload} touches browser APIs.
  */
 
-/** Serialise the node/edge view model to pretty-printed JSON. */
+/**
+ * Serialise the node/edge view model to pretty-printed JSON.
+ *
+ * The unclaimed group's key is a rendering device, not a team the registry
+ * holds, so it is unwound back to `team: null` — the wire's own answer for an
+ * agent no team claims (AAASM-5184). Exporting the `__orphan__` sentinel would
+ * hand a downstream consumer a team id that no API ever asserted, which is the
+ * same fabrication the sentinel exists to stop the *screen* making.
+ */
 export function buildGraphJson(
   nodes: readonly TopologyNode[],
   edges: readonly TopologyEdge[],
 ): string {
-  return JSON.stringify({ nodes, edges }, null, 2)
+  const exported = nodes.map((n) => (isUnclaimedTeam(n.team) ? { ...n, team: null } : n))
+  return JSON.stringify({ nodes: exported, edges }, null, 2)
 }
 
 /**
