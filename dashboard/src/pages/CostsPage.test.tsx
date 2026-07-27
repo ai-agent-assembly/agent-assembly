@@ -458,3 +458,50 @@ describe('CostsPage — AAASM-5127: an unmeasured budget is never drawn as headr
     expect(within(daily).getByText('75.0% used')).toBeInTheDocument()
   })
 })
+
+describe('CostsPage — AAASM-5160: the per-team tab is a table with Agents and Monthly spend', () => {
+  it('renders a row per team carrying agent count, daily spend, burn bar and monthly spend', async () => {
+    setupMocks()
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    await screen.findByTestId('costs-tabs')
+    await openTab('teams')
+
+    const table = await screen.findByTestId('costs-team-table')
+    expect(within(table).getByText('Agents')).toBeInTheDocument()
+    expect(within(table).getByText('Monthly spend')).toBeInTheDocument()
+
+    const hot = table.querySelector('[data-team="team-hot"]') as HTMLElement
+    expect(within(hot).getByTestId('costs-team-agents')).toHaveTextContent('3')
+    expect(within(hot).getByText('$190.00')).toBeInTheDocument()
+    expect(within(hot).getByText('$2900.00')).toBeInTheDocument()
+    // The bar is kept verbatim as the "vs daily limit" cell, so its AAASM-5135
+    // absence handling is unchanged.
+    expect(within(hot).getByTestId('team-budget-bar').dataset.thresholdBucket).toBe('danger')
+  })
+
+  it('renders an absent monthly figure as an absence, never as $0', async () => {
+    const noMonthly: CostSummary = {
+      ...COSTS,
+      per_team: [{ team_id: 'team-hot', daily_spend_usd: '190.00', date: '2026-05-13' }],
+    }
+    setupMocks(OVERVIEW, noMonthly)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    await screen.findByTestId('costs-tabs')
+    await openTab('teams')
+
+    const table = await screen.findByTestId('costs-team-table')
+    // team-hot is in the breakdown with no monthly figure → monthly tracking off.
+    const hot = table.querySelector('[data-team="team-hot"]') as HTMLElement
+    expect(within(hot).getByTestId('costs-team-no-monthly').dataset.truthState).toBe('unconfigured')
+    expect(within(hot).queryByText('$0.00')).not.toBeInTheDocument()
+
+    // team-cool is absent from the breakdown entirely → nothing was measured.
+    const cool = table.querySelector('[data-team="team-cool"]') as HTMLElement
+    expect(within(cool).getByTestId('costs-team-no-monthly').dataset.truthState).toBe('unknown')
+    expect(within(cool).getByTestId('costs-team-no-daily').dataset.truthState).toBe('unknown')
+  })
+})
