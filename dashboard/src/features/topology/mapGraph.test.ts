@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { mapTopologyGraph } from './mapGraph'
+import { UNCLAIMED_TEAM } from './unclaimed'
 import type { components } from '../../api/generated/schema'
 
 type ApiGraph = components['schemas']['TopologyGraphResponse']
@@ -25,8 +26,20 @@ describe('mapTopologyGraph', () => {
     }
     const { nodes } = mapTopologyGraph(graph)
     expect(nodes[0]).toMatchObject({ status: 'suspended', team: 'ops' })
-    // A null team_id collapses to the empty (ungrouped) team bucket.
-    expect(nodes[1]).toMatchObject({ status: 'deregistered', team: '' })
+    // A null team_id joins the named unclaimed group — never the empty string,
+    // which downstream consumers read as a team whose name happens to be blank
+    // (AAASM-5184).
+    expect(nodes[1]).toMatchObject({ status: 'deregistered', team: UNCLAIMED_TEAM })
+    expect(nodes[1].team).not.toBe('')
+  })
+
+  it('treats a blank team_id as unclaimed, not as a team named ""', () => {
+    // The wire nullability is `string | null`, but `isOrphanAgent` — the
+    // definition this defers to — counts `''` as an absence too. Were that not
+    // honoured here, a blank id would slip through as a real team key and
+    // reintroduce the unlabelled cluster from the other direction.
+    const graph: ApiGraph = { nodes: [node({ id: 'blank', team_id: '' })], edges: [] }
+    expect(mapTopologyGraph(graph).nodes[0].team).toBe(UNCLAIMED_TEAM)
   })
 
   it('defaults owner / policyCount / budget to neutral placeholders when absent', () => {

@@ -71,6 +71,15 @@ export interface TopologyNode {
   readonly id: string
   readonly name: string
   readonly status: TopologyStatus
+  /**
+   * Group key: the agent's `team_id`, or the `UNCLAIMED_TEAM` sentinel when no
+   * team claims it (`features/topology/unclaimed.ts`).
+   *
+   * Never the empty string. It used to be, and every consumer then treated that
+   * blank as a team name — inflating `N teams`, offering an unlabelled filter
+   * row, and drawing a nameless cluster (AAASM-5184). Read it through
+   * `isUnclaimedTeam` / `teamLabel` rather than testing it for emptiness.
+   */
   readonly team: string
   /** Operator / engineer who owns the agent. Surfaced in the node detail panel (AAASM-1337). */
   readonly owner: string
