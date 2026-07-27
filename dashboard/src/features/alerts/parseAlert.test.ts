@@ -90,6 +90,48 @@ describe('normaliseAlert', () => {
     ).toBeNull()
   })
 
+  it('accepts either spelling of the fields the wire and the dashboard share', () => {
+    // The rule-engine Stories are specified in camelCase; the shipped budget
+    // alerts are snake_case. Both have to survive the transition.
+    const camel = normaliseAlert({
+      id: 'a-1',
+      severity: 'CRITICAL',
+      status: 'FIRING',
+      ruleId: 'r-9',
+      ruleName: 'Budget > 90%',
+      agentId: 'aa-001',
+      firstFiredAt: '2026-06-01T09:00:00Z',
+      destinationIds: ['slack-ops'],
+    })
+    expect(camel).toMatchObject({
+      ruleId: 'r-9',
+      ruleName: 'Budget > 90%',
+      agentId: 'aa-001',
+      firstFiredAt: '2026-06-01T09:00:00Z',
+      destinationIds: ['slack-ops'],
+    })
+
+    const snake = normaliseAlert(
+      wireAlert({ rule_id: 'r-9', rule_name: 'Budget > 90%', first_fired_at: '2026-06-01T09:00:00Z' }),
+    )
+    expect(snake).toMatchObject({
+      ruleId: 'r-9',
+      ruleName: 'Budget > 90%',
+      firstFiredAt: '2026-06-01T09:00:00Z',
+    })
+  })
+
+  it('falls back to an empty timestamp rather than inventing one', () => {
+    // No `timestamp` and no camelCase spelling: the row genuinely does not say
+    // when it fired, and guessing "now" would date an incident to page-load.
+    expect(normaliseAlert(wireAlert({ timestamp: undefined })).firstFiredAt).toBe('')
+  })
+
+  it('ignores a destinations list that is not a list of strings', () => {
+    expect(normaliseAlert(wireAlert({ destination_ids: [1, 2] })).destinationIds).toEqual([])
+    expect(normaliseAlert(wireAlert({ destination_ids: 'slack-ops' })).destinationIds).toEqual([])
+  })
+
   it('rejects a row it cannot identify', () => {
     expect(() => normaliseAlert(null)).toThrow(AlertShapeError)
     expect(() => normaliseAlert('nope')).toThrow(AlertShapeError)
