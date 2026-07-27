@@ -102,10 +102,22 @@ const TOKEN_SHAPED = /token/i
  *
  * KNOWN LIMIT, verified: it matches on the *text* of the right-hand side, so it
  * catches `key = 'aa_token'`, `{ key: 'aa_token' }` and `{ key: TOKEN_KEY }` —
- * but not a rebind laundered through a constant whose own name lacks "token":
+ * but not a rebind laundered through a constant whose own name lacks "token".
+ *
+ * Reaching the gap takes BOTH conditions, which is easy to get wrong when
+ * writing the example (an earlier draft of this comment illustrated it with a
+ * snippet that is in fact caught):
+ *
+ *   1. the key expression must itself be allowlisted, or the ALLOWED_KEYS check
+ *      rejects it before TOKEN_REBIND is reached — an inline `{ key: AUTH }.key`
+ *      is NOT allowlisted, so that form IS caught; and
+ *   2. the value must reach it via a name containing no "token" text.
+ *
+ * Both together, verified not caught:
  *
  *   const AUTH = 'aa_token'
- *   localStorage.setItem({ key: AUTH }.key, v)   // NOT caught
+ *   const opts = { key: AUTH }              // `opts.key` IS allowlisted
+ *   localStorage.setItem(opts.key, v)       // NOT caught
  *
  * Closing that needs value resolution, i.e. a type-aware pass, which is more
  * machinery than this guard is worth. Code review covers it. Stated here so the
