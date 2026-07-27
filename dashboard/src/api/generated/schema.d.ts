@@ -1964,7 +1964,7 @@ export interface components {
              *     `redact` / `unspecified`) so the UI can map to its verdict styling
              *     without re-deriving the enum. Derived, not a separate audit field.
              */
-            decisionLabel: string;
+            decisionLabel: components["schemas"]["DecisionLabel"];
             /**
              * Format: int64
              * @description The design's `latency` column. **Always `null`: the audit log records no
@@ -2177,7 +2177,7 @@ export interface components {
              */
             policy_count?: number | null;
             /** @description Runtime status: `active`, `suspended`, or `deregistered`. */
-            status: string;
+            status: components["schemas"]["AgentNodeStatus"];
             /** @description Team this agent belongs to, if any. */
             team_id?: string | null;
             /**
@@ -2191,6 +2191,22 @@ export interface components {
              */
             trust: number | null;
         };
+        /**
+         * @description Runtime status of an agent node in the topology projection.
+         *
+         *     AAASM-5218 — constrains the wire vocabulary of [`AgentNode::status`] at the
+         *     OpenAPI derive to exactly the three values `status_str` can emit, so the
+         *     generated spec (and the TypeScript client) advertises a closed enum instead
+         *     of an unconstrained `string`. Serializes lowercase, matching the strings the
+         *     registry's [`AgentStatus`] mapped to before this was a free-form field.
+         *
+         *     Deliberately distinct from the runtime registry [`AgentStatus`], whose
+         *     `Suspended(_)` variant carries a parameterised reason an enum cannot express,
+         *     and from the capability-view `AgentStatus` — the three agent-status
+         *     vocabularies are not reconciled here (that is an ADR question, see AAASM-5209).
+         * @enum {string}
+         */
+        AgentNodeStatus: "active" | "suspended" | "deregistered";
         /** @description JSON representation of an agent returned by the API. */
         AgentResponse: {
             /** @description Currently active sessions for this agent. */
@@ -3018,6 +3034,17 @@ export interface components {
          */
         Decision: "allow" | "narrow" | "approval" | "deny" | "na";
         /**
+         * @description Wire vocabulary for [`AgentDecisionResponse::decision_label`].
+         *
+         *     AAASM-5219 — constrains the `decisionLabel` field to the closed set of
+         *     lowercase labels [`decision_label`] can emit, one per proto
+         *     [`Decision`](aa_proto::assembly::common::v1::Decision) discriminant plus the
+         *     `unspecified` fallback, so the generated OpenAPI spec advertises an enum
+         *     rather than a free-form `string`. Serializes lowercase.
+         * @enum {string}
+         */
+        DecisionLabel: "allow" | "deny" | "pending" | "redact" | "unspecified";
+        /**
          * @description Per-kind configuration payload for a `Destination`.
          *
          *     Serialised as `{ "kind": "...", "config": { ... } }` so that the API
@@ -3401,7 +3428,7 @@ export interface components {
             /** @description Hex-encoded agent ID that produced this log entry. */
             agent_id: string;
             /** @description Type of audit event. */
-            event_type: string;
+            event_type: components["schemas"]["LogEventType"];
             /** @description Pre-serialized JSON payload. */
             payload: string;
             /**
@@ -3414,6 +3441,20 @@ export interface components {
             /** @description ISO 8601 timestamp of the event. */
             timestamp: string;
         };
+        /**
+         * @description Category of an audit log entry, mirroring [`aa_core::AuditEventType`].
+         *
+         *     AAASM-5221 — constrains the [`LogEntry::event_type`] wire vocabulary to the
+         *     closed set of labels [`AuditEventType::as_str`] emits, so the generated
+         *     OpenAPI spec advertises an enum rather than a free-form `string`. Variants
+         *     serialize verbatim (PascalCase), matching the strings the audit log has
+         *     always written, so the wire shape is unchanged.
+         *
+         *     Kept in lock-step with `AuditEventType`: the [`From`] impl is exhaustive, so
+         *     adding an audit variant without extending this enum is a compile error.
+         * @enum {string}
+         */
+        LogEventType: "ToolCallIntercepted" | "PolicyViolation" | "CredentialLeakBlocked" | "ApprovalRequested" | "ApprovalGranted" | "ApprovalDenied" | "BudgetLimitApproached" | "BudgetLimitExceeded" | "ApprovalTimedOut" | "ApprovalRouted" | "ApprovalEscalated" | "AgentForceDeregistered" | "MessageBlocked" | "ToolDispatched" | "A2ACallIntercepted" | "A2AImpersonationAttempted" | "SandboxStarted" | "SandboxFilesystemBlocked" | "SandboxCpuTimeout" | "SandboxOomKilled" | "SandboxTerminated" | "SandboxHostFnRateLimited";
         /**
          * @description Per-agent daily budget projection for a topology node (AAASM-5045).
          *
@@ -4478,9 +4519,19 @@ export interface components {
              *     credential/PII content was detected (drives the `"narrow"` verdict).
              */
             redacted: boolean;
-            /** @description Dry-run verdict: `"allow"`, `"narrow"`, `"approval"`, or `"deny"`. */
-            verdict: string;
+            /** @description Dry-run verdict: `allow`, `narrow`, `approval`, or `deny`. */
+            verdict: components["schemas"]["SimulateVerdict"];
         };
+        /**
+         * @description Dry-run verdict returned by `POST /api/v1/policies/simulate`.
+         *
+         *     AAASM-5220 — constrains the [`SimulatePolicyResponse::verdict`] wire
+         *     vocabulary to the closed set the simulate handler emits, so the generated
+         *     OpenAPI spec advertises an enum rather than a free-form `string`. Serializes
+         *     lowercase.
+         * @enum {string}
+         */
+        SimulateVerdict: "allow" | "narrow" | "approval" | "deny";
         /** @description Response for `GET /api/v1/agents/{id}/subtree-burn`. */
         SubtreeBurnResponse: {
             /** @description Hex-encoded root agent ID. */
