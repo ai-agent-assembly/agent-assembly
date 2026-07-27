@@ -1,8 +1,10 @@
 # ADR 0026: Seven Open Dashboard Product-Semantics Decisions
 
-**Status**: Proposed — **every one of the seven decisions below requires product
-sign-off before an implementation ticket is opened.** Decisions 2, 3 and 5
-additionally require architecture sign-off because they imply backend surface.
+**Status**: Proposed, **except Decision 2 — Accepted 2026-07 (option (A))**, see
+*Update — AAASM-5124 / AAASM-5178* in that section. The remaining six decisions
+still require product sign-off before an implementation ticket is opened.
+Decisions 3 and 5 additionally require architecture sign-off because they imply
+backend surface.
 **Date**: 2026-07
 **Ticket**: [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082)
 
@@ -11,8 +13,10 @@ answer, because each is a **product-semantics** choice, not an implementation ch
 Each is recorded here with the verified current behaviour, honest options, a
 recommendation, and the single question a decision-maker must answer.
 
-**Nothing in this ADR is implemented and nothing may be implemented from it.** Merging
-it changes no code and authorises no work.
+**Nothing in this ADR is implemented and nothing may be implemented from it** — with
+the single exception of Decision 2, which has since been signed off and implemented;
+see the Update at the end of that section. Merging this record changes no code and
+authorises no work; only a recorded sign-off does.
 
 Because that sentence has to mean something, note how the recommendations below are
 worded. They are **recommendations to a decision-maker**, never instructions to an
@@ -223,6 +227,62 @@ who read the legend as a roadmap loses that signal — which is the point. The
 > **Does the Capability Matrix narrow its legend and controls to the three states the
 > projection can emit (plus unconfigured) — or is a per-cell `narrow`/`approval`
 > computation in scope for AAASM-5094?**
+
+### Update — AAASM-5124 / AAASM-5178 (product sign-off, 2026-07)
+
+**Answered: (A).** Product signed off narrowing the Capability surface to the states
+the projection can actually emit. Recorded verbatim: *"show only states the current
+projection can actually emit · include unconfigured / unknown where applicable ·
+remove narrow and approval from the legend, filters, and mutation controls until a
+real backend computation can produce them · do not preserve aspirational states merely
+to match an old mock."* Option (C) stays rejected; option (B) stays out of scope for
+this surface and remains AAASM-5094's to reopen.
+
+What that resolved to in the implementation, and the three places it is narrower than
+the question implied:
+
+- **Legend** — now `allow` / `deny` / `n/a`
+  (`dashboard/src/features/capability/CapabilityFilterBar.tsx`). The `--narrow` and
+  `--approval` swatch rules are deleted with it.
+- **Filters — no-op, and confirmed as one.** `CapabilityFilters` is
+  `{ search, framework, owner, mode, trustMax }`; there is no decision filter to
+  remove, exactly as this section's scope note recorded. A test now pins the control
+  list closed so a decision filter cannot be added later without re-deciding this.
+- **Mutation controls** — already narrowed to the accepted subset earlier in
+  AAASM-5124; unchanged by this update.
+- **`unconfigured` is deliberately NOT added.** The sign-off says "where applicable"
+  and it is not yet applicable: ADR 0024 proposes the state but nothing emits it, and
+  `Decision` has no such member. Listing it now would be the same defect in the
+  opposite direction — a legend entry for a state no cell can carry. It joins the
+  legend when the backend emits it, and per ADR 0024 it must also join the override
+  reject-list at that point, because unconfigured is a fact about the data and never
+  an operator choice.
+- **`Decision` is untouched**, as this section's recommendation required — five
+  members, no wire-contract change. Re-widening the legend remains one entry.
+
+**Adjacent decision recorded here rather than in a new ADR** — AAASM-5178 (capability
+overrides are display-only). It is the same defect in this section's family: a control
+that asserts more authority than its data supports. `aa-api`'s module doc states the
+override store "[has] never fed enforcement", yet the button read `Apply override` and
+the success toast read `override applied to N agents`. Of that ticket's three options —
+(a) disable, (b) label unmistakably at the point of action, (c) wire real enforcement —
+**product chose (b)**: *"disable, remove, or explicitly label display-only overrides
+immediately · never report that enforcement changed when only the dashboard annotation
+changed · keep real enforcement wiring as a separate implementation task."* The control
+therefore names itself `Record display-only override`, its confirmation states the
+decision, the agent count and that the gateway is unaffected, and the toast reports the
+annotation without claiming an enforcement change.
+
+**(c) is explicitly deferred, not silently dropped.** Wiring the dashboard to real
+enforcement changes policy state from the browser and overlaps the mutation-safety
+design in ADR 0021; it needs its own ADR and its own ticket, and must not arrive as a
+side effect of a labelling change.
+
+**Residual risk accepted with this update:** an operator can still record a bulk
+annotation that the UI offers no way to revert — the endpoint has a `DELETE`, but the
+FE client exposes only `getMatrix` and `applyOverride`. The confirmation step is the
+compensating control. An undo affordance is tracked as follow-up work rather than
+half-built here; see the PR discussion on AAASM-5124.
 
 ---
 
@@ -611,6 +671,13 @@ state.
   [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082).
 - Decision 2 depends on ADR 0024 (empty-cascade semantics) and touches
   [AAASM-5090](https://lightning-dust-mite.atlassian.net/browse/AAASM-5090).
+- Decision 2 was signed off as option (A) and implemented under
+  [AAASM-5124](https://lightning-dust-mite.atlassian.net/browse/AAASM-5124) in PR
+  [#1718](https://github.com/ai-agent-assembly/agent-assembly/pull/1718), which also
+  carries the AAASM-5178 disclosure decision recorded in that section's Update.
+  Real enforcement wiring (option (c) of
+  [AAASM-5178](https://lightning-dust-mite.atlassian.net/browse/AAASM-5178)) is
+  deferred to its own ADR alongside ADR 0021.
 - Decision 3 sits inside ADR 0015's DLP trust boundary.
 - Decision 4 continues ADR 0021, which named the absent-vs-defaulted problem without
   settling it.
