@@ -1196,6 +1196,15 @@ jobs:
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      # AAASM-5191: the whole outage was specs seeding `aa_token` into
+      # localStorage while `tokenStorage.ts` reads sessionStorage. Worse than
+      # the timeouts: localStorage is a state production cannot reach, because
+      # AAASM-4322 removed the token from it as XSS-exfiltration hardening — so
+      # a spec seeding both stores would keep passing if that hardening were
+      # ever reverted, and the gate would certify the vulnerability. Cheap grep,
+      # runs before the browser is even provisioned.
+      - name: Guard — aa_token is seeded into sessionStorage only
+        run: pnpm e2e:check-seeds
       - name: Generate API types from OpenAPI spec
         run: pnpm generate:api
       - name: Download dashboard dist artifact
@@ -1479,11 +1488,15 @@ jobs:
       - dashboard-test
       # AAASM-5192: gated here deliberately, not left advisory. The exclusions
       # above are quality/acceptance signals; this one asserts functional
-      # behaviour (routes render, drawers open, the API contract holds) exactly
-      # as `dashboard-test` does, so it belongs in the same bucket. An advisory
-      # e2e job would reproduce the condition that caused AAASM-5191 — a suite
-      # nothing acts on — with extra steps. It is credible as a gate only
-      # because its config quarantines the known-red specs (AAASM-5195).
+      # behaviour (routes render, client-side behaviour holds, the rendered app
+      # still works against a stubbed backend) exactly as `dashboard-test` does,
+      # so it belongs in the same bucket. Note what it does NOT assert: 43 of
+      # the 44 gated specs stub every call with `page.route`, so this is not an
+      # API-contract check and cannot see backend drift (ADR-0028, "What this
+      # gate does not prove"). An advisory e2e job would reproduce the condition
+      # that caused AAASM-5191 — a suite nothing acts on — with extra steps. It
+      # is credible as a gate only because its config quarantines the known-red
+      # specs (AAASM-5195) and ratchets that list (QUARANTINE_CEILING).
       - dashboard-e2e
       - dashboard-codegen-drift
       - aa-cli-compat
