@@ -71,13 +71,23 @@ const DECISION_BY_DISCRIMINANT: Readonly<Record<number, AuditDecision>> = {
   4: 'REDACT',
 }
 
-/** Accepted spellings of the string form, which only the shadow path emits. */
-const DECISION_BY_NAME: Readonly<Record<string, AuditDecision>> = {
-  ALLOW: 'ALLOW',
-  DENY: 'DENY',
-  PENDING: 'PENDING',
-  REDACT: 'REDACT',
-}
+/**
+ * Accepted spellings of the string form, which only the shadow path emits.
+ *
+ * A `Map` rather than a plain object because the key is `raw.toUpperCase()`,
+ * derived from a `JSON.parse` of an untrusted audit blob. A plain-object lookup
+ * inherits `Object.prototype`, so `"__proto__"` (or any prototype member name)
+ * would resolve to a truthy inherited value and be coerced into a fabricated
+ * verdict on a governance surface. A `Map` only holds its own keys, so an
+ * inherited name misses and the value is reported as an explicit `unknown`
+ * (AAASM-5225).
+ */
+const DECISION_BY_NAME: ReadonlyMap<string, AuditDecision> = new Map([
+  ['ALLOW', 'ALLOW'],
+  ['DENY', 'DENY'],
+  ['PENDING', 'PENDING'],
+  ['REDACT', 'REDACT'],
+])
 
 /**
  * Interpret one raw `decision`-shaped JSON value.
@@ -103,7 +113,7 @@ function readDecisionValue(raw: unknown): Certain<AuditDecision> | null {
     )
   }
   if (typeof raw === 'string' && raw.length > 0) {
-    const mapped = DECISION_BY_NAME[raw.toUpperCase()]
+    const mapped = DECISION_BY_NAME.get(raw.toUpperCase())
     if (mapped) return known(mapped)
     return absent('unknown', `Unrecognised decision value "${raw}"`)
   }
