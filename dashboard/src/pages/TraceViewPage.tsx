@@ -7,7 +7,6 @@ import { TraceTimeline } from '../components/trace/TraceTimeline'
 import { TraceTimelineFilter } from '../components/trace/TraceTimelineFilter'
 import { ALL_ON, type SeverityFilter } from '../components/trace/severityFilter'
 import { PayloadModal } from '../components/trace/PayloadModal'
-import { EmptyState } from '../components/states'
 import { StatusState } from '../components/truthfulness'
 import { isKnown } from '../lib/truthfulness'
 import { downloadTraceJson } from '../features/trace/export'
@@ -118,10 +117,15 @@ export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPa
         </div>
       )}
 
+      {/* `state={null}` because this is a genuinely empty result, not an
+          absence: the trace was read successfully and contained no spans. An
+          absence badge here would report a healthy read as a fault. */}
       {!isLoading && !isError && data?.length === 0 && (
-        <EmptyState
+        <StatusState
+          state={null}
           title="No events recorded for this session"
           description="The agent ran but produced no governed actions in this session."
+          testId="empty-state"
         />
       )}
 
@@ -139,9 +143,14 @@ export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPa
           {severityFilterable && <TraceTimelineFilter value={filter} onChange={setFilter} />}
           {filteredEvents.length === 0 ? (
             <div data-testid="trace-filter-empty">
-              <EmptyState
+              {/* Also a true empty: every row was read, the operator's own
+                  filter is what is hiding them. Only reachable while the
+                  severity filter is rendered at all. */}
+              <StatusState
+                state={null}
                 title="All events hidden by filter"
                 description="Re-enable a severity above (or press Esc) to see events again."
+                testId="empty-state"
               />
             </div>
           ) : (
