@@ -1039,7 +1039,21 @@ body, .main, .topbar, .page, .page-head, .card,
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: var(--ink-4);
+  /* ACCESSIBILITY CORRECTION (AAASM-5130, ADR-0027) — was var(--ink-4).
+     .empty renders at 11px, and --ink-4 against the --paper page ground
+     measures 3.14:1 (light, #8a8a8a on #f5f4f0) and 4.10:1 (dark, #7a766c on
+     #14130f) — below the WCAG 2.1 AA floor of 4.5:1 for normal text, with no
+     large-text exemption available at 11px. --ink-3 is the smallest step along
+     the same grey ramp that clears it: 6.27:1 light, 7.57:1 dark, and 6.90:1 /
+     7.07:1 on the lighter --paper-2 ground some surfaces place it on.
+     Corrected at source rather than only downstream, so the next surface built
+     from this file does not reintroduce the failure — which is exactly how it
+     reached the shipped Fleet page. Unlike the AAASM-5134 rail correction this
+     edits a per-component rule rather than a token: ADR-0027's forbidden-designs
+     clause binds "the failing value", not only failing tokens.
+     Shared by alerts, costs, live-ops, fleet, policy and teams — all six were
+     specifying the same failing value. */
+  color: var(--ink-3);
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   text-transform: uppercase;
