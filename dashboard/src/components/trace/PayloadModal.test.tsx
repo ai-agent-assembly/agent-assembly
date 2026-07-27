@@ -139,3 +139,26 @@ describe('PayloadModal', () => {
     expect(close).toHaveFocus()
   })
 })
+
+describe('a span whose verdict was never recorded', () => {
+  it('shows the absence marker in the title instead of a chip', () => {
+    // The ordinary production case: `ToolCallIntercepted` records that the
+    // governance layer saw the call, never how it ruled, and the
+    // audit-reconstruction path leaves `decision` null. The title must not
+    // reach for a chip it has no basis for.
+    render(
+      <PayloadModal
+        event={{
+          ...EVENT,
+          decision: absent<string>('not-evaluated', 'This span recorded no governance decision'),
+        }}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByTestId('verdict-chip')).not.toBeInTheDocument()
+    const marker = screen.getByTestId('payload-modal-verdict-absent')
+    expect(marker).toHaveAttribute('data-truth-state', 'not-evaluated')
+    expect(screen.getByTestId('payload-modal').textContent).not.toContain('ALLOWED')
+  })
+})
