@@ -42,6 +42,16 @@ describe('mapTopologyGraph', () => {
     expect(mapTopologyGraph(graph).nodes[0].team).toBe(UNCLAIMED_TEAM)
   })
 
+  it('treats a whitespace-only team_id as unclaimed, matching the gateway', () => {
+    // The registry stores `Some("   ")` — `validate_tenant_id` (AAASM-4190)
+    // rejects control characters only — and `aa-api`'s `team_of` folds it to no
+    // team (AAASM-5182). Admitting it here as a team key drew the nameless
+    // cluster again and had the dashboard contradict the gateway about one
+    // agent (AAASM-5184).
+    const graph: ApiGraph = { nodes: [node({ id: 'ws', team_id: '   ' })], edges: [] }
+    expect(mapTopologyGraph(graph).nodes[0].team).toBe(UNCLAIMED_TEAM)
+  })
+
   it('defaults owner / policyCount / budget to neutral placeholders when absent', () => {
     const { nodes } = mapTopologyGraph({ nodes: [node()], edges: [] })
     expect(nodes[0]).toMatchObject({ owner: '', policyCount: 0, budgetSpend: 0, budgetLimit: null })
