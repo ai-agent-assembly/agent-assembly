@@ -1,6 +1,6 @@
 import { TeamBudgetBar } from '../topology/TeamBudgetBar'
 import { AbsenceMarker } from '../truthfulness'
-import { bucketForBudget } from '../topology/budgetThreshold'
+import { bucketForConfiguredBudget } from '../topology/budgetThreshold'
 import type { TeamListRow } from '../../features/teams/api'
 import './PerTeamTable.css'
 
@@ -16,8 +16,7 @@ const NO_MONTHLY_ROW_DETAIL = 'This team has no row in the cost breakdown'
 /** Burn bucket for the daily figure's ink, or `undefined` when unmeasurable. */
 function dailyBucket(row: TeamListRow): string | undefined {
   if (row.daily_spend_usd == null || row.daily_limit_usd == null) return undefined
-  if (row.daily_limit_usd <= 0) return 'danger'
-  return bucketForBudget(row.daily_spend_usd, row.daily_limit_usd)
+  return bucketForConfiguredBudget(row.daily_spend_usd, row.daily_limit_usd)
 }
 
 /**
