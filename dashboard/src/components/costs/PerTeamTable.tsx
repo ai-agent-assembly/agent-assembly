@@ -21,9 +21,13 @@ function dailyBucket(row: TeamListRow): string | undefined {
 
 /**
  * Per-team cost table for the Costs page Per-team tab, restoring the table
- * shape of `design/v1/hi-fi/costs.jsx:428-478` and `design/v2/hi-fi/costs.jsx`
- * (v2 authoritative per ADR-0025): Team | Agents | Daily spend | vs daily limit
- * | Monthly spend (AAASM-5160).
+ * shape of `design/v1/hi-fi/costs.jsx:428-478` and `design/v2/hi-fi/costs.jsx`:
+ * Team | Agents | Daily spend | vs daily limit | Monthly spend (AAASM-5160).
+ *
+ * Both mocks specify the identical column set, so nothing here rests on which
+ * of them is binding. ADR-0025 would make v2 authoritative, but its status is
+ * `Proposed` pending product/design sign-off — evidence for the shape, not
+ * authority for it.
  *
  * It replaces a flat list of `TeamBudgetBar`, which showed team and burn only —
  * so team size was invisible on the only per-team cost surface, and the product

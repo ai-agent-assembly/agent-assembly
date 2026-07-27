@@ -281,8 +281,10 @@ function blockedSub(count: MeasuredCount): Certain<ReactNode> {
  * everything and found nothing wrong (AAASM-5185).
  *
  * There is no Daily/Monthly period control (AAASM-5126). Both mocks
- * (`design/v1/hi-fi/costs.jsx`, and `design/v2` per ADR-0025) show the two
- * windows side by side and neither has a toggle, and the shipped one could not
+ * (`design/v1/hi-fi/costs.jsx` and `design/v2/hi-fi/costs.jsx` — ADR-0025 would
+ * make the latter binding but is still `Proposed`, so both are read as
+ * evidence) show the two windows side by side and neither has a toggle, and the
+ * shipped control could not
  * honour the switch: the per-team bars, the blocked-by-budget count and the
  * burn callouts are all daily and stayed daily under "Monthly" — the wire has
  * no per-team ceiling of any window (`TeamCostEntry` carries spend only, and
