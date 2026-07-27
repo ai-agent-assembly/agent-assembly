@@ -91,7 +91,26 @@ const NON_WRITE_PROPS = new Set(['getItem', 'setItem', 'removeItem', 'clear', 'k
 /** A key expression mentioning a token is always wrong, allowlisted or not. */
 const TOKEN_SHAPED = /token/i
 
-/** Rebinding an allowlisted generic name to something token-shaped. */
+/**
+ * Rebinding an allowlisted generic name to something token-shaped. This is what
+ * stops `key`/`opts.key` — allowlisted because they currently resolve to the
+ * theme and onboarding keys — from being repointed at the auth token.
+ *
+ * Runs against `noComments`, NOT `codeOnly`: the rebind people actually write is
+ * a string literal (`key = 'aa_token'`), and `codeOnly` blanks those. v3 had it
+ * on the wrong buffer and silently stopped catching the only form that matters.
+ *
+ * KNOWN LIMIT, verified: it matches on the *text* of the right-hand side, so it
+ * catches `key = 'aa_token'`, `{ key: 'aa_token' }` and `{ key: TOKEN_KEY }` —
+ * but not a rebind laundered through a constant whose own name lacks "token":
+ *
+ *   const AUTH = 'aa_token'
+ *   localStorage.setItem({ key: AUTH }.key, v)   // NOT caught
+ *
+ * Closing that needs value resolution, i.e. a type-aware pass, which is more
+ * machinery than this guard is worth. Code review covers it. Stated here so the
+ * gap is a known quantity rather than a discovered one.
+ */
 const TOKEN_REBIND = /\b(?:key|themeKey)\s*[:=]\s*[^,;\n)}]*token[^,;\n)}]*/gi
 
 /** Reaching the global by computed string name, e.g. `window['localStorage']`. */
@@ -217,6 +236,25 @@ const failures = []
 
 for (const file of files) {
   const src = readFileSync(file, 'utf8')
+  // WHICH BUFFER, AND WHY — v3 got this wrong and it cost three detections.
+  //
+  //   noComments  comments blanked, STRING LITERALS INTACT.
+  //   codeOnly    comments AND string literals blanked.
+  //
+  // Everything that inspects a *key* or a *value* must read `noComments`, because
+  // keys are string literals — blanking them makes `key = 'aa_token'` look like
+  // `key = ` and a rebind becomes invisible. v3 ran TOKEN_REBIND against
+  // `codeOnly` and so could not see a literal rebind, which is the only way
+  // anyone would write one; it also hid `addInitScript("localStorage.setItem(
+  // 'aa_token', …)")`, where the whole write lives inside a string.
+  //
+  // Only the unconsumed-occurrence sweep reads `codeOnly`, and only because
+  // spec *prose* legitimately says "localStorage" — in comments (blanked in
+  // both) and in test-name strings such as
+  // `test('explicit choice persists across reload (localStorage)')`, which
+  // would otherwise be flagged. Narrow exception, narrow buffer.
+  //
+  // Both masks preserve length, so offsets and line numbers are interchangeable.
   const codeOnly = mask(src, { strings: true })
   const noComments = mask(src, { strings: false })
   const lineOf = (idx) => src.slice(0, idx).split('\n').length
@@ -227,7 +265,7 @@ for (const file of files) {
   for (const { re, builtinsAreNotKeys } of WRITE_PATTERNS) {
     re.lastIndex = 0
     let m
-    while ((m = re.exec(codeOnly)) !== null) {
+    while ((m = re.exec(noComments)) !== null) {
       const masked = m[1].trim().replace(/\s+/g, ' ')
       if (builtinsAreNotKeys && NON_WRITE_PROPS.has(masked)) continue // READ_PATTERNS owns it
       consumed.push([m.index, m.index + m[0].length])
@@ -249,7 +287,7 @@ for (const file of files) {
   for (const pattern of READ_PATTERNS) {
     pattern.lastIndex = 0
     let m
-    while ((m = pattern.exec(codeOnly)) !== null) consumed.push([m.index, m.index + m[0].length])
+    while ((m = pattern.exec(noComments)) !== null) consumed.push([m.index, m.index + m[0].length])
   }
 
   // ── The shape inversion ──────────────────────────────────────────────────
@@ -282,7 +320,7 @@ for (const file of files) {
 
   TOKEN_REBIND.lastIndex = 0
   let r
-  while ((r = TOKEN_REBIND.exec(codeOnly)) !== null) {
+  while ((r = TOKEN_REBIND.exec(noComments)) !== null) {
     failures.push(
       `${file}:${lineOf(r.index)}  allowlisted key name rebound to something token-shaped: ${r[0].trim()}`,
     )
