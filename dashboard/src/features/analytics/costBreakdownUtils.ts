@@ -29,7 +29,12 @@ export function computeSegmentTotals(buckets: CostBucket[]): Map<string, number>
 
 export function transformBuckets(buckets: CostBucket[]): Record<string, string | number>[] {
   return buckets.map(b => {
-    const row: Record<string, string | number> = { label: b.label }
+    // Build on a null-prototype object so a segment keyed "__proto__" is stored
+    // as an own property rather than silently reassigning the prototype slot (a
+    // no-op that drops the segment from the chart with no crash, wrong value, or
+    // log). Segment keys come from an unvalidated API response.
+    const row: Record<string, string | number> = Object.create(null)
+    row.label = b.label
     for (const s of b.segments) {
       row[s.key] = clampChartValue(s.value)
     }
