@@ -1490,13 +1490,15 @@ jobs:
       # above are quality/acceptance signals; this one asserts functional
       # behaviour (routes render, client-side behaviour holds, the rendered app
       # still works against a stubbed backend) exactly as `dashboard-test` does,
-      # so it belongs in the same bucket. Note what it does NOT assert: 43 of
-      # the 44 gated specs stub every call with `page.route`, so this is not an
-      # API-contract check and cannot see backend drift (ADR-0028, "What this
+      # so it belongs in the same bucket. Note what it does NOT assert: all 44
+      # gated specs stub every call, so this is not an API-contract check and
+      # cannot see backend drift; real-backend coverage is zero because the one
+      # spec that talks to a live gateway needs `cargo` (ADR-0028, "What this
       # gate does not prove"). An advisory e2e job would reproduce the condition
       # that caused AAASM-5191 — a suite nothing acts on — with extra steps. It
       # is credible as a gate only because its config quarantines the known-red
-      # specs (AAASM-5195) and ratchets that list (QUARANTINE_CEILING).
+      # specs (AAASM-5195) and ratchets that list against a frozen baseline
+      # (QUARANTINE_BASELINE in playwright.quarantine.ts).
       - dashboard-e2e
       - dashboard-codegen-drift
       - aa-cli-compat
