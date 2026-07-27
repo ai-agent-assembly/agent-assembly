@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SilenceAction } from './SilenceAction'
 import { ToastProvider } from '../../components/ToastProvider'
 import { AuthContext, type AuthContextValue, type Scope } from '../../auth/AuthContext'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 
 interface Call {
   url: string
@@ -44,7 +46,9 @@ function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>
-      <ToastProvider>{children}</ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>{children}</ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>
   )
 }

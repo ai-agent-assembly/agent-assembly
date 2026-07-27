@@ -30,6 +30,22 @@
   max-height: 190px;
 }
 
+/* No payload was recorded (AAASM-5165). The console keeps its dark ground in
+   both themes so the block still reads as the payload area rather than as a
+   missing section, but it centres the absence marker instead of scrolling an
+   empty monospace region. */
+.redaction-preview__body--absent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.redaction-preview__absent-caption {
+  font-size: 11px;
+  color: #8d8778;
+}
+
 .redaction-preview__line {
   white-space: pre;
 }

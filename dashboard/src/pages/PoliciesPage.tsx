@@ -34,11 +34,19 @@ const FILTER_TABS: ReadonlyArray<{ id: FilterTab; label: string }> = [
 interface PolicyEditorOverlayContainerProps {
   dirtyRef: RefObject<boolean>
   onRequestClose: () => void
+  /**
+   * Opens the page's single `PolicySimulatePanel` instance. Ownership stays on
+   * the page rather than in this container (AAASM-5142) because the page-header
+   * Simulate button already drives the same panel — two owners would mean two
+   * mounted dialogs and two sources of open/closed truth.
+   */
+  onSimulate: () => void
 }
 
 function PolicyEditorOverlayContainer({
   dirtyRef,
   onRequestClose,
+  onSimulate,
 }: Readonly<PolicyEditorOverlayContainerProps>) {
   const { props, closeOverlay } = useOverlay('policy-editor')
   const overlayProps = props as unknown as PolicyEditorOverlayProps
@@ -85,6 +93,7 @@ function PolicyEditorOverlayContainer({
       onClose={onRequestClose}
       onDirtyChange={handleDirtyChange}
       isSaving={isPending}
+      onSimulate={onSimulate}
     />
   )
 }
@@ -368,6 +377,11 @@ export function PoliciesPage() {
   const [simulateOpen, setSimulateOpen] = useState(false)
   const { canWrite } = usePermissions()
 
+  // One panel instance, one owner — driven both by the page-header button and
+  // by the editor overlay's footer "Simulate impact" (AAASM-5142).
+  const openSimulate = useCallback(() => setSimulateOpen(true), [])
+  const closeSimulate = useCallback(() => setSimulateOpen(false), [])
+
   // Observe-mode policies detected by parsing each policy_yaml client-side.
   // The aa-api `PolicyResponse` doesn't expose `enforcement_mode` as a
   // field today, so we read it out of the raw YAML; the helper tolerates
@@ -409,12 +423,18 @@ export function PoliciesPage() {
   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
 
   const attemptCloseEditor = useCallback(() => {
+    // The simulator is a native modal <dialog> in the top layer, but its Esc
+    // keydown still bubbles to the document listener OverlayHost installs — so
+    // without this guard one Esc would dismiss the simulator *and* the editor
+    // behind it (or raise the discard prompt over it). Esc belongs to the
+    // topmost surface; the simulator closes itself via its own `cancel`.
+    if (simulateOpen) return
     if (editorDirtyRef.current) {
       setConfirmDiscardOpen(true)
     } else {
       closeOverlay()
     }
-  }, [closeOverlay])
+  }, [closeOverlay, simulateOpen])
 
   const handleDiscardConfirm = useCallback(() => {
     setConfirmDiscardOpen(false)
@@ -453,7 +473,7 @@ export function PoliciesPage() {
             type="button"
             className="policies-page__simulate-btn"
             data-testid="open-simulate-btn"
-            onClick={() => setSimulateOpen(true)}
+            onClick={openSimulate}
           >
             ▸ Simulate
           </button>
@@ -496,6 +516,7 @@ export function PoliciesPage() {
         <PolicyEditorOverlayContainer
           dirtyRef={editorDirtyRef}
           onRequestClose={attemptCloseEditor}
+          onSimulate={openSimulate}
         />
       </OverlayHost>
 
@@ -518,7 +539,7 @@ export function PoliciesPage() {
         submitting={enablingLive}
       />
 
-      <PolicySimulatePanel open={simulateOpen} onClose={() => setSimulateOpen(false)} />
+      <PolicySimulatePanel open={simulateOpen} onClose={closeSimulate} />
     </main>
   )
 }

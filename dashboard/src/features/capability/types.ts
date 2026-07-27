@@ -2,6 +2,24 @@ export type Verb = 'read' | 'write' | 'delete' | 'exec'
 
 export type Decision = 'allow' | 'narrow' | 'approval' | 'deny' | 'na'
 
+/**
+ * The decisions an operator may actually record as an override (AAASM-5124).
+ *
+ * `POST /api/v1/capability/override` rejects `narrow` and `approval` with a 400:
+ * the matrix is a projection of a static capability set, which can only ever
+ * yield `allow` / `deny` / `na`, so recording either of the other two "would put
+ * a decision in the grid that no projection can ever produce or restore". They
+ * are decided per action by policy stages the projection does not run.
+ *
+ * This is deliberately a *subset* of `Decision` rather than a change to it.
+ * `Decision` is the display vocabulary and still has five members — cells and
+ * the legend are unaffected; only what the override control may submit narrows,
+ * because an override the gateway is certain to refuse has no successful path.
+ */
+export const OVERRIDABLE_DECISIONS = ['allow', 'deny', 'na'] as const
+
+export type OverridableDecision = (typeof OVERRIDABLE_DECISIONS)[number]
+
 export type AgentMode = 'enforce' | 'shadow'
 
 export type AgentStatus = 'active' | 'idle' | 'suspended'
@@ -98,7 +116,12 @@ export interface OverrideRequest {
   agentIds: string[]
   resourceId: string
   verb: Verb
-  decision: Decision
+  /**
+   * Typed to the accepted subset, not to `Decision`. The optimistic edit the
+   * page paints is built from this same request, so a decision the endpoint
+   * would refuse cannot reach the grid even for the duration of the round-trip.
+   */
+  decision: OverridableDecision
 }
 
 export interface OverrideResponse {

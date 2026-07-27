@@ -25,3 +25,17 @@
 .costs-budget-bar__fill[data-threshold-bucket='danger'] {
   background: var(--danger);
 }
+
+/*
+ * Unmeasured track (AAASM-5127): no spend figure, or no configured ceiling.
+ * A plain empty track is indistinguishable from a real budget at 0% burn, so
+ * the absence is drawn — a faint hatch — rather than left to read as headroom.
+ * Tokens only, so it inverts with the theme like the rest of the bar.
+ */
+.costs-budget-bar[data-truth-state] {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--paper-3) 0 3px,
+    transparent 3px 6px
+  );
+}

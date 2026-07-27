@@ -154,19 +154,21 @@ describe('CostsPage — KPI strip', () => {
     expect(within(blocked).getByText('1')).toBeInTheDocument()
   })
 
-  it('switches the utilisation KPI to monthly; daily/monthly cards are period-independent', async () => {
+  it('shows both windows at once, and the two daily KPIs agree on saying "daily"', async () => {
     setupMocks()
     mockBreakdownFetch()
     render(<CostsPage />, { wrapper: Wrapper })
 
-    await screen.findByTestId('costs-kpi-utilisation')
-    await userEvent.click(screen.getByTestId('costs-period-monthly'))
-
-    // Utilisation follows the toggle: monthly = 3200/5000 = 64.0%.
-    expect(within(screen.getByTestId('costs-kpi-utilisation')).getByText('64.0%')).toBeInTheDocument()
-    // Daily + Monthly spend cards stay put (they show both periods at once).
-    expect(within(screen.getByTestId('costs-kpi-daily')).getByText('$210.00')).toBeInTheDocument()
+    // Neither window is behind a control — both are permanently on screen.
+    expect(within(await screen.findByTestId('costs-kpi-daily')).getByText('$210.00')).toBeInTheDocument()
     expect(within(screen.getByTestId('costs-kpi-monthly')).getByText('$3200.00')).toBeInTheDocument()
+
+    // …and the two live KPIs that share the daily window both name it, rather
+    // than one following a toggle while the other stayed daily (AAASM-5126).
+    const util = screen.getByTestId('costs-kpi-utilisation')
+    expect(within(util).getByText('105.0%')).toBeInTheDocument()
+    expect(within(util).getByText('daily · of $200.00 limit')).toBeInTheDocument()
+    expect(within(screen.getByTestId('costs-kpi-blocked')).getByText(/daily limit/)).toBeInTheDocument()
   })
 
   it('degrades to dashes / N-A / 0 across the strip before any cost data arrives', async () => {
@@ -185,7 +187,7 @@ describe('CostsPage — KPI strip', () => {
 
     const util = screen.getByTestId('costs-kpi-utilisation')
     expect(within(util).getByText('N/A')).toBeInTheDocument()
-    expect(within(util).getByText('no budget limit set')).toBeInTheDocument()
+    expect(within(util).getByText('no daily budget limit set')).toBeInTheDocument()
 
     expect(within(screen.getByTestId('costs-kpi-agents')).getByText('0')).toBeInTheDocument()
   })
@@ -206,7 +208,7 @@ describe('CostsPage — KPI strip', () => {
     expect(within(await screen.findByTestId('costs-kpi-daily')).getByText('$42.00')).toBeInTheDocument()
     const util = screen.getByTestId('costs-kpi-utilisation')
     expect(within(util).getByText('N/A')).toBeInTheDocument()
-    expect(within(util).getByText('no budget limit set')).toBeInTheDocument()
+    expect(within(util).getByText('no daily budget limit set')).toBeInTheDocument()
   })
 })
 
@@ -373,10 +375,86 @@ describe('CostsPage — per-team states (under the Per-team tab)', () => {
 
     const blocked = await screen.findByTestId('costs-kpi-blocked')
     expect(within(blocked).getByText('0')).toBeInTheDocument()
-    expect(within(blocked).getByText('no teams over limit')).toBeInTheDocument()
+    expect(within(blocked).getByText('no teams over the daily limit')).toBeInTheDocument()
 
     await openTab('teams')
     const bars = await screen.findAllByTestId('team-budget-bar')
     expect(bars.find(b => b.dataset.team === 'team-warn')!.dataset.thresholdBucket).toBe('warn')
+  })
+})
+
+describe('CostsPage — AAASM-5126: the page offers no period it cannot honour', () => {
+  it('renders no Daily/Monthly period control at all', async () => {
+    setupMocks()
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    await screen.findByTestId('costs-kpis')
+    // The control the toggle used to render, and the generic segmented control
+    // it was built from — neither may reappear on this page.
+    expect(screen.queryByTestId('costs-period-daily')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('costs-period-monthly')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Monthly' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Daily' })).not.toBeInTheDocument()
+  })
+
+  it('labels the per-team section with the window its bars are drawn from', async () => {
+    setupMocks()
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    await screen.findByTestId('costs-tabs')
+    await openTab('teams')
+
+    const hint = await screen.findByTestId('costs-team-hint')
+    expect(hint).toHaveTextContent(/^daily spend vs org daily limit/)
+    // The regression: this said "monthly" while the bars below stayed daily.
+    expect(hint).not.toHaveTextContent(/monthly/i)
+
+    // …and the bars really are the daily figures the hint claims: team-hot
+    // reads 190/200, the daily pair, not 2900 against anything monthly.
+    const bars = await screen.findAllByTestId('team-budget-bar')
+    const hot = bars.find(b => b.dataset.team === 'team-hot')!
+    expect(within(hot).getByTestId('team-budget-bar-amount')).toHaveTextContent('$190 / $200 · 95%')
+  })
+})
+
+describe('CostsPage — AAASM-5127: an unmeasured budget is never drawn as headroom', () => {
+  /** Costs with a real daily budget and no monthly tracking at all. */
+  const NO_MONTHLY: CostSummary = {
+    date: '2026-05-13',
+    daily_spend_usd: '150.00',
+    daily_limit_usd: '200.00',
+    per_agent: [{ agent_id: 'agent-spendy', daily_spend_usd: '150.00', date: '2026-05-13' }],
+    per_team: [{ team_id: 'team-hot', daily_spend_usd: '150.00', date: '2026-05-13' }],
+  }
+
+  it('leaves the monthly mini-bar unmeasured when the wire carries no monthly figures', async () => {
+    setupMocks(OVERVIEW, NO_MONTHLY)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const monthly = await screen.findByTestId('costs-kpi-monthly')
+    expect(within(monthly).getByText('—')).toBeInTheDocument()
+
+    const bar = within(monthly).getByTestId('costs-budget-bar')
+    expect(bar.dataset.truthState).toBe('unknown')
+    // The regression: `used={spend.spend ?? 0}` + `bucket = … : 'ok'` drew a
+    // green 0%-burnt track for a month nobody ever measured.
+    expect(bar.dataset.thresholdBucket).toBeUndefined()
+    expect(bar.getAttribute('aria-label')).not.toContain('%')
+    expect(within(monthly).queryByText(/% used/)).not.toBeInTheDocument()
+  })
+
+  it('still measures the daily bar beside it, so the absence is specific', async () => {
+    setupMocks(OVERVIEW, NO_MONTHLY)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const daily = await screen.findByTestId('costs-kpi-daily')
+    const bar = within(daily).getByTestId('costs-budget-bar')
+    expect(bar.dataset.truthState).toBeUndefined()
+    expect(bar.dataset.thresholdBucket).toBe('ok') // 150/200 = 75% — a real, measured 75%
+    expect(within(daily).getByText('75.0% used')).toBeInTheDocument()
   })
 })

@@ -2,24 +2,59 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PayloadModal } from './PayloadModal'
-import type { TraceEvent } from '../../features/trace/types'
+import { NO_DATA, absent, known } from '../../lib/truthfulness'
+import type { TraceEvent, TraceSeverity } from '../../features/trace/types'
+
+const NOT_ON_SPAN =
+  'TraceSpan carries only span_id, parent_span_id, operation, decision and timestamps'
+
+/** The five fields `TraceSpan` has no source for, exactly as `api.ts` maps them. */
+const UNSOURCED = {
+  payload: absent<unknown>('not-supported', NOT_ON_SPAN),
+  payloadPreview: absent<string>('not-supported', NOT_ON_SPAN),
+  severity: absent<TraceSeverity>('not-supported', NOT_ON_SPAN),
+  redactedFields: absent<readonly string[]>('not-supported', NOT_ON_SPAN),
+  violationReason: absent<string>('not-supported', NOT_ON_SPAN),
+}
 
 const EVENT: TraceEvent = {
   id: 'evt-1',
   timestamp: '2026-04-23T14:23:01Z',
-  type: 'policy_violation',
+  type: 'ToolCallIntercepted',
   agent: 'support-agent',
-  durationMs: 12,
-  payloadPreview: 'refund > $100',
-  payload: {
+  parentSpanId: null,
+  durationMs: known(12),
+  decision: known('scrub'),
+  ...UNSOURCED,
+}
+
+/**
+ * The same span once the backend supplies payload and redaction (AAASM-5100),
+ * so the "redacted values never reach the DOM" claim stays asserted through the
+ * modal rather than only in `RedactionPreview.test.tsx`.
+ */
+const EVENT_WITH_PAYLOAD: TraceEvent = {
+  ...EVENT,
+  payload: known({
     action: 'process_refund',
     amount: 250,
     user_id: 4521,
     notes: 'manual review',
-  },
-  severity: 'critical',
-  redactedFields: ['user_id'],
-  violationReason: 'refund > $100 requires human approval',
+  }),
+  payloadPreview: known('refund > $100'),
+  severity: known<TraceSeverity>('critical'),
+  redactedFields: known(['user_id']),
+  violationReason: known('refund > $100 requires human approval'),
+}
+
+/** The ordinary audit-reconstruction case: `end_time` was never recorded. */
+const EVENT_NO_DURATION: TraceEvent = {
+  ...EVENT,
+  id: 'evt-2',
+  durationMs: absent<number>(
+    'unknown',
+    'This span recorded no end time, so its duration was never measured',
+  ),
 }
 
 describe('PayloadModal', () => {
@@ -37,7 +72,7 @@ describe('PayloadModal', () => {
     expect(screen.getByTestId('decision-explainer')).toBeInTheDocument()
     expect(screen.getByTestId('layer-steps')).toBeInTheDocument()
     expect(screen.getByTestId('decision-outcome-band')).toBeInTheDocument()
-    // redactedFields present → scrubbed verdict on the header chip.
+    // decision "scrub" → scrubbed verdict on the header chip.
     expect(screen.getByTestId('verdict-chip')).toHaveAttribute('data-verdict', 'scrubbed')
     // Ratified square corners for the Trace surface (AAASM-5075).
     expect(screen.getByTestId('verdict-chip')).toHaveAttribute('data-shape', 'square')
@@ -45,12 +80,28 @@ describe('PayloadModal', () => {
   })
 
   it('shows redacted values as █ blocks and never leaks the real value', () => {
-    render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
+    render(<PayloadModal event={EVENT_WITH_PAYLOAD} onClose={vi.fn()} />)
 
     expect(screen.getByTestId('redaction-block').textContent).toMatch(/^█+$/)
     expect(screen.getByTestId('redaction-preview-body').textContent).not.toContain('4521')
     // Non-redacted values are still shown.
     expect(screen.getByTestId('redaction-preview-body')).toHaveTextContent('process_refund')
+  })
+
+  it('renders the duration as an absence when the span was never measured', () => {
+    const { container } = render(<PayloadModal event={EVENT_NO_DURATION} onClose={vi.fn()} />)
+
+    const duration = screen.getByTestId('payload-modal-duration')
+    expect(duration).not.toHaveAttribute('data-truth-state', 'known')
+    expect(duration).toHaveAttribute('data-truth-state', 'unknown')
+    expect(duration).toHaveTextContent(NO_DATA)
+
+    // AAASM-5165: the subtitle used to interpolate the raw number, so an
+    // unmeasured span printed "null ms" next to the agent name.
+    const subtitle = container.querySelector('.payload-modal__subtitle')?.textContent ?? ''
+    expect(subtitle).toContain('support-agent')
+    expect(subtitle).not.toContain('null')
+    expect(subtitle).not.toContain('NaN')
   })
 
   it('closes on Escape and on backdrop click', async () => {
@@ -86,5 +137,28 @@ describe('PayloadModal', () => {
     expect(close).toHaveFocus()
     await userEvent.tab({ shift: true })
     expect(close).toHaveFocus()
+  })
+})
+
+describe('a span whose verdict was never recorded', () => {
+  it('shows the absence marker in the title instead of a chip', () => {
+    // The ordinary production case: `ToolCallIntercepted` records that the
+    // governance layer saw the call, never how it ruled, and the
+    // audit-reconstruction path leaves `decision` null. The title must not
+    // reach for a chip it has no basis for.
+    render(
+      <PayloadModal
+        event={{
+          ...EVENT,
+          decision: absent<string>('not-evaluated', 'This span recorded no governance decision'),
+        }}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByTestId('verdict-chip')).not.toBeInTheDocument()
+    const marker = screen.getByTestId('payload-modal-verdict-absent')
+    expect(marker).toHaveAttribute('data-truth-state', 'not-evaluated')
+    expect(screen.getByTestId('payload-modal').textContent).not.toContain('ALLOWED')
   })
 })

@@ -68,10 +68,15 @@ describe('usePermissions', () => {
     expect(admin.result.current).toBe(true)
   })
 
-  it('falls back to permissive when no AuthProvider is mounted', () => {
+  it('fails closed when no AuthProvider is mounted', () => {
+    // Guards AAASM-5180: the fallback used to grant every scope, so a spec that
+    // rendered a gated control without a provider never reached the disabled
+    // branch and its RBAC assertion passed vacuously.
     const { result } = renderHook(() => usePermissions())
-    expect(result.current.canWrite).toBe(true)
-    expect(result.current.canAdmin).toBe(true)
+    expect(result.current.scopes).toEqual([])
+    expect(result.current.can('read')).toBe(false)
+    expect(result.current.canWrite).toBe(false)
+    expect(result.current.canAdmin).toBe(false)
   })
 })
 

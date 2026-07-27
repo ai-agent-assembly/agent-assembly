@@ -11,8 +11,11 @@ const SCOPE_RANK: Record<Scope, number> = { read: 0, write: 1, admin: 2 }
 export const WRITE_REQUIRED_HINT =
   'You have read-only access — write permission is required for this action.'
 
-/** Every scope — the permissive fallback when no AuthProvider is mounted. */
-const ALL_SCOPES: readonly Scope[] = ['read', 'write', 'admin']
+/**
+ * No scopes — what an unprovided tree resolves to. Module-level so `useScopes`
+ * returns a referentially stable value and the `useMemo`s below don't rerun.
+ */
+const NO_SCOPES: readonly Scope[] = Object.freeze([])
 
 /**
  * Does any granted scope satisfy the required level? Mirrors the server's
@@ -25,15 +28,24 @@ export function scopesSatisfy(granted: readonly Scope[], required: Scope): boole
 }
 
 /**
- * Resolve the caller's scopes from context. When no AuthProvider is mounted we
- * can't know them, so — because this gate is advisory (the gateway re-checks
- * every mutation) — we fall back to all scopes rather than hide controls we
- * have no basis to hide. In the real app the provider is always present, so a
- * read-only token yields `['read']` and correctly disables write controls.
+ * Resolve the caller's scopes from context, failing closed when no
+ * AuthProvider is mounted.
+ *
+ * This previously fell back to *every* scope, reasoning that the gate is
+ * advisory (the gateway re-checks every mutation) so it should not hide
+ * controls it has no basis to hide. That fallback was unreachable in the app —
+ * `main.tsx` is the sole entrypoint and wraps the whole tree in
+ * `<AuthProvider>` — but it was very much reachable in tests, where any spec
+ * rendering a gated control without a provider silently exercised the
+ * fully-permissive path. RBAC assertions written against it passed
+ * vacuously: deleting the gate outright kept CI green (AAASM-5180).
+ *
+ * Failing closed makes the unprovided case the safe one and forces a spec to
+ * state the scopes it runs under. Use the `GrantScopes` helper to do so.
  */
 function useScopes(): readonly Scope[] {
   const ctx = useContext(AuthContext)
-  return ctx ? ctx.scopes : ALL_SCOPES
+  return ctx ? ctx.scopes : NO_SCOPES
 }
 
 export interface Permissions {

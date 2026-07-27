@@ -7,7 +7,8 @@ import { TraceTimeline } from '../components/trace/TraceTimeline'
 import { TraceTimelineFilter } from '../components/trace/TraceTimelineFilter'
 import { ALL_ON, type SeverityFilter } from '../components/trace/severityFilter'
 import { PayloadModal } from '../components/trace/PayloadModal'
-import { EmptyState } from '../components/states'
+import { StatusState } from '../components/truthfulness'
+import { isKnown } from '../lib/truthfulness'
 import { downloadTraceJson } from '../features/trace/export'
 import type { TraceEvent } from '../features/trace/types'
 import './TraceViewPage.css'
@@ -16,9 +17,24 @@ const TRACE_SKELETON_KEYS = Array.from({ length: 4 }, (_, i) => `trace-skeleton-
 
 function applyFilter(events: readonly TraceEvent[], filter: SeverityFilter): TraceEvent[] {
   return events.filter(event => {
-    const key = event.severity ?? 'neutral'
+    const key = isKnown(event.severity) ? event.severity.value : 'neutral'
     return filter[key]
   })
+}
+
+/**
+ * Whether the severity filter has anything to filter on.
+ *
+ * `TraceSpan` has no severity field, so every event maps to `neutral` and three
+ * of the filter's four checkboxes can never match a row. Rendering them anyway
+ * would be an affordance with no production path — the operator would uncheck
+ * "Critical", see nothing change, and conclude there are no critical events.
+ * The control is therefore hidden until a severity is actually present, which
+ * also means it reappears on its own the day the backend supplies one
+ * (AAASM-5100) rather than needing to be rebuilt.
+ */
+function hasKnownSeverity(events: readonly TraceEvent[]): boolean {
+  return events.some(event => isKnown(event.severity))
 }
 
 export interface TraceViewPageProps {
@@ -40,11 +56,22 @@ export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPa
   const id = agentId ?? params.id ?? ''
   const sessionId = sessionIdProp ?? params.sessionId ?? ''
   const { data: agent } = useAgentQuery(id)
-  const { data, isLoading, isError, refetch } = useTraceQuery(id, sessionId)
+  // The trace is keyed by session alone; the agent id is only used for the
+  // header label and the back link.
+  const { data, isLoading, isError, refetch } = useTraceQuery(sessionId)
   const agentLabel = agent?.name ?? id
   const [filter, setFilter] = useState<SeverityFilter>(ALL_ON)
   const [selectedEvent, setSelectedEvent] = useState<TraceEvent | null>(null)
-  const filteredEvents = useMemo(() => applyFilter(data ?? [], filter), [data, filter])
+  // Coalesced once. Repeating `data ?? []` inside each arm of the filter
+  // choice left one arm's fallback unreachable — `data` is always defined by
+  // the time a severity is known — which reads as an untested branch when it
+  // is really a branch that cannot be taken.
+  const events = useMemo(() => data ?? [], [data])
+  const severityFilterable = useMemo(() => hasKnownSeverity(events), [events])
+  const filteredEvents = useMemo(
+    () => (severityFilterable ? applyFilter(events, filter) : events),
+    [events, filter, severityFilterable],
+  )
 
   return (
     <main style={{ padding: '1.5rem' }} data-testid="trace-view">
@@ -70,17 +97,35 @@ export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPa
         </div>
       )}
 
+      {/* A failed trace request is the `unavailable` state of the shared
+          vocabulary, not a bare red paragraph. `StatusState` carries the
+          fault badge, `role="alert"`, and the screen-reader sentence, so an
+          unreadable trace can never be skimmed as an empty one. */}
       {isError && (
         <div data-testid="trace-error" style={{ marginTop: '1rem' }}>
-          <p style={{ color: 'var(--danger)' }}>Failed to load trace.</p>
-          <button type="button" onClick={() => ignorePromise(refetch())}>Retry</button>
+          <StatusState
+            state="unavailable"
+            title="Trace unavailable"
+            description="The session trace could not be read, so this view cannot say what the agent did."
+            testId="trace-unavailable"
+            action={
+              <button type="button" onClick={() => ignorePromise(refetch())}>
+                Retry
+              </button>
+            }
+          />
         </div>
       )}
 
+      {/* `state={null}` because this is a genuinely empty result, not an
+          absence: the trace was read successfully and contained no spans. An
+          absence badge here would report a healthy read as a fault. */}
       {!isLoading && !isError && data?.length === 0 && (
-        <EmptyState
+        <StatusState
+          state={null}
           title="No events recorded for this session"
           description="The agent ran but produced no governed actions in this session."
+          testId="empty-state"
         />
       )}
 
@@ -95,12 +140,17 @@ export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPa
               Export
             </button>
           </div>
-          <TraceTimelineFilter value={filter} onChange={setFilter} />
+          {severityFilterable && <TraceTimelineFilter value={filter} onChange={setFilter} />}
           {filteredEvents.length === 0 ? (
             <div data-testid="trace-filter-empty">
-              <EmptyState
+              {/* Also a true empty: every row was read, the operator's own
+                  filter is what is hiding them. Only reachable while the
+                  severity filter is rendered at all. */}
+              <StatusState
+                state={null}
                 title="All events hidden by filter"
                 description="Re-enable a severity above (or press Esc) to see events again."
+                testId="empty-state"
               />
             </div>
           ) : (

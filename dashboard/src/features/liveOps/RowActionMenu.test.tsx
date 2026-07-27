@@ -21,9 +21,8 @@ function op(status: OperationStatus = 'running'): LiveOperation {
 
 /**
  * Mount inside an AuthProvider-equivalent so the scope under test is the one
- * `usePermissions` reads. Without a provider it falls back to every scope,
- * which is the permissive default the real app never runs in — and is exactly
- * the reason the write gate here was never exercised before AAASM-5148.
+ * `usePermissions` reads. Without a provider it now resolves to *no* scopes
+ * (AAASM-5180), so a spec that wants the enabled branch has to say so.
  */
 function withScopes(scopes: Scope[], ui: React.ReactElement) {
   const auth: AuthContextValue = {
@@ -54,9 +53,7 @@ function setup(overrides?: {
       onHaltAgent={overrides?.onHaltAgent}
     />
   )
-  const view = render(
-    overrides?.scopes ? withScopes(overrides.scopes, menu) : menu,
-  )
+  const view = render(withScopes(overrides?.scopes ?? ['read', 'write'], menu))
   return { onPause, onResume, onTerminate, user: userEvent.setup(), view }
 }
 

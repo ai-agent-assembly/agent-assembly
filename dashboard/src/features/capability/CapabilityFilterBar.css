@@ -114,15 +114,10 @@
   background: var(--paper-2);
 }
 
-.cap-legend-sw--narrow {
-  background: var(--warn-bg);
-  border-color: var(--warn);
-}
-
-.cap-legend-sw--approval {
-  background: var(--info-bg);
-  border-color: var(--info);
-}
+/* No `--narrow` / `--approval` swatch: the legend lists only the states the
+   capability projection can emit (ADR 0026 Decision 2 / AAASM-5124). The cell
+   colours for those two decisions still live in CapabilityMatrixGrid.css, which
+   serves the shared five-member `Decision` vocabulary. */
 
 .cap-legend-sw--deny {
   background: var(--danger-bg);

@@ -1,12 +1,19 @@
 import { useMemo } from 'react'
 import type { TraceEvent } from '../../features/trace/types'
 import { buildLayerSteps, deriveVerdict, VERDICT_META } from '../../features/trace/decision'
+import { isKnown } from '../../lib/truthfulness'
+import { AbsenceMarker, TruthfulValue } from '../truthfulness'
 import { LayerSteps } from './LayerSteps'
 import { RedactionPreview } from './RedactionPreview'
 import './DecisionExplainer.css'
 
 export interface DecisionExplainerProps {
   readonly event: TraceEvent
+}
+
+/** `${ms} ms total`, applied only to a duration that was actually measured. */
+function formatTotal(ms: number): string {
+  return `${ms} ms total`
 }
 
 /**
@@ -17,14 +24,23 @@ export interface DecisionExplainerProps {
  * The matched-policy link (`policy P-0xx →`) and the trace_id chain from the
  * hi-fi are backend-gated (no API field yet) and rendered as an explicit note
  * rather than fabricated. Tracked on AAASM-5029.
+ *
+ * The outcome band is the surface's strongest claim — a full-width coloured
+ * verdict — so when no verdict is derivable (AAASM-5109) it renders the neutral
+ * absence band instead of a colour. A green ALLOWED band is not a safe default
+ * for "we do not know".
  */
 export function DecisionExplainer({ event }: DecisionExplainerProps) {
   const verdict = useMemo(() => deriveVerdict(event), [event])
   const steps = useMemo(() => buildLayerSteps(event), [event])
-  const meta = VERDICT_META[verdict]
+  const meta = isKnown(verdict) ? VERDICT_META[verdict.value] : null
 
   return (
-    <div className="decision-explainer" data-testid="decision-explainer" data-verdict={verdict}>
+    <div
+      className="decision-explainer"
+      data-testid="decision-explainer"
+      data-verdict={isKnown(verdict) ? verdict.value : 'absent'}
+    >
       <div className="decision-explainer__eyebrow">decision trace</div>
 
       <LayerSteps steps={steps} />
@@ -32,12 +48,27 @@ export function DecisionExplainer({ event }: DecisionExplainerProps) {
       <div
         className="decision-explainer__band"
         data-testid="decision-outcome-band"
-        style={{ borderColor: meta.colorVar }}
+        style={{ borderColor: meta?.colorVar }}
       >
-        <span className="decision-explainer__verdict" style={{ color: meta.colorVar }}>
-          {meta.label}
+        <span className="decision-explainer__verdict" style={{ color: meta?.colorVar }}>
+          {isKnown(verdict) ? (
+            VERDICT_META[verdict.value].label
+          ) : (
+            <AbsenceMarker
+              state={verdict.state}
+              detail={verdict.detail}
+              showLabel
+              testId="decision-verdict-absent"
+            />
+          )}
         </span>
-        <span className="decision-explainer__ms">{event.durationMs}&nbsp;ms total</span>
+        <span className="decision-explainer__ms">
+          <TruthfulValue
+            value={event.durationMs}
+            format={formatTotal}
+            testId="decision-duration"
+          />
+        </span>
         <span className="decision-explainer__policy" data-testid="decision-policy-gated">
           policy link … backend-gated
         </span>

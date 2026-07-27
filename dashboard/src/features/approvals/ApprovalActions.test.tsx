@@ -6,12 +6,18 @@ import { api } from '../../api/client'
 import { AuthContext, type AuthContextValue, type Scope } from '../../auth/AuthContext'
 import { WRITE_REQUIRED_HINT } from '../../auth/usePermissions'
 import { ApprovalActions } from './ApprovalActions'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 
 function renderWithClient(ui: React.ReactElement) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
+  return render(
+    <QueryClientProvider client={client}>
+      <GrantScopes scopes={WRITE_SCOPES}>{ui}</GrantScopes>
+    </QueryClientProvider>,
+  )
 }
 
 /**
@@ -182,7 +188,9 @@ describe('ApprovalActions', () => {
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     })
     const { rerender } = render(
-      <QueryClientProvider client={client}>{actions(false)}</QueryClientProvider>,
+      <QueryClientProvider client={client}>
+        {withScopes(['write'], actions(false))}
+      </QueryClientProvider>,
     )
 
     await userEvent.click(screen.getByTestId('approval-reject-btn'))
@@ -190,7 +198,11 @@ describe('ApprovalActions', () => {
     expect(screen.getByTestId('approval-reject-confirm')).toBeEnabled()
 
     // e.g. the approval expired while the reason was being typed.
-    rerender(<QueryClientProvider client={client}>{actions(true)}</QueryClientProvider>)
+    rerender(
+      <QueryClientProvider client={client}>
+        {withScopes(['write'], actions(true))}
+      </QueryClientProvider>,
+    )
 
     expect(screen.getByTestId('approval-reject-confirm')).toBeDisabled()
     expect(post).not.toHaveBeenCalled()

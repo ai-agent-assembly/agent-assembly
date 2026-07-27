@@ -6,6 +6,7 @@ import { dslFor } from './dslFor'
 import { RuleCard } from './RuleCard'
 import { ScopeRow } from './ScopeRow'
 import { ValidationPanel } from './ValidationPanel'
+import { rulesChangedCount } from './rulesChangedCount'
 import type { PolicyDraft, RuleDraft } from './types'
 import './editor.css'
 
@@ -24,6 +25,12 @@ interface PolicyEditorOverlayProps {
    * for the duration of the mutation. Falsy in tests + stub flows.
    */
   isSaving?: boolean
+  /**
+   * Opens the shipped single-request dry-run simulator (ADR-0017 item 6).
+   * Required, not optional: the button must never be rendered with no
+   * production path behind it (AAASM-5142).
+   */
+  onSimulate: () => void
 }
 
 /**
@@ -40,6 +47,7 @@ export function PolicyEditorOverlay({
   onClose,
   onDirtyChange,
   isSaving = false,
+  onSimulate,
 }: Readonly<PolicyEditorOverlayProps>) {
   const {
     draft,
@@ -90,13 +98,14 @@ export function PolicyEditorOverlay({
       toast('Fix validation errors before simulating.', 'error')
       return
     }
-    toast('Simulate impact: coming soon.', 'info')
+    onSimulate()
   }
 
+  const changedRules = rulesChangedCount(draft.rules, originalRuleById)
 
   let footerStatus: string
   if (isDirty) {
-    footerStatus = `${draft.rules.length} rule(s) modified · run simulate to preview impact`
+    footerStatus = `${changedRules} rule(s) modified · run simulate to preview impact`
   } else if (draft.status === 'proposed') {
     footerStatus = 'Draft — never deployed'
   } else {

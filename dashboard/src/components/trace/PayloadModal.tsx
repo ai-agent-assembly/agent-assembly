@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react'
+import { useEffect, useRef, type KeyboardEvent } from 'react'
 import type { TraceEvent } from '../../features/trace/types'
 import { deriveVerdict } from '../../features/trace/decision'
+import { isKnown } from '../../lib/truthfulness'
+import { AbsenceMarker, TruthfulValue } from '../truthfulness'
 import { VerdictChip } from './VerdictChip'
 import { DecisionExplainer } from './DecisionExplainer'
 import './PayloadModal.css'
@@ -8,6 +10,11 @@ import './PayloadModal.css'
 export interface PayloadModalProps {
   readonly event: TraceEvent | null
   readonly onClose: () => void
+}
+
+/** Duration in the modal subtitle, rendered only when one was measured. */
+function formatDuration(ms: number): string {
+  return `${ms} ms`
 }
 
 /**
@@ -57,9 +64,15 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
     }
   }
 
-  const verdict = useMemo(() => (event ? deriveVerdict(event) : null), [event])
+  if (!event) return null
 
-  if (!event || !verdict) return null
+  // Derived after the guard rather than in a `useMemo` above it. Memoising it
+  // forced the value to be `Certain<Verdict> | null` so the hook could run on a
+  // closed modal, which in turn forced a `verdict === null` check that could
+  // never be true once `event` was non-null — a branch no test can reach
+  // because no input produces it. `deriveVerdict` is two map lookups; it does
+  // not need memoising, and not memoising it removes the dead branch entirely.
+  const verdict = deriveVerdict(event)
 
   return (
     <div
@@ -90,10 +103,26 @@ export function PayloadModal({ event, onClose }: PayloadModalProps) {
           <div>
             <div className="payload-modal__eyebrow">trace decision explainer</div>
             <h2 className="payload-modal__title">
-              <VerdictChip verdict={verdict} shape="square" />{' '}
+              {isKnown(verdict) ? (
+                <VerdictChip verdict={verdict.value} shape="square" />
+              ) : (
+                <AbsenceMarker
+                  state={verdict.state}
+                  detail={verdict.detail}
+                  showLabel
+                  testId="payload-modal-verdict-absent"
+                />
+              )}{' '}
               <code>{event.type}</code> · <span className="payload-modal__time">{event.timestamp}</span>
             </h2>
-            <div className="payload-modal__subtitle">{event.agent} · {event.durationMs}&nbsp;ms</div>
+            <div className="payload-modal__subtitle">
+              {event.agent} ·{' '}
+              <TruthfulValue
+                value={event.durationMs}
+                format={formatDuration}
+                testId="payload-modal-duration"
+              />
+            </div>
           </div>
           <div className="payload-modal__actions">
             <button

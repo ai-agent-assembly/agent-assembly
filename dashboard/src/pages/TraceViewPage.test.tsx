@@ -9,7 +9,8 @@ import * as traceApi from '../features/trace/api'
 import * as agentsApi from '../features/agents/api'
 import * as traceExport from '../features/trace/export'
 import { traceExportSchema } from '../features/trace/exportSchema'
-import type { TraceEvent } from '../features/trace/types'
+import { absent, known } from '../lib/truthfulness'
+import type { TraceEvent, TraceSeverity } from '../features/trace/types'
 import type { Agent } from '../features/agents/api'
 
 function makeClient() {
@@ -54,15 +55,36 @@ const MOCK_AGENT: Agent = {
   pid: null,
 }
 
+const NOT_ON_TRACE_SPAN =
+  'TraceSpan carries only span_id, parent_span_id, operation, decision and timestamps'
+
+/**
+ * Shaped exactly as `mapSpanToEvent` builds an event from a real `TraceSpan`:
+ * the five fields the span schema cannot carry are absences, and the duration
+ * of an audit-reconstructed span was never measured. Tests that need a severity
+ * have to say so explicitly via {@link withSeverity}.
+ */
 const MOCK_EVENT: TraceEvent = {
   id: 'evt-1',
   timestamp: '2026-04-23T14:23:01Z',
-  type: 'llm_call',
+  type: 'ToolCallIntercepted',
   agent: 'support-agent',
-  durationMs: 834,
-  payloadPreview: 'GPT-4o · query user 4521 billing',
-  payload: {},
-  severity: 'info',
+  parentSpanId: null,
+  durationMs: absent<number>(
+    'unknown',
+    'This span recorded no end time, so its duration was never measured',
+  ),
+  decision: known('allow'),
+  payloadPreview: absent<string>('not-supported', NOT_ON_TRACE_SPAN),
+  payload: absent<unknown>('not-supported', NOT_ON_TRACE_SPAN),
+  severity: absent<TraceSeverity>('not-supported', NOT_ON_TRACE_SPAN),
+  redactedFields: absent<readonly string[]>('not-supported', NOT_ON_TRACE_SPAN),
+  violationReason: absent<string>('not-supported', NOT_ON_TRACE_SPAN),
+}
+
+/** An event carrying a severity — the only shape the filter can act on. */
+function withSeverity(id: string, severity: TraceSeverity): TraceEvent {
+  return { ...MOCK_EVENT, id, severity: known(severity) }
 }
 
 describe('TraceViewPage', () => {
@@ -84,6 +106,15 @@ describe('TraceViewPage', () => {
     expect(heading).toHaveTextContent('support-agent')
     expect(heading).toHaveTextContent('session-abc')
     expect(screen.getByTestId('trace-agent-label')).toHaveTextContent('support-agent')
+  })
+
+  it('queries the trace by session id alone (the agent is an output of the call)', () => {
+    const useTraceQuery = vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
+      mockTraceQuery({ data: [MOCK_EVENT], isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderAt('/agents/agent-001/trace/session-abc')
+
+    expect(useTraceQuery).toHaveBeenCalledWith('session-abc')
   })
 
   it('falls back to agent id in the header while the agent query has no data', () => {
@@ -118,7 +149,7 @@ describe('TraceViewPage', () => {
     expect(screen.getAllByTestId('trace-row-skeleton')).toHaveLength(4)
   })
 
-  it('shows error banner with Retry button on failure and calls refetch on click', async () => {
+  it('renders the unavailable status state with a Retry button on failure and calls refetch on click', async () => {
     const refetch = vi.fn()
     vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
       mockTraceQuery({ data: undefined, isLoading: false, isError: true, refetch }),
@@ -126,6 +157,13 @@ describe('TraceViewPage', () => {
     renderAt('/agents/agent-001/trace/session-abc')
 
     expect(screen.getByTestId('trace-error')).toBeInTheDocument()
+    // A failed trace request is `unavailable`, not an empty session — the state
+    // is what stops the page reading as a clean bill of health.
+    const status = screen.getByTestId('trace-unavailable')
+    expect(status).toHaveAttribute('data-truth-state', 'unavailable')
+    expect(status).toHaveTextContent('Trace unavailable')
+    expect(screen.getByRole('alert')).toBe(status)
+
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(refetch).toHaveBeenCalledTimes(1)
   })
@@ -139,13 +177,20 @@ describe('TraceViewPage', () => {
     const empty = screen.getByTestId('empty-state')
     expect(empty).toBeInTheDocument()
     expect(empty).toHaveTextContent('No events recorded for this session')
+    // An empty session is a known answer, not an absence.
+    expect(empty).toHaveAttribute('data-truth-state', 'empty')
     // Filter must not render when there are no events to filter.
     expect(screen.queryByTestId('trace-filter')).not.toBeInTheDocument()
   })
 
-  it('mounts the timeline + filter when events are present', () => {
+  it('mounts the timeline + filter when events carry a severity', () => {
     vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
-      mockTraceQuery({ data: [MOCK_EVENT], isLoading: false, isError: false, refetch: vi.fn() }),
+      mockTraceQuery({
+        data: [withSeverity('a', 'info')],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
     )
     renderAt('/agents/agent-001/trace/session-abc')
 
@@ -154,10 +199,31 @@ describe('TraceViewPage', () => {
     expect(screen.getAllByTestId('trace-event')).toHaveLength(1)
   })
 
+  it('mounts the timeline but no filter when no event has a known severity', () => {
+    // The shape the real endpoint returns: `TraceSpan` has no severity field, so
+    // every row is neutral and three of the filter's four boxes could never
+    // match. Rendering it would be an affordance with no production path.
+    vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
+      mockTraceQuery({
+        data: [MOCK_EVENT, { ...MOCK_EVENT, id: 'evt-2' }],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderAt('/agents/agent-001/trace/session-abc')
+
+    expect(screen.queryByTestId('trace-filter')).not.toBeInTheDocument()
+    expect(screen.getByTestId('trace-timeline')).toBeInTheDocument()
+    const rows = screen.getAllByTestId('trace-event')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveAttribute('data-severity', 'neutral')
+  })
+
   it('hides rows whose severity is unchecked in the filter', async () => {
     const events: TraceEvent[] = [
-      { ...MOCK_EVENT, id: 'a', severity: 'critical', type: 'policy_violation' },
-      { ...MOCK_EVENT, id: 'b', severity: 'info', type: 'llm_call' },
+      { ...withSeverity('a', 'critical'), type: 'PolicyViolation' },
+      { ...withSeverity('b', 'info'), type: 'ToolDispatched' },
     ]
     vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
       mockTraceQuery({ data: events, isLoading: false, isError: false, refetch: vi.fn() }),
@@ -175,10 +241,11 @@ describe('TraceViewPage', () => {
     vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
       mockTraceQuery({
         data: [
-          { ...MOCK_EVENT, id: 'a', severity: 'critical' },
-          { ...MOCK_EVENT, id: 'b', severity: 'warning' },
-          { ...MOCK_EVENT, id: 'c', severity: 'info' },
-          { ...MOCK_EVENT, id: 'd', severity: undefined },
+          withSeverity('a', 'critical'),
+          withSeverity('b', 'warning'),
+          withSeverity('c', 'info'),
+          // Severity absent — this row is the `neutral` bucket.
+          { ...MOCK_EVENT, id: 'd' },
         ],
         isLoading: false,
         isError: false,
@@ -221,10 +288,7 @@ describe('TraceViewPage', () => {
 
   it('Export button triggers downloadTraceJson with the trace ids and ALL events (not the filtered set)', async () => {
     const downloadSpy = vi.spyOn(traceExport, 'downloadTraceJson').mockImplementation(() => {})
-    const events: TraceEvent[] = [
-      { ...MOCK_EVENT, id: 'a', severity: 'critical' },
-      { ...MOCK_EVENT, id: 'b', severity: 'info' },
-    ]
+    const events: TraceEvent[] = [withSeverity('a', 'critical'), withSeverity('b', 'info')]
     vi.spyOn(traceApi, 'useTraceQuery').mockReturnValue(
       mockTraceQuery({ data: events, isLoading: false, isError: false, refetch: vi.fn() }),
     )
@@ -265,7 +329,16 @@ describe('TraceViewPage', () => {
     await userEvent.click(screen.getByTestId('export-trace'))
 
     await new Promise(r => setTimeout(r, 0))
-    expect(() => traceExportSchema.parse(JSON.parse(capturedBlobText))).not.toThrow()
+    const parsed = JSON.parse(capturedBlobText)
+    expect(() => traceExportSchema.parse(parsed)).not.toThrow()
+    expect(parsed.version).toBe('2')
+    // The absences the page renders as `—` are written to the file as labelled
+    // absences, not as zeroes or omitted keys.
+    expect(parsed.events[0].severity).toEqual({
+      known: false,
+      state: 'not-supported',
+      detail: NOT_ON_TRACE_SPAN,
+    })
 
     URL.createObjectURL = originalCreateObjectURL
     URL.revokeObjectURL = originalRevokeObjectURL
