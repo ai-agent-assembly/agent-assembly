@@ -210,13 +210,16 @@ type FleetTableState = 'loading' | 'unavailable' | 'fleet-empty' | 'filter-empty
  * borrow either empty-state copy. Only once the list is `known` — where `[]` is
  * a real answer, not a missing one — does the filtered count decide which of
  * the two empty results applies.
+ *
+ * Which absence it is comes from `Certain.state`, not from a second boolean.
+ * That distinction is the whole point of the vocabulary: only `unavailable`
+ * means the request failed, and only `unavailable` may say so. Every other
+ * absence — `unknown` above all, which is what a query paused offline reports —
+ * means "asked, do not yet know", and that is the skeleton, not a failure
+ * banner for a request that was never sent.
  */
-function fleetTableState(
-  agents: Certain<Agent[]>,
-  isLoading: boolean,
-  filteredCount: number,
-): FleetTableState {
-  if (!isKnown(agents)) return isLoading ? 'loading' : 'unavailable'
+function fleetTableState(agents: Certain<Agent[]>, filteredCount: number): FleetTableState {
+  if (!isKnown(agents)) return agents.state === 'unavailable' ? 'unavailable' : 'loading'
   if (agents.value.length === 0) return 'fleet-empty'
   return filteredCount === 0 ? 'filter-empty' : 'rows'
 }
@@ -234,7 +237,13 @@ function clickOnInteractive(e: MouseEvent<HTMLTableRowElement>): boolean {
 export function FleetPage() {
   const navigate = useNavigate()
   const { toast } = useToast()
-  const { data: agents, isLoading, isError, refetch } = useAgentsQuery()
+  // `isPending`, not `isLoading`: TanStack derives `isLoading = isPending &&
+  // isFetching`, so a query that is pending but *paused* (the default
+  // `networkMode: 'online'` behaviour when the browser is offline) reports
+  // `isLoading === false` with no data and no error. Feeding that to
+  // `certainFromQuery` as the pending flag would classify a request that was
+  // never sent as a failed one.
+  const { data: agents, isPending, isError, refetch } = useAgentsQuery()
   const { data: activeSessions } = useActiveSessionsQuery()
   const { data: enforcement } = useAgentEnforcementQuery('24h')
   // Default sort mirrors the hi-fi Fleet (sortKey='trust', sortDir='asc') so the
@@ -330,11 +339,11 @@ export function FleetPage() {
   })
 
   const agentsCertain = useMemo<Certain<Agent[]>>(
-    () => certainFromQuery<Agent[]>({ isError, isPending: isLoading, data: agents }),
-    [isError, isLoading, agents],
+    () => certainFromQuery<Agent[]>({ isError, isPending, data: agents }),
+    [isError, isPending, agents],
   )
   const filteredCount = filteredFleet.length
-  const tableState = fleetTableState(agentsCertain, isLoading, filteredCount)
+  const tableState = fleetTableState(agentsCertain, filteredCount)
   // Counts are claims about the fleet, so they fold to `—` rather than `0`
   // whenever the fleet size is not yet a known fact.
   const totalAgentsText = certainText(agentsCertain, (list) => String(list.length))
