@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
 import { computeHierarchy } from '../../features/topology/hierarchy'
+import { isUnclaimedTeam, teamLabel } from '../../features/topology/unclaimed'
 import './TeamDetailPanel.css'
 
 export interface TeamDetailPanelProps {
@@ -54,12 +55,20 @@ export function TeamDetailPanel({ team, nodes, edges, onClose, onSelectNode }: T
     }).length
   }, [nodes, edges, team])
 
+  const unclaimed = isUnclaimedTeam(team)
+  const label = teamLabel(team)
+
   return (
-    <aside className="team-detail-panel" data-testid="team-detail-panel" aria-label={`Team detail: ${team}`}>
+    <aside
+      className="team-detail-panel"
+      data-testid="team-detail-panel"
+      data-unclaimed={unclaimed ? 'true' : undefined}
+      aria-label={unclaimed ? 'Detail: agents belonging to no team' : `Team detail: ${label}`}
+    >
       <header className="team-detail-panel__head">
         <div>
-          <div className="team-detail-panel__eyebrow">team</div>
-          <h2 className="team-detail-panel__title">{team}</h2>
+          <div className="team-detail-panel__eyebrow">{unclaimed ? 'no team' : 'team'}</div>
+          <h2 className="team-detail-panel__title">{unclaimed ? `⚠ ${label}` : label}</h2>
           <div className="team-detail-panel__sub" data-testid="team-detail-roots">
             {members.length} agent{members.length === 1 ? '' : 's'} · {roots.length} root{roots.length === 1 ? '' : 's'}
           </div>
@@ -75,7 +84,14 @@ export function TeamDetailPanel({ team, nodes, edges, onClose, onSelectNode }: T
         </button>
       </header>
 
-      {roots.length > 1 && (
+      {unclaimed && (
+        <div className="team-detail-panel__note team-detail-panel__note--warn" data-testid="team-detail-unclaimed-note">
+          These agents belong to no team, so no team-scoped policy or budget applies to them.
+          Assigning each to a team is what brings it under team governance.
+        </div>
+      )}
+
+      {roots.length > 1 && !unclaimed && (
         <div className="team-detail-panel__note" data-testid="team-detail-multiroot">
           {roots.length} independent root agents — each owns its delegation subtree within this team.
         </div>
@@ -118,12 +134,20 @@ export function TeamDetailPanel({ team, nodes, edges, onClose, onSelectNode }: T
         </ul>
       </section>
 
-      <section className="team-detail-panel__section">
-        <div className="team-detail-panel__section-label">cross-team edges</div>
-        <div className="team-detail-panel__crossteam" data-testid="team-detail-crossteam-count">
-          {crossTeamCount} edge{crossTeamCount === 1 ? '' : 's'} to other teams
-        </div>
-      </section>
+      {/* No cross-team count for the unclaimed group: an edge touching an agent
+          with no team is not a boundary crossing — that is the server's own
+          rule (`aa-api/src/routes/topology.rs:259`, which requires a team on
+          *both* endpoints, mirrored by `/topology/edges`'s `is_cross_team`).
+          Reporting a number here would have this panel contradict both the
+          gateway and the sidebar's fleet-wide counter. */}
+      {!unclaimed && (
+        <section className="team-detail-panel__section">
+          <div className="team-detail-panel__section-label">cross-team edges</div>
+          <div className="team-detail-panel__crossteam" data-testid="team-detail-crossteam-count">
+            {crossTeamCount} edge{crossTeamCount === 1 ? '' : 's'} to other teams
+          </div>
+        </section>
+      )}
     </aside>
   )
 }

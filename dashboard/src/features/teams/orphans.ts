@@ -28,9 +28,20 @@ import type { AgentNode, TopologyOverview } from './api'
  * `certain` decides what "missing" means so this file cannot drift from the
  * rest of the dashboard: `null`, `undefined` and `''` are absences (a blank
  * team id is not a team), while `0`/`false`/`[]` would be real values.
+ *
+ * The id is trimmed *before* being lifted, so a whitespace-only `team_id` is an
+ * absence too. That is a domain rule about team ids, not a change to the
+ * absence vocabulary — `'   '` is a perfectly real string, and `certain` is
+ * right to say so for values in general. It is specific to this field because
+ * the registry accepts it: `AgentRegistry::validate_tenant_id` (AAASM-4190)
+ * rejects control characters only, so `Some("   ")` reaches the wire, and the
+ * gateway itself folds it to no team (`aa-api`'s `team_of`, AAASM-5182).
+ * Without the trim the dashboard would call that agent claimed while the
+ * gateway calls it unclaimed — two answers to one question, which is the whole
+ * failure this module exists to prevent (AAASM-5184).
  */
 export function isOrphanAgent(node: AgentNode): boolean {
-  return isAbsent(certain(node.team_id, 'unconfigured'))
+  return isAbsent(certain(node.team_id?.trim(), 'unconfigured'))
 }
 
 /** Every agent no team claims, at any delegation depth. */

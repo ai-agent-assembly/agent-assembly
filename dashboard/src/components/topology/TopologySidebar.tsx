@@ -1,5 +1,6 @@
 import type { TopologyEdgeKind } from '../../features/topology/types'
 import { EDGE_KINDS } from '../../features/topology/edgeKinds'
+import { isUnclaimedTeam, teamLabel } from '../../features/topology/unclaimed'
 import './TopologySidebar.css'
 
 /** Aggregate counters shown in the sidebar header stat badges. */
@@ -18,6 +19,15 @@ export interface TopologyStats {
    */
   readonly crossTeamHidden: number
   readonly hasCycles: boolean
+  /**
+   * Agents no team claims (AAASM-5184).
+   *
+   * Its own stat rather than a share of the team count: these agents are the
+   * ones no team-scoped policy or budget can reach, so a governance console
+   * that folds them into `N teams` hides exactly the population an operator
+   * most needs to see.
+   */
+  readonly unclaimed: number
 }
 
 export interface TopologySidebarProps {
@@ -35,6 +45,12 @@ export interface TopologySidebarProps {
 }
 
 const ALL = 'all'
+
+/** Row bullet: the all-teams target, the unclaimed warning, or a plain team. */
+function filterMark(id: string, unclaimed: boolean): string {
+  if (id === ALL) return '◎'
+  return unclaimed ? '⚠' : '○'
+}
 
 /** Status-stripe legend rows — colours match the node stripe CSS. */
 const STATUS_LEGEND: ReadonlyArray<{ readonly color: string; readonly label: string }> = [
@@ -64,7 +80,10 @@ export function TopologySidebar({
   showCrossTeam,
   onToggleCrossTeam,
 }: TopologySidebarProps) {
-  const filterOptions = [{ id: ALL, label: 'All teams' }, ...teams.map((t) => ({ id: t, label: t }))]
+  // The unclaimed group gets its real name here. It used to render as a row
+  // with an empty label, so the operator could see a filter but not what it
+  // selected (AAASM-5184).
+  const filterOptions = [{ id: ALL, label: 'All teams' }, ...teams.map((t) => ({ id: t, label: teamLabel(t) }))]
 
   return (
     <aside className="topo-sidebar" data-testid="topology-sidebar" aria-label="Topology controls">
@@ -81,6 +100,18 @@ export function TopologySidebar({
         {stats.hasCycles && (
           <span className="topo-sidebar__stat topo-sidebar__stat--danger" data-testid="topology-stat-cycle">
             ⟳ cycle
+          </span>
+        )}
+        {stats.unclaimed > 0 && (
+          <span
+            className="topo-sidebar__stat topo-sidebar__stat--warn"
+            data-testid="topology-stat-unclaimed"
+            title={
+              `${stats.unclaimed} agent${stats.unclaimed === 1 ? ' belongs' : 's belong'} to no team, ` +
+              'so no team-scoped policy or budget applies to them.'
+            }
+          >
+            ⚠ {stats.unclaimed} unclaimed
           </span>
         )}
         <span className="topo-sidebar__stat topo-sidebar__stat--muted" data-testid="topology-stat-crossteam">
@@ -109,18 +140,23 @@ export function TopologySidebar({
         <div data-testid="topology-team-filter">
           {filterOptions.map((opt) => {
             const isActive = filterTeam === opt.id
+            const unclaimed = isUnclaimedTeam(opt.id)
             return (
               <button
                 key={opt.id}
                 type="button"
-                className={`topo-sidebar__team${isActive ? ' topo-sidebar__team--active' : ''}`}
+                className={
+                  `topo-sidebar__team${isActive ? ' topo-sidebar__team--active' : ''}` +
+                  `${unclaimed ? ' topo-sidebar__team--unclaimed' : ''}`
+                }
                 data-testid="team-filter-item"
                 data-team={opt.id}
+                data-unclaimed={unclaimed ? 'true' : undefined}
                 data-active={isActive ? 'true' : undefined}
                 aria-pressed={isActive}
                 onClick={() => onFilterTeam(opt.id)}
               >
-                <span className="topo-sidebar__team-mark">{opt.id === ALL ? '◎' : '○'}</span>
+                <span className="topo-sidebar__team-mark">{filterMark(opt.id, unclaimed)}</span>
                 {opt.label}
               </button>
             )

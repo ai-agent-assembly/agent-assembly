@@ -32,6 +32,26 @@ describe('isOrphanAgent', () => {
     expect(isOrphanAgent(agent({ id: 'blank', team_id: '' }))).toBe(true)
   })
 
+  it.each([
+    ['spaces', '   '],
+    ['a tab', '\t'],
+    ['a newline', '\n'],
+  ])('treats a team id of only %s as no team', (_label, teamId) => {
+    // The registry accepts it — `validate_tenant_id` (AAASM-4190) rejects
+    // control characters only — and the gateway folds it to no team in
+    // `team_of` (AAASM-5182). Calling such an agent claimed here would have the
+    // dashboard and the gateway give opposite answers about one agent, and on
+    // Topology it reinstated the phantom team this vocabulary exists to end
+    // (AAASM-5184).
+    expect(isOrphanAgent(agent({ id: 'ws', team_id: teamId }))).toBe(true)
+  })
+
+  it('does not trim a real team id into a different team', () => {
+    // Only *emptiness* is decided by the trim. A padded id is still that team,
+    // so the agent is claimed — the gateway keys on the registered id too.
+    expect(isOrphanAgent(agent({ id: 'padded', team_id: ' platform ' }))).toBe(false)
+  })
+
   it('never calls a claimed agent an orphan, at any depth', () => {
     expect(isOrphanAgent(agent({ id: 'r', team_id: 'platform' }))).toBe(false)
     expect(isOrphanAgent(agent({ id: 'c', depth: 7, team_id: 'platform' }))).toBe(false)
@@ -45,8 +65,9 @@ describe('selectOrphanAgents', () => {
       agent({ id: 'b', depth: 1 }),
       agent({ id: 'c', depth: 2, team_id: 'platform' }),
       agent({ id: 'd' }),
+      agent({ id: 'e', team_id: '   ' }),
     ]
-    expect(selectOrphanAgents(nodes).map(n => n.id)).toEqual(['b', 'd'])
+    expect(selectOrphanAgents(nodes).map(n => n.id)).toEqual(['b', 'd', 'e'])
   })
 
   it('returns an empty list when every agent is claimed — a real answer, not an absence', () => {

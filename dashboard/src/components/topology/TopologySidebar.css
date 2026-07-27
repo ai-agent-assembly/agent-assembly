@@ -50,6 +50,13 @@
   color: var(--warn);
 }
 
+/* "⚠ N unclaimed" — agents no team claims (AAASM-5184). Warn-toned per
+   design/v2/hi-fi/topology.jsx:952: not a fault, but a governance gap the
+   operator has an action to take about. */
+.topo-sidebar__stat--warn {
+  color: var(--warn);
+}
+
 .topo-sidebar__group {
   padding: 0.7rem 0.8rem 0.5rem;
   border-bottom: 1px solid var(--line);
@@ -97,6 +104,13 @@
 
 .topo-sidebar__team-mark {
   color: var(--ink-4);
+}
+
+/* The unclaimed row reads as the governance gap it is, so it is not mistaken
+   for one more team in the list (design/v2/hi-fi/topology.jsx:790). */
+.topo-sidebar__team--unclaimed,
+.topo-sidebar__team--unclaimed .topo-sidebar__team-mark {
+  color: var(--warn);
 }
 
 .topo-sidebar__edge {

@@ -73,6 +73,14 @@
   color: var(--info);
 }
 
+/* The unclaimed group's note is a governance gap, not neutral information, so
+   it carries the caution tone rather than the informational one (AAASM-5184). */
+.team-detail-panel__note--warn {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
 .team-detail-panel__section {
   display: flex;
   flex-direction: column;

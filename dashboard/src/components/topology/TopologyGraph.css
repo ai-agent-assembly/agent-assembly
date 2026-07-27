@@ -320,6 +320,17 @@
   opacity: 0.7;
 }
 
+/* The unclaimed group is drawn as a distinct treatment, not as one more team
+   box (design/v2/hi-fi/topology.jsx:190). */
+.topology-cluster--unclaimed .topology-cluster__outline {
+  stroke: var(--warn);
+  stroke-dasharray: 3 3;
+}
+
+.topology-cluster--unclaimed .topology-cluster__label {
+  color: var(--warn);
+}
+
 .topology-cluster__overlay {
   display: flex;
   flex-direction: column;

@@ -7,6 +7,7 @@ import type {
   TopologyNode,
   TopologyStatus,
 } from './types'
+import { teamKeyOf } from './unclaimed'
 
 /**
  * Map the live `GET /api/v1/topology` response (AAASM-5040) onto the topology
@@ -77,7 +78,10 @@ function mapNode(n: ApiNode): TopologyNode {
     id: n.id,
     name: n.name,
     status: toStatus(n.status),
-    team: n.team_id ?? '',
+    // An agent no team claims joins the named unclaimed group rather than a
+    // blank-labelled one (AAASM-5184). `teamKeyOf` defers to `isOrphanAgent`,
+    // so Topology and the Teams page cannot disagree about who is unclaimed.
+    team: teamKeyOf(n),
     // Live values enriched by the graph endpoint (AAASM-5045); null-safe — an
     // absent field keeps the prior neutral placeholder (see module doc).
     owner: n.owner ?? '',
