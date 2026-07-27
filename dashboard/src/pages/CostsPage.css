@@ -135,13 +135,7 @@
   color: var(--ink-4);
 }
 
-/* ── Per-team budget bars ────────────────────────────────────────────────── */
-
-.costs-team-bars {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
+/* ── Per-team budget states ──────────────────────────────────────────────── */
 
 .costs-team-bars__empty,
 .costs-state {

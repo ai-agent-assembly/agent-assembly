@@ -1,7 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { CostBreakdownPanel } from '../features/analytics/CostBreakdownPanel'
-import { TeamBudgetBar } from '../components/topology/TeamBudgetBar'
 import {
   joinTeamRows,
   useCostSummaryQuery,
@@ -18,6 +17,7 @@ import { BudgetBar } from '../components/costs/BudgetBar'
 import { BurnCallouts } from '../components/costs/BurnCallouts'
 import { CostTabs, type CostTab } from '../components/costs/CostTabs'
 import { PerAgentTable } from '../components/costs/PerAgentTable'
+import { PerTeamTable } from '../components/costs/PerTeamTable'
 import '../features/analytics/CostBreakdownPanel.css'
 import './CostsPage.css'
 
@@ -134,24 +134,7 @@ function TeamBudgetContent({ isError, isLoading, teamRows, onRetry }: TeamBudget
       </p>
     )
   }
-  return (
-    <div className="costs-team-bars">
-      {/* Both fields are passed through rather than defaulted: they are
-          genuinely nullable (`joinTeamRows` yields `null` for a team missing
-          from the cost breakdown, and for every team while `/costs` is
-          unresolved). The `?? 0` these replace rendered `$0 / $0 · 0%` at
-          `aria-valuenow=0` — an unmeasured budget shown as a wholly unburnt
-          one (AAASM-5135). */}
-      {teamRows.map(row => (
-        <TeamBudgetBar
-          key={row.team_id}
-          team={row.team_id}
-          spent={row.daily_spend_usd}
-          limit={row.daily_limit_usd}
-        />
-      ))}
-    </div>
-  )
+  return <PerTeamTable rows={teamRows} />
 }
 
 /**
@@ -164,15 +147,17 @@ function TeamBudgetContent({ isError, isLoading, teamRows, onRetry }: TeamBudget
  *                   KPIs (a superset of the mock's four cards).
  *   - Callouts    — daily-burn warning (≥80%) / critical (≥95%) banners.
  *   - History     — 7-day spend `HistoryChart`.
- *   - Tabs        — Per-agent (table + analytics breakdown) / Per-team (budget
- *                   bars) / Budget tree (inheritance), replacing the previous
- *                   stacked sections.
+ *   - Tabs        — Per-agent (table + analytics breakdown) / Per-team (table) /
+ *                   Budget tree (inheritance), replacing the previous stacked
+ *                   sections.
  *
  * The OSS `/api/v1/costs` summary only carries an *org* budget limit, so per-team
  * utilisation is each team's spend against the org limit (its share of the org
  * budget) rather than a per-team configured limit, which the OSS API does not
- * expose. The mock's per-agent 7-day sparkline and per-team monthly limit are
- * omitted — neither has a backing endpoint yet (AAASM-5076).
+ * expose. The mock's per-agent 7-day sparkline and per-team monthly *limit* are
+ * omitted — neither has a backing endpoint yet (AAASM-5076 / ADR-0020 /
+ * AAASM-5087). Per-team agent count and monthly *spend* are restored, both being
+ * on the wire already (AAASM-5160).
  *
  * There is no Daily/Monthly period control (AAASM-5126). Both mocks
  * (`design/v1/hi-fi/costs.jsx`, and `design/v2` per ADR-0025) show the two
