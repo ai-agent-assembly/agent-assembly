@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * Guard: the auth token is written to sessionStorage ONLY (AAASM-4322 / ADR-0028).
+ * Guard: the auth token is written to sessionStorage ONLY (AAASM-4322).
+ *
+ * Contract and rationale: dashboard/tests/e2e/README.md, "CI gate".
  *
  * WHY THIS EXISTS: AAASM-4322 moved the auth JWT out of localStorage as
  * XSS-exfiltration hardening. localStorage is therefore a state production
@@ -340,7 +342,7 @@ for (const file of files) {
 }
 
 if (failures.length > 0) {
-  console.error('FAIL: the auth token must be written to sessionStorage only (AAASM-4322 / ADR-0028).')
+  console.error('FAIL: the auth token must be written to sessionStorage only (AAASM-4322).')
   console.error('      localStorage is a state production cannot reach; a spec that seeds it')
   console.error('      would keep passing if that hardening were reverted.\n')
   for (const f of [...new Set(failures)]) console.error(`  ${f}`)

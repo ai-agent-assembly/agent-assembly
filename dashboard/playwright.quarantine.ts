@@ -193,7 +193,8 @@ if (additions.length > 0) {
   throw new Error(
     `Quarantine gained ${additions.length} entry/entries not in the frozen baseline: ` +
       `${additions.join(', ')}. The e2e gate only stays credible if this list shrinks ` +
-      `(ADR-0028, AAASM-5195). Fix the spec instead — or, if the addition is genuinely ` +
+      `(AAASM-5195; see dashboard/tests/e2e/README.md, "CI gate"). Fix the spec instead — ` +
+      `or, if the addition is genuinely ` +
       `justified, add it to QUARANTINE_BASELINE in the same commit so the decision is ` +
       `visible in review.`,
   )
