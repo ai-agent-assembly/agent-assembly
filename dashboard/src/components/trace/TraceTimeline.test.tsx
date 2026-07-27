@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { TraceTimeline } from './TraceTimeline'
 import { absent, known } from '../../lib/truthfulness'
 import type { TraceEvent, TraceSeverity } from '../../features/trace/types'
+import { MAX_INDENT_DEPTH } from '../../features/trace/nesting'
 
 const NO_FIELD = 'TraceSpan has no such field'
 
@@ -233,5 +234,93 @@ describe('an operation with no recorded verdict', () => {
     const marker = screen.getByTestId('trace-event-verdict-absent')
     expect(marker).toHaveAttribute('data-truth-state', 'not-evaluated')
     expect(screen.getByTestId('trace-event').textContent).not.toContain('ALLOWED')
+  })
+})
+
+describe('span nesting (AAASM-5109)', () => {
+  const nested = (id: string, parentSpanId: string | null): TraceEvent => ({
+    ...BASE_EVENT,
+    id,
+    type: 'ToolCallIntercepted',
+    severity: NO_SEVERITY,
+    parentSpanId,
+  })
+
+  it('indents each row by its parent-chain depth', () => {
+    render(
+      <TraceTimeline
+        events={[nested('a', null), nested('b', 'a'), nested('c', 'b')]}
+      />,
+    )
+    const rows = screen.getAllByTestId('trace-event')
+    expect(rows[0]).toHaveAttribute('data-depth', '0')
+    expect(rows[1]).toHaveAttribute('data-depth', '1')
+    expect(rows[2]).toHaveAttribute('data-depth', '2')
+  })
+
+  it('offsets a nested row with a real indent, not just an attribute', () => {
+    render(<TraceTimeline events={[nested('a', null), nested('b', 'a')]} />)
+    const rows = screen.getAllByTestId('trace-event')
+    expect(rows[0]).toHaveStyle({ '--trace-depth': '0' })
+    expect(rows[1]).toHaveStyle({ '--trace-depth': '1' })
+  })
+
+  it('keeps the gateway ordering — indentation shows lineage, it does not regroup', () => {
+    // `b` is a child of `a` but arrives after an unrelated root; the timeline
+    // must not hoist it next to its parent.
+    render(
+      <TraceTimeline
+        events={[nested('a', null), nested('x', null), nested('b', 'a')]}
+      />,
+    )
+    const rows = screen.getAllByTestId('trace-event')
+    expect(rows.map((r) => r.getAttribute('data-depth'))).toEqual(['0', '0', '1'])
+  })
+
+  it('roots a span whose parent is not in the response', () => {
+    render(<TraceTimeline events={[nested('orphan', 'off-window')]} />)
+    expect(screen.getByTestId('trace-event')).toHaveAttribute('data-depth', '0')
+  })
+
+  it('renders a cyclic ancestry at the root instead of hanging', () => {
+    render(<TraceTimeline events={[nested('a', 'b'), nested('b', 'a')]} />)
+    const rows = screen.getAllByTestId('trace-event')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveAttribute('data-depth', '0')
+    expect(rows[1]).toHaveAttribute('data-depth', '0')
+  })
+
+  it('reports true depth but clamps the drawn offset', () => {
+    // Ten levels deep: `data-depth` stays honest, the indent stops at
+    // MAX_INDENT_DEPTH so the row cannot be pushed off the panel.
+    const chain = Array.from({ length: 10 }, (_, i) =>
+      nested(`s${i}`, i === 0 ? null : `s${i - 1}`),
+    )
+    render(<TraceTimeline events={chain} />)
+    const rows = screen.getAllByTestId('trace-event')
+    expect(rows[9]).toHaveAttribute('data-depth', '9')
+    expect(rows[9]).toHaveStyle({ '--trace-depth': String(MAX_INDENT_DEPTH) })
+  })
+})
+
+describe('the row glyph', () => {
+  it('falls back to a neutral dot for an operation it has no glyph for', () => {
+    // ICON_BY_TYPE covers the audit event types the trace surface expects.
+    // Anything else — a newly added AuditEventType, or a sandbox/budget event
+    // — must render a neutral mark rather than guess a meaning for it.
+    render(
+      <TraceTimeline
+        events={[
+          { ...BASE_EVENT, id: 'g1', type: 'SandboxCpuTimeout', severity: NO_SEVERITY },
+          { ...BASE_EVENT, id: 'g2', type: 'PolicyViolation', severity: NO_SEVERITY },
+        ]}
+      />,
+    )
+    const rows = screen.getAllByTestId('trace-event')
+    expect(rows[0].textContent).toContain('·')
+    expect(rows[0].textContent).not.toContain('⚠')
+    // The mapped operation still gets its own glyph, so the fallback is not
+    // simply swallowing everything.
+    expect(rows[1].textContent).toContain('⚠')
   })
 })
