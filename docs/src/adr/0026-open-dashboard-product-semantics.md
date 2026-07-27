@@ -238,7 +238,7 @@ real backend computation can produce them · do not preserve aspirational states
 to match an old mock."* Option (C) stays rejected; option (B) stays out of scope for
 this surface and remains AAASM-5094's to reopen.
 
-What that resolved to in the implementation, and the three places it is narrower than
+What that resolved to in the implementation — including where it lands narrower than
 the question implied:
 
 - **Legend** — now `allow` / `deny` / `n/a`
