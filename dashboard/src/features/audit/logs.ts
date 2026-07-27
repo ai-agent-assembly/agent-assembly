@@ -71,13 +71,23 @@ const DECISION_BY_DISCRIMINANT: Readonly<Record<number, AuditDecision>> = {
   4: 'REDACT',
 }
 
-/** Accepted spellings of the string form, which only the shadow path emits. */
-const DECISION_BY_NAME: Readonly<Record<string, AuditDecision>> = {
-  ALLOW: 'ALLOW',
-  DENY: 'DENY',
-  PENDING: 'PENDING',
-  REDACT: 'REDACT',
-}
+/**
+ * Accepted spellings of the string form, which only the shadow path emits.
+ *
+ * A `Map` rather than a plain object because the key is `raw.toUpperCase()`,
+ * derived from a `JSON.parse` of an untrusted audit blob. A plain-object lookup
+ * inherits `Object.prototype`, so `"__proto__"` (or any prototype member name)
+ * would resolve to a truthy inherited value and be coerced into a fabricated
+ * verdict on a governance surface. A `Map` only holds its own keys, so an
+ * inherited name misses and the value is reported as an explicit `unknown`
+ * (AAASM-5225).
+ */
+const DECISION_BY_NAME: ReadonlyMap<string, AuditDecision> = new Map([
+  ['ALLOW', 'ALLOW'],
+  ['DENY', 'DENY'],
+  ['PENDING', 'PENDING'],
+  ['REDACT', 'REDACT'],
+])
 
 /**
  * Interpret one raw `decision`-shaped JSON value.
@@ -103,7 +113,7 @@ function readDecisionValue(raw: unknown): Certain<AuditDecision> | null {
     )
   }
   if (typeof raw === 'string' && raw.length > 0) {
-    const mapped = DECISION_BY_NAME[raw.toUpperCase()]
+    const mapped = DECISION_BY_NAME.get(raw.toUpperCase())
     if (mapped) return known(mapped)
     return absent('unknown', `Unrecognised decision value "${raw}"`)
   }
@@ -370,51 +380,80 @@ function boolLabel(value: unknown, whenTrue: string, whenFalse: string): string 
  * One summariser per `detail.kind`, keyed exactly as
  * `aa-runtime/src/audit_publisher/conversion.rs::detail_summary` emits them.
  *
+ * A `Map` rather than a plain object because the key comes straight from
+ * `detail.kind` — a `JSON.parse` of an untrusted audit blob. A plain-object
+ * lookup inherits `Object.prototype`, so a blob whose `kind` is `constructor`,
+ * `toString`, `valueOf` or `__proto__` would resolve to a *prototype* member and
+ * then be **invoked** as though it were a summariser: `constructor` returns the
+ * detail object stringified, `toString` returns `[object Undefined]`, and
+ * `valueOf` throws — every one of them either fabricates a summary or crashes
+ * the reader on a governance surface. A `Map` only ever contains its own keys,
+ * so an inherited name misses and the caller reports an honest absence
+ * (AAASM-5223).
+ *
  * A table rather than a `switch` so each kind is an independently readable unit
  * and adding a producer-side kind is a one-line change here.
  */
-const DETAIL_SUMMARISERS: Readonly<
-  Record<string, (detail: Record<string, unknown>) => string | null>
-> = {
-  llm_call: (d) => joinParts([str(d, 'model'), str(d, 'provider')]),
+const DETAIL_SUMMARISERS: ReadonlyMap<
+  string,
+  (detail: Record<string, unknown>) => string | null
+> = new Map([
+  ['llm_call', (d) => joinParts([str(d, 'model'), str(d, 'provider')])],
 
-  tool_call: (d) => {
-    const name = str(d, 'tool_name')
-    const source = str(d, 'tool_source')
-    const named = name && source ? `${name} (${source})` : (name ?? source)
-    return joinParts([named, boolLabel(d['succeeded'], '✓ ok', '✕ error')])
-  },
+  [
+    'tool_call',
+    (d) => {
+      const name = str(d, 'tool_name')
+      const source = str(d, 'tool_source')
+      const named = name && source ? `${name} (${source})` : (name ?? source)
+      return joinParts([named, boolLabel(d['succeeded'], '✓ ok', '✕ error')])
+    },
+  ],
 
-  file_op: (d) => {
-    const operation = str(d, 'operation')
-    const verb = operation ? operation.toUpperCase() : null
-    return joinParts([joinParts([verb, str(d, 'path')], ' '), str(d, 'source')])
-  },
+  [
+    'file_op',
+    (d) => {
+      const operation = str(d, 'operation')
+      const verb = operation ? operation.toUpperCase() : null
+      return joinParts([joinParts([verb, str(d, 'path')], ' '), str(d, 'source')])
+    },
+  ],
 
-  network_call: (d) => {
-    const protocol = str(d, 'protocol')
-    const host = str(d, 'host')
-    if (!host) return protocol
-    const port = typeof d['port'] === 'number' ? String(d['port']) : null
-    const authority = port ? `${host}:${port}` : host
-    return protocol ? `${protocol}://${authority}` : authority
-  },
+  [
+    'network_call',
+    (d) => {
+      const protocol = str(d, 'protocol')
+      const host = str(d, 'host')
+      if (!host) return protocol
+      const port = typeof d['port'] === 'number' ? String(d['port']) : null
+      const authority = port ? `${host}:${port}` : host
+      return protocol ? `${protocol}://${authority}` : authority
+    },
+  ],
 
-  process_exec: (d) => {
-    const exitCode = d['exit_code']
-    const exit = typeof exitCode === 'number' ? `exit ${exitCode}` : null
-    return joinParts([str(d, 'command'), exit])
-  },
+  [
+    'process_exec',
+    (d) => {
+      const exitCode = d['exit_code']
+      const exit = typeof exitCode === 'number' ? `exit ${exitCode}` : null
+      return joinParts([str(d, 'command'), exit])
+    },
+  ],
 
-  policy_violation: (d) => {
-    const head = joinParts([str(d, 'blocked_action'), str(d, 'reason')], ' — ')
-    const rule = str(d, 'policy_rule')
-    return joinParts([head, rule ? `rule ${rule}` : null])
-  },
+  [
+    'policy_violation',
+    (d) => {
+      const head = joinParts([str(d, 'blocked_action'), str(d, 'reason')], ' — ')
+      const rule = str(d, 'policy_rule')
+      return joinParts([head, rule ? `rule ${rule}` : null])
+    },
+  ],
 
-  approval: (d) =>
-    joinParts([str(d, 'approval_id'), boolLabel(d['approved'], 'approved', 'denied')], ' '),
-}
+  [
+    'approval',
+    (d) => joinParts([str(d, 'approval_id'), boolLabel(d['approved'], 'approved', 'denied')], ' '),
+  ],
+])
 
 /**
  * Summarise the runtime's `detail` object.
@@ -428,7 +467,7 @@ const DETAIL_SUMMARISERS: Readonly<
  */
 function summariseDetail(detail: Record<string, unknown>): string | null {
   const kind = str(detail, 'kind')
-  const summarise = kind === null ? undefined : DETAIL_SUMMARISERS[kind]
+  const summarise = kind === null ? undefined : DETAIL_SUMMARISERS.get(kind)
   return summarise ? summarise(detail) : null
 }
 
