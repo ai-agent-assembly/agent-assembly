@@ -182,6 +182,7 @@ use crate::routes::{
         policies::PolicyResponse,
         policies::CreatePolicyRequest,
         policies::SimulatePolicyRequest,
+        policies::SimulateVerdict,
         policies::SimulatePolicyResponse,
         policies::TeamPolicyResponse,
         policies::TeamPoliciesResponse,

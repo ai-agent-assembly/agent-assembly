@@ -751,11 +751,26 @@ pub struct SimulatePolicyRequest {
     pub team_id: Option<String>,
 }
 
+/// Dry-run verdict returned by `POST /api/v1/policies/simulate`.
+///
+/// AAASM-5220 — constrains the [`SimulatePolicyResponse::verdict`] wire
+/// vocabulary to the closed set the simulate handler emits, so the generated
+/// OpenAPI spec advertises an enum rather than a free-form `string`. Serializes
+/// lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SimulateVerdict {
+    Allow,
+    Narrow,
+    Approval,
+    Deny,
+}
+
 /// Response body for `POST /api/v1/policies/simulate` (AAASM-5037).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SimulatePolicyResponse {
-    /// Dry-run verdict: `"allow"`, `"narrow"`, `"approval"`, or `"deny"`.
-    pub verdict: String,
+    /// Dry-run verdict: `allow`, `narrow`, `approval`, or `deny`.
+    pub verdict: SimulateVerdict,
     /// Label of the policy rule / reason that produced the verdict. `null` for a
     /// clean allow with no matched narrowing or deny rule.
     pub matched_rule: Option<String>,
@@ -845,14 +860,14 @@ pub async fn simulate_policy(
         // Allowed, but the scanner would scrub sensitive content first — the
         // request is narrowed rather than passed through verbatim.
         aa_core::PolicyResult::Allow if redacted => (
-            "narrow",
+            SimulateVerdict::Narrow,
             Some("sensitive content scrubbed".to_string()),
             "allowed after redacting sensitive content".to_string(),
         ),
-        aa_core::PolicyResult::Allow => ("allow", None, "allowed by policy".to_string()),
-        aa_core::PolicyResult::Deny { reason } => ("deny", Some(reason.clone()), reason.clone()),
+        aa_core::PolicyResult::Allow => (SimulateVerdict::Allow, None, "allowed by policy".to_string()),
+        aa_core::PolicyResult::Deny { reason } => (SimulateVerdict::Deny, Some(reason.clone()), reason.clone()),
         aa_core::PolicyResult::RequiresApproval { timeout_secs } => (
-            "approval",
+            SimulateVerdict::Approval,
             Some("requires_approval".to_string()),
             format!("human approval required (timeout {timeout_secs}s)"),
         ),
@@ -861,7 +876,7 @@ pub async fn simulate_policy(
     Ok((
         StatusCode::OK,
         Json(SimulatePolicyResponse {
-            verdict: verdict.to_string(),
+            verdict,
             matched_rule,
             reason,
             redacted,
