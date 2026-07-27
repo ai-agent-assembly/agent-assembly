@@ -165,6 +165,17 @@ On `git push`, documentation is also checked: `cargo doc --workspace --no-deps`.
 
 The workspace-level clippy lints (`correctness = deny`, `suspicious = deny`, others `warn`) live in `[workspace.lints.clippy]` of the top-level `Cargo.toml` — do not override them per-crate.
 
+### Which CI jobs block a merge
+
+`ci-success` is the aggregate check; membership in its `needs:` list is what makes a job blocking. When you add a CI job, choose its status by applying this rule:
+
+> **Does the job assert *behaviour*, or produce a *metric*?**
+> Jobs asserting functional behaviour — does it compile, do the tests pass, does the rendered app still work — are members of `ci-success` and **block**. Jobs producing quality or acceptance *metrics* — coverage percentages, Sonar findings — are excluded and are **advisory**.
+
+A job's status is chosen by applying that rule, **never inherited from whichever job it was copied from**. Coverage and Sonar are advisory because they are metrics, not because advisory is a safe default: an advisory job that asserts behaviour is a check nobody acts on, which is indistinguishable from not having written it.
+
+Note that `ci-success` treats a **skipped** need as passing, so a job behind a `dorny/paths-filter` router is only as sound as its filter. If your job can be broken by a change outside its own filter, it needs a different guard.
+
 ## Performance and Latency Tests
 
 Latency and performance tests assert absolute timing thresholds (e.g. p99 < 15 ms). They **must not run under `cargo llvm-cov`** or any other coverage/instrumentation tool, because instrumentation adds 2–10× overhead per instruction and makes timing guarantees unreliable on shared CI runners.
