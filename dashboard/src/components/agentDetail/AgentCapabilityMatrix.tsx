@@ -1,7 +1,8 @@
-import { useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { ignorePromise } from '../../lib/ignorePromise'
 import { CapabilityMatrixGrid, type CellSelection } from '../../features/capability/CapabilityMatrixGrid'
 import { VERBS, type Policy, type SampleCall, type Verb } from '../../features/capability/types'
+import { defaultVerb } from '../../features/capability/verb'
 import { LoadingState } from '../LoadingState'
 import { ErrorState } from '../ErrorState'
 import { useAgentCapabilityMatrixQuery } from './useAgentCapabilityMatrix'
@@ -41,7 +42,21 @@ export function AgentCapabilityMatrix({
   testId = 'agent-capability-matrix',
 }: Readonly<AgentCapabilityMatrixProps>) {
   const { data, isLoading, isError, refetch } = useAgentCapabilityMatrixQuery(agentId, agentName)
-  const [verb, setVerb] = useState<Verb>('write')
+  // `null` means "the operator has not chosen a verb yet", distinct from any
+  // particular verb — the landing verb is then derived from the fetched matrix
+  // rather than hard-coded to `write` (AAASM-5197, following AAASM-5125). Once a
+  // verb is picked it wins outright, including over a later refetch that would
+  // have derived a different default.
+  const [chosenVerb, setChosenVerb] = useState<Verb | null>(null)
+  // Derived from the fetched matrix so the tab opens on the verb this
+  // projection actually populates (exec, on today's grid) instead of `write`,
+  // which is n/a in every column but Filesystem. Scoped to one agent, so the
+  // agent list is `[data.agent]` when present.
+  const landingVerb = useMemo(
+    () => defaultVerb(data?.agent ? [data.agent] : [], data?.resources ?? []),
+    [data],
+  )
+  const verb = chosenVerb ?? landingVerb
   const [inspected, setInspected] = useState<CellSelection | null>(null)
 
   if (isLoading) {
@@ -85,7 +100,7 @@ export function AgentCapabilityMatrix({
               aria-checked={verb === v}
               className={`acm-verb${verb === v ? ' is-active' : ''}`}
               data-testid={`${testId}-verb-${v}`}
-              onClick={() => setVerb(v)}
+              onClick={() => setChosenVerb(v)}
             >
               {v}
             </button>
