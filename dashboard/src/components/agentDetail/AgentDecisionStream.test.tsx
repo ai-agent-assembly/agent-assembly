@@ -4,6 +4,7 @@ import type { UseQueryResult } from '@tanstack/react-query'
 import { AgentDecisionStream } from './AgentDecisionStream'
 import * as agentsApi from '../../features/agents/api'
 import type { AgentDecision } from '../../features/agents/api'
+import { VERDICT_META } from '../../features/trace/decision'
 
 function mockQuery<T>(partial: Partial<UseQueryResult<T, Error>>): UseQueryResult<T, Error> {
   return partial as unknown as UseQueryResult<T, Error>
@@ -133,6 +134,41 @@ describe('AgentDecisionStream', () => {
     render(<AgentDecisionStream agentId="a1" />)
     const verdict = within(screen.getByTestId('agent-decision-row')).getByText(/unspecified/)
     expect(verdict).toHaveStyle({ color: 'var(--ink-3)' })
+  })
+
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
+    'renders an inherited-name decision label (%s) with the neutral absence colour rather than crashing',
+    (label) => {
+      vi.spyOn(agentsApi, 'useAgentDecisionsQuery').mockReturnValue(
+        mockQuery<AgentDecision[]>({
+          data: [decision({ decision: 0, decisionLabel: label })],
+          isLoading: false,
+          isError: false,
+          refetch: vi.fn(),
+        }),
+      )
+      // With an object-literal lookup this throws (the inherited function value is
+      // truthy, so `VERDICT_META[<function>].colorVar` reads `.colorVar` of undefined)
+      // and unmounts the Traffic tab. The Map lookup must return undefined and render
+      // the absence colour instead.
+      render(<AgentDecisionStream agentId="a1" />)
+      const verdict = within(screen.getByTestId('agent-decision-row')).getByText(new RegExp(label))
+      expect(verdict).toHaveStyle({ color: 'var(--ink-3)' })
+    },
+  )
+
+  it('still maps real decision labels to their verdict colour', () => {
+    vi.spyOn(agentsApi, 'useAgentDecisionsQuery').mockReturnValue(
+      mockQuery<AgentDecision[]>({
+        data: [decision({ decision: 2, decisionLabel: 'deny' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    render(<AgentDecisionStream agentId="a1" />)
+    const verdict = within(screen.getByTestId('agent-decision-row')).getByText(/deny/)
+    expect(verdict).toHaveStyle({ color: VERDICT_META.denied.colorVar })
   })
 
   it('falls back to the raw timestamp when it is not a valid date', () => {
