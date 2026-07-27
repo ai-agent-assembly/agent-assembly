@@ -4,6 +4,8 @@ import { ApprovalActions } from '../../features/approvals/ApprovalActions'
 import { ApprovalCountdown } from '../../features/approvals/ApprovalCountdown'
 import type { Approval } from '../../features/approvals/api'
 import type { Verdict } from '../../features/trace/decision'
+import { absent, isKnown, known, type Certain } from '../../lib/truthfulness'
+import { AbsenceMarker } from '../truthfulness'
 import { VerdictChip } from './VerdictChip'
 import './ApprovalDetailDrawer.css'
 
@@ -30,15 +32,75 @@ export interface ApprovalDetailDrawerProps {
   readonly extraActions?: ReactNode
 }
 
-/** Approval lifecycle status → the verdict chip shown in the head. */
-const STATUS_VERDICT: Record<string, Verdict> = {
-  pending: 'pending',
-  approved: 'allowed',
-  rejected: 'denied',
+/**
+ * Approval lifecycle status → the verdict chip shown in the head.
+ *
+ * The three statuses `ApprovalResponse.status` documents in `openapi/v1.yaml`
+ * ("pending", "approved", or "rejected") and nothing else — the field is typed
+ * as a bare string with no enum, so the wire may carry a fourth value this
+ * build has never heard of.
+ *
+ * A `Map`, not an object literal, for the same reason as
+ * `features/trace/decision.ts` (AAASM-5109): the key arrives over the wire, and
+ * a plain-object lookup resolves the prototype chain — `status: "constructor"`
+ * returns `Object`, which is `!== undefined`, so a `??` guard never fires and a
+ * *function* is handed on as a verdict. A `Map` has no inherited keys.
+ */
+const VERDICT_BY_STATUS = new Map<string, Verdict>([
+  ['pending', 'pending'],
+  ['approved', 'allowed'],
+  ['rejected', 'denied'],
+])
+
+/**
+ * The head verdict for an approval, or an explicit absence.
+ *
+ * There is deliberately no default. The previous `?? 'pending'` claimed of any
+ * unrecognised status that the approval is still awaiting a human — a positive
+ * statement about the governance queue that nothing established, and one that
+ * renders *identically* to a genuinely pending request, so an operator has no
+ * way to tell the two apart. (The footer is unaffected: it gates on
+ * `status !== 'pending'` directly, so an uninterpretable status already
+ * disables the decision buttons, which is the fail-closed direction.)
+ *
+ * `unknown` is the honest state here, not `unavailable` (the request succeeded
+ * and carried a status), not `not-evaluated` (a status exists, so something
+ * did evaluate this approval — we simply cannot read its answer), and not
+ * `not-supported` (the backend does supply the field). We asked, we got a
+ * value, and we could not determine what it means.
+ *
+ * Matching is exact rather than case-folded: the gateway is the sole producer
+ * of this field and emits the three documented lowercase words, so treating
+ * some other casing as equivalent would be an interpretation the schema does
+ * not authorise.
+ */
+function statusVerdict(status: string): Certain<Verdict> {
+  const named = VERDICT_BY_STATUS.get(status)
+  if (named !== undefined) return known(named)
+  return absent<Verdict>('unknown', `Unrecognised approval status "${status}"`)
 }
 
-function statusVerdict(status: string): Verdict {
-  return STATUS_VERDICT[status] ?? 'pending'
+/**
+ * The head chip — or the absence marker when the status cannot be interpreted.
+ *
+ * The chip is the drawer's loudest claim about an approval, so an unreadable
+ * status renders the neutral `—` affordance (with its screen-reader sentence
+ * and hover detail) rather than a coloured verdict. This mirrors how
+ * `DecisionExplainer` treats an underivable trace verdict.
+ */
+function HeadVerdict({ status }: Readonly<{ status: string }>) {
+  const verdict = statusVerdict(status)
+  if (isKnown(verdict)) {
+    return <VerdictChip verdict={verdict.value} shape="square" />
+  }
+  return (
+    <AbsenceMarker
+      state={verdict.state}
+      detail={verdict.detail}
+      showLabel
+      testId="approval-detail-verdict-absent"
+    />
+  )
 }
 
 interface KvRow {
@@ -95,7 +157,7 @@ export function ApprovalDetailDrawer({
                 <span className="approval-detail__id" data-testid="approval-detail-id">
                   {approval.id}
                 </span>
-                <VerdictChip verdict={statusVerdict(approval.status)} shape="square" />
+                <HeadVerdict status={approval.status} />
               </div>
               <div className="approval-detail__summary">
                 <code>{approval.agent_id}</code> · {approval.action}

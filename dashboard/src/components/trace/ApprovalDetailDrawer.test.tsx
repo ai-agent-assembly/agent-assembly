@@ -117,6 +117,70 @@ describe('ApprovalDetailDrawer', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  // AAASM-5190. The status→verdict lookup is keyed by a wire string that
+  // `openapi/v1.yaml` types as a bare `string` with no enum, so these three
+  // cases pin the whole contract: inherited object keys must not resolve, an
+  // uninterpretable status must not be dressed up as a real verdict, and every
+  // documented status must still map exactly as it did before the fix.
+  describe('status → verdict lookup (AAASM-5190)', () => {
+    // `constructor` is a member of every object literal's prototype, so the old
+    // `STATUS_VERDICT[status] ?? 'pending'` returned `Object` — truthy, so the
+    // `??` never fired — and handed a *function* to VerdictChip as a verdict.
+    it.each(['constructor', 'toString', 'valueOf', '__proto__'])(
+      'does not resolve the inherited key %s to a verdict',
+      (status) => {
+        renderWithClient(
+          <ApprovalDetailDrawer approval={makeApproval({ status })} onClose={vi.fn()} />,
+        )
+        expect(screen.queryByTestId('verdict-chip')).not.toBeInTheDocument()
+        expect(screen.getByTestId('approval-detail-verdict-absent')).toBeInTheDocument()
+      },
+    )
+
+    it('renders an explicit unknown absence for an unrecognised status, not PENDING', () => {
+      renderWithClient(
+        <ApprovalDetailDrawer approval={makeApproval({ status: 'escalated' })} onClose={vi.fn()} />,
+      )
+
+      expect(screen.queryByTestId('verdict-chip')).not.toBeInTheDocument()
+      const marker = screen.getByTestId('approval-detail-verdict-absent')
+      expect(marker).toHaveAttribute('data-truth-state', 'unknown')
+      // The raw status reaches the operator through the tooltip rather than
+      // being silently swallowed into a verdict they cannot question.
+      expect(marker).toHaveAttribute('title', expect.stringContaining('escalated'))
+      expect(marker).toHaveTextContent('Unknown')
+    })
+
+    it.each([
+      ['pending', 'pending'],
+      ['approved', 'allowed'],
+      ['rejected', 'denied'],
+    ])('still maps the recognised status %s to %s', (status, verdict) => {
+      renderWithClient(
+        <ApprovalDetailDrawer approval={makeApproval({ status })} onClose={vi.fn()} />,
+      )
+      expect(screen.getByTestId('verdict-chip')).toHaveAttribute('data-verdict', verdict)
+      expect(screen.queryByTestId('approval-detail-verdict-absent')).not.toBeInTheDocument()
+    })
+
+    // The head's honesty is only half the fix; the other half is that an
+    // uninterpretable status must not be *actionable*. The footer gates on
+    // `status !== 'pending'`, so this holds today — but it held only by code
+    // reading until now. Rewriting that guard as an allow-list of decided
+    // statuses (`=== 'approved' || === 'rejected'`) reads like a tidy-up and
+    // would silently re-enable approve/reject for a status nobody can read.
+    // `renderWithClient` already grants WRITE_SCOPES, so `actionsDisabled`
+    // collapses to exactly the status gate under test rather than to scope.
+    it('leaves the decision footer disabled for an uninterpretable status', () => {
+      renderWithClient(
+        <ApprovalDetailDrawer approval={makeApproval({ status: 'escalated' })} onClose={vi.fn()} />,
+      )
+
+      expect(screen.getByTestId('approval-approve-btn')).toBeDisabled()
+      expect(screen.getByTestId('approval-reject-btn')).toBeDisabled()
+    })
+  })
+
   it('forwards the extraActions seam into the footer', () => {
     renderWithClient(
       <ApprovalDetailDrawer
