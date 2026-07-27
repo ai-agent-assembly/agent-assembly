@@ -6,6 +6,7 @@ import { CapabilityPage } from './CapabilityPage'
 import { ToastProvider } from '../components/ToastProvider'
 import { capabilityClient } from '../api/capability'
 import { CAPABILITY_MATRIX_FIXTURE } from '../features/capability/fixtures'
+import { defaultVerb } from '../features/capability/verb'
 import type { CapabilityMatrix } from '../features/capability/types'
 
 vi.mock('../api/capability', () => ({
@@ -68,6 +69,36 @@ const PROJECTION_MATRIX: CapabilityMatrix = {
       ]),
     ) as typeof agent.caps,
   })),
+}
+
+/**
+ * The matrix shaped the way `project_matrix` shapes a real fleet: read/write/
+ * delete on the Filesystem family only, `exec` on Terminal, Network-outbound
+ * and every MCP-tool column (`aa-api/src/routes/capability.rs:497-524`).
+ */
+const EXEC_HEAVY_MATRIX: CapabilityMatrix = {
+  resources: [
+    { id: 'filesystem', name: 'Filesystem', group: 'files', paths: [] },
+    { id: 'terminal', name: 'Terminal', group: 'infra', paths: [] },
+    { id: 'network-outbound', name: 'Network', group: 'infra', paths: [] },
+  ],
+  agents: [
+    {
+      id: 'a1',
+      name: 'research-bot',
+      framework: 'langgraph',
+      trust: null,
+      status: 'active',
+      lastSeen: '2026-07-26T00:00:00Z',
+      caps: {
+        filesystem: { read: 'allow', write: 'allow', delete: 'deny', exec: 'na' },
+        terminal: { read: 'na', write: 'na', delete: 'na', exec: 'allow' },
+        'network-outbound': { read: 'na', write: 'na', delete: 'na', exec: 'allow' },
+      },
+    },
+  ],
+  policies: FIXTURE.policies,
+  sampleCalls: [],
 }
 
 /**
@@ -165,7 +196,40 @@ describe('CapabilityPage', () => {
     expect(summary).not.toHaveTextContent('narrowed')
     expect(summary).toHaveTextContent('denied')
     expect(summary).toHaveTextContent('flagged agents')
-    expect(summary).toHaveTextContent('total "allow" cells (write)')
+    // The verb in the label is the one the page landed on, derived from the
+    // fixture rather than hard-coded (AAASM-5125).
+    expect(summary).toHaveTextContent(
+      `total "allow" cells (${defaultVerb(FIXTURE.agents, FIXTURE.resources)})`,
+    )
+  })
+
+  /**
+   * AAASM-5125. The page opened on `write`, which the live projection models on
+   * the Filesystem column alone — every other column is `exec`-only — so the
+   * flagship governance page landed on one populated column and a wall of n/a.
+   */
+  it('lands on the verb the loaded matrix populates, not on write', async () => {
+    getMatrix.mockResolvedValue(EXEC_HEAVY_MATRIX)
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+    expect(screen.getByRole('radio', { name: 'exec' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'write' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByLabelText('matrix summary')).toHaveTextContent(
+      'total "allow" cells (exec)',
+    )
+  })
+
+  it("keeps the operator's chosen verb even though the default is derived", async () => {
+    // The derivation is a landing default, not a constraint: an explicit choice
+    // must survive, including a choice of the verb the data does not favour.
+    getMatrix.mockResolvedValue(EXEC_HEAVY_MATRIX)
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+    fireEvent.click(screen.getByRole('radio', { name: 'write' }))
+    expect(screen.getByRole('radio', { name: 'write' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('matrix summary')).toHaveTextContent(
+      'total "allow" cells (write)',
+    )
   })
 
   it('navigates to the policy editor from the Open Policy editor button', async () => {

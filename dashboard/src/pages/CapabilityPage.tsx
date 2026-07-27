@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { capabilityClient } from '../api/capability'
@@ -21,6 +21,7 @@ import { PerResourceTab } from '../features/capability/PerResourceTab'
 import { EMPTY_FILTERS, applyFilters, type CapabilityFilters } from '../features/capability/filters'
 import { applyOverrideLocal } from '../features/capability/override'
 import { NO_SORT, nextSortState, sortAgents, type SortState } from '../features/capability/sort'
+import { defaultVerb } from '../features/capability/verb'
 import { VERBS } from '../features/capability/types'
 import type { CapabilityMatrix, OverridableDecision, Verb } from '../features/capability/types'
 import './CapabilityPage.css'
@@ -29,8 +30,21 @@ type Tab = 'matrix' | 'resource' | 'agent'
 
 export function CapabilityPage() {
   const [tab, setTab] = useState<Tab>('matrix')
-  const [verb, setVerb] = useState<Verb>('write')
+  // `null` means "the operator has not chosen a verb yet", which is a different
+  // thing from any particular verb — the landing verb is then derived from the
+  // matrix rather than hard-coded (AAASM-5125). Once a verb is picked it wins
+  // outright, including over a later refetch that would have derived a
+  // different default.
+  const [chosenVerb, setChosenVerb] = useState<Verb | null>(null)
   const { data, error: loadError, isPending, refetch } = useCapabilityMatrixQuery()
+  // Derived from the *fetched* matrix, not the optimistic shadow: an override
+  // that records `na` would otherwise be able to shift the landing verb of an
+  // operator who never chose one.
+  const landingVerb = useMemo(
+    () => defaultVerb(data?.agents ?? [], data?.resources ?? []),
+    [data],
+  )
+  const verb = chosenVerb ?? landingVerb
   // The bulk-override bar edits the grid optimistically. That edit lives in its
   // own state and shadows the fetched matrix, so the fetched value never has to
   // be copied into state (and cannot go stale behind a refetch).
@@ -223,7 +237,7 @@ export function CapabilityPage() {
                 role="radio"
                 aria-checked={verb === v}
                 className={`capability-verb${verb === v ? ' is-active' : ''}`}
-                onClick={() => setVerb(v)}
+                onClick={() => setChosenVerb(v)}
               >
                 {v}
               </button>
