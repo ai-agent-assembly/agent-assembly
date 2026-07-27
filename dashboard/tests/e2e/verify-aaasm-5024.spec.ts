@@ -11,8 +11,12 @@ const OUT = 'verify/AAASM-5024'
 async function prime(page: Page, theme: 'light' | 'dark') {
   await page.addInitScript(
     ([t]) => {
+      // `aa_token` goes in sessionStorage ONLY. AAASM-4322 removed it from
+      // localStorage as XSS-exfiltration hardening, so a spec that also seeds
+      // localStorage asserts against a state production cannot reach — and
+      // would keep passing if that hardening were ever reverted. The theme key
+      // does legitimately live in localStorage.
       sessionStorage.setItem('aa_token', 'verify-token')
-      localStorage.setItem('aa_token', 'verify-token')
       localStorage.setItem('aa-dashboard-theme', t)
     },
     [theme],
