@@ -587,6 +587,39 @@ describe('TopologyGraph — unconfigured budget limits', () => {
     expect(bar).toHaveAttribute('aria-valuenow', '25')
     expect(bar).toHaveTextContent('$5 / $20 · 25%')
   })
+
+  /**
+   * AAASM-5185 changed this cluster bar, and it is the only topology surface it
+   * changed — `TopologyGraph` renders the shared `TeamBudgetBar`, so moving that
+   * component onto `bucketForConfiguredBudget` reached here too. It went
+   * `ok` / `aria-valuenow="0"` / `$500 / $0 · 0%` → `danger` / `100` / `100%`.
+   *
+   * Retained deliberately rather than reverted, and pinned here so it can never
+   * change again unobserved: a cluster total of `$0` cannot mean "unconfigured"
+   * on this surface, because the sum goes `null` the moment any member lacks a
+   * ceiling (see the mixed-members case above). Reaching `0` therefore requires
+   * every member to carry an explicitly-configured `$0` — a team that denies
+   * every agent in it, which is not a team with no budget.
+   *
+   * The sibling surfaces still disagree: `selectTeamBudget` and the node-detail
+   * panel both read `limit > 0` and report a configured `$0` as "no limit". That
+   * inconsistency is recorded as PRODUCT-DECISION-REQUIRED (AAASM-5251), not
+   * resolved here.
+   */
+  it('treats a team total of $0 as a ceiling that denies, not as an absent one', () => {
+    const allZero: TopologyNode[] = [
+      { id: 'z1', name: 'z1', status: 'active', team: 'alpha', owner: 'a', policyCount: 0, budgetSpend: 300, budgetLimit: 0 },
+      { id: 'z2', name: 'z2', status: 'active', team: 'alpha', owner: 'a', policyCount: 0, budgetSpend: 200, budgetLimit: 0 },
+    ]
+    render(<TopologyGraph nodes={allZero} edges={[]} />)
+    const bar = screen.getByTestId('team-budget-bar')
+
+    // A measurement, not an absence — the distinction AAASM-5135 established.
+    expect(bar).not.toHaveAttribute('data-truth-state')
+    expect(bar.dataset.thresholdBucket).toBe('danger')
+    expect(bar).toHaveAttribute('aria-valuenow', '100')
+    expect(bar).toHaveTextContent('$500 / $0 · 100%')
+  })
 })
 
 // ── Cross-team badge under a team filter (AAASM-5138) ────────────────────────
