@@ -1,4 +1,4 @@
-import { bucketForBudget } from '../../components/topology/budgetThreshold'
+import { bucketForConfiguredBudget } from '../../components/topology/budgetThreshold'
 import {
   absent,
   certain,
@@ -114,7 +114,13 @@ function countBlockedByBudget(teamRows: Certain<readonly TeamListRow[]>): Measur
     if (row.daily_limit_usd == null) missingCeiling += 1
     if (row.daily_spend_usd == null || row.daily_limit_usd == null) continue
     measured += 1
-    if (bucketForBudget(row.daily_spend_usd, row.daily_limit_usd) === 'danger') blocked += 1
+    // `bucketForConfiguredBudget`, not the plain threshold helper: the latter
+    // maps a configured `$0` ceiling to `ok`, which would report a roster
+    // spending against a budget that permits nothing as fully compliant — a
+    // fabricated clean bill of health on the one KPI that exists to deny it.
+    if (bucketForConfiguredBudget(row.daily_spend_usd, row.daily_limit_usd) === 'danger') {
+      blocked += 1
+    }
   }
 
   // An empty roster is a measured fact — the overview resolved and reported no

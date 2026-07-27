@@ -77,13 +77,33 @@ describe('PerTeamTable — AAASM-5160 restored columns', () => {
 
   it('buckets a configured $0 ceiling as danger rather than as untouched', () => {
     // `bucketForBudget` maps `limit <= 0` to `ok`; a fully-consumed ceiling is
-    // not a comfortable one, so the cell resolves that case itself.
+    // not a comfortable one, so the Costs surfaces read
+    // `bucketForConfiguredBudget` instead.
     render(<PerTeamTable rows={[row({ team_id: 'team-zero', daily_spend_usd: 5, daily_limit_usd: 0 })]} />)
 
     expect(
       (cell('team-zero').querySelector('.costs-team-table__daily') as HTMLElement).dataset
         .thresholdBucket,
     ).toBe('danger')
+  })
+
+  it('gives the same verdict in the spend cell and the burn bar for a $0 ceiling', () => {
+    // The AAASM-5185 defect was intra-row: the spend cell resolved `limit <= 0`
+    // itself while the bar beside it used the plain threshold helper, so one
+    // team read `danger` in red and `ok` at `$400 / $0 · 0%` simultaneously.
+    // Both cells must now answer identically, or the row is lying to itself.
+    render(<PerTeamTable rows={[row({ team_id: 'team-zero', daily_spend_usd: 400, daily_limit_usd: 0 })]} />)
+
+    const zero = cell('team-zero')
+    const spendCell = zero.querySelector('.costs-team-table__daily') as HTMLElement
+    const bar = within(zero).getByTestId('team-budget-bar')
+
+    expect(spendCell.dataset.thresholdBucket).toBe('danger')
+    expect(bar.dataset.thresholdBucket).toBe('danger')
+    expect(spendCell.dataset.thresholdBucket).toBe(bar.dataset.thresholdBucket)
+    // …and the bar must not announce untouched headroom while it says danger.
+    expect(bar).toHaveAttribute('aria-valuenow', '100')
+    expect(bar).toHaveTextContent('$400 / $0 · 100%')
   })
 
   it('renders an absent monthly figure as an absence, never as $0', () => {

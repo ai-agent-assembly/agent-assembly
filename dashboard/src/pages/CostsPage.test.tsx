@@ -561,6 +561,46 @@ describe('CostsPage — AAASM-5185: the strip never reports 0 for what it did no
   })
 })
 
+describe('CostsPage — AAASM-5185: a configured $0 ceiling gets one answer, not three', () => {
+  /** A ceiling that permits nothing, with both teams spending against it. */
+  const ZERO_CEILING: CostSummary = {
+    date: '2026-05-13',
+    daily_spend_usd: '500.00',
+    daily_limit_usd: '0.00',
+    per_agent: [],
+    per_team: [
+      { team_id: 'team-hot', daily_spend_usd: '400.00', date: '2026-05-13' },
+      { team_id: 'team-cool', daily_spend_usd: '100.00', date: '2026-05-13' },
+    ],
+  }
+
+  it('agrees across the spend cell, the burn bar and the Blocked-by-budget KPI', async () => {
+    // The three surfaces resolved `limit <= 0` independently and disagreed:
+    // the spend cell said `danger`, the bar said `ok` at `$400 / $0 · 0%`, and
+    // the KPI said `0 · no teams over the daily limit` — a fabricated clean
+    // bill of health for a budget that blocks everything.
+    setupMocks(OVERVIEW, ZERO_CEILING)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
+    expect(within(blocked).getByText('2')).toBeInTheDocument()
+    expect(within(blocked).queryByText('no teams over the daily limit')).not.toBeInTheDocument()
+    expect(within(blocked).getByText('teams at ≥95% of the org daily limit')).toBeInTheDocument()
+
+    await screen.findByTestId('costs-tabs')
+    await openTab('teams')
+    const table = await screen.findByTestId('costs-team-table')
+    const hot = table.querySelector('[data-team="team-hot"]') as HTMLElement
+
+    const spendCell = hot.querySelector('.costs-team-table__daily') as HTMLElement
+    const bar = within(hot).getByTestId('team-budget-bar')
+    expect(spendCell.dataset.thresholdBucket).toBe('danger')
+    expect(bar.dataset.thresholdBucket).toBe('danger')
+    expect(bar).toHaveAttribute('aria-valuenow', '100')
+  })
+})
+
 describe('CostsPage — AAASM-5160: the per-team tab is a table with Agents and Monthly spend', () => {
   it('renders a row per team carrying agent count, daily spend, burn bar and monthly spend', async () => {
     setupMocks()

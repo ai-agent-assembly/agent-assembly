@@ -113,6 +113,22 @@ describe('deriveCostKpis — AAASM-5185: a count states its own coverage', () =>
     expect(blocked.total).toBe(3)
   })
 
+  it('counts a team spending against a configured $0 ceiling as blocked', () => {
+    // `bucketForBudget` maps `limit <= 0` to `ok`, so this roster — spending
+    // real money against a ceiling that permits nothing — reported `0 · no
+    // teams over the daily limit`: a clean bill of health on the compliance
+    // KPI, for the one configuration that blocks everything.
+    const rows: readonly TeamListRow[] = [
+      row({ team_id: 'team-hot', daily_spend_usd: 400, daily_limit_usd: 0 }),
+      row({ team_id: 'team-cool', daily_spend_usd: 100, daily_limit_usd: 0 }),
+    ]
+
+    const blocked = deriveCostKpis(known(COSTS), known(rows)).blockedByBudget
+
+    expect(blocked.value).toEqual(known(2))
+    expect(blocked).toMatchObject({ measured: 2, total: 2 })
+  })
+
   it('is absent, not 0, when no row carries a ceiling to measure against', () => {
     // The successful-response case: `/costs` answered, spend is real, and not
     // one team has a `daily_limit_usd`. A `0` here asserts compliance for a
