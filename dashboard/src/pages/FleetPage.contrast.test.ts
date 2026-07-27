@@ -133,10 +133,14 @@ describe('Fleet no-rows contrast floor (ADR-0027)', () => {
     }
   })
 
-  it('agrees with the measurements recorded in the AAASM-5130 review', () => {
-    // Pins the arithmetic itself against the values measured in Chromium via
-    // getComputedStyle on the built app. If this drifts, the ratios quoted in
-    // the review trail are no longer the ones being enforced.
+  it('pins the WCAG formula against the hexes measured in Chromium', () => {
+    // Named for what it actually guards: these are *literal* hexes, not the
+    // shipped tokens, so this test keeps passing if the palette moves — the
+    // three tests above are what track the shipped values. What it pins is the
+    // arithmetic, against the numbers read back via getComputedStyle on the
+    // built app. If it drifts, the ratios quoted in the AAASM-5130 review trail
+    // and in the design/v2 correction notes are no longer the ones being
+    // enforced anywhere.
     expect(contrast('#8a8a8a', '#ffffff')).toBeCloseTo(3.45, 2) // --ink-4 light, rejected
     expect(contrast('#7a766c', '#1c1a16')).toBeCloseTo(3.83, 2) // --ink-4 dark, rejected
     expect(contrast('#5a5a5a', '#ffffff')).toBeCloseTo(6.9, 2) // --ink-3 light, shipped
