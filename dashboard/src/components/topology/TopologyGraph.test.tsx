@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { TopologyGraph } from './TopologyGraph'
 import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
+import { UNCLAIMED_TEAM } from '../../features/topology/unclaimed'
 
 const NODES: TopologyNode[] = [
   // ratio 0.1 → small
@@ -684,30 +685,42 @@ describe('TopologyGraph — cross-team badge', () => {
   })
 })
 
-// ── The unnamed-team cluster is not a dead affordance (AAASM-5140's rule) ────
+// ── The unclaimed cluster is named and selectable (AAASM-5184) ──────────────
+//
+// AAASM-5140 made this cluster inert because it was keyed by the empty string,
+// which `TopologyPage` reads as falsy — the click opened nothing. That was a
+// stopgap which deferred the naming decision to this ticket. With a real key
+// and a real label the panel opens, so the affordance is restored.
 describe('TopologyGraph — cluster for agents with no team', () => {
   const MIXED: TopologyNode[] = [
     { id: 'g1', name: 'governed', status: 'active', team: 'support', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
-    { id: 'o1', name: 'teamless', status: 'active', team: '', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    { id: 'o1', name: 'teamless', status: 'active', team: UNCLAIMED_TEAM, owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
   ]
 
-  it('renders the unnamed group as non-interactive', () => {
-    // `TopologyPage` gates its team panel on a truthy team, so clicking this
-    // cluster never opened anything. An affordance with no successful path is
-    // removed rather than left to look clickable.
+  const unclaimedCluster = () =>
+    screen.getAllByTestId('team-cluster').find(c => c.dataset.team === UNCLAIMED_TEAM)!
+
+  it('labels the unclaimed group instead of leaving it blank', () => {
     render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={vi.fn()} />)
-    const blank = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === '')!
-    expect(blank).toHaveAttribute('data-selectable', 'false')
-    expect(blank).not.toHaveAttribute('role', 'button')
-    expect(blank).not.toHaveAttribute('tabindex')
+    const cluster = unclaimedCluster()
+    expect(cluster).toHaveAttribute('data-unclaimed', 'true')
+    const label = within(cluster).getByTestId('team-cluster-label')
+    // The visible name, not the sentinel key and not an empty string.
+    expect(label).toHaveTextContent(/unclaimed/i)
+    expect(label.textContent).not.toContain(UNCLAIMED_TEAM)
+    expect(label.textContent?.trim()).not.toBe('')
   })
 
-  it('does not fire onTeamClick for the unnamed group', async () => {
+  it('makes the unclaimed group selectable now that its panel opens', async () => {
     const onTeamClick = vi.fn()
     render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={onTeamClick} />)
-    const blank = screen.getAllByTestId('team-cluster').find(c => c.dataset.team === '')!
-    await userEvent.click(blank)
-    expect(onTeamClick).not.toHaveBeenCalled()
+    const cluster = unclaimedCluster()
+    expect(cluster).toHaveAttribute('role', 'button')
+    expect(cluster).not.toHaveAttribute('data-selectable', 'false')
+    await userEvent.click(cluster)
+    // The key it reports is the sentinel, which `TopologyPage` holds as a
+    // truthy `selectedTeam` — the dead click of AAASM-5140 is gone.
+    expect(onTeamClick).toHaveBeenCalledWith(UNCLAIMED_TEAM)
   })
 
   it('leaves real team clusters selectable', async () => {

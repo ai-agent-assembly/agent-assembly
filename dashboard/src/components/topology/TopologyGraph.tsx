@@ -14,6 +14,7 @@ import {
 import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
 import { computeHierarchy, detectDelegationCycles } from '../../features/topology/hierarchy'
 import { crossTeamDegreeByNode, isCrossTeamEdge, isEdgeDrawn, teamById } from '../../features/topology/crossTeam'
+import { isUnclaimedTeam, teamLabel } from '../../features/topology/unclaimed'
 import { NO_DATA, TRUTH_STATE_META } from '../../lib/truthfulness'
 import { TeamBudgetBar } from './TeamBudgetBar'
 import { Tooltip } from '../Tooltip'
@@ -562,24 +563,32 @@ export function TopologyGraph({
       >
       {/* Team clusters (drawn under nodes) */}
       {clusters.map(c => {
-        // Agents with no `team_id` are grouped under the empty-string team.
-        // That group is not selectable: `TopologyPage` gates its detail panel on
-        // a truthy team, so a click here has never opened anything. Rather than
-        // leave an affordance with no successful path, the cluster renders
-        // inert (AAASM-5140's rule). Naming and properly surfacing the group is
-        // a separate, design-specified piece of work — see AAASM-5184.
-        const selectable = onTeamClick !== undefined && c.team !== ''
+        // Agents no team claims form their own named group (AAASM-5184).
+        //
+        // AAASM-5140 left this cluster inert because it was keyed by the empty
+        // string, which `TopologyPage` reads as falsy — the click opened
+        // nothing, so an affordance with no successful path was worse than
+        // none. Now that the group carries a real key and a real label, the
+        // panel does open, and the cluster is selectable like any other.
+        const unclaimed = isUnclaimedTeam(c.team)
+        const label = teamLabel(c.team)
+        const selectable = onTeamClick !== undefined
         return (
         <g
           key={`cluster-${c.team}`}
-          className="topology-cluster"
+          className={`topology-cluster${unclaimed ? ' topology-cluster--unclaimed' : ''}`}
           data-testid="team-cluster"
           data-team={c.team}
+          data-unclaimed={unclaimed ? 'true' : undefined}
           data-selectable={selectable ? undefined : 'false'}
           data-selected={selectedTeam === c.team ? 'true' : undefined}
           role={selectable ? 'button' : undefined}
           tabIndex={selectable ? 0 : undefined}
-          aria-label={selectable ? `Inspect team ${c.team}` : undefined}
+          aria-label={
+            selectable
+              ? (unclaimed ? 'Inspect agents belonging to no team' : `Inspect team ${label}`)
+              : undefined
+          }
           style={selectable ? { cursor: 'pointer' } : undefined}
           onClick={selectable ? (e) => { e.stopPropagation(); if (!consumePanClick()) onTeamClick(c.team) } : undefined}
           onKeyDown={selectable ? (e: KeyboardEvent<SVGGElement>) => {
@@ -601,12 +610,15 @@ export function TopologyGraph({
             height={TEAM_LABEL_HEIGHT + TEAM_BUDGET_BAR_HEIGHT}
           >
             <div className="topology-cluster__overlay" data-testid="team-cluster-overlay">
-              <Tooltip content={`${c.team} · ${c.memberCount} member${c.memberCount === 1 ? '' : 's'} · $${c.spent.toFixed(0)} / ${formatLimit(c.limit, 0)}`}>
+              <Tooltip content={`${label} · ${c.memberCount} member${c.memberCount === 1 ? '' : 's'} · $${c.spent.toFixed(0)} / ${formatLimit(c.limit, 0)}`}>
                 <span className="topology-cluster__label" data-testid="team-cluster-label">
-                  {c.team}
+                  {unclaimed ? `⚠ ${label}` : label}
                 </span>
               </Tooltip>
-              <TeamBudgetBar team={c.team} spent={c.spent} limit={c.limit} />
+              {/* The bar is labelled with the group's display name, not its
+                  sentinel key — `TeamBudgetBar` renders `team` as visible text
+                  and is shared with the Costs page. */}
+              <TeamBudgetBar team={label} spent={c.spent} limit={c.limit} />
             </div>
           </foreignObject>
         </g>
