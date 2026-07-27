@@ -48,11 +48,11 @@ export class AlertShapeError extends Error {
  * active silence covers it (AAASM-1645). The three map 1:1 onto the dashboard's
  * ladder with no judgement call.
  */
-const WIRE_STATUS: Readonly<Record<string, AlertStatus>> = {
-  unresolved: 'FIRING',
-  resolved: 'RESOLVED',
-  suppressed: 'SUPPRESSED',
-}
+const WIRE_STATUS: ReadonlyMap<string, AlertStatus> = new Map([
+  ['unresolved', 'FIRING'],
+  ['resolved', 'RESOLVED'],
+  ['suppressed', 'SUPPRESSED'],
+])
 
 /**
  * Severity vocabulary as `aa-api` actually serialises it.
@@ -108,7 +108,7 @@ export function canonicalStatus(raw: unknown): AlertStatus {
   const value = str(raw)
   if (value === null) throw new AlertShapeError('alert.status is not a string')
   if (CANONICAL_STATUS.has(value)) return value as AlertStatus
-  const mapped = WIRE_STATUS[value.toLowerCase()]
+  const mapped = WIRE_STATUS.get(value.toLowerCase())
   if (mapped) return mapped
   throw new AlertShapeError(`unrecognised alert status: ${JSON.stringify(value)}`)
 }
