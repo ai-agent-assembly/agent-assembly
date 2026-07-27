@@ -54,12 +54,29 @@ describe('usePoliciesQuery', () => {
     expect(result.current.data).toEqual([POLICY])
   })
 
-  it('falls back to an empty array when data is nullish', async () => {
+  it('fails rather than reporting an empty policy set when the body has no items', async () => {
+    // AAASM-5186: this previously returned `[]`, which no consumer could tell
+    // apart from a genuinely empty policy set — the shell counted it to zero
+    // and rendered a calm rail. A 200 with no `items` is a malformed response,
+    // so the hook reports it as the absence it is and lets `certainFromQuery`
+    // mark it, rather than substituting a business value.
     get.mockResolvedValue({ data: undefined } satisfies FetchResult)
     const { wrapper } = makeWrapper()
     const { result } = renderHook(() => usePoliciesQuery(), { wrapper })
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data).toEqual([])
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.error?.message).toBe('Policies response carried no items')
+  })
+
+  it('does not issue the request when disabled', async () => {
+    // The shell disables this for a caller without admin scope, which is the
+    // only thing standing between a read-only operator and a guaranteed 403 on
+    // every page load (AAASM-5186).
+    get.mockResolvedValue({ data: { items: [POLICY], page: 1, per_page: 50, total: 1 } } satisfies FetchResult)
+    const { wrapper } = makeWrapper()
+    const { result } = renderHook(() => usePoliciesQuery({ enabled: false }), { wrapper })
+    await waitFor(() => expect(result.current.fetchStatus).toBe('idle'))
+    expect(get).not.toHaveBeenCalled()
+    expect(result.current.data).toBeUndefined()
   })
 
   it('throws on failure', async () => {

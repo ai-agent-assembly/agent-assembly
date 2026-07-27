@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { GrantScopes } from '../auth/GrantScopes'
+import type { Scope } from '../auth/AuthContext'
 
 // Shell chrome (AAASM-5021) is data-driven: the rail foot status, the count
 // badges, the breadcrumb and the "last sync" clock only appear once the shell's
@@ -32,28 +34,49 @@ const mockState = vi.hoisted(() => ({
     isError: boolean
     error: unknown
   },
+  /** Whether the shell actually issued the policies query (AAASM-5186). */
+  policiesEnabled: true,
 }))
 
 vi.mock('../features/agents/api', () => ({ useAgentsQuery: () => mockState.agents }))
-vi.mock('../features/policies/api', () => ({ usePoliciesQuery: () => mockState.policies }))
+vi.mock('../features/policies/api', () => ({
+  // Record what the shell asked for, not just what it got: AAASM-5186's fix is
+  // partly a decision *not to make the request*, and a mock that swallows the
+  // options could not tell a suppressed query apart from an issued one.
+  usePoliciesQuery: (options?: { enabled?: boolean }) => {
+    mockState.policiesEnabled = options?.enabled ?? true
+    return mockState.policies
+  },
+}))
 vi.mock('../features/alerts/api', () => ({ useAlertsQuery: () => mockState.alerts }))
 vi.mock('../auth/useAuth', () => ({ useAuth: () => ({ token: null, logout: vi.fn() }) }))
 vi.mock('../features/approvals/ApprovalsBellButton', () => ({ ApprovalsBellButton: () => null }))
 
 import { AppShell } from './AppShell'
 
-function renderShellAt(path: string) {
+/**
+ * Render the shell as a named caller.
+ *
+ * Admin by default because the Policy badge only exists for a caller who may
+ * list policies at all — `GET /api/v1/policies` requires cross-tenant admin
+ * scope (AAASM-3995(a)), so an unscoped shell has no badge to assert about.
+ * Tests covering the read-only operator pass `scopes` explicitly, which is the
+ * point of failing closed (AAASM-5180): the caller is stated, never inherited.
+ */
+function renderShellAt(path: string, scopes: Scope[] = ['read', 'write', 'admin']) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route element={<AppShell />}>
-            <Route path="*" element={<div data-testid="page" />} />
-          </Route>
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <GrantScopes scopes={scopes}>
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route element={<AppShell />}>
+              <Route path="*" element={<div data-testid="page" />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </GrantScopes>,
   )
 }
 
@@ -269,6 +292,49 @@ describe('AppShell chrome — the Policy badge never invents a zero (AAASM-5186)
 
     expect(screen.queryByTestId('nav-badge-policy')).toBeNull()
     expect(screen.queryByTestId('nav-badge-absent-policy')).toBeNull()
+  })
+
+  it('asks for nothing and marks nothing when the caller may not list policies', () => {
+    // The authorisation boundary, not an outage. `GET /api/v1/policies`
+    // requires cross-tenant admin scope (AAASM-3995(a)), so for a read/write
+    // operator — the majority of callers — the request is a guaranteed 403 on
+    // every page load. Rendering that refusal as `unavailable` would announce
+    // "the request for this value failed" when nothing failed: a fail-*wrong*
+    // replacing the fail-open this ticket removes. The shell makes no claim
+    // instead, and does not spend the request finding out.
+    mockState.policies = {
+      data: [{ active: false }, { active: false }],
+      isPending: false,
+      isError: false,
+      error: null,
+    }
+    renderShellAt('/overview', ['read', 'write'])
+
+    expect(mockState.policiesEnabled).toBe(false)
+    expect(screen.queryByTestId('nav-badge-policy')).toBeNull()
+    expect(screen.queryByTestId('nav-badge-absent-policy')).toBeNull()
+    // The rail row itself stays — the operator can still navigate; it just
+    // carries no claim about a count they have no right to read.
+    expect(screen.getByTestId('nav-link-policy')).toBeInTheDocument()
+  })
+
+  it('does issue the query, and does mark a failure, for an admin caller', () => {
+    // The other side of the gate above, so "no badge" can never quietly become
+    // the answer for everyone. An admin's token says they may list policies; a
+    // failure at that point is a real failure and keeps the fault marker.
+    mockState.policies = {
+      data: undefined,
+      isPending: false,
+      isError: true,
+      error: new Error('HTTP 403'),
+    }
+    renderShellAt('/overview', ['read', 'write', 'admin'])
+
+    expect(mockState.policiesEnabled).toBe(true)
+    expect(screen.getByTestId('nav-badge-absent-policy')).toHaveAttribute(
+      'data-truth-state',
+      'unavailable',
+    )
   })
 })
 
