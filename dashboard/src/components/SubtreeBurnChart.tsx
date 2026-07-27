@@ -132,7 +132,13 @@ export function SubtreeBurnChart({ agentId }: Readonly<{ agentId: string }>) {
   )
 }
 
-function transform(data: SubtreeBurn | undefined): {
+// Exported for tests: recharts does not render `<Area>` paths under jsdom, so the
+// per-child row contract (including retaining a `__proto__` child id) is exercised
+// directly against the transformed rows rather than the mounted SVG. This pure
+// helper is not a component, so react-refresh's component-only-export rule is
+// disabled for this single export.
+// eslint-disable-next-line react-refresh/only-export-components
+export function transform(data: SubtreeBurn | undefined): {
   rows: ChartRow[]
   childIds: string[]
   childName: Map<string, string>
@@ -151,7 +157,13 @@ function transform(data: SubtreeBurn | undefined): {
   const sortedChildIds = Array.from(childIds).sort((a, b) => a.localeCompare(b))
 
   const rows: ChartRow[] = (data?.points ?? []).map((point) => {
-    const row: ChartRow = { date: point.date, total: Number.parseFloat(point.total_usd) || 0 }
+    // Build on a null-prototype object so a `__proto__` child agent id is stored
+    // as a real own property. A plain `{}` would treat `row['__proto__'] = n` as a
+    // no-op prototype assignment, silently dropping that child's burn from the row.
+    const row = Object.assign(Object.create(null) as ChartRow, {
+      date: point.date,
+      total: Number.parseFloat(point.total_usd) || 0,
+    })
     for (const cid of sortedChildIds) {
       const match = point.per_child.find((c) => c.child_agent_id === cid)
       row[cid] = match ? Number.parseFloat(match.spent_usd) || 0 : 0
