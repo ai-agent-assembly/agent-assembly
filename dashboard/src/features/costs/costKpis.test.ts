@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { deriveCostKpis } from './costKpis'
+import { absent, isAbsent, isKnown, known } from '../../lib/truthfulness'
 import type { CostSummary, TeamListRow } from '../teams/api'
 
 const COSTS: CostSummary = {
@@ -17,39 +18,43 @@ const COSTS: CostSummary = {
   ],
 }
 
+function row(over: Partial<TeamListRow> & { team_id: string }): TeamListRow {
+  return {
+    agent_count: 2,
+    root_agent_count: 1,
+    daily_spend_usd: null,
+    daily_limit_usd: null,
+    monthly_spend_usd: null,
+    burn_pct: null,
+    ...over,
+  }
+}
+
 const TEAM_ROWS: readonly TeamListRow[] = [
-  { team_id: 'team-hot', agent_count: 2, root_agent_count: 1, daily_spend_usd: 150, daily_limit_usd: 200, monthly_spend_usd: 3200, burn_pct: 75 },
+  row({ team_id: 'team-hot', daily_spend_usd: 150, daily_limit_usd: 200, burn_pct: 75 }),
 ]
 
 describe('deriveCostKpis — daily / monthly / tracked figures', () => {
   it('derives daily and monthly spend, limit and burn %', () => {
-    const kpis = deriveCostKpis(COSTS, TEAM_ROWS)
+    const kpis = deriveCostKpis(known(COSTS), known(TEAM_ROWS))
 
     expect(kpis.daily).toEqual({ spend: 150, limit: 200, pct: 75 })
     expect(kpis.monthly).toEqual({ spend: 3200, limit: 5000, pct: 64 })
   })
 
   it('counts agents and teams tracked from the summary rows', () => {
-    const kpis = deriveCostKpis(COSTS, TEAM_ROWS)
+    const kpis = deriveCostKpis(known(COSTS), known(TEAM_ROWS))
 
-    expect(kpis.agentsTracked).toBe(2)
-    expect(kpis.teamsTracked).toBe(1)
+    expect(kpis.agentsTracked).toEqual(known(2))
+    expect(kpis.teamsTracked).toEqual(known(1))
   })
 
   it('leaves limit/pct null when a period has no configured limit', () => {
     const noLimit: CostSummary = { date: '2026-05-13', daily_spend_usd: '42.00' }
-    const kpis = deriveCostKpis(noLimit, [])
+    const kpis = deriveCostKpis(known(noLimit), known([]))
 
     expect(kpis.daily).toEqual({ spend: 42, limit: null, pct: null })
     expect(kpis.monthly).toEqual({ spend: null, limit: null, pct: null })
-  })
-
-  it('degrades to zeros / nulls before any cost data arrives', () => {
-    const kpis = deriveCostKpis(undefined, [])
-
-    expect(kpis.agentsTracked).toBe(0)
-    expect(kpis.teamsTracked).toBe(0)
-    expect(kpis.daily).toEqual({ spend: null, limit: null, pct: null })
   })
 
   describe('AAASM-5126 — no figure can be presented under another window’s heading', () => {
@@ -58,7 +63,7 @@ describe('deriveCostKpis — daily / monthly / tracked figures', () => {
       // `totalSpend` / `limit` / `utilisationPct`, which is how "Monthly" came
       // to head a strip whose other figures were still daily. The shape now
       // makes that unexpressible: a caller must name the window it wants.
-      const kpis = deriveCostKpis(COSTS, TEAM_ROWS)
+      const kpis = deriveCostKpis(known(COSTS), known(TEAM_ROWS))
 
       expect(Object.keys(kpis).sort()).toEqual([
         'agentsTracked',
@@ -77,25 +82,120 @@ describe('deriveCostKpis — daily / monthly / tracked figures', () => {
       // figure is daily and is labelled daily rather than following a toggle.
       const rows: readonly TeamListRow[] = [
         // 195/200 = 97.5% — danger.
-        { team_id: 'team-hot', agent_count: 2, root_agent_count: 1, daily_spend_usd: 195, daily_limit_usd: 200, monthly_spend_usd: null, burn_pct: 97.5 },
+        row({ team_id: 'team-hot', daily_spend_usd: 195, daily_limit_usd: 200, burn_pct: 97.5 }),
         // 20/200 = 10% — ok.
-        { team_id: 'team-cool', agent_count: 1, root_agent_count: 1, daily_spend_usd: 20, daily_limit_usd: 200, monthly_spend_usd: null, burn_pct: 10 },
+        row({ team_id: 'team-cool', daily_spend_usd: 20, daily_limit_usd: 200, burn_pct: 10 }),
       ]
 
-      expect(deriveCostKpis(COSTS, rows).blockedByBudget).toBe(1)
+      const blocked = deriveCostKpis(known(COSTS), known(rows)).blockedByBudget
+      expect(blocked.value).toEqual(known(1))
+      expect(blocked).toMatchObject({ measured: 2, total: 2 })
     })
+  })
+})
 
-    it('never counts a team whose ceiling is unknown as either blocked or safe', () => {
-      // An unresolved `/costs` leaves every joined row null on both sides. The
-      // count reports what it measured — one blocked team out of the one it
-      // could measure — rather than absorbing the unmeasured rows as compliant.
-      const rows: readonly TeamListRow[] = [
-        { team_id: 'team-unknown', agent_count: 2, root_agent_count: 1, daily_spend_usd: null, daily_limit_usd: null, monthly_spend_usd: null, burn_pct: null },
-        { team_id: 'team-nolimit', agent_count: 2, root_agent_count: 1, daily_spend_usd: 900, daily_limit_usd: null, monthly_spend_usd: null, burn_pct: null },
-        { team_id: 'team-hot', agent_count: 2, root_agent_count: 1, daily_spend_usd: 195, daily_limit_usd: 200, monthly_spend_usd: null, burn_pct: 97.5 },
-      ]
+describe('deriveCostKpis — AAASM-5185: a count states its own coverage', () => {
+  it('reports its coverage when only some rows are measurable, rather than absorbing the rest', () => {
+    // The derivation always excluded unmeasurable rows, but the bare `1` it
+    // returned was indistinguishable from a `1` over a fully-measured roster —
+    // so the page captioned it "no teams over the daily limit" for the two it
+    // never looked at. The coverage now travels with the count.
+    const rows: readonly TeamListRow[] = [
+      row({ team_id: 'team-unknown' }),
+      row({ team_id: 'team-nolimit', daily_spend_usd: 900 }),
+      row({ team_id: 'team-hot', daily_spend_usd: 195, daily_limit_usd: 200, burn_pct: 97.5 }),
+    ]
 
-      expect(deriveCostKpis(COSTS, rows).blockedByBudget).toBe(1)
-    })
+    const blocked = deriveCostKpis(known(COSTS), known(rows)).blockedByBudget
+
+    expect(blocked.value).toEqual(known(1))
+    expect(blocked.measured).toBe(1)
+    expect(blocked.total).toBe(3)
+  })
+
+  it('is absent, not 0, when no row carries a ceiling to measure against', () => {
+    // The successful-response case: `/costs` answered, spend is real, and not
+    // one team has a `daily_limit_usd`. A `0` here asserts compliance for a
+    // ceiling that does not exist.
+    const rows: readonly TeamListRow[] = [
+      row({ team_id: 'team-hot', daily_spend_usd: 130 }),
+      row({ team_id: 'team-cool', daily_spend_usd: 20 }),
+    ]
+
+    const blocked = deriveCostKpis(known(COSTS), known(rows)).blockedByBudget
+
+    expect(isKnown(blocked.value)).toBe(false)
+    expect(isAbsent(blocked.value) && blocked.value.state).toBe('unconfigured')
+    expect(blocked.measured).toBe(0)
+    expect(blocked.total).toBe(2)
+  })
+
+  it('is `unknown` when ceilings exist but no spend was measured', () => {
+    const rows: readonly TeamListRow[] = [row({ team_id: 'team-hot', daily_limit_usd: 200 })]
+
+    const blocked = deriveCostKpis(known(COSTS), known(rows)).blockedByBudget
+    expect(isAbsent(blocked.value) && blocked.value.state).toBe('unknown')
+  })
+
+  it('propagates a failed roster as `unavailable`, never as a compliance result', () => {
+    const blocked = deriveCostKpis(
+      absent<CostSummary>('unavailable', 'HTTP 503'),
+      absent<readonly TeamListRow[]>('unavailable', 'HTTP 503'),
+    ).blockedByBudget
+
+    expect(isAbsent(blocked.value) && blocked.value.state).toBe('unavailable')
+  })
+
+  it('still reads 0 for a genuinely measured, fully-compliant roster', () => {
+    // The whole point of the absence: a real zero must survive it intact.
+    const rows: readonly TeamListRow[] = [
+      row({ team_id: 'team-cool', daily_spend_usd: 20, daily_limit_usd: 200, burn_pct: 10 }),
+    ]
+
+    const blocked = deriveCostKpis(known(COSTS), known(rows)).blockedByBudget
+
+    expect(blocked.value).toEqual(known(0))
+    expect(blocked.measured).toBe(1)
+    expect(blocked.total).toBe(1)
+  })
+
+  it('counts an empty roster as a measured zero — the overview answered', () => {
+    const blocked = deriveCostKpis(known(COSTS), known([])).blockedByBudget
+    expect(blocked.value).toEqual(known(0))
+    expect(blocked.total).toBe(0)
+  })
+
+  it('reports tracked counts as absent when the summary never arrived', () => {
+    // `agentsTracked: 0` / `across 0 teams` was the same false negative: an
+    // absent breakdown is not an observation of emptiness.
+    const kpis = deriveCostKpis(
+      absent<CostSummary>('unavailable', 'HTTP 503'),
+      absent<readonly TeamListRow[]>('unavailable', 'HTTP 503'),
+    )
+
+    expect(isAbsent(kpis.agentsTracked) && kpis.agentsTracked.state).toBe('unavailable')
+    expect(isAbsent(kpis.teamsTracked) && kpis.teamsTracked.state).toBe('unavailable')
+    expect(kpis.daily).toEqual({ spend: null, limit: null, pct: null })
+  })
+
+  it('reports tracked counts as absent when the summary carries no breakdown', () => {
+    const bare: CostSummary = { date: '2026-05-13', daily_spend_usd: '42.00' }
+    const kpis = deriveCostKpis(known(bare), known([]))
+
+    expect(isAbsent(kpis.agentsTracked) && kpis.agentsTracked.state).toBe('unconfigured')
+    expect(isAbsent(kpis.teamsTracked) && kpis.teamsTracked.state).toBe('unconfigured')
+  })
+
+  it('keeps an empty breakdown a measured zero', () => {
+    const empty: CostSummary = {
+      date: '2026-05-13',
+      daily_spend_usd: '0.00',
+      per_agent: [],
+      per_team: [],
+    }
+    const kpis = deriveCostKpis(known(empty), known([]))
+
+    expect(kpis.agentsTracked).toEqual(known(0))
+    expect(kpis.teamsTracked).toEqual(known(0))
   })
 })

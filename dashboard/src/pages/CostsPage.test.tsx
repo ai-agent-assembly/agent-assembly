@@ -171,7 +171,7 @@ describe('CostsPage — KPI strip', () => {
     expect(within(screen.getByTestId('costs-kpi-blocked')).getByText(/daily limit/)).toBeInTheDocument()
   })
 
-  it('degrades to dashes / N-A / 0 across the strip before any cost data arrives', async () => {
+  it('degrades to explicit absences across the strip before any cost data arrives', async () => {
     vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
       mockQuery<TopologyOverview>({ data: OVERVIEW, isLoading: false, isError: false, refetch: vi.fn() }),
     )
@@ -186,13 +186,23 @@ describe('CostsPage — KPI strip', () => {
     expect(within(daily).getByText('—')).toBeInTheDocument()
 
     const util = screen.getByTestId('costs-kpi-utilisation')
-    expect(within(util).getByText('N/A')).toBeInTheDocument()
+    // Was the locally-invented `N/A`; the vocabulary names `—` as the single
+    // affordance for "no production value" (AAASM-5185).
+    expect(within(util).getByTestId('costs-kpi-utilisation-value').dataset.truthState).toBe(
+      'unconfigured',
+    )
     expect(within(util).getByText('no daily budget limit set')).toBeInTheDocument()
 
-    expect(within(screen.getByTestId('costs-kpi-agents')).getByText('0')).toBeInTheDocument()
+    // The regression: an unresolved summary reported `0 across 0 teams`, which
+    // is a measurement nobody took.
+    const agents = screen.getByTestId('costs-kpi-agents')
+    expect(within(agents).queryByText('0')).not.toBeInTheDocument()
+    expect(within(agents).getByTestId('costs-kpi-agents-value').dataset.truthState).toBe(
+      'unconfigured',
+    )
   })
 
-  it('renders N/A utilisation when spend exists but no limit is configured', async () => {
+  it('renders an unconfigured utilisation when spend exists but no limit is configured', async () => {
     const noLimitCosts: CostSummary = {
       date: '2026-05-13',
       daily_spend_usd: '42.00',
@@ -207,7 +217,9 @@ describe('CostsPage — KPI strip', () => {
 
     expect(within(await screen.findByTestId('costs-kpi-daily')).getByText('$42.00')).toBeInTheDocument()
     const util = screen.getByTestId('costs-kpi-utilisation')
-    expect(within(util).getByText('N/A')).toBeInTheDocument()
+    expect(within(util).getByTestId('costs-kpi-utilisation-value').dataset.truthState).toBe(
+      'unconfigured',
+    )
     expect(within(util).getByText('no daily budget limit set')).toBeInTheDocument()
   })
 })
@@ -456,6 +468,96 @@ describe('CostsPage — AAASM-5127: an unmeasured budget is never drawn as headr
     expect(bar.dataset.truthState).toBeUndefined()
     expect(bar.dataset.thresholdBucket).toBe('ok') // 150/200 = 75% — a real, measured 75%
     expect(within(daily).getByText('75.0% used')).toBeInTheDocument()
+  })
+})
+
+describe('CostsPage — AAASM-5185: the strip never reports 0 for what it did not measure', () => {
+  /** A successful `/costs` with real spend and no ceiling anywhere. */
+  const NO_LIMITS: CostSummary = {
+    date: '2026-05-13',
+    daily_spend_usd: '150.00',
+    per_agent: [{ agent_id: 'agent-spendy', daily_spend_usd: '150.00', date: '2026-05-13' }],
+    per_team: [
+      { team_id: 'team-hot', daily_spend_usd: '130.00', date: '2026-05-13' },
+      { team_id: 'team-cool', daily_spend_usd: '20.00', date: '2026-05-13' },
+    ],
+  }
+
+  it('leaves Blocked-by-budget absent on a successful response with no ceiling configured', async () => {
+    setupMocks(OVERVIEW, NO_LIMITS)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
+    // The regression: `0 · no teams over the daily limit` sat beside a
+    // Utilisation card reading "no daily budget limit set" — two KPIs on one
+    // strip disagreeing about whether a daily limit exists.
+    expect(within(blocked).queryByText('0')).not.toBeInTheDocument()
+    expect(within(blocked).queryByText('no teams over the daily limit')).not.toBeInTheDocument()
+    expect(within(blocked).getByTestId('costs-kpi-blocked-value').dataset.truthState).toBe(
+      'unconfigured',
+    )
+    expect(within(blocked).getByText('no team has a daily ceiling configured')).toBeInTheDocument()
+
+    // …and the neighbour it used to contradict now agrees.
+    const util = screen.getByTestId('costs-kpi-utilisation')
+    expect(within(util).getByText('no daily budget limit set')).toBeInTheDocument()
+  })
+
+  it('states its coverage when only some teams are measurable', async () => {
+    const partial: CostSummary = {
+      ...COSTS,
+      // team-cool is absent from the breakdown, so its spend is unknown.
+      per_team: [{ team_id: 'team-hot', daily_spend_usd: '190.00', date: '2026-05-13' }],
+    }
+    setupMocks(OVERVIEW, partial)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
+    expect(within(blocked).getByText('1')).toBeInTheDocument()
+    expect(within(blocked).getByText('1 of 2 teams measured · 1 unmeasured')).toBeInTheDocument()
+    expect(within(blocked).queryByText('teams at ≥95% of the org daily limit')).not.toBeInTheDocument()
+  })
+
+  it('reports a failed /costs as unavailable across the strip, never as zero', async () => {
+    setupMocks(OVERVIEW, undefined, { isError: true })
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
+    expect(within(blocked).getByTestId('costs-kpi-blocked-value').dataset.truthState).toBe(
+      'unavailable',
+    )
+    expect(within(blocked).getByText('daily burn could not be loaded')).toBeInTheDocument()
+
+    const agents = screen.getByTestId('costs-kpi-agents')
+    expect(within(agents).getByTestId('costs-kpi-agents-value').dataset.truthState).toBe(
+      'unavailable',
+    )
+    expect(within(agents).queryByText(/across 0 teams/)).not.toBeInTheDocument()
+
+    const daily = screen.getByTestId('costs-kpi-daily')
+    expect(within(daily).getByTestId('costs-kpi-daily-value').dataset.truthState).toBe('unavailable')
+    expect(within(daily).queryByText('$0.00')).not.toBeInTheDocument()
+  })
+
+  it('still renders a genuinely measured zero as 0', async () => {
+    const compliant: CostSummary = {
+      ...COSTS,
+      per_team: [{ team_id: 'team-cool', daily_spend_usd: '20.00', date: '2026-05-13' }],
+    }
+    setupMocks(
+      { ...OVERVIEW, teams: [{ team_id: 'team-cool', agent_count: 2, root_agent_count: 1 }] },
+      compliant,
+    )
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
+    expect(within(blocked).getByText('0')).toBeInTheDocument()
+    expect(within(blocked).getByText('no teams over the daily limit')).toBeInTheDocument()
+    expect(within(blocked).getByTestId('costs-kpi-blocked-value').dataset.truthState).toBe('known')
   })
 })
 
