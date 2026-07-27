@@ -181,6 +181,39 @@ describe('AuditLogPage', () => {
     expect(screen.getByTestId('audit-stat-other')).toHaveTextContent('1')
   })
 
+  // ── AAASM-5234: event_type is raw wire (`type: string`), so a value that
+  // collides with a prototype member (`constructor`, `__proto__`) must fall to
+  // the default meta, not resolve to an inherited object member. A plain-object
+  // lookup with `?? default` fails this because the inherited member is truthy;
+  // keying by Map makes the lookup own-keys only.
+  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty'])(
+    'falls to the default meta for the prototype-member event type %s',
+    async (inherited) => {
+      get.mockResolvedValue({
+        data: page([entry({ seq: 950, event_type: inherited, payload: '{}' })]),
+      })
+      renderPage()
+      const row = await screen.findByTestId('audit-row-950')
+      // The default meta labels the chip with the raw event type verbatim; a
+      // leaked inherited member would render `[object Object]`/`function ...`.
+      expect(within(row).getByText(new RegExp(inherited))).toBeInTheDocument()
+      const chip = within(row).getByText(new RegExp(inherited))
+      expect(chip.textContent).not.toContain('[object')
+      expect(chip.textContent).not.toContain('function')
+      expect(screen.getByTestId('audit-stat-other')).toHaveTextContent('1')
+    },
+  )
+
+  it('still maps a real event type to its declared meta', async () => {
+    get.mockResolvedValue({
+      data: page([entry({ seq: 951, event_type: 'PolicyViolation', payload: '{}' })]),
+    })
+    renderPage()
+    const row = await screen.findByTestId('audit-row-951')
+    expect(within(row).getByText(/Policy Violation/)).toBeInTheDocument()
+    expect(within(row).getByText(/⚑/)).toBeInTheDocument()
+  })
+
   it('filters by event family when a stats tile is clicked', async () => {
     renderPage()
     await screen.findByTestId('audit-row-1048')
