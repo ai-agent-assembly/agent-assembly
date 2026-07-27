@@ -7,6 +7,7 @@ import { TopologyPage } from './TopologyPage'
 import { TraceDrawerProvider } from '../components/trace/TraceDrawerProvider'
 import * as topologyApi from '../features/topology/api'
 import type { TopologyGraph } from '../features/topology/types'
+import { UNCLAIMED_TEAM } from '../features/topology/unclaimed'
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -48,6 +49,90 @@ describe('TopologyPage', () => {
     expect(heading).toHaveTextContent('Topology')
     // 3 nodes across 2 teams (support × 2, analytics × 1).
     expect(screen.getByTestId('topology-meta')).toHaveTextContent('3 agents · 2 teams')
+  })
+
+  // ── The unclaimed group is not a team (AAASM-5184) ────────────────────────
+  describe('agents that belong to no team', () => {
+    /** Two agents, exactly one real team — the ticket's reproduction. */
+    const WITH_UNCLAIMED: TopologyGraph = {
+      nodes: [
+        { id: 'a1', name: 'support', status: 'active', team: 'support', owner: 'alice', policyCount: 2, budgetSpend: 1, budgetLimit: 10 },
+        { id: 'a2', name: 'teamless', status: 'active', team: UNCLAIMED_TEAM, owner: 'bob', policyCount: 0, budgetSpend: 0, budgetLimit: null },
+      ],
+      edges: [],
+    }
+
+    function renderWith(graph: TopologyGraph) {
+      vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+        mockQuery({ data: graph, isLoading: false, isError: false, refetch: vi.fn() }),
+      )
+      return renderPage()
+    }
+
+    it('counts only real teams in the header', () => {
+      renderWith(WITH_UNCLAIMED)
+      // One real team exists. Counting the unclaimed group asserted two.
+      expect(screen.getByTestId('topology-meta')).toHaveTextContent('2 agents · 1 team')
+    })
+
+    it('reports 0 teams when every agent is unclaimed', () => {
+      renderWith({
+        nodes: [
+          { id: 'a1', name: 'one', status: 'active', team: UNCLAIMED_TEAM, owner: '', policyCount: 0, budgetSpend: 0, budgetLimit: null },
+          { id: 'a2', name: 'two', status: 'active', team: UNCLAIMED_TEAM, owner: '', policyCount: 0, budgetSpend: 0, budgetLimit: null },
+        ],
+        edges: [],
+      })
+      expect(screen.getByTestId('topology-meta')).toHaveTextContent('2 agents · 0 teams')
+    })
+
+    it('gives the unclaimed filter row a visible label', () => {
+      renderWith(WITH_UNCLAIMED)
+      const row = screen
+        .getAllByTestId('team-filter-item')
+        .find((el) => el.dataset.team === UNCLAIMED_TEAM)!
+      expect(row).toHaveTextContent(/unclaimed/i)
+      // The operator could previously see a row but not what it selected.
+      expect(row.textContent?.replace(/[⚠○◎\s]/g, '')).not.toBe('')
+    })
+
+    it('surfaces an unclaimed count in the sidebar stats', () => {
+      renderWith(WITH_UNCLAIMED)
+      expect(screen.getByTestId('topology-stat-unclaimed')).toHaveTextContent('1 unclaimed')
+    })
+
+    it('shows no unclaimed stat when every agent has a team', () => {
+      renderWith(GRAPH)
+      expect(screen.queryByTestId('topology-stat-unclaimed')).not.toBeInTheDocument()
+      expect(screen.getByTestId('topology-meta')).toHaveTextContent('3 agents · 2 teams')
+    })
+
+    it('opens a detail panel for the unclaimed cluster instead of doing nothing', async () => {
+      renderWith(WITH_UNCLAIMED)
+      const cluster = screen
+        .getAllByTestId('team-cluster')
+        .find((el) => el.dataset.team === UNCLAIMED_TEAM)!
+      await userEvent.click(cluster)
+
+      const panel = await screen.findByTestId('team-detail-panel')
+      expect(panel).toHaveAttribute('data-unclaimed', 'true')
+      // Its own copy — it explains the governance gap rather than presenting
+      // the group as a team like any other.
+      expect(screen.getByTestId('team-detail-unclaimed-note')).toHaveTextContent(/no team-scoped policy or budget/i)
+      // "cross-team edges" is a category error for a group that is not a team.
+      expect(screen.queryByTestId('team-detail-crossteam-count')).not.toBeInTheDocument()
+      expect(panel.textContent).not.toContain(UNCLAIMED_TEAM)
+    })
+
+    it('still shows the cross-team count for a real team', async () => {
+      renderWith(WITH_UNCLAIMED)
+      const cluster = screen
+        .getAllByTestId('team-cluster')
+        .find((el) => el.dataset.team === 'support')!
+      await userEvent.click(cluster)
+      expect(await screen.findByTestId('team-detail-crossteam-count')).toBeInTheDocument()
+      expect(screen.queryByTestId('team-detail-unclaimed-note')).not.toBeInTheDocument()
+    })
   })
 
   it('falls back to "0 agents · 0 teams" when data is undefined', () => {
