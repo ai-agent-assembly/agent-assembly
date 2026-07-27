@@ -60,6 +60,50 @@ describe('deriveCategory', () => {
   it('falls through to uncategorized when the rule is not loaded', () => {
     expect(deriveCategory(alert('e', 'r-missing'), byId)).toBe('uncategorized')
   })
+
+  // `rule.metric` is raw wire data wearing an unenforced `AlertMetric`
+  // annotation — the alerts client casts the response with a bare `as T`
+  // (see `api.ts`). A malformed or hostile payload can set `metric` to a bogus
+  // string, an inherited object member (`constructor` / `__proto__`), or a
+  // non-string. The metric must be validated against the `AlertMetric` union
+  // and fall to `uncategorized`, never resolve a prototype member or produce an
+  // out-of-union key that makes downstream `CATEGORY_META[cat]` /
+  // `counts[cat] += 1` throw or go NaN.
+  it.each([
+    ['a plain unknown metric', 'not_a_metric'],
+    ['the inherited "constructor" key', 'constructor'],
+    ['the inherited "__proto__" key', '__proto__'],
+    ['the inherited "toString" key', 'toString'],
+    ['the inherited "hasOwnProperty" key', 'hasOwnProperty'],
+  ])('validates out %s and returns uncategorized', (_label, metric) => {
+    const wireRule = rule('r-bad', metric as AlertMetric)
+    const byIdWithBad = indexRulesById([...RULES, wireRule])
+    expect(deriveCategory(alert('f', 'r-bad'), byIdWithBad)).toBe('uncategorized')
+  })
+
+  it('rejects a non-string metric without throwing', () => {
+    const wireRule = rule('r-num', 42 as unknown as AlertMetric)
+    const byIdWithBad = indexRulesById([...RULES, wireRule])
+    expect(deriveCategory(alert('g', 'r-num'), byIdWithBad)).toBe('uncategorized')
+  })
+})
+
+describe('categoryCounts with an invalid wire metric', () => {
+  it('counts an invalid metric as uncategorized, not a bogus own key or NaN', () => {
+    const badRule = rule('r-bad', 'constructor' as AlertMetric)
+    const byId = indexRulesById([...RULES, badRule])
+    const counts: Record<AlertCategory, number> = categoryCounts(
+      [alert('a1', 'r-pol'), alert('a2', 'r-bad'), alert('a3', 'r-bad')],
+      byId,
+    )
+    expect(counts.policy_violation).toBe(1)
+    expect(counts.uncategorized).toBe(2)
+    // No bogus own key leaked in, and every count is a real number.
+    expect(Object.keys(counts).sort()).toEqual(
+      ['anomaly', 'approval', 'budget', 'policy_violation', 'uncategorized'].sort(),
+    )
+    for (const v of Object.values(counts)) expect(Number.isNaN(v)).toBe(false)
+  })
 })
 
 describe('categoryCounts', () => {
