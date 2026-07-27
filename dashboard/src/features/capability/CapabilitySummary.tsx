@@ -17,7 +17,7 @@ export interface CapabilitySummaryProps {
   cascade: Certain<CascadeEvidence>
 }
 
-type StatTone = 'neutral' | 'warn' | 'ok' | 'danger'
+type StatTone = 'neutral' | 'ok' | 'danger'
 
 interface StatProps {
   n: Certain<number>
@@ -47,6 +47,16 @@ function SummaryStat({ n, label, tone = 'neutral', testId }: Readonly<StatProps>
  * of a large allow count next to a reassuring `0 denied`. A summary asserting
  * permissions with no policy behind it is the exact claim this lane exists to
  * stop the dashboard making.
+ *
+ * There is no `narrowed` tile (AAASM-5187). It rendered a real `0` for a state
+ * `GET /capability/matrix` cannot emit at all, and ADR 0026 Decision 2 —
+ * Accepted — removes `narrow` from this page's surfaces rather than preserving
+ * them aspirationally. Relabelling it `Not evaluated` to match the neighbouring
+ * `flagged agents` tile was rejected: that tile's absence is *contingent* (the
+ * `flagged` field exists on the wire and turns into a measurement as soon as one
+ * agent carries it), whereas a narrowed count is structurally unreachable, so a
+ * tile for it could only ever be a permanent placeholder advertising a state
+ * that will never arrive on this endpoint.
  */
 export function CapabilitySummary({
   agents,
@@ -54,11 +64,10 @@ export function CapabilitySummary({
   verb,
   cascade,
 }: Readonly<CapabilitySummaryProps>) {
-  const { allow, narrow, deny, flaggedAgents } = summarizeMatrix(agents, resources, verb, cascade)
+  const { allow, deny, flaggedAgents } = summarizeMatrix(agents, resources, verb, cascade)
   return (
     <div className="cap-summary" aria-label="matrix summary">
       <SummaryStat n={allow} label={`total "allow" cells (${verb})`} testId="cap-summary-allow" />
-      <SummaryStat n={narrow} label="narrowed" tone="warn" testId="cap-summary-narrow" />
       <SummaryStat n={deny} label="denied" tone="ok" testId="cap-summary-deny" />
       <SummaryStat
         n={flaggedAgents}

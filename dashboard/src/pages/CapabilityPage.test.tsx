@@ -157,10 +157,12 @@ describe('CapabilityPage', () => {
     expect(
       screen.getByText(`${FIXTURE.agents.length} × ${FIXTURE.resources.length}`),
     ).toBeInTheDocument()
-    // Summary row with the four stat tiles.
+    // Summary row. Three tiles, not four: the `narrowed` tile was removed with
+    // AAASM-5187 because the projection cannot emit a narrowed cell, so its
+    // count could only ever be a fabricated zero (ADR 0026 Decision 2).
     const summary = screen.getByLabelText('matrix summary')
     expect(summary).toBeInTheDocument()
-    expect(summary).toHaveTextContent('narrowed')
+    expect(summary).not.toHaveTextContent('narrowed')
     expect(summary).toHaveTextContent('denied')
     expect(summary).toHaveTextContent('flagged agents')
     expect(summary).toHaveTextContent('total "allow" cells (write)')

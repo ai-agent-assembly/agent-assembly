@@ -32,10 +32,8 @@
   color: var(--ink);
 }
 
-.cap-summary-stat-n--warn {
-  color: var(--warn);
-}
-
+/* No `--warn` tone: its only user was the `narrowed` tile, removed with
+   AAASM-5187 (ADR 0026 Decision 2). */
 .cap-summary-stat-n--ok {
   color: var(--ok);
 }

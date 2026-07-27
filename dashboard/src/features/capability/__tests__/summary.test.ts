@@ -54,7 +54,7 @@ function state(value: Certain<number>): string | undefined {
 }
 
 describe('summarizeMatrix — with a loaded cascade', () => {
-  it('counts allow / narrow / deny cells for the given verb', () => {
+  it('counts allow / deny cells for the given verb', () => {
     const agents: CapabilityAgent[] = [
       makeAgent({
         id: 'a',
@@ -67,8 +67,12 @@ describe('summarizeMatrix — with a loaded cascade', () => {
     ]
     const s = summarizeMatrix(agents, RESOURCES, VERB, LOADED)
     expect(count(s.allow)).toBe(2)
-    expect(count(s.narrow)).toBe(1)
     expect(count(s.deny)).toBe(1)
+    // AAASM-5187: the narrow cell in the fixture inflates neither count, and no
+    // narrowed total is surfaced for it. ADR 0026 Decision 2 keeps `narrow` off
+    // this page until a backend computation can produce it, so the summary must
+    // not offer a field a caller could render as `0`.
+    expect(s).not.toHaveProperty('narrow')
   })
 
   it('only counts the selected verb, ignoring other verbs', () => {
@@ -86,7 +90,6 @@ describe('summarizeMatrix — with a loaded cascade', () => {
     const agents = [makeAgent({ caps: { gmail: cell({ write: 'allow' }) } })]
     const s = summarizeMatrix(agents, RESOURCES, VERB, LOADED)
     expect(count(s.allow)).toBe(1)
-    expect(count(s.narrow)).toBe(0)
     expect(count(s.deny)).toBe(0)
   })
 
@@ -115,7 +118,6 @@ describe('summarizeMatrix — the AAASM-5106 guard', () => {
   it('does not report a reassuring zero denial count either', () => {
     const s = summarizeMatrix(permissive, RESOURCES, VERB, EMPTY)
     expect(state(s.deny)).toBe('unconfigured')
-    expect(state(s.narrow)).toBe('unconfigured')
   })
 
   it('propagates an unavailable matrix to every count', () => {
@@ -130,7 +132,7 @@ describe('summarizeMatrix — the AAASM-5106 guard', () => {
     // that would put "Unavailable — the request failed" beside three stats
     // reading "Unknown", tooltipped "Unavailable — Request in flight".
     const s = summarizeMatrix(permissive, RESOURCES, VERB, absent('unknown', 'Request in flight'))
-    for (const field of [s.allow, s.narrow, s.deny, s.flaggedAgents]) {
+    for (const field of [s.allow, s.deny, s.flaggedAgents]) {
       expect(state(field)).toBe('unknown')
     }
   })
