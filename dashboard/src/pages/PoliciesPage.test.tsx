@@ -337,6 +337,99 @@ describe('PoliciesPage — overlay wiring', () => {
   })
 })
 
+describe('PoliciesPage — editor Simulate wiring (AAASM-5142)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("opens the shipped simulator from the editor's footer button", async () => {
+    const user = userEvent.setup()
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    expect(screen.queryByTestId('policy-simulate')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+
+    // The real dry-run panel, not a toast telling the operator it is unbuilt.
+    expect(await screen.findByTestId('policy-simulate')).toBeInTheDocument()
+    expect(screen.getByTestId('simulate-run-btn')).toBeInTheDocument()
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the editor mounted underneath so the draft is not lost', async () => {
+    const user = userEvent.setup()
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+    await screen.findByTestId('policy-simulate')
+    expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('policy-simulate-close'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('policy-simulate')).not.toBeInTheDocument(),
+    )
+    expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
+  })
+
+  it('leaves the editor open when a dismiss lands while the simulator is up', async () => {
+    // The simulator is a top-layer <dialog>, but its Esc keydown still reaches
+    // the document listener OverlayHost installs. That dismiss belongs to the
+    // simulator alone — the editor behind it must survive.
+    const user = userEvent.setup()
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+    await screen.findByTestId('policy-simulate')
+
+    await user.keyboard('{Escape}')
+
+    expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
+    expect(screen.queryByText('Discard unsaved changes?')).not.toBeInTheDocument()
+  })
+
+  it('still dismisses the editor on Escape once the simulator is closed', async () => {
+    const user = userEvent.setup()
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+    await screen.findByTestId('policy-simulate')
+    await user.click(screen.getByTestId('policy-simulate-close'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('policy-simulate')).not.toBeInTheDocument(),
+    )
+
+    await user.keyboard('{Escape}')
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('policy-editor-overlay')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('refuses to simulate an invalid draft and keeps the panel shut', async () => {
+    const user = userEvent.setup()
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    // Strip the only verb off R1 to force a validation error.
+    await user.click(screen.getByTestId('editor-rule-0-verb-read'))
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+
+    expect(
+      await screen.findByText(/Fix validation errors before simulating/),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('policy-simulate')).not.toBeInTheDocument()
+  })
+})
+
 describe('PoliciesPage — save flow', () => {
   afterEach(() => {
     vi.restoreAllMocks()
