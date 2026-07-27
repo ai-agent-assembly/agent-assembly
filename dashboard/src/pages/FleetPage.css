@@ -311,6 +311,20 @@
   letter-spacing: 0;
 }
 
+/* ── Filtered-empty callout (AAASM-5130) ───────────────────────
+   Sits *under* the table, mirroring `design/v2/hi-fi/fleet.jsx:275`: the
+   column headers stay so the operator keeps the sort/column context, and the
+   callout supplies the sentence the bare headers could not. */
+
+.fleet-empty--filtered {
+  padding: 48px 24px 60px;
+  border-top: 1px solid var(--line);
+}
+
+.fleet-empty__action {
+  margin-top: 16px;
+}
+
 /* ── Fleet data table ───────────────────────────────────────── */
 
 .fleet-table__wrap {
