@@ -23,11 +23,36 @@ export type AlertCategory =
   | 'approval'
   | 'uncategorized'
 
-const METRIC_CATEGORY: Record<AlertMetric, AlertCategory> = {
-  policy_violation_count: 'policy_violation',
-  budget_spent_pct: 'budget',
-  anomaly_score: 'anomaly',
-  approval_pending_age: 'approval',
+// A `Map`, not a plain object: `rule.metric` is raw wire data wearing an
+// unenforced `AlertMetric` annotation (the alerts client casts the response
+// with a bare `as T` — see `api.ts`), so a hostile payload can send
+// `"__proto__"` or `"constructor"`. A plain-object lookup would then resolve to
+// an inherited prototype member instead of `undefined`, and `?? 'uncategorized'`
+// would never fire. A `Map` only ever holds its own keys, so an unknown key is
+// a clean miss.
+const METRIC_CATEGORY: ReadonlyMap<AlertMetric, AlertCategory> = new Map([
+  ['policy_violation_count', 'policy_violation'],
+  ['budget_spent_pct', 'budget'],
+  ['anomaly_score', 'anomaly'],
+  ['approval_pending_age', 'approval'],
+])
+
+/** The `AlertMetric` union as a runtime allow-list — the same shape as `METRIC_CATEGORY`'s keys. */
+const KNOWN_METRICS: readonly AlertMetric[] = [
+  'policy_violation_count',
+  'budget_spent_pct',
+  'anomaly_score',
+  'approval_pending_age',
+]
+
+/**
+ * Validate an unknown wire value against the `AlertMetric` union before it is
+ * trusted as a category-map key — the allow-list guard from
+ * `components/fleet/StatusChip.tsx`. Guards against `rule.metric` being a
+ * garbage string, an inherited object member, or a non-string entirely.
+ */
+function isAlertMetric(value: unknown): value is AlertMetric {
+  return (KNOWN_METRICS as readonly unknown[]).includes(value)
 }
 
 /**
@@ -92,7 +117,8 @@ export function deriveCategory(
 ): AlertCategory {
   const rule = byId.get(alert.ruleId)
   if (!rule) return 'uncategorized'
-  return METRIC_CATEGORY[rule.metric] ?? 'uncategorized'
+  if (!isAlertMetric(rule.metric)) return 'uncategorized'
+  return METRIC_CATEGORY.get(rule.metric) ?? 'uncategorized'
 }
 
 /** Count alerts per category (only the four user-selectable categories). */
