@@ -6,6 +6,8 @@ import { AlertRuleForm } from './AlertRuleForm'
 import { ToastProvider } from '../../components/ToastProvider'
 import { AuthContext, type AuthContextValue, type Scope } from '../../auth/AuthContext'
 import type { AlertRule, Destination } from './types'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 
 // ── fetch stub mirroring the AAASM-1075 test setup ─────────────────────────
 
@@ -82,7 +84,9 @@ function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>
-      <ToastProvider>{children}</ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>{children}</ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>
   )
 }

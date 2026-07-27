@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { PoliciesPage } from './PoliciesPage'
+import { GrantScopes } from '../auth/GrantScopes'
+import { WRITE_SCOPES } from '../auth/testScopes'
 import { OverlayProvider } from '../components/OverlayProvider'
 import { ToastProvider } from '../components/ToastProvider'
 import * as policiesApi from '../features/policies/api'
@@ -20,15 +22,17 @@ function makeClient() {
 function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <QueryClientProvider client={makeClient()}>
-      <ToastProvider>
-        <OverlayProvider>
-          {/* AppShell normally renders the overlay mount divs; in tests we
-              inline just the one this page uses so OverlayHost has a portal
-              target. */}
-          <div data-overlay="policy-editor" data-testid="overlay-mount-policy-editor" />
-          {children}
-        </OverlayProvider>
-      </ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>
+          <OverlayProvider>
+            {/* AppShell normally renders the overlay mount divs; in tests we
+                inline just the one this page uses so OverlayHost has a portal
+                target. */}
+            <div data-overlay="policy-editor" data-testid="overlay-mount-policy-editor" />
+            {children}
+          </OverlayProvider>
+        </ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>
   )
 }
