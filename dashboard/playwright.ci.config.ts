@@ -23,8 +23,9 @@ import base from './playwright.config'
  * exclusion lives in this one reviewable file rather than hidden in the specs.
  *
  * TO REMOVE AN ENTRY: fix the spec (or the product bug it exposes), confirm it
- * passes, delete the line. No approval needed — shrinking this list is always
- * the desired direction.
+ * passes, delete the line, and lower `QUARANTINE_CEILING` below by the same
+ * amount. No approval needed — shrinking this list is always the desired
+ * direction.
  *
  * EVERY ENTRY WAS RE-MEASURED on 2026-07-27 (review follow-up), individually
  * and as a group. That pass removed `review-aaasm-5110.spec.ts`, which was
@@ -137,6 +138,35 @@ const QUARANTINE = [
   'verify-aaasm-5077.spec.ts',
   'verify-aaasm-5080.spec.ts',
 ]
+
+/**
+ * The ratchet (AAASM-5192 review follow-up).
+ *
+ * "The list only shrinks" was prose with nothing enforcing it, which left the
+ * gate hollowable from the inside: a PR adding entries still touches
+ * `dashboard/**`, so the job runs — on the *reduced* set — and goes green. The
+ * gate's credibility rests entirely on this list not growing, so that has to be
+ * a check rather than an intention.
+ *
+ * This constant is the committed ceiling. Because it lives in the config every
+ * Playwright run loads, it is enforced locally and in CI with no extra step.
+ * Raising it is still possible — the point is not to make it impossible, it is
+ * to make it a deliberate, reviewable one-line diff that a reviewer sees,
+ * instead of an entry appended invisibly to a 40-line array.
+ *
+ * WHEN YOU REMOVE AN ENTRY: lower this number by the same amount. That is what
+ * makes the ratchet tighten rather than just hold.
+ */
+const QUARANTINE_CEILING = 42
+
+if (QUARANTINE.length > QUARANTINE_CEILING) {
+  throw new Error(
+    `Quarantine grew: ${QUARANTINE.length} entries against a ceiling of ${QUARANTINE_CEILING}. ` +
+      `The e2e gate only stays credible if this list shrinks (ADR-0028, AAASM-5195). ` +
+      `Fix the spec instead — or, if the addition is genuinely justified, raise ` +
+      `QUARANTINE_CEILING in the same commit so the decision is visible in review.`,
+  )
+}
 
 export default defineConfig({
   ...base,
