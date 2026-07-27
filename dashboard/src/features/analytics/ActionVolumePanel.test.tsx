@@ -104,6 +104,27 @@ describe('transformSeries', () => {
     expect(row['agent-b']).toBe(8)
   })
 
+  it('retains a "__proto__" series key as an own property instead of dropping it (AAASM-5240)', () => {
+    // The series key comes from an unvalidated fetch response. When rows were
+    // plain object literals, `row['__proto__'] = value` was a silent no-op, so a
+    // "__proto__" series vanished from the chart data. Rows built on a null-proto
+    // object keep it as a real own property that Recharts can plot.
+    const withProtoKey: ActionVolumeSeries[] = [
+      {
+        key: '__proto__',
+        name: 'Proto',
+        points: [
+          { t: 1000, value: 7 },
+          { t: 2000, value: 9 },
+        ],
+      },
+    ]
+    const rows = transformSeries(withProtoKey)
+    const row = rows.find(r => r['t'] === 1000)!
+    expect(Object.prototype.hasOwnProperty.call(row, '__proto__')).toBe(true)
+    expect(row['__proto__']).toBe(7)
+  })
+
   it('clamps out-of-range values so the axis domain stays finite (AAASM-4334)', () => {
     // A malformed 200 can carry the schema-boundary value -Number.MAX_VALUE,
     // which previously collapsed the Recharts Y axis and spawned duplicate tick
