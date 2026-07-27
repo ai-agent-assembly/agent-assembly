@@ -22,7 +22,7 @@ import { EMPTY_FILTERS, applyFilters, type CapabilityFilters } from '../features
 import { applyOverrideLocal } from '../features/capability/override'
 import { NO_SORT, nextSortState, sortAgents, type SortState } from '../features/capability/sort'
 import { VERBS } from '../features/capability/types'
-import type { CapabilityMatrix, Decision, Verb } from '../features/capability/types'
+import type { CapabilityMatrix, OverridableDecision, Verb } from '../features/capability/types'
 import './CapabilityPage.css'
 
 type Tab = 'matrix' | 'resource' | 'agent'
@@ -82,7 +82,10 @@ export function CapabilityPage() {
     decision,
   }: {
     resourceId: string
-    decision: Decision
+    // The optimistic edit below is painted before the POST is answered, so this
+    // is typed to the subset the endpoint accepts (AAASM-5124) — the grid can
+    // then only ever show a decision the projection could itself produce.
+    decision: OverridableDecision
   }) => {
     if (!matrix) return
     const agentIds = [...selected]
@@ -92,7 +95,18 @@ export function CapabilityPage() {
     setSelected(new Set())
     try {
       await capabilityClient.applyOverride({ agentIds, resourceId, verb, decision })
-      toast(`override applied to ${agentIds.length} agent${agentIds.length === 1 ? '' : 's'}`, 'success')
+      // Reports what the write actually did (AAASM-5178). `override applied to N
+      // agents` read as though a gateway decision had changed; the store this
+      // POST writes "has never fed enforcement"
+      // (`aa-api/src/routes/capability.rs:32-38`), so the only thing that changed
+      // is the annotation replayed over this projection on read. Stating the
+      // annotation landed *and* that enforcement did not is the accurate report —
+      // silence on the second half is what made the first half deceptive.
+      toast(
+        `display-only override recorded for ${agentIds.length} agent${agentIds.length === 1 ? '' : 's'}` +
+          ' — the dashboard annotation changed; gateway enforcement did not',
+        'success',
+      )
       // The server replays the override onto its own projection, so once the
       // refetch lands the fetched matrix already carries the edit. Drop the
       // optimistic shadow then — left in place it wins over `data` forever, and

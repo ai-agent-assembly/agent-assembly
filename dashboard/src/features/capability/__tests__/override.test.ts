@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { applyOverrideLocal } from '../override'
+import { applyOverrideLocal, isOverridableDecision } from '../override'
 import { CAPABILITY_MATRIX_FIXTURE } from '../fixtures'
+
+describe('isOverridableDecision', () => {
+  it('admits what the endpoint accepts and refuses the rest', () => {
+    // The three the projection can produce, so the three an override may record.
+    expect(['allow', 'deny', 'na'].every(isOverridableDecision)).toBe(true)
+    // The two `apply_override` answers with a 400, plus a value that is not a
+    // decision at all — what a `<select>` yields when asked for a missing option.
+    expect(['narrow', 'approval', ''].some(isOverridableDecision)).toBe(false)
+  })
+})
 
 describe('applyOverrideLocal', () => {
   it('updates only the targeted (agent, resource, verb)', () => {

@@ -17,11 +17,25 @@ function uniqueSorted(values: string[]): string[] {
 /**
  * Legend swatches, in the same visual order and colours the matrix cells use
  * (see `CapabilityMatrixGrid.css`), so the bar reads as a key for the grid.
+ *
+ * Only the states this grid's projection can actually emit (ADR 0026 Decision 2,
+ * signed off in favour of option (A) under AAASM-5124). `GET /capability/matrix`
+ * yields `allow` / `deny` / `na` and nothing else: `narrow` and `approval` are
+ * decided per action by policy stages the projection does not run
+ * (`aa-api/src/routes/capability.rs:19-27`), so a legend entry for either
+ * advertised a state no cell could ever carry. That is the "aspirational legend"
+ * the ADR rejects as option (C), not a roadmap the key is entitled to show.
+ *
+ * `Decision` deliberately keeps all five members — it is the display vocabulary
+ * shared with surfaces the projection does not feed, and re-widening this list is
+ * the one-line change if AAASM-5094 ever computes those cells.
+ *
+ * ADR 0024's proposed sixth state, `unconfigured`, is **not** listed: nothing
+ * emits it yet, and adding it ahead of the backend would reintroduce exactly the
+ * defect this entry removes.
  */
 const LEGEND: ReadonlyArray<{ decision: string; label: string }> = [
   { decision: 'allow', label: 'allow' },
-  { decision: 'narrow', label: 'narrow' },
-  { decision: 'approval', label: 'approval' },
   { decision: 'deny', label: 'deny' },
   { decision: 'na', label: 'n/a' },
 ]

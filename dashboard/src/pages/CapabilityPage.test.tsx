@@ -44,6 +44,60 @@ function renderPage() {
 
 const FIXTURE = CAPABILITY_MATRIX_FIXTURE
 
+/**
+ * The matrix shaped the way the live endpoint actually shapes it.
+ *
+ * `GET /capability/matrix` projects a static capability set, so every cell it
+ * emits is `allow`, `deny` or `na` — `narrow` and `approval` are decided by
+ * policy stages the projection does not run. The design fixture still carries
+ * all five for the legend's sake, which would mask a `narrow` cell painted by
+ * the override path, so the optimistic-render run below folds it down first.
+ */
+const PROJECTION_MATRIX: CapabilityMatrix = {
+  ...FIXTURE,
+  agents: FIXTURE.agents.map((agent) => ({
+    ...agent,
+    caps: Object.fromEntries(
+      Object.entries(agent.caps).map(([resourceId, cell]) => [
+        resourceId,
+        Object.fromEntries(
+          Object.entries(cell).map(([key, value]) =>
+            value === 'narrow' || value === 'approval' ? [key, 'allow'] : [key, value],
+          ),
+        ),
+      ]),
+    ) as typeof agent.caps,
+  })),
+}
+
+/**
+ * The first resource column of the grid — the column the run overrides.
+ *
+ * The matrix is one flat CSS grid, so its cells come back in row-major order
+ * with `resources.length` of them per agent row.
+ */
+function firstColumn(): HTMLElement[] {
+  const width = PROJECTION_MATRIX.resources.length
+  return screen.getAllByRole('gridcell').filter((_, i) => i % width === 0)
+}
+
+/**
+ * Drive the bulk bar the way an operator now has to (AAASM-5124).
+ *
+ * There is no pre-selected decision and no one-click write: a decision must be
+ * chosen, then the write confirmed. Every run below that expects a POST goes
+ * through here, so if either gate is removed they all fail rather than silently
+ * exercising a shortcut.
+ */
+function recordOverride(decision: string, resourceId?: string) {
+  fireEvent.change(screen.getByLabelText('decision'), { target: { value: decision } })
+  if (resourceId) {
+    fireEvent.change(screen.getByLabelText('resource'), { target: { value: resourceId } })
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Record display-only override' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+}
+
 beforeEach(() => {
   getMatrix.mockReset()
   applyOverride.mockReset()
@@ -153,7 +207,7 @@ describe('CapabilityPage', () => {
     ).toBeInTheDocument()
   })
 
-  it('applies a bulk override and toasts success', async () => {
+  it('records a bulk override and toasts what actually changed', async () => {
     getMatrix.mockResolvedValue(FIXTURE)
     applyOverride.mockResolvedValueOnce({ updated: [] })
     renderPage()
@@ -161,14 +215,45 @@ describe('CapabilityPage', () => {
 
     // Select all agents via the matrix select-all checkbox.
     fireEvent.click(screen.getByLabelText('select all agents'))
-
-    // The BulkActionBar appears; pick a resource + decision then apply.
-    fireEvent.change(screen.getByLabelText('resource'), {
-      target: { value: FIXTURE.resources[0].id },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Apply override' }))
+    recordOverride('deny', FIXTURE.resources[0].id)
 
     await waitFor(() => expect(applyOverride).toHaveBeenCalledTimes(1))
+
+    // AAASM-5178: the override store has never fed enforcement, so the success
+    // report may not read as though a gateway decision moved. It says the
+    // annotation landed, and says enforcement did not follow it.
+    const toast = await screen.findByText(/display-only override recorded/)
+    expect(toast).toHaveTextContent('gateway enforcement did not')
+    expect(screen.queryByText(/^override applied to/)).not.toBeInTheDocument()
+  })
+
+  it('does not write when the operator never confirms', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+    fireEvent.click(screen.getByLabelText('select all agents'))
+
+    // Choosing a decision and pressing the primary control is not yet a write.
+    fireEvent.change(screen.getByLabelText('decision'), { target: { value: 'deny' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Record display-only override' }))
+    expect(applyOverride).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(applyOverride).not.toHaveBeenCalled())
+  })
+
+  it('cannot write at all before a decision is chosen', async () => {
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+    fireEvent.click(screen.getByLabelText('select all agents'))
+
+    // The bar is on screen with a live selection, and the write is unreachable —
+    // there is no decision that an unconsidered click could submit.
+    expect(screen.getByRole('region', { name: 'bulk override' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Record display-only override' }))
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
+    await waitFor(() => expect(applyOverride).not.toHaveBeenCalled())
   })
 
   it('re-syncs with the server projection after a successful override', async () => {
@@ -185,10 +270,7 @@ describe('CapabilityPage', () => {
     await screen.findByRole('heading', { name: /Capability/ })
 
     fireEvent.click(screen.getByLabelText('select all agents'))
-    fireEvent.change(screen.getByLabelText('resource'), {
-      target: { value: FIXTURE.resources[0].id },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Apply override' }))
+    recordOverride('deny', FIXTURE.resources[0].id)
 
     expect(await screen.findByText('renamed-by-server')).toBeInTheDocument()
   })
@@ -199,8 +281,44 @@ describe('CapabilityPage', () => {
     renderPage()
     await screen.findByRole('heading', { name: /Capability/ })
     fireEvent.click(screen.getByLabelText('select all agents'))
-    fireEvent.click(screen.getByRole('button', { name: 'Apply override' }))
+    recordOverride('deny')
     expect(await screen.findByText(/rollback: gateway said no/)).toBeInTheDocument()
+  })
+
+  it('never paints a decision the projection cannot produce, in flight or after', async () => {
+    // The page applies the override optimistically — `setOptimistic(...)` runs
+    // *before* the POST is answered — so whatever the bulk bar can submit is on
+    // screen for the length of the round-trip. When the bar defaulted to
+    // `narrow` that meant the grid rendered `narrow` cells the gateway was about
+    // to 400, then rolled them back (AAASM-5124).
+    getMatrix.mockResolvedValue(PROJECTION_MATRIX)
+    let settle!: () => void
+    applyOverride.mockReturnValue(new Promise<void>((r) => (settle = () => r())))
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+
+    const impossibleCells = () =>
+      screen
+        .getAllByRole('gridcell')
+        .filter((c) => c.dataset.decision === 'narrow' || c.dataset.decision === 'approval')
+
+    expect(impossibleCells()).toHaveLength(0)
+    // Something in the column has to change, or "every cell reads deny" below
+    // would hold without the optimistic edit ever running.
+    expect(firstColumn().some((c) => c.dataset.decision !== 'deny')).toBe(true)
+
+    fireEvent.click(screen.getByLabelText('select all agents'))
+    recordOverride('deny', PROJECTION_MATRIX.resources[0].id)
+
+    // In flight: the optimistic edit is on screen — so this run really does
+    // exercise the pre-POST paint — and it is a decision the projection emits.
+    await waitFor(() => expect(applyOverride).toHaveBeenCalledTimes(1))
+    expect(impossibleCells()).toHaveLength(0)
+    expect(firstColumn().every((c) => c.dataset.decision === 'deny')).toBe(true)
+
+    settle()
+    await waitFor(() => expect(getMatrix).toHaveBeenCalledTimes(2))
+    expect(impossibleCells()).toHaveLength(0)
   })
 
   it('clears the selection via the bulk Clear button', async () => {
