@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { CapabilityFilterBar } from './CapabilityFilterBar'
 import { EMPTY_FILTERS } from './filters'
@@ -40,7 +40,11 @@ describe('CapabilityFilterBar', () => {
     expect(screen.getByText('2 of 3 agents')).toBeInTheDocument()
   })
 
-  it('renders the five-swatch decision legend', () => {
+  it('legends only the decisions the capability projection can emit', () => {
+    // ADR 0026 Decision 2, signed off as option (A) under AAASM-5124. The legend
+    // advertised `narrow` and `approval`; `GET /capability/matrix` projects a
+    // static capability set and can emit neither, so both were a key to cells
+    // that could not exist — the "aspirational legend" the ADR rejects.
     render(
       <CapabilityFilterBar
         filters={EMPTY_FILTERS}
@@ -51,11 +55,44 @@ describe('CapabilityFilterBar', () => {
       />,
     )
     const legend = screen.getByRole('list', { name: 'decision legend' })
-    const items = legend.querySelectorAll('.cap-legend-item')
-    expect(items).toHaveLength(5)
-    for (const label of ['allow', 'narrow', 'approval', 'deny', 'n/a']) {
-      expect(screen.getByText(label)).toBeInTheDocument()
+    expect([...legend.querySelectorAll('.cap-legend-item')].map((li) => li.textContent)).toEqual([
+      'allow',
+      'deny',
+      'n/a',
+    ])
+    for (const removed of ['narrow', 'approval']) {
+      expect(within(legend).queryByText(removed)).not.toBeInTheDocument()
+      expect(legend.querySelector(`.cap-legend-sw--${removed}`)).toBeNull()
     }
+  })
+
+  it('offers no filter for a decision state at all', () => {
+    // The bar filters on framework / owner / trust / mode and nothing else, so
+    // "remove narrow and approval from the filters" has nothing to remove. This
+    // run exists so that adding a decision filter later cannot quietly
+    // reintroduce a control for a state the projection never emits.
+    render(
+      <CapabilityFilterBar
+        filters={EMPTY_FILTERS}
+        onChange={vi.fn()}
+        totalAgents={3}
+        visibleAgents={3}
+        agents={AGENTS}
+      />,
+    )
+    const search = screen.getByRole('search')
+    const offered = [...search.querySelectorAll('option')].map((o) => o.value)
+    for (const removed of ['narrow', 'approval']) {
+      expect(offered).not.toContain(removed)
+    }
+    // No filter control is keyed on a decision at all — the legend `<ul>` is the
+    // only element on the bar that mentions one, and it is not interactive. The
+    // count pins the list closed, so a sixth control cannot appear unnoticed.
+    const FILTER_CONTROLS = ['search agents', 'framework', 'owner', 'filter by trust at most', 'mode']
+    for (const label of FILTER_CONTROLS) {
+      expect(within(search).getByLabelText(label)).toBeInTheDocument()
+    }
+    expect(search.querySelectorAll('select, input')).toHaveLength(FILTER_CONTROLS.length)
   })
 
   it('builds deduped, sorted option lists for framework / owner / mode', () => {
