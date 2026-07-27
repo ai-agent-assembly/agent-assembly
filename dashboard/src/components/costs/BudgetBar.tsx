@@ -27,26 +27,6 @@ export interface BudgetBarProps {
   readonly label: string
 }
 
-/**
- * Thin budget-burn bar for the Costs KPI cards, mirroring the `BudgetBar` in
- * `design/v1/hi-fi/costs.jsx`. The fill colour comes from the shared
- * `bucketForBudget` threshold (green <80 / amber 80–95 / red ≥95) so it matches
- * `TeamBudgetBar` and the budget tree; width is clamped to 100% so an
- * over-budget period pins the bar full rather than overflowing its track.
- *
- * A burn ratio needs *both* numbers. Missing either leaves the bar unmeasured:
- * no fill, no threshold bucket, and an `aria-label` that says the burn is
- * unknown. It previously fell back to `bucket='ok'` at `0%`, which painted an
- * unmeasured budget the same green as a comfortably-underspent one and
- * announced "0%" — a positive claim of headroom on evidence that does not
- * exist (AAASM-5127). A zero-width fill is still a rendered measurement of
- * zero, so none is drawn.
- *
- * `bucketForBudget` maps `limit <= 0` to `ok`, which is the same false-green
- * for the *configured* `$0` ceiling: it is fully consumed, not untouched. The
- * bar resolves that case itself rather than reaching into the shared threshold
- * helper, which topology's node-detail panel also depends on.
- */
 /** Burn percentage, or `null` when either number is missing. */
 function burnPct(used: number | null, limit: number | null): number | null {
   if (used === null || limit === null) return null
@@ -78,6 +58,26 @@ function burnLabel(label: string, used: number | null, pct: number | null): stri
   return `${label} unknown — ${detail}`
 }
 
+/**
+ * Thin budget-burn bar for the Costs KPI cards, mirroring the `BudgetBar` in
+ * `design/v1/hi-fi/costs.jsx`. The fill colour comes from the shared
+ * `bucketForBudget` threshold (green <80 / amber 80–95 / red ≥95) so it matches
+ * `TeamBudgetBar` and the budget tree; width is clamped to 100% so an
+ * over-budget period pins the bar full rather than overflowing its track.
+ *
+ * A burn ratio needs *both* numbers. Missing either leaves the bar unmeasured:
+ * no fill, no threshold bucket, and an `aria-label` that says the burn is
+ * unknown. It previously fell back to `bucket='ok'` at `0%`, which painted an
+ * unmeasured budget the same green as a comfortably-underspent one and
+ * announced "0%" — a positive claim of headroom on evidence that does not
+ * exist (AAASM-5127). A zero-width fill is still a rendered measurement of
+ * zero, so none is drawn.
+ *
+ * `bucketForBudget` maps `limit <= 0` to `ok`, which is the same false-green
+ * for the *configured* `$0` ceiling: it is fully consumed, not untouched. The
+ * bar resolves that case itself rather than reaching into the shared threshold
+ * helper, which topology's node-detail panel also depends on.
+ */
 export function BudgetBar({ used, limit, label }: BudgetBarProps) {
   const pct = burnPct(used, limit)
   const bucket = burnBucket(used, limit)
