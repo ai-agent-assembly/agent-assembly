@@ -62,11 +62,25 @@ body {
   --rail-bg:           #0e0e0e;
   --rail-fg:           #c8c5b8;
   --rail-fg-dim:       #8a8880;
-  --rail-fg-muted:     #6a6a60;
+  /* ACCESSIBILITY CORRECTION (AAASM-5134, ADR-0027) — was #6a6a60.
+     Rail section headings render at 11px, and #6a6a60 on the #0e0e0e rail
+     measures 3.53:1, below the WCAG 2.1 AA floor of 4.5:1 for normal text.
+     #7b7b71 is the smallest step along the same warm-grey ramp that clears
+     it: 4.52:1 here, 4.66:1 against the darker #0a0907 dark-mode rail below.
+     The spec is corrected at source rather than deviated from downstream, so
+     the next surface built from this file does not reintroduce the failure.
+     ADR-0027 records that the accessibility floor overrides this spec
+     wherever the two conflict. */
+  --rail-fg-muted:     #7b7b71;
   --rail-divider:      #2a2a2a;
   --rail-item-hover:   #1f1f1f;
   --rail-item-active-bg: #ffffff;
   --rail-item-active-fg: #0e0e0e;
+  /* NOT corrected — see ADR-0027 "Accepted risks". Route numbers are 11px at
+     3.53:1 like the headings were, but they also sit on the --rail-item-hover
+     fill, where even the corrected grey reaches only 3.86:1. Clearing AA here
+     needs a hover-state decision, not a one-value bump; tracked on AAASM-5134
+     rather than guessed at. */
   --rail-num:          #6a6a60;
 }
 
