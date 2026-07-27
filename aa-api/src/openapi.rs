@@ -168,6 +168,7 @@ use crate::routes::{
         agents::PermissionSourceResponse,
         agents::EffectivePermissionsResponse,
         crate::models::verdict::RuntimeVerdict,
+        agents::DecisionLabel,
         agents::AgentDecisionResponse,
         agents::AgentDecisionsResponse,
         agents::BudgetRowResponse,

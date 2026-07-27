@@ -1018,7 +1018,7 @@ pub struct AgentDecisionResponse {
     /// Lowercase label derived from `decision` (`allow` / `deny` / `pending` /
     /// `redact` / `unspecified`) so the UI can map to its verdict styling
     /// without re-deriving the enum. Derived, not a separate audit field.
-    pub decision_label: String,
+    pub decision_label: DecisionLabel,
     /// The canonical 5-way runtime verdict (`allow` / `narrow` / `scrub` /
     /// `pending` / `deny`, AAASM-5086) for this action — the vocabulary the
     /// dashboard renders. Distinct from `decision`/`decisionLabel`, which are the
@@ -1071,16 +1071,33 @@ const MAX_DECISIONS_LIMIT: usize = 500;
 /// do (AAASM-4145); a caller that wants more history pages via `limit`.
 const MAX_DECISIONS_SCAN: usize = 10_000;
 
+/// Wire vocabulary for [`AgentDecisionResponse::decision_label`].
+///
+/// AAASM-5219 — constrains the `decisionLabel` field to the closed set of
+/// lowercase labels [`decision_label`] can emit, one per proto
+/// [`Decision`](aa_proto::assembly::common::v1::Decision) discriminant plus the
+/// `unspecified` fallback, so the generated OpenAPI spec advertises an enum
+/// rather than a free-form `string`. Serializes lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DecisionLabel {
+    Allow,
+    Deny,
+    Pending,
+    Redact,
+    Unspecified,
+}
+
 /// Lowercase label for a [`Decision`](aa_proto::assembly::common::v1::Decision)
 /// discriminant, used for `decisionLabel`.
-fn decision_label(discriminant: i64) -> &'static str {
+fn decision_label(discriminant: i64) -> DecisionLabel {
     use aa_proto::assembly::common::v1::Decision;
     match discriminant {
-        d if d == Decision::Allow as i64 => "allow",
-        d if d == Decision::Deny as i64 => "deny",
-        d if d == Decision::Pending as i64 => "pending",
-        d if d == Decision::Redact as i64 => "redact",
-        _ => "unspecified",
+        d if d == Decision::Allow as i64 => DecisionLabel::Allow,
+        d if d == Decision::Deny as i64 => DecisionLabel::Deny,
+        d if d == Decision::Pending as i64 => DecisionLabel::Pending,
+        d if d == Decision::Redact as i64 => DecisionLabel::Redact,
+        _ => DecisionLabel::Unspecified,
     }
 }
 
@@ -1143,7 +1160,7 @@ fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
         verb,
         resource,
         decision,
-        decision_label: decision_label(decision).to_string(),
+        decision_label: decision_label(decision),
         // The 5-way runtime verdict is not captured at decision time yet;
         // deriving it is the ADR-0018-gated hot-path follow-up. Surface null
         // rather than lossily mapping the coarse proto `decision` onto it.
@@ -1270,12 +1287,12 @@ mod tests {
 
     #[test]
     fn decision_label_maps_each_discriminant() {
-        assert_eq!(decision_label(1), "allow");
-        assert_eq!(decision_label(2), "deny");
-        assert_eq!(decision_label(3), "pending");
-        assert_eq!(decision_label(4), "redact");
-        assert_eq!(decision_label(0), "unspecified");
-        assert_eq!(decision_label(99), "unspecified");
+        assert_eq!(decision_label(1), DecisionLabel::Allow);
+        assert_eq!(decision_label(2), DecisionLabel::Deny);
+        assert_eq!(decision_label(3), DecisionLabel::Pending);
+        assert_eq!(decision_label(4), DecisionLabel::Redact);
+        assert_eq!(decision_label(0), DecisionLabel::Unspecified);
+        assert_eq!(decision_label(99), DecisionLabel::Unspecified);
     }
 
     #[test]
@@ -1308,7 +1325,7 @@ mod tests {
         );
         let row = entry_to_decision_row(&entry).expect("tool_call carries a decision");
         assert_eq!(row.decision, 1);
-        assert_eq!(row.decision_label, "allow");
+        assert_eq!(row.decision_label, DecisionLabel::Allow);
         assert_eq!(row.verb.as_deref(), Some("TOOL_CALL"));
         assert_eq!(row.resource.as_deref(), Some("pg.users"));
         assert_eq!(row.matched_policy, None);
@@ -1335,7 +1352,7 @@ mod tests {
             r#"{"action_type":"TOOL_CALL","decision":2,"detail":{"kind":"policy_violation","policy_rule":"P-066","blocked_action":"gmail.send"}}"#,
         );
         let row = entry_to_decision_row(&nested).unwrap();
-        assert_eq!(row.decision_label, "deny");
+        assert_eq!(row.decision_label, DecisionLabel::Deny);
         assert_eq!(row.matched_policy.as_deref(), Some("P-066"));
         assert_eq!(row.resource.as_deref(), Some("gmail.send"));
 
