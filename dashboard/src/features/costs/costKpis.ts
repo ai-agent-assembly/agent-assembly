@@ -2,18 +2,6 @@ import { bucketForBudget } from '../../components/topology/budgetThreshold'
 import type { CostSummary, TeamListRow } from '../teams/api'
 
 /**
- * The two budget periods `/api/v1/costs` reports.
- *
- * Both are shown at once — as their own KPI cards — rather than selected
- * between. The page used to carry a Daily/Monthly segmented control, but the
- * only figure it could actually move was a utilisation percentage already
- * printed on the card beside it; everything else on the page (the per-team
- * bars, the blocked-by-budget count, the burn callouts) is daily and stayed
- * daily while the labels flipped (AAASM-5126). See `CostsPage`.
- */
-export type BudgetPeriod = 'daily' | 'monthly'
-
-/**
  * Org spend against its configured limit for one budget period, plus the
  * derived burn percentage. Backs a Daily / Monthly KPI card and its mini
  * budget bar.
