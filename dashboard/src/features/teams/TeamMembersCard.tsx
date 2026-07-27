@@ -1,11 +1,6 @@
 import { Link } from 'react-router-dom'
 import type { AgentNode } from './api'
-
-const STATUS_CHIP: Record<string, string> = {
-  active: 'is-ok',
-  suspended: 'is-warn',
-  deregistered: '',
-}
+import { statusChip } from './statusChip'
 
 interface TeamMembersCardProps {
   members: AgentNode[]
@@ -52,7 +47,7 @@ export function TeamMembersCard({ members, isLoading, isError }: Readonly<TeamMe
                 <span className="teams-chip is-danger" data-testid="team-member-flagged">flagged</span>
               )}
               <span
-                className={`teams-chip ${STATUS_CHIP[member.status] ?? ''}`}
+                className={`teams-chip ${statusChip(member.status) ?? ''}`}
                 data-testid="team-member-status"
               >
                 {member.status}
