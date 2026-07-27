@@ -159,7 +159,11 @@ export interface AuditExportContext {
  * suppressed denials would be a worse failure than either number alone.
  */
 interface ReportTally {
-  readonly typeCounts: Record<string, number>
+  // A Map, not a plain object: `event_type` is raw wire input, so a value of
+  // `__proto__` or `constructor` must be tallied as an ordinary key rather than
+  // hitting the prototype setter (silent data loss) or colliding with an
+  // inherited method (a bogus non-numeric count).
+  readonly typeCounts: ReadonlyMap<string, number>
   readonly decisionCounts: Record<string, number>
   readonly noVerdictCounts: Record<string, number>
   readonly suppressedCounts: Record<string, number>
@@ -178,7 +182,7 @@ function verdictTallyKey(verdict: AuditVerdict, enforced: string): string {
 }
 
 function tallyRows(rows: readonly LogEntry[]): ReportTally {
-  const typeCounts: Record<string, number> = {}
+  const typeCounts = new Map<string, number>()
   const decisionCounts: Record<string, number> = {}
   const noVerdictCounts: Record<string, number> = {}
   const suppressedCounts: Record<string, number> = {}
@@ -186,7 +190,7 @@ function tallyRows(rows: readonly LogEntry[]): ReportTally {
   const suppressed: { entry: LogEntry; verdict: AuditVerdict }[] = []
 
   for (const e of rows) {
-    typeCounts[e.event_type] = (typeCounts[e.event_type] ?? 0) + 1
+    typeCounts.set(e.event_type, (typeCounts.get(e.event_type) ?? 0) + 1)
     const verdict = extractVerdict(e.payload)
     const wasSuppressed = isSuppressedDenial(verdict)
 
@@ -226,8 +230,9 @@ function tallyRows(rows: readonly LogEntry[]): ReportTally {
 }
 
 /** Descending by count — the order every tally table in the report uses. */
-function byCountDesc(counts: Record<string, number>): [string, number][] {
-  return Object.entries(counts).sort((a, b) => b[1] - a[1])
+function byCountDesc(counts: ReadonlyMap<string, number> | Record<string, number>): [string, number][] {
+  const entries = counts instanceof Map ? [...counts.entries()] : Object.entries(counts)
+  return entries.sort((a, b) => b[1] - a[1])
 }
 
 /**
