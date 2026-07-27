@@ -150,6 +150,46 @@ describe('PolicySimulatePanel', () => {
     expect(screen.getByTestId('simulate-redacted')).toBeInTheDocument()
   })
 
+  // The schema types `verdict` as a bare `string`, so a value that collides
+  // with an inherited Object.prototype member ("toString", "constructor", …)
+  // used to resolve against the plain-object lookup and defeat the `?? --na`
+  // fallback. Keyed by a Map, only the four real verdicts resolve; anything
+  // else — including prototype-member names — falls through to `--na`.
+  it.each(['toString', 'constructor', 'hasOwnProperty', '__proto__', 'valueOf'])(
+    'falls to the --na class for the inherited "%s" verdict key',
+    async (verdict) => {
+      const user = userEvent.setup()
+      post.mockResolvedValue({
+        data: { verdict, matched_rule: null, reason: 'unknown', redacted: false },
+      })
+      renderPanel()
+      await user.type(screen.getByTestId('simulate-tool-input'), 'shell')
+      await user.click(screen.getByTestId('simulate-run-btn'))
+
+      const el = await screen.findByTestId('simulate-verdict')
+      expect(el).toHaveClass('policy-simulate__verdict--na')
+    },
+  )
+
+  it.each([
+    ['allow', 'policy-simulate__verdict--allow'],
+    ['narrow', 'policy-simulate__verdict--narrow'],
+    ['approval', 'policy-simulate__verdict--approval'],
+    ['deny', 'policy-simulate__verdict--deny'],
+  ])('maps the real "%s" verdict to its modifier class', async (verdict, expectedClass) => {
+    const user = userEvent.setup()
+    post.mockResolvedValue({
+      data: { verdict, matched_rule: null, reason: 'ok', redacted: false },
+    })
+    renderPanel()
+    await user.type(screen.getByTestId('simulate-tool-input'), 'shell')
+    await user.click(screen.getByTestId('simulate-run-btn'))
+
+    const el = await screen.findByTestId('simulate-verdict')
+    expect(el).toHaveClass(expectedClass)
+    expect(el).not.toHaveClass('policy-simulate__verdict--na')
+  })
+
   it('surfaces an error banner when the request fails', async () => {
     const user = userEvent.setup()
     post.mockResolvedValue({ error: { detail: 'boom' } })
