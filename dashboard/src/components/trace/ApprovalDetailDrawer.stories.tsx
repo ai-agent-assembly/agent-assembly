@@ -47,3 +47,16 @@ export const Decided: Story = {
     onClose: () => {},
   },
 }
+
+/**
+ * A status this build cannot interpret (AAASM-5190). `ApprovalResponse.status`
+ * is an unconstrained wire string, so the head renders the neutral absence
+ * marker instead of guessing a verdict — a PENDING chip here would be
+ * indistinguishable from a genuinely pending approval.
+ */
+export const UnrecognisedStatus: Story = {
+  args: {
+    approval: { ...PENDING, status: 'escalated', expires_at: '' },
+    onClose: () => {},
+  },
+}
