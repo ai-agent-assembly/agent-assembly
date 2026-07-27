@@ -23,10 +23,16 @@ const EVIDENCE_DIR = resolve(process.cwd(), 'verify/AAASM-5021')
 const THEME_KEY = 'aa-dashboard-theme'
 type Theme = 'light' | 'dark'
 
-// A real 3-part JWT carrying a `sub` claim so the topbar shows an identity.
+// A real 3-part JWT carrying a `sub` claim so the topbar shows an identity, and
+// an admin-scoped `scope` claim so the Policy rail badge renders. Since
+// AAASM-5186 (#1727), AppShell short-circuits `badgeFor('policy')` to `null`
+// unless `useCan('admin')` is true, and scopes are recovered from the token's
+// `scope` claim via `parseScopesFromJwt` (an array of 'read'|'write'|'admin').
+// A scope-less token would list no policies and render no policy badge; an
+// admin scope keeps this spec's "2 inactive policies → badge '2'" contract.
 const b64url = (o: object) =>
   Buffer.from(JSON.stringify(o)).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
-const JWT = `${b64url({ alg: 'none' })}.${b64url({ sub: 'kelly@security' })}.sig`
+const JWT = `${b64url({ alg: 'none' })}.${b64url({ sub: 'kelly@security', scope: ['read', 'write', 'admin'] })}.sig`
 
 const AGENTS = Array.from({ length: 142 }, (_, i) => ({
   id: `agent-${i}`,
