@@ -25,8 +25,9 @@ use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::models::topology::{agent_flagged, agent_mode, format_id, status_str};
 pub use crate::models::topology::{
-    AgentLineage, AgentNode, AgentTree, LineageStep, NodeBudget, NodeEffectivePermissions, PolicyChainTier,
-    TeamSummary, TeamTopology, TopologyGraphEdge, TopologyGraphResponse, TopologyOverview, TopologyStats,
+    AgentLineage, AgentNode, AgentNodeStatus, AgentTree, LineageStep, NodeBudget, NodeEffectivePermissions,
+    PolicyChainTier, TeamSummary, TeamTopology, TopologyGraphEdge, TopologyGraphResponse, TopologyOverview,
+    TopologyStats,
 };
 use crate::routes::enforcement_mirror::{agent_tool_ids, cascade_denies_all_egress, cascade_denies_tool};
 use crate::state::AppState;

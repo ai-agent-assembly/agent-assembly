@@ -222,6 +222,7 @@ use crate::routes::{
         topology::TopologyGraphEdge,
         topology::TeamSummary,
         topology::AgentNode,
+        topology::AgentNodeStatus,
         topology::NodeBudget,
         topology::NodeEffectivePermissions,
         topology::PolicyChainTier,

@@ -27,6 +27,36 @@ pub(crate) fn status_str(status: &AgentStatus) -> &'static str {
     }
 }
 
+/// Runtime status of an agent node in the topology projection.
+///
+/// AAASM-5218 — constrains the wire vocabulary of [`AgentNode::status`] at the
+/// OpenAPI derive to exactly the three values `status_str` can emit, so the
+/// generated spec (and the TypeScript client) advertises a closed enum instead
+/// of an unconstrained `string`. Serializes lowercase, matching the strings the
+/// registry's [`AgentStatus`] mapped to before this was a free-form field.
+///
+/// Deliberately distinct from the runtime registry [`AgentStatus`], whose
+/// `Suspended(_)` variant carries a parameterised reason an enum cannot express,
+/// and from the capability-view `AgentStatus` — the three agent-status
+/// vocabularies are not reconciled here (that is an ADR question, see AAASM-5209).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentNodeStatus {
+    Active,
+    Suspended,
+    Deregistered,
+}
+
+impl From<&AgentStatus> for AgentNodeStatus {
+    fn from(status: &AgentStatus) -> Self {
+        match status {
+            AgentStatus::Active => AgentNodeStatus::Active,
+            AgentStatus::Suspended(_) => AgentNodeStatus::Suspended,
+            AgentStatus::Deregistered => AgentNodeStatus::Deregistered,
+        }
+    }
+}
+
 /// Policy-violation count at or above which a node is surfaced as "flagged"
 /// (danger-tinted card + ⚑ marker) in the topology graph.
 ///
@@ -257,7 +287,7 @@ pub struct AgentNode {
     /// Delegation depth — 0 for root agents.
     pub depth: u32,
     /// Runtime status: `active`, `suspended`, or `deregistered`.
-    pub status: String,
+    pub status: AgentNodeStatus,
     /// Team this agent belongs to, if any.
     pub team_id: Option<String>,
     /// Governance level — included only when `show_budget=true`.
@@ -315,7 +345,7 @@ impl From<&AgentRecord> for AgentNode {
             id: format_id(&r.agent_id),
             name: r.name.clone(),
             depth: r.depth,
-            status: status_str(&r.status).to_owned(),
+            status: AgentNodeStatus::from(&r.status),
             team_id: r.team_id.clone(),
             governance_level: None,
             mode: agent_mode(r),
@@ -667,7 +697,7 @@ mod tests {
             id: "0102030405060708090a0b0c0d0e0f10".to_string(),
             name: "agent-x".to_string(),
             depth: 1,
-            status: "active".to_string(),
+            status: AgentNodeStatus::Active,
             team_id: Some("team-alpha".to_string()),
             governance_level: None,
             mode: "enforce".to_string(),
