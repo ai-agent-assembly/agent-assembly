@@ -53,7 +53,6 @@ const DATA_PLATFORM_TEAM = {
 async function seed(page: Page, theme: Theme) {
   await page.addInitScript((opts: { key: string; theme: string }) => {
     sessionStorage.setItem('aa_token', 'teams-e2e-token')
-    localStorage.setItem('aa_team_admin', '1')
     localStorage.setItem(opts.key, opts.theme)
   }, { key: THEME_KEY, theme })
 }

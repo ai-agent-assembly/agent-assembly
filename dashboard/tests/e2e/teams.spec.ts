@@ -1,10 +1,19 @@
 import { test, expect, type Page } from '@playwright/test'
 
+// A real 3-part JWT carrying an admin-scoped `scope` claim. Team management
+// (the ActionBar Suspend/Resume controls) is gated on `useCanManageTeam()` →
+// `useCan('admin')` since AAASM-5253, and scopes are recovered from the token's
+// `scope` claim via `parseScopesFromJwt`. This grants team-admin through the
+// same verified-scope machinery as production — never the removed
+// client-writable `aa_team_admin` flag.
+const b64url = (o: object) =>
+  Buffer.from(JSON.stringify(o)).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
+const ADMIN_JWT = `${b64url({ alg: 'none' })}.${b64url({ sub: 'e2e-admin', scope: ['read', 'write', 'admin'] })}.sig`
+
 async function injectAuth(page: Page) {
-  await page.addInitScript(() => {
-    sessionStorage.setItem('aa_token', 'e2e-test-token')
-    localStorage.setItem('aa_team_admin', '1')
-  })
+  await page.addInitScript((token) => {
+    sessionStorage.setItem('aa_token', token)
+  }, ADMIN_JWT)
 }
 
 const TEAM_MEMBERS = [
