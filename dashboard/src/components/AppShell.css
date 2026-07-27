@@ -23,7 +23,20 @@
   --shell-nav-text: #e8e6dd;
   --shell-nav-text-muted: #c8c5b8;
   --shell-nav-text-dim: #8a8880;
-  --shell-nav-section-text: #6a6a60;
+  /* Group headings deviate from the mock's #6a6a60 on accessibility grounds.
+     That value measures 3.53:1 against the #0e0e0e rail at 11px, below the
+     WCAG 2.1 AA floor of 4.5:1 for normal text; #7b7b71 is the smallest step
+     along the same warm-grey ramp that clears it, at 4.52:1 (4.66:1 against
+     v2's darker #0a0907 dark-mode rail, so it holds in both themes). The
+     accessibility floor overrides the visual spec where the two conflict —
+     see ADR-0027, which also carries the correction back into design/v2.
+     Pinned by AppShell.contrast.test.ts. */
+  --shell-nav-section-text: #7b7b71;
+  /* Still the mock's 3.53:1 value — route numbers are a separate token and
+     additionally sit on the #1f1f1f hover fill, where even the corrected grey
+     reaches only 3.86:1, so clearing AA needs a hover-state decision rather
+     than a one-value bump. Recorded as an accepted risk in ADR-0027 and
+     tracked on AAASM-5134 rather than guessed at here. */
   --shell-nav-num: #6a6a60;
   --shell-nav-border: #2a2a2a;
   --shell-nav-hover-bg: #1f1f1f;
