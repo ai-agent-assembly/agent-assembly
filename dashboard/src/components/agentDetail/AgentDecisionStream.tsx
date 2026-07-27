@@ -23,12 +23,12 @@ import { ErrorState } from '../ErrorState'
  * as the trace decision-explainer. `unspecified` / unknown labels fall through
  * to a neutral render (no verdict colour) rather than a guessed one.
  */
-const VERDICT_BY_LABEL: Record<string, Verdict> = {
-  allow: 'allowed',
-  deny: 'denied',
-  pending: 'pending',
-  redact: 'scrubbed',
-}
+const VERDICT_BY_LABEL = new Map<string, Verdict>([
+  ['allow', 'allowed'],
+  ['deny', 'denied'],
+  ['pending', 'pending'],
+  ['redact', 'scrubbed'],
+])
 
 /** Format an RFC 3339 timestamp as `HH:MM:SS`, matching the design's ts column. */
 function formatTime(ts: string): string {
@@ -39,7 +39,7 @@ function formatTime(ts: string): string {
 }
 
 function DecisionCell({ row }: Readonly<{ row: AgentDecision }>) {
-  const verdict = VERDICT_BY_LABEL[row.decisionLabel]
+  const verdict = VERDICT_BY_LABEL.get(row.decisionLabel)
   const color = verdict ? VERDICT_META[verdict].colorVar : 'var(--ink-3)'
   return (
     <span className="adt-verdict" style={{ color }}>
