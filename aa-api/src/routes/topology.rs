@@ -109,18 +109,63 @@ fn caller_has_no_tenant_scope(caller: &AuthenticatedCaller) -> bool {
     !caller.scopes.contains(&Scope::Admin) && caller.tenant.org_id.is_none() && caller.tenant.team_id.is_none()
 }
 
+/// Join cache-key components into a string that only an equal component list
+/// can produce.
+///
+/// Every component here is caller-controlled: the registry validates a tenant id
+/// against control characters *only* (`AgentRegistry::validate_tenant_id`,
+/// AAASM-4190), so `|` is legal inside an `org_id` / `team_id`, and `status` and
+/// the `{team_id}` / `{agent_id}` path segments are free-form request input.
+/// Joining those raw lets two *different* requests assemble one key — an
+/// `org="acme"` + `team="x|team=y"` caller and an `org="acme|team=x"` +
+/// `team="y"` caller both rendered `org=acme|team=x|team=y` — which is a
+/// cross-tenant read and equally a cross-tenant write, since either caller can
+/// be the one that populates the shared entry. Length-prefixing each component
+/// makes the encoding decodable, hence injective, extending AAASM-4190's
+/// bucket-key defence to the response caches.
+fn cache_key_of(parts: &[&str]) -> String {
+    let mut key = String::new();
+    for part in parts {
+        if !key.is_empty() {
+            key.push('|');
+        }
+        key.push_str(&part.len().to_string());
+        key.push(':');
+        key.push_str(part);
+    }
+    key
+}
+
+/// Encode an optional cache-key component so an absent value and a present
+/// empty one cannot collide.
+///
+/// The two are different queries, not two spellings of one: `?org_id=` selects
+/// the records whose `org_id` is empty, while omitting it selects every record;
+/// likewise a caller scoped to `org_id: Some("")` is confined by
+/// [`record_visible_to`] where a caller with `None` is not.
+fn opt_part(value: Option<&str>) -> String {
+    match value {
+        Some(v) => format!("={v}"),
+        None => "-".to_string(),
+    }
+}
+
 /// Cache-key fragment that makes a cached topology response specific to the
 /// caller's tenant scope, so a tenant-scoped response is never served to a
 /// caller from a different tenant.
+///
+/// The tag alone is *not* sufficient to isolate a response: it is the constant
+/// `admin` for every admin caller, so any handler whose body also varies with a
+/// request parameter must name that parameter in its key too (AAASM-5181).
 fn tenant_cache_tag(caller: &AuthenticatedCaller) -> String {
     if caller.scopes.contains(&Scope::Admin) {
-        return "admin".to_string();
+        return cache_key_of(&["admin"]);
     }
-    format!(
-        "org={}|team={}",
-        caller.tenant.org_id.as_deref().unwrap_or(""),
-        caller.tenant.team_id.as_deref().unwrap_or(""),
-    )
+    cache_key_of(&[
+        "tenant",
+        &opt_part(caller.tenant.org_id.as_deref()),
+        &opt_part(caller.tenant.team_id.as_deref()),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -527,13 +572,12 @@ pub async fn get_overview(
 
     // AAASM-3483 — the tenant tag scopes the cache entry to the caller's tenant
     // so a tenant-scoped response is never served to a different tenant.
-    let cache_key = format!(
-        "{}|{}|{}|{}",
-        tenant_cache_tag(&caller),
-        params.status.as_deref().unwrap_or(""),
-        params.min_depth.unwrap_or(0),
-        params.show_budget.unwrap_or(false),
-    );
+    let cache_key = cache_key_of(&[
+        &tenant_cache_tag(&caller),
+        &opt_part(params.status.as_deref()),
+        &params.min_depth.unwrap_or(0).to_string(),
+        &params.show_budget.unwrap_or(false).to_string(),
+    ]);
     if let Some(cached) = state.topology_overview_cache.get(&cache_key).await {
         return (StatusCode::OK, Json((*cached).clone()));
     }
@@ -678,14 +722,13 @@ pub async fn get_tree(
         );
     }
 
-    let cache_key = format!(
-        "{}|{}|{}|{}|{}",
-        tenant_cache_tag(&caller),
-        root_id,
-        max_depth,
-        params.status.as_deref().unwrap_or(""),
-        show_budget,
-    );
+    let cache_key = cache_key_of(&[
+        &tenant_cache_tag(&caller),
+        &root_id,
+        &max_depth.to_string(),
+        &opt_part(params.status.as_deref()),
+        &show_budget.to_string(),
+    ]);
     if let Some(cached) = state.topology_tree_cache.get(&cache_key).await {
         return Ok((StatusCode::OK, Json((*cached).clone())));
     }
@@ -741,14 +784,16 @@ pub async fn get_team(
             .with_detail("Reading a team's topology requires admin scope or membership in that team"));
     }
 
-    let cache_key = format!(
-        "{}|{}|{}|{}|{}",
-        tenant_cache_tag(&caller),
-        team_id,
-        params.status.as_deref().unwrap_or(""),
-        params.min_depth.unwrap_or(0),
-        params.show_budget.unwrap_or(false),
-    );
+    // `params.org_id` is deliberately absent: unlike `get_overview`, this handler
+    // never reads it, so it cannot shape the body and naming it would only split
+    // the entry. If it ever starts filtering by org, it belongs in this key.
+    let cache_key = cache_key_of(&[
+        &tenant_cache_tag(&caller),
+        &team_id,
+        &opt_part(params.status.as_deref()),
+        &params.min_depth.unwrap_or(0).to_string(),
+        &params.show_budget.unwrap_or(false).to_string(),
+    ]);
     if let Some(cached) = state.topology_team_cache.get(&cache_key).await {
         return Ok((StatusCode::OK, Json((*cached).clone())));
     }
@@ -826,7 +871,7 @@ pub async fn get_lineage(
         );
     }
 
-    let cache_key = format!("{}|{}", tenant_cache_tag(&caller), agent_id_str);
+    let cache_key = cache_key_of(&[&tenant_cache_tag(&caller), &agent_id_str]);
     if let Some(cached) = state.topology_lineage_cache.get(&cache_key).await {
         return Ok((StatusCode::OK, Json((*cached).clone())));
     }
@@ -914,7 +959,7 @@ pub async fn get_stats(
     // they leak every tenant's agent counts. The tenant tag scopes the cache and
     // the visibility filter below confines the aggregation to the caller's tenant
     // (a non-admin with no tenant scope aggregates over an empty set → zeros).
-    let cache_key = format!("stats|{}", tenant_cache_tag(&caller));
+    let cache_key = cache_key_of(&["stats", &tenant_cache_tag(&caller)]);
     if let Some(cached) = state.topology_stats_cache.get(&cache_key).await {
         return (StatusCode::OK, Json((*cached).clone()));
     }
