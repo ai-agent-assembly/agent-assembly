@@ -37,6 +37,23 @@ const METRIC_CATEGORY: ReadonlyMap<AlertMetric, AlertCategory> = new Map([
   ['approval_pending_age', 'approval'],
 ])
 
+/** The `AlertMetric` union as a runtime allow-list — the same shape as `METRIC_CATEGORY`'s keys. */
+const KNOWN_METRICS: readonly AlertMetric[] = [
+  'policy_violation_count',
+  'budget_spent_pct',
+  'anomaly_score',
+  'approval_pending_age',
+]
+
+/**
+ * Validate an unknown wire value against the `AlertMetric` union before it is
+ * trusted as a category-map key — the allow-list guard from
+ * `components/fleet/StatusChip.tsx`. Guards against `rule.metric` being a
+ * garbage string, an inherited object member, or a non-string entirely.
+ */
+function isAlertMetric(value: unknown): value is AlertMetric {
+  return (KNOWN_METRICS as readonly unknown[]).includes(value)
+}
 
 /**
  * User-selectable category filter chips, in display order. `uncategorized` is
@@ -100,6 +117,7 @@ export function deriveCategory(
 ): AlertCategory {
   const rule = byId.get(alert.ruleId)
   if (!rule) return 'uncategorized'
+  if (!isAlertMetric(rule.metric)) return 'uncategorized'
   return METRIC_CATEGORY.get(rule.metric) ?? 'uncategorized'
 }
 
