@@ -59,6 +59,20 @@ describe('canonicalStatus / canonicalSeverity — the live wire vocabulary', () 
     expect(() => canonicalStatus(undefined)).toThrow(AlertShapeError)
     expect(() => canonicalSeverity(3)).toThrow(AlertShapeError)
   })
+
+  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'])(
+    'throws on the inherited object member %s instead of returning it',
+    (inherited) => {
+      // A plain-object lookup keyed by `WIRE_STATUS[value]` would resolve these
+      // names to a truthy Object.prototype member and slip past the `if (mapped)`
+      // guard — a payload we cannot read silently becoming a well-typed Alert.
+      // That is the exact route by which "a suppressed alert starts counting as
+      // firing". Keyed by a Map, `.get()` returns undefined for inherited names
+      // and the documented fail-closed throw fires as designed.
+      expect(() => canonicalStatus(inherited)).toThrow(AlertShapeError)
+      expect(() => canonicalSeverity(inherited)).toThrow(AlertShapeError)
+    },
+  )
 })
 
 describe('normaliseAlert', () => {

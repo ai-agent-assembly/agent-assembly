@@ -48,11 +48,11 @@ export class AlertShapeError extends Error {
  * active silence covers it (AAASM-1645). The three map 1:1 onto the dashboard's
  * ladder with no judgement call.
  */
-const WIRE_STATUS: Readonly<Record<string, AlertStatus>> = {
-  unresolved: 'FIRING',
-  resolved: 'RESOLVED',
-  suppressed: 'SUPPRESSED',
-}
+const WIRE_STATUS: ReadonlyMap<string, AlertStatus> = new Map([
+  ['unresolved', 'FIRING'],
+  ['resolved', 'RESOLVED'],
+  ['suppressed', 'SUPPRESSED'],
+])
 
 /**
  * Severity vocabulary as `aa-api` actually serialises it.
@@ -68,11 +68,11 @@ const WIRE_STATUS: Readonly<Record<string, AlertStatus>> = {
  * Stories (AAASM-1385…1389) settle on a different ladder, this table is the one
  * place that changes.
  */
-const WIRE_SEVERITY: Readonly<Record<string, Severity>> = {
-  critical: 'CRITICAL',
-  warning: 'HIGH',
-  info: 'LOW',
-}
+const WIRE_SEVERITY: ReadonlyMap<string, Severity> = new Map([
+  ['critical', 'CRITICAL'],
+  ['warning', 'HIGH'],
+  ['info', 'LOW'],
+])
 
 /** The dashboard's own vocabulary, accepted unchanged. */
 const CANONICAL_STATUS: ReadonlySet<string> = new Set<AlertStatus>([
@@ -108,7 +108,7 @@ export function canonicalStatus(raw: unknown): AlertStatus {
   const value = str(raw)
   if (value === null) throw new AlertShapeError('alert.status is not a string')
   if (CANONICAL_STATUS.has(value)) return value as AlertStatus
-  const mapped = WIRE_STATUS[value.toLowerCase()]
+  const mapped = WIRE_STATUS.get(value.toLowerCase())
   if (mapped) return mapped
   throw new AlertShapeError(`unrecognised alert status: ${JSON.stringify(value)}`)
 }
@@ -118,7 +118,7 @@ export function canonicalSeverity(raw: unknown): Severity {
   const value = str(raw)
   if (value === null) throw new AlertShapeError('alert.severity is not a string')
   if (CANONICAL_SEVERITY.has(value)) return value as Severity
-  const mapped = WIRE_SEVERITY[value.toLowerCase()]
+  const mapped = WIRE_SEVERITY.get(value.toLowerCase())
   if (mapped) return mapped
   throw new AlertShapeError(`unrecognised alert severity: ${JSON.stringify(value)}`)
 }
