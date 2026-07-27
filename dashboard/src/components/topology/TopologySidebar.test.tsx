@@ -3,8 +3,9 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { TopologySidebar, type TopologyStats } from './TopologySidebar'
 import { defaultVisibleKinds } from '../../features/topology/edgeKinds'
+import { UNCLAIMED_TEAM } from '../../features/topology/unclaimed'
 
-const STATS: TopologyStats = { active: 3, flagged: 1, crossTeam: 2, crossTeamHidden: 0, hasCycles: false }
+const STATS: TopologyStats = { active: 3, flagged: 1, crossTeam: 2, crossTeamHidden: 0, hasCycles: false, unclaimed: 0 }
 
 function renderSidebar(overrides: Partial<Parameters<typeof TopologySidebar>[0]> = {}) {
   const props = {
@@ -36,6 +37,33 @@ describe('TopologySidebar', () => {
   it('omits the flagged badge when there are no flagged agents', () => {
     renderSidebar({ stats: { ...STATS, flagged: 0 } })
     expect(screen.queryByTestId('topology-stat-flagged')).toBeNull()
+  })
+
+  // ── The unclaimed group (AAASM-5184) ──────────────────────────────────────
+  it('shows the unclaimed stat only when some agent has no team', () => {
+    renderSidebar({ stats: { ...STATS, unclaimed: 3 } })
+    expect(screen.getByTestId('topology-stat-unclaimed')).toHaveTextContent('⚠ 3 unclaimed')
+  })
+
+  it('omits the unclaimed stat when every agent has a team', () => {
+    renderSidebar({ stats: { ...STATS, unclaimed: 0 } })
+    expect(screen.queryByTestId('topology-stat-unclaimed')).toBeNull()
+  })
+
+  it('labels the unclaimed filter row rather than rendering it blank', () => {
+    renderSidebar({ teams: ['support', UNCLAIMED_TEAM] })
+    const row = screen.getAllByTestId('team-filter-item').find((i) => i.dataset.team === UNCLAIMED_TEAM)!
+    expect(row).toHaveAttribute('data-unclaimed', 'true')
+    expect(row).toHaveTextContent(/unclaimed/i)
+    // Never the raw sentinel — that is an internal key, not a name.
+    expect(row.textContent).not.toContain(UNCLAIMED_TEAM)
+  })
+
+  it('still filters by the unclaimed group when its row is clicked', async () => {
+    const props = renderSidebar({ teams: ['support', UNCLAIMED_TEAM] })
+    const row = screen.getAllByTestId('team-filter-item').find((i) => i.dataset.team === UNCLAIMED_TEAM)!
+    await userEvent.click(row)
+    expect(props.onFilterTeam).toHaveBeenCalledWith(UNCLAIMED_TEAM)
   })
 
   it('shows the cycle badge + alert when hasCycles', () => {

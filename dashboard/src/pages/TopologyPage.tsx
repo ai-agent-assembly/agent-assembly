@@ -4,6 +4,7 @@ import { useTopologyQuery } from '../features/topology/api'
 import { detectDelegationCycles } from '../features/topology/hierarchy'
 import { crossTeamEdges, hiddenCrossTeamCount, teamById } from '../features/topology/crossTeam'
 import { defaultVisibleKinds } from '../features/topology/edgeKinds'
+import { countUnclaimed, realTeams } from '../features/topology/unclaimed'
 import { exportGraphJson, exportGraphSvg } from '../features/topology/exportGraph'
 import { TopologyGraph } from '../components/topology/TopologyGraph'
 import { TopologySidebar } from '../components/topology/TopologySidebar'
@@ -50,8 +51,14 @@ export function TopologyPage() {
   const allNodes = useMemo(() => data?.nodes ?? [], [data])
   const allEdges = useMemo(() => data?.edges ?? [], [data])
 
+  // Every group the canvas draws, including the unclaimed group — the sidebar
+  // filter needs a row for each.
   const teams = useMemo(() => [...new Set(allNodes.map((n) => n.team))].sort((a, b) => a.localeCompare(b)), [allNodes])
-  const teamCount = teams.length
+  // ...but `N teams` counts only teams that exist. The unclaimed group is a
+  // grouping this page renders, not a team the registry holds, and counting it
+  // asserted one more team than the fleet has (AAASM-5184;
+  // `design/v2/hi-fi/topology.jsx:928`).
+  const teamCount = useMemo(() => realTeams(teams).length, [teams])
   const agentCount = allNodes.length
 
   /** The selected agent as of the latest payload — see `selectedNodeId`. */
@@ -99,7 +106,12 @@ export function TopologyPage() {
       showCrossTeam,
     })
     const hasCycles = detectDelegationCycles(allEdges).size > 0
-    return { active, flagged, crossTeam, crossTeamHidden, hasCycles }
+    // Agents no team claims. Surfaced as its own warn-toned stat rather than
+    // folded into the team count, which is what made the group invisible while
+    // still inflating `N teams` (AAASM-5184;
+    // `design/v2/hi-fi/topology.jsx:952`).
+    const unclaimed = countUnclaimed(allNodes)
+    return { active, flagged, crossTeam, crossTeamHidden, hasCycles, unclaimed }
   }, [allNodes, allEdges, visibleNodes, visibleKinds, showCrossTeam])
 
   const handleNodeClick = useCallback((node: TopologyNode) => {
