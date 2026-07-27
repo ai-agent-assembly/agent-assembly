@@ -112,6 +112,26 @@ describe('extractVerdict — proto enum wire shape', () => {
   it('ignores an empty-string decision and falls through', () => {
     expect(extractVerdict('{"decision":""}').enforced).toMatchObject({ known: false })
   })
+
+  // ── AAASM-5225: an inherited decision-name key must never resolve ────────────
+  // `decision` / `shadow_decision` are strings straight out of `JSON.parse` of an
+  // untrusted audit blob, looked up in DECISION_BY_NAME. With a plain object that
+  // table inherited `Object.prototype`, so a prototype-member name in the wire
+  // value could resolve to a truthy inherited value and be coerced into a
+  // fabricated verdict on the governance surface. A Map holds only its own four
+  // keys, so an inherited name resolves to nothing and the value is reported as
+  // an explicit `unknown` — never one of the four verdicts.
+  it.each(['__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty'])(
+    'refuses to turn the inherited-member name %j into a verdict',
+    (name) => {
+      const enforced = extractVerdict(JSON.stringify({ decision: name })).enforced
+      expect(isKnown(enforced)).toBe(false)
+      expect(enforced).toMatchObject({ state: 'unknown' })
+      const suppressed = extractVerdict(JSON.stringify({ shadow_decision: name })).suppressed
+      // Either null (not read) or an explicit unknown — never a resolved verdict.
+      expect(suppressed === null || isKnown(suppressed) === false).toBe(true)
+    },
+  )
 })
 
 // ── AAASM-5117 review blocker: observe mode ────────────────────────────────
@@ -315,6 +335,28 @@ describe('payloadSummary — real payload shapes', () => {
   it('reports an absence for a JSON array payload', () => {
     expect(payloadSummary('[1,2,3]')).toMatchObject({ known: false })
   })
+
+  // ── AAASM-5223: an inherited `detail.kind` must never resolve to a summariser ──
+  // The summariser table was a plain object, so `detail.kind` — a value straight
+  // out of `JSON.parse` of an untrusted audit blob — could name an
+  // `Object.prototype` member and be *invoked* as a summariser: `constructor`
+  // fabricates a summary from the detail object, `toString` returns
+  // `[object Undefined]`, and `valueOf` / `__proto__` throw. A Map has no
+  // inherited keys, so each of these misses and the caller reports an absence
+  // rather than fabricating or crashing.
+  it.each(['constructor', 'toString', 'valueOf', '__proto__', 'hasOwnProperty'])(
+    'does not invoke an inherited member for detail.kind %j — reports an absence',
+    (kind) => {
+      let summary: ReturnType<typeof payloadSummary>
+      // The read must not throw (valueOf / __proto__ would, if invoked).
+      expect(() => {
+        summary = payloadSummary(JSON.stringify({ detail: { kind, tool_name: 'x' } }))
+      }).not.toThrow()
+      // ...and it must not fabricate a summary (constructor / toString would).
+      expect(isKnown(summary!)).toBe(false)
+      expect(summary!).toMatchObject({ known: false })
+    },
+  )
 })
 
 describe('extractTraceId', () => {
