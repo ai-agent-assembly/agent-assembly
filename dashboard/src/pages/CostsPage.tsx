@@ -1,14 +1,27 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { CostBreakdownPanel } from '../features/analytics/CostBreakdownPanel'
+import { TruthfulValue } from '../components/truthfulness'
+import {
+  certain,
+  certainFromQuery,
+  isKnown,
+  known,
+  mapCertain,
+  propagateAbsence,
+  type Certain,
+  type TruthState,
+} from '../lib/truthfulness'
 import {
   joinTeamRows,
   useCostSummaryQuery,
   useTopologyOverviewQuery,
+  type CostSummary,
   type TeamListRow,
+  type TopologyOverview,
 } from '../features/teams/api'
 import { useTopologyQuery } from '../features/topology/api'
-import { deriveCostKpis, type PeriodSpend } from '../features/costs/costKpis'
+import { deriveCostKpis, type MeasuredCount, type PeriodSpend } from '../features/costs/costKpis'
 import { buildPerAgentRows } from '../features/costs/perAgentRows'
 import { useCostHistoryQuery, useBudgetTreeQuery } from '../features/costs/api'
 import { HistoryChart } from '../components/costs/HistoryChart'
@@ -41,14 +54,28 @@ function burnValueClass(pct: number | null): string {
   return ''
 }
 
-function usd(value: number | null): string {
-  return value == null ? '—' : `$${value.toFixed(2)}`
+function usd(value: number): string {
+  return `$${value.toFixed(2)}`
+}
+
+/** `$x.xx`, or the reason there is no figure. Never a fabricated `$0.00`. */
+function certainUsd(value: number | null, whenMissing: TruthState): Certain<ReactNode> {
+  return mapCertain(certain(value, whenMissing), usd)
 }
 
 interface KpiCardProps {
   readonly label: string
-  readonly value: string
-  readonly sub: string
+  /**
+   * The headline figure, or the reason there is none.
+   *
+   * `Certain` rather than `string` so an absence has somewhere to live. While
+   * these were typed `string` the only way to render "we measured nothing" was
+   * to pick a stand-in — and the stand-in picked was `0`, which on a compliance
+   * KPI reads as a clean bill of health for teams nobody checked (AAASM-5185).
+   */
+  readonly value: Certain<ReactNode>
+  /** The caption beneath the figure, subject to the same rule. */
+  readonly sub: Certain<ReactNode>
   readonly valueClass?: string
   readonly footer?: ReactNode
   readonly testId: string
@@ -58,8 +85,14 @@ function KpiCard({ label, value, sub, valueClass = '', footer, testId }: KpiCard
   return (
     <div className="costs-kpi" data-testid={testId}>
       <div className="costs-kpi__label">{label}</div>
-      <div className={`costs-kpi__value${valueClass}`}>{value}</div>
-      <div className="costs-kpi__sub">{sub}</div>
+      {/* A severity colour is a claim about a measured figure, so it is only
+          applied to one. An absence carries its own truth tone instead. */}
+      <div className={`costs-kpi__value${isKnown(value) ? valueClass : ''}`}>
+        <TruthfulValue value={value} format={node => node} testId={`${testId}-value`} />
+      </div>
+      <div className="costs-kpi__sub">
+        <TruthfulValue value={sub} format={node => node} testId={`${testId}-sub`} />
+      </div>
       {footer}
     </div>
   )
@@ -69,18 +102,27 @@ interface SpendKpiCardProps {
   readonly label: string
   readonly period: string
   readonly spend: PeriodSpend
+  /**
+   * Which absence an unfilled spend figure is — resolved by the caller from the
+   * `/costs` query, because only it can tell an outage from an unset budget.
+   */
+  readonly whenMissing: TruthState
   readonly testId: string
 }
 
 /** Daily / Monthly spend card: value, "of $limit" sub, mini budget bar + % used. */
-function SpendKpiCard({ label, period, spend, testId }: SpendKpiCardProps) {
+function SpendKpiCard({ label, period, spend, whenMissing, testId }: SpendKpiCardProps) {
   return (
     <KpiCard
       testId={testId}
       label={label}
-      value={usd(spend.spend)}
+      value={certainUsd(spend.spend, whenMissing)}
       valueClass={burnValueClass(spend.pct)}
-      sub={spend.limit == null ? `no ${period} limit set` : `of ${usd(spend.limit)} ${period} limit`}
+      sub={known(
+        spend.limit == null
+          ? `no ${period} limit set`
+          : `of ${usd(spend.limit)} ${period} limit`,
+      )}
       footer={
         <div className="costs-kpi__bar">
           {/* Spend is passed through, not defaulted: `monthly_spend_usd` is
@@ -138,6 +180,37 @@ function TeamBudgetContent({ isError, isLoading, teamRows, onRetry }: TeamBudget
 }
 
 /**
+ * Caption for the Blocked-by-budget KPI, stating coverage whenever the count
+ * does not span the whole roster.
+ *
+ * The sub-text stays a `known` statement even when the count is absent: "no
+ * team has a daily ceiling configured" is itself a fact worth telling the
+ * operator, and dashing it too would leave the card silent about why. What it
+ * may never do is assert compliance — the unconditional "no teams over the
+ * daily limit" it replaces did exactly that for teams the page never measured
+ * (AAASM-5185).
+ */
+function blockedSub(count: MeasuredCount): Certain<ReactNode> {
+  if (!isKnown(count.value)) {
+    if (count.value.state === 'unavailable') return known('daily burn could not be loaded')
+    if (count.value.state === 'unconfigured') return known('no team has a daily ceiling configured')
+    return known('no team’s daily burn could be measured')
+  }
+  if (count.total === 0) return known('no teams registered')
+  if (count.measured < count.total) {
+    const unmeasured = count.total - count.measured
+    return known(
+      `${count.measured} of ${count.total} teams measured · ${unmeasured} unmeasured`,
+    )
+  }
+  return known(
+    count.value.value === 0
+      ? 'no teams over the daily limit'
+      : 'teams at ≥95% of the org daily limit',
+  )
+}
+
+/**
  * Cost & Budget page (AAASM-3509, restructured for FE parity in AAASM-5076) —
  * replaces the `<ComingSoon>` stub at `/costs`.
  *
@@ -158,6 +231,11 @@ function TeamBudgetContent({ isError, isLoading, teamRows, onRetry }: TeamBudget
  * omitted — neither has a backing endpoint yet (AAASM-5076 / ADR-0020 /
  * AAASM-5087). Per-team agent count and monthly *spend* are restored, both being
  * on the wire already (AAASM-5160).
+ *
+ * Every figure on the KPI strip is a `Certain`, so an absence renders as `—`
+ * with its own state and tone rather than as a numeral. A compliance count that
+ * measured nothing must not be indistinguishable from one that measured
+ * everything and found nothing wrong (AAASM-5185).
  *
  * There is no Daily/Monthly period control (AAASM-5126). Both mocks
  * (`design/v1/hi-fi/costs.jsx`, and `design/v2` per ADR-0025) show the two
@@ -180,7 +258,31 @@ export function CostsPage() {
     () => joinTeamRows(overviewQuery.data, costsQuery.data),
     [overviewQuery.data, costsQuery.data],
   )
-  const kpis = useMemo(() => deriveCostKpis(costsQuery.data, teamRows), [costsQuery.data, teamRows])
+
+  // The KPI strip is fed through the truthfulness vocabulary rather than the
+  // raw query data, so an outage, an in-flight request and an unset budget stay
+  // distinguishable all the way to the rendered card instead of collapsing into
+  // a numeral (AAASM-5185). An empty `/costs` body is `unconfigured`: the
+  // endpoint answers, there is simply no budget set up behind it.
+  const costsCertain = certainFromQuery<CostSummary>(costsQuery, { whenEmpty: 'unconfigured' })
+  const overviewCertain = certainFromQuery<TopologyOverview>(overviewQuery, {
+    whenEmpty: 'unconfigured',
+  })
+  // Every per-team figure needs both halves — the roster from the overview and
+  // the spend/ceiling from the summary — so either absence disqualifies the
+  // rows. Joining them first would hand the derivation a full roster of null
+  // pairs, which is indistinguishable from a configured-but-unspent org.
+  let teamRowsCertain: Certain<readonly TeamListRow[]>
+  if (!isKnown(overviewCertain)) teamRowsCertain = propagateAbsence(overviewCertain)
+  else if (!isKnown(costsCertain)) teamRowsCertain = propagateAbsence(costsCertain)
+  else teamRowsCertain = known(teamRows)
+
+  const kpis = deriveCostKpis(costsCertain, teamRowsCertain)
+  // Which absence an unfilled spend figure is. A resolved summary that simply
+  // carries no monthly figure is `unconfigured` (the gateway only accumulates
+  // `monthly_spent_usd` behind a `has_monthly` gate); anything else inherits
+  // the query's own state, so a 503 reads `unavailable`, not "unset".
+  const spendState: TruthState = isKnown(costsCertain) ? 'unconfigured' : costsCertain.state
 
   // Agent → team map for the per-agent table, resolved from the topology graph
   // (the cost summary's per-agent rows carry no team). Best-effort: agents with
@@ -216,18 +318,31 @@ export function CostsPage() {
       </header>
 
       <div className="costs-kpis" data-testid="costs-kpis">
-        <SpendKpiCard testId="costs-kpi-daily" label="Daily spend" period="daily" spend={kpis.daily} />
+        <SpendKpiCard
+          testId="costs-kpi-daily"
+          label="Daily spend"
+          period="daily"
+          spend={kpis.daily}
+          whenMissing={spendState}
+        />
         <SpendKpiCard
           testId="costs-kpi-monthly"
           label="Monthly spend"
           period="monthly"
           spend={kpis.monthly}
+          whenMissing={spendState}
         />
+        {/* `0 across 0 teams` was the same false negative as the Blocked count:
+            an absent breakdown is not a measured emptiness. A resolved summary
+            that genuinely lists nothing still reads `0` (AAASM-5185). */}
         <KpiCard
           testId="costs-kpi-agents"
           label="Agents tracked"
-          value={String(kpis.agentsTracked)}
-          sub={`across ${kpis.teamsTracked} ${kpis.teamsTracked === 1 ? 'team' : 'teams'}`}
+          value={kpis.agentsTracked}
+          sub={mapCertain(
+            kpis.teamsTracked,
+            teams => `across ${teams} ${teams === 1 ? 'team' : 'teams'}`,
+          )}
         />
         {/* Both of these describe the *daily* window, and both now say so.
             Utilisation used to follow the period toggle while its neighbour
@@ -237,24 +352,27 @@ export function CostsPage() {
         <KpiCard
           testId="costs-kpi-utilisation"
           label="Budget utilisation"
-          value={kpis.daily.pct == null ? 'N/A' : `${kpis.daily.pct.toFixed(1)}%`}
-          sub={
+          // `N/A` was a locally-invented placeholder; the vocabulary names `—`
+          // as the one affordance for "no production value" and forbids the
+          // ad-hoc variants precisely so an operator learns to read it once.
+          value={mapCertain(certain(kpis.daily.pct, spendState), pct => `${pct.toFixed(1)}%`)}
+          sub={known(
             kpis.daily.limit == null
               ? 'no daily budget limit set'
-              : `daily · of ${usd(kpis.daily.limit)} limit`
-          }
+              : `daily · of ${usd(kpis.daily.limit)} limit`,
+          )}
           valueClass={utilisationClass(kpis.daily.pct)}
         />
         <KpiCard
           testId="costs-kpi-blocked"
           label="Blocked by budget"
-          value={String(kpis.blockedByBudget)}
-          sub={
-            kpis.blockedByBudget === 0
-              ? 'no teams over the daily limit'
-              : 'teams at ≥95% of the org daily limit'
+          value={kpis.blockedByBudget.value}
+          sub={blockedSub(kpis.blockedByBudget)}
+          valueClass={
+            isKnown(kpis.blockedByBudget.value) && kpis.blockedByBudget.value.value > 0
+              ? ' costs-kpi__value--danger'
+              : ''
           }
-          valueClass={kpis.blockedByBudget > 0 ? ' costs-kpi__value--danger' : ''}
         />
       </div>
 
@@ -269,7 +387,7 @@ export function CostsPage() {
       <CostTabs
         value={tab}
         onChange={setTab}
-        agentCount={kpis.agentsTracked}
+        agentCount={perAgentRows.length}
         teamCount={teamRows.length}
       />
 
