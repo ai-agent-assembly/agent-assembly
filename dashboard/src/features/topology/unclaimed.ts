@@ -55,13 +55,18 @@ export function isUnclaimedTeam(team: string): boolean {
  * The group key for a wire node: its `team_id`, or {@link UNCLAIMED_TEAM} when
  * no team claims it.
  *
- * `isOrphanAgent` is the authority on what "no team" means, and it already
- * treats `null`, `undefined` and `''` alike — so a node it rejects is one
- * carrying a real id.
+ * `isOrphanAgent` is the sole authority on what "no team" means, and it already
+ * treats `null`, `undefined`, `''` and whitespace-only ids alike — so a node it
+ * rejects is one carrying a real id. The `teamId` test that remains is type
+ * narrowing (`string | null | undefined` → `string`), not a second rule: it can
+ * only be falsy when `isOrphanAgent` has already returned `true`.
+ *
+ * A real id is returned **unchanged**, not trimmed, so the group still keys on
+ * exactly what was registered — the same choice `aa-api`'s `team_of` makes.
  */
 export function teamKeyOf(node: ApiNode): string {
   const teamId = node.team_id
-  return teamId && !isOrphanAgent(node) ? teamId : UNCLAIMED_TEAM
+  return !isOrphanAgent(node) && teamId ? teamId : UNCLAIMED_TEAM
 }
 
 /** How a group key should read on screen. */
