@@ -579,3 +579,78 @@ describe('FleetPage bulk resume fan-out', () => {
     await waitFor(() => expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument())
   })
 })
+
+/**
+ * AAASM-5130: the four reasons the agents view can show no rows are different
+ * facts and must not render alike. One test per state, each asserting both what
+ * that state says *and* that it does not borrow another state's affordance.
+ */
+describe('FleetPage no-rows states are distinguishable', () => {
+  it('explains a filter that matched nothing and offers to clear it', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [makeAgent({ id: '1', name: 'alpha' }), makeAgent({ id: '2', name: 'beta' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    let lastSearch = ''
+    renderFleet('/agents?q=no-such-agent', (s) => { lastSearch = s })
+
+    expect(screen.getByTestId('fleet-filter-empty')).toBeInTheDocument()
+    // A filter that excluded everything is a successful result, so neither the
+    // onboarding copy nor the failure banner may appear.
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agents-error')).not.toBeInTheDocument()
+    expect(screen.queryAllByTestId('agent-row')).toHaveLength(0)
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· 0 of 2 agents')
+
+    fireEvent.click(screen.getByTestId('fleet-filter-empty-clear'))
+
+    await waitFor(() => expect(lastSearch).toBe(''))
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('agent-row')).toHaveLength(2)
+  })
+
+  it('shows the onboarding copy and no table when the fleet is genuinely empty', () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderFleet()
+
+    expect(screen.getByTestId('agents-empty')).toBeInTheDocument()
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    // Column headers over blank space beneath the callout is the ambiguity the
+    // callout exists to remove.
+    expect(screen.queryByTestId('agents-table')).not.toBeInTheDocument()
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· 0 of 0 agents')
+  })
+
+  it('never states a fleet size when the request failed', () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() }),
+    )
+    renderFleet()
+
+    expect(screen.getByTestId('agents-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('agents-table')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    // "0 of 0 agents" would be a business claim the failed request never made.
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· — of — agents')
+    expect(screen.getByTestId('fleet-tab-agents-count')).toHaveTextContent('—')
+  })
+
+  it('never states a fleet size while the request is in flight', () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({ data: undefined, isLoading: true, isError: false, refetch: vi.fn() }),
+    )
+    renderFleet()
+
+    expect(screen.getAllByTestId('agent-row-skeleton')).toHaveLength(5)
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· — of — agents')
+  })
+})
