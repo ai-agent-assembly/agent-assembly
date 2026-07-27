@@ -1,5 +1,14 @@
+import * as monaco from 'monaco-editor'
+import { loader } from '@monaco-editor/react'
 import { Suspense, lazy } from 'react'
 import { useTheme } from '../../theme/useTheme'
+
+// Point @monaco-editor/react at the npm-bundled Monaco runtime instead of
+// its default jsDelivr CDN fetch. index.html sets `script-src 'self'`
+// (AAASM-4322), which blocks the CDN loader and stops the editor from loading
+// in any built dashboard (AAASM-5199). Configuring the loader with the local
+// package makes Vite bundle the runtime, keeping the CSP unchanged.
+loader.config({ monaco })
 
 // Lazy-load Monaco so the editor JS is fetched only when the alert
 // detail drawer actually opens — keeps the first-paint of the Alerts
