@@ -45,6 +45,45 @@ describe('serializeGraphSvg', () => {
     expect(out).toContain('xmlns="http://www.w3.org/2000/svg"')
     expect(out).toContain('<rect')
   })
+
+  it('does not write the unclaimed sentinel into the exported file', () => {
+    // The SVG leaves the app just like the JSON does, so it must not assert a
+    // team id no API returned either (AAASM-5184). `data-unclaimed` already
+    // says what the group is.
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    const cluster = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+    cluster.setAttribute('data-team', UNCLAIMED_TEAM)
+    cluster.setAttribute('data-unclaimed', 'true')
+    svg.appendChild(cluster)
+
+    const out = serializeGraphSvg(svg)
+
+    expect(out).not.toContain(UNCLAIMED_TEAM)
+    expect(out).not.toContain('data-team')
+    expect(out).toContain('data-unclaimed="true"')
+  })
+
+  it('leaves a real team cluster’s data-team intact', () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    const cluster = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+    cluster.setAttribute('data-team', 'support')
+    svg.appendChild(cluster)
+    expect(serializeGraphSvg(svg)).toContain('data-team="support"')
+  })
+
+  it('leaves the live DOM untouched', () => {
+    // The clone is what gets stripped — exporting must not mutate the canvas
+    // the operator is still looking at.
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    const cluster = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+    cluster.setAttribute('data-team', UNCLAIMED_TEAM)
+    cluster.setAttribute('data-unclaimed', 'true')
+    svg.appendChild(cluster)
+
+    serializeGraphSvg(svg)
+
+    expect(cluster.getAttribute('data-team')).toBe(UNCLAIMED_TEAM)
+  })
 })
 
 describe('triggerDownload', () => {
