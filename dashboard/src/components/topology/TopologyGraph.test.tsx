@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { TopologyGraph } from './TopologyGraph'
@@ -720,6 +720,46 @@ describe('TopologyGraph — cluster for agents with no team', () => {
     await userEvent.click(cluster)
     // The key it reports is the sentinel, which `TopologyPage` holds as a
     // truthy `selectedTeam` — the dead click of AAASM-5140 is gone.
+    expect(onTeamClick).toHaveBeenCalledWith(UNCLAIMED_TEAM)
+  })
+
+  it.each([['Enter'], [' ']])('opens the unclaimed group from the keyboard with %s', async (key) => {
+    // The cluster advertises `role="button"` and a tab stop, so the keyboard
+    // path has to work or the affordance is a lie to anyone not using a mouse.
+    const onTeamClick = vi.fn()
+    render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={onTeamClick} />)
+    const cluster = unclaimedCluster()
+    expect(cluster).toHaveAttribute('tabindex', '0')
+    cluster.focus()
+    await userEvent.keyboard(key === ' ' ? '[Space]' : `{${key}}`)
+    expect(onTeamClick).toHaveBeenCalledWith(UNCLAIMED_TEAM)
+  })
+
+  it('ignores other keys on the cluster', async () => {
+    const onTeamClick = vi.fn()
+    render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={onTeamClick} />)
+    unclaimedCluster().focus()
+    await userEvent.keyboard('{Escape}a')
+    expect(onTeamClick).not.toHaveBeenCalled()
+  })
+
+  it('does not select when the click merely concluded a pan-drag', async () => {
+    // Panning the canvas and releasing over a cluster is a pan, not a
+    // selection — `consumePanClick` swallows that click.
+    const onTeamClick = vi.fn()
+    render(<TopologyGraph nodes={MIXED} edges={[]} onTeamClick={onTeamClick} />)
+    const svg = screen.getByTestId('topology-graph')
+    const cluster = unclaimedCluster()
+
+    fireEvent.mouseDown(svg, { clientX: 0, clientY: 0 })
+    fireEvent.mouseMove(svg, { clientX: 60, clientY: 40 }) // past PAN_CLICK_THRESHOLD
+    fireEvent.mouseUp(svg, { clientX: 60, clientY: 40 })
+    fireEvent.click(cluster)
+
+    expect(onTeamClick).not.toHaveBeenCalled()
+
+    // The next click, with no drag before it, still selects.
+    await userEvent.click(cluster)
     expect(onTeamClick).toHaveBeenCalledWith(UNCLAIMED_TEAM)
   })
 
