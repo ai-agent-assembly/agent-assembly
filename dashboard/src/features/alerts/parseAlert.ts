@@ -68,11 +68,11 @@ const WIRE_STATUS: ReadonlyMap<string, AlertStatus> = new Map([
  * Stories (AAASM-1385…1389) settle on a different ladder, this table is the one
  * place that changes.
  */
-const WIRE_SEVERITY: Readonly<Record<string, Severity>> = {
-  critical: 'CRITICAL',
-  warning: 'HIGH',
-  info: 'LOW',
-}
+const WIRE_SEVERITY: ReadonlyMap<string, Severity> = new Map([
+  ['critical', 'CRITICAL'],
+  ['warning', 'HIGH'],
+  ['info', 'LOW'],
+])
 
 /** The dashboard's own vocabulary, accepted unchanged. */
 const CANONICAL_STATUS: ReadonlySet<string> = new Set<AlertStatus>([
@@ -118,7 +118,7 @@ export function canonicalSeverity(raw: unknown): Severity {
   const value = str(raw)
   if (value === null) throw new AlertShapeError('alert.severity is not a string')
   if (CANONICAL_SEVERITY.has(value)) return value as Severity
-  const mapped = WIRE_SEVERITY[value.toLowerCase()]
+  const mapped = WIRE_SEVERITY.get(value.toLowerCase())
   if (mapped) return mapped
   throw new AlertShapeError(`unrecognised alert severity: ${JSON.stringify(value)}`)
 }
