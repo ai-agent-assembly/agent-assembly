@@ -160,3 +160,4 @@
   - [0024 - Semantics of an Empty or Unavailable Policy Cascade](adr/0024-empty-cascade-semantics.md)
   - [0025 - `design/v2/` Is the Authoritative Visual Specification](adr/0025-design-v2-authoritative-visual-spec.md)
   - [0026 - Seven Open Dashboard Product-Semantics Decisions](adr/0026-open-dashboard-product-semantics.md)
+  - [0027 - The Accessibility Floor Overrides the Visual Specification](adr/0027-accessibility-floor-overrides-visual-spec.md)
