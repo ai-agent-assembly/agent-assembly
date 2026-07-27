@@ -25,6 +25,13 @@ import base from './playwright.config'
  * TO REMOVE AN ENTRY: fix the spec (or the product bug it exposes), confirm it
  * passes, delete the line. No approval needed — shrinking this list is always
  * the desired direction.
+ *
+ * EVERY ENTRY WAS RE-MEASURED on 2026-07-27 (review follow-up), individually
+ * and as a group. That pass removed `review-aaasm-5110.spec.ts`, which was
+ * listed as untriaged drift but passes 3/3 in isolation and in every group run
+ * — 12 tests had been excluded from the gate for no reason. Two entries pass
+ * locally and are quarantined for a stated environmental reason rather than
+ * for failing (`review-aaasm-5150`, `hitl-approval`); both say so below.
  */
 
 /**
@@ -77,8 +84,8 @@ const QUARANTINE = [
   'review-aaasm-5150.spec.ts',
 
   // --- Racy, not rotten (AAASM-5198) ------------------------------------
-  // The only entry here that passes in a full-suite run. Its "force layout
-  // settles" check treats two consecutive identical position samples as proof
+  // Its "force layout settles" check treats two consecutive identical
+  // position samples as proof
   // the d3 simulation stopped, which is not sound — on an idle machine the
   // samples arrive fast enough to match mid-motion, and the later
   // "cards do not move" assertion then fails against a still-moving graph.
@@ -86,20 +93,32 @@ const QUARANTINE = [
   // likely to fail the quieter the runner, which is exactly a CI runner.
   'verify-aaasm-5135.spec.ts',
 
+  // --- Needs a real Rust gateway, which this job does not provision ------
+  // NOT test rot — it passes locally (3/3 isolated). `hitl-fixture.ts` spawns
+  // `cargo test --test e2e_hitl_approval e2e_fixture_main` to boot a real
+  // `aa-api`, because this is the one spec that asserts a genuine
+  // {dashboard → REST → ApprovalQueue → REST → dashboard} round-trip instead
+  // of mocking it. The `dashboard-e2e` job installs pnpm + Node + Chromium and
+  // nothing else, so `cargo` is absent on the runner. Provisioning a Rust
+  // toolchain and a cold workspace build inside the dashboard gate would cost
+  // more than the whole suite; this spec belongs in a Rust-side e2e lane.
+  // Tracked in AAASM-5195. (It also explains the local flake: under 6-worker
+  // load the cargo build and port bind contend and it fails.)
+  'hitl-approval.spec.ts',
+
   // --- Not yet individually triaged (AAASM-5195) ------------------------
   // Assorted data-testid / behaviour drift. Listed honestly as untriaged
-  // rather than assigned a cause that has not been verified.
+  // rather than assigned a cause that has not been verified. Every entry here
+  // was re-measured on 2026-07-27 and confirmed still failing.
   'alerts-5026-verify.spec.ts',
   'alerts-design-fidelity.spec.ts',
   'analytics.spec.ts',
   'budget-burn-design-fidelity.spec.ts',
   'capability-design-fidelity.spec.ts',
   'fleet-design-fidelity.spec.ts',
-  'hitl-approval.spec.ts',
   'permissions-panel-design-fidelity.spec.ts',
   'retention-policy-design-fidelity.spec.ts',
   'review-aaasm-5084.spec.ts',
-  'review-aaasm-5110.spec.ts',
   'sandbox-enable-live.spec.ts',
   'topology-design-fidelity.spec.ts',
   'trace-design-fidelity.spec.ts',
