@@ -39,6 +39,9 @@ importers:
       d3-hierarchy:
         specifier: ^3.1.2
         version: 3.1.2
+      monaco-editor:
+        specifier: 0.55.1
+        version: 0.55.1
       openapi-fetch:
         specifier: ^0.17.0
         version: 0.17.0
