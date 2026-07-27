@@ -570,10 +570,15 @@ pub async fn get_overview(
         caller.tenant.org_id.clone()
     };
 
-    // AAASM-3483 — the tenant tag scopes the cache entry to the caller's tenant
-    // so a tenant-scoped response is never served to a different tenant.
+    // AAASM-5181 — the key must name every input that shapes the body: the
+    // caller's tenant AND the org actually queried. Keying on the tenant tag
+    // alone did not deliver the isolation the comment here used to claim: the
+    // tag is the constant `admin` for every admin caller, so `?org_id=A` and
+    // `?org_id=B` produced one key and whichever arrived second was served the
+    // first org's overview for the rest of the TTL.
     let cache_key = cache_key_of(&[
         &tenant_cache_tag(&caller),
+        &opt_part(effective_org.as_deref()),
         &opt_part(params.status.as_deref()),
         &params.min_depth.unwrap_or(0).to_string(),
         &params.show_budget.unwrap_or(false).to_string(),
