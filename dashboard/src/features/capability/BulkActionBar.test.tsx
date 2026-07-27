@@ -187,7 +187,34 @@ describe('BulkActionBar', () => {
     expect(onApply).not.toHaveBeenCalled()
   })
 
-  it('renders nothing without a selection or without resources', () => {
+  it('names a resource by its id when the projection stops carrying it', () => {
+    // A refetch can drop the selected resource while the selection survives, so
+    // the confirmation falls back to the raw id rather than naming nothing at
+    // all — a confirmation with a blank subject is not a confirmation.
+    const { rerender } = render(
+      <BulkActionBar
+        count={2}
+        resources={RESOURCES}
+        verb="write"
+        onApply={vi.fn()}
+        onClear={vi.fn()}
+      />,
+    )
+    fireEvent.change(decisionSelect(), { target: { value: 'deny' } })
+    rerender(
+      <BulkActionBar
+        count={2}
+        resources={[{ id: 'vault', name: 'vault', group: 'infra', paths: ['vault/*'] }]}
+        verb="write"
+        onApply={vi.fn()}
+        onClear={vi.fn()}
+      />,
+    )
+    fireEvent.click(applyButton())
+    expect(screen.getByLabelText('confirm override')).toHaveTextContent('gmail')
+  })
+
+  it('renders nothing without a selection', () => {
     const { container } = render(
       <BulkActionBar
         count={0}
@@ -196,6 +223,13 @@ describe('BulkActionBar', () => {
         onApply={vi.fn()}
         onClear={vi.fn()}
       />,
+    )
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('renders nothing when the projection carries no resources', () => {
+    const { container } = render(
+      <BulkActionBar count={2} resources={[]} verb="write" onApply={vi.fn()} onClear={vi.fn()} />,
     )
     expect(container).toBeEmptyDOMElement()
   })
