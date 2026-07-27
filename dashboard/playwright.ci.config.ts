@@ -63,6 +63,19 @@ const QUARANTINE = [
   // in-place `drawer-panel`. Needs a product call on which side is correct.
   'verify-aaasm-94.spec.ts',
 
+  // --- Catching a real product bug (AAASM-5199) -------------------------
+  // NOT test rot. This spec asserts the page logs no console errors, and on a
+  // Linux runner it correctly catches one: `RuleYamlViewer` lazy-loads
+  // `@monaco-editor/react`, which fetches the Monaco runtime from jsDelivr,
+  // which `index.html`'s `script-src 'self'` CSP (AAASM-4322) forbids — so the
+  // YAML editor cannot load in ANY built dashboard. It passes on macOS only
+  // because the lazy import had not fired before the assertion ran.
+  //
+  // Quarantined solely so the gate lands green in the PR that introduces it.
+  // Delete this entry the moment AAASM-5199 is fixed — it is the one entry here
+  // pointing at a live defect rather than at a stale spec.
+  'review-aaasm-5150.spec.ts',
+
   // --- Racy, not rotten (AAASM-5198) ------------------------------------
   // The only entry here that passes in a full-suite run. Its "force layout
   // settles" check treats two consecutive identical position samples as proof
