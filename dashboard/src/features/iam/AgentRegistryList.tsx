@@ -9,11 +9,11 @@ import './AgentRegistryList.css'
  * emits — see `agentStatusVariant` for why these are capitalised Rust variant
  * names and not the lowercase capability-matrix enum.
  */
-const STATUS_CLASS: Record<string, string> = {
-  Active: 'iam-agent-status--active',
-  Suspended: 'iam-agent-status--suspended',
-  Deregistered: 'iam-agent-status--deregistered',
-}
+const STATUS_CLASS = new Map<string, string>([
+  ['Active', 'iam-agent-status--active'],
+  ['Suspended', 'iam-agent-status--suspended'],
+  ['Deregistered', 'iam-agent-status--deregistered'],
+])
 
 /**
  * Render the registry's own word for the agent's status.
@@ -26,7 +26,7 @@ const STATUS_CLASS: Record<string, string> = {
  * the outer variant, so a payload cannot cost a suspended agent its colour.
  */
 function StatusChip({ status }: Readonly<{ status: string }>) {
-  const toneClass = STATUS_CLASS[agentStatusVariant(status)] ?? 'iam-agent-status--other'
+  const toneClass = STATUS_CLASS.get(agentStatusVariant(status)) ?? 'iam-agent-status--other'
   return (
     <span className={`iam-agent-status ${toneClass}`} data-status={status} title={status}>
       {status}
