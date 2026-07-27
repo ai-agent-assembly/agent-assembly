@@ -36,11 +36,22 @@ export function buildGraphJson(
  * Clones the node so the live DOM is untouched, stamps the SVG namespace (a
  * detached clone loses the implicit one the browser adds), and prepends an XML
  * prolog so the result opens as a standalone `.svg` file.
+ *
+ * The unclaimed cluster's `data-team` is dropped from the clone for the same
+ * reason {@link buildGraphJson} unwinds the sentinel to `null` (AAASM-5184):
+ * this is a file that leaves the app, and `data-team="__orphan__"` would assert
+ * a team id no API ever returned. Removing the attribute — rather than blanking
+ * it — is the honest encoding, because `data-unclaimed="true"` on the same
+ * element already carries the fact, and an empty `data-team` is exactly the
+ * blank-team claim the ticket exists to stop making.
  */
 export function serializeGraphSvg(svg: SVGSVGElement): string {
   const clone = svg.cloneNode(true) as SVGSVGElement
   clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
   clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink')
+  for (const el of clone.querySelectorAll('[data-unclaimed="true"][data-team]')) {
+    el.removeAttribute('data-team')
+  }
   const body = new XMLSerializer().serializeToString(clone)
   return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n${body}`
 }
