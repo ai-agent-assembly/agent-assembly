@@ -131,7 +131,13 @@ test.describe('AAASM-5090 — real capability matrix', () => {
       await page.screenshot({ path: `${EVIDENCE_DIR}/capability-per-agent-${theme}.png`, fullPage: true })
 
       // --- Per-resource tab: lastSeen is formatted from the real ISO stamp. ---
+      // Since AAASM-5125 the page lands on the verb the projection populates
+      // most (EXEC here, not the old hard-coded WRITE), and the per-resource
+      // tree defaults to the first resource (Filesystem). No agent declares
+      // EXEC on Filesystem, so that pairing is empty; select Terminal, on which
+      // checkout-agent (lastSeen 2m ago) declares EXEC, to show a formatted row.
       await page.getByRole('button', { name: 'Per-resource' }).click()
+      await page.getByTestId('per-resource-node-terminal').click()
       await expect(page.getByText('2m ago').first()).toBeVisible()
       await page.screenshot({ path: `${EVIDENCE_DIR}/capability-per-resource-${theme}.png`, fullPage: true })
     })
