@@ -36,7 +36,7 @@ globalThis.ResizeObserver = ResizeObserverStub
  * (AAASM-5185).
  */
 function mockQuery<T>(p: Record<string, unknown>): UseQueryResult<T, Error> {
-  return p as unknown as UseQueryResult<T, Error>
+  return { isPending: p.isLoading === true, ...p } as unknown as UseQueryResult<T, Error>
 }
 
 function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
@@ -101,6 +101,7 @@ function setupMocks(
     mockQuery<TopologyOverview>({
       data: overview,
       isLoading: opts.isLoading ?? false,
+      isPending: opts.isPending ?? opts.isLoading ?? false,
       isError: false,
       refetch: vi.fn(),
     }),
@@ -109,6 +110,7 @@ function setupMocks(
     mockQuery<CostSummary>({
       data: costs,
       isLoading: opts.isLoading ?? false,
+      isPending: opts.isPending ?? opts.isLoading ?? false,
       isError: opts.isError ?? false,
       refetch: vi.fn(),
     }),
@@ -624,6 +626,44 @@ describe('CostsPage — AAASM-5185: a caption never describes a budget it did no
     expect(within(screen.getByTestId('costs-kpi-daily')).getByText('no daily limit set')).toBeInTheDocument()
   })
 
+  it('reports an in-flight burn as pending, not as one that could not be measured', async () => {
+    // `certainFromQuery` gives an in-flight request the same `unknown` state as
+    // a roster examined and found unmeasurable, so the Blocked caption claimed
+    // a measurement had been attempted and failed while the request was still
+    // running. TanStack sets `isPending` — which is what `certainFromQuery`
+    // reads — so the mock must too.
+    setupMocks(OVERVIEW, undefined, { isPending: true, isLoading: true })
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
+    expect(within(blocked).getByTestId('costs-kpi-blocked-value').dataset.truthState).toBe('unknown')
+    expect(within(blocked).queryByText('no team’s daily burn could be measured')).not.toBeInTheDocument()
+    expect(within(blocked).getByText('waiting for the daily burn figures')).toBeInTheDocument()
+
+    expect(
+      within(screen.getByTestId('costs-kpi-daily')).getByText('waiting for the daily budget'),
+    ).toBeInTheDocument()
+  })
+
+  it('still reports a resolved roster with no measurable burn as unmeasurable', async () => {
+    // The counterpart the in-flight branch must not absorb: both queries
+    // resolved, rows exist, ceilings exist, and no spend was measured.
+    const ceilingsNoSpend: CostSummary = {
+      date: '2026-05-13',
+      daily_spend_usd: '0.00',
+      daily_limit_usd: '200.00',
+      per_agent: [],
+      per_team: [],
+    }
+    setupMocks(OVERVIEW, ceilingsNoSpend)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
+    expect(within(blocked).getByTestId('costs-kpi-blocked-value').dataset.truthState).toBe('unknown')
+    expect(within(blocked).getByText('no team’s daily burn could be measured')).toBeInTheDocument()
+  })
 })
 
 describe('CostsPage — AAASM-5185: a configured $0 ceiling gets one answer, not three', () => {

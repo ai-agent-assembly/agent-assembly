@@ -223,7 +223,19 @@ function TeamBudgetContent({ isError, isLoading, teamRows, onRetry }: TeamBudget
  */
 function blockedSub(count: MeasuredCount): Certain<ReactNode> {
   if (!isKnown(count.value)) {
-    if (count.value.state === 'unavailable') return known('daily burn could not be loaded')
+    // `total` is the structural difference between "the roster never arrived,
+    // so nothing was examined" and "rows were examined and none proved
+    // measurable". Only the second may be reported as a failed measurement: an
+    // in-flight request has not failed to measure anything, it has not
+    // finished, and `certainFromQuery` gives it the same `unknown` state as a
+    // genuinely unmeasurable roster. Keying off `total` rather than the
+    // absence `detail` keeps that distinction structural instead of a string
+    // match (AAASM-5185).
+    if (count.total === 0) {
+      if (count.value.state === 'unavailable') return known('daily burn could not be loaded')
+      if (count.value.state === 'unknown') return known('waiting for the daily burn figures')
+      return known('no daily burn figures were reported')
+    }
     if (count.value.state === 'unconfigured') return known('no team has a daily ceiling configured')
     return known('no team’s daily burn could be measured')
   }
