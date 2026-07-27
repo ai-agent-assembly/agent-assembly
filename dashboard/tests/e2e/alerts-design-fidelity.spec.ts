@@ -160,7 +160,7 @@ const ALERT_DETAIL = {
 }
 
 async function injectToken(page: Page) {
-  await page.addInitScript(() => localStorage.setItem('aa_token', 'aaasm1395-token'))
+  await page.addInitScript(() => sessionStorage.setItem('aa_token', 'aaasm1395-token'))
 }
 
 async function mockApi(page: Page) {

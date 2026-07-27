@@ -153,7 +153,7 @@ const LIVE_TOPOLOGY = {
 
 async function injectToken(page: Page) {
   await page.addInitScript(() => {
-    localStorage.setItem('aa_token', 'e2e-smoke-token')
+    sessionStorage.setItem('aa_token', 'e2e-smoke-token')
   })
 }
 

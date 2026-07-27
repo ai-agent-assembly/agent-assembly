@@ -36,7 +36,7 @@ test.describe('Approvals — AAASM-1571 ST-P-5: HITL gate via real gateway', () 
     // Project-wide auth shim: the dashboard reads `aa_token` from
     // localStorage for the bearer header.
     await page.addInitScript(() => {
-      localStorage.setItem('aa_token', 'e2e-test-token')
+      sessionStorage.setItem('aa_token', 'e2e-test-token')
     })
 
     // The fixture has no event broadcast plumbing; abort the WS so the

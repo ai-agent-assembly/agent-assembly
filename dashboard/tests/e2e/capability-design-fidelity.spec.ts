@@ -33,7 +33,7 @@ const HIFI_TOKENS = {
 
 async function injectToken(page: Page) {
   await page.addInitScript(() =>
-    localStorage.setItem('aa_token', 'capability-fidelity-token'),
+    sessionStorage.setItem('aa_token', 'capability-fidelity-token'),
   )
 }
 

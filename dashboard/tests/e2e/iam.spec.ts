@@ -14,7 +14,7 @@ const SCREENSHOT_DIR = 'tests/__screenshots__/AAASM-1087'
 
 async function injectToken(page: Page) {
   await page.addInitScript(() => {
-    localStorage.setItem('aa_token', 'e2e-test-token')
+    sessionStorage.setItem('aa_token', 'e2e-test-token')
   })
 }
 

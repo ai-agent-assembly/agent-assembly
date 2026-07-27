@@ -94,7 +94,7 @@ const AGENTS = [ACTIVE_AGENT, FLAGGED_AGENT, SUSPENDED_AGENT]
 
 async function injectToken(page: Page) {
   await page.addInitScript(() =>
-    localStorage.setItem('aa_token', 'design-fidelity-token'),
+    sessionStorage.setItem('aa_token', 'design-fidelity-token'),
   )
 }
 

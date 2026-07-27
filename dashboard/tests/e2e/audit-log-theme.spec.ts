@@ -57,7 +57,7 @@ const LOGS = [
 async function seed(page: Page, theme: Theme) {
   await page.addInitScript(
     (opts: { key: string; theme: string }) => {
-      localStorage.setItem('aa_token', 'audit-e2e-token')
+      sessionStorage.setItem('aa_token', 'audit-e2e-token')
       localStorage.setItem(opts.key, opts.theme)
     },
     { key: THEME_KEY, theme },
