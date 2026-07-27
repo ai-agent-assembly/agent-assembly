@@ -27,7 +27,9 @@
  *     row, because the span schema has no severity field — is not offered;
  *  7. a span that *was* measured still prints its duration, so the guards did
  *     not simply blank the column;
- *  8. neither theme produces console errors or uncaught exceptions.
+ *  8. a child span is drawn indented under its parent, and an orphaned or
+ *     cyclic parent chain still renders flat instead of hanging (AAASM-5109);
+ *  9. neither theme produces console errors or uncaught exceptions.
  *
  * `openapi-fetch` captures `globalThis.fetch` at module load, so the trace
  * response is injected with `page.route` and the token seeded with
@@ -324,6 +326,66 @@ test.describe('AAASM-5109 / 5165 review — Trace calls a real route and admits 
       await expect(page.getByTestId('trace-unavailable')).toHaveCount(0)
 
       await shot(page, `trace-empty-${theme}`)
+      expect(harness.errors).toEqual([])
+    })
+
+
+    test(`child spans are indented under their parent — ${theme}`, async ({ page }) => {
+      // AAASM-5109 lists `parent_span_id` -> nesting as target behaviour. The
+      // run asserts the *drawn* offset, not merely that a prop was threaded
+      // through: a `data-depth` attribute with no visual consequence would
+      // satisfy the ticket on paper and change nothing an operator sees.
+      const harness = await bootstrap(page, theme, {
+        spans: [
+          span({ span_id: 'root', operation: 'ToolCallIntercepted' }),
+          span({ span_id: 'child', parent_span_id: 'root', operation: 'ToolDispatched' }),
+          span({ span_id: 'grandchild', parent_span_id: 'child', operation: 'PolicyViolation' }),
+        ],
+      })
+      await navigate(page, TRACE_PATH)
+
+      const rows = page.getByTestId('trace-event')
+      await expect(rows).toHaveCount(3)
+      await expect(rows.nth(0)).toHaveAttribute('data-depth', '0')
+      await expect(rows.nth(1)).toHaveAttribute('data-depth', '1')
+      await expect(rows.nth(2)).toHaveAttribute('data-depth', '2')
+
+      // Real, computed indentation — strictly increasing left offset.
+      const offsets = await rows.evaluateAll((els) =>
+        els.map((el) => el.getBoundingClientRect().left),
+      )
+      expect(offsets[1]).toBeGreaterThan(offsets[0])
+      expect(offsets[2]).toBeGreaterThan(offsets[1])
+
+      await shot(page, `nesting-${theme}`)
+      expect(harness.errors).toEqual([])
+    })
+
+    test(`an orphaned or cyclic parent chain still renders — ${theme}`, async ({ page }) => {
+      // Neither case should be emitted, and nothing on the wire forbids either:
+      // `build_trace_from_audit` scans a bounded window so a parent can fall
+      // outside it, and no producer validates against a loop. Both must render
+      // flat rather than hang the page or throw.
+      const harness = await bootstrap(page, theme, {
+        spans: [
+          span({ span_id: 'orphan', parent_span_id: 'not-in-this-response' }),
+          span({ span_id: 'loop-a', parent_span_id: 'loop-b' }),
+          span({ span_id: 'loop-b', parent_span_id: 'loop-a' }),
+        ],
+      })
+      await navigate(page, TRACE_PATH)
+
+      const rows = page.getByTestId('trace-event')
+      await expect(rows).toHaveCount(3)
+      for (let i = 0; i < 3; i += 1) {
+        await expect(rows.nth(i)).toHaveAttribute('data-depth', '0')
+      }
+
+      const offsets = await rows.evaluateAll((els) =>
+        els.map((el) => el.getBoundingClientRect().left),
+      )
+      expect(new Set(offsets).size).toBe(1)
+
       expect(harness.errors).toEqual([])
     })
 
