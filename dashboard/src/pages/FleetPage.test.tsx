@@ -196,9 +196,15 @@ describe('FleetPage loading and error states', () => {
   it('renders skeleton rows while loading', () => {
     // `isPending` alongside `isLoading`: the page reads the former, so without
     // it this mock reached the skeleton via the empty-payload fallback rather
-    // than the pending branch it means to exercise (AAASM-5130). The other two
-    // cases in this block are flag-independent — `data: []` is known and
-    // `isError: true` is unavailable whatever the pending flag says.
+    // than the pending branch it means to exercise (AAASM-5130).
+    //
+    // `certainFromQuery` resolves error -> pending -> empty payload
+    // (`query.ts:103-111`), so of the two cases below only the `isError: true`
+    // one is genuinely flag-independent: error outranks pending. `data: []` is
+    // *not* — adding `isPending: true` to it yields `unknown` and the
+    // empty-state callout disappears. It is left without the flag because
+    // omitting it reads as not-pending, which is the settled success that test
+    // describes; it is incomplete, not wrong.
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
       mockQuery<Agent[]>({
         data: undefined,
