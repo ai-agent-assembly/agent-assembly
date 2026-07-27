@@ -12,6 +12,8 @@
  *  1. a failed `GET /api/v1/alerts` renders the shared `—` marker in the Alerts
  *     rail slot, tagged `unavailable`, with no digit visible anywhere in the
  *     chip (AAASM-5149);
+ *  1b. a *successful* response whose rows are unreadable lands in exactly the
+ *     same place — a 200 we cannot parse is not an empty fleet (AAASM-5149);
  *  2. a *loaded* fleet counts only what is still firing — a resolved and a
  *     suppressed CRITICAL do not keep the badge alight (AAASM-5149);
  *  3. a loaded fleet with nothing firing renders no badge and no marker: a
@@ -79,17 +81,32 @@ const POLICIES = [
   },
 ]
 
+/**
+ * One alert row exactly as `aa-api` serialises it.
+ *
+ * Transcribed from `AlertResponse` (aa-api/src/routes/alerts.rs:376-395) and
+ * `StoredAlert` (aa-api/src/alerts/mod.rs:29-115): snake_case keys, lower-case
+ * `severity` (`info` / `warning` / `critical`), and `status` drawn from
+ * `unresolved` / `resolved` / `suppressed`.
+ *
+ * These fixtures deliberately speak the *backend's* dialect, not the
+ * dashboard's. Written the other way round — as they were on the first pass —
+ * they cannot detect the defect that mattered most here: the badge predicate
+ * compared against a vocabulary the wire never sends, so it counted zero for
+ * every live response, and a known zero renders no badge at all. The run is
+ * only end-to-end if the payload is the one the server actually returns.
+ */
 function alert(id: string, severity: string, status: string) {
   return {
     id,
-    ruleId: 'r1',
-    ruleName: 'budget breach',
     severity,
+    category: 'budget',
+    message: 'Budget threshold 90% crossed',
+    timestamp: '2026-06-01T10:00:00Z',
+    agent_id: 'support-agent',
+    team_id: null,
     status,
-    agentId: 'support-agent',
-    firstFiredAt: '2026-06-01T10:00:00Z',
-    resolvedAt: status === 'RESOLVED' ? '2026-06-01T11:00:00Z' : null,
-    destinationIds: [],
+    updated_at: status === 'resolved' ? '2026-06-01T11:00:00Z' : null,
   }
 }
 
@@ -102,15 +119,34 @@ function alert(id: string, severity: string, status: string) {
  */
 const ALERTS_MIXED = {
   items: [
-    alert('al-1', 'CRITICAL', 'FIRING'),
-    alert('al-2', 'CRITICAL', 'RESOLVED'),
-    alert('al-3', 'CRITICAL', 'SUPPRESSED'),
-    alert('al-4', 'HIGH', 'FIRING'),
+    alert('al-1', 'critical', 'unresolved'),
+    alert('al-2', 'critical', 'resolved'),
+    alert('al-3', 'critical', 'suppressed'),
+    alert('al-4', 'warning', 'unresolved'),
   ],
+  total: 4,
+  page: 1,
+  per_page: 50,
 }
 
 /** A fleet that loaded cleanly and genuinely has nothing critical firing. */
-const ALERTS_QUIET = { items: [alert('al-4', 'HIGH', 'FIRING')] }
+const ALERTS_QUIET = {
+  items: [alert('al-4', 'warning', 'unresolved')],
+  total: 1,
+  page: 1,
+  per_page: 50,
+}
+
+/**
+ * A 200 whose rows the client cannot read.
+ *
+ * Distinct from a 503: the request succeeded, so nothing in the transport layer
+ * is wrong — only the payload is unintelligible. That must still land on
+ * `unavailable`, never on a confident zero (AAASM-5149).
+ */
+const ALERTS_UNREADABLE = {
+  items: [{ id: 'al-9', severity: 'catastrophic', status: 'acknowledged' }],
+}
 
 interface Harness {
   errors: string[]
@@ -225,6 +261,26 @@ test.describe('AAASM-5149 / 5134 review — the rail claims only what it knows',
 
       await shot(page, `alerts-outage-${theme}`)
       await railShot(page, `alerts-outage-rail-${theme}`)
+      expect(harness.errors).toEqual([])
+    })
+
+    test(`a 200 carrying unreadable rows never reads as zero critical — ${theme}`, async ({
+      page,
+    }) => {
+      // The second half of the same defect. A payload in a vocabulary the
+      // client cannot parse used to be cast straight to `Alert[]`, match
+      // nothing, and total to zero — a successful request quietly asserting a
+      // healthy fleet. It must land exactly where a failed request lands.
+      const harness = await bootstrap(page, theme, { alerts: ALERTS_UNREADABLE })
+      await navigate(page, '/agents')
+
+      const marker = page.getByTestId('nav-badge-absent-alerts')
+      await expect(marker).toHaveAttribute('data-truth-state', 'unavailable', {
+        timeout: OUTAGE_SETTLE_MS,
+      })
+      expect(await sightedBadgeText(page)).toBe('—')
+
+      await railShot(page, `alerts-unreadable-rail-${theme}`)
       expect(harness.errors).toEqual([])
     })
 
