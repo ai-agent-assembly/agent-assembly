@@ -63,10 +63,15 @@ export function TraceViewPage({ agentId, sessionId: sessionIdProp }: TraceViewPa
   const agentLabel = agent?.name ?? id
   const [filter, setFilter] = useState<SeverityFilter>(ALL_ON)
   const [selectedEvent, setSelectedEvent] = useState<TraceEvent | null>(null)
-  const severityFilterable = useMemo(() => hasKnownSeverity(data ?? []), [data])
+  // Coalesced once. Repeating `data ?? []` inside each arm of the filter
+  // choice left one arm's fallback unreachable — `data` is always defined by
+  // the time a severity is known — which reads as an untested branch when it
+  // is really a branch that cannot be taken.
+  const events = useMemo(() => data ?? [], [data])
+  const severityFilterable = useMemo(() => hasKnownSeverity(events), [events])
   const filteredEvents = useMemo(
-    () => (severityFilterable ? applyFilter(data ?? [], filter) : (data ?? [])),
-    [data, filter, severityFilterable],
+    () => (severityFilterable ? applyFilter(events, filter) : events),
+    [events, filter, severityFilterable],
   )
 
   return (
