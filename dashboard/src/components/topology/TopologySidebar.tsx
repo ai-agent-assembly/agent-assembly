@@ -46,6 +46,12 @@ export interface TopologySidebarProps {
 
 const ALL = 'all'
 
+/** Row bullet: the all-teams target, the unclaimed warning, or a plain team. */
+function filterMark(id: string, unclaimed: boolean): string {
+  if (id === ALL) return '◎'
+  return unclaimed ? '⚠' : '○'
+}
+
 /** Status-stripe legend rows — colours match the node stripe CSS. */
 const STATUS_LEGEND: ReadonlyArray<{ readonly color: string; readonly label: string }> = [
   { color: 'var(--ok)', label: 'active' },
@@ -150,7 +156,7 @@ export function TopologySidebar({
                 aria-pressed={isActive}
                 onClick={() => onFilterTeam(opt.id)}
               >
-                <span className="topo-sidebar__team-mark">{opt.id === ALL ? '◎' : unclaimed ? '⚠' : '○'}</span>
+                <span className="topo-sidebar__team-mark">{filterMark(opt.id, unclaimed)}</span>
                 {opt.label}
               </button>
             )

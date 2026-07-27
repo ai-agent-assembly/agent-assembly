@@ -28,6 +28,95 @@ const SIZE_VARIANT: Record<'small' | 'medium' | 'large', { w: number; h: number 
 
 const CLUSTER_PADDING = 18
 const TEAM_LABEL_HEIGHT = 36
+
+/** A cluster's geometry plus the per-team aggregates its overlay renders. */
+interface ClusterBox extends TeamLayoutEntry {
+  readonly x: number
+  readonly y: number
+  readonly w: number
+  readonly h: number
+}
+
+interface TeamClusterProps {
+  readonly cluster: ClusterBox
+  readonly selected: boolean
+  readonly onTeamClick?: (team: string) => void
+  /** True when the click concluded a pan-drag, which must not also select. */
+  readonly consumePanClick: () => boolean
+}
+
+/**
+ * One team's cluster box: outline, label, and budget bar.
+ *
+ * Its own component rather than an inline `clusters.map` body so the group's
+ * a11y wiring and the unclaimed-group treatment read as one unit instead of a
+ * stack of ternaries inside the canvas render.
+ *
+ * Agents no team claims form their own named group (AAASM-5184). AAASM-5140
+ * had left that cluster inert because it was keyed by the empty string, which
+ * `TopologyPage` reads as falsy — the click opened nothing, so an affordance
+ * with no successful path was worse than none. Now that the group carries a
+ * real key and a real label the panel does open, so it is selectable like any
+ * other cluster.
+ */
+function TeamCluster({ cluster: c, selected, onTeamClick, consumePanClick }: TeamClusterProps) {
+  const unclaimed = isUnclaimedTeam(c.team)
+  const label = teamLabel(c.team)
+
+  const handleClick = (e: ReactMouseEvent<SVGGElement>) => {
+    e.stopPropagation()
+    if (!consumePanClick()) onTeamClick?.(c.team)
+  }
+  const handleKeyDown = (e: KeyboardEvent<SVGGElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onTeamClick?.(c.team)
+    }
+  }
+
+  return (
+    <g
+      className={`topology-cluster${unclaimed ? ' topology-cluster--unclaimed' : ''}`}
+      data-testid="team-cluster"
+      data-team={c.team}
+      data-unclaimed={unclaimed ? 'true' : undefined}
+      data-selected={selected ? 'true' : undefined}
+      data-selectable={onTeamClick ? undefined : 'false'}
+      role={onTeamClick ? 'button' : undefined}
+      tabIndex={onTeamClick ? 0 : undefined}
+      aria-label={clusterLabel(unclaimed, label, onTeamClick !== undefined)}
+      style={onTeamClick ? { cursor: 'pointer' } : undefined}
+      onClick={onTeamClick ? handleClick : undefined}
+      onKeyDown={onTeamClick ? handleKeyDown : undefined}
+    >
+      <rect className="topology-cluster__outline" x={c.x} y={c.y} width={c.w} height={c.h} rx={10} />
+      <foreignObject
+        x={c.x + 8}
+        y={c.y + 6}
+        width={Math.max(160, c.w - 16)}
+        height={TEAM_LABEL_HEIGHT + TEAM_BUDGET_BAR_HEIGHT}
+      >
+        <div className="topology-cluster__overlay" data-testid="team-cluster-overlay">
+          <Tooltip content={`${label} · ${c.memberCount} member${c.memberCount === 1 ? '' : 's'} · $${c.spent.toFixed(0)} / ${formatLimit(c.limit, 0)}`}>
+            <span className="topology-cluster__label" data-testid="team-cluster-label">
+              {unclaimed ? `⚠ ${label}` : label}
+            </span>
+          </Tooltip>
+          {/* The bar is labelled with the group's display name, not its
+              sentinel key — `TeamBudgetBar` renders `team` as visible text and
+              is shared with the Costs page. */}
+          <TeamBudgetBar team={label} spent={c.spent} limit={c.limit} />
+        </div>
+      </foreignObject>
+    </g>
+  )
+}
+
+/** Accessible name for a cluster, or none when it is not interactive. */
+function clusterLabel(unclaimed: boolean, label: string, selectable: boolean): string | undefined {
+  if (!selectable) return undefined
+  return unclaimed ? 'Inspect agents belonging to no team' : `Inspect team ${label}`
+}
 const TEAM_BUDGET_BAR_HEIGHT = 32
 
 /**
@@ -562,68 +651,15 @@ export function TopologyGraph({
         transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}
       >
       {/* Team clusters (drawn under nodes) */}
-      {clusters.map(c => {
-        // Agents no team claims form their own named group (AAASM-5184).
-        //
-        // AAASM-5140 left this cluster inert because it was keyed by the empty
-        // string, which `TopologyPage` reads as falsy — the click opened
-        // nothing, so an affordance with no successful path was worse than
-        // none. Now that the group carries a real key and a real label, the
-        // panel does open, and the cluster is selectable like any other.
-        const unclaimed = isUnclaimedTeam(c.team)
-        const label = teamLabel(c.team)
-        const selectable = onTeamClick !== undefined
-        return (
-        <g
+      {clusters.map(c => (
+        <TeamCluster
           key={`cluster-${c.team}`}
-          className={`topology-cluster${unclaimed ? ' topology-cluster--unclaimed' : ''}`}
-          data-testid="team-cluster"
-          data-team={c.team}
-          data-unclaimed={unclaimed ? 'true' : undefined}
-          data-selectable={selectable ? undefined : 'false'}
-          data-selected={selectedTeam === c.team ? 'true' : undefined}
-          role={selectable ? 'button' : undefined}
-          tabIndex={selectable ? 0 : undefined}
-          aria-label={
-            selectable
-              ? (unclaimed ? 'Inspect agents belonging to no team' : `Inspect team ${label}`)
-              : undefined
-          }
-          style={selectable ? { cursor: 'pointer' } : undefined}
-          onClick={selectable ? (e) => { e.stopPropagation(); if (!consumePanClick()) onTeamClick(c.team) } : undefined}
-          onKeyDown={selectable ? (e: KeyboardEvent<SVGGElement>) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onTeamClick(c.team) }
-          } : undefined}
-        >
-          <rect
-            className="topology-cluster__outline"
-            x={c.x}
-            y={c.y}
-            width={c.w}
-            height={c.h}
-            rx={10}
-          />
-          <foreignObject
-            x={c.x + 8}
-            y={c.y + 6}
-            width={Math.max(160, c.w - 16)}
-            height={TEAM_LABEL_HEIGHT + TEAM_BUDGET_BAR_HEIGHT}
-          >
-            <div className="topology-cluster__overlay" data-testid="team-cluster-overlay">
-              <Tooltip content={`${label} · ${c.memberCount} member${c.memberCount === 1 ? '' : 's'} · $${c.spent.toFixed(0)} / ${formatLimit(c.limit, 0)}`}>
-                <span className="topology-cluster__label" data-testid="team-cluster-label">
-                  {unclaimed ? `⚠ ${label}` : label}
-                </span>
-              </Tooltip>
-              {/* The bar is labelled with the group's display name, not its
-                  sentinel key — `TeamBudgetBar` renders `team` as visible text
-                  and is shared with the Costs page. */}
-              <TeamBudgetBar team={label} spent={c.spent} limit={c.limit} />
-            </div>
-          </foreignObject>
-        </g>
-        )
-      })}
+          cluster={c}
+          selected={selectedTeam === c.team}
+          onTeamClick={onTeamClick}
+          consumePanClick={consumePanClick}
+        />
+      ))}
 
       {/* Relationship edges — above the cluster fills, under the node cards so
           nodes sit on top and arrowheads land on the target card border. */}
