@@ -53,6 +53,20 @@ fn parse_agent_id(id: &str) -> Result<[u8; 16], ProblemDetail> {
     })
 }
 
+/// The record's team, treating a blank `team_id` as no team at all.
+///
+/// "This agent has no team" reaches the topology projection in two shapes: the
+/// registry stores `None` when no team was given, but also accepts `Some("")` —
+/// `validate_tenant_id` (AAASM-4190) rejects only control characters, not an
+/// empty or whitespace-only id. Both must group as *no team*. Admitting a blank
+/// id as a team invents one that does not exist: it inflates `team_count`, and
+/// the group it creates has no name to render (AAASM-5182). The id is returned
+/// unchanged when it is not blank, so grouping still keys on exactly what was
+/// registered.
+fn team_of(record: &AgentRecord) -> Option<&str> {
+    record.team_id.as_deref().filter(|team| !team.trim().is_empty())
+}
+
 fn matches_status_filter(status: &AgentStatus, filter: &str) -> bool {
     match filter.to_ascii_lowercase().as_str() {
         "active" => matches!(status, AgentStatus::Active),
@@ -614,10 +628,13 @@ pub async fn get_overview(
 
     let total_agent_count = filtered.len();
 
+    // AAASM-5182 — group on `team_of`, not on `team_id.is_some()`: a blank
+    // `team_id` is no team, and letting it open an entry here reported a team
+    // that does not exist in both `team_count` and `teams`.
     let mut team_map: HashMap<String, (usize, usize)> = HashMap::new();
     for r in &filtered {
-        if let Some(tid) = &r.team_id {
-            let entry = team_map.entry(tid.clone()).or_insert((0, 0));
+        if let Some(tid) = team_of(r) {
+            let entry = team_map.entry(tid.to_owned()).or_insert((0, 0));
             entry.0 += 1;
             if r.depth == 0 {
                 entry.1 += 1;
@@ -641,9 +658,12 @@ pub async fn get_overview(
         v
     };
 
+    // AAASM-5182 — the same definition of "no team" as `team_map` above, so a
+    // blank-team root is listed here instead of falling out of the team
+    // breakdown and this list both, present only in `total_agent_count`.
     let mut standalone_root_agents: Vec<AgentNode> = filtered
         .iter()
-        .filter(|r| r.depth == 0 && r.team_id.is_none())
+        .filter(|r| r.depth == 0 && team_of(r).is_none())
         .map(|r| {
             let mut node = AgentNode::from(*r);
             if show_budget {
@@ -998,8 +1018,12 @@ pub async fn get_stats(
             AgentStatus::Suspended(_) => suspended_count += 1,
             AgentStatus::Deregistered => deregistered_count += 1,
         }
-        if let Some(tid) = &r.team_id {
-            *team_sizes.entry(tid.clone()).or_insert(0) += 1;
+        // AAASM-5182 — same "no team" rule as the overview's team breakdown, so
+        // the two surfaces cannot report different team counts for one registry:
+        // a blank `team_id` is not a team here either, and a blank-team spawned
+        // agent is the orphan it actually is.
+        if let Some(tid) = team_of(r) {
+            *team_sizes.entry(tid.to_owned()).or_insert(0) += 1;
         } else if r.depth > 0 {
             orphan_count += 1;
         }
