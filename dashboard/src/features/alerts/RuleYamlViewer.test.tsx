@@ -3,12 +3,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Theme } from '../../theme/useTheme'
 import { RuleYamlViewer } from './RuleYamlViewer'
 
+// Shared with the hoisted vi.mock factories below via vi.hoisted so they are
+// defined before the mocks run. `bundledMonaco` stands in for the npm Monaco
+// runtime (kept out of jsdom); `loaderConfig` captures what the viewer hands
+// to loader.config — the whole point of AAASM-5199 is that it must be the
+// bundled runtime, so @monaco-editor/react never fetches Monaco from the
+// jsDelivr CDN that index.html's `script-src 'self'` CSP forbids.
+const { bundledMonaco, loaderConfig } = vi.hoisted(() => ({
+  bundledMonaco: { __bundled: true },
+  loaderConfig: vi.fn(),
+}))
+vi.mock('monaco-editor', () => bundledMonaco)
+
 // Mock @monaco-editor/react so the test stays fast and deterministic:
 // the real Editor pulls Monaco from a CDN and won't render in jsdom.
 // The mock captures all props on a data-* attribute string so the
 // assertions below can read them back synchronously.
 vi.mock('@monaco-editor/react', () => ({
   __esModule: true,
+  loader: { config: loaderConfig },
   default: (props: Record<string, unknown>) => (
     <div
       data-testid="monaco-editor-mock"
@@ -41,6 +54,14 @@ severity: CRITICAL
 `
 
 describe('RuleYamlViewer', () => {
+  it('registers the npm-bundled Monaco with the loader so it never hits the CDN (AAASM-5199)', () => {
+    // The module-level loader.config in RuleYamlViewer runs on import, before
+    // any render. It must receive the bundled `monaco-editor` package so
+    // @monaco-editor/react uses the local runtime instead of fetching Monaco
+    // from jsDelivr — a fetch index.html's `script-src 'self'` CSP forbids.
+    expect(loaderConfig).toHaveBeenCalledWith({ monaco: bundledMonaco })
+  })
+
   it('renders the alert-detail-rule-yaml wrapper around Monaco', async () => {
     render(<RuleYamlViewer yaml={YAML_SAMPLE} />)
 
