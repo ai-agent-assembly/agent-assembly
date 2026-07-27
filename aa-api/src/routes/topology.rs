@@ -53,6 +53,20 @@ fn parse_agent_id(id: &str) -> Result<[u8; 16], ProblemDetail> {
     })
 }
 
+/// The record's team, treating a blank `team_id` as no team at all.
+///
+/// "This agent has no team" reaches the topology projection in two shapes: the
+/// registry stores `None` when no team was given, but also accepts `Some("")` —
+/// `validate_tenant_id` (AAASM-4190) rejects only control characters, not an
+/// empty or whitespace-only id. Both must group as *no team*. Admitting a blank
+/// id as a team invents one that does not exist: it inflates `team_count`, and
+/// the group it creates has no name to render (AAASM-5182). The id is returned
+/// unchanged when it is not blank, so grouping still keys on exactly what was
+/// registered.
+fn team_of(record: &AgentRecord) -> Option<&str> {
+    record.team_id.as_deref().filter(|team| !team.trim().is_empty())
+}
+
 fn matches_status_filter(status: &AgentStatus, filter: &str) -> bool {
     match filter.to_ascii_lowercase().as_str() {
         "active" => matches!(status, AgentStatus::Active),
@@ -109,18 +123,63 @@ fn caller_has_no_tenant_scope(caller: &AuthenticatedCaller) -> bool {
     !caller.scopes.contains(&Scope::Admin) && caller.tenant.org_id.is_none() && caller.tenant.team_id.is_none()
 }
 
+/// Join cache-key components into a string that only an equal component list
+/// can produce.
+///
+/// Every component here is caller-controlled: the registry validates a tenant id
+/// against control characters *only* (`AgentRegistry::validate_tenant_id`,
+/// AAASM-4190), so `|` is legal inside an `org_id` / `team_id`, and `status` and
+/// the `{team_id}` / `{agent_id}` path segments are free-form request input.
+/// Joining those raw lets two *different* requests assemble one key — an
+/// `org="acme"` + `team="x|team=y"` caller and an `org="acme|team=x"` +
+/// `team="y"` caller both rendered `org=acme|team=x|team=y` — which is a
+/// cross-tenant read and equally a cross-tenant write, since either caller can
+/// be the one that populates the shared entry. Length-prefixing each component
+/// makes the encoding decodable, hence injective, extending AAASM-4190's
+/// bucket-key defence to the response caches.
+fn cache_key_of(parts: &[&str]) -> String {
+    let mut key = String::new();
+    for part in parts {
+        if !key.is_empty() {
+            key.push('|');
+        }
+        key.push_str(&part.len().to_string());
+        key.push(':');
+        key.push_str(part);
+    }
+    key
+}
+
+/// Encode an optional cache-key component so an absent value and a present
+/// empty one cannot collide.
+///
+/// The two are different queries, not two spellings of one: `?org_id=` selects
+/// the records whose `org_id` is empty, while omitting it selects every record;
+/// likewise a caller scoped to `org_id: Some("")` is confined by
+/// [`record_visible_to`] where a caller with `None` is not.
+fn opt_part(value: Option<&str>) -> String {
+    match value {
+        Some(v) => format!("={v}"),
+        None => "-".to_string(),
+    }
+}
+
 /// Cache-key fragment that makes a cached topology response specific to the
 /// caller's tenant scope, so a tenant-scoped response is never served to a
 /// caller from a different tenant.
+///
+/// The tag alone is *not* sufficient to isolate a response: it is the constant
+/// `admin` for every admin caller, so any handler whose body also varies with a
+/// request parameter must name that parameter in its key too (AAASM-5181).
 fn tenant_cache_tag(caller: &AuthenticatedCaller) -> String {
     if caller.scopes.contains(&Scope::Admin) {
-        return "admin".to_string();
+        return cache_key_of(&["admin"]);
     }
-    format!(
-        "org={}|team={}",
-        caller.tenant.org_id.as_deref().unwrap_or(""),
-        caller.tenant.team_id.as_deref().unwrap_or(""),
-    )
+    cache_key_of(&[
+        "tenant",
+        &opt_part(caller.tenant.org_id.as_deref()),
+        &opt_part(caller.tenant.team_id.as_deref()),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -525,15 +584,19 @@ pub async fn get_overview(
         caller.tenant.org_id.clone()
     };
 
-    // AAASM-3483 — the tenant tag scopes the cache entry to the caller's tenant
-    // so a tenant-scoped response is never served to a different tenant.
-    let cache_key = format!(
-        "{}|{}|{}|{}",
-        tenant_cache_tag(&caller),
-        params.status.as_deref().unwrap_or(""),
-        params.min_depth.unwrap_or(0),
-        params.show_budget.unwrap_or(false),
-    );
+    // AAASM-5181 — the key must name every input that shapes the body: the
+    // caller's tenant AND the org actually queried. Keying on the tenant tag
+    // alone did not deliver the isolation the comment here used to claim: the
+    // tag is the constant `admin` for every admin caller, so `?org_id=A` and
+    // `?org_id=B` produced one key and whichever arrived second was served the
+    // first org's overview for the rest of the TTL.
+    let cache_key = cache_key_of(&[
+        &tenant_cache_tag(&caller),
+        &opt_part(effective_org.as_deref()),
+        &opt_part(params.status.as_deref()),
+        &params.min_depth.unwrap_or(0).to_string(),
+        &params.show_budget.unwrap_or(false).to_string(),
+    ]);
     if let Some(cached) = state.topology_overview_cache.get(&cache_key).await {
         return (StatusCode::OK, Json((*cached).clone()));
     }
@@ -565,10 +628,13 @@ pub async fn get_overview(
 
     let total_agent_count = filtered.len();
 
+    // AAASM-5182 — group on `team_of`, not on `team_id.is_some()`: a blank
+    // `team_id` is no team, and letting it open an entry here reported a team
+    // that does not exist in both `team_count` and `teams`.
     let mut team_map: HashMap<String, (usize, usize)> = HashMap::new();
     for r in &filtered {
-        if let Some(tid) = &r.team_id {
-            let entry = team_map.entry(tid.clone()).or_insert((0, 0));
+        if let Some(tid) = team_of(r) {
+            let entry = team_map.entry(tid.to_owned()).or_insert((0, 0));
             entry.0 += 1;
             if r.depth == 0 {
                 entry.1 += 1;
@@ -592,9 +658,12 @@ pub async fn get_overview(
         v
     };
 
+    // AAASM-5182 — the same definition of "no team" as `team_map` above, so a
+    // blank-team root is listed here instead of falling out of the team
+    // breakdown and this list both, present only in `total_agent_count`.
     let mut standalone_root_agents: Vec<AgentNode> = filtered
         .iter()
-        .filter(|r| r.depth == 0 && r.team_id.is_none())
+        .filter(|r| r.depth == 0 && team_of(r).is_none())
         .map(|r| {
             let mut node = AgentNode::from(*r);
             if show_budget {
@@ -678,14 +747,13 @@ pub async fn get_tree(
         );
     }
 
-    let cache_key = format!(
-        "{}|{}|{}|{}|{}",
-        tenant_cache_tag(&caller),
-        root_id,
-        max_depth,
-        params.status.as_deref().unwrap_or(""),
-        show_budget,
-    );
+    let cache_key = cache_key_of(&[
+        &tenant_cache_tag(&caller),
+        &root_id,
+        &max_depth.to_string(),
+        &opt_part(params.status.as_deref()),
+        &show_budget.to_string(),
+    ]);
     if let Some(cached) = state.topology_tree_cache.get(&cache_key).await {
         return Ok((StatusCode::OK, Json((*cached).clone())));
     }
@@ -741,14 +809,16 @@ pub async fn get_team(
             .with_detail("Reading a team's topology requires admin scope or membership in that team"));
     }
 
-    let cache_key = format!(
-        "{}|{}|{}|{}|{}",
-        tenant_cache_tag(&caller),
-        team_id,
-        params.status.as_deref().unwrap_or(""),
-        params.min_depth.unwrap_or(0),
-        params.show_budget.unwrap_or(false),
-    );
+    // `params.org_id` is deliberately absent: unlike `get_overview`, this handler
+    // never reads it, so it cannot shape the body and naming it would only split
+    // the entry. If it ever starts filtering by org, it belongs in this key.
+    let cache_key = cache_key_of(&[
+        &tenant_cache_tag(&caller),
+        &team_id,
+        &opt_part(params.status.as_deref()),
+        &params.min_depth.unwrap_or(0).to_string(),
+        &params.show_budget.unwrap_or(false).to_string(),
+    ]);
     if let Some(cached) = state.topology_team_cache.get(&cache_key).await {
         return Ok((StatusCode::OK, Json((*cached).clone())));
     }
@@ -826,7 +896,7 @@ pub async fn get_lineage(
         );
     }
 
-    let cache_key = format!("{}|{}", tenant_cache_tag(&caller), agent_id_str);
+    let cache_key = cache_key_of(&[&tenant_cache_tag(&caller), &agent_id_str]);
     if let Some(cached) = state.topology_lineage_cache.get(&cache_key).await {
         return Ok((StatusCode::OK, Json((*cached).clone())));
     }
@@ -914,7 +984,7 @@ pub async fn get_stats(
     // they leak every tenant's agent counts. The tenant tag scopes the cache and
     // the visibility filter below confines the aggregation to the caller's tenant
     // (a non-admin with no tenant scope aggregates over an empty set → zeros).
-    let cache_key = format!("stats|{}", tenant_cache_tag(&caller));
+    let cache_key = cache_key_of(&["stats", &tenant_cache_tag(&caller)]);
     if let Some(cached) = state.topology_stats_cache.get(&cache_key).await {
         return (StatusCode::OK, Json((*cached).clone()));
     }
@@ -948,8 +1018,12 @@ pub async fn get_stats(
             AgentStatus::Suspended(_) => suspended_count += 1,
             AgentStatus::Deregistered => deregistered_count += 1,
         }
-        if let Some(tid) = &r.team_id {
-            *team_sizes.entry(tid.clone()).or_insert(0) += 1;
+        // AAASM-5182 — same "no team" rule as the overview's team breakdown, so
+        // the two surfaces cannot report different team counts for one registry:
+        // a blank `team_id` is not a team here either, and a blank-team spawned
+        // agent is the orphan it actually is.
+        if let Some(tid) = team_of(r) {
+            *team_sizes.entry(tid.to_owned()).or_insert(0) += 1;
         } else if r.depth > 0 {
             orphan_count += 1;
         }
@@ -1146,7 +1220,7 @@ mod graph_tests {
 
     /// A read-scoped caller confined to `org` / `team`. `None` / `None` with no
     /// admin scope is the unscoped caller the deny-by-default guard rejects.
-    fn reader(scopes: Vec<Scope>, org_id: Option<&str>, team_id: Option<&str>) -> RequireRead {
+    pub(super) fn reader(scopes: Vec<Scope>, org_id: Option<&str>, team_id: Option<&str>) -> RequireRead {
         RequireRead(AuthenticatedCaller {
             key_id: "k".to_string(),
             scopes,
@@ -1157,13 +1231,13 @@ mod graph_tests {
         })
     }
 
-    fn admin() -> RequireRead {
+    pub(super) fn admin() -> RequireRead {
         reader(vec![Scope::Admin], None, None)
     }
 
     /// Minimal registered agent. Only the fields the graph projection reads
     /// carry meaningful values.
-    fn record(id_byte: u8, name: &str, team_id: Option<&str>) -> AgentRecord {
+    pub(super) fn record(id_byte: u8, name: &str, team_id: Option<&str>) -> AgentRecord {
         AgentRecord {
             agent_id: [id_byte; 16],
             name: name.to_string(),
@@ -1199,7 +1273,7 @@ mod graph_tests {
         }
     }
 
-    fn state_with(records: Vec<AgentRecord>) -> AppState {
+    pub(super) fn state_with(records: Vec<AgentRecord>) -> AppState {
         let state = AppState::local_in_memory().expect("state builds");
         for r in records {
             state.agent_registry.register(r).expect("register");
@@ -1645,5 +1719,222 @@ mod graph_tests {
         let graph = graph_for(admin(), &state).await;
         assert!(graph.nodes.is_empty());
         assert!(graph.edges.is_empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Overview / stats projection tests (AAASM-5181, AAASM-5182)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod overview_tests {
+    use super::graph_tests::{admin, reader, record, state_with};
+    use super::*;
+
+    /// [`record`] with an owning org — what an `?org_id` selector resolves
+    /// against, and what `record_visible_to` scopes a non-admin caller to.
+    fn record_in_org(id_byte: u8, name: &str, team_id: Option<&str>, org_id: &str) -> AgentRecord {
+        AgentRecord {
+            org_id: Some(org_id.to_string()),
+            ..record(id_byte, name, team_id)
+        }
+    }
+
+    fn org_filter(org_id: &str) -> TopologyFilterParams {
+        TopologyFilterParams {
+            org_id: Some(org_id.to_string()),
+            ..Default::default()
+        }
+    }
+
+    async fn overview_for(caller: RequireRead, state: &AppState, params: TopologyFilterParams) -> TopologyOverview {
+        let (status, Json(overview)) = get_overview(caller, Extension(state.clone()), Query(params)).await;
+        assert_eq!(status, StatusCode::OK);
+        overview
+    }
+
+    fn team_ids(overview: &TopologyOverview) -> Vec<&str> {
+        overview.teams.iter().map(|t| t.team_id.as_str()).collect()
+    }
+
+    fn node_names(nodes: &[AgentNode]) -> Vec<&str> {
+        nodes.iter().map(|n| n.name.as_str()).collect()
+    }
+
+    // ── Tenant isolation of the cache (AAASM-5181) ─────────────────────────
+
+    /// The overview body varies with `?org_id`, but the key named only the
+    /// tenant tag — a constant `admin` for every admin caller. Both requests
+    /// therefore shared one entry and the second was answered from the first
+    /// org's cached body for the rest of the 1s TTL.
+    #[tokio::test]
+    async fn one_admin_asking_about_two_orgs_gets_each_org_s_own_overview() {
+        let state = state_with(vec![
+            record_in_org(0x01, "a", Some("team-acme"), "acme"),
+            record_in_org(0x02, "b", Some("team-globex"), "globex"),
+        ]);
+
+        let acme = overview_for(admin(), &state, org_filter("acme")).await;
+        let globex = overview_for(admin(), &state, org_filter("globex")).await;
+
+        assert_eq!(team_ids(&acme), ["team-acme"]);
+        assert_eq!(
+            team_ids(&globex),
+            ["team-globex"],
+            "the ?org_id=globex request must not be served acme's cached overview"
+        );
+    }
+
+    /// The poisoning direction of the same defect: whichever org is asked about
+    /// *first* is the one that populates the shared entry, so a cache miss for
+    /// org A followed by a request for org B is as wrong as the reverse.
+    #[tokio::test]
+    async fn the_org_that_populates_the_entry_does_not_decide_what_the_other_reads() {
+        let state = state_with(vec![
+            record_in_org(0x01, "a", Some("team-acme"), "acme"),
+            record_in_org(0x02, "b", Some("team-globex"), "globex"),
+        ]);
+
+        let globex = overview_for(admin(), &state, org_filter("globex")).await;
+        let acme = overview_for(admin(), &state, org_filter("acme")).await;
+
+        assert_eq!(team_ids(&globex), ["team-globex"]);
+        assert_eq!(
+            team_ids(&acme),
+            ["team-acme"],
+            "the ?org_id=acme request must not be served globex's cached overview"
+        );
+    }
+
+    /// `|` is a legal tenant-id character — `validate_tenant_id` (AAASM-4190)
+    /// rejects control characters only — so two genuinely different tenants
+    /// could render one `|`-joined key: `org="acme"` + `team="x|team=y"` and
+    /// `org="acme|team=x"` + `team="y"` both produced `org=acme|team=x|team=y`.
+    #[tokio::test]
+    async fn a_pipe_in_a_tenant_id_cannot_forge_another_tenant_s_cache_entry() {
+        let state = state_with(vec![
+            record_in_org(0x01, "a", Some("x|team=y"), "acme"),
+            record_in_org(0x02, "b", Some("y"), "acme|team=x"),
+        ]);
+        let first = reader(vec![Scope::Read], Some("acme"), Some("x|team=y"));
+        let second = reader(vec![Scope::Read], Some("acme|team=x"), Some("y"));
+
+        let a = overview_for(first, &state, TopologyFilterParams::default()).await;
+        let b = overview_for(second, &state, TopologyFilterParams::default()).await;
+
+        assert_eq!(team_ids(&a), ["x|team=y"]);
+        assert_eq!(
+            team_ids(&b),
+            ["y"],
+            "a tenant id containing the key separator must not alias onto another tenant's entry"
+        );
+    }
+
+    /// An absent org scope is not an empty one: a caller scoped to `Some("")`
+    /// is confined by `record_visible_to` to records whose own `org_id` is
+    /// empty, where a `None` caller is not confined at all.
+    #[test]
+    fn an_absent_optional_key_part_never_collides_with_an_empty_one() {
+        assert_ne!(opt_part(None), opt_part(Some("")));
+        assert_ne!(
+            tenant_cache_tag(&reader(vec![Scope::Read], None, Some("t")).0),
+            tenant_cache_tag(&reader(vec![Scope::Read], Some(""), Some("t")).0),
+        );
+    }
+
+    /// Only an equal component list may produce an equal key — the property the
+    /// five topology cache keys rest on.
+    #[test]
+    fn cache_key_components_cannot_be_reshuffled_into_the_same_key() {
+        assert_ne!(cache_key_of(&["a|b", "c"]), cache_key_of(&["a", "b|c"]));
+        assert_ne!(cache_key_of(&["a", "b"]), cache_key_of(&["a|b"]));
+        assert_ne!(cache_key_of(&["", "a"]), cache_key_of(&["a", ""]));
+        assert_eq!(cache_key_of(&["a", "b"]), cache_key_of(&["a", "b"]));
+    }
+
+    // ── Team-less agents are not a team (AAASM-5182) ───────────────────────
+
+    /// `None` and `Some("")` are two spellings of "no team", and neither may
+    /// open a team entry: before the fix the blank id was counted in
+    /// `team_count` and listed in `teams` as a team with no name, while its
+    /// agent appeared in neither the team breakdown nor the standalone list.
+    #[tokio::test]
+    async fn a_blank_team_id_is_no_team_and_is_not_counted_as_one() {
+        let state = state_with(vec![
+            record(0x01, "governed", Some("support")),
+            record(0x02, "blank-team", Some("")),
+            record(0x03, "no-team", None),
+        ]);
+
+        let overview = overview_for(admin(), &state, TopologyFilterParams::default()).await;
+
+        assert_eq!(team_ids(&overview), ["support"]);
+        assert_eq!(
+            overview.team_count, 1,
+            "two team-less agents must not invent a team between them"
+        );
+        assert_eq!(overview.total_agent_count, 3);
+        assert_eq!(
+            node_names(&overview.standalone_root_agents),
+            ["blank-team", "no-team"],
+            "a blank team_id belongs with the team-less roots, not in a team of its own"
+        );
+    }
+
+    /// Whitespace names no team either, for the same reason an empty string
+    /// does not: there is no such team to label or filter by.
+    #[tokio::test]
+    async fn a_whitespace_only_team_id_is_no_team() {
+        let state = state_with(vec![
+            record(0x01, "governed", Some("support")),
+            record(0x02, "blank-team", Some("   ")),
+        ]);
+
+        let overview = overview_for(admin(), &state, TopologyFilterParams::default()).await;
+
+        assert_eq!(team_ids(&overview), ["support"]);
+        assert_eq!(node_names(&overview.standalone_root_agents), ["blank-team"]);
+    }
+
+    /// The stats aggregate groups teams the same way the overview does, so the
+    /// two surfaces cannot report different team counts for one registry.
+    #[tokio::test]
+    async fn stats_does_not_count_a_blank_team_id_as_a_team() {
+        let state = state_with(vec![
+            record(0x01, "governed", Some("support")),
+            record(0x02, "blank-team", Some("")),
+            AgentRecord {
+                depth: 1,
+                ..record(0x03, "blank-team-spawned", Some(""))
+            },
+        ]);
+
+        let (status, Json(stats)) = get_stats(admin(), Extension(state.clone())).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(stats.team_count, 1, "a blank team_id must not inflate the team count");
+        assert_eq!(stats.team_sizes.keys().collect::<Vec<_>>(), ["support"]);
+        assert_eq!(stats.total_agents, 3);
+        assert_eq!(
+            stats.orphan_count, 1,
+            "a spawned agent with a blank team_id is the orphan it appears to be"
+        );
+    }
+
+    /// A real team is still grouped, counted and listed unchanged — the fix
+    /// narrows what counts as a team, it does not drop teams.
+    #[tokio::test]
+    async fn a_real_team_is_unaffected() {
+        let state = state_with(vec![
+            record(0x01, "a", Some("support")),
+            record(0x02, "b", Some("support")),
+        ]);
+
+        let overview = overview_for(admin(), &state, TopologyFilterParams::default()).await;
+
+        assert_eq!(overview.team_count, 1);
+        assert_eq!(overview.teams[0].agent_count, 2);
+        assert_eq!(overview.teams[0].root_agent_count, 2);
+        assert!(overview.standalone_root_agents.is_empty());
     }
 }
