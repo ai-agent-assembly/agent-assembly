@@ -1,5 +1,6 @@
 //! Audit log query endpoints.
 
+use aa_core::AuditEventType;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
@@ -9,6 +10,71 @@ use utoipa::{IntoParams, ToSchema};
 use crate::auth::scope::{RequireRead, Scope};
 use crate::pagination::PaginationParams;
 use crate::state::AppState;
+
+/// Category of an audit log entry, mirroring [`aa_core::AuditEventType`].
+///
+/// AAASM-5221 — constrains the [`LogEntry::event_type`] wire vocabulary to the
+/// closed set of labels [`AuditEventType::as_str`] emits, so the generated
+/// OpenAPI spec advertises an enum rather than a free-form `string`. Variants
+/// serialize verbatim (PascalCase), matching the strings the audit log has
+/// always written, so the wire shape is unchanged.
+///
+/// Kept in lock-step with `AuditEventType`: the [`From`] impl is exhaustive, so
+/// adding an audit variant without extending this enum is a compile error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum LogEventType {
+    ToolCallIntercepted,
+    PolicyViolation,
+    CredentialLeakBlocked,
+    ApprovalRequested,
+    ApprovalGranted,
+    ApprovalDenied,
+    BudgetLimitApproached,
+    BudgetLimitExceeded,
+    ApprovalTimedOut,
+    ApprovalRouted,
+    ApprovalEscalated,
+    AgentForceDeregistered,
+    MessageBlocked,
+    ToolDispatched,
+    A2ACallIntercepted,
+    A2AImpersonationAttempted,
+    SandboxStarted,
+    SandboxFilesystemBlocked,
+    SandboxCpuTimeout,
+    SandboxOomKilled,
+    SandboxTerminated,
+    SandboxHostFnRateLimited,
+}
+
+impl From<AuditEventType> for LogEventType {
+    fn from(t: AuditEventType) -> Self {
+        match t {
+            AuditEventType::ToolCallIntercepted => LogEventType::ToolCallIntercepted,
+            AuditEventType::PolicyViolation => LogEventType::PolicyViolation,
+            AuditEventType::CredentialLeakBlocked => LogEventType::CredentialLeakBlocked,
+            AuditEventType::ApprovalRequested => LogEventType::ApprovalRequested,
+            AuditEventType::ApprovalGranted => LogEventType::ApprovalGranted,
+            AuditEventType::ApprovalDenied => LogEventType::ApprovalDenied,
+            AuditEventType::BudgetLimitApproached => LogEventType::BudgetLimitApproached,
+            AuditEventType::BudgetLimitExceeded => LogEventType::BudgetLimitExceeded,
+            AuditEventType::ApprovalTimedOut => LogEventType::ApprovalTimedOut,
+            AuditEventType::ApprovalRouted => LogEventType::ApprovalRouted,
+            AuditEventType::ApprovalEscalated => LogEventType::ApprovalEscalated,
+            AuditEventType::AgentForceDeregistered => LogEventType::AgentForceDeregistered,
+            AuditEventType::MessageBlocked => LogEventType::MessageBlocked,
+            AuditEventType::ToolDispatched => LogEventType::ToolDispatched,
+            AuditEventType::A2ACallIntercepted => LogEventType::A2ACallIntercepted,
+            AuditEventType::A2AImpersonationAttempted => LogEventType::A2AImpersonationAttempted,
+            AuditEventType::SandboxStarted => LogEventType::SandboxStarted,
+            AuditEventType::SandboxFilesystemBlocked => LogEventType::SandboxFilesystemBlocked,
+            AuditEventType::SandboxCpuTimeout => LogEventType::SandboxCpuTimeout,
+            AuditEventType::SandboxOomKilled => LogEventType::SandboxOomKilled,
+            AuditEventType::SandboxTerminated => LogEventType::SandboxTerminated,
+            AuditEventType::SandboxHostFnRateLimited => LogEventType::SandboxHostFnRateLimited,
+        }
+    }
+}
 
 /// JSON representation of an audit log entry.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -22,7 +88,7 @@ pub struct LogEntry {
     /// Hex-encoded session ID for the agent run.
     pub session_id: String,
     /// Type of audit event.
-    pub event_type: String,
+    pub event_type: LogEventType,
     /// Pre-serialized JSON payload.
     pub payload: String,
 }
@@ -127,7 +193,7 @@ pub async fn list_logs(
                 timestamp,
                 agent_id: hex::encode(e.agent_id().as_bytes()),
                 session_id: hex::encode(e.session_id().as_bytes()),
-                event_type: e.event_type().as_str().to_string(),
+                event_type: LogEventType::from(e.event_type()),
                 payload: e.payload().to_string(),
             }
         })

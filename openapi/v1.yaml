@@ -3374,7 +3374,7 @@ components:
             the AAASM-5035 note in `analytics::decision_is_error`): `1` = Allow,
             `2` = Deny, `3` = Pending, `4` = Redact, `0` = Unspecified.
         decisionLabel:
-          type: string
+          $ref: '#/components/schemas/DecisionLabel'
           description: |-
             Lowercase label derived from `decision` (`allow` / `deny` / `pending` /
             `redact` / `unspecified`) so the UI can map to its verdict styling
@@ -3663,7 +3663,7 @@ components:
             leave it `null` rather than emitting a misleading `0`.
           minimum: 0
         status:
-          type: string
+          $ref: '#/components/schemas/AgentNodeStatus'
           description: 'Runtime status: `active`, `suspended`, or `deregistered`.'
         team_id:
           type:
@@ -3698,6 +3698,25 @@ components:
         status: active
         team_id: team-alpha
         trust: null
+    AgentNodeStatus:
+      type: string
+      description: |-
+        Runtime status of an agent node in the topology projection.
+
+        AAASM-5218 — constrains the wire vocabulary of [`AgentNode::status`] at the
+        OpenAPI derive to exactly the three values `status_str` can emit, so the
+        generated spec (and the TypeScript client) advertises a closed enum instead
+        of an unconstrained `string`. Serializes lowercase, matching the strings the
+        registry's [`AgentStatus`] mapped to before this was a free-form field.
+
+        Deliberately distinct from the runtime registry [`AgentStatus`], whose
+        `Suspended(_)` variant carries a parameterised reason an enum cannot express,
+        and from the capability-view `AgentStatus` — the three agent-status
+        vocabularies are not reconciled here (that is an ADR question, see AAASM-5209).
+      enum:
+      - active
+      - suspended
+      - deregistered
     AgentResponse:
       type: object
       description: JSON representation of an agent returned by the API.
@@ -5118,6 +5137,22 @@ components:
       - approval
       - deny
       - na
+    DecisionLabel:
+      type: string
+      description: |-
+        Wire vocabulary for [`AgentDecisionResponse::decision_label`].
+
+        AAASM-5219 — constrains the `decisionLabel` field to the closed set of
+        lowercase labels [`decision_label`] can emit, one per proto
+        [`Decision`](aa_proto::assembly::common::v1::Decision) discriminant plus the
+        `unspecified` fallback, so the generated OpenAPI spec advertises an enum
+        rather than a free-form `string`. Serializes lowercase.
+      enum:
+      - allow
+      - deny
+      - pending
+      - redact
+      - unspecified
     DestinationConfig:
       oneOf:
       - type: object
@@ -5758,7 +5793,7 @@ components:
           type: string
           description: Hex-encoded agent ID that produced this log entry.
         event_type:
-          type: string
+          $ref: '#/components/schemas/LogEventType'
           description: Type of audit event.
         payload:
           type: string
@@ -5774,6 +5809,42 @@ components:
         timestamp:
           type: string
           description: ISO 8601 timestamp of the event.
+    LogEventType:
+      type: string
+      description: |-
+        Category of an audit log entry, mirroring [`aa_core::AuditEventType`].
+
+        AAASM-5221 — constrains the [`LogEntry::event_type`] wire vocabulary to the
+        closed set of labels [`AuditEventType::as_str`] emits, so the generated
+        OpenAPI spec advertises an enum rather than a free-form `string`. Variants
+        serialize verbatim (PascalCase), matching the strings the audit log has
+        always written, so the wire shape is unchanged.
+
+        Kept in lock-step with `AuditEventType`: the [`From`] impl is exhaustive, so
+        adding an audit variant without extending this enum is a compile error.
+      enum:
+      - ToolCallIntercepted
+      - PolicyViolation
+      - CredentialLeakBlocked
+      - ApprovalRequested
+      - ApprovalGranted
+      - ApprovalDenied
+      - BudgetLimitApproached
+      - BudgetLimitExceeded
+      - ApprovalTimedOut
+      - ApprovalRouted
+      - ApprovalEscalated
+      - AgentForceDeregistered
+      - MessageBlocked
+      - ToolDispatched
+      - A2ACallIntercepted
+      - A2AImpersonationAttempted
+      - SandboxStarted
+      - SandboxFilesystemBlocked
+      - SandboxCpuTimeout
+      - SandboxOomKilled
+      - SandboxTerminated
+      - SandboxHostFnRateLimited
     NodeBudget:
       type: object
       description: |-
@@ -7308,8 +7379,22 @@ components:
             Whether the payload would be scrubbed before reaching the model because
             credential/PII content was detected (drives the `"narrow"` verdict).
         verdict:
-          type: string
-          description: 'Dry-run verdict: `"allow"`, `"narrow"`, `"approval"`, or `"deny"`.'
+          $ref: '#/components/schemas/SimulateVerdict'
+          description: 'Dry-run verdict: `allow`, `narrow`, `approval`, or `deny`.'
+    SimulateVerdict:
+      type: string
+      description: |-
+        Dry-run verdict returned by `POST /api/v1/policies/simulate`.
+
+        AAASM-5220 — constrains the [`SimulatePolicyResponse::verdict`] wire
+        vocabulary to the closed set the simulate handler emits, so the generated
+        OpenAPI spec advertises an enum rather than a free-form `string`. Serializes
+        lowercase.
+      enum:
+      - allow
+      - narrow
+      - approval
+      - deny
     SubtreeBurnResponse:
       type: object
       description: Response for `GET /api/v1/agents/{id}/subtree-burn`.

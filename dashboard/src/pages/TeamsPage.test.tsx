@@ -95,10 +95,10 @@ const APPROVALS: Approval[] = [
 
 function topologyFor(teamId: string): TeamTopology {
   const members = teamId === 'team-000'
-    ? [{ id: 'a1', name: 'orchestrator', status: 'active', depth: 0, flagged: false, mode: 'enforce', trust: null }]
+    ? [{ id: 'a1', name: 'orchestrator', status: 'active' as const, depth: 0, flagged: false, mode: 'enforce', trust: null }]
     : [
-        { id: 'b1', name: 'router', status: 'active', depth: 0, flagged: false, mode: 'enforce', trust: null },
-        { id: 'b2', name: 'scraper', status: 'suspended', depth: 1, flagged: true, mode: 'shadow', trust: null },
+        { id: 'b1', name: 'router', status: 'active' as const, depth: 0, flagged: false, mode: 'enforce', trust: null },
+        { id: 'b2', name: 'scraper', status: 'suspended' as const, depth: 1, flagged: true, mode: 'shadow', trust: null },
       ]
   return { team_id: teamId, agent_count: members.length, members }
 }
