@@ -194,8 +194,25 @@ describe('FleetPage URL filter sync', () => {
 
 describe('FleetPage loading and error states', () => {
   it('renders skeleton rows while loading', () => {
+    // `isPending` alongside `isLoading`: the page reads the former, so without
+    // it this mock reached the skeleton via the empty-payload fallback rather
+    // than the pending branch it means to exercise (AAASM-5130).
+    //
+    // `certainFromQuery` resolves error -> pending -> empty payload
+    // (`query.ts:103-111`), so of the two cases below only the `isError: true`
+    // one is genuinely flag-independent: error outranks pending. `data: []` is
+    // *not* — adding `isPending: true` to it yields `unknown` and the
+    // empty-state callout disappears. It is left without the flag because
+    // omitting it reads as not-pending, which is the settled success that test
+    // describes; it is incomplete, not wrong.
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
-      mockQuery<Agent[]>({ data: undefined, isLoading: true, isError: false, refetch: vi.fn() }),
+      mockQuery<Agent[]>({
+        data: undefined,
+        isLoading: true,
+        isPending: true,
+        isError: false,
+        refetch: vi.fn(),
+      }),
     )
     renderFleet()
     expect(screen.getAllByTestId('agent-row-skeleton')).toHaveLength(5)
@@ -577,5 +594,123 @@ describe('FleetPage bulk resume fan-out', () => {
 
     releaseResolve({ data: { agent_id: 'a', previous_status: 'suspended', new_status: 'active' } })
     await waitFor(() => expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument())
+  })
+})
+
+/**
+ * AAASM-5130: the four reasons the agents view can show no rows are different
+ * facts and must not render alike. One test per state, each asserting both what
+ * that state says *and* that it does not borrow another state's affordance.
+ */
+describe('FleetPage no-rows states are distinguishable', () => {
+  it('explains a filter that matched nothing and offers to clear it', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [makeAgent({ id: '1', name: 'alpha' }), makeAgent({ id: '2', name: 'beta' })],
+        isLoading: false,
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    let lastSearch = ''
+    renderFleet('/agents?q=no-such-agent', (s) => { lastSearch = s })
+
+    expect(screen.getByTestId('fleet-filter-empty')).toBeInTheDocument()
+    // A filter that excluded everything is a successful result, so neither the
+    // onboarding copy nor the failure banner may appear.
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agents-error')).not.toBeInTheDocument()
+    expect(screen.queryAllByTestId('agent-row')).toHaveLength(0)
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· 0 of 2 agents')
+
+    fireEvent.click(screen.getByTestId('fleet-filter-empty-clear'))
+
+    await waitFor(() => expect(lastSearch).toBe(''))
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('agent-row')).toHaveLength(2)
+  })
+
+  it('shows the onboarding copy and no table when the fleet is genuinely empty', () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [],
+        isLoading: false,
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+
+    expect(screen.getByTestId('agents-empty')).toBeInTheDocument()
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    // Column headers over blank space beneath the callout is the ambiguity the
+    // callout exists to remove.
+    expect(screen.queryByTestId('agents-table')).not.toBeInTheDocument()
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· 0 of 0 agents')
+  })
+
+  it('never states a fleet size when the request failed', () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: undefined,
+        isLoading: false,
+        isPending: false,
+        isError: true,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+
+    expect(screen.getByTestId('agents-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('agents-table')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    // "0 of 0 agents" would be a business claim the failed request never made.
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· — of — agents')
+    expect(screen.getByTestId('fleet-tab-agents-count')).toHaveTextContent('—')
+  })
+
+  it('never states a fleet size while the request is in flight', () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: undefined,
+        isLoading: true,
+        isPending: true,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+
+    expect(screen.getAllByTestId('agent-row-skeleton')).toHaveLength(5)
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· — of — agents')
+  })
+
+  it('does not report a paused request as a failed one', () => {
+    // TanStack derives `isLoading = isPending && isFetching`, so a query paused
+    // by the default `networkMode: 'online'` while the browser is offline is
+    // pending with `isLoading === false` — the shape that used to fall through
+    // to the failure banner and announce "Failed to load agents." over a
+    // request that was never sent. `unknown` is not `unavailable`.
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: undefined,
+        isLoading: false,
+        isPending: true,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+
+    expect(screen.queryByTestId('agents-error')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('agent-row-skeleton')).toHaveLength(5)
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· — of — agents')
   })
 })

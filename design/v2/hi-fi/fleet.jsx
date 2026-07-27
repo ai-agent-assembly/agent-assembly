@@ -155,7 +155,18 @@ function FleetPage({ goCapability, goAgent, toast }) {
         <div>
           <h1 className="page-title">
             Fleet
-            <span style={{ color: 'var(--ink-4)', fontWeight: 400, fontSize: 14, marginLeft: 8 }}>
+            {/* ACCESSIBILITY CORRECTION (AAASM-5130, ADR-0027) — was
+                var(--ink-4). This count renders at 14px/400 on the --paper-2
+                .page-head ground, where --ink-4 measures 3.45:1 (light,
+                #8a8a8a on #ffffff) and 3.83:1 (dark, #7a766c on #1c1a16) —
+                below the WCAG 2.1 AA floor of 4.5:1, and 14px only reaches the
+                3:1 large-text exemption at weight 700. --ink-3 is the smallest
+                step along the same ramp that clears it: 6.90:1 / 7.07:1.
+                The shipped .fleet-page__count inherited this value from here
+                and had to be corrected downstream too, which is the drift
+                ADR-0027's "do not fix only dashboard/src/" clause exists to
+                stop. */}
+            <span style={{ color: 'var(--ink-3)', fontWeight: 400, fontSize: 14, marginLeft: 8 }}>
               · {filtered.length} of {window.AGENTS.length} agents
             </span>
           </h1>

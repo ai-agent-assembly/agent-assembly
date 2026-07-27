@@ -37,7 +37,11 @@
   margin-left: 8px;
   font-size: 14px;
   font-weight: 400;
-  color: var(--ink-4);
+  /* `--ink-3`, not `--ink-4`: this span now carries the `NO_DATA` em-dash when
+     the fleet size is not a known fact, and `--ink-4` measures 3.45:1 (light) /
+     3.83:1 (dark) — below the ADR-0027 AA floor. The absence glyph is the least
+     affordable thing on the page to render illegibly. */
+  color: var(--ink-3);
   font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 
@@ -145,7 +149,12 @@
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 1px;
-  color: var(--ink-4);
+  /* `--ink-3`, not the `--ink-4` this rule shipped with while it had no
+     consumer: at 12px/400 `--ink-4` measures 3.45:1 (light) / 3.83:1 (dark),
+     below the ADR-0027 WCAG 2.1 AA floor of 4.5:1, and no large-text exemption
+     applies. `--ink-3` is the smallest step that clears it (6.90:1 / 7.07:1)
+     and keeps the title on the same hue ramp as the body it heads. */
+  color: var(--ink-3);
 }
 
 .fleet-empty__body {
@@ -309,6 +318,23 @@
   text-align: left;
   text-transform: none;
   letter-spacing: 0;
+}
+
+/* ── Filtered-empty callout (AAASM-5130) ───────────────────────
+   Sits *under* the table, mirroring `design/v2/hi-fi/fleet.jsx:275`: the
+   column headers stay so the operator keeps the sort/column context, and the
+   callout supplies the sentence the bare headers could not. */
+
+.fleet-empty--filtered {
+  /* `<output>` (implicit role="status", preferred over role="status" per
+     typescript:S6819) is inline by default. */
+  display: block;
+  padding: 48px 24px 60px;
+  border-top: 1px solid var(--line);
+}
+
+.fleet-empty__action {
+  margin-top: 16px;
 }
 
 /* ── Fleet data table ───────────────────────────────────────── */
