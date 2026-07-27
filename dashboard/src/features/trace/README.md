@@ -35,3 +35,23 @@ Those fields are typed `Certain<T>` (`src/lib/truthfulness`) rather than
 `T | undefined`, so a component cannot interpolate an absence into a string.
 Do not give them a fallback value — an em-dash that says why is the contract
 (AAASM-5109 / AAASM-5165).
+
+## Nesting
+
+`parent_span_id` is rendered as indentation: `nesting.ts` walks each span's
+parent chain and `TraceTimeline` offsets the row by the resulting depth. Row
+*order* is left exactly as the gateway sorted it (by `start_time`) — indentation
+shows lineage, it does not regroup the timeline.
+
+Two malformed-ancestry cases are handled deliberately rather than defensively,
+because both are reachable from a well-behaved gateway:
+
+- **Parent not in the response.** `build_trace_from_audit` scans a bounded
+  10 000-entry window, so a chain can be truncated part-way. The hops that did
+  resolve are kept; the walk stops where the evidence stops.
+- **A cycle.** Nothing on the wire validates against one. A cyclic ancestry is
+  not a deep nesting but an unusable one, so those spans render at the root.
+
+Depth is reported in full via `data-depth`; only the drawn offset is clamped
+(`MAX_INDENT_DEPTH`), so the attribute stays a fact about the data rather than a
+description of the layout.
