@@ -1,0 +1,175 @@
+# ADR 0028: The Dashboard E2E Suite Is a Merge Gate, Not an Advisory Signal
+
+**Status**: Accepted
+**Date**: 2026-07
+**Ticket**: [AAASM-5192](https://lightning-dust-mite.atlassian.net/browse/AAASM-5192)
+
+This ADR records that the dashboard Playwright suite blocks merge, and — more
+durably — the rule that decides which CI jobs block and which do not. That rule
+existed only as a comment in `ci.yml` and had never been written down anywhere a
+future contributor would look. It complements ADR
+[0025](0025-design-v2-authoritative-visual-spec.md) and
+[0027](0027-accessibility-floor-overrides-visual-spec.md), both of which lean on
+e2e specs as their enforcement mechanism and are unenforceable if those specs do
+not run.
+
+---
+
+## Context
+
+Until AAASM-5192, **no workflow referenced Playwright at all.** The dashboard e2e
+suite ran nowhere in CI. Every e2e result in the programme was author-run or
+reviewer-run evidence, produced locally and attached by hand.
+
+The cost of that arrived as AAASM-5191: commit `d68a0d63` (AAASM-4322) moved the
+auth token from `localStorage` to `sessionStorage` and did not update the specs
+that seeded it. 31 files stopped authenticating. Nothing noticed for **19 days**,
+and the only reason it was ever found is that a reviewer went looking by hand.
+The specs did not fail loudly — they timed out before the app mounted, so the
+failure did not even name auth as the cause.
+
+Two facts made this a decision rather than a bug fix:
+
+1. **"Green CI" in this repo already means less than it appears.** `ci.yml`
+   records coverage and Sonar as deliberately advisory, and branch protection
+   currently requires *no* status contexts at all. Adding another job without
+   deciding its status would inherit "advisory" by default — and an advisory
+   e2e job is functionally identical to the state that produced AAASM-5191.
+2. **The suite is not green.** Measured on `main` with the seed fixed: 433 tests,
+   300 passing — **131 failures across 41 of 86 files** (AAASM-5195). 16 of those
+   41 were never touched by the seed bug at all, so the rot substantially
+   predates it. A gate cannot simply be pointed at the suite as it stands.
+
+The forcing constraint is that these two pull in opposite directions: the lesson
+of AAASM-5191 says *block*, and the state of the suite says *you cannot block on
+this*. Any answer that only honours one of them is wrong.
+
+## Decision
+
+1. **The dashboard e2e suite blocks merge.** The `dashboard-e2e` job is a member
+   of the `ci-success` aggregate — the single status intended to be the required
+   branch-protection check (AAASM-2599). A red e2e run fails `ci-success`.
+
+2. **The blocking/advisory rule is: does the job assert *behaviour* or *quality*?**
+   Jobs asserting functional behaviour (does it compile, do the tests pass, does
+   the rendered app still work) are members of `ci-success` and block. Jobs
+   producing quality or acceptance *metrics* (coverage percentages, Sonar
+   findings) are excluded and are advisory. E2E specs assert routes render,
+   drawers open and API contracts hold — the same category as the `dashboard-test`
+   vitest job, which already blocks. It goes in the same bucket. A job's status is
+   chosen by applying this rule, never inherited from whichever job it was copied
+   from.
+
+3. **The gate is credible only if it is green, so known-red specs are quarantined
+   explicitly, not skipped.** `dashboard/playwright.ci.config.ts` is the normal
+   config plus a `testIgnore` quarantine list. **Specs are gated by default** — a
+   file must be named to be excluded — so a spec added by anyone else is covered
+   automatically and cannot opt out by accident. The list only ever shrinks;
+   removing an entry needs no approval.
+
+4. **Quarantine is not deletion and not `.skip`.** Every quarantined spec remains
+   intact and runs on `pnpm test:e2e` locally. The exclusion lives in one
+   reviewable file with a stated cause per group, not hidden inside the specs.
+
+5. **Snapshot specs stay out of CI.** `theme-visual` and
+   `responsive-viewport-visual` have platform-specific `-chromium-darwin`
+   baselines and no Linux equivalents; they remain the local visual gate that
+   `tests/e2e/README.md` already described. No gated spec calls
+   `toHaveScreenshot`, so the gate is platform-independent.
+
+6. **The token is seeded into `sessionStorage`.** Specs must seed `aa_token` where
+   `src/auth/tokenStorage.ts` reads it. This is the invariant AAASM-5191 broke.
+
+## Accepted risks
+
+- **The gate covers 44 of 86 files (242 of 433 tests).** A regression in a
+  quarantined spec is not caught. This is accepted because the alternative —
+  gating on a suite with 131 known failures — produces a permanently red check
+  that everyone learns to bypass, which is strictly worse than a smaller check
+  that is believed. The quarantine is tracked in AAASM-5195 and shrinks.
+  *Assumption:* the list is actually worked down rather than becoming permanent
+  furniture.
+- **The green set was verified on macOS.** Linux runner behaviour is confirmed
+  only by the first CI run on the introducing PR. Mitigated by `retries: 2` in CI
+  and by no gated spec depending on pixel baselines.
+- **Blocking is not yet enforced end to end.** Branch protection requires no
+  status contexts today, so this ADR makes the job blocking *within* `ci-success`;
+  making `ci-success` a required check is a repo-admin action outside this change.
+  Until that happens the gate is advisory in practice regardless of what this ADR
+  says.
+
+## Explicitly forbidden designs
+
+- **Do not add an e2e job as advisory.** That is the state AAASM-5191 already
+  proved does not work.
+- **Do not use `test.skip` / `test.fixme` / deletion to make the suite green.** A
+  failing spec is a finding. Quarantine is visible and reviewable in one file;
+  `.skip` is invisible and rots silently.
+- **Do not quarantine a spec to unblock your own PR.** The list is for specs
+  already red at the gate's introduction. A spec your change breaks is your
+  change's problem.
+- **Do not gate snapshot specs on Linux runners** without committing
+  `-chromium-linux` baselines first; a `--update-snapshots` run on CI hardware
+  launders a real visual regression into a new baseline.
+- **Do not rebuild the bundle inside the e2e job.** It consumes
+  `dashboard-build`'s artifact so a failed build cannot leave `vite preview`
+  serving a stale `dist/` that the suite then passes against.
+
+## Consequences
+
+- **Contributors**: a dashboard change that breaks a gated spec now fails CI
+  instead of merging. Failures are diagnosable from build artifacts (HTML report,
+  failure screenshots, retry traces, JUnit XML) without a local reproduction.
+- **Rust-only PRs**: unaffected. The job is behind the same `dorny/paths-filter`
+  `dashboard` filter as the other dashboard jobs, and skips cleanly — `ci-success`
+  treats a skipped job as passing.
+- **Cost**: roughly 4–5 minutes of runner time on dashboard PRs (measured: 138s
+  for the suite at 2 workers, 71s at 4, plus install and browser provisioning).
+- **ADRs 0025 / 0027**: their visual and accessibility contracts now have a
+  standing enforcement mechanism for the non-snapshot portion.
+
+## Operational guidance
+
+- Adding a spec requires no CI change — it is gated automatically.
+- To remove a quarantine entry: fix the spec or the product bug it exposes,
+  confirm it passes, delete the line.
+- To make the gate actually blocking, a repo admin must add **CI Success** to the
+  required status checks for `main` (see ADR 0016 for the re-verification step
+  after any branch-protection change).
+
+## Validation requirements
+
+- `dashboard-e2e` appears in `ci-success`'s `needs:` list.
+- `playwright.ci.config.ts` selects every spec not named in its quarantine list
+  (verify with `playwright test --config=playwright.ci.config.ts --list`).
+- The gated set passes with no failures on a Linux runner.
+- No gated spec calls `toHaveScreenshot`.
+- No spec seeds `aa_token` into `localStorage`.
+
+## Reconsideration triggers
+
+- The AAASM-5195 quarantine reaches zero — fold `playwright.ci.config.ts` back
+  into the base config and delete this mechanism.
+- The quarantine stops shrinking, or grows — the gate is being used to defer work
+  rather than to stay credible, and the decision should be re-argued.
+- `-chromium-linux` baselines are committed — snapshot specs can then join the
+  gate and sub-decision 5 is revisited.
+- Suite runtime stops being sane on a dashboard PR — split into a fast blocking
+  lane plus a slower scheduled lane rather than quietly reducing coverage.
+- Auth moves off `sessionStorage` (e.g. to HttpOnly cookies, which
+  `tokenStorage.ts` names as preferable) — sub-decision 6 and every seeding call
+  site must move together, which is the failure this ADR exists to prevent.
+
+## Traceability
+
+| Reference | Relation |
+| --- | --- |
+| [AAASM-5192](https://lightning-dust-mite.atlassian.net/browse/AAASM-5192) | The ticket this ADR records — wire the e2e suite into CI |
+| [AAASM-5191](https://lightning-dust-mite.atlassian.net/browse/AAASM-5191) | The 19-day silent breakage that motivated it |
+| [AAASM-5195](https://lightning-dust-mite.atlassian.net/browse/AAASM-5195) | The 41 quarantined files; the backlog this decision depends on shrinking |
+| [AAASM-5198](https://lightning-dust-mite.atlassian.net/browse/AAASM-5198) | The one quarantined spec that is racy rather than rotten |
+| [AAASM-4322](https://lightning-dust-mite.atlassian.net/browse/AAASM-4322) | The `localStorage` → `sessionStorage` migration that broke the seeds |
+| [AAASM-2599](https://lightning-dust-mite.atlassian.net/browse/AAASM-2599) | Established `ci-success` as the single required aggregate check |
+| [ADR 0016](0016-default-branch-master-to-main-migration.md) | Branch-protection required-check handling |
+| [ADR 0025](0025-design-v2-authoritative-visual-spec.md) | Visual spec whose enforcement depends on these specs running |
+| [ADR 0027](0027-accessibility-floor-overrides-visual-spec.md) | Accessibility floor, same dependency |

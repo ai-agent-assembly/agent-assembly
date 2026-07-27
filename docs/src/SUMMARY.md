@@ -161,3 +161,4 @@
   - [0025 - `design/v2/` Is the Authoritative Visual Specification](adr/0025-design-v2-authoritative-visual-spec.md)
   - [0026 - Seven Open Dashboard Product-Semantics Decisions](adr/0026-open-dashboard-product-semantics.md)
   - [0027 - The Accessibility Floor Overrides the Visual Specification](adr/0027-accessibility-floor-overrides-visual-spec.md)
+  - [0028 - The Dashboard E2E Suite Is a Merge Gate, Not an Advisory Signal](adr/0028-dashboard-e2e-is-a-merge-gate.md)
