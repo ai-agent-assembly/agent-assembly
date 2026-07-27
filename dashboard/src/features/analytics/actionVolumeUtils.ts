@@ -34,7 +34,10 @@ export function transformSeries(series: ActionVolumeSeries[]): ChartRow[] {
   const rowMap = new Map<number, ChartRow>()
   for (const s of series) {
     for (const pt of s.points) {
-      if (!rowMap.has(pt.t)) rowMap.set(pt.t, { t: pt.t })
+      // Row values are built on a null-prototype object so a series whose key is
+      // "__proto__" (from the unvalidated fetch response) becomes an own property
+      // instead of a silent no-op that would drop the series from the chart.
+      if (!rowMap.has(pt.t)) rowMap.set(pt.t, Object.assign(Object.create(null), { t: pt.t }))
       rowMap.get(pt.t)![s.key] = clampChartValue(pt.value)
     }
   }
