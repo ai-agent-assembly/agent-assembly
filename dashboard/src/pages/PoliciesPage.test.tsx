@@ -776,3 +776,28 @@ describe('PoliciesPage list-row reach and hits', () => {
     expect(screen.getByTestId('policy-row-hits')).toHaveTextContent('142')
   })
 })
+
+// ── AAASM-5143: history toggle for archived policy versions ─────────────────
+
+describe('PoliciesPage — history toggle', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('starts with history off — queries active-only versions', () => {
+    const spy = mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(spy).toHaveBeenCalledWith({ includeArchived: false })
+    expect(screen.getByTestId('policy-history-toggle')).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('re-runs the query with include_archived when the toggle is clicked', async () => {
+    const user = userEvent.setup()
+    const spy = mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('policy-history-toggle'))
+    expect(spy).toHaveBeenLastCalledWith({ includeArchived: true })
+    expect(screen.getByTestId('policy-history-toggle')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+})
