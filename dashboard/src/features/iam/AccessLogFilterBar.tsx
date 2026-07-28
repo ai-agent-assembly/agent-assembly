@@ -6,6 +6,10 @@ import {
 } from './accessLog'
 import './AccessLogFilterBar.css'
 
+// AccessLogEventType is a closed app union kept only as a future-endpoint
+// contract (AAASM-5111) — never populated from a live wire value today —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const EVENT_TYPE_LABELS: Record<AccessLogEventType, string> = {
   login: 'Login',
   logout: 'Logout',
@@ -18,6 +22,9 @@ const EVENT_TYPE_LABELS: Record<AccessLogEventType, string> = {
 const TIME_RANGE_OPTIONS = ['24h', '7d', '30d', 'custom'] as const
 type TimeRangeOption = (typeof TIME_RANGE_OPTIONS)[number]
 
+// TimeRangeOption is a closed local union chosen from a fixed select, not a
+// raw wire string — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const TIME_RANGE_LABELS: Record<TimeRangeOption, string> = {
   '24h': 'Last 24 hours',
   '7d': 'Last 7 days',

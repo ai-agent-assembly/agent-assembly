@@ -18,6 +18,9 @@ export interface RoleCapabilityCatalogueEntry {
   capabilities: readonly string[]
 }
 
+// Role is the closed member-role union — a static built-in catalogue, not a
+// wire-keyed lookup — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 export const ROLE_CAPABILITY_CATALOGUE: Record<Role, RoleCapabilityCatalogueEntry> = {
   org_admin: {
     description:

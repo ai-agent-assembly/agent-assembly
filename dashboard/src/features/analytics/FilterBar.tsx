@@ -12,6 +12,9 @@ interface FilterBarProps {
   isLoadingTeams?: boolean
 }
 
+// Keyed by `PresetRange`, a closed app union chosen from a fixed select, not a
+// raw wire string — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const RANGE_LABELS: Record<string, string> = {
   '24h': 'Last 24 hours',
   '7d': 'Last 7 days',

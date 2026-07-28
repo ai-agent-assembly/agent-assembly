@@ -31,6 +31,10 @@ type PolicyResponse = components['schemas']['PolicyResponse']
 
 // Inverse of serializeDraft's SLA_TO_SECONDS. Unrecognised timeouts fall back
 // to the editor's default SLA so the approver row still renders a valid value.
+// Keyed by `number`, not a string — outside this rule's `Record<string, ...>`-
+// style wire-key threat model (the lookup source is a numeric
+// `timeout_seconds`, which cannot collide with an object prototype member).
+// eslint-disable-next-line no-restricted-syntax
 const SECONDS_TO_SLA: Record<number, ApproverSla> = {
   300: '5m',
   900: '15m',

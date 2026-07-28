@@ -135,6 +135,10 @@ interface LayerStat {
   readonly tone?: 'ok' | 'warn' | 'danger' | 'info' | 'scrub'
 }
 
+// LayerStat['tone'] is a closed local union set only by this page's own
+// `countTone` helper, never from the wire — narrow-union Record gap
+// (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const TONE_CLASS: Record<NonNullable<LayerStat['tone']>, string> = {
   ok: 'is-ok',
   warn: 'is-warn',
@@ -216,6 +220,10 @@ function LayerCard({
  * verdict. Severity is a real field the alerts API emits, so tinting it asserts
  * nothing the data does not already say (AAASM-5116).
  */
+// Alert['severity'] is the closed 4-member Severity union, validated onto an
+// Alert by `canonicalSeverity` in parseAlert.ts — narrow-union Record gap
+// (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const SEVERITY_TONE: Record<Alert['severity'], string> = {
   CRITICAL: 'var(--danger)',
   HIGH: 'var(--warn)',

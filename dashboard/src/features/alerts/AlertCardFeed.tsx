@@ -12,6 +12,10 @@ import { StatusBadge } from './StatusBadge'
 import { CATEGORY_META, deriveCategory } from './alertCategory'
 import type { Alert, AlertRule, Severity } from './types'
 
+// Severity is a closed 4-member app union; `normaliseAlert`/`canonicalSeverity`
+// in parseAlert.ts validate the wire value into it before an Alert ever exists
+// — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const SEVERITY_BORDER: Record<Severity, string> = {
   CRITICAL: 'var(--severity-critical)',
   HIGH: 'var(--severity-high)',

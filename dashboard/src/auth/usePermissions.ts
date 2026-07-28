@@ -5,6 +5,9 @@ import { AuthContext, type Scope } from './AuthContext'
  * Privilege ranking, mirroring the server ordering `read < write < admin`
  * (`aa-auth::scope::Scope`). A higher scope satisfies a lower requirement.
  */
+// `Scope` is the closed 3-member union from the generated OpenAPI schema, not a
+// wire-supplied raw string — the AAASM-5245 rule's gap #2 (real union key).
+// eslint-disable-next-line no-restricted-syntax
 const SCOPE_RANK: Record<Scope, number> = { read: 0, write: 1, admin: 2 }
 
 /** Tooltip/title copy shown on controls disabled for a read-only caller. */

@@ -5,6 +5,9 @@ interface ModeChipProps {
   mode: FleetMode
 }
 
+// FleetMode is a closed 3-member app union, not a raw wire string — narrow-
+// union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const GLYPH: Record<FleetMode, string> = {
   enforce: '●',
   shadow: '◐',

@@ -5,6 +5,9 @@ const TICK_FAST_MS = 1_000
 const TICK_SLOW_MS = 10_000
 const FAST_THRESHOLD_MS = 60_000
 
+// Keyed by CountdownTier, a closed app union computed client-side from a
+// timestamp, not a raw wire string — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const TIER_COLOR: Record<ReturnType<typeof getCountdownTier>, string> = {
   high: 'var(--danger)',
   medium: 'var(--warn)',

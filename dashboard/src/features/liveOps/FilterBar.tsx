@@ -25,6 +25,10 @@ interface FilterBarProps {
 
 const DEFAULT_OP_TYPES = ['read', 'write', 'delete', 'exec'] as const
 
+// OperationStatus is a closed app union; `coerceStatus`/`opStateToStatus` in
+// useLiveOpsStream.ts validate the wire state into it before an op ever
+// carries one — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const STATUS_LABEL: Record<OperationStatus, string> = {
   running: 'Running',
   pending: 'Pending',

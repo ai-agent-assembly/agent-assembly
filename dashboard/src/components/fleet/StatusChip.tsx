@@ -6,6 +6,10 @@ interface StatusChipProps {
   status: string
 }
 
+// FleetStatusKind is a closed app union; `classify()` allow-list-guards the
+// wire-supplied `status` string against it before this table is ever indexed
+// — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const GLYPH: Record<FleetStatusKind, string> = {
   active: '●',
   idle: '○',

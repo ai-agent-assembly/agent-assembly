@@ -34,6 +34,9 @@ type Phase = 'idle' | 'probing' | 'answered'
 /** The copy button's outcome. `failed` did not exist before AAASM-5145. */
 type CopyState = 'idle' | 'copied' | 'failed'
 
+// PackageManager is a closed local union chosen from the component's own tab
+// state, not a raw wire string — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const COMMANDS: Record<PackageManager, string> = {
   pip: 'pip install agent-assembly',
   npm: 'npm install @agent-assembly/sdk',

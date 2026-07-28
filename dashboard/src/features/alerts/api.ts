@@ -41,6 +41,9 @@ export async function alertsFetch<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
+  // A write-side header accumulator (built fresh per call from known static
+  // keys + a spread), not a wire-keyed lookup table — AAASM-5245 gap 1.
+  // eslint-disable-next-line no-restricted-syntax
   const headers: Record<string, string> = {
     Accept: 'application/json',
     ...authHeader(),

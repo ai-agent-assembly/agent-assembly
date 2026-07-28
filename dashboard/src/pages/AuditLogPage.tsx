@@ -59,6 +59,10 @@ const EVENT_META = new Map<string, { label: string; chip: string; icon: string }
  * payload. Keyed by the four real `assembly.common.v1.Decision` variants — the
  * mock's invented `APPROVE` key matched no proto variant and is gone.
  */
+// AuditDecision is a closed 4-member app union; `readDecisionValue` in
+// features/audit/logs.ts validates the wire payload into it before this table
+// is ever indexed — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const DECISION_META: Record<AuditDecision, { chip: string; label: string }> = {
   ALLOW: { chip: 'ok', label: 'allow' },
   DENY: { chip: 'danger', label: 'deny' },

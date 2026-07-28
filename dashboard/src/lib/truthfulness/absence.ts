@@ -70,6 +70,9 @@ export interface TruthStateMeta {
   readonly tone: TruthTone
 }
 
+// TruthState is a closed 6-member app union defined entirely in this module,
+// never a raw wire string — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 export const TRUTH_STATE_META: Record<TruthState, TruthStateMeta> = {
   unknown: {
     label: 'Unknown',

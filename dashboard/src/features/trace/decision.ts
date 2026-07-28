@@ -51,6 +51,10 @@ export interface VerdictMeta {
   readonly bgVar: string
 }
 
+// Verdict is a closed 5-member app union produced only by `deriveVerdict`'s
+// own Map-based lookups above (never a raw wire string itself) — narrow-union
+// Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 export const VERDICT_META: Record<Verdict, VerdictMeta> = {
   allowed: { label: '✓ ALLOWED', icon: '✓', colorVar: 'var(--ok)', bgVar: 'var(--ok-bg)' },
   narrowed: { label: '↘ NARROWED', icon: '↘', colorVar: 'var(--warn)', bgVar: 'var(--warn-bg)' },
@@ -65,6 +69,10 @@ export interface StatusMeta {
   readonly bgVar: string
 }
 
+// LayerStatus is a closed 7-member app union computed client-side per
+// ADR-0017 item 13 — not a raw wire string — narrow-union Record gap
+// (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 export const STATUS_META: Record<LayerStatus, StatusMeta> = {
   pass: { icon: '✓', colorVar: 'var(--ok)', bgVar: 'var(--ok-bg)' },
   fail: { icon: '✕', colorVar: 'var(--danger)', bgVar: 'var(--danger-bg)' },

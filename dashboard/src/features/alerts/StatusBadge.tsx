@@ -1,5 +1,9 @@
 import type { AlertStatus } from './types'
 
+// AlertStatus is a closed 3-member app union, validated onto an Alert by
+// `canonicalStatus` in parseAlert.ts before this component ever sees one —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const STATUS_STYLE: Record<AlertStatus, { bg: string; fg: string }> = {
   FIRING: { bg: 'var(--status-danger-bg)', fg: 'var(--status-danger-text-strong)' },
   RESOLVED: { bg: 'var(--status-success-bg)', fg: 'var(--status-success-text-strong)' },
