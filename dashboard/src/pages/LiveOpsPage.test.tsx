@@ -311,6 +311,18 @@ describe('LiveOpsPage', () => {
     expect(screen.getByTestId('error-state-live')).toBeInTheDocument()
   })
 
+  it('mounts the P1 runtime-down banner with its severity + propagation copy', () => {
+    // AAASM-5153: the canonical live-kind ErrorState carries the P1 banner and
+    // the last-known-policy-snapshot propagation warning the old generic card
+    // dropped.
+    mockStream({ status: 'error' })
+    renderWithProviders(<LiveOpsPage />)
+    expect(screen.getByTestId('runtime-down-banner')).toBeInTheDocument()
+    expect(screen.getByText(/RUNTIME DISCONNECTED/)).toBeInTheDocument()
+    expect(screen.getByText(/severity: P1/)).toBeInTheDocument()
+    expect(screen.getByText(/last known policy snapshot/)).toBeInTheDocument()
+  })
+
   it('renders ErrorState with a working reconnect retry when hook errors', async () => {
     const user = userEvent.setup()
     const reconnect = vi.fn()
