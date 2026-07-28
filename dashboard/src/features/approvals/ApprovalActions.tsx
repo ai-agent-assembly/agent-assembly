@@ -18,7 +18,7 @@ export interface ApprovalActionsProps {
   readonly onError?: (action: 'approve' | 'reject', error: unknown) => void
   /**
    * Visual density. `sm` (default) suits inline approval cards / table rows
-   * (Live-ops); `md` suits a drawer footer (Trace ApprovalDetailDrawer).
+   * (Live-ops); `md` suits a larger drawer/footer surface.
    */
   readonly size?: 'sm' | 'md'
   /** Disable both actions — e.g. the approval already decided or expired. */
@@ -50,7 +50,7 @@ function btnStyle(size: 'sm' | 'md', bg: string, enabled: boolean): CSSPropertie
  * `POST /api/v1/approvals/{id}/approve|reject` mutations.
  *
  * Shared Wave-2 primitive (AAASM-5077): Live-ops mounts it inline on approval
- * cards and Trace mounts it in the ApprovalDetailDrawer. It owns the mutation
+ * cards. It owns the mutation
  * wiring and reject-reason capture so every surface hits the endpoints
  * identically; callers react via `onApproved` / `onRejected` / `onError`
  * (optimistic list removal, drawer close, toasts) rather than re-implementing
