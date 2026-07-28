@@ -58,6 +58,13 @@
   color: var(--danger);
 }
 
+.ad-head__note {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--danger);
+}
+
 .ad-head__chip {
   display: inline-flex;
   align-items: center;

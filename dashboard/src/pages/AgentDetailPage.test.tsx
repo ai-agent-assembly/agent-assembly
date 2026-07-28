@@ -187,6 +187,26 @@ function mockSuspendedAgent() {
   )
 }
 
+// AAASM-5163: mount the drawer for one specific agent (custom metadata /
+// last_event) so the flag-note and last-seen assertions control their inputs.
+function mockAgentDetail(agent: Agent) {
+  mockCapabilityMatrix()
+  vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+    mockQuery<Agent[]>({ data: [agent], isLoading: false, isError: false, refetch: vi.fn() }),
+  )
+  vi.spyOn(agentsApi, 'useAgentQuery').mockReturnValue(
+    mockQuery<Agent | undefined>({ data: agent, isLoading: false, isError: false, refetch: vi.fn() }),
+  )
+  vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
+    mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
+  )
+  vi.spyOn(agentsApi, 'useAgentCapabilitiesQuery').mockReturnValue(
+    mockQuery<agentsApi.EffectivePermissions>({
+      data: { allow: [], deny: [], sources: [] }, isLoading: false, isError: false,
+    }),
+  )
+}
+
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('AgentDetailPage deep link', () => {
@@ -228,6 +248,39 @@ describe('AgentDetailPage deep link', () => {
     mockCapabilityMatrix()
     renderApp('/agents/abc123')
     expect(await screen.findByTestId('agent-detail-did')).toHaveTextContent('did:agent:agent-assembly:abc123')
+  })
+})
+
+describe('AgentDetailPage drawer head flag note (AAASM-5163)', () => {
+  it('renders the ⚠-prefixed note when metadata carries one', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, metadata: { owner: 'alice', note: 'quarantined pending review' } })
+    renderApp('/agents/abc123')
+    const note = await screen.findByTestId('agent-detail-note')
+    expect(note).toHaveTextContent('⚠ quarantined pending review')
+  })
+
+  it('omits the note sub-line when metadata carries no note', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, metadata: { owner: 'alice' } })
+    renderApp('/agents/abc123')
+    await screen.findByTestId('agent-detail')
+    expect(screen.queryByTestId('agent-detail-note')).not.toBeInTheDocument()
+  })
+})
+
+describe('AgentDetailPage identity last-seen (AAASM-5163)', () => {
+  it('humanizes the last-seen ISO timestamp rather than printing it raw', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, last_event: '2026-05-12T00:00:00Z' })
+    renderApp('/agents/abc123')
+    const lastSeen = await screen.findByTestId('agent-detail-last-seen')
+    expect(lastSeen).toHaveTextContent(/last seen \d+[smhd] ago/)
+    expect(lastSeen).not.toHaveTextContent('2026-05-12T00:00:00Z')
+  })
+
+  it('renders an em-dash for last-seen when the agent has no last event', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, last_event: null })
+    renderApp('/agents/abc123')
+    const lastSeen = await screen.findByTestId('agent-detail-last-seen')
+    expect(lastSeen).toHaveTextContent('last seen —')
   })
 })
 
