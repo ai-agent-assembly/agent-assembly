@@ -168,12 +168,18 @@ const baseColumns: ColumnDef<FleetAgent>[] = [
   columnHelper.accessor('blocked24h', {
     header: 'Blocked / 24h',
     enableSorting: true,
-    cell: (info) => <NumericCell value={info.getValue()} />,
+    cell: (info) => {
+      const value = info.getValue()
+      return <NumericCell value={value} tone={value !== null && value > 50 ? 'danger' : undefined} />
+    },
   }),
   columnHelper.accessor('scrubbed24h', {
     header: 'Scrubbed / 24h',
     enableSorting: true,
-    cell: (info) => <NumericCell value={info.getValue()} />,
+    cell: (info) => {
+      const value = info.getValue()
+      return <NumericCell value={value} tone={value !== null && value > 0 ? 'scrub' : undefined} />
+    },
   }),
   columnHelper.accessor('lastSeen', {
     header: 'Last seen',
