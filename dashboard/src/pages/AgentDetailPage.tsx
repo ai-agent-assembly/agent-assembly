@@ -262,6 +262,11 @@ export function AgentDetailPage() {
                     <span className="ad-head__owner">@{toFleetAgent(agent).owner}</span>
                   )}
                 </h1>
+                {toFleetAgent(agent).note && (
+                  <p className="ad-head__note" data-testid="agent-detail-note">
+                    ⚠ {toFleetAgent(agent).note}
+                  </p>
+                )}
               </div>
               <div className="ad-head__actions">
                 <button
