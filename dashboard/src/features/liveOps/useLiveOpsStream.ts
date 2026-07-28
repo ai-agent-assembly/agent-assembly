@@ -268,6 +268,17 @@ export function useLiveOpsStream({
 
   // Hoisted out of the WebSocket `onmessage` handler to keep the effect's
   // callback nesting shallow (mapEvent + mergeOp already isolate the logic).
+  //
+  // `JSON.parse(...) as GovernanceEvent` is a bare cast (AAASM-5217 audit).
+  // Accepted-risk: every field of `parsed` that ends up used as an
+  // object-lookup key is validated before that lookup, not trusted from the
+  // annotation — `mapEvent` runs the wire `audit.status` / `ops_change.state`
+  // through `coerceStatus`/`opStateToStatus` (allow-listed against
+  // `OPERATION_STATUSES`) before it becomes the `LiveOperation.status` that
+  // `STATUS_LABEL[op.status]` (`OperationRow.tsx`) indexes, and
+  // `mapCallStackNode` runs `node.kind` through `coerceCallStackKind`
+  // (allow-listed against `CALL_STACK_KINDS`). `event.id` / `agent_id` /
+  // `resource` / `op_type` are rendered as opaque display values, never keys.
   const handleMessage = useCallback(
     (evt: MessageEvent) => {
       try {
