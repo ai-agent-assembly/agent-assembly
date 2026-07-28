@@ -5,7 +5,8 @@ import { useSandboxSummaryQuery } from '../features/audit/api'
 import { extractEnforcementMode, extractScope } from '../features/policies/policyYamlHelpers'
 import { SandboxEnableLiveDialog } from '../features/policies/SandboxEnableLiveDialog'
 import { SandboxSummaryCard } from '../components/SandboxSummaryCard'
-import { EmptyState, ErrorState } from '../components/states'
+import { EmptyState } from '../components/states'
+import { ErrorState } from '../components/ErrorState'
 import { OverlayHost } from '../components/OverlayHost'
 import { useOverlay } from '../components/useOverlay'
 import { useToast } from '../components/Toast'
@@ -336,13 +337,10 @@ function PoliciesContent({
   showHistory,
 }: PoliciesContentProps) {
   if (isError) {
-    return (
-      <ErrorState
-        title="Failed to load policies"
-        description="The gateway returned an unexpected error."
-        onRetry={onRetry}
-      />
-    )
+    // Canonical full-page error surface (AAASM-5152). The `generic` copy key
+    // supplies the fault badge, title, and the "Retry" primary action; onRetry
+    // re-runs the policies query.
+    return <ErrorState kind="generic" onRetry={onRetry} />
   }
   if (isLoading) {
     return (
