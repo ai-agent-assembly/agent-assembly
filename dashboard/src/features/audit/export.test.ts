@@ -295,8 +295,8 @@ describe('buildComplianceReport — prototype-polluting event types', () => {
 
   it('tallies a __proto__ event_type instead of silently dropping it', () => {
     const rows = [
-      entry({ seq: 1, event_type: '__proto__', payload: '{"event_id":"a"}' }),
-      entry({ seq: 2, event_type: '__proto__', payload: '{"event_id":"b"}' }),
+      entry({ seq: 1, event_type: '__proto__' as never, payload: '{"event_id":"a"}' }),
+      entry({ seq: 2, event_type: '__proto__' as never, payload: '{"event_id":"b"}' }),
     ]
     const report = buildComplianceReport(rows, ctx, COMPLETE, now)
     expect(report).toContain('- __proto__: 2')
@@ -304,8 +304,8 @@ describe('buildComplianceReport — prototype-polluting event types', () => {
 
   it('gives a constructor event_type a real numeric count, not a fabricated string', () => {
     const rows = [
-      entry({ seq: 1, event_type: 'constructor', payload: '{"event_id":"a"}' }),
-      entry({ seq: 2, event_type: 'constructor', payload: '{"event_id":"b"}' }),
+      entry({ seq: 1, event_type: 'constructor' as never, payload: '{"event_id":"a"}' }),
+      entry({ seq: 2, event_type: 'constructor' as never, payload: '{"event_id":"b"}' }),
     ]
     const report = buildComplianceReport(rows, ctx, COMPLETE, now)
     expect(report).toMatch(/^- constructor: 2$/m)
