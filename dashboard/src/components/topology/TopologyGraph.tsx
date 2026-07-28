@@ -361,6 +361,31 @@ export function TopologyGraph({
   /** Team lookup for edge classification. Hoisted so it is not rebuilt per tick. */
   const nodeTeams = useMemo(() => teamById(nodes), [nodes])
 
+  /**
+   * The selected node plus every node sharing an edge with it, or `null` when
+   * nothing is selected (AAASM-5137).
+   *
+   * When a node is selected the canvas dims everything outside this set so the
+   * operator sees the selection's immediate neighbourhood without the rest of
+   * the mesh competing for attention — the `connectedIds` focus treatment from
+   * `design/v2/hi-fi/topology.jsx:392`. `null` (nothing selected) is distinct
+   * from an empty set: it means "dim nothing", so every node and edge renders at
+   * full opacity.
+   *
+   * Derived from the *drawable* `edges` — the same set the canvas draws — so a
+   * neighbour reachable only through a filtered-out edge kind is not counted as
+   * connected on a view that isn't showing that connection.
+   */
+  const connectedIds = useMemo<ReadonlySet<string> | null>(() => {
+    if (selectedNodeId == null) return null
+    const ids = new Set<string>([selectedNodeId])
+    for (const e of edges) {
+      if (e.source === selectedNodeId) ids.add(e.target)
+      if (e.target === selectedNodeId) ids.add(e.source)
+    }
+    return ids
+  }, [selectedNodeId, edges])
+
   // Cluster centers: a grid laid out left-to-right, top-to-bottom. Depends only
   // on *which* teams exist and the canvas size — never on their budgets — so it
   // stays referentially stable across a metrics-only payload update.
