@@ -172,20 +172,27 @@ jobs:
             # broad `rust` set above, so this can never lose coverage). Always
             # include this workflow so editing CI re-runs everything.
             proto:
-              - 'proto/**'
-              - 'aa-proto/**'
+              - 'proto/**/*.proto'
+              - 'aa-proto/**/*.rs'
+              - 'aa-proto/**/Cargo.toml'
               - '.github/workflows/ci.yml'
             schema:
-              - 'schemas/**'
+              - 'schemas/**/*.json'
+              - 'schemas/**/*.yaml'
               - '.github/workflows/ci.yml'
             openapi:
-              - 'aa-api/**'
-              - 'openapi/**'
+              - 'aa-api/**/*.rs'
+              - 'aa-api/**/Cargo.toml'
+              - 'openapi/v1.yaml'
               - '.spectral.yaml'
               - '.github/workflows/ci.yml'
             storage:
-              - 'aa-gateway/**'
-              - 'aa-storage*/**'
+              - 'aa-gateway/**/*.rs'
+              - 'aa-gateway/**/Cargo.toml'
+              - 'aa-gateway/**/*.sql'
+              - 'aa-storage*/**/*.rs'
+              - 'aa-storage*/**/Cargo.toml'
+              - 'aa-storage*/**/*.sql'
               - '.github/workflows/ci.yml'
             # AAASM-4454: explicit, self-documenting trigger for the
             # integration-surface contract tests, which police that the gRPC
