@@ -203,15 +203,16 @@ function describeAtViewport(width: number, height: number) {
       expect(bg).toMatch(/rgba?\(8,\s*9,\s*11,\s*0?\.78\)/)
     })
 
-    test('already-configured gateway redirects to / without showing the wizard', async ({
+    test('already-configured gateway redirects to Overview without showing the wizard', async ({
       page,
     }) => {
       await preconfigureGateway(page)
       await page.goto('/onboarding')
       // Wizard must not be present.
       await expect(page.getByTestId('onboarding-wizard')).toHaveCount(0)
-      // Page lands on /; the AppShell stays mounted, so confirm by URL.
-      expect(page.url()).toMatch(/\/$/)
+      // Root now redirects to Overview (AAASM-5144), not the Approvals queue;
+      // the AppShell stays mounted, so confirm the landing route by URL.
+      await expect.poll(() => page.url()).toMatch(/\/overview$/)
     })
 
     test('happy path: framework → install → identity → policy → enroll → finish', async ({
