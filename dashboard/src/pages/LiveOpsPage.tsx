@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useToast } from '../components/Toast'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EmptyState } from '../components/EmptyState'
-import { ErrorState } from '../components/states'
+import { ErrorState } from '../components/ErrorState'
 import { TruthfulValue } from '../components/truthfulness'
 import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 import { certainFromQuery, mapCertain } from '../lib/truthfulness'
@@ -279,14 +279,11 @@ export function LiveOpsPage() {
 
   let streamBody
   if (status === 'error') {
-    streamBody = (
-      <ErrorState
-        title="Connection lost"
-        description="Lost the connection to the gateway event stream after several attempts."
-        onRetry={reconnect}
-        retryLabel="Reconnect"
-      />
-    )
+    // AAASM-5153: the canonical live-kind ErrorState mounts the P1 runtime-down
+    // banner (severity P1 + last-known-policy-snapshot propagation warning),
+    // which the old generic "Connection lost" card dropped. Reconnect is wired
+    // to the real stream reconnect handler.
+    streamBody = <ErrorState kind="live" onRetry={reconnect} />
   } else if (status === 'connected' && ops.length === 0) {
     streamBody = (
       <EmptyState
