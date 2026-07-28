@@ -35,6 +35,9 @@ import './FleetPage.css'
 
 const COLUMN_COUNT = 11
 
+/** Columns that render right-aligned numeric values (AAASM-5161). */
+const NUMERIC_COLUMN_IDS: ReadonlySet<string> = new Set(['blocked24h', 'scrubbed24h'])
+
 const SKELETON_ROW_KEYS = Array.from({ length: 5 }, (_, i) => `skeleton-row-${i}`)
 const SKELETON_CELL_KEYS = Array.from({ length: COLUMN_COUNT }, (_, j) => `skeleton-cell-${j}`)
 
@@ -54,9 +57,14 @@ function SkeletonRows() {
   )
 }
 
-function NumericCell({ value }: Readonly<{ value: number | null }>) {
+type NumericCellTone = 'danger' | 'scrub'
+
+function NumericCell({
+  value,
+  tone,
+}: Readonly<{ value: number | null; tone?: NumericCellTone }>) {
   return (
-    <span className="fleet-table__numeric">
+    <span className={`fleet-table__numeric${tone ? ` fleet-table__numeric--${tone}` : ''}`}>
       {value ?? '—'}
     </span>
   )
@@ -160,12 +168,18 @@ const baseColumns: ColumnDef<FleetAgent>[] = [
   columnHelper.accessor('blocked24h', {
     header: 'Blocked / 24h',
     enableSorting: true,
-    cell: (info) => <NumericCell value={info.getValue()} />,
+    cell: (info) => {
+      const value = info.getValue()
+      return <NumericCell value={value} tone={value !== null && value > 50 ? 'danger' : undefined} />
+    },
   }),
   columnHelper.accessor('scrubbed24h', {
     header: 'Scrubbed / 24h',
     enableSorting: true,
-    cell: (info) => <NumericCell value={info.getValue()} />,
+    cell: (info) => {
+      const value = info.getValue()
+      return <NumericCell value={value} tone={value !== null && value > 0 ? 'scrub' : undefined} />
+    },
   }),
   columnHelper.accessor('lastSeen', {
     header: 'Last seen',
@@ -541,7 +555,7 @@ export function FleetPage() {
                   {hg.headers.map((header) => (
                     <th
                       key={header.id}
-                      className={`fleet-table__th${header.column.getCanSort() ? ' fleet-table__th--sortable' : ''}`}
+                      className={`fleet-table__th${header.column.getCanSort() ? ' fleet-table__th--sortable' : ''}${NUMERIC_COLUMN_IDS.has(header.column.id) ? ' fleet-table__th--numeric' : ''}`}
                       onClick={header.column.getToggleSortingHandler()}
                     >
                       {flexRender(header.column.columnDef.header, header.getContext())}
@@ -578,7 +592,10 @@ export function FleetPage() {
                     }}
                   >
                     {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="fleet-table__cell">
+                      <td
+                        key={cell.id}
+                        className={`fleet-table__cell${NUMERIC_COLUMN_IDS.has(cell.column.id) ? ' fleet-table__cell--numeric' : ''}`}
+                      >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </td>
                     ))}
