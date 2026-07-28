@@ -150,8 +150,8 @@ describe('TeamDetailPage', () => {
       members: [
         { id: 'a'.repeat(32), name: 'known-active', status: 'active', depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
         { id: 'b'.repeat(32), name: 'known-suspended', status: 'suspended', depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
-        { id: 'c'.repeat(32), name: 'proto-constructor', status: 'constructor', depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
-        { id: 'd'.repeat(32), name: 'proto-tostring', status: 'toString', depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
+        { id: 'c'.repeat(32), name: 'proto-constructor', status: 'constructor' as never, depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
+        { id: 'd'.repeat(32), name: 'proto-tostring', status: 'toString' as never, depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
       ],
     }
     mockTeam({ data: team })
