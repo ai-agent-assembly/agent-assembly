@@ -32,6 +32,11 @@ const POLICY: Policy = {
   policy_yaml: 'name: baseline\n',
 }
 
+// The policies list is keyed by its includeArchived flag (AAASM-5143); the
+// default (history-off) view — where a newly created policy lands — carries
+// this exact key.
+const DEFAULT_POLICIES_KEY = ['policies', { includeArchived: false }] as const
+
 let get: Mock
 let post: Mock
 
@@ -124,13 +129,13 @@ describe('useCreatePolicy', () => {
       () => new Promise<FetchResult>((resolve) => { resolvePost = resolve }),
     )
     const { client, wrapper } = makeWrapper()
-    client.setQueryData<Policy[]>(['policies'], [POLICY])
+    client.setQueryData<Policy[]>(DEFAULT_POLICIES_KEY, [POLICY])
     const { result } = renderHook(() => useCreatePolicy(), { wrapper })
 
     result.current.mutate({ policy_yaml: 'name: "my-new-policy"\n' })
 
     await waitFor(() => {
-      const cached = client.getQueryData<Policy[]>(['policies'])
+      const cached = client.getQueryData<Policy[]>(DEFAULT_POLICIES_KEY)
       expect(cached?.some((p) => p.name === 'my-new-policy' && p.version === 'pending')).toBe(true)
     })
 
@@ -149,7 +154,7 @@ describe('useCreatePolicy', () => {
     result.current.mutate({ policy_yaml: 'rules: []\n' })
 
     await waitFor(() => {
-      const cached = client.getQueryData<Policy[]>(['policies'])
+      const cached = client.getQueryData<Policy[]>(DEFAULT_POLICIES_KEY)
       expect(cached?.some((p) => p.name === '(new policy)')).toBe(true)
     })
 
@@ -160,7 +165,7 @@ describe('useCreatePolicy', () => {
   it('rolls back the optimistic placeholder on failure', async () => {
     post.mockResolvedValue({ error: { message: 'boom' } } satisfies FetchResult)
     const { client, wrapper } = makeWrapper()
-    client.setQueryData<Policy[]>(['policies'], [POLICY])
+    client.setQueryData<Policy[]>(DEFAULT_POLICIES_KEY, [POLICY])
     const { result } = renderHook(() => useCreatePolicy(), { wrapper })
 
     await expect(
@@ -168,7 +173,7 @@ describe('useCreatePolicy', () => {
     ).rejects.toThrow('Failed to apply policy')
 
     await waitFor(() => {
-      const cached = client.getQueryData<Policy[]>(['policies'])
+      const cached = client.getQueryData<Policy[]>(DEFAULT_POLICIES_KEY)
       expect(cached).toEqual([POLICY])
     })
   })
