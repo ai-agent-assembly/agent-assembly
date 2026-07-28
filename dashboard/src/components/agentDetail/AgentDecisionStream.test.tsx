@@ -141,7 +141,7 @@ describe('AgentDecisionStream', () => {
     (label) => {
       vi.spyOn(agentsApi, 'useAgentDecisionsQuery').mockReturnValue(
         mockQuery<AgentDecision[]>({
-          data: [decision({ decision: 0, decisionLabel: label })],
+          data: [decision({ decision: 0, decisionLabel: label as never })],
           isLoading: false,
           isError: false,
           refetch: vi.fn(),
