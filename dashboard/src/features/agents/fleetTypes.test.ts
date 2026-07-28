@@ -71,9 +71,7 @@ describe('toFleetAgent', () => {
   })
 
   it('fills blocked24h / scrubbed24h from the enforcement lookup when present', () => {
-    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), {
-      'id-1': { blocked: 7, scrubbed: 3 },
-    })
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), new Map([['id-1', { blocked: 7, scrubbed: 3 }]]))
     expect(fa.blocked24h).toBe(7)
     expect(fa.scrubbed24h).toBe(3)
   })
@@ -81,11 +79,30 @@ describe('toFleetAgent', () => {
   it('leaves blocked24h / scrubbed24h null when the agent is absent from the lookup', () => {
     // An agent with no blocked/scrubbed decisions in the window is omitted from
     // the endpoint response, so it must render `—`, not a fabricated 0.
-    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), {
-      'other-agent': { blocked: 2, scrubbed: 1 },
-    })
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), new Map([['other-agent', { blocked: 2, scrubbed: 1 }]]))
     expect(fa.blocked24h).toBeNull()
     expect(fa.scrubbed24h).toBeNull()
+  })
+
+  it('retrieves an inherited-prototype agent id via .get() instead of colliding with it', () => {
+    // AAASM-5237: agent_id is raw wire input. With a plain-object accumulator,
+    // a `constructor` key would read back `Object` and a `__proto__` key would
+    // write through the prototype setter instead of storing an ordinary entry.
+    // A Map treats both as ordinary keys.
+    const ctorLookup = new Map([['constructor', { blocked: 9, scrubbed: 2 }]])
+    const ctorAgent = toFleetAgent(makeAgent({ id: 'constructor' }), ctorLookup)
+    expect(ctorAgent.blocked24h).toBe(9)
+    expect(ctorAgent.scrubbed24h).toBe(2)
+
+    const protoLookup = new Map([['__proto__', { blocked: 4, scrubbed: 1 }]])
+    const protoAgent = toFleetAgent(makeAgent({ id: '__proto__' }), protoLookup)
+    expect(protoAgent.blocked24h).toBe(4)
+    expect(protoAgent.scrubbed24h).toBe(1)
+
+    // A real, unrelated agent id must still resolve normally.
+    const realAgent = toFleetAgent(makeAgent({ id: 'id-1' }), new Map([['id-1', { blocked: 7, scrubbed: 3 }]]))
+    expect(realAgent.blocked24h).toBe(7)
+    expect(realAgent.scrubbed24h).toBe(3)
   })
 })
 

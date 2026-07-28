@@ -74,7 +74,7 @@ function makeAlert(overrides: Partial<Alert> = {}): Alert {
 }
 
 /** Enforcement counts for the default single-agent fleet. */
-const FULL_ENFORCEMENT: AgentEnforcementLookup = { 'agent-1': { blocked: 4, scrubbed: 12 } }
+const FULL_ENFORCEMENT: AgentEnforcementLookup = new Map([['agent-1', { blocked: 4, scrubbed: 12 }]])
 
 function setup({
   agents = [makeAgent()],
