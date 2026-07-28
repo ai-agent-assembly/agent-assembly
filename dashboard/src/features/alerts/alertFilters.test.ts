@@ -51,6 +51,16 @@ describe('applyClientFilters', () => {
     expect(applyClientFilters(ROWS, filters, NOW)).toEqual([RECENT])
   })
 
+  it.each([
+    ['rule name', 'BUDGET BURN'],
+    ['agent id', 'AA-1'],
+    ['alert id', 'ALERT-RECENT-ID'],
+  ])('matches q against %s case-insensitively', (_label, query) => {
+    const target = { ...RECENT, id: 'alert-recent-id' }
+    const filters: AlertFilters = { ...DEFAULT_ALERT_FILTERS, q: query }
+    expect(applyClientFilters([target, OTHER], filters, NOW)).toEqual([target])
+  })
+
   it('drops rows that fired before the selected preset window', () => {
     const stale = alert({ id: 'old', firstFiredAt: '2026-04-01T09:00:00Z' })
     expect(applyClientFilters([RECENT, stale], DEFAULT_ALERT_FILTERS, NOW)).toEqual([RECENT])
