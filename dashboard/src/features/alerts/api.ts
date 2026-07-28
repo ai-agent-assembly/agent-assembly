@@ -37,6 +37,24 @@ function authHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+/**
+ * Generic fetch helper shared by every alerts endpoint. `return (await
+ * response.json()) as T` (AAASM-5217 audit) is a bare cast: nothing here
+ * canonicalises the body against `T`.
+ *
+ * Accepted-risk, not blanket-safe: the list path (`fetchAlertsPage` below)
+ * pipes its response through `readAlertsPage` → `parseAlertList`, which
+ * validates `severity`/`status` before an `Alert` exists (AAASM-5149). The
+ * single-alert-detail and rules/destinations/silence paths that also call
+ * this helper (`useAlertQuery`, `useAlertRulesQuery`, `useDestinationsQuery`,
+ * etc.) do not get that same normalisation — but every place their
+ * `severity`/`status` fields are used as an object-lookup key
+ * (`SeverityBadge`, `StatusBadge`) validates the value itself immediately
+ * before indexing, rather than trusting the annotation this cast asserts. No
+ * other field this helper's callers return is ever used as a lookup key —
+ * `metric`, `operator`, ids, and timestamps are all rendered as opaque
+ * display values.
+ */
 export async function alertsFetch<T>(
   path: string,
   init: RequestInit = {},

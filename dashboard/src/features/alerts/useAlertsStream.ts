@@ -106,6 +106,13 @@ export function useAlertsStream(
 
       socket.onmessage = (event) => {
         if (cancelled) return
+        // `JSON.parse(...) as AlertsStreamFrame` is a bare cast (AAASM-5217
+        // audit). Accepted-risk: `frame.type` is only ever compared with `===`
+        // against fixed string literals below, never used as an object-lookup
+        // key, and `frame.alert` is validated by `normaliseAlert` two lines
+        // down before any of its fields (including `severity`/`status`, the
+        // ones that do become lookup keys via `SeverityBadge`/`StatusBadge`)
+        // are trusted.
         let frame: AlertsStreamFrame
         try {
           frame = JSON.parse(event.data) as AlertsStreamFrame
