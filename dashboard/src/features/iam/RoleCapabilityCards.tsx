@@ -3,17 +3,22 @@ import { buildRoleCards, type RoleCard } from './roleCapabilities'
 import type { Member } from './types'
 import './RoleCapabilityCards.css'
 
-const ROLE_BADGE_TONE: Record<string, string> = {
-  org_admin: 'iam-role-badge--owner',
-  team_admin: 'iam-role-badge--admin',
-  developer: 'iam-role-badge--member',
-  viewer: 'iam-role-badge--viewer',
-  auditor: 'iam-role-badge--viewer',
-}
+// A Map, not an object literal: `.get()` returns undefined for inherited
+// names like `constructor`/`toString`/`__proto__`, so an attacker-controlled
+// role id can never resolve to a prototype method's class name. An object
+// literal indexed as `ROLE_BADGE_TONE[role]` would resolve those inherited
+// keys and let a crafted role reach a value that is not a real tone class.
+const ROLE_BADGE_TONE = new Map<string, string>([
+  ['org_admin', 'iam-role-badge--owner'],
+  ['team_admin', 'iam-role-badge--admin'],
+  ['developer', 'iam-role-badge--member'],
+  ['viewer', 'iam-role-badge--viewer'],
+  ['auditor', 'iam-role-badge--viewer'],
+])
 
 /** Badge tone class for a role id, defaulting when the role is unrecognised. */
 function badgeTone(role: string): string {
-  return ROLE_BADGE_TONE[role] ?? 'iam-role-badge--viewer'
+  return ROLE_BADGE_TONE.get(role) ?? 'iam-role-badge--viewer'
 }
 
 function firstName(name: string): string {
