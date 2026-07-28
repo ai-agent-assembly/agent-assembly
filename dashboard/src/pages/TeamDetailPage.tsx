@@ -11,6 +11,7 @@ import {
   type TeamTopology,
 } from '../features/teams/api'
 import { useCanManageTeam } from '../features/teams/permissions'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { NotFoundPage } from './NotFoundPage'
 
 const STATUS_COLOR = new Map<string, string>([
@@ -84,40 +85,6 @@ function MemberRow({ member }: Readonly<{ member: AgentNode }>) {
   )
 }
 
-interface ConfirmDialogProps {
-  title: string
-  body: React.ReactNode
-  confirmLabel: string
-  onConfirm: () => void
-  onCancel: () => void
-  busy: boolean
-}
-
-function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel, busy }: Readonly<ConfirmDialogProps>) {
-  return (
-    <div
-      data-testid="confirm-dialog"
-      role="dialog"
-      aria-modal="true"
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-      }}
-    >
-      <div style={{ background: 'var(--surface-card)', padding: '1.5rem', borderRadius: '6px', minWidth: '24rem', maxWidth: '40rem' }}>
-        <h2 style={{ marginTop: 0 }}>{title}</h2>
-        <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>{body}</div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
-          <button type="button" data-testid="confirm-cancel" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button type="button" data-testid="confirm-ok" onClick={onConfirm} disabled={busy}>
-            {busy ? 'Working…' : confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 interface ActionBarProps {
   team: TeamTopology
   onError: (msg: string) => void
@@ -166,37 +133,34 @@ function ActionBar({ team, onError }: Readonly<ActionBarProps>) {
           Resume Team
         </button>
       </div>
-      {pending === 'suspend' && (
-        <ConfirmDialog
-          title="Suspend entire team?"
-          body={
-            <>
-              <p>The following {team.members.length} member{team.members.length === 1 ? '' : 's'} will be suspended:</p>
-              <ul style={{ maxHeight: '12rem', overflow: 'auto', paddingLeft: '1.25rem' }}>
-                {team.members.map(m => (
-                  <li key={m.id}>
-                    <code>{m.name}</code> (<code>{m.id.slice(0, 8)}…</code>)
-                  </li>
-                ))}
-              </ul>
-            </>
-          }
-          confirmLabel="Suspend"
-          busy={suspend.isPending}
-          onCancel={() => setPending(null)}
-          onConfirm={runSuspend}
-        />
-      )}
-      {pending === 'resume' && (
-        <ConfirmDialog
-          title="Resume entire team?"
-          body={<p>All {team.members.length} members will be resumed to active.</p>}
-          confirmLabel="Resume"
-          busy={resume.isPending}
-          onCancel={() => setPending(null)}
-          onConfirm={runResume}
-        />
-      )}
+      <ConfirmDialog
+        open={pending === 'suspend'}
+        title="Suspend entire team?"
+        body={
+          <>
+            <p>The following {team.members.length} member{team.members.length === 1 ? '' : 's'} will be suspended:</p>
+            <ul style={{ maxHeight: '12rem', overflow: 'auto', paddingLeft: '1.25rem' }}>
+              {team.members.map(m => (
+                <li key={m.id}>
+                  <code>{m.name}</code> (<code>{m.id.slice(0, 8)}…</code>)
+                </li>
+              ))}
+            </ul>
+          </>
+        }
+        confirmLabel="Suspend"
+        confirmVariant="danger"
+        onCancel={() => setPending(null)}
+        onConfirm={runSuspend}
+      />
+      <ConfirmDialog
+        open={pending === 'resume'}
+        title="Resume entire team?"
+        body={<p>All {team.members.length} members will be resumed to active.</p>}
+        confirmLabel="Resume"
+        onCancel={() => setPending(null)}
+        onConfirm={runResume}
+      />
     </>
   )
 }
