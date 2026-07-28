@@ -853,4 +853,14 @@ describe('TopologyGraph — neighbour focus on node select', () => {
     // Only the lone→lone-two edge is dimmed; the two edges incident to p1 are lit.
     expect(dimmed).toHaveLength(1)
   })
+
+  it('dims nothing when no node is selected', () => {
+    render(<TopologyGraph nodes={NODES} edges={EDGES} />)
+    for (const g of screen.getAllByTestId('topology-node')) {
+      expect(g).not.toHaveAttribute('data-dimmed')
+    }
+    for (const p of screen.getAllByTestId('topology-edge')) {
+      expect(p).not.toHaveAttribute('data-dimmed')
+    }
+  })
 })
