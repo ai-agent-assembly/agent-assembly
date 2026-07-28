@@ -840,4 +840,17 @@ describe('TopologyGraph — neighbour focus on node select', () => {
     render(<TopologyGraph nodes={NODES} edges={EDGES} selectedNodeId="p1" />)
     expect(nodeNamed('lone')).toHaveAttribute('data-dimmed', 'true')
   })
+
+  it('dims edges touching neither the selection nor a neighbour', () => {
+    // Add an edge whose endpoints are both outside p1's neighbourhood
+    // (lone ↔ lone-two). p1's own two edges must stay lit; the outside edge
+    // must dim.
+    const edges: TopologyEdge[] = [...EDGES, { source: 'lone', target: 'lone2', kind: 'call' }]
+    render(<TopologyGraph nodes={NODES} edges={edges} selectedNodeId="p1" />)
+    const dimmed = screen
+      .getAllByTestId('topology-edge')
+      .filter(p => p.getAttribute('data-dimmed') === 'true')
+    // Only the lone→lone-two edge is dimmed; the two edges incident to p1 are lit.
+    expect(dimmed).toHaveLength(1)
+  })
 })
