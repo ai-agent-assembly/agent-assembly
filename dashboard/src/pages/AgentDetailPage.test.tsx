@@ -258,6 +258,13 @@ describe('AgentDetailPage drawer head flag note (AAASM-5163)', () => {
     const note = await screen.findByTestId('agent-detail-note')
     expect(note).toHaveTextContent('⚠ quarantined pending review')
   })
+
+  it('omits the note sub-line when metadata carries no note', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, metadata: { owner: 'alice' } })
+    renderApp('/agents/abc123')
+    await screen.findByTestId('agent-detail')
+    expect(screen.queryByTestId('agent-detail-note')).not.toBeInTheDocument()
+  })
 })
 
 describe('AgentDetailPage close behavior', () => {
