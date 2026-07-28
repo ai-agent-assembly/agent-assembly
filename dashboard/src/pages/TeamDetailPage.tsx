@@ -10,9 +10,13 @@ import {
   type AgentNode,
   type TeamTopology,
 } from '../features/teams/api'
+import { useBudgetTreeQuery } from '../features/costs/api'
+import { selectTeamBudget } from '../features/teams/detailData'
+import { TeamBudgetCard } from '../features/teams/TeamBudgetCard'
 import { useCanManageTeam } from '../features/teams/permissions'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { NotFoundPage } from './NotFoundPage'
+import '../pages/TeamsPage.css'
 
 const STATUS_COLOR = new Map<string, string>([
   ['active', 'var(--status-success-solid)'],
@@ -170,9 +174,14 @@ export function TeamDetailPage() {
   const teamId = encodedTeamId ? decodeURIComponent(encodedTeamId) : undefined
   const teamQuery = useTeamTopologyQuery(teamId)
   const costsQuery = useCostSummaryQuery()
+  const budgetTree = useBudgetTreeQuery()
   const [toast, setToast] = useState<string | null>(null)
 
   const teamCost = useMemo(() => teamCostFor(teamId ?? '', costsQuery.data), [teamId, costsQuery.data])
+  const budget = useMemo(
+    () => (teamId ? selectTeamBudget(budgetTree.data, teamId) : null),
+    [budgetTree.data, teamId],
+  )
 
   if (teamQuery.notFound) {
     return <NotFoundPage />
@@ -212,6 +221,10 @@ export function TeamDetailPage() {
           </header>
 
           <ActionBar team={teamQuery.data} onError={setToast} />
+
+          <div className="teams-detail-cards">
+            <TeamBudgetCard budget={budget} isLoading={budgetTree.isLoading} />
+          </div>
 
           {teamQuery.data.members.length === 0 ? (
             <p data-testid="team-members-empty">No members in this team yet.</p>
