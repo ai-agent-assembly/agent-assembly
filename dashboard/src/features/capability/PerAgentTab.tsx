@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { CapabilityAgent, Decision, Resource } from './types'
-import { DECISIONS, VERBS } from './types'
+import { decisionMeta, VERBS } from './types'
 import type { CellSelection } from './CapabilityMatrixGrid'
 import './PerAgentTab.css'
 import { orNoData } from './display'
@@ -137,7 +137,7 @@ export function PerAgentTab({
                           }
                         >
                           <span className="cap-pat-cell-label">
-                            {DECISIONS[decision].label}
+                            {decisionMeta(decision).label}
                           </span>
                         </td>
                       )

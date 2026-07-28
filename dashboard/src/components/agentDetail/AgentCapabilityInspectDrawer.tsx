@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import type { CellSelection } from '../../features/capability/CapabilityMatrixGrid'
-import { DECISIONS, type Policy, type Verb } from '../../features/capability/types'
+import { decisionMeta, type Policy, type Verb } from '../../features/capability/types'
 import type { EffectivePermissions, PermissionSource } from '../../features/agents/api'
 // Reuse the shared cell-inspect drawer shell (scrim / aside / header / section
 // tokens) so the agent-detail drawer stays visually identical to the Capability
@@ -82,7 +82,7 @@ export function AgentCapabilityInspectDrawer({
 
   if (!cell) return null
   const { agent, resource, verb, decision } = cell
-  const decMeta = DECISIONS[decision]
+  const decMeta = decisionMeta(decision)
   const respPolicies = policiesFor(policies, agent.id, resource.id, verb)
 
   return (

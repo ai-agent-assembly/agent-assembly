@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { CapabilityAgent, Resource, Verb } from './types'
-import { DECISIONS } from './types'
+import { decisionMeta } from './types'
 import type { CellSelection } from './CapabilityMatrixGrid'
 import './PerResourceTab.css'
 import { orNoData, relativeTime } from './display'
@@ -145,7 +145,7 @@ export function PerResourceTab({
                           className={`cap-prt-decision cap-prt-decision--${decision}`}
                           data-decision={decision}
                         >
-                          {DECISIONS[decision].label}
+                          {decisionMeta(decision).label}
                         </span>
                       </td>
                       <td className="cap-prt-last-seen">{relativeTime(a.lastSeen)}</td>
