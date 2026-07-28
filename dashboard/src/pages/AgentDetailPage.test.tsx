@@ -294,6 +294,17 @@ describe('AgentDetailPage decision-mix empty state (AAASM-5164)', () => {
   })
 })
 
+describe('AgentDetailPage tab labels (AAASM-5170)', () => {
+  it('renders the full Capability snapshot and Recent traffic tab labels', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    expect(await screen.findByTestId('agent-detail-tab-capability')).toHaveTextContent(
+      'Capability snapshot',
+    )
+    expect(screen.getByTestId('agent-detail-tab-traffic')).toHaveTextContent('Recent traffic')
+  })
+})
+
 describe('AgentDetailPage close behavior', () => {
   it('closes back to /agents when the breadcrumb button is clicked', async () => {
     mockHappyPath()
