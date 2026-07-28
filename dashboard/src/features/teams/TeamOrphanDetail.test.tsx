@@ -72,7 +72,7 @@ describe('TeamOrphanDetail', () => {
   it('renders an unrecognised agent status with no chip modifier', () => {
     // `status` is a raw wire string: an unmapped value must fall back to the bare
     // `teams-chip` class (the `?? ''` at the call site), never leak a stray token.
-    renderOrphan(known([agent({ id: 'a1', status: 'retired' })]))
+    renderOrphan(known([agent({ id: 'a1', status: 'retired' as never })]))
     const chip = screen.getByTestId('orphan-agent-status')
     expect(chip).toHaveTextContent('retired')
     expect(chip).toHaveAttribute('class', 'teams-chip ')
