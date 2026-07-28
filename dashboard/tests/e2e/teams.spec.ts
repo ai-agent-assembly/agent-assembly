@@ -116,12 +116,12 @@ test.describe('Teams two-pane', () => {
 
     await page.getByTestId('team-suspend-btn').click()
     await expect(page.getByTestId('confirm-dialog')).toBeVisible()
-    await page.getByTestId('confirm-ok').click()
+    await page.getByTestId('confirm-dialog-confirm').click()
     await expect(page.getByTestId('team-member-status').first()).toHaveText('suspended')
 
     await page.getByTestId('team-resume-btn').click()
     await expect(page.getByTestId('confirm-dialog')).toBeVisible()
-    await page.getByTestId('confirm-ok').click()
+    await page.getByTestId('confirm-dialog-confirm').click()
     await expect(page.getByTestId('team-member-status').first()).toHaveText('active')
   })
 })

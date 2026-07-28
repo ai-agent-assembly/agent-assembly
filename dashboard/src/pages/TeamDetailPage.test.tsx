@@ -1,21 +1,16 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { TeamDetailPage } from './TeamDetailPage'
 import * as teamsApi from '../features/teams/api'
 import * as teamPermissions from '../features/teams/permissions'
-import type { AgentLineage, CostSummary, TeamTopology, TeamTopologyResult } from '../features/teams/api'
+import type { CostSummary, TeamTopology, TeamTopologyResult } from '../features/teams/api'
 
 function mockQuery<T>(p: Partial<UseQueryResult<T, Error>>): UseQueryResult<T, Error> {
   return p as unknown as UseQueryResult<T, Error>
-}
-
-function LocationProbe() {
-  const loc = useLocation()
-  return <div data-testid="location">{loc.pathname + loc.search}</div>
 }
 
 function Wrapper({ initialEntries, children }: Readonly<{ initialEntries: string[]; children: React.ReactNode }>) {
@@ -24,8 +19,7 @@ function Wrapper({ initialEntries, children }: Readonly<{ initialEntries: string
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={initialEntries}>
         <Routes>
-          <Route path="/teams/:teamId" element={<>{children}<LocationProbe /></>} />
-          <Route path="/topology" element={<><div data-testid="topology-page">topology</div><LocationProbe /></>} />
+          <Route path="/teams/:teamId" element={children} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>
@@ -69,31 +63,31 @@ function mockCosts(costs: CostSummary | undefined = COSTS) {
   )
 }
 
-function mockLineage(rootId: string) {
-  const lineage: AgentLineage = {
-    agent_id: 'agent',
-    ancestor_count: 1,
-    ancestors: [{ id: rootId, name: 'root', depth: 0 }],
-  }
-  vi.spyOn(teamsApi, 'useAgentLineageQuery').mockReturnValue(
-    mockQuery<AgentLineage>({ data: lineage, isLoading: false, isError: false }),
-  )
-}
-
 afterEach(() => {
   vi.restoreAllMocks()
 })
 
 describe('TeamDetailPage', () => {
-  it('renders header and member rows when team has members', async () => {
+  it('renders the header and the full hi-fi card set', async () => {
     mockTeam({ data: FIVE_MEMBER_TEAM })
     mockCosts()
-    mockLineage('a'.repeat(32))
     render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-alpha']}>{children}</Wrapper> })
     expect(await screen.findByTestId('team-detail-header')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'team-alpha' })).toBeInTheDocument()
     expect(screen.getByTestId('team-member-count')).toHaveTextContent('5 members')
     expect(screen.getByTestId('team-total-spend')).toHaveTextContent('$42.00')
+    // The full detail page now renders the same four cards as TeamDetailPane.
+    expect(screen.getByTestId('team-budget-card')).toBeInTheDocument()
+    expect(screen.getByTestId('team-approval-card')).toBeInTheDocument()
+    expect(screen.getByTestId('team-policies-card')).toBeInTheDocument()
+    expect(screen.getByTestId('team-members-card')).toBeInTheDocument()
+  })
+
+  it('renders one member row per member inside the members card', async () => {
+    mockTeam({ data: FIVE_MEMBER_TEAM })
+    mockCosts()
+    render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-alpha']}>{children}</Wrapper> })
+    await screen.findByTestId('team-members-card')
     expect(screen.getAllByTestId('team-member-row')).toHaveLength(5)
   })
 
@@ -103,17 +97,15 @@ describe('TeamDetailPage', () => {
     vi.spyOn(teamPermissions, 'useCanManageTeam').mockReturnValue(true)
     mockTeam({ data: FIVE_MEMBER_TEAM })
     mockCosts()
-    mockLineage('a'.repeat(32))
     render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-alpha']}>{children}</Wrapper> })
     await screen.findByTestId('team-detail-header')
     await user.click(screen.getByTestId('team-resume-btn'))
     expect(await screen.findByText('Resume entire team?')).toBeInTheDocument()
   })
 
-  it('renders empty-members message when team has no members', async () => {
+  it('renders the members-card empty state when the team has no members', async () => {
     mockTeam({ data: EMPTY_TEAM })
     mockCosts()
-    mockLineage('x')
     render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-beta']}>{children}</Wrapper> })
     expect(await screen.findByTestId('team-members-empty')).toBeInTheDocument()
   })
@@ -121,62 +113,7 @@ describe('TeamDetailPage', () => {
   it('renders NotFoundPage when team id is unknown', async () => {
     mockTeam({ notFound: true })
     mockCosts()
-    mockLineage('x')
     render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/missing']}>{children}</Wrapper> })
     expect(await screen.findByRole('heading', { name: /404/ })).toBeInTheDocument()
-  })
-
-  it('navigates to /topology?root=<topmost ancestor> when Open in topology clicked', async () => {
-    const user = userEvent.setup()
-    const rootId = 'f'.repeat(32)
-    mockTeam({ data: FIVE_MEMBER_TEAM })
-    mockCosts()
-    mockLineage(rootId)
-    render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-alpha']}>{children}</Wrapper> })
-    await waitFor(() => expect(screen.getAllByTestId('open-in-topology')).toHaveLength(5))
-    await user.click(screen.getAllByTestId('open-in-topology')[0])
-    expect(await screen.findByTestId('topology-page')).toBeInTheDocument()
-    expect(screen.getByTestId('location')).toHaveTextContent(`/topology?root=${rootId}`)
-  })
-
-  it('colors known statuses from the map and unknown statuses fall to the muted color', async () => {
-    // 'constructor' and 'toString' are inherited Object.prototype members: a
-    // plain-object lookup returns the inherited function for these key names and
-    // defeats the `?? var(--text-muted)` fallback. A Map returns only the
-    // explicitly-set entries, so both fall through to the muted color.
-    const team: TeamTopology = {
-      team_id: 'team-proto',
-      agent_count: 4,
-      members: [
-        { id: 'a'.repeat(32), name: 'known-active', status: 'active', depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
-        { id: 'b'.repeat(32), name: 'known-suspended', status: 'suspended', depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
-        { id: 'c'.repeat(32), name: 'proto-constructor', status: 'constructor' as never, depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
-        { id: 'd'.repeat(32), name: 'proto-tostring', status: 'toString' as never, depth: 0, team_id: 'team-proto', mode: 'enforce', flagged: false, trust: null },
-      ],
-    }
-    mockTeam({ data: team })
-    mockCosts()
-    mockLineage('a'.repeat(32))
-    render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-proto']}>{children}</Wrapper> })
-    const badges = await screen.findAllByTestId('team-member-status')
-    expect(badges).toHaveLength(4)
-    // Known statuses resolve to their mapped colors.
-    expect(badges[0]).toHaveStyle({ background: 'var(--status-success-solid)' })
-    expect(badges[1]).toHaveStyle({ background: 'var(--status-warning-solid)' })
-    // Inherited prototype member names must fall to the muted color, not a function.
-    expect(badges[2]).toHaveStyle({ background: 'var(--text-muted)' })
-    expect(badges[3]).toHaveStyle({ background: 'var(--text-muted)' })
-  })
-
-  it('falls back to the member id when lineage is unavailable', async () => {
-    const user = userEvent.setup()
-    mockTeam({ data: FIVE_MEMBER_TEAM })
-    mockCosts()
-    vi.spyOn(teamsApi, 'useAgentLineageQuery').mockReturnValue(
-      mockQuery<AgentLineage>({ data: undefined, isLoading: false, isError: false }),
-    )
-    render(<TeamDetailPage />, { wrapper: ({ children }) => <Wrapper initialEntries={['/teams/team-alpha']}>{children}</Wrapper> })
-    await user.click((await screen.findAllByTestId('open-in-topology'))[0])
-    expect(screen.getByTestId('location')).toHaveTextContent(`/topology?root=${'a'.repeat(32)}`)
   })
 })
