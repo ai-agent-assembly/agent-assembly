@@ -18,8 +18,12 @@ export interface AgentEnforcementCount {
  * lookup) by `GET /api/v1/analytics/agent-enforcement` (AAASM-5084). Absence of
  * a key means the agent recorded no blocked/scrubbed decisions in the window,
  * which the Fleet view renders as `—` rather than `0`.
+ *
+ * A Map, not a plain object: `agent_id` is raw wire input, so a value of
+ * `constructor`/`__proto__`/etc. must be an ordinary key rather than hitting
+ * the prototype setter or colliding with an inherited member (AAASM-5237).
  */
-export type AgentEnforcementLookup = Readonly<Record<string, AgentEnforcementCount>>
+export type AgentEnforcementLookup = ReadonlyMap<string, AgentEnforcementCount>
 
 /** Enforcement modes rendered by `ModeChip`. */
 export type FleetMode = 'enforce' | 'shadow' | 'off'
@@ -91,7 +95,7 @@ function parseMode(raw: string | undefined): FleetMode {
  */
 export function toFleetAgent(agent: Agent, enforcement?: AgentEnforcementLookup): FleetAgent {
   const metadata = agent.metadata ?? {}
-  const counts = enforcement?.[agent.id]
+  const counts = enforcement?.get(agent.id)
   return {
     source: agent,
     id: agent.id,

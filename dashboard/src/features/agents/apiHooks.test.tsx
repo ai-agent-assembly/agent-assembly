@@ -69,10 +69,12 @@ describe('useAgentEnforcementQuery', () => {
     } satisfies FetchResult)
     const { result } = renderHook(() => useAgentEnforcementQuery(), { wrapper: makeWrapper() })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data).toEqual({
-      a1: { blocked: 3, scrubbed: 1 },
-      a2: { blocked: 0, scrubbed: 5 },
-    })
+    expect(result.current.data).toEqual(
+      new Map([
+        ['a1', { blocked: 3, scrubbed: 1 }],
+        ['a2', { blocked: 0, scrubbed: 5 }],
+      ]),
+    )
     expect(get).toHaveBeenCalledWith('/api/v1/analytics/agent-enforcement', {
       params: { query: { window: '24h' } },
     })
@@ -91,7 +93,26 @@ describe('useAgentEnforcementQuery', () => {
     get.mockResolvedValue({ data: undefined } satisfies FetchResult)
     const { result } = renderHook(() => useAgentEnforcementQuery(), { wrapper: makeWrapper() })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data).toEqual({})
+    expect(result.current.data).toEqual(new Map())
+  })
+
+  it('retrieves an inherited-prototype agent_id via .get() instead of colliding with it', async () => {
+    // AAASM-5237: agent_id is raw wire input. With the old plain-object
+    // accumulator, `constructor` would read back `Object` and `__proto__`
+    // would write through the prototype setter instead of storing an ordinary
+    // entry. A Map treats both as ordinary keys.
+    get.mockResolvedValue({
+      data: [
+        { agent_id: 'constructor', blocked: 9, scrubbed: 2 },
+        { agent_id: '__proto__', blocked: 4, scrubbed: 1 },
+      ],
+    } satisfies FetchResult)
+    const { result } = renderHook(() => useAgentEnforcementQuery(), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    const lookup = result.current.data
+    expect(lookup?.get('constructor')).toEqual({ blocked: 9, scrubbed: 2 })
+    expect(lookup?.get('__proto__')).toEqual({ blocked: 4, scrubbed: 1 })
+    expect(lookup?.size).toBe(2)
   })
 
   it('throws on failure', async () => {
