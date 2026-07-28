@@ -57,13 +57,18 @@ export function applyClientFilters(
   filters: AlertFilters,
   now: number = Date.now(),
 ): readonly Alert[] {
-  const q = filters.agentQuery.trim().toLowerCase()
+  const agentQuery = filters.agentQuery.trim().toLowerCase()
+  const q = filters.q.trim().toLowerCase()
   const { fromMs, toMs } = resolveTimeWindow(filters, now)
   return rows.filter((r) => {
     if (filters.severities.length && !filters.severities.includes(r.severity)) return false
     if (filters.statuses.length && !filters.statuses.includes(r.status)) return false
-    if (q) {
+    if (agentQuery) {
       const haystack = `${r.agentId ?? ''} ${r.ruleName}`.toLowerCase()
+      if (!haystack.includes(agentQuery)) return false
+    }
+    if (q) {
+      const haystack = `${r.ruleName} ${r.agentId ?? ''} ${r.id}`.toLowerCase()
       if (!haystack.includes(q)) return false
     }
     const firedMs = Date.parse(r.firstFiredAt)
