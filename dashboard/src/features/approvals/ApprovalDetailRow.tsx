@@ -1,3 +1,4 @@
+import { ApprovalRoutingBadge } from '../../components/ApprovalRoutingBadge'
 import type { Approval } from './api'
 
 export interface ApprovalDetailRowProps {
@@ -59,6 +60,12 @@ export function ApprovalDetailRow({ approval, colSpan }: Readonly<ApprovalDetail
             <span style={LABEL_STYLE}>Requested at</span>
             <span>{approval.created_at}</span>
           </div>
+          {approval.routing_status && (
+            <div style={FIELD_STYLE}>
+              <span style={LABEL_STYLE}>Routing</span>
+              <ApprovalRoutingBadge routingStatus={approval.routing_status} />
+            </div>
+          )}
           {approval.routing_status && approval.routing_status.history.length > 0 && (
             <div style={FIELD_STYLE}>
               <span style={LABEL_STYLE}>Routing history</span>
