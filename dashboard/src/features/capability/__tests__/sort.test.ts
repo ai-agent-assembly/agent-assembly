@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { NO_SORT, nextSortState, sortAgents } from '../sort'
 import { AGENTS, RESOURCES } from '../fixtures'
+import type { CapabilityAgent, Decision } from '../types'
 
 describe('nextSortState', () => {
   it('cycles desc → asc → none on the same column', () => {
@@ -34,5 +35,39 @@ describe('sortAgents', () => {
     // desc puts deny first.
     expect(sorted[0].caps.gmail.write).toBe('deny')
     expect(sorted.at(-1)!.caps.gmail.write).toBe('allow')
+  })
+
+  // AAASM-5217: `a.caps[id]?.[verb]` is raw wire data wearing an unenforced
+  // `Decision` annotation — the capability matrix is cast wholesale at the API
+  // boundary (`api/capability.ts`). A hostile payload can set a cell's
+  // decision to an inherited-prototype key (`"__proto__"`/`"constructor"`) or
+  // an unrecognised string; the sort must not throw, produce `NaN` comparisons,
+  // or resolve an inherited `Object.prototype` member as if it were a real
+  // weight.
+  it('does not throw or misorder when a cell carries a hostile decision value', () => {
+    const hostile: CapabilityAgent = {
+      ...AGENTS[0],
+      id: 'hostile-agent',
+      caps: {
+        ...AGENTS[0].caps,
+        gmail: { read: 'allow', write: '__proto__' as unknown as Decision, delete: 'na', exec: 'na' },
+      },
+    }
+    const agents = [...AGENTS, hostile]
+    expect(() =>
+      sortAgents(agents, RESOURCES, 'write', { resourceId: 'gmail', direction: 'desc' }),
+    ).not.toThrow()
+    const sorted = sortAgents(agents, RESOURCES, 'write', {
+      resourceId: 'gmail',
+      direction: 'desc',
+    })
+    expect(sorted).toHaveLength(agents.length)
+    // A hostile/unrecognised value weighs the same as `na`, so it must not
+    // rank ahead of every real decision (which an inherited prototype member
+    // like an unbound function could otherwise coerce to NaN and place
+    // unpredictably via `Array.prototype.sort`'s undefined-NaN handling).
+    const hostileIdx = sorted.findIndex((a) => a.id === 'hostile-agent')
+    const denyIdx = sorted.findIndex((a) => a.caps.gmail.write === 'deny')
+    expect(hostileIdx).toBeGreaterThan(denyIdx)
   })
 })
