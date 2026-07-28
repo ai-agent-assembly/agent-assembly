@@ -181,6 +181,10 @@ interface EdgeGeometry {
   readonly kind: TopologyEdge['kind']
   readonly crossTeam: boolean
   readonly d: string
+  /** Endpoint ids, kept so the node-select dim state can be read at render time
+   *  without recomputing geometry (AAASM-5137). */
+  readonly source: string
+  readonly target: string
 }
 
 /**
@@ -578,7 +582,14 @@ export function TopologyGraph({
         d = `M${start.x} ${start.y} L${end.x} ${end.y}`
       }
 
-      geoms.push({ key: `${edge.source}->${edge.target}-${edge.kind}-${i}`, kind: edge.kind, crossTeam, d })
+      geoms.push({
+        key: `${edge.source}->${edge.target}-${edge.kind}-${i}`,
+        kind: edge.kind,
+        crossTeam,
+        d,
+        source: String(edge.source),
+        target: String(edge.target),
+      })
     })
     return geoms
   }, [edges, positions, width, height, visibleKinds, showCrossTeam, nodeTeams, nodeById])
@@ -706,6 +717,9 @@ export function TopologyGraph({
           data-testid="topology-edge"
           data-kind={e.kind}
           data-cross-team={e.crossTeam ? 'true' : undefined}
+          // Dimmed when a node is selected and neither endpoint is it or a
+          // neighbour (AAASM-5137). `null` connectedIds = nothing selected.
+          data-dimmed={connectedIds && !connectedIds.has(e.source) && !connectedIds.has(e.target) ? 'true' : undefined}
           d={e.d}
           fill="none"
           strokeWidth={EDGE_STYLE[e.kind].width}
