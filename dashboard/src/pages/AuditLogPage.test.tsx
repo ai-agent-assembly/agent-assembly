@@ -195,7 +195,7 @@ describe('AuditLogPage', () => {
     'falls to the default meta for the prototype-member event type %s',
     async (inherited) => {
       get.mockResolvedValue({
-        data: page([entry({ seq: 950, event_type: inherited, payload: '{}' })]),
+        data: page([entry({ seq: 950, event_type: inherited as never, payload: '{}' })]),
       })
       renderPage()
       const row = await screen.findByTestId('audit-row-950')
