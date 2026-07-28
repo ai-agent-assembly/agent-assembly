@@ -128,4 +128,21 @@ describe('OnboardingPage', () => {
     expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).toBeNull()
     expect(screen.getByTestId('toast-container')).toHaveTextContent(/Setup complete/i)
   })
+
+  // AAASM-5144 — finish used to land on "/", which was the Approvals queue.
+  it('navigates to /overview, not /, when the wizard is finished', () => {
+    saveWizardSession({
+      step: 'enroll',
+      state: {
+        framework: 'langchain',
+        gatewayHealthy: true,
+        policyPreset: 'read-only',
+        enrolled: true,
+      },
+    })
+    renderAt('/onboarding')
+    fireEvent.click(screen.getByTestId('onboarding-continue'))
+    expect(screen.getByTestId('overview-page')).toBeInTheDocument()
+    expect(screen.queryByTestId('root-page')).toBeNull()
+  })
 })
