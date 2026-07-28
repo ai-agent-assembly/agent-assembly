@@ -4,7 +4,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useAgentQuery, useAgentEventsQuery, useAgentEnforcementQuery, type Agent } from '../features/agents/api'
 import { extractSandboxInfo } from '../features/audit/api'
 import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
-import { toFleetAgent } from '../features/agents/fleetTypes'
+import { toFleetAgent, formatLastSeen } from '../features/agents/fleetTypes'
 import { Drawer } from '../components/Drawer'
 import { SuspendReasonDialog } from '../components/SuspendReasonDialog'
 import { StatusChip } from '../components/fleet/StatusChip'
@@ -86,9 +86,9 @@ function IdentityStrip({ agent }: Readonly<{ agent: Agent }>) {
         <p className="ad-identity__did" data-testid="agent-detail-did">
           did:agent:{ownerSlug}:{agent.id}
         </p>
-        {fleetAgent.lastSeen && (
-          <p className="ad-identity__did-meta">last seen {fleetAgent.lastSeen}</p>
-        )}
+        <p className="ad-identity__did-meta" data-testid="agent-detail-last-seen">
+          last seen {formatLastSeen(fleetAgent.lastSeen)}
+        </p>
       </div>
 
       <TrustGauge score={fleetAgent.trust} />
