@@ -26,7 +26,7 @@ export const InlineSmall: Story = {
   args: { approvalId: 'apr-001', size: 'sm' },
 }
 
-/** Drawer-footer density — for the Trace ApprovalDetailDrawer. */
+/** Larger drawer/footer density. */
 export const DrawerMedium: Story = {
   args: { approvalId: 'apr-001', size: 'md' },
 }
