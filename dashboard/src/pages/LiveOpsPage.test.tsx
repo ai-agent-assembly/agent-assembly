@@ -280,7 +280,7 @@ describe('LiveOpsPage', () => {
     mockStream({ status: 'reconnecting' })
     renderWithProviders(<LiveOpsPage />)
     expect(screen.getByTestId('live-ops-reconnecting')).toBeInTheDocument()
-    expect(screen.queryByTestId('error-state')).toBeNull()
+    expect(screen.queryByTestId('error-state-live')).toBeNull()
   })
 
   it('renders the live EmptyState when stream is connected and ops list is empty', () => {
@@ -308,7 +308,7 @@ describe('LiveOpsPage', () => {
     mockStream({ ops: [], status: 'error' })
     renderWithProviders(<LiveOpsPage />)
     expect(screen.queryByTestId('empty-state-live')).toBeNull()
-    expect(screen.getByTestId('error-state')).toBeInTheDocument()
+    expect(screen.getByTestId('error-state-live')).toBeInTheDocument()
   })
 
   it('renders ErrorState with a working reconnect retry when hook errors', async () => {
@@ -316,7 +316,7 @@ describe('LiveOpsPage', () => {
     const reconnect = vi.fn()
     mockStream({ status: 'error', reconnect })
     renderWithProviders(<LiveOpsPage />)
-    expect(screen.getByTestId('error-state')).toBeInTheDocument()
+    expect(screen.getByTestId('error-state-live')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /reconnect/i }))
     expect(reconnect).toHaveBeenCalledTimes(1)
   })
