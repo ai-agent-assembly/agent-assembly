@@ -389,6 +389,20 @@ export function CostsPage() {
             teams => `across ${teams} ${teams === 1 ? 'team' : 'teams'}`,
           )}
         />
+        {/* The fourth spec KPI (design/v1/hi-fi/costs.jsx:299-305) — restored
+            per ADR-0017 item 14, which ratifies Utilisation and Blocked as
+            *additive* to the spec strip, not a replacement for one of its
+            cards (AAASM-5159). `avgPerAgent` folds to `not-evaluated` on a
+            genuine zero-agent roster rather than `NaN` or a fabricated
+            `$0.00`; the sub-caption is the cost date the mock pairs it with,
+            which propagates its own absence when the summary has not
+            resolved. */}
+        <KpiCard
+          testId="costs-kpi-avg-per-agent"
+          label="Avg / agent today"
+          value={mapCertain(kpis.avgPerAgent, usd)}
+          sub={mapCertain(costsCertain, summary => summary.date)}
+        />
         {/* Both of these describe the *daily* window, and both now say so.
             Utilisation used to follow the period toggle while its neighbour
             stayed hard-wired to daily, so the two silently disagreed about
