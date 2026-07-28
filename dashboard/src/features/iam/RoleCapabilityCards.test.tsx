@@ -220,3 +220,31 @@ describe('RoleCapabilityCard — null-safe rendering', () => {
     expect(screen.getByTestId('role-card-count-viewer')).toHaveTextContent('0 members')
   })
 })
+
+describe('RoleCapabilityCard — badge tone', () => {
+  const DEFAULT_TONE = 'iam-role-badge--viewer'
+
+  function toneClass(role: string): string {
+    const card: RoleCard = { role, description: null, capabilities: [], memberCount: 0, assignees: [] }
+    render(<RoleCapabilityCard card={card} />)
+    const badge = screen.getByText(role)
+    const tone = [...badge.classList].find((c) => c !== 'iam-role-badge')
+    return tone ?? ''
+  }
+
+  // Load-bearing: an object literal indexed as ROLE_BADGE_TONE[role] resolves
+  // inherited Object.prototype keys, so a crafted role id like `constructor`
+  // reaches a prototype method's class name instead of falling to the default
+  // tone. A Map `.get()` returns undefined for these names, so they hit the
+  // default. Against a pre-fix object literal these cases fail.
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf'])(
+    'falls back to the default tone for the inherited key %s',
+    (role) => {
+      expect(toneClass(role)).toBe(DEFAULT_TONE)
+    },
+  )
+
+  it('falls back to the default tone for any unknown role', () => {
+    expect(toneClass('not-a-role')).toBe(DEFAULT_TONE)
+  })
+})
