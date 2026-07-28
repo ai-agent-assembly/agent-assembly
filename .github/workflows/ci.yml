@@ -40,11 +40,11 @@ on:
       - "dashboard/**/*.js"
       - "dashboard/**/*.mjs"
       - "dashboard/**/*.cjs"
-      - "dashboard/**/*.json"
-      - "dashboard/**/*.yaml"
-      - "dashboard/index.html"
+      - "dashboard/package.json"
+      - "dashboard/tsconfig.json"
       - "dashboard/.npmrc"
       - "dashboard/pnpm-lock.yaml"
+      - "dashboard/index.html"
       - "sonar-project.properties"
   pull_request:
     branches: [main]
@@ -82,11 +82,11 @@ on:
       - "dashboard/**/*.js"
       - "dashboard/**/*.mjs"
       - "dashboard/**/*.cjs"
-      - "dashboard/**/*.json"
-      - "dashboard/**/*.yaml"
-      - "dashboard/index.html"
+      - "dashboard/package.json"
+      - "dashboard/tsconfig.json"
       - "dashboard/.npmrc"
       - "dashboard/pnpm-lock.yaml"
+      - "dashboard/index.html"
       - "sonar-project.properties"
   # AAASM-3446: the per-PR / per-push path-filter above gates the slow eBPF
   # jobs (ebpf-build, e2e-ebpf-linux) to aa-ebpf*/** changes for cost control,
