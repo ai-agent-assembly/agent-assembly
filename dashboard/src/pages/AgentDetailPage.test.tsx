@@ -267,6 +267,16 @@ describe('AgentDetailPage drawer head flag note (AAASM-5163)', () => {
   })
 })
 
+describe('AgentDetailPage identity last-seen (AAASM-5163)', () => {
+  it('humanizes the last-seen ISO timestamp rather than printing it raw', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, last_event: '2026-05-12T00:00:00Z' })
+    renderApp('/agents/abc123')
+    const lastSeen = await screen.findByTestId('agent-detail-last-seen')
+    expect(lastSeen).toHaveTextContent(/last seen \d+[smhd] ago/)
+    expect(lastSeen).not.toHaveTextContent('2026-05-12T00:00:00Z')
+  })
+})
+
 describe('AgentDetailPage close behavior', () => {
   it('closes back to /agents when the breadcrumb button is clicked', async () => {
     mockHappyPath()
