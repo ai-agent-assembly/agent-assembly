@@ -67,6 +67,7 @@ describe('deriveCostKpis — daily / monthly / tracked figures', () => {
 
       expect(Object.keys(kpis).sort()).toEqual([
         'agentsTracked',
+        'avgPerAgent',
         'blockedByBudget',
         'daily',
         'monthly',
@@ -213,5 +214,44 @@ describe('deriveCostKpis — AAASM-5185: a count states its own coverage', () =>
 
     expect(kpis.agentsTracked).toEqual(known(0))
     expect(kpis.teamsTracked).toEqual(known(0))
+  })
+})
+
+describe('deriveCostKpis — AAASM-5159: Avg / agent today', () => {
+  it('divides daily spend by agents tracked', () => {
+    // COSTS: daily_spend_usd 150.00 across 2 per_agent rows → 75.00.
+    const kpis = deriveCostKpis(known(COSTS), known(TEAM_ROWS))
+
+    expect(kpis.avgPerAgent).toEqual(known(75))
+  })
+
+  it('is `not-evaluated`, not NaN or 0, when agentsTracked is a genuine zero', () => {
+    const zeroAgents: CostSummary = {
+      date: '2026-05-13',
+      daily_spend_usd: '150.00',
+      per_agent: [],
+      per_team: [],
+    }
+    const kpis = deriveCostKpis(known(zeroAgents), known([]))
+
+    expect(kpis.agentsTracked).toEqual(known(0))
+    expect(isAbsent(kpis.avgPerAgent) && kpis.avgPerAgent.state).toBe('not-evaluated')
+  })
+
+  it('propagates an absent agentsTracked (no breakdown configured) rather than dividing', () => {
+    const bare: CostSummary = { date: '2026-05-13', daily_spend_usd: '42.00' }
+    const kpis = deriveCostKpis(known(bare), known([]))
+
+    expect(isAbsent(kpis.agentsTracked) && kpis.agentsTracked.state).toBe('unconfigured')
+    expect(isAbsent(kpis.avgPerAgent) && kpis.avgPerAgent.state).toBe('unconfigured')
+  })
+
+  it('propagates a failed /costs as unavailable, never as a computed figure', () => {
+    const kpis = deriveCostKpis(
+      absent<CostSummary>('unavailable', 'HTTP 503'),
+      absent<readonly TeamListRow[]>('unavailable', 'HTTP 503'),
+    )
+
+    expect(isAbsent(kpis.avgPerAgent) && kpis.avgPerAgent.state).toBe('unavailable')
   })
 })

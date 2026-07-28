@@ -163,6 +163,12 @@ describe('CostsPage — KPI strip', () => {
     expect(within(agents).getByText('2')).toBeInTheDocument()
     expect(within(agents).getByText('across 2 teams')).toBeInTheDocument()
 
+    // Avg / agent today (AAASM-5159, design/v1/hi-fi/costs.jsx:299-305):
+    // 210.00 daily spend / 2 agents tracked = $105.00, dated from the summary.
+    const avgPerAgent = screen.getByTestId('costs-kpi-avg-per-agent')
+    expect(within(avgPerAgent).getByText('$105.00')).toBeInTheDocument()
+    expect(within(avgPerAgent).getByText('2026-05-13')).toBeInTheDocument()
+
     // Budget utilisation = 210/200 = 105.0% (daily period).
     const util = screen.getByTestId('costs-kpi-utilisation')
     expect(within(util).getByText('105.0%')).toBeInTheDocument()
@@ -792,5 +798,47 @@ describe('CostsPage — AAASM-5160: the per-team tab is a table with Agents and 
     const cool = table.querySelector('[data-team="team-cool"]') as HTMLElement
     expect(within(cool).getByTestId('costs-team-no-monthly').dataset.truthState).toBe('unknown')
     expect(within(cool).getByTestId('costs-team-no-daily').dataset.truthState).toBe('unknown')
+  })
+})
+
+describe('CostsPage — AAASM-5159: Avg / agent today KPI restored per ADR-0017 item 14', () => {
+  it('renders daily spend / agents tracked with the cost date as its sub-caption', async () => {
+    setupMocks()
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    // COSTS: daily_spend_usd 210.00 / 2 per_agent rows = $105.00.
+    const avgPerAgent = await screen.findByTestId('costs-kpi-avg-per-agent')
+    expect(within(avgPerAgent).getByText('$105.00')).toBeInTheDocument()
+    expect(within(avgPerAgent).getByText('2026-05-13')).toBeInTheDocument()
+  })
+
+  it('renders an em-dash, never NaN or $0.00, when zero agents are tracked', async () => {
+    const zeroAgents: CostSummary = {
+      ...COSTS,
+      per_agent: [],
+    }
+    setupMocks(OVERVIEW, zeroAgents)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const avgPerAgent = await screen.findByTestId('costs-kpi-avg-per-agent')
+    expect(within(avgPerAgent).getByText('—')).toBeInTheDocument()
+    expect(within(avgPerAgent).queryByText('NaN')).not.toBeInTheDocument()
+    expect(within(avgPerAgent).queryByText('$0.00')).not.toBeInTheDocument()
+    // The date sub-caption still resolves — the summary itself is known, only
+    // the ratio it feeds is undefined.
+    expect(within(avgPerAgent).getByText('2026-05-13')).toBeInTheDocument()
+  })
+
+  it('renders the card as an absence, not a computed figure, when /costs fails', async () => {
+    setupMocks(OVERVIEW, undefined, { isError: true })
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const avgPerAgent = await screen.findByTestId('costs-kpi-avg-per-agent')
+    expect(
+      within(avgPerAgent).getByTestId('costs-kpi-avg-per-agent-value').dataset.truthState,
+    ).toBe('unavailable')
   })
 })

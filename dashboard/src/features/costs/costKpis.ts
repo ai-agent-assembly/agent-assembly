@@ -69,6 +69,18 @@ export interface CostKpis {
   readonly agentsTracked: Certain<number>
   /** Number of teams with a per-team cost row today (the "across N teams" figure). */
   readonly teamsTracked: Certain<number>
+  /**
+   * `daily.spend / agentsTracked` — the mock's "Avg / agent today" KPI
+   * (design/v1/hi-fi/costs.jsx:299-305).
+   *
+   * `not-evaluated` when `agentsTracked` is a genuine, measured `0`: the
+   * ratio is mathematically undefined at that point, and dividing anyway
+   * would render either `NaN` or a fabricated `$0.00` — the same false
+   * negative the rest of this module exists to prevent. Any other absence
+   * (an outage, an in-flight request, no breakdown configured) propagates
+   * from `agentsTracked` unchanged.
+   */
+  readonly avgPerAgent: Certain<number>
 }
 
 function parseUsd(value: string | null | undefined): number | null {
@@ -166,6 +178,23 @@ function trackedCount(
 }
 
 /**
+ * `dailySpend / agentsTracked`, guarding the zero-agent case.
+ *
+ * `agentsTracked` being absent (outage, in-flight, no breakdown configured)
+ * propagates unchanged. A *known* `0` is different: the division is
+ * undefined, not merely unmeasured, so it folds to `not-evaluated` rather
+ * than to `NaN` or a fabricated `$0.00`.
+ */
+function averagePerAgent(dailySpend: number | null, agentsTracked: Certain<number>): Certain<number> {
+  if (!isKnown(agentsTracked)) return propagateAbsence(agentsTracked)
+  if (agentsTracked.value === 0) {
+    return absent('not-evaluated', 'No agents were tracked today to average spend across')
+  }
+  if (dailySpend == null) return absent('unconfigured', 'No daily spend was reported')
+  return known(dailySpend / agentsTracked.value)
+}
+
+/**
  * Derive the KPI-strip figures for the Cost & Budget page from the cost summary
  * and the already-joined per-team rows. Pure so it can be unit-tested without a
  * query client.
@@ -185,12 +214,15 @@ export function deriveCostKpis(
   teamRows: Certain<readonly TeamListRow[]>,
 ): CostKpis {
   const summary = isKnown(costs) ? costs.value : undefined
+  const daily = periodSpend(summary?.daily_spend_usd, summary?.daily_limit_usd)
+  const agentsTracked = trackedCount(costs, summary?.per_agent)
 
   return {
     blockedByBudget: countBlockedByBudget(teamRows),
-    daily: periodSpend(summary?.daily_spend_usd, summary?.daily_limit_usd),
+    daily,
     monthly: periodSpend(summary?.monthly_spend_usd, summary?.monthly_limit_usd),
-    agentsTracked: trackedCount(costs, summary?.per_agent),
+    agentsTracked,
     teamsTracked: trackedCount(costs, summary?.per_team),
+    avgPerAgent: averagePerAgent(daily.spend, agentsTracked),
   }
 }
