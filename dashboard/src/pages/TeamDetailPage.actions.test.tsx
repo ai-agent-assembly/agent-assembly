@@ -104,7 +104,7 @@ describe('TeamDetailPage action bar', () => {
     expect(dialog).toHaveTextContent('worker-2')
     expect(suspendMutate).not.toHaveBeenCalled()
 
-    await user.click(screen.getByTestId('confirm-ok'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
     expect(suspendMutate).toHaveBeenCalledTimes(1)
     expect(suspendMutate.mock.calls[0][0]).toEqual({
       teamId: 'team-alpha',
@@ -128,7 +128,7 @@ describe('TeamDetailPage action bar', () => {
 
     render(<TeamDetailPage />, { wrapper: Wrapper })
     await user.click(screen.getByTestId('team-suspend-btn'))
-    await user.click(screen.getByTestId('confirm-cancel'))
+    await user.click(screen.getByTestId('confirm-dialog-cancel'))
 
     expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
     expect(suspendMutate).not.toHaveBeenCalled()
@@ -153,7 +153,7 @@ describe('TeamDetailPage action bar', () => {
 
     render(<TeamDetailPage />, { wrapper: Wrapper })
     await user.click(screen.getByTestId('team-suspend-btn'))
-    await user.click(screen.getByTestId('confirm-ok'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
 
     expect(failingMutate).toHaveBeenCalledTimes(1)
     expect(await screen.findByTestId('team-action-toast')).toHaveTextContent('boom')
