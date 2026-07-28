@@ -371,6 +371,7 @@
 
 .fleet-table__th--sortable { cursor: pointer; }
 .fleet-table__th--sortable:hover { color: var(--ink); }
+.fleet-table__th--numeric { text-align: right; }
 
 .fleet-table__sort {
   margin-left: 3px;
@@ -396,6 +397,10 @@
 }
 
 .fleet-table__cell--skeleton { padding: 7px 10px; }
+/* Alignment lives on the cell, not the inner span: a right-aligned inline
+   span inside a left-aligned `<td>` only shrink-wraps to the digits, so the
+   column never forms a scannable right-aligned edge (AAASM-5161). */
+.fleet-table__cell--numeric { text-align: right; }
 
 .fleet-table__skeleton {
   display: block;
@@ -453,8 +458,6 @@
 }
 
 .fleet-table__numeric {
-  display: inline-block;
-  text-align: right;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   color: var(--ink-2);
 }
