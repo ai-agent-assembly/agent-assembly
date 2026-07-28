@@ -275,6 +275,13 @@ describe('AgentDetailPage identity last-seen (AAASM-5163)', () => {
     expect(lastSeen).toHaveTextContent(/last seen \d+[smhd] ago/)
     expect(lastSeen).not.toHaveTextContent('2026-05-12T00:00:00Z')
   })
+
+  it('renders an em-dash for last-seen when the agent has no last event', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, last_event: null })
+    renderApp('/agents/abc123')
+    const lastSeen = await screen.findByTestId('agent-detail-last-seen')
+    expect(lastSeen).toHaveTextContent('last seen —')
+  })
 })
 
 describe('AgentDetailPage close behavior', () => {
