@@ -133,8 +133,8 @@ type AgentDetailTab = 'overview' | 'capability' | 'traffic' | 'policies' | 'line
 
 const TABS: ReadonlyArray<{ id: AgentDetailTab; label: string }> = [
   { id: 'overview',   label: 'Overview' },
-  { id: 'capability', label: 'Capability' },
-  { id: 'traffic',    label: 'Traffic' },
+  { id: 'capability', label: 'Capability snapshot' },
+  { id: 'traffic',    label: 'Recent traffic' },
   { id: 'policies',   label: 'Policies' },
   { id: 'lineage',    label: 'Lineage' },
   { id: 'config',     label: 'Config' },
