@@ -59,23 +59,29 @@ export function ApprovalDetailRow({ approval, colSpan }: Readonly<ApprovalDetail
             <span style={LABEL_STYLE}>Requested at</span>
             <span>{approval.created_at}</span>
           </div>
-          {approval.routing_status && (
+          {approval.routing_status && approval.routing_status.history.length > 0 && (
             <div style={FIELD_STYLE}>
-              <span style={LABEL_STYLE}>Routing</span>
-              <pre
-                data-testid="approval-detail-routing"
-                style={{
-                  margin: 0,
-                  fontSize: '0.75rem',
-                  background: 'var(--paper-2)',
-                  border: '1px solid var(--line)',
-                  borderRadius: '0.25rem',
-                  padding: '0.5rem',
-                  whiteSpace: 'pre-wrap',
-                }}
+              <span style={LABEL_STYLE}>Routing history</span>
+              <div
+                data-testid="approval-detail-routing-history"
+                style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}
               >
-                {JSON.stringify(approval.routing_status, null, 2)}
-              </pre>
+                {approval.routing_status.history.map((entry, i) => (
+                  <div
+                    key={`${entry.at}-${entry.action}-${entry.to_role}-${i}`}
+                    data-testid="approval-detail-routing-history-row"
+                    style={{ display: 'flex', gap: '0.5rem', fontSize: '0.75rem' }}
+                  >
+                    <code style={{ fontFamily: 'monospace' }}>
+                      {new Date(entry.at * 1000).toISOString()}
+                    </code>
+                    <span>
+                      {entry.action}
+                      {entry.from_role ? ` from ${entry.from_role}` : ''} → {entry.to_role}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           <div style={{ ...FIELD_STYLE, color: 'var(--ink-4)', fontStyle: 'italic' }}>
