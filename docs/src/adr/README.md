@@ -34,3 +34,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0025](0025-design-v2-authoritative-visual-spec.md) | `design/v2/` Is the Authoritative Visual Specification | Proposed |
 | [0026](0026-open-dashboard-product-semantics.md) | Seven Open Dashboard Product-Semantics Decisions | Proposed (Decision 2 Accepted) |
 | [0027](0027-accessibility-floor-overrides-visual-spec.md) | The Accessibility Floor Overrides the Visual Specification | Accepted |
+| [0028](0028-ci-trigger-scoping-allowlist-by-filetype.md) | CI Trigger-Scoping — Path Filters Must Allow-List by File Type | Proposed |
