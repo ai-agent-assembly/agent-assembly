@@ -8,7 +8,6 @@ on:
     branches: [main]
     paths:
       - "aa-*/**/*.rs"
-      - "aa-*/**/Cargo.toml"
       - "aa-*/**/*.sql"
       - "aa-*/**/*.toml"
       - "aa-*/**/*.py"
@@ -51,7 +50,6 @@ on:
     branches: [main]
     paths:
       - "aa-*/**/*.rs"
-      - "aa-*/**/Cargo.toml"
       - "aa-*/**/*.sql"
       - "aa-*/**/*.toml"
       - "aa-*/**/*.py"
