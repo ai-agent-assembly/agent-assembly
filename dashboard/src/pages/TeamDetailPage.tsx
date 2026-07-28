@@ -17,6 +17,7 @@ import { selectTeamApprovals, selectTeamBudget } from '../features/teams/detailD
 import { TeamBudgetCard } from '../features/teams/TeamBudgetCard'
 import { TeamApprovalRoutingCard } from '../features/teams/TeamApprovalRoutingCard'
 import { TeamActivePoliciesCard } from '../features/teams/TeamActivePoliciesCard'
+import { TeamMembersCard } from '../features/teams/TeamMembersCard'
 import { useCanManageTeam } from '../features/teams/permissions'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { NotFoundPage } from './NotFoundPage'
@@ -239,6 +240,11 @@ export function TeamDetailPage() {
               policies={policiesQuery.data ?? null}
               isLoading={policiesQuery.isLoading}
               isError={policiesQuery.isError}
+            />
+            <TeamMembersCard
+              members={teamQuery.data.members}
+              isLoading={teamQuery.isLoading}
+              isError={teamQuery.isError}
             />
           </div>
 
