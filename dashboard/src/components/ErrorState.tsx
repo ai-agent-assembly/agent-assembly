@@ -12,6 +12,9 @@ interface CopyEntry {
   secondary: string | null
 }
 
+// ErrorStateKind is a closed 2-member app union, not a raw wire string —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const COPY: Record<ErrorStateKind, CopyEntry> = {
   generic: {
     icon: '⚠',

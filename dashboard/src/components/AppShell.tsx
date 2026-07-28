@@ -19,6 +19,9 @@ import { TraceDrawer } from './trace/TraceDrawer'
 import { ThemeToggle } from './ThemeToggle'
 import './AppShell.css'
 
+// RouteGroup is a closed 3-member app union, not a raw wire string — narrow-
+// union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const GROUP_LABEL: Record<RouteGroup, string> = {
   monitor: 'monitor',
   control: 'control',

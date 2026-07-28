@@ -11,6 +11,10 @@ import type { Severity } from './types'
  * AAASM-1395's design-fidelity spec asserts each of the four
  * `--severity-*` tokens; collapsing buckets here would break it.
  */
+// Severity is a closed 4-member app union, validated onto an Alert by
+// `canonicalSeverity` in parseAlert.ts before this component ever sees one —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const SEVERITY_BG: Record<Severity, string> = {
   CRITICAL: 'var(--severity-critical)',
   HIGH: 'var(--severity-high)',

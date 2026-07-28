@@ -24,6 +24,10 @@ const SEVERITY_RANK: Record<Severity, number> = Object.fromEntries(
   SEVERITY_ORDER.map((s, i) => [s, SEVERITY_ORDER.length - i]),
 ) as Record<Severity, number>
 
+// AlertStatus is a closed 3-member app union; `canonicalStatus` in
+// parseAlert.ts validates the wire value into it before an Alert ever exists —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const STATUS_RANK: Record<AlertStatus, number> = {
   FIRING: 3,
   SUPPRESSED: 2,

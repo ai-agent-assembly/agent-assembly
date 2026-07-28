@@ -36,6 +36,10 @@ import type {
   RuleDraft,
 } from './types'
 
+// ApproverSla is a closed local union of the editor's own SLA picklist
+// (APPROVER_SLA_OPTS in ./constants.ts), not a raw wire string — narrow-union
+// Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const SLA_TO_SECONDS: Record<ApproverSla, number> = {
   '5m': 300,
   '15m': 900,

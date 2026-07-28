@@ -9,6 +9,9 @@ export interface SortState {
 
 export const NO_SORT: SortState = { resourceId: null, direction: null }
 
+// Decision is a closed 5-member app union produced by the capability cascade
+// projection, not a raw wire string — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const DECISION_WEIGHT: Record<Decision, number> = {
   na: 0,
   allow: 1,

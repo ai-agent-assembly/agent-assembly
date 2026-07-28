@@ -10,6 +10,9 @@ function removeToast(list: ToastMessage[], id: number): ToastMessage[] {
   return list.filter((t) => t.id !== id)
 }
 
+// ToastVariant is a closed 3-member app union, not a raw wire string —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const TOAST_BACKGROUND: Record<ToastVariant, string> = {
   success: 'var(--status-success-solid)',
   error: 'var(--status-danger-solid)',

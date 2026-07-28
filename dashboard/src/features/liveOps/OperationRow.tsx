@@ -23,6 +23,10 @@ interface OperationRowProps {
   onHaltAgent?: () => void
 }
 
+// OperationStatus is a closed app union, validated onto an op by
+// `coerceStatus`/`opStateToStatus` in useLiveOpsStream.ts — narrow-union
+// Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const STATUS_LABEL: Record<OperationStatus, string> = {
   running: 'RUNNING',
   pending: 'PENDING',
@@ -31,6 +35,10 @@ const STATUS_LABEL: Record<OperationStatus, string> = {
   terminated: 'TERMINATED',
 }
 
+// OperationOverride is a closed local union set only by this page's own
+// optimistic row-action state, never from the wire — narrow-union Record gap
+// (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const OVERRIDE_LABEL: Record<OperationOverride, string> = {
   pausing: 'pausing…',
   resuming: 'resuming…',

@@ -7,6 +7,9 @@ export interface TraceTimelineFilterProps {
   readonly onChange: (next: SeverityFilter) => void
 }
 
+// SeverityKey is a closed app union (TraceSeverity plus the local 'neutral'
+// member), not a raw wire string — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const LABELS: Record<SeverityKey, string> = {
   critical: 'Critical',
   warning: 'Warning',

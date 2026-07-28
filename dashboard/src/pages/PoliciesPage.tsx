@@ -450,6 +450,9 @@ export function PoliciesPage() {
   if (filter === 'active') filtered = activePolicies
   else if (filter === 'proposed') filtered = proposedPolicies
 
+  // FilterTab is a closed local union of this page's own filter-tab state,
+  // not a raw wire string — narrow-union Record gap (AAASM-5245 gap 2).
+  // eslint-disable-next-line no-restricted-syntax
   const counts: Record<FilterTab, number> = {
     all: all.length,
     active: activePolicies.length,

@@ -20,6 +20,9 @@ import { TeamBudgetBar } from './TeamBudgetBar'
 import { Tooltip } from '../Tooltip'
 import './TopologyGraph.css'
 
+// Inline closed 3-member literal union, not a raw wire string — narrow-union
+// Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const SIZE_VARIANT: Record<'small' | 'medium' | 'large', { w: number; h: number }> = {
   small: { w: 76, h: 44 },
   medium: { w: 96, h: 56 },
@@ -134,6 +137,10 @@ const DEPTH_ROW_GAP = 62
  * (`design/v1/hi-fi/topology.jsx`): filled dot = enforce, half dot = shadow,
  * hollow dot = off. Colour is applied per-mode via CSS (see TopologyGraph.css).
  */
+// TopologyMode is a closed 3-member app union; the wire's `mode` string is
+// passed through `toMode()` in mapGraph.ts before a node ever carries it —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const MODE_GLYPH: Record<NonNullable<TopologyNode['mode']>, string> = {
   enforce: '●',
   shadow: '◐',
@@ -154,6 +161,10 @@ const MODE_GLYPH: Record<NonNullable<TopologyNode['mode']>, string> = {
  * `.topology-edge--<kind>` class so edges re-theme in light/dark like the rest
  * of the graph (the design's raw hex would not).
  */
+// TopologyEdgeKind is a closed 6-member app union; the wire's `kind` string is
+// allow-listed against `GRAPH_KINDS` in mapGraph.ts before an edge carries it
+// — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const EDGE_STYLE: Record<TopologyEdge['kind'], { width: number; dash?: string }> = {
   delegation: { width: 1.75 },
   call: { width: 1.5, dash: '6 4' },

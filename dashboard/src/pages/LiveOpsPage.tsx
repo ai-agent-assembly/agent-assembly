@@ -51,6 +51,10 @@ import './LiveOpsPage.css'
  */
 const NO_PAGING_BACKEND_TITLE = 'On-call paging is not available yet — no integration is wired'
 
+// OperationOverride is a closed local union set only by this page's own
+// optimistic row-action state, never from the wire — narrow-union Record gap
+// (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const OVERRIDE_VERB: Record<OperationOverride, string> = {
   pausing: 'pause',
   resuming: 'resume',

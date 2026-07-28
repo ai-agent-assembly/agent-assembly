@@ -75,6 +75,9 @@ export interface CategoryMeta {
   badgeText: string
 }
 
+// AlertCategory is a closed app union derived client-side (never read off the
+// wire directly) — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 export const CATEGORY_META: Record<AlertCategory, CategoryMeta> = {
   policy_violation: {
     label: 'policy viol.',
@@ -126,6 +129,9 @@ export function categoryCounts(
   alerts: readonly Alert[],
   byId: ReadonlyMap<string, AlertRule>,
 ): Record<AlertCategory, number> {
+  // AlertCategory is a closed app union derived client-side, not a raw wire
+  // key — narrow-union Record gap (AAASM-5245 gap 2).
+  // eslint-disable-next-line no-restricted-syntax
   const counts: Record<AlertCategory, number> = {
     policy_violation: 0,
     budget: 0,

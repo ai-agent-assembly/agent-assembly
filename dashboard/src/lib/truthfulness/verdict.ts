@@ -161,6 +161,9 @@ export function tallyVerdicts(
     )
   }
 
+  // Inline closed 3-member literal union, tallied client-side — narrow-union
+  // Record gap (AAASM-5245 gap 2).
+  // eslint-disable-next-line no-restricted-syntax
   const counts: Record<'allow' | 'narrow' | 'deny', number> = { allow: 0, narrow: 0, deny: 0 }
   for (const decision of decisions) {
     const resolved = resolveVerdict(decision, cascade)

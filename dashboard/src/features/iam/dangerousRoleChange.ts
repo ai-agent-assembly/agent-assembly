@@ -1,5 +1,9 @@
 import type { Member, Role } from './types'
 
+// Role is the closed member-role union (`ROLES` in ./types); both call sites
+// pass an already-typed `Role`, not a raw wire string — narrow-union Record
+// gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const ROLE_RANK: Record<Role, number> = {
   org_admin: 4,
   team_admin: 3,

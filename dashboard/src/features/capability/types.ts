@@ -130,6 +130,9 @@ export interface OverrideResponse {
 
 export const VERBS: readonly Verb[] = ['read', 'write', 'delete', 'exec'] as const
 
+// Decision is the closed 5-member app union defined two lines above, not a
+// raw wire string — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 export const DECISIONS: Record<Decision, DecisionMeta> = {
   allow: { label: 'allow', color: '--ink-3', bg: '--paper-2' },
   narrow: { label: 'narrow', color: '--warn', bg: '--warn-bg' },

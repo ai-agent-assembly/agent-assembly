@@ -20,6 +20,9 @@ interface CopyEntry {
   secondary: string | null
 }
 
+// EmptyStatePage is a closed app union of page names, not a raw wire string —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const COPY: Record<EmptyStatePage, CopyEntry> = {
   overview: {
     icon: '⊘',

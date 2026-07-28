@@ -10,6 +10,9 @@
 import type { Alert, AlertFilters, TimeRangePreset } from './types'
 
 /** Preset window lengths in milliseconds. `custom` is bounded by from/to. */
+// TimeRangePreset is a closed app union chosen from a fixed select, not a raw
+// wire string — narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const PRESET_WINDOW_MS: Record<Exclude<TimeRangePreset, 'custom'>, number> = {
   '24h': 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
