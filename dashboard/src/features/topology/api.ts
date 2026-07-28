@@ -61,6 +61,13 @@ export function useTopologyQuery() {
 
       const res = await fetch(`${base}/api/v1/topology`, { headers })
       if (!res.ok) throw new Error('Failed to fetch topology')
+      // `as components['schemas']['TopologyGraphResponse']` is a bare cast
+      // (AAASM-5217 audit). Accepted-risk: `mapTopologyGraph` runs every
+      // node's wire `status`/`mode` through `toStatus`/`toMode`
+      // (`mapGraph.ts`), each an allow-list check against
+      // `RUNTIME_STATUSES`/`MODES`, before either becomes part of the
+      // `TopologyNode` the view renders — no field of this cast's target is
+      // used as a lookup key before that validation happens.
       const raw = (await res.json()) as components['schemas']['TopologyGraphResponse']
       return mapTopologyGraph(raw)
     },
@@ -91,6 +98,10 @@ export function useTopologyNodeRecentEvents(nodeId: string) {
         { headers },
       )
       if (!res.ok) throw new Error('Failed to fetch recent events')
+      // `as readonly RecentEvent[]` is a bare cast (AAASM-5217 audit).
+      // Accepted-risk: `RecentEvent.type` (`NodeDetailPanel.tsx`) is rendered
+      // as opaque display text, never used as a lookup key — the minimal
+      // shared shape this type declares has no field that is.
       return (await res.json()) as readonly RecentEvent[]
     },
   })
