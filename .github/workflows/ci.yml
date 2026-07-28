@@ -217,7 +217,8 @@ jobs:
             # bpf-linker compile) so they only run when eBPF code — or this
             # workflow — actually changes. Non-eBPF PRs skip them.
             ebpf:
-              - 'aa-ebpf*/**'
+              - 'aa-ebpf*/**/*.rs'
+              - 'aa-ebpf*/**/*.toml'
               - '.github/workflows/ci.yml'
               - 'scripts/build-ebpf-probes.sh'
               - '.github/workflows/release.yml'
