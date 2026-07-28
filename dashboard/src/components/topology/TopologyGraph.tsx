@@ -730,6 +730,10 @@ export function TopologyGraph({
         // (AAASM-5138). Only meaningful while a team filter is narrowing the
         // view — see the `teamFilterActive` prop.
         const crossTeamCount = teamFilterActive ? (crossTeamDegree.get(node.id) ?? 0) : 0
+        // Dimmed when a node is selected and this one is neither it nor a
+        // neighbour (AAASM-5137). `null` connectedIds means nothing is selected,
+        // so nothing dims.
+        const dimmed = connectedIds ? !connectedIds.has(node.id) : false
 
         const handleClick = onNodeClick ? () => onNodeClick(node) : undefined
         const handleKeyDown = onNodeClick
@@ -749,6 +753,7 @@ export function TopologyGraph({
             data-status={node.status}
             data-size-bucket={bucket}
             data-selected={selectedNodeId === node.id ? 'true' : undefined}
+            data-dimmed={dimmed ? 'true' : undefined}
             data-depth={depth}
             data-root={isRoot ? 'true' : undefined}
             data-in-cycle={inCycle ? 'true' : undefined}
