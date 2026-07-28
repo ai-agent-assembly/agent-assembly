@@ -1,5 +1,5 @@
 import type { CapabilityAgent, Decision, Resource, Verb } from './types'
-import { DECISIONS } from './types'
+import { DECISIONS, decisionMeta } from './types'
 import type { SortState } from './sort'
 import './CapabilityMatrixGrid.css'
 import { orNoData } from './display'
@@ -231,7 +231,7 @@ function RowGroup({
               }
             }}
           >
-            {DECISIONS[decision].label}
+            {decisionMeta(decision).label}
             {flagged && <span className="cap-mx-cell-flag" aria-label="recent flag" />}
           </div>
         )

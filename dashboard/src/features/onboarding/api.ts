@@ -41,6 +41,14 @@ function isChecksMap(value: unknown): value is Record<string, string> {
  *
  * Declining matters as much as accepting: reading a health report out of a body
  * that is not one would be a fabrication of exactly the kind this lane removes.
+ *
+ * The two casts below (AAASM-5217 audit) are accepted-risk: `candidate.checks`
+ * (validated as a string-valued map by `isChecksMap`, but not against a
+ * closed key set — the gateway's subsystem list is open-ended) is only ever
+ * iterated with `Object.entries` in `probeLines.ts`, which reads `[name,
+ * status]` pairs and renders both as opaque text; it is never used as an
+ * object-lookup key itself. `status` / `version` / `api_version` are likewise
+ * rendered as plain text, not indexed into a `Record`.
  */
 function asHealthResponse(body: unknown): GatewayHealth | null {
   if (typeof body !== 'object' || body === null) return null

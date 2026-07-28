@@ -58,6 +58,11 @@ export function ViolationHeatmapPage() {
     const headers: Record<string, string> = {};
     if (token) headers.Authorization = `Bearer ${token}`;
 
+    // `r.json() as Promise<ApiResponse>` is a bare cast (AAASM-5217 audit).
+    // Accepted-risk: `ApiResponse.nodes[].agent_id` is used as a React list
+    // `key` and a d3 hierarchy id (`ViolationHeatmap.tsx`), never as an
+    // object/Map lookup key, and `violation_count`/`window_secs` are plain
+    // numbers consumed arithmetically, not as keys.
     fetch(`${base}/api/v1/audit/violations-by-lineage?${params}`, { headers })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);

@@ -33,6 +33,15 @@ export interface TeamListRow {
   burn_pct: number | null
 }
 
+// The four response casts in this file (`TopologyOverview`, `CostSummary`,
+// `TeamTopology`, `AgentLineage` below) are bare casts (AAASM-5217 audit).
+// Accepted-risk: no field any of them expose — team/agent ids, spend figures,
+// member `status` (`'active' | 'suspended'`), lineage `tier` — is ever used
+// as an object/Map lookup key in `features/teams` or its consumers.
+// `joinTeamRows` keys `costByTeam` by `team_id`, but that id is opaque
+// (looked up with `.get()` on a real `Map`, which treats every key as an
+// ordinary key regardless of value); every status/tier field is rendered as
+// display text or compared with `===`.
 export function useTopologyOverviewQuery() {
   return useQuery({
     queryKey: ['topology', 'overview'],

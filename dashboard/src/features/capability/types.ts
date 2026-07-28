@@ -137,3 +137,33 @@ export const DECISIONS: Record<Decision, DecisionMeta> = {
   deny: { label: 'deny', color: '--danger', bg: '--danger-bg' },
   na: { label: 'n/a', color: '--ink-5', bg: '--paper-3' },
 }
+
+const KNOWN_DECISIONS: ReadonlySet<string> = new Set<Decision>([
+  'allow',
+  'narrow',
+  'approval',
+  'deny',
+  'na',
+])
+
+/**
+ * Validate an unknown value against the `Decision` union before it is trusted
+ * as a `DECISIONS` lookup key (AAASM-5217). `GET /api/v1/capability/matrix` is
+ * cast wholesale to `CapabilityMatrix` at the API boundary
+ * (`api/capability.ts`), so a cell's decision carries an unenforced `Decision`
+ * annotation over raw wire data — a hostile or malformed payload can send
+ * `"__proto__"` or `"constructor"` here.
+ */
+export function isDecision(value: unknown): value is Decision {
+  return typeof value === 'string' && KNOWN_DECISIONS.has(value)
+}
+
+/**
+ * Look up display metadata for a decision, validating the wire value first.
+ * An unrecognised or prototype-inherited key folds to the `na` metadata
+ * rather than resolving to `undefined` or an inherited `Object.prototype`
+ * member the way `DECISIONS[decision]` would for a key like `"__proto__"`.
+ */
+export function decisionMeta(decision: Decision): DecisionMeta {
+  return isDecision(decision) ? DECISIONS[decision] : DECISIONS.na
+}

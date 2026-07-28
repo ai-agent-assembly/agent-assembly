@@ -58,6 +58,14 @@ export function useApprovalsStream({
 
   // Hoisted out of the WebSocket `onmessage` handler to keep the effect's
   // callback nesting shallow.
+  //
+  // `JSON.parse(...) as GovernanceEvent` and `event.payload as
+  // ApprovalPayload` are bare casts (AAASM-5217 audit). Accepted-risk:
+  // `event.event_type` and `payload.status` are only ever compared with
+  // `===` against fixed string literals (never used as an object-lookup
+  // key), and `payload.action` — the field carried into `Approval.action` —
+  // is rendered as opaque display text and added to a `Set` for the filter
+  // dropdown (`filter.ts`), never indexed into a `Record`/object literal.
   const handleMessage = useCallback(
     (evt: MessageEvent) => {
       try {

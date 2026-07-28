@@ -1,4 +1,4 @@
-import type { CapabilityAgent, Decision, Resource, Verb } from './types'
+import { isDecision, type CapabilityAgent, type Decision, type Resource, type Verb } from './types'
 
 export type SortDirection = 'asc' | 'desc' | null
 
@@ -15,6 +15,19 @@ const DECISION_WEIGHT: Record<Decision, number> = {
   narrow: 2,
   approval: 3,
   deny: 4,
+}
+
+/**
+ * Weight for a sort comparison, validating the wire-derived decision first
+ * (AAASM-5217). `a.caps[id]?.[verb]` is raw wire data wearing an unenforced
+ * `Decision` annotation — the capability matrix is cast wholesale at the API
+ * boundary (`api/capability.ts`) — so a hostile or malformed payload can send
+ * `"__proto__"` or `"constructor"` here. An unrecognised value weighs the same
+ * as `na` rather than resolving to `undefined` (making every comparison
+ * `NaN`) or an inherited `Object.prototype` member.
+ */
+function decisionWeight(decision: Decision): number {
+  return isDecision(decision) ? DECISION_WEIGHT[decision] : DECISION_WEIGHT.na
 }
 
 export function nextSortState(prev: SortState, resourceId: string): SortState {
@@ -36,6 +49,6 @@ export function sortAgents(
   return [...agents].sort((a, b) => {
     const da = a.caps[sort.resourceId as string]?.[verb] ?? 'na'
     const db = b.caps[sort.resourceId as string]?.[verb] ?? 'na'
-    return factor * (DECISION_WEIGHT[da] - DECISION_WEIGHT[db])
+    return factor * (decisionWeight(da) - decisionWeight(db))
   })
 }

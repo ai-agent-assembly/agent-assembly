@@ -6,11 +6,33 @@ const STATUS_STYLE: Record<AlertStatus, { bg: string; fg: string }> = {
   SUPPRESSED: { bg: 'var(--surface-card-border)', fg: 'var(--text-secondary)' },
 }
 
+const KNOWN_STATUSES: ReadonlySet<string> = new Set<AlertStatus>([
+  'FIRING',
+  'RESOLVED',
+  'SUPPRESSED',
+])
+
+/**
+ * Validate a status before it is trusted as a `STATUS_STYLE` lookup key
+ * (AAASM-5217). Same rationale as `SeverityBadge.isSeverity`: the single-alert
+ * detail path (`useAlertQuery` in `api.ts`) reaches this component through a
+ * bare `as T` cast with no canonicalisation, unlike the `/alerts` list path.
+ * `STATUS_STYLE[status]` on an unrecognised or prototype-inherited key
+ * (`"__proto__"`) would throw on destructuring `undefined`, crashing the whole
+ * alert detail drawer instead of rendering a badge.
+ */
+function isAlertStatus(value: string): value is AlertStatus {
+  return KNOWN_STATUSES.has(value)
+}
+
 export function StatusBadge({ status }: Readonly<{ status: AlertStatus }>) {
-  const { bg, fg } = STATUS_STYLE[status]
+  const known = isAlertStatus(status)
+  const { bg, fg } = known
+    ? STATUS_STYLE[status]
+    : { bg: 'var(--surface-card-border)', fg: 'var(--text-secondary)' }
   return (
     <span
-      data-testid={`status-badge-${status}`}
+      data-testid={`status-badge-${known ? status : 'unknown'}`}
       style={{
         display: 'inline-block',
         padding: '2px 8px',

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import type { CapabilityAgent, Policy, Resource, SampleCall, Verb } from './types'
-import { DECISIONS } from './types'
+import { decisionMeta } from './types'
 import type { CellSelection } from './CapabilityMatrixGrid'
 import './CellInspectDrawer.css'
 
@@ -56,7 +56,7 @@ export function CellInspectDrawer({
 
   if (!cell) return null
   const { agent, resource, verb, decision } = cell
-  const decMeta = DECISIONS[decision]
+  const decMeta = decisionMeta(decision)
   const respPolicies = policiesFor(policies, agent, resource, verb)
   const recentCalls = callsFor(sampleCalls, agent, verb)
 

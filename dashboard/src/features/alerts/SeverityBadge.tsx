@@ -18,10 +18,35 @@ const SEVERITY_BG: Record<Severity, string> = {
   LOW: 'var(--severity-low)',
 }
 
+const KNOWN_SEVERITIES: ReadonlySet<string> = new Set<Severity>([
+  'CRITICAL',
+  'HIGH',
+  'MEDIUM',
+  'LOW',
+])
+
+/**
+ * Validate a severity before it is trusted as a `SEVERITY_BG` lookup key
+ * (AAASM-5217). `severity` reaches this component from two paths: the
+ * `/alerts` list, which canonicalises it via `parseAlert.ts`'s
+ * `canonicalSeverity` before it ever becomes an `Alert`, and the single-alert
+ * detail / rules endpoints (`useAlertQuery`, `useAlertRulesQuery`), which fetch
+ * through the bare `as T` cast in `api.ts` with no equivalent validation. This
+ * component is the shared lookup boundary for both, so it — not the fetch — is
+ * where an unrecognised or prototype-inherited value (`"__proto__"`,
+ * `"constructor"`) must be caught, rather than resolving to `undefined`
+ * (`background: undefined`, a silently blank badge) or an inherited
+ * `Object.prototype` member.
+ */
+function isSeverity(value: string): value is Severity {
+  return KNOWN_SEVERITIES.has(value)
+}
+
 export function SeverityBadge({ severity }: Readonly<{ severity: Severity }>) {
+  const known = isSeverity(severity)
   return (
     <span
-      data-testid={`severity-badge-${severity}`}
+      data-testid={`severity-badge-${known ? severity : 'unknown'}`}
       style={{
         display: 'inline-block',
         padding: '2px 8px',
@@ -30,7 +55,7 @@ export function SeverityBadge({ severity }: Readonly<{ severity: Severity }>) {
         fontWeight: 700,
         letterSpacing: '0.04em',
         color: 'var(--text-on-accent)',
-        background: SEVERITY_BG[severity],
+        background: known ? SEVERITY_BG[severity] : 'var(--severity-low)',
       }}
     >
       {severity}
