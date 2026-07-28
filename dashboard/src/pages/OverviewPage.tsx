@@ -36,6 +36,7 @@ const ALL_ALERTS: AlertFilters = {
   severities: [],
   statuses: [],
   agentQuery: '',
+  q: '',
   timeRange: '24h',
   customFrom: null,
   customTo: null,
