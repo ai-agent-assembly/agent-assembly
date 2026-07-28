@@ -462,6 +462,15 @@
   color: var(--ink-2);
 }
 
+.fleet-table__numeric--danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.fleet-table__numeric--scrub {
+  color: var(--scrub);
+}
+
 .fleet-table__last-seen {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 11px;

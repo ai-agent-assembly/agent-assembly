@@ -57,9 +57,14 @@ function SkeletonRows() {
   )
 }
 
-function NumericCell({ value }: Readonly<{ value: number | null }>) {
+type NumericCellTone = 'danger' | 'scrub'
+
+function NumericCell({
+  value,
+  tone,
+}: Readonly<{ value: number | null; tone?: NumericCellTone }>) {
   return (
-    <span className="fleet-table__numeric">
+    <span className={`fleet-table__numeric${tone ? ` fleet-table__numeric--${tone}` : ''}`}>
       {value ?? '—'}
     </span>
   )
