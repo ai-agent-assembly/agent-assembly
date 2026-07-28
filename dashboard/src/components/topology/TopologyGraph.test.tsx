@@ -805,3 +805,69 @@ describe('TopologyGraph — cluster for agents with no team', () => {
     expect(onTeamClick).toHaveBeenCalledWith('support')
   })
 })
+
+// ── Neighbour focus on node select (AAASM-5137) ──────────────────────────────
+// Selecting a node keeps it and its immediate neighbours lit while everything
+// unconnected recedes (data-dimmed → CSS opacity 0.2 / 0.07), mirroring the
+// `connectedIds` focus treatment in design/v2/hi-fi/topology.jsx:392.
+describe('TopologyGraph — neighbour focus on node select', () => {
+  const NODES: TopologyNode[] = [
+    { id: 'p1', name: 'planner', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    { id: 'w1', name: 'worker', status: 'active', team: 'alpha', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    { id: 'x1', name: 'x-caller', status: 'active', team: 'beta', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    // Outside p1's neighbourhood — these must dim when p1 is selected.
+    { id: 'lone', name: 'lone', status: 'active', team: 'beta', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    { id: 'lone2', name: 'lone-two', status: 'active', team: 'beta', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+  ]
+  const EDGES: TopologyEdge[] = [
+    { source: 'p1', target: 'w1', kind: 'delegation' }, // p1 ↔ w1
+    { source: 'x1', target: 'p1', kind: 'call' },        // p1 ↔ x1 (target side)
+  ]
+
+  const nodeNamed = (name: string) =>
+    screen.getAllByTestId('topology-node').find(
+      g => g.querySelector('.topology-node__name')?.textContent?.includes(name),
+    )!
+
+  it('keeps the selected node and its neighbours undimmed', () => {
+    render(<TopologyGraph nodes={NODES} edges={EDGES} selectedNodeId="p1" />)
+    expect(nodeNamed('planner')).not.toHaveAttribute('data-dimmed')
+    expect(nodeNamed('worker')).not.toHaveAttribute('data-dimmed')
+    expect(nodeNamed('x-caller')).not.toHaveAttribute('data-dimmed')
+  })
+
+  it('dims a node connected to neither the selection nor its neighbours', () => {
+    render(<TopologyGraph nodes={NODES} edges={EDGES} selectedNodeId="p1" />)
+    expect(nodeNamed('lone')).toHaveAttribute('data-dimmed', 'true')
+  })
+
+  it('dims edges touching neither the selection nor a neighbour', () => {
+    // Add an edge whose endpoints are both outside p1's neighbourhood
+    // (lone ↔ lone-two). p1's own two edges must stay lit; the outside edge
+    // must dim.
+    const edges: TopologyEdge[] = [...EDGES, { source: 'lone', target: 'lone2', kind: 'call' }]
+    render(<TopologyGraph nodes={NODES} edges={edges} selectedNodeId="p1" />)
+    const dimmed = screen
+      .getAllByTestId('topology-edge')
+      .filter(p => p.getAttribute('data-dimmed') === 'true')
+    // Only the lone→lone-two edge is dimmed; the two edges incident to p1 are lit.
+    expect(dimmed).toHaveLength(1)
+  })
+
+  it('dims nothing when no node is selected', () => {
+    render(<TopologyGraph nodes={NODES} edges={EDGES} />)
+    for (const g of screen.getAllByTestId('topology-node')) {
+      expect(g).not.toHaveAttribute('data-dimmed')
+    }
+    for (const p of screen.getAllByTestId('topology-edge')) {
+      expect(p).not.toHaveAttribute('data-dimmed')
+    }
+  })
+
+  it('re-lights everything when the selection is cleared', () => {
+    const { rerender } = render(<TopologyGraph nodes={NODES} edges={EDGES} selectedNodeId="p1" />)
+    expect(nodeNamed('lone')).toHaveAttribute('data-dimmed', 'true')
+    rerender(<TopologyGraph nodes={NODES} edges={EDGES} selectedNodeId={null} />)
+    expect(nodeNamed('lone')).not.toHaveAttribute('data-dimmed')
+  })
+})

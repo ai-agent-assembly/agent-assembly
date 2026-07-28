@@ -181,6 +181,10 @@ interface EdgeGeometry {
   readonly kind: TopologyEdge['kind']
   readonly crossTeam: boolean
   readonly d: string
+  /** Endpoint ids, kept so the node-select dim state can be read at render time
+   *  without recomputing geometry (AAASM-5137). */
+  readonly source: string
+  readonly target: string
 }
 
 /**
@@ -360,6 +364,31 @@ export function TopologyGraph({
 
   /** Team lookup for edge classification. Hoisted so it is not rebuilt per tick. */
   const nodeTeams = useMemo(() => teamById(nodes), [nodes])
+
+  /**
+   * The selected node plus every node sharing an edge with it, or `null` when
+   * nothing is selected (AAASM-5137).
+   *
+   * When a node is selected the canvas dims everything outside this set so the
+   * operator sees the selection's immediate neighbourhood without the rest of
+   * the mesh competing for attention — the `connectedIds` focus treatment from
+   * `design/v2/hi-fi/topology.jsx:392`. `null` (nothing selected) is distinct
+   * from an empty set: it means "dim nothing", so every node and edge renders at
+   * full opacity.
+   *
+   * Derived from the *drawable* `edges` — the same set the canvas draws — so a
+   * neighbour reachable only through a filtered-out edge kind is not counted as
+   * connected on a view that isn't showing that connection.
+   */
+  const connectedIds = useMemo<ReadonlySet<string> | null>(() => {
+    if (selectedNodeId == null) return null
+    const ids = new Set<string>([selectedNodeId])
+    for (const e of edges) {
+      if (e.source === selectedNodeId) ids.add(e.target)
+      if (e.target === selectedNodeId) ids.add(e.source)
+    }
+    return ids
+  }, [selectedNodeId, edges])
 
   // Cluster centers: a grid laid out left-to-right, top-to-bottom. Depends only
   // on *which* teams exist and the canvas size — never on their budgets — so it
@@ -553,7 +582,14 @@ export function TopologyGraph({
         d = `M${start.x} ${start.y} L${end.x} ${end.y}`
       }
 
-      geoms.push({ key: `${edge.source}->${edge.target}-${edge.kind}-${i}`, kind: edge.kind, crossTeam, d })
+      geoms.push({
+        key: `${edge.source}->${edge.target}-${edge.kind}-${i}`,
+        kind: edge.kind,
+        crossTeam,
+        d,
+        source: String(edge.source),
+        target: String(edge.target),
+      })
     })
     return geoms
   }, [edges, positions, width, height, visibleKinds, showCrossTeam, nodeTeams, nodeById])
@@ -681,6 +717,9 @@ export function TopologyGraph({
           data-testid="topology-edge"
           data-kind={e.kind}
           data-cross-team={e.crossTeam ? 'true' : undefined}
+          // Dimmed when a node is selected and neither endpoint is it or a
+          // neighbour (AAASM-5137). `null` connectedIds = nothing selected.
+          data-dimmed={connectedIds && !connectedIds.has(e.source) && !connectedIds.has(e.target) ? 'true' : undefined}
           d={e.d}
           fill="none"
           strokeWidth={EDGE_STYLE[e.kind].width}
@@ -705,6 +744,10 @@ export function TopologyGraph({
         // (AAASM-5138). Only meaningful while a team filter is narrowing the
         // view — see the `teamFilterActive` prop.
         const crossTeamCount = teamFilterActive ? (crossTeamDegree.get(node.id) ?? 0) : 0
+        // Dimmed when a node is selected and this one is neither it nor a
+        // neighbour (AAASM-5137). `null` connectedIds means nothing is selected,
+        // so nothing dims.
+        const dimmed = connectedIds ? !connectedIds.has(node.id) : false
 
         const handleClick = onNodeClick ? () => onNodeClick(node) : undefined
         const handleKeyDown = onNodeClick
@@ -724,6 +767,7 @@ export function TopologyGraph({
             data-status={node.status}
             data-size-bucket={bucket}
             data-selected={selectedNodeId === node.id ? 'true' : undefined}
+            data-dimmed={dimmed ? 'true' : undefined}
             data-depth={depth}
             data-root={isRoot ? 'true' : undefined}
             data-in-cycle={inCycle ? 'true' : undefined}
