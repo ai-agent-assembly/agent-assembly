@@ -11,8 +11,10 @@ import {
   type TeamTopology,
 } from '../features/teams/api'
 import { useBudgetTreeQuery } from '../features/costs/api'
-import { selectTeamBudget } from '../features/teams/detailData'
+import { useApprovalsQuery } from '../features/approvals/api'
+import { selectTeamApprovals, selectTeamBudget } from '../features/teams/detailData'
 import { TeamBudgetCard } from '../features/teams/TeamBudgetCard'
+import { TeamApprovalRoutingCard } from '../features/teams/TeamApprovalRoutingCard'
 import { useCanManageTeam } from '../features/teams/permissions'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { NotFoundPage } from './NotFoundPage'
@@ -175,12 +177,17 @@ export function TeamDetailPage() {
   const teamQuery = useTeamTopologyQuery(teamId)
   const costsQuery = useCostSummaryQuery()
   const budgetTree = useBudgetTreeQuery()
+  const approvalsQuery = useApprovalsQuery()
   const [toast, setToast] = useState<string | null>(null)
 
   const teamCost = useMemo(() => teamCostFor(teamId ?? '', costsQuery.data), [teamId, costsQuery.data])
   const budget = useMemo(
     () => (teamId ? selectTeamBudget(budgetTree.data, teamId) : null),
     [budgetTree.data, teamId],
+  )
+  const approvals = useMemo(
+    () => (teamId ? selectTeamApprovals(approvalsQuery.data, teamId) : []),
+    [approvalsQuery.data, teamId],
   )
 
   if (teamQuery.notFound) {
@@ -224,6 +231,7 @@ export function TeamDetailPage() {
 
           <div className="teams-detail-cards">
             <TeamBudgetCard budget={budget} isLoading={budgetTree.isLoading} />
+            <TeamApprovalRoutingCard approvals={approvals} isLoading={approvalsQuery.isLoading} />
           </div>
 
           {teamQuery.data.members.length === 0 ? (
