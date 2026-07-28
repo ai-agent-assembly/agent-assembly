@@ -63,7 +63,7 @@ describe('TeamMembersCard', () => {
   it('renders an unrecognised status with no chip modifier', () => {
     // `status` is a raw wire string: an unmapped value must fall back to the bare
     // `teams-chip` class (the `?? ''` at the call site), never leak a stray token.
-    renderCard({ members: [member({ status: 'retired' })], isLoading: false, isError: false })
+    renderCard({ members: [member({ status: 'retired' as never })], isLoading: false, isError: false })
     const chip = screen.getByTestId('team-member-status')
     expect(chip).toHaveTextContent('retired')
     expect(chip).toHaveAttribute('class', 'teams-chip ')
