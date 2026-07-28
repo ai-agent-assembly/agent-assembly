@@ -7,49 +7,87 @@ on:
   push:
     branches: [main]
     paths:
-      - "aa-*/**"
-      - "proto/**"
-      - "conformance/**"
+      - "aa-*/**/*.rs"
+      - "aa-*/**/*.sql"
+      - "aa-*/**/*.toml"
+      - "aa-*/**/*.py"
+      - "aa-*/**/*.ts"
+      - "aa-*/**/*.js"
+      - "aa-*/**/*.mjs"
+      - "aa-*/**/*.go"
+      - "aa-*/**/*.wat"
+      - "aa-*/**/*.sh"
+      - "aa-*/**/*.json"
+      - "aa-*/**/*.jsonl"
+      - "proto/**/*.proto"
+      - "conformance/**/*.rs"
+      - "conformance/**/*.json"
+      - "conformance/**/*.bin"
+      - "conformance/**/*.toml"
+      - "conformance/**/*.py"
+      - "conformance/runner/requirements.txt"
       - "Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"
-      - "openapi/**"
-      - "schemas/**"
+      - "openapi/v1.yaml"
+      - "schemas/**/*.json"
+      - "schemas/**/*.yaml"
       - ".spectral.yaml"
       - ".github/workflows/ci.yml"
-      - "dashboard/**"
+      - "dashboard/**/*.ts"
+      - "dashboard/**/*.tsx"
+      - "dashboard/**/*.css"
+      - "dashboard/**/*.js"
+      - "dashboard/**/*.mjs"
+      - "dashboard/**/*.cjs"
+      - "dashboard/package.json"
+      - "dashboard/tsconfig.json"
+      - "dashboard/.npmrc"
+      - "dashboard/pnpm-lock.yaml"
+      - "dashboard/index.html"
       - "sonar-project.properties"
-      - "!**/*.md"
-      - "!**/LICENSE"
-      - "!**/*.png"
-      - "!**/*.jpg"
-      - "!**/*.jpeg"
-      - "!**/*.gif"
-      - "!**/*.webp"
-      - "!**/*.ico"
   pull_request:
     branches: [main]
     paths:
-      - "aa-*/**"
-      - "proto/**"
-      - "conformance/**"
+      - "aa-*/**/*.rs"
+      - "aa-*/**/*.sql"
+      - "aa-*/**/*.toml"
+      - "aa-*/**/*.py"
+      - "aa-*/**/*.ts"
+      - "aa-*/**/*.js"
+      - "aa-*/**/*.mjs"
+      - "aa-*/**/*.go"
+      - "aa-*/**/*.wat"
+      - "aa-*/**/*.sh"
+      - "aa-*/**/*.json"
+      - "aa-*/**/*.jsonl"
+      - "proto/**/*.proto"
+      - "conformance/**/*.rs"
+      - "conformance/**/*.json"
+      - "conformance/**/*.bin"
+      - "conformance/**/*.toml"
+      - "conformance/**/*.py"
+      - "conformance/runner/requirements.txt"
       - "Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"
-      - "openapi/**"
-      - "schemas/**"
+      - "openapi/v1.yaml"
+      - "schemas/**/*.json"
+      - "schemas/**/*.yaml"
       - ".spectral.yaml"
       - ".github/workflows/ci.yml"
-      - "dashboard/**"
+      - "dashboard/**/*.ts"
+      - "dashboard/**/*.tsx"
+      - "dashboard/**/*.css"
+      - "dashboard/**/*.js"
+      - "dashboard/**/*.mjs"
+      - "dashboard/**/*.cjs"
+      - "dashboard/package.json"
+      - "dashboard/tsconfig.json"
+      - "dashboard/.npmrc"
+      - "dashboard/pnpm-lock.yaml"
+      - "dashboard/index.html"
       - "sonar-project.properties"
-      - "!**/*.md"
-      - "!**/LICENSE"
-      - "!**/*.png"
-      - "!**/*.jpg"
-      - "!**/*.jpeg"
-      - "!**/*.gif"
-      - "!**/*.webp"
-      - "!**/*.ico"
   # AAASM-3446: the per-PR / per-push path-filter above gates the slow eBPF
   # jobs (ebpf-build, e2e-ebpf-linux) to aa-ebpf*/** changes for cost control,
   # which means the Layer 3 (eBPF) / three-layer suite is normally SKIPPED on
@@ -87,18 +125,43 @@ jobs:
         with:
           filters: |
             rust:
-              - 'aa-*/**'
-              - 'proto/**'
-              - 'conformance/**'
+              - 'aa-*/**/*.rs'
+              - 'aa-*/**/*.sql'
+              - 'aa-*/**/*.toml'
+              - 'aa-*/**/*.py'
+              - 'aa-*/**/*.ts'
+              - 'aa-*/**/*.js'
+              - 'aa-*/**/*.mjs'
+              - 'aa-*/**/*.go'
+              - 'aa-*/**/*.wat'
+              - 'aa-*/**/*.sh'
+              - 'aa-*/**/*.json'
+              - 'aa-*/**/*.jsonl'
+              - 'proto/**/*.proto'
+              - 'conformance/**/*.rs'
+              - 'conformance/**/*.json'
+              - 'conformance/**/*.bin'
+              - 'conformance/**/*.toml'
+              - 'conformance/**/*.py'
+              - 'conformance/runner/requirements.txt'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'deny.toml'
               - 'openapi/v1.yaml'
               - '.spectral.yaml'
-              - 'schemas/**'
               - '.github/workflows/ci.yml'
             dashboard:
-              - 'dashboard/**'
+              - 'dashboard/**/*.ts'
+              - 'dashboard/**/*.tsx'
+              - 'dashboard/**/*.css'
+              - 'dashboard/**/*.js'
+              - 'dashboard/**/*.mjs'
+              - 'dashboard/**/*.cjs'
+              - 'dashboard/package.json'
+              - 'dashboard/tsconfig.json'
+              - 'dashboard/.npmrc'
+              - 'dashboard/pnpm-lock.yaml'
+              - 'dashboard/index.html'
               - 'openapi/v1.yaml'
               - 'sonar-project.properties'
               - '.github/workflows/ci.yml'
@@ -107,20 +170,27 @@ jobs:
             # broad `rust` set above, so this can never lose coverage). Always
             # include this workflow so editing CI re-runs everything.
             proto:
-              - 'proto/**'
-              - 'aa-proto/**'
+              - 'proto/**/*.proto'
+              - 'aa-proto/**/*.rs'
+              - 'aa-proto/**/Cargo.toml'
               - '.github/workflows/ci.yml'
             schema:
-              - 'schemas/**'
+              - 'schemas/**/*.json'
+              - 'schemas/**/*.yaml'
               - '.github/workflows/ci.yml'
             openapi:
-              - 'aa-api/**'
-              - 'openapi/**'
+              - 'aa-api/**/*.rs'
+              - 'aa-api/**/Cargo.toml'
+              - 'openapi/v1.yaml'
               - '.spectral.yaml'
               - '.github/workflows/ci.yml'
             storage:
-              - 'aa-gateway/**'
-              - 'aa-storage*/**'
+              - 'aa-gateway/**/*.rs'
+              - 'aa-gateway/**/Cargo.toml'
+              - 'aa-gateway/**/*.sql'
+              - 'aa-storage*/**/*.rs'
+              - 'aa-storage*/**/Cargo.toml'
+              - 'aa-storage*/**/*.sql'
               - '.github/workflows/ci.yml'
             # AAASM-4454: explicit, self-documenting trigger for the
             # integration-surface contract tests, which police that the gRPC
@@ -128,21 +198,25 @@ jobs:
             # the CLI starts. These paths are a strict subset of `rust` above
             # (so this never loses coverage); the conformance job ORs the two,
             # so the contract still runs if `rust` is ever narrowed. Every path
-            # here is covered by an `on.*.paths` entry (`aa-*/**`,
-            # `conformance/**`), so this is a live trigger, not a dead one.
+            # here is covered by an `on.*.paths` entry (`aa-*/**/*.rs`,
+            # `conformance/**/*.rs`), so this is a live trigger, not a dead one.
             conformance:
               - 'aa-cli/src/commands/start.rs'
               - 'aa-gateway/src/local_mode.rs'
               - 'aa-gateway/src/main.rs'
-              - 'aa-api/src/**'
-              - 'conformance/**'
-              - 'proto/**'
+              - 'aa-api/src/**/*.rs'
+              - 'conformance/**/*.rs'
+              - 'conformance/**/*.json'
+              - 'conformance/**/*.bin'
+              - 'conformance/**/*.toml'
+              - 'proto/**/*.proto'
               - '.github/workflows/ci.yml'
             # AAASM-2580: gate the slow eBPF --release jobs (fat-LTO BPF build +
             # bpf-linker compile) so they only run when eBPF code — or this
             # workflow — actually changes. Non-eBPF PRs skip them.
             ebpf:
-              - 'aa-ebpf*/**'
+              - 'aa-ebpf*/**/*.rs'
+              - 'aa-ebpf*/**/*.toml'
               - '.github/workflows/ci.yml'
               - 'scripts/build-ebpf-probes.sh'
               - '.github/workflows/release.yml'
