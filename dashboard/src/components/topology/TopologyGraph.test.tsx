@@ -863,4 +863,11 @@ describe('TopologyGraph — neighbour focus on node select', () => {
       expect(p).not.toHaveAttribute('data-dimmed')
     }
   })
+
+  it('re-lights everything when the selection is cleared', () => {
+    const { rerender } = render(<TopologyGraph nodes={NODES} edges={EDGES} selectedNodeId="p1" />)
+    expect(nodeNamed('lone')).toHaveAttribute('data-dimmed', 'true')
+    rerender(<TopologyGraph nodes={NODES} edges={EDGES} selectedNodeId={null} />)
+    expect(nodeNamed('lone')).not.toHaveAttribute('data-dimmed')
+  })
 })
