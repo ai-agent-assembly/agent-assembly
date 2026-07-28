@@ -835,4 +835,9 @@ describe('TopologyGraph — neighbour focus on node select', () => {
     expect(nodeNamed('worker')).not.toHaveAttribute('data-dimmed')
     expect(nodeNamed('x-caller')).not.toHaveAttribute('data-dimmed')
   })
+
+  it('dims a node connected to neither the selection nor its neighbours', () => {
+    render(<TopologyGraph nodes={NODES} edges={EDGES} selectedNodeId="p1" />)
+    expect(nodeNamed('lone')).toHaveAttribute('data-dimmed', 'true')
+  })
 })
