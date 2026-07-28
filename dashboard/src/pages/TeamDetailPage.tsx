@@ -6,6 +6,7 @@ import {
   useCostSummaryQuery,
   useResumeTeam,
   useSuspendTeam,
+  useTeamPoliciesQuery,
   useTeamTopologyQuery,
   type AgentNode,
   type TeamTopology,
@@ -15,6 +16,7 @@ import { useApprovalsQuery } from '../features/approvals/api'
 import { selectTeamApprovals, selectTeamBudget } from '../features/teams/detailData'
 import { TeamBudgetCard } from '../features/teams/TeamBudgetCard'
 import { TeamApprovalRoutingCard } from '../features/teams/TeamApprovalRoutingCard'
+import { TeamActivePoliciesCard } from '../features/teams/TeamActivePoliciesCard'
 import { useCanManageTeam } from '../features/teams/permissions'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { NotFoundPage } from './NotFoundPage'
@@ -178,6 +180,7 @@ export function TeamDetailPage() {
   const costsQuery = useCostSummaryQuery()
   const budgetTree = useBudgetTreeQuery()
   const approvalsQuery = useApprovalsQuery()
+  const policiesQuery = useTeamPoliciesQuery(teamId)
   const [toast, setToast] = useState<string | null>(null)
 
   const teamCost = useMemo(() => teamCostFor(teamId ?? '', costsQuery.data), [teamId, costsQuery.data])
@@ -232,6 +235,11 @@ export function TeamDetailPage() {
           <div className="teams-detail-cards">
             <TeamBudgetCard budget={budget} isLoading={budgetTree.isLoading} />
             <TeamApprovalRoutingCard approvals={approvals} isLoading={approvalsQuery.isLoading} />
+            <TeamActivePoliciesCard
+              policies={policiesQuery.data ?? null}
+              isLoading={policiesQuery.isLoading}
+              isError={policiesQuery.isError}
+            />
           </div>
 
           {teamQuery.data.members.length === 0 ? (
