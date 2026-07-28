@@ -338,8 +338,11 @@ export function AgentDetailPage() {
                   <section className="ad-card">
                     <h2 className="ad-card__title">traffic mix · last 24h</h2>
                     <div className="ad-traffic-mix" data-testid="agent-detail-traffic-mix">
-                      <div className="ad-traffic-mix__seg ad-traffic-mix__seg--placeholder">
-                        wired in a follow-up sub-task
+                      <div
+                        className="ad-traffic-mix__seg ad-traffic-mix__seg--placeholder"
+                        data-testid="agent-detail-traffic-mix-empty"
+                      >
+                        Decision mix is not available yet
                       </div>
                     </div>
                   </section>
