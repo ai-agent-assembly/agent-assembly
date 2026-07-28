@@ -104,6 +104,17 @@ describe('usePoliciesQuery', () => {
     })
   })
 
+  it('requests archived versions when includeArchived is set', async () => {
+    // AAASM-5143: the page-header history toggle flips this option, which must
+    // reach the wire as `include_archived=true` so older versions come back.
+    get.mockResolvedValue({ data: { items: [POLICY], page: 1, per_page: 50, total: 1 } } satisfies FetchResult)
+    const { wrapper } = makeWrapper()
+    const { result } = renderHook(() => usePoliciesQuery({ includeArchived: true }), { wrapper })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(get).toHaveBeenCalledWith('/api/v1/policies', {
+      params: { query: { include_archived: true } },
+    })
+  })
 })
 
 describe('useActivePolicyQuery', () => {
