@@ -321,15 +321,25 @@ describe('OverviewPage', () => {
     expect(approvals).toHaveTextContent('queue clear')
   })
 
-  it('reports awaiting-decision copy when approvals are pending', () => {
-    setup({
-      agents: [makeAgent()],
-      approvals: [{ id: 'ap-1' }, { id: 'ap-2' }, { id: 'ap-3' }] as unknown as Approval[],
-    })
-    renderPage()
-    const approvals = screen.getByTestId('overview-approvals')
-    expect(screen.getByTestId('overview-approval-count')).toHaveTextContent('3')
-    expect(approvals).toHaveTextContent('awaiting operator decision')
+  it('reports derived urgent count + oldest age when approvals are pending', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-20T12:00:00Z'))
+    try {
+      setup({
+        agents: [makeAgent()],
+        approvals: [
+          { id: 'ap-1', created_at: '2026-05-20T11:55:00Z' }, // 5m — urgent
+          { id: 'ap-2', created_at: '2026-05-20T11:30:00Z' }, // 30m — urgent
+          { id: 'ap-3', created_at: '2026-05-20T10:00:00Z' }, // 2h — not urgent
+        ] as unknown as Approval[],
+      })
+      renderPage()
+      const approvals = screen.getByTestId('overview-approvals')
+      expect(screen.getByTestId('overview-approval-count')).toHaveTextContent('3')
+      expect(approvals).toHaveTextContent('2 urgent · oldest 2h')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('renders the active-policy count as unavailable when the policies query fails', () => {

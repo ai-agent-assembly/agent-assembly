@@ -2,7 +2,8 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAgentsQuery, useAgentEnforcementQuery } from '../features/agents/api'
 import { toFleetAgent } from '../features/agents/fleetTypes'
-import { useApprovalsQuery } from '../features/approvals/api'
+import { useApprovalsQuery, type Approval } from '../features/approvals/api'
+import { deriveApprovalsSummary, formatApprovalsSummary } from '../features/approvals/summary'
 import { usePoliciesQuery } from '../features/policies/api'
 import { useAlertsQuery } from '../features/alerts/api'
 import type { Alert, AlertFilters } from '../features/alerts/types'
@@ -274,10 +275,20 @@ function RecentAlertRow({ alert }: Readonly<{ alert: Alert }>) {
   )
 }
 
-/** Sub-line under the approvals count; never affirms a clear queue it cannot see. */
-function queueNote(count: Certain<number>): string {
-  if (!isKnown(count)) return `queue ${TRUTH_STATE_META[count.state].label.toLowerCase()}`
-  return count.value === 0 ? 'queue clear' : 'awaiting operator decision'
+/**
+ * Sub-line under the approvals count; never affirms a clear queue it cannot see.
+ *
+ * When the queue is known and non-empty it reports the derived urgency headline
+ * — "{n} urgent · oldest {age}" (AAASM-5169) — computed client-side from the
+ * already-loaded approvals. The mock's "(PII)" category tag is intentionally
+ * absent: nothing on the approval record classifies a request as PII.
+ */
+function queueNote(approvals: Certain<readonly Approval[]>): string {
+  if (!isKnown(approvals)) return `queue ${TRUTH_STATE_META[approvals.state].label.toLowerCase()}`
+  if (approvals.value.length === 0) return 'queue clear'
+  return (
+    formatApprovalsSummary(deriveApprovalsSummary(approvals.value)) ?? 'awaiting operator decision'
+  )
 }
 
 export function OverviewPage() {
@@ -504,7 +515,7 @@ export function OverviewPage() {
             <div className="overview-bignum">
               <TruthfulValue value={approvalCount} testId="overview-approval-count" />
             </div>
-            <div className="overview-muted">{queueNote(approvalCount)}</div>
+            <div className="overview-muted">{queueNote(approvals)}</div>
             <div className="overview-issue__actions">
               <button
                 type="button"
