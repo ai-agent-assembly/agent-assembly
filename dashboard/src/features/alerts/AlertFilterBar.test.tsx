@@ -48,6 +48,14 @@ describe('AlertFilterBar', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ agentQuery: 'x' }))
   })
 
+  it('emits free-text search query changes', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<AlertFilterBar value={DEFAULT_ALERT_FILTERS} onChange={onChange} />)
+    await user.type(screen.getByTestId('alerts-filter-q'), 'x')
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ q: 'x' }))
+  })
+
   it('emits a new time range when the select changes', async () => {
     const user = userEvent.setup()
     const onChange = vi.fn()
