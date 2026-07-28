@@ -45,6 +45,20 @@ describe('selectTeamBudget', () => {
     const t = tree([{ id: 'team-a', label: 'agent-a', kind: 'agent', depth: 1, own_spend_usd: '5', subtree_spend_usd: '5', budget_limit_usd: '10', children: [] }])
     expect(selectTeamBudget(t, 'team-a')).toBeNull()
   })
+
+  it('falls spend back to 0 when the subtree figure is unparseable', () => {
+    // A non-numeric wire value must not leak `NaN` into the card; parseDecimal
+    // returns null for it and the `?? 0` guard takes over.
+    const t = tree([{ id: 'team-a', label: 'team-a', kind: 'team', depth: 1, own_spend_usd: '0', subtree_spend_usd: 'n/a', budget_limit_usd: null, children: [] }])
+    expect(selectTeamBudget(t, 'team-a')).toEqual({ limitUsd: null, spentUsd: 0, burnPct: null, bucket: null })
+  })
+
+  it('returns null when the root carries no children array', () => {
+    // A root delivered without a `children` field must not throw; the `?? []`
+    // guard turns the missing collection into "no matching team".
+    const t: BudgetTree = { root: { id: 'org', label: 'org', kind: 'org', depth: 0, own_spend_usd: '0', subtree_spend_usd: '0', budget_limit_usd: '100', children: undefined as unknown as TreeNode['children'] } }
+    expect(selectTeamBudget(t, 'team-a')).toBeNull()
+  })
 })
 
 function approval(overrides: Partial<Approval>): Approval {
@@ -72,5 +86,18 @@ describe('selectTeamApprovals', () => {
       approval({ id: 'mid', created_at: '2026-05-12T00:00:00Z' }),
     ]
     expect(selectTeamApprovals(list, 'team-a').map(a => a.id)).toEqual(['new', 'mid', 'old'])
+  })
+
+  it('sorts a missing created_at as the oldest via the empty-string fallback', () => {
+    // A wire row without `created_at` must not crash localeCompare; the `?? ''`
+    // guard treats it as the empty string, sorting it after every timestamped row.
+    // Two undated rows around a dated one exercise the fallback on both the `a`
+    // and `b` sides of the comparator.
+    const list = [
+      approval({ id: 'undated-1', created_at: undefined as unknown as string }),
+      approval({ id: 'dated', created_at: '2026-05-12T00:00:00Z' }),
+      approval({ id: 'undated-2', created_at: undefined as unknown as string }),
+    ]
+    expect(selectTeamApprovals(list, 'team-a').map(a => a.id)).toEqual(['dated', 'undated-1', 'undated-2'])
   })
 })
