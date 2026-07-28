@@ -284,6 +284,16 @@ describe('AgentDetailPage identity last-seen (AAASM-5163)', () => {
   })
 })
 
+describe('AgentDetailPage decision-mix empty state (AAASM-5164)', () => {
+  it('shows an honest empty state and not the internal placeholder shorthand', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    const empty = await screen.findByTestId('agent-detail-traffic-mix-empty')
+    expect(empty).toHaveTextContent('Decision mix is not available yet')
+    expect(screen.queryByText(/wired in a follow-up sub-task/i)).not.toBeInTheDocument()
+  })
+})
+
 describe('AgentDetailPage close behavior', () => {
   it('closes back to /agents when the breadcrumb button is clicked', async () => {
     mockHappyPath()
