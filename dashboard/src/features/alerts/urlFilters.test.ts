@@ -8,6 +8,7 @@ describe('urlFilters', () => {
       severities: ['CRITICAL', 'HIGH'],
       statuses: ['FIRING'],
       agentQuery: 'aa-001',
+      q: 'budget burn',
       timeRange: 'custom',
       customFrom: '2026-05-13T00:00',
       customTo: '2026-05-13T23:59',

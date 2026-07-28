@@ -32,6 +32,8 @@ export interface AlertFilters {
   severities: readonly Severity[]
   statuses: readonly AlertStatus[]
   agentQuery: string
+  /** Free-text search over rule name, agent id, and alert id (AAASM-5146). */
+  q: string
   timeRange: TimeRangePreset
   /** ISO 8601 — required when `timeRange === 'custom'`. */
   customFrom: string | null
@@ -42,6 +44,7 @@ export const DEFAULT_ALERT_FILTERS: AlertFilters = {
   severities: [],
   statuses: [],
   agentQuery: '',
+  q: '',
   timeRange: '24h',
   customFrom: null,
   customTo: null,

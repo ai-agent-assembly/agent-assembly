@@ -90,6 +90,26 @@ export function AlertFilterBar({ value, onChange }: Readonly<AlertFilterBarProps
       <label
         style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'var(--text-muted)' }}
       >
+        <span>Search</span>
+        <input
+          data-testid="alerts-filter-q"
+          type="search"
+          placeholder="search message or agent…"
+          value={value.q}
+          onChange={(e) => onChange({ ...value, q: e.target.value })}
+          style={{
+            padding: '2px 8px',
+            border: '1px solid var(--form-input-border)',
+            borderRadius: '4px',
+            fontSize: '0.75rem',
+            minWidth: '12rem',
+          }}
+        />
+      </label>
+
+      <label
+        style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'var(--text-muted)' }}
+      >
         <span>Agent</span>
         <input
           data-testid="alerts-filter-agent"

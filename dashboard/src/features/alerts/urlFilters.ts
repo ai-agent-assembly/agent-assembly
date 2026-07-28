@@ -25,6 +25,7 @@ export function filtersFromSearchParams(sp: URLSearchParams): AlertFilters {
     severities,
     statuses,
     agentQuery: sp.get('agent') ?? '',
+    q: sp.get('q') ?? '',
     timeRange,
     customFrom: sp.get('from'),
     customTo: sp.get('to'),
@@ -36,6 +37,7 @@ export function filtersToSearchParams(filters: AlertFilters): URLSearchParams {
   filters.severities.forEach((s) => sp.append('severity', s))
   filters.statuses.forEach((s) => sp.append('status', s))
   if (filters.agentQuery.trim()) sp.set('agent', filters.agentQuery.trim())
+  if (filters.q.trim()) sp.set('q', filters.q.trim())
   if (filters.timeRange !== '24h') sp.set('range', filters.timeRange)
   if (filters.timeRange === 'custom') {
     if (filters.customFrom) sp.set('from', filters.customFrom)
