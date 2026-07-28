@@ -200,15 +200,18 @@ jobs:
             # the CLI starts. These paths are a strict subset of `rust` above
             # (so this never loses coverage); the conformance job ORs the two,
             # so the contract still runs if `rust` is ever narrowed. Every path
-            # here is covered by an `on.*.paths` entry (`aa-*/**`,
-            # `conformance/**`), so this is a live trigger, not a dead one.
+            # here is covered by an `on.*.paths` entry (`aa-*/**/*.rs`,
+            # `conformance/**/*.rs`), so this is a live trigger, not a dead one.
             conformance:
               - 'aa-cli/src/commands/start.rs'
               - 'aa-gateway/src/local_mode.rs'
               - 'aa-gateway/src/main.rs'
-              - 'aa-api/src/**'
-              - 'conformance/**'
-              - 'proto/**'
+              - 'aa-api/src/**/*.rs'
+              - 'conformance/**/*.rs'
+              - 'conformance/**/*.json'
+              - 'conformance/**/*.bin'
+              - 'conformance/**/*.toml'
+              - 'proto/**/*.proto'
               - '.github/workflows/ci.yml'
             # AAASM-2580: gate the slow eBPF --release jobs (fat-LTO BPF build +
             # bpf-linker compile) so they only run when eBPF code — or this
