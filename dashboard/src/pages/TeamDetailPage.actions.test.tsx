@@ -134,6 +134,63 @@ describe('TeamDetailPage action bar', () => {
     expect(suspendMutate).not.toHaveBeenCalled()
   })
 
+  it('resumes every member on confirm and dismisses on cancel', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(permissions, 'useCanManageTeam').mockReturnValue(true)
+    mockTeam()
+    mockCosts()
+    mockLineage()
+    const resumeMutate = vi.fn()
+    vi.spyOn(teamsApi, 'useSuspendTeam').mockReturnValue(
+      mockMutation<ReturnType<typeof teamsApi.useSuspendTeam>>({ mutate: vi.fn(), isPending: false }),
+    )
+    vi.spyOn(teamsApi, 'useResumeTeam').mockReturnValue(
+      mockMutation<ReturnType<typeof teamsApi.useResumeTeam>>({ mutate: resumeMutate, isPending: false }),
+    )
+
+    render(<TeamDetailPage />, { wrapper: Wrapper })
+
+    // Cancel first: the resume dialog closes without invoking the mutation.
+    await user.click(screen.getByTestId('team-resume-btn'))
+    await user.click(screen.getByTestId('confirm-dialog-cancel'))
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument()
+    expect(resumeMutate).not.toHaveBeenCalled()
+
+    // Confirm: the mutation fires for every member of the team.
+    await user.click(screen.getByTestId('team-resume-btn'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+    expect(resumeMutate).toHaveBeenCalledTimes(1)
+    expect(resumeMutate.mock.calls[0][0]).toEqual({
+      teamId: 'team-alpha',
+      memberIds: TEAM.members.map(m => m.id),
+    })
+  })
+
+  it('surfaces an error toast when the resume mutation fails', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(permissions, 'useCanManageTeam').mockReturnValue(true)
+    mockTeam()
+    mockCosts()
+    mockLineage()
+    const failingResume = vi.fn().mockImplementation((_vars, opts) => {
+      opts?.onError?.(new Error('resume failed'))
+      opts?.onSettled?.()
+    })
+    vi.spyOn(teamsApi, 'useSuspendTeam').mockReturnValue(
+      mockMutation<ReturnType<typeof teamsApi.useSuspendTeam>>({ mutate: vi.fn(), isPending: false }),
+    )
+    vi.spyOn(teamsApi, 'useResumeTeam').mockReturnValue(
+      mockMutation<ReturnType<typeof teamsApi.useResumeTeam>>({ mutate: failingResume, isPending: false }),
+    )
+
+    render(<TeamDetailPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('team-resume-btn'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
+    expect(failingResume).toHaveBeenCalledTimes(1)
+    expect(await screen.findByTestId('team-action-toast')).toHaveTextContent('resume failed')
+  })
+
   it('surfaces an error toast when the suspend mutation fails', async () => {
     const user = userEvent.setup()
     vi.spyOn(permissions, 'useCanManageTeam').mockReturnValue(true)
