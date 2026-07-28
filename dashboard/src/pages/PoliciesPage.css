@@ -56,6 +56,35 @@
   outline-offset: 1px;
 }
 
+/* History toggle (AAASM-5143): matches the secondary button chrome, with a
+   pressed state when archived versions are being shown. */
+.policies-page__history-btn {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.policies-page__history-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.policies-page__history-btn:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 1px;
+}
+
+.policies-page__history-btn--on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--paper);
+}
+
 .policies-page__title {
   margin: 0;
   font-size: 1.5rem;
@@ -295,6 +324,26 @@
   border-radius: 4px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+/* Archived (older) policy versions surfaced by the history toggle (AAASM-5143):
+   a muted uppercase tag plus a dimmed row so live versions stay foregrounded. */
+.policies-list__chip-archived {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--ink-4);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.policies-list__row--archived {
+  opacity: 0.72;
 }
 
 /* ── Skeleton loading rows ───────────────────────────────── */
