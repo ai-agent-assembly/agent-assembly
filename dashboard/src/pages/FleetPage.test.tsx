@@ -10,6 +10,7 @@ import { ToastProvider } from '../components/ToastProvider'
 import * as agentsApi from '../features/agents/api'
 import * as client from '../api/client'
 import type { Agent, FleetActiveSession } from '../features/agents/api'
+import type { AgentEnforcementLookup } from '../features/agents/fleetTypes'
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -367,6 +368,87 @@ describe('FleetPage table interactions', () => {
     fireEvent.click(screen.getByTestId('fleet-select-all'))
     await waitFor(() => expect(screen.getByTestId('fleet-select-a')).not.toBeChecked())
     expect(screen.getByTestId('fleet-select-b')).not.toBeChecked()
+  })
+})
+
+describe('FleetPage blocked/scrubbed column tone', () => {
+  it('tones blocked24h as danger above 50, and leaves it untoned at/below 50', async () => {
+    const enforcement: AgentEnforcementLookup = new Map([
+      ['danger', { blocked: 51, scrubbed: 0 }],
+      ['boundary', { blocked: 50, scrubbed: 0 }],
+    ])
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'danger', name: 'danger-agent' }),
+          makeAgent({ id: 'boundary', name: 'boundary-agent' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(agentsApi, 'useAgentEnforcementQuery').mockReturnValue(
+      mockQuery<AgentEnforcementLookup>({ data: enforcement, isLoading: false, isError: false }),
+    )
+    renderFleet()
+
+    expect(await screen.findByText('51')).toHaveClass('fleet-table__numeric--danger')
+    expect(screen.getByText('50')).not.toHaveClass('fleet-table__numeric--danger')
+  })
+
+  it('tones scrubbed24h as scrub above 0, and leaves it untoned at 0', async () => {
+    const enforcement: AgentEnforcementLookup = new Map([
+      ['scrubbed', { blocked: 0, scrubbed: 3 }],
+      ['clean', { blocked: 0, scrubbed: 0 }],
+    ])
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'scrubbed', name: 'scrubbed-agent' }),
+          makeAgent({ id: 'clean', name: 'clean-agent' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(agentsApi, 'useAgentEnforcementQuery').mockReturnValue(
+      mockQuery<AgentEnforcementLookup>({ data: enforcement, isLoading: false, isError: false }),
+    )
+    renderFleet()
+
+    expect(await screen.findByText('3')).toHaveClass('fleet-table__numeric--scrub')
+    // Both agents' `blocked` (0) and the clean agent's `scrubbed` (0) render as
+    // the literal digit "0" via NumericCell; none of them carry the scrub tone.
+    for (const zero of screen.getAllByText('0')) {
+      expect(zero).not.toHaveClass('fleet-table__numeric--scrub')
+    }
+  })
+
+  it('renders neither tone for an agent absent from the enforcement lookup', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [makeAgent({ id: 'unknown', name: 'unknown-agent' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(agentsApi, 'useAgentEnforcementQuery').mockReturnValue(
+      mockQuery<AgentEnforcementLookup>({ data: new Map(), isLoading: false, isError: false }),
+    )
+    renderFleet()
+
+    const placeholders = await screen.findAllByText('—')
+    const numericPlaceholders = placeholders.filter((el) =>
+      el.classList.contains('fleet-table__numeric'),
+    )
+    expect(numericPlaceholders).toHaveLength(2)
+    for (const el of numericPlaceholders) {
+      expect(el).not.toHaveClass('fleet-table__numeric--danger')
+      expect(el).not.toHaveClass('fleet-table__numeric--scrub')
+    }
   })
 })
 
