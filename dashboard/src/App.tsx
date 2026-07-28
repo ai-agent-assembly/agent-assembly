@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { ProtectedRoute } from './pages/ProtectedRoute'
 import { AppShell } from './components/AppShell'
 import { LoginPage } from './pages/LoginPage'
@@ -36,8 +36,8 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
-            {/* Landing — keeps the working approvals queue at root for now. */}
-            <Route path="/" element={<ApprovalsPage />} />
+            {/* Landing — Overview per AAASM-5144 (mock: index.html route init + onboarding finish). */}
+            <Route path="/" element={<Navigate to="/overview" replace />} />
 
             {/* ── Canonical 12 routes (AAASM-94 AC #5, #6) ──────────────── */}
             {/* monitor */}

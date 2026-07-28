@@ -296,7 +296,24 @@ test.describe('AAASM-5186 — the Policy badge claims only what it knows', () =>
       scopes: ['read', 'write'],
       policies: POLICIES_MIXED,
     })
-    await navigate(page, '/agents')
+    // Root now lands on Overview (AAASM-5144), whose policy *card* fetches
+    // /policies through the truthful `certainFromQuery` boundary — a different,
+    // scope-ungated consumer than the nav badge this test is about. Boot at
+    // root, let that landing request settle, then reset the request log so the
+    // assertion below measures only what the badge asks for as we route to
+    // /agents. The badge's own query is `enabled: canListPolicies` (false for a
+    // read/write operator), so its honest contribution is nothing.
+    await page.goto('/')
+    await page.getByTestId('appshell').waitFor()
+    // Let the Overview landing settle (its policy card fires /policies once)
+    // before clearing the log, so the reset can't race an in-flight request.
+    await expect.poll(() => harness.policyRequests.length).toBeGreaterThan(0)
+    harness.policyRequests.length = 0
+    await page.evaluate(() => {
+      window.history.pushState({}, '', '/agents')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    await expect(page.getByTestId('appshell-nav')).toBeVisible()
 
     // Even though the fixture would have supplied two inactive versions.
     expect(harness.policyRequests).toEqual([])

@@ -31,6 +31,7 @@ function renderAt(path: string) {
         <MemoryRouter initialEntries={[path]}>
           <Routes>
             <Route path="/" element={<div data-testid="root-page">root</div>} />
+            <Route path="/overview" element={<div data-testid="overview-page">overview</div>} />
             <Route path="/onboarding" element={<OnboardingPage />} />
           </Routes>
         </MemoryRouter>
@@ -126,5 +127,22 @@ describe('OnboardingPage', () => {
     expect(globalThis.localStorage.getItem(ONBOARDING_COMPLETED_KEY)).toBe('true')
     expect(globalThis.localStorage.getItem(ONBOARDING_SESSION_KEY)).toBeNull()
     expect(screen.getByTestId('toast-container')).toHaveTextContent(/Setup complete/i)
+  })
+
+  // AAASM-5144 — finish used to land on "/", which was the Approvals queue.
+  it('navigates to /overview, not /, when the wizard is finished', () => {
+    saveWizardSession({
+      step: 'enroll',
+      state: {
+        framework: 'langchain',
+        gatewayHealthy: true,
+        policyPreset: 'read-only',
+        enrolled: true,
+      },
+    })
+    renderAt('/onboarding')
+    fireEvent.click(screen.getByTestId('onboarding-continue'))
+    expect(screen.getByTestId('overview-page')).toBeInTheDocument()
+    expect(screen.queryByTestId('root-page')).toBeNull()
   })
 })

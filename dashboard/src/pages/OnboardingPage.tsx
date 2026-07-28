@@ -40,9 +40,10 @@ export function OnboardingPage() {
     clearWizardSession()
     if (kind === 'finished') {
       toast('Setup complete — welcome to Agent Assembly.', 'success')
-    } else {
-      toast('Onboarding skipped — you can re-run it from the Tweaks panel.', 'info')
+      navigate('/overview', { replace: true })
+      return
     }
+    toast('Onboarding skipped — you can re-run it from the Tweaks panel.', 'info')
     navigate('/', { replace: true })
   }
 
