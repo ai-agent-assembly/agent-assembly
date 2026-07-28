@@ -1,14 +1,12 @@
 import { useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import {
   teamCostFor,
-  useAgentLineageQuery,
   useCostSummaryQuery,
   useResumeTeam,
   useSuspendTeam,
   useTeamPoliciesQuery,
   useTeamTopologyQuery,
-  type AgentNode,
   type TeamTopology,
 } from '../features/teams/api'
 import { useBudgetTreeQuery } from '../features/costs/api'
@@ -22,77 +20,6 @@ import { useCanManageTeam } from '../features/teams/permissions'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { NotFoundPage } from './NotFoundPage'
 import '../pages/TeamsPage.css'
-
-const STATUS_COLOR = new Map<string, string>([
-  ['active', 'var(--status-success-solid)'],
-  ['suspended', 'var(--status-warning-solid)'],
-  ['deregistered', 'var(--text-muted)'],
-])
-
-function StatusBadge({ status }: Readonly<{ status: string }>) {
-  const color = STATUS_COLOR.get(status) ?? 'var(--text-muted)'
-  return (
-    <span
-      data-testid="team-member-status"
-      style={{
-        display: 'inline-block',
-        padding: '2px 8px',
-        borderRadius: '9999px',
-        fontSize: '0.75rem',
-        fontWeight: 600,
-        color: 'var(--text-on-accent)',
-        background: color,
-      }}
-    >
-      {status}
-    </span>
-  )
-}
-
-function ShortId({ id }: Readonly<{ id: string }>) {
-  return (
-    <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8125rem' }}>
-      {id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id}
-    </code>
-  )
-}
-
-function OpenInTopologyButton({ agentId }: Readonly<{ agentId: string }>) {
-  const lineage = useAgentLineageQuery(agentId)
-  const navigate = useNavigate()
-  const rootId = lineage.data?.ancestors?.[0]?.id ?? agentId
-  return (
-    <button
-      type="button"
-      data-testid="open-in-topology"
-      onClick={() => navigate(`/topology?root=${encodeURIComponent(rootId)}`)}
-      disabled={lineage.isLoading}
-      style={{ padding: '0.2rem 0.6rem' }}
-    >
-      Open in topology
-    </button>
-  )
-}
-
-function MemberRow({ member }: Readonly<{ member: AgentNode }>) {
-  return (
-    <tr data-testid="team-member-row" style={{ borderBottom: '1px solid var(--surface-hover-bg)' }}>
-      <td style={{ padding: '0.5rem' }}>
-        <Link to={`/agents/${encodeURIComponent(member.id)}`}>
-          <ShortId id={member.id} />
-        </Link>
-        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{member.name}</div>
-      </td>
-      <td style={{ padding: '0.5rem' }}>
-        <StatusBadge status={member.status} />
-      </td>
-      <td style={{ padding: '0.5rem', fontFamily: 'JetBrains Mono, monospace' }}>{member.depth}</td>
-      <td style={{ padding: '0.5rem' }}>
-        <OpenInTopologyButton agentId={member.id} />
-      </td>
-    </tr>
-  )
-}
 
 interface ActionBarProps {
   team: TeamTopology
@@ -247,30 +174,6 @@ export function TeamDetailPage() {
               isError={teamQuery.isError}
             />
           </div>
-
-          {teamQuery.data.members.length === 0 ? (
-            <p data-testid="team-members-empty">No members in this team yet.</p>
-          ) : (
-            <table data-testid="team-members-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  {['Agent ID', 'Status', 'Depth', 'Actions'].map(h => (
-                    <th
-                      key={h}
-                      style={{ textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid var(--surface-card-border)' }}
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {teamQuery.data.members.map(m => (
-                  <MemberRow key={m.id} member={m} />
-                ))}
-              </tbody>
-            </table>
-          )}
         </>
       )}
     </main>
