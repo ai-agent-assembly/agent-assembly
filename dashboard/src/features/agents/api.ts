@@ -46,9 +46,13 @@ export function useAgentEnforcementQuery(window: EnforcementWindow = '24h') {
         params: { query: { window } },
       })
       if (error) throw new Error('Failed to fetch agent enforcement metrics')
-      const lookup: Record<string, { blocked: number; scrubbed: number }> = {}
+      // `agent_id` is raw wire input, so a plain object accumulator would let a
+      // value of `constructor`/`__proto__`/etc. write through to (or read back)
+      // an inherited prototype member instead of being stored as an ordinary
+      // entry. A Map treats every key as an ordinary key.
+      const lookup = new Map<string, { blocked: number; scrubbed: number }>()
       for (const row of data ?? []) {
-        lookup[row.agent_id] = { blocked: row.blocked, scrubbed: row.scrubbed }
+        lookup.set(row.agent_id, { blocked: row.blocked, scrubbed: row.scrubbed })
       }
       return lookup
     },
