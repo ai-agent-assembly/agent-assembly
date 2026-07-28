@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthProvider } from './auth/AuthProvider'
 
@@ -11,6 +11,9 @@ function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
+// Mirrors App.tsx's "/" → "/overview" redirect (AAASM-5144) without pulling in
+// OverviewPage's full data-fetching stack — this smoke test only cares that
+// root lands on the Overview route, not on Overview's own rendered content.
 function AppRoutes({ initialPath = '/' }: Readonly<{ initialPath?: string }>) {
   return (
     <QueryClientProvider client={makeClient()}>
@@ -19,7 +22,8 @@ function AppRoutes({ initialPath = '/' }: Readonly<{ initialPath?: string }>) {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route element={<ProtectedRoute />}>
-              <Route path="/" element={<div>Dashboard home</div>} />
+              <Route path="/" element={<Navigate to="/overview" replace />} />
+              <Route path="/overview" element={<div>Overview page</div>} />
             </Route>
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
@@ -54,6 +58,6 @@ describe('Router smoke tests', () => {
   it('renders protected route when token is present', () => {
     sessionStorage.setItem('aa_token', 'test-token')
     render(<AppRoutes initialPath="/" />)
-    expect(screen.getByText('Dashboard home')).toBeInTheDocument()
+    expect(screen.getByText('Overview page')).toBeInTheDocument()
   })
 })
