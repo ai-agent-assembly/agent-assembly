@@ -5,16 +5,17 @@ import { elapsedLabel } from '../features/agents/sessionTime'
 import { StatusChip } from '../components/fleet/StatusChip'
 
 const SKELETON_ROW_KEYS = Array.from({ length: 4 }, (_, i) => `sess-skeleton-${i}`)
-const SKELETON_CELL_KEYS = Array.from({ length: 5 }, (_, j) => `sess-skeleton-cell-${j}`)
+const SKELETON_CELL_KEYS = Array.from({ length: 6 }, (_, j) => `sess-skeleton-cell-${j}`)
 
 /**
  * Fleet → Active Sessions tab (AAASM-5038): a fleet-wide, read-only table of
  * currently-open agent sessions served by `GET /api/v1/fleet/active-sessions`.
  *
- * The design mock's `current task` / `actions` columns are intentionally absent:
- * the gateway registry tracks session id, start, and status per session but not
- * a per-session action count or task label, and this surface only shows state
- * that already exists rather than inventing it.
+ * The `actions` column is populated from real gateway traffic (AAASM-5088):
+ * each CheckAction / BatchCheck the gateway evaluates for a session increments
+ * its `actions_count`. The design mock's `current task` column stays absent —
+ * the session layer has no real source for a task label, and this surface only
+ * shows state that already exists rather than inventing it.
  */
 export function ActiveSessionsView() {
   const navigate = useNavigate()
@@ -45,8 +46,9 @@ export function ActiveSessionsView() {
             <th className="fleet-table__th">session</th>
             <th className="fleet-table__th">agent</th>
             <th className="fleet-table__th">running</th>
+            <th className="fleet-table__th">actions</th>
             <th className="fleet-table__th">status</th>
-            <th className="fleet-table__th" aria-label="actions" />
+            <th className="fleet-table__th" aria-label="inspect" />
           </tr>
         </thead>
         <tbody>
@@ -86,6 +88,9 @@ export function ActiveSessionsView() {
                     <span className="fleet-session__pulse" aria-hidden="true" />
                     {elapsedLabel(s.started_at)}
                   </span>
+                </td>
+                <td className="fleet-table__cell">
+                  <span className="fleet-session__actions">{s.actions_count}</span>
                 </td>
                 <td className="fleet-table__cell">
                   <StatusChip status={s.status} />

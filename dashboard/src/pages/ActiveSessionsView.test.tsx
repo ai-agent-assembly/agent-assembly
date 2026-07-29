@@ -25,6 +25,7 @@ function makeSession(overrides: Partial<FleetActiveSession> = {}): FleetActiveSe
     session_id: 'sess-9a4f',
     started_at: new Date(Date.now() - 90_000).toISOString(),
     status: 'running',
+    actions_count: 12,
     ...overrides,
   }
 }
@@ -49,7 +50,10 @@ describe('ActiveSessionsView', () => {
   it('renders one row per session with agent, status, and elapsed', () => {
     vi.spyOn(agentsApi, 'useActiveSessionsQuery').mockReturnValue(
       mockQuery<FleetActiveSession[]>({
-        data: [makeSession(), makeSession({ session_id: 'sess-8b12', agent_name: 'analytics-runner', team_id: null })],
+        data: [
+          makeSession(),
+          makeSession({ session_id: 'sess-8b12', agent_name: 'analytics-runner', team_id: null, actions_count: 47 }),
+        ],
         isLoading: false,
         isError: false,
         refetch: vi.fn(),
@@ -61,6 +65,9 @@ describe('ActiveSessionsView', () => {
     expect(screen.getByText('sess-9a4f')).toBeInTheDocument()
     expect(screen.getByText('research-bot')).toBeInTheDocument()
     expect(screen.getByText('growth')).toBeInTheDocument()
+    // Each session's own actions_count renders on its row.
+    expect(screen.getByText('12')).toBeInTheDocument()
+    expect(screen.getByText('47')).toBeInTheDocument()
     expect(screen.getAllByTestId('fleet-status')).toHaveLength(2)
   })
 
