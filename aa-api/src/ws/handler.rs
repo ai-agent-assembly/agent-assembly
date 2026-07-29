@@ -438,6 +438,7 @@ fn build_violation_payload(ev: &aa_runtime::pipeline::event::PipelineEvent) -> V
 
             let op_type = action_type_label(enriched.inner.action_type);
             let status = decision_label(enriched.inner.decision);
+            let decision = decision_bucket_label(enriched.inner.decision);
             let team = if enriched.inner.team_id.is_empty() {
                 None
             } else {
@@ -453,6 +454,7 @@ fn build_violation_payload(ev: &aa_runtime::pipeline::event::PipelineEvent) -> V
                 op_type,
                 resource,
                 status,
+                decision,
                 latency_ms,
                 team,
                 call_stack,
@@ -571,6 +573,25 @@ fn decision_label(raw: i32) -> Option<String> {
         Decision::Allow | Decision::Redact => "running",
         Decision::Deny => "blocked",
         Decision::Pending => "pending",
+        Decision::Unspecified => return None,
+    };
+    Some(label.to_string())
+}
+
+/// Map the proto `Decision` enum (raw `i32`) to the dashboard's decision-mix
+/// bucket vocabulary for the Live-Ops allow/scrub/pending/deny counters
+/// (AAASM-5089). Unlike [`decision_label`], which collapses Allow and Redact
+/// into `running`, this keeps them distinct: `Redact` is the scrub outcome the
+/// counters need to separate from a plain allow. There is no `narrow` bucket —
+/// the proto `Decision` has no such variant.
+fn decision_bucket_label(raw: i32) -> Option<String> {
+    use aa_proto::assembly::common::v1::Decision;
+    let decision = Decision::try_from(raw).ok()?;
+    let label = match decision {
+        Decision::Allow => "allow",
+        Decision::Redact => "scrub",
+        Decision::Pending => "pending",
+        Decision::Deny => "deny",
         Decision::Unspecified => return None,
     };
     Some(label.to_string())
@@ -736,6 +757,7 @@ mod tests {
                 op_type,
                 resource,
                 status,
+                decision: _,
                 latency_ms,
                 team,
                 call_stack: _,
@@ -928,6 +950,22 @@ mod tests {
         let ev = pipeline_audit(ActionType::ToolCall, Decision::Redact, "", None);
         let fields = unwrap_audit_fields(build_violation_payload(&ev));
         assert_eq!(fields.status.as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn decision_bucket_separates_allow_from_scrub_unlike_status() {
+        // The Live-Ops counters (AAASM-5089) need allow and scrub distinct — the
+        // `status` field collapses both into "running", so the bucket must not.
+        assert_eq!(decision_bucket_label(Decision::Allow as i32).as_deref(), Some("allow"));
+        assert_eq!(decision_bucket_label(Decision::Redact as i32).as_deref(), Some("scrub"));
+        assert_eq!(
+            decision_bucket_label(Decision::Pending as i32).as_deref(),
+            Some("pending")
+        );
+        assert_eq!(decision_bucket_label(Decision::Deny as i32).as_deref(), Some("deny"));
+        // Unspecified / unknown carry no bucket rather than a fabricated one.
+        assert_eq!(decision_bucket_label(Decision::Unspecified as i32), None);
+        assert_eq!(decision_bucket_label(9999), None);
     }
 
     fn extract_call_stack(p: ViolationPayload) -> Option<Vec<CallStackNode>> {

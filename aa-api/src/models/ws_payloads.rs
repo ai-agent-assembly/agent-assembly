@@ -64,6 +64,18 @@ pub enum ViolationPayload {
         /// (awaiting human approval).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<String>,
+        /// Governance decision bucket from the proto `Decision`, in the
+        /// dashboard's decision-mix vocabulary — one of `"allow"` (proto
+        /// `ALLOW`), `"scrub"` (proto `REDACT`), `"pending"` (proto
+        /// `PENDING`), or `"deny"` (proto `DENY`). Distinct from `status`,
+        /// which collapses allow/redact into `"running"` and so cannot feed
+        /// the Live Ops allow/scrub/deny/await counters. Omitted when the
+        /// decision is unspecified. There is deliberately no `"narrow"`
+        /// bucket: the proto `Decision` enum has no such variant, so no
+        /// event can be attributed to it (matches
+        /// `analytics::decision_mix_bucket`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision: Option<String>,
         /// Observed latency in milliseconds. Optional today — populated once
         /// the audit pipeline tracks per-action duration end-to-end.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -184,6 +196,7 @@ mod tests {
             op_type: Some("tool_call".into()),
             resource: Some("gmail.send".into()),
             status: Some("running".into()),
+            decision: Some("allow".into()),
             latency_ms: Some(834),
             team: Some("support".into()),
             call_stack: None,
@@ -193,6 +206,7 @@ mod tests {
         assert_eq!(json["op_type"], "tool_call");
         assert_eq!(json["resource"], "gmail.send");
         assert_eq!(json["status"], "running");
+        assert_eq!(json["decision"], "allow");
         assert_eq!(json["latency_ms"], 834);
         assert_eq!(json["team"], "support");
     }
@@ -206,6 +220,7 @@ mod tests {
             op_type: Some("llm_call".into()),
             resource: Some("gpt-4o".into()),
             status: Some("running".into()),
+            decision: Some("allow".into()),
             latency_ms: Some(600),
             team: None,
             call_stack: None,
@@ -216,6 +231,7 @@ mod tests {
             op_type,
             resource,
             status,
+            decision,
             latency_ms,
             team,
             ..
@@ -226,6 +242,7 @@ mod tests {
         assert_eq!(op_type.as_deref(), Some("llm_call"));
         assert_eq!(resource.as_deref(), Some("gpt-4o"));
         assert_eq!(status.as_deref(), Some("running"));
+        assert_eq!(decision.as_deref(), Some("allow"));
         assert_eq!(latency_ms, Some(600));
         assert_eq!(team, None);
     }
@@ -242,6 +259,7 @@ mod tests {
             op_type: None,
             resource: None,
             status: None,
+            decision: None,
             latency_ms: None,
             team: None,
             call_stack: None,
@@ -251,6 +269,7 @@ mod tests {
         assert!(!obj.contains_key("op_type"));
         assert!(!obj.contains_key("resource"));
         assert!(!obj.contains_key("status"));
+        assert!(!obj.contains_key("decision"));
         assert!(!obj.contains_key("latency_ms"));
         assert!(!obj.contains_key("team"));
         assert!(!obj.contains_key("call_stack"));
@@ -265,6 +284,7 @@ mod tests {
             op_type: Some("tool_call".into()),
             resource: Some("gmail.send".into()),
             status: Some("running".into()),
+            decision: Some("allow".into()),
             latency_ms: Some(500),
             team: None,
             call_stack: Some(vec![CallStackNode {

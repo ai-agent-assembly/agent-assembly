@@ -5521,6 +5521,19 @@ export interface components {
              *     steps). Omitted when the producer did not record a stack.
              */
             call_stack?: components["schemas"]["CallStackNode"][] | null;
+            /**
+             * @description Governance decision bucket from the proto `Decision`, in the
+             *     dashboard's decision-mix vocabulary — one of `"allow"` (proto
+             *     `ALLOW`), `"scrub"` (proto `REDACT`), `"pending"` (proto
+             *     `PENDING`), or `"deny"` (proto `DENY`). Distinct from `status`,
+             *     which collapses allow/redact into `"running"` and so cannot feed
+             *     the Live Ops allow/scrub/deny/await counters. Omitted when the
+             *     decision is unspecified. There is deliberately no `"narrow"`
+             *     bucket: the proto `Decision` enum has no such variant, so no
+             *     event can be attributed to it (matches
+             *     `analytics::decision_mix_bucket`).
+             */
+            decision?: string | null;
             /** @enum {string} */
             kind: "audit";
             /**
