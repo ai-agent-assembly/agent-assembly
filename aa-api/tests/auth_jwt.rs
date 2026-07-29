@@ -153,6 +153,7 @@ async fn issued_jwt_retains_caller_tenant() {
         key_hash: key.hash().expect("hashing should succeed"),
         scopes: vec![Scope::Read, Scope::Write],
         created_at: 1700000000,
+        expires_at: None,
         label: Some("tenant key".to_string()),
         team_id: Some("alpha".to_string()),
         org_id: Some("org-1".to_string()),

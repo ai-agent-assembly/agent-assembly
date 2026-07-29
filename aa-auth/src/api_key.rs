@@ -128,6 +128,12 @@ pub struct ApiKeyEntry {
     pub scopes: Vec<Scope>,
     /// Unix timestamp when the key was created.
     pub created_at: u64,
+    /// AAASM-5177 — optional expiry as a Unix timestamp (seconds). When set, the
+    /// key is rejected at authentication once the wall clock passes this instant
+    /// (see [`ApiKeyStore::validate_detailed`]). `None` means the key never
+    /// expires, preserving legacy keys that predate this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
     /// Optional human-readable label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -397,6 +403,7 @@ mod tests {
             key_hash: hash,
             scopes: vec![Scope::Read, Scope::Write],
             created_at: 1700000000,
+            expires_at: None,
             label: Some("test key".to_string()),
             team_id: None,
             org_id: None,
@@ -419,6 +426,7 @@ mod tests {
             key_hash: hash,
             scopes: vec![Scope::Read],
             created_at: 1700000000,
+            expires_at: None,
             label: None,
             team_id: None,
             org_id: None,
@@ -452,6 +460,7 @@ mod tests {
             key_hash: key.hash().expect("hash"),
             scopes: vec![Scope::Admin],
             created_at: 1700000000,
+            expires_at: None,
             label: None,
             team_id: None,
             org_id: None,
@@ -510,6 +519,7 @@ mod tests {
             key_hash: probe_hash,
             scopes: vec![Scope::Admin],
             created_at: 0,
+            expires_at: None,
             label: None,
             team_id: None,
             org_id: None,
@@ -536,6 +546,7 @@ mod tests {
             key_hash: key.hash().expect("hash"),
             scopes: vec![Scope::Read],
             created_at: 0,
+            expires_at: None,
             label: None,
             team_id: None,
             org_id: None,

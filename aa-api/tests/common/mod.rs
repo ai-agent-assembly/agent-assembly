@@ -257,6 +257,7 @@ pub fn generate_test_api_key(id: &str, scopes: Vec<Scope>) -> (String, ApiKeyEnt
         key_hash: hash,
         scopes,
         created_at: 1700000000,
+        expires_at: None,
         label: Some(format!("test key {id}")),
         team_id: None,
         org_id: None,
