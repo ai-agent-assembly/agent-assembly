@@ -236,20 +236,21 @@ pub struct PolicyResponse {
     /// which is a different and stronger claim than "not currently loaded".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub affects: Option<Vec<String>>,
-    /// Number of times this policy fired in the last 24 hours.
+    /// Number of times this policy document fired in the last 24 hours.
     ///
-    /// **Always absent.** Nothing on the audit write path records which policy
-    /// document produced a decision: `AuditEntry` has no policy field, and the
-    /// payload's `policy_rule` is the free-text deny *reason*
-    /// (`aa_gateway::service::policy_service::evaluate_one`), empty on every
-    /// allow. `aa_gateway::engine::decision::PolicyDecision::Deny` does carry a
-    /// `source_scope`, but `into_policy_result` drops it before the audit write —
-    /// and it is scope-granular, not document-granular, so it could not name a
-    /// document even if it survived. Capturing the deciding document at decision
-    /// time is enforcement-boundary work owned by AAASM-5107; until it lands this
-    /// is reported absent rather than as a `0` that would be indistinguishable
-    /// from "fired zero times". The same field is absent for the same reason on
-    /// the capability matrix's `Policy`.
+    /// Sourced (AAASM-5107) by joining this row's document content digest against
+    /// the per-document decision counts tallied from the last-24h audit window —
+    /// each policy decision now records the deciding document's digest on its
+    /// audit entry (`AuditEntry::policy_doc_id`, stamped at the enforcement
+    /// boundary from `PolicyDocument::content_digest`). The digest distinguishes
+    /// two versions of the same `(scope, name)` pair.
+    ///
+    /// **Absent, never `0`.** A document that recorded no decision in the window,
+    /// a row whose snapshot cannot be parsed to a digest, or a key shared by two
+    /// distinct live documents (no single "the" document to count) all report
+    /// absent — preserving the absent-vs-"fired zero times" distinction
+    /// AAASM-5096 established. The same sourcing applies to the capability
+    /// matrix's `Policy.hits24h`.
     #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
     pub hits_24h: Option<u64>,
 }
@@ -611,8 +612,10 @@ pub struct TeamPolicyResponse {
     /// that declares none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Number of times this policy fired in the last 24 hours. **Always absent**
-    /// — see [`PolicyResponse::hits_24h`] for why no source exists.
+    /// Number of times this policy document fired in the last 24 hours. Sourced
+    /// from per-document decision counts (AAASM-5107); absent, never `0`, when
+    /// the document recorded no decision in the window — see
+    /// [`PolicyResponse::hits_24h`] for the full sourcing and absent-vs-zero rule.
     #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
     pub hits_24h: Option<u64>,
 }
