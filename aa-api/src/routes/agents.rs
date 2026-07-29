@@ -105,6 +105,7 @@ fn record_to_response(r: aa_gateway::registry::AgentRecord) -> AgentResponse {
             session_id: s.session_id,
             started_at: s.started_at.to_rfc3339(),
             status: s.status,
+            actions_count: s.actions_count,
         })
         .collect();
 
@@ -190,6 +191,8 @@ pub struct ActiveSessionResponse {
     pub started_at: String,
     /// Current status of the session.
     pub status: String,
+    /// Number of governed actions observed on this session so far (AAASM-5088).
+    pub actions_count: u32,
 }
 
 /// A currently-open agent session in the fleet-wide active-sessions listing
@@ -197,10 +200,11 @@ pub struct ActiveSessionResponse {
 ///
 /// Enriches the per-agent [`ActiveSessionResponse`] with the owning agent's
 /// identity so the dashboard Fleet → Active Sessions tab can render one flat,
-/// fleet-wide table without a second lookup. `actions_count` / `current_task`
-/// from the design mock are deliberately omitted: the registry does not track
-/// them per session, and this endpoint only surfaces state that already exists
-/// (it must not invent a session store).
+/// fleet-wide table without a second lookup. `actions_count` is now sourced
+/// from real gateway traffic (AAASM-5088): each CheckAction / BatchCheck the
+/// gateway evaluates for the session increments it. `current_task` from the
+/// design mock stays omitted — the session layer has no real source for a task
+/// label, and this endpoint surfaces only state that already exists.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct FleetActiveSessionResponse {
     /// Hex-encoded UUID of the agent that owns the session.
@@ -215,6 +219,8 @@ pub struct FleetActiveSessionResponse {
     pub started_at: String,
     /// Current status of the session (e.g. "running", "idle").
     pub status: String,
+    /// Number of governed actions observed on this session so far (AAASM-5088).
+    pub actions_count: u32,
 }
 
 /// Summary of a recent event in the API response.
@@ -388,6 +394,7 @@ pub async fn list_active_sessions(
                 session_id: s.session_id,
                 started_at: s.started_at.to_rfc3339(),
                 status: s.status,
+                actions_count: s.actions_count,
             })
         })
         .collect();
