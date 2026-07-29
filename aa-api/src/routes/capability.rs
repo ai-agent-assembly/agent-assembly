@@ -703,7 +703,10 @@ fn project_matrix(
                 // definition the active one for its scope. `Proposed` /
                 // `Archived` have no representation in the loaded engine.
                 status: PolicyStatus::Active,
-                hits_24h: None,
+                // AAASM-5107 — join this document's content digest against the
+                // per-document 24h decision counts. Absent (never 0) when the
+                // document recorded no decision in the window.
+                hits_24h: hits.count(&doc.content_digest()),
                 affects,
                 rules: project_rules(&doc),
             }
@@ -977,7 +980,9 @@ mod tests {
         // No enforcement_mode override was declared.
         assert!(agent.mode.is_none());
         for policy in &m.policies {
-            assert!(policy.hits_24h.is_none(), "24h hit counts have no source here");
+            // AAASM-5107 sources hits24h from the 24h audit window; this fixture
+            // seeds no decisions, so every document is absent (never a faked 0).
+            assert!(policy.hits_24h.is_none(), "no seeded decisions → hits24h absent, not 0");
         }
         let json = serde_json::to_value(agent).unwrap();
         // AAASM-5104 — `trust` is required-but-nullable: the key is always on the
