@@ -23,7 +23,7 @@ const RECENT = alert({ id: 'a' })
 const OTHER = alert({
   id: 'b',
   ruleName: 'low signal',
-  severity: 'LOW',
+  severity: 'INFO',
   status: 'RESOLVED',
   agentId: 'aa-2',
   firstFiredAt: '2026-05-13T08:00:00Z',

@@ -24,7 +24,7 @@ describe('criticalFiringCount', () => {
       alert({ id: '1' }),
       alert({ id: '2', status: 'RESOLVED', resolvedAt: '2026-05-13T10:00:00Z' }),
       alert({ id: '3', status: 'SUPPRESSED' }),
-      alert({ id: '4', severity: 'HIGH' }),
+      alert({ id: '4', severity: 'WARNING' }),
     ]
     expect(criticalFiringCount(rows)).toBe(1)
   })
@@ -44,7 +44,7 @@ describe('isOpenIncident', () => {
 
 describe('criticalFiringBadge', () => {
   it('reports a real zero as a known value', () => {
-    const badge = criticalFiringBadge(known([alert({ severity: 'LOW' })]))
+    const badge = criticalFiringBadge(known([alert({ severity: 'INFO' })]))
     expect(badge).toEqual({ known: true, value: 0 })
   })
 
