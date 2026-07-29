@@ -142,6 +142,42 @@ pub struct RoutingStatusInfo {
     pub history: Vec<RoutingHistoryEntry>,
 }
 
+/// Response state of a single approver in a multi-approver quorum (AAASM-5095).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct QuorumApproverStatus {
+    /// Approver identifier (user id or role) participating in the quorum.
+    pub approver: String,
+    /// This approver's response so far: `"pending"`, `"approved"`, or
+    /// `"rejected"`. Never fabricated — reflects the approver's real recorded
+    /// response.
+    pub status: String,
+}
+
+/// Multi-approver quorum status for an approval request (AAASM-5095).
+///
+/// Present **only** when the approval is a quorum approval (more than one
+/// approver is required). It carries a truthful "`responded` of `required`
+/// responded" tally plus the per-approver breakdown — the counts always
+/// reflect real approver responses and are never fabricated. Absent
+/// (serialized as omitted) for single-target approvals.
+///
+/// NOTE: full N-approver quorum *enforcement* (gateway-side routing that
+/// blocks resolution until the quorum is met) is scoped as a follow-up. This
+/// type is the wire contract; until the gateway can supply real per-approver
+/// responses the field is emitted as absent rather than with a fabricated
+/// count.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct QuorumStatus {
+    /// Number of approver responses required to satisfy the quorum (N).
+    pub required: u32,
+    /// Number of approvers that have responded so far — a real count of the
+    /// entries in `approvers` whose status is not `"pending"`. Never a
+    /// fabricated value.
+    pub responded: u32,
+    /// Per-approver response breakdown. Length is the quorum size.
+    pub approvers: Vec<QuorumApproverStatus>,
+}
+
 /// JSON representation of a pending approval request.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ApprovalResponse {
@@ -169,6 +205,12 @@ pub struct ApprovalResponse {
     /// Team the approval was routed to, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
+    /// Multi-approver quorum status (AAASM-5095). Present only when the
+    /// approval is a quorum approval; absent for single-target approvals. When
+    /// present the tally reflects real approver responses and is never
+    /// fabricated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quorum: Option<QuorumStatus>,
 }
 
 /// Render a `PendingApprovalRequest` (returned by `ApprovalQueue::list`)
@@ -207,6 +249,10 @@ fn pending_to_response(p: PendingApprovalRequest) -> ApprovalResponse {
             .unwrap_or_default(),
         routing_status,
         team_id: p.team_id,
+        // Quorum enforcement/routing is a documented AAASM-5095 follow-up; the
+        // queue does not yet track per-approver quorum responses, so emit the
+        // field as absent rather than fabricate a tally.
+        quorum: None,
     }
 }
 
@@ -227,6 +273,7 @@ fn resolved_to_response(r: ResolvedRecord) -> ApprovalResponse {
         expires_at: String::new(),
         routing_status: None,
         team_id: r.team_id,
+        quorum: None,
     }
 }
 
@@ -399,6 +446,7 @@ pub async fn approve_action(
             expires_at: String::new(),
             routing_status: None,
             team_id: None,
+            quorum: None,
         }),
     ))
 }
@@ -457,6 +505,7 @@ pub async fn reject_action(
             expires_at: String::new(),
             routing_status: None,
             team_id: None,
+            quorum: None,
         }),
     ))
 }

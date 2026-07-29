@@ -201,6 +201,8 @@ use crate::routes::{
         approvals::PaginatedApprovalResponse,
         approvals::DecideRequest,
         approvals::ForwardRequest,
+        approvals::QuorumStatus,
+        approvals::QuorumApproverStatus,
         costs::CostSummary,
         costs::AgentCostEntry,
         costs::TeamCostEntry,
