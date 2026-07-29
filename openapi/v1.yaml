@@ -1099,6 +1099,53 @@ paths:
                 $ref: '#/components/schemas/ActionVolumeResponse'
         '401':
           description: Missing or invalid credentials
+  /api/v1/analytics/agent-decision-mix:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/agent-decision-mix` — per-agent decision distribution.'
+      description: |-
+        Aggregates the existing audit log over the requested window, grouping by
+        agent id and tallying each recorded decision into the Agent-Detail
+        traffic-mix buckets `allow` / `narrow` / `scrub` / `pending` / `deny` (the
+        vocabulary in `dashboard/src/features/trace/decision.ts`). The audit
+        event-type → bucket mapping is [`decision_mix_bucket`], identical to the
+        gateway's own decision write path (`decision_to_event_type_from_response`)
+        and to the enforcement timeline (AAASM-5031): read-only observability over
+        data the API already holds — no enforcement or audit-write path is touched.
+
+        **Truthfulness.** Only the four proto `Decision` outcomes the gateway records
+        are populated. `narrow` is always `0`: the proto `Decision` enum has no
+        `NARROW` variant, so no audit event can be attributed to it, and inventing a
+        count would fabricate governance activity that never happened. Agents with no
+        tracked decision in the window are omitted entirely (the dashboard renders an
+        empty state rather than a synthetic all-zero row). Confined to the caller's
+        tenant via [`fetch_window_entries`] and bounded by [`MAX_ANALYTICS_AUDIT_EVENTS`],
+        matching the sibling per-agent route (`agent-enforcement`, AAASM-5084).
+      operationId: get_agent_decision_mix
+      parameters:
+      - name: window
+        in: query
+        description: |-
+          Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+          `24h` — the window the Agent-Detail "traffic mix · last 24h" card shows;
+          any unrecognised value also falls back to `24h`.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Per-agent allow/narrow/scrub/pending/deny decision distribution over the window
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AgentDecisionMixCounts'
+        '401':
+          description: Missing or invalid credentials
   /api/v1/analytics/agent-enforcement:
     get:
       tags:
@@ -3349,6 +3396,67 @@ components:
           - string
           - 'null'
           description: Total spend this month in USD for this agent (if monthly tracking is enabled).
+    AgentDecisionMixCounts:
+      type: object
+      description: |-
+        One agent's decision-outcome distribution over the requested window.
+
+        The five fields are the Agent-Detail traffic-mix vocabulary
+        (`allowed / narrowed / scrubbed / pending / denied`, see
+        `dashboard/src/features/trace/decision.ts`). Four are sourced from the audit
+        log's recorded decision event types; `narrow` has no audit source and is
+        always `0` (see [`get_agent_decision_mix`]).
+      required:
+      - agent_id
+      - allow
+      - narrow
+      - scrub
+      - pending
+      - deny
+      properties:
+        agent_id:
+          type: string
+          description: |-
+            Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+            uses, so the dashboard can join this mix directly onto its fleet/agent rows.
+        allow:
+          type: integer
+          format: int64
+          description: |-
+            Allowed decisions: `ToolCallIntercepted` audit events (the gateway records
+            proto `Decision::ALLOW` as this event type).
+          minimum: 0
+        deny:
+          type: integer
+          format: int64
+          description: |-
+            Denied decisions: `PolicyViolation` audit events (the gateway records
+            proto `Decision::DENY` as this event type).
+          minimum: 0
+        narrow:
+          type: integer
+          format: int64
+          description: |-
+            Narrowed decisions. **No audit source exists**: the proto `Decision` enum
+            has no `NARROW` variant and the gateway never writes a narrow event type
+            (narrowing is a capability-plane concept, not a per-invocation audit
+            decision), so this is always `0` — a truthful absence rather than a
+            fabricated count.
+          minimum: 0
+        pending:
+          type: integer
+          format: int64
+          description: |-
+            Pending decisions: `ApprovalRequested` audit events (the gateway records
+            proto `Decision::PENDING` as this event type).
+          minimum: 0
+        scrub:
+          type: integer
+          format: int64
+          description: |-
+            Scrubbed decisions: `CredentialLeakBlocked` audit events (the gateway
+            records proto `Decision::REDACT` as this event type).
+          minimum: 0
     AgentDecisionResponse:
       type: object
       description: |-
