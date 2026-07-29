@@ -93,6 +93,7 @@ async fn approval_push_wakes_blocked_agent() {
             ApprovalDecision::Approved {
                 by: "ops-1".to_string(),
                 reason: Some("approved by e2e".to_string()),
+                conditions: vec![],
             },
         )
         .expect("decide on a pending request succeeds");
