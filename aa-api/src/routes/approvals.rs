@@ -461,6 +461,82 @@ pub async fn reject_action(
     ))
 }
 
+/// `POST /api/v1/approvals/:id/forward` — reassign a pending approval to a
+/// different approver (AAASM-5095).
+///
+/// Forwarding does **not** decide the request: it stays pending so the new
+/// target must still approve or reject it. This is a governance action and
+/// carries the *same* write-scope + tenant-ownership guard as approve/reject
+/// (an operator may only forward approvals in a team it can access, or any
+/// approval when it holds admin scope). Returns the still-pending approval on
+/// success, 404 when the id is unknown or already resolved (no pending request
+/// to forward), and 400 for a missing target or invalid UUID.
+#[utoipa::path(
+    post,
+    path = "/api/v1/approvals/{id}/forward",
+    params(("id" = String, Path, description = "Approval request identifier")),
+    responses(
+        (status = 200, description = "Approval reassigned; still pending", body = ApprovalResponse),
+        (status = 400, description = "Missing forward target or invalid UUID"),
+        (status = 404, description = "Approval request not found or already resolved")
+    ),
+    tag = "approvals"
+)]
+pub async fn forward_action(
+    RequireWrite(caller): RequireWrite,
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<ForwardRequest>,
+) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
+    let uuid = Uuid::parse_str(&id)
+        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
+
+    // Same guard as approve/reject: write scope + tenant ownership. Forwarding
+    // must not let a caller act on an approval outside its authority.
+    authorize_approval_access(&caller, &state, uuid, &id)?;
+
+    let to = body.to.trim();
+    if to.is_empty() {
+        return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail("Forwarding requires a non-empty `to` approver target"));
+    }
+
+    // `forward` returns false when the request is unknown or already resolved
+    // (no pending request to reassign) — surface that as 404.
+    if !state.approval_queue.forward(uuid, to) {
+        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
+            .with_detail(format!("No pending approval request to forward: {id}")));
+    }
+
+    // The request is still pending; return its current snapshot so the caller
+    // observes the updated routing target.
+    let resp = match state.approval_queue.get_by_id(uuid) {
+        Some(ApprovalLookup::Pending(p)) => pending_to_response(p),
+        // Raced to resolution between forward and lookup — report not found
+        // rather than a stale/misleading body.
+        _ => {
+            return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
+                .with_detail(format!("No pending approval request to forward: {id}")))
+        }
+    };
+
+    Ok((StatusCode::OK, Json(resp)))
+}
+
+/// Request body for the forward/reassign action (AAASM-5095).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ForwardRequest {
+    /// Approver identifier (user id or role) to reassign the request to.
+    pub to: String,
+    /// Identity of the operator performing the forward. Optional; recorded for
+    /// audit context.
+    #[serde(default)]
+    pub by: Option<String>,
+    /// Optional reason for the reassignment.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 /// Request body for approval decide actions.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct DecideRequest {
