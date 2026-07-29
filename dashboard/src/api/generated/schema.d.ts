@@ -2808,7 +2808,14 @@ export interface components {
         CapCell: {
             delete: components["schemas"]["Decision"];
             exec: components["schemas"]["Decision"];
-            /** @description Marks this cell for UI attention (e.g. over-permissioned). */
+            /**
+             * @description `Some(true)` when this cell's grant is over-permission — the agent is
+             *     effectively allowed a destructive system verb its declared `RiskTier`
+             *     baseline does not warrant (AAASM-5175, ADR 0029). Absent when the cell is
+             *     within baseline, or when the agent is not evaluated (no resolvable tier,
+             *     or an empty cascade). Only the offending marker is emitted; a per-cell
+             *     `false` is not, so the UI highlights positives without negative clutter.
+             */
             flag?: boolean | null;
             read: components["schemas"]["Decision"];
             write: components["schemas"]["Decision"];
@@ -2820,8 +2827,14 @@ export interface components {
                 [key: string]: components["schemas"]["CapCell"];
             };
             /**
-             * @description Always absent: flagging an agent as over-permissioned is a scoring rule
-             *     with no implementation in the gateway (see `trust`).
+             * @description Over-permission verdict (AAASM-5175, ADR 0029): `Some(true)` when the
+             *     agent is effectively granted a destructive system capability its declared
+             *     `RiskTier` baseline does not warrant, `Some(false)` when it was evaluated
+             *     and found within baseline. Absent when the agent is *not* evaluated — it
+             *     declared no resolvable risk tier, or its policy cascade is empty (in which
+             *     case every cell is `Allow` by fall-through and flagging would be a false
+             *     positive). This is a structural grant-vs-posture signal, distinct from the
+             *     behavioural `trust` score (ADR 0019) and the topology violation-volume flag.
              */
             flagged?: boolean | null;
             framework: string;
@@ -2831,7 +2844,12 @@ export interface components {
             lastSeen: string;
             mode?: null | components["schemas"]["AgentMode"];
             name: string;
-            /** @description Always absent: no operator-authored per-agent note exists in the registry. */
+            /**
+             * @description When `flagged` is `Some(true)`, a human-readable explanation naming the
+             *     tier and the offending grants (e.g. "Low-risk agent granted file_delete,
+             *     terminal_exec beyond its tier baseline"). Absent otherwise — there is no
+             *     operator-authored note source, so a note only ever accompanies a flag.
+             */
             note?: string | null;
             /**
              * @description Owning team, from the registry's first-class `team_id` (falling back to
