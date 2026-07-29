@@ -24,6 +24,7 @@ pub mod iam;
 pub mod logs;
 pub mod ops;
 pub mod policies;
+pub mod policy_hits;
 pub mod tools;
 pub mod topology;
 pub mod traces;
