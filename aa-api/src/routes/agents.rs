@@ -1368,7 +1368,8 @@ fn build_denial_recommendation(entries: &[AuditEntry]) -> Option<AgentConfigReco
     let top_resources_share_pct = share(top_sum);
 
     let names: Vec<&str> = top_resources.iter().map(|r| r.resource.as_str()).collect();
-    let summary = format!(
+    let summary =
+        format!(
         "{} {} account for {:.0}% of this agent's denials in the last {} ({}). Review whether these can be narrowed.",
         top_resources.len(),
         if top_resources.len() == 1 { "resource" } else { "resources" },
@@ -1883,9 +1884,18 @@ mod tests {
     #[test]
     fn project_config_mode_maps_each_override_and_omits_absent() {
         use aa_core::EnforcementMode as M;
-        assert_eq!(project_config_mode(Some(M::Enforce)), Some(EnforcementModeLabel::Enforce));
-        assert_eq!(project_config_mode(Some(M::Observe)), Some(EnforcementModeLabel::Observe));
-        assert_eq!(project_config_mode(Some(M::Disabled)), Some(EnforcementModeLabel::Disabled));
+        assert_eq!(
+            project_config_mode(Some(M::Enforce)),
+            Some(EnforcementModeLabel::Enforce)
+        );
+        assert_eq!(
+            project_config_mode(Some(M::Observe)),
+            Some(EnforcementModeLabel::Observe)
+        );
+        assert_eq!(
+            project_config_mode(Some(M::Disabled)),
+            Some(EnforcementModeLabel::Disabled)
+        );
         // No per-agent override → omitted, never defaulted to a fabricated mode.
         assert_eq!(project_config_mode(None), None);
     }
@@ -1908,7 +1918,10 @@ mod tests {
 
         // The ADR-0022 fields with no per-agent source are not in the contract.
         for absent in ["fail_open", "rate_limit", "observability", "issuer", "identity"] {
-            assert!(!obj.contains_key(absent), "`{absent}` must not be in the config contract");
+            assert!(
+                !obj.contains_key(absent),
+                "`{absent}` must not be in the config contract"
+            );
         }
         // A `None` value is omitted, never emitted as an explicit null.
         assert!(
@@ -1964,7 +1977,10 @@ mod tests {
         // Qualitative only: no percentage-improvement claim, no policy named.
         assert!(reco.summary.contains("gmail/write"));
         assert!(!reco.summary.contains('%') || reco.summary.contains("of this agent's denials"));
-        assert!(!reco.summary.to_lowercase().contains("p-0"), "must not name a specific policy");
+        assert!(
+            !reco.summary.to_lowercase().contains("p-0"),
+            "must not name a specific policy"
+        );
     }
 
     #[test]
@@ -2016,10 +2032,13 @@ mod tests {
             )],
         );
 
-        let (status, Json(body)) =
-            get_agent_config(admin(), Extension(state), axum::extract::Path(hex::encode([0x01u8; 16])))
-                .await
-                .expect("admin may read config");
+        let (status, Json(body)) = get_agent_config(
+            admin(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+        )
+        .await
+        .expect("admin may read config");
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
