@@ -157,7 +157,17 @@ impl IamApiKeyStore {
     }
 
     /// Issue a new key. Returns the [`GeneratedApiKey`] one-shot reveal.
-    pub fn generate(&self, label: &str, scopes: Vec<ApiKeyScope>, owner: &str) -> GeneratedApiKey {
+    ///
+    /// AAASM-5177 — `expires_at` sets the key's expiry. `None` issues a key that
+    /// never expires; callers that want the safe default TTL should compute
+    /// `Some(now + ttl)` before calling (the API handler applies the default).
+    pub fn generate(
+        &self,
+        label: &str,
+        scopes: Vec<ApiKeyScope>,
+        owner: &str,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> GeneratedApiKey {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let id = format!("key-gen-{seq}");
         let prefix = format!("aa_live_{}", random_suffix(4));
@@ -171,7 +181,7 @@ impl IamApiKeyStore {
             scopes,
             status: ApiKeyStatus::Active,
             created_at: now,
-            expires_at: None,
+            expires_at,
             last_used: None,
             owner: owner.to_string(),
             role: "service:reader".to_string(),
@@ -217,18 +227,25 @@ impl IamApiKeyStore {
     pub fn rotate(&self, id: &str, actor: &str) -> Result<GeneratedApiKey, RotateError> {
         // Snapshot the old entry up front so we can re-use its label / scopes
         // / owner without holding a write reference across `generate`.
-        let (label, scopes, owner) = {
+        let (label, scopes, owner, expires_at) = {
             let entry = self.keys.get(id).ok_or(RotateError::NotFound)?;
             if entry.status == ApiKeyStatus::Revoked {
                 return Err(RotateError::AlreadyRevoked);
             }
-            (entry.label.clone(), entry.scopes.clone(), entry.owner.clone())
+            (
+                entry.label.clone(),
+                entry.scopes.clone(),
+                entry.owner.clone(),
+                entry.expires_at,
+            )
         };
 
         // Revoke the old entry first so the audit trail records the
         // revocation before the new issuance.
         self.revoke(id, actor).map_err(RotateError::from)?;
-        let generated = self.generate(&label, scopes, &owner);
+        // AAASM-5177 — the replacement inherits the source key's expiry so a
+        // rotation does not silently extend (or shorten) the key's lifetime.
+        let generated = self.generate(&label, scopes, &owner, expires_at);
 
         // Note the rotation linkage on the *new* entry's activity feed so
         // operators can trace it back.
@@ -324,7 +341,7 @@ mod tests {
     #[test]
     fn generate_returns_secret_and_persists_active_entry() {
         let s = store();
-        let gen = s.generate("gateway-ci", vec![ApiKeyScope::ReadMembers], "alice");
+        let gen = s.generate("gateway-ci", vec![ApiKeyScope::ReadMembers], "alice", None);
         assert!(
             gen.secret.starts_with(&gen.prefix),
             "secret should embed the public prefix"
@@ -346,8 +363,8 @@ mod tests {
     #[test]
     fn generate_assigns_distinct_ids_under_concurrent_calls() {
         let s = store();
-        let a = s.generate("k-a", vec![], "alice");
-        let b = s.generate("k-b", vec![], "alice");
+        let a = s.generate("k-a", vec![], "alice", None);
+        let b = s.generate("k-b", vec![], "alice", None);
         assert_ne!(a.id, b.id);
         assert_ne!(a.prefix, b.prefix);
     }
@@ -355,7 +372,7 @@ mod tests {
     #[test]
     fn revoke_marks_entry_revoked_and_appends_activity() {
         let s = store();
-        let gen = s.generate("k", vec![], "alice");
+        let gen = s.generate("k", vec![], "alice", None);
         assert!(s.revoke(&gen.id, "alice").is_ok());
 
         let entry = s.list().into_iter().find(|e| e.id == gen.id).unwrap();
@@ -371,7 +388,7 @@ mod tests {
     #[test]
     fn revoke_is_idempotent_only_in_the_sense_of_returning_an_explicit_error_on_second_call() {
         let s = store();
-        let gen = s.generate("k", vec![], "alice");
+        let gen = s.generate("k", vec![], "alice", None);
         s.revoke(&gen.id, "alice").unwrap();
         assert_eq!(s.revoke(&gen.id, "alice"), Err(RevokeError::AlreadyRevoked));
     }
@@ -379,7 +396,7 @@ mod tests {
     #[test]
     fn rotate_revokes_old_and_issues_new_entry_preserving_label_and_owner() {
         let s = store();
-        let gen = s.generate("ci-runner", vec![ApiKeyScope::ReadAudit], "alice");
+        let gen = s.generate("ci-runner", vec![ApiKeyScope::ReadAudit], "alice", None);
         let rotated = s.rotate(&gen.id, "alice").unwrap();
 
         assert_ne!(rotated.id, gen.id);
@@ -407,7 +424,7 @@ mod tests {
     #[test]
     fn rotate_refuses_already_revoked_key() {
         let s = store();
-        let gen = s.generate("k", vec![], "alice");
+        let gen = s.generate("k", vec![], "alice", None);
         s.revoke(&gen.id, "alice").unwrap();
         assert_eq!(s.rotate(&gen.id, "alice"), Err(RotateError::AlreadyRevoked));
     }
@@ -415,9 +432,9 @@ mod tests {
     #[test]
     fn list_sorts_newest_first() {
         let s = store();
-        let _a = s.generate("a", vec![], "alice");
+        let _a = s.generate("a", vec![], "alice", None);
         std::thread::sleep(std::time::Duration::from_millis(2));
-        let b = s.generate("b", vec![], "alice");
+        let b = s.generate("b", vec![], "alice", None);
 
         let entries = s.list();
         assert_eq!(entries.len(), 2);
