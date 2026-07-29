@@ -365,6 +365,14 @@ describe('AuditLogPage', () => {
     expect(within(detail).getByText(/deny-external-mail/)).toBeInTheDocument()
   })
 
+  it('labels the timestamp cell with the UTC zone', async () => {
+    // The wire timestamp is UTC; on a compliance surface the zone must be
+    // explicit so a clock time is not read as local (AAASM-5172).
+    renderPage()
+    const row = await screen.findByTestId('audit-row-1048')
+    expect(within(row).getByText('14:02:11 UTC')).toBeInTheDocument()
+  })
+
   it('shows the trace id in the expanded metadata when the payload carries one', async () => {
     renderPage()
     fireEvent.click(await screen.findByTestId('audit-row-1048'))
