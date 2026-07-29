@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { criticalFiringBadge, criticalFiringCount } from './alertBadge'
 import { AlertShapeError, canonicalSeverity, canonicalStatus, normaliseAlert, parseAlertList } from './parseAlert'
+import { ALERT_SEVERITY_ORDER } from './types'
 import { known } from '../../lib/truthfulness'
 
 /**
@@ -39,8 +40,8 @@ describe('canonicalStatus / canonicalSeverity — the live wire vocabulary', () 
 
   it.each([
     ['critical', 'CRITICAL'],
-    ['warning', 'HIGH'],
-    ['info', 'LOW'],
+    ['warning', 'WARNING'],
+    ['info', 'INFO'],
   ])('maps wire severity %s onto %s', (wire, expected) => {
     expect(canonicalSeverity(wire)).toBe(expected)
   })
@@ -205,5 +206,56 @@ describe('the nav badge counts real backend payloads (AAASM-5149 regression guar
       wireAlert({ id: 'a2', severity: 'critical', status: 'resolved' }),
     ])
     expect(criticalFiringBadge(known(page))).toEqual(known(0))
+  })
+})
+
+/**
+ * The severity-vocabulary contract guard (AAASM-5193).
+ *
+ * The dashboard's alert-severity set must be *exactly* the image of the
+ * backend's emittable wire severities under `canonicalSeverity` — no more, no
+ * less. The backend `AlertSeverity` `Display` impl
+ * (`aa-api/src/alerts/mod.rs`) emits exactly these three literals; they are the
+ * single source of truth, transcribed here the same way the wire fixtures above
+ * are.
+ *
+ * This is the test that fails if a frontend-only severity level ever reappears.
+ * `MEDIUM` was the historical offender: it lived in the dashboard's severity
+ * union but no real `AlertResponse` payload could ever carry it (the rule engine
+ * collapses onto critical/warning/info before firing). Reintroducing it — or
+ * any other level the wire cannot produce — as an alert severity would make
+ * `ALERT_SEVERITY_ORDER` disagree with the derived set, and this goes red.
+ * `MEDIUM` remaining reachable on the *rule-authoring* ladder (`RuleSeverity`)
+ * is deliberate and is not exercised here, because a rule severity is not an
+ * emitted alert severity.
+ */
+describe('alert severity set is exactly derivable from the wire enum (AAASM-5193 guard)', () => {
+  // The backend's canonical wire severities — `AlertSeverity`'s `Display`
+  // output. Update this only when the backend enum changes, never to match a
+  // frontend-only level.
+  const WIRE_SEVERITIES = ['critical', 'warning', 'info'] as const
+
+  it('derives the dashboard alert vocabulary 1:1 from the wire, with nothing extra', () => {
+    const derived = new Set(WIRE_SEVERITIES.map((w) => canonicalSeverity(w)))
+
+    // Every dashboard alert severity must be produced by some wire value…
+    for (const level of ALERT_SEVERITY_ORDER) {
+      expect(derived.has(level)).toBe(true)
+    }
+    // …and the dashboard must carry no alert severity the wire cannot produce.
+    // Set sizes matching (both 3) proves the mapping is a bijection: a
+    // frontend-only level like MEDIUM would make one side larger and fail here.
+    expect(derived.size).toBe(ALERT_SEVERITY_ORDER.length)
+    expect([...derived].sort()).toEqual([...ALERT_SEVERITY_ORDER].sort())
+  })
+
+  it('rejects a frontend-only severity that the wire cannot emit', () => {
+    // MEDIUM is the canonical regression: reachable on the RuleSeverity ladder,
+    // never on an emitted alert. The alert boundary must not admit it.
+    expect(() => canonicalSeverity('MEDIUM')).toThrow(AlertShapeError)
+    expect(() => canonicalSeverity('medium')).toThrow(AlertShapeError)
+    // HIGH/LOW were the old lossy remap targets; they are not alert severities.
+    expect(() => canonicalSeverity('HIGH')).toThrow(AlertShapeError)
+    expect(() => canonicalSeverity('LOW')).toThrow(AlertShapeError)
   })
 })
