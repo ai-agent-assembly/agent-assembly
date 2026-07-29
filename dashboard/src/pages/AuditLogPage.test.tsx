@@ -373,6 +373,18 @@ describe('AuditLogPage', () => {
     expect(within(row).getByText('14:02:11 UTC')).toBeInTheDocument()
   })
 
+  it('shows a ▼/▲ expand glyph that mirrors the row state', async () => {
+    // The disclosure glyph from the mock (design/v1/hi-fi/audit-log.jsx) sits
+    // beside the View link and flips with the row (AAASM-5172).
+    renderPage()
+    const row = await screen.findByTestId('audit-row-1048')
+    const glyph = screen.getByTestId('audit-expand-glyph-1048')
+
+    expect(glyph).toHaveTextContent('▼')
+    fireEvent.click(row)
+    expect(screen.getByTestId('audit-expand-glyph-1048')).toHaveTextContent('▲')
+  })
+
   it('shows the trace id in the expanded metadata when the payload carries one', async () => {
     renderPage()
     fireEvent.click(await screen.findByTestId('audit-row-1048'))
