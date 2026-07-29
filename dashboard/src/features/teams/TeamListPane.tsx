@@ -21,14 +21,17 @@ interface TeamListPaneProps {
   onSelectOrphan: () => void
 }
 
-function MiniBudgetBar({ pct }: Readonly<{ pct: number }>) {
+function MiniBudgetBar({ pct, spend, limit }: Readonly<{ pct: number; spend: number; limit: number }>) {
   const color = budgetBucketColor(bucketForRatio(pct / 100))
   return (
     <div>
       <div className="teams-mini-bar">
         <div className="teams-mini-bar__fill" style={{ width: `${Math.min(100, pct)}%`, background: color }} />
       </div>
-      <div className="teams-mini-bar__label">{pct.toFixed(1)}% burn</div>
+      {/* Dollar figures, not the raw percentage, per design/v1/hi-fi/teams.jsx:35-37.
+          The percentage stays the colour signal on the bar above; the label is
+          the spend against the limit an operator can act on (AAASM-5172). */}
+      <div className="teams-mini-bar__label">${spend.toFixed(2)} / ${limit.toFixed(0)}</div>
     </div>
   )
 }
@@ -109,7 +112,9 @@ export function TeamListPane({
               <span className="teams-list-row__name">{row.team_id}</span>
               <span className="teams-list-row__agents">{row.agent_count}×</span>
             </div>
-            {row.burn_pct != null && <MiniBudgetBar pct={row.burn_pct} />}
+            {row.burn_pct != null && row.daily_spend_usd != null && row.daily_limit_usd != null && (
+              <MiniBudgetBar pct={row.burn_pct} spend={row.daily_spend_usd} limit={row.daily_limit_usd} />
+            )}
           </button>
         ))}
 
