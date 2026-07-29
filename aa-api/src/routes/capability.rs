@@ -562,6 +562,42 @@ fn system_cell(
     }
 }
 
+/// The over-permission-eligible capabilities and the (system resource, verb)
+/// cell coordinates they occupy in the matrix. The single source both
+/// [`system_cell`] flags and [`over_permission_offenders`] names offenders from,
+/// so the two can never disagree about which grant drove a flag (ADR 0029).
+fn high_privilege_cells() -> [(&'static str, Verb, aa_core::Capability); 4] {
+    use aa_core::Capability as C;
+    [
+        ("filesystem", Verb::Write, C::FileWrite),
+        ("filesystem", Verb::Delete, C::FileDelete),
+        ("terminal", Verb::Exec, C::TerminalExec),
+        ("network_outbound", Verb::Exec, C::NetworkOutbound),
+    ]
+}
+
+/// Read the display names of the capabilities that drove an agent's
+/// over-permission flag, in stable column order. A capability offends when its
+/// cell is effectively `Allow` and the tier baseline does not warrant it — the
+/// same test [`system_cell`] applied per cell — so the agent-level note names
+/// exactly the grants the per-cell flags mark.
+fn over_permission_offenders(cells: &BTreeMap<String, CapCell>, tier: aa_core::RiskTier) -> Vec<String> {
+    high_privilege_cells()
+        .into_iter()
+        .filter_map(|(resource, verb, cap)| {
+            let cell = cells.get(resource)?;
+            let decision = match verb {
+                Verb::Write => cell.write,
+                Verb::Delete => cell.delete,
+                Verb::Exec => cell.exec,
+                Verb::Read => cell.read,
+            };
+            (decision == Decision::Allow && over_permission::is_over_permission(tier, &cap))
+                .then(|| cap.to_string())
+        })
+        .collect()
+}
+
 /// Map the registry's liveness status onto the matrix's. `Idle` is never
 /// produced: the registry has no idle state, and deriving one from heartbeat
 /// staleness would be a threshold this endpoint has no mandate to pick.
@@ -688,6 +724,26 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
             );
         }
 
+        // Agent-level over-permission signal (ADR 0029). Present only for an
+        // evaluated agent (resolvable tier + non-empty cascade); `Some(true)`
+        // when any system cell is flagged, else the honest `Some(false)`
+        // "evaluated, within baseline". Unevaluated agents stay `None` — never a
+        // fabricated verdict.
+        let (flagged, note) = match over_perm_tier {
+            Some(tier) => {
+                let offenders = over_permission_offenders(&cells, tier);
+                let flagged = !offenders.is_empty();
+                let note = flagged.then(|| {
+                    format!(
+                        "{tier:?}-risk agent granted {} beyond its tier baseline",
+                        offenders.join(", ")
+                    )
+                });
+                (Some(flagged), note)
+            }
+            None => (None, None),
+        };
+
         agents.push(CapabilityAgent {
             id: id_hex,
             name: record.name.clone(),
@@ -697,8 +753,8 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
             mode: project_mode(record.enforcement_mode),
             status: project_status(&record.status),
             last_seen: record.last_heartbeat.to_rfc3339(),
-            flagged: None,
-            note: None,
+            flagged,
+            note,
             caps: cells,
         });
     }
