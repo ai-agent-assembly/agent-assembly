@@ -1865,4 +1865,191 @@ mod tests {
             body.sources.iter().map(|s| &s.scope).collect::<Vec<_>>()
         );
     }
+
+    // ── AAASM-5098 / ADR-0022: per-agent config projection ──────────────────
+
+    /// A team-scoped (non-admin) caller belonging to `team_id`.
+    fn team_caller(team_id: &str) -> RequireRead {
+        RequireRead(AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes: vec![Scope::Read],
+            tenant: crate::auth::Tenant {
+                org_id: None,
+                team_id: Some(team_id.to_string()),
+            },
+        })
+    }
+
+    #[test]
+    fn project_config_mode_maps_each_override_and_omits_absent() {
+        use aa_core::EnforcementMode as M;
+        assert_eq!(project_config_mode(Some(M::Enforce)), Some(EnforcementModeLabel::Enforce));
+        assert_eq!(project_config_mode(Some(M::Observe)), Some(EnforcementModeLabel::Observe));
+        assert_eq!(project_config_mode(Some(M::Disabled)), Some(EnforcementModeLabel::Disabled));
+        // No per-agent override → omitted, never defaulted to a fabricated mode.
+        assert_eq!(project_config_mode(None), None);
+    }
+
+    /// ADR-0022 validation requirement: undefined config keys are absent from the
+    /// serialized response, not `null`. `fail_open` / `rate_limit` /
+    /// `observability` / `issuer` have no per-agent source, so they must never
+    /// appear as keys; `enforcement_mode` and `recommendation` are absent (not
+    /// null) when they have no value.
+    #[test]
+    fn unsupported_and_empty_fields_are_absent_not_null() {
+        let resp = AgentConfigResponse {
+            agent_id: "ab".repeat(16),
+            enforcement_mode: None,
+            policies: Vec::new(),
+            recommendation: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let obj = json.as_object().unwrap();
+
+        // The ADR-0022 fields with no per-agent source are not in the contract.
+        for absent in ["fail_open", "rate_limit", "observability", "issuer", "identity"] {
+            assert!(!obj.contains_key(absent), "`{absent}` must not be in the config contract");
+        }
+        // A `None` value is omitted, never emitted as an explicit null.
+        assert!(
+            !obj.contains_key("enforcement_mode"),
+            "an absent enforcement_mode must be omitted, not null"
+        );
+        assert!(
+            !obj.contains_key("recommendation"),
+            "an absent recommendation must be omitted, not null"
+        );
+        // The always-present fields are still there.
+        assert!(obj.contains_key("agent_id"));
+        assert!(obj.contains_key("policies"));
+    }
+
+    #[test]
+    fn enforcement_mode_serializes_snake_case() {
+        let json = serde_json::to_value(EnforcementModeLabel::Observe).unwrap();
+        assert_eq!(json, serde_json::json!("observe"));
+    }
+
+    /// Build a `PolicyViolation`-shaped audit entry whose payload names a denied
+    /// resource via `action_type` (the real gateway denial write shape — no
+    /// `detail` object).
+    fn denial_entry(action_type: &str) -> AuditEntry {
+        decision_entry(&format!(r#"{{"action_type":"{action_type}","decision":2}}"#))
+    }
+
+    #[test]
+    fn recommendation_ranks_dominant_resources_and_reports_shares() {
+        // 10 denials: 5×gmail/write, 3×gdrive/write, 2×http/write.
+        let mut entries = Vec::new();
+        for _ in 0..5 {
+            entries.push(denial_entry("gmail/write"));
+        }
+        for _ in 0..3 {
+            entries.push(denial_entry("gdrive/write"));
+        }
+        for _ in 0..2 {
+            entries.push(denial_entry("http/write"));
+        }
+
+        let reco = build_denial_recommendation(&entries).expect("10 denials clears the floor");
+        assert_eq!(reco.total_denials, 10);
+        assert_eq!(reco.window, "7d");
+        // Ranked most-denied first.
+        let names: Vec<&str> = reco.top_resources.iter().map(|r| r.resource.as_str()).collect();
+        assert_eq!(names, vec!["gmail/write", "gdrive/write", "http/write"]);
+        assert_eq!(reco.top_resources[0].denials, 5);
+        assert!((reco.top_resources[0].share_pct - 50.0).abs() < 1e-9);
+        // All three fit within CONFIG_RECO_TOP_N, so they account for 100%.
+        assert!((reco.top_resources_share_pct - 100.0).abs() < 1e-9);
+        // Qualitative only: no percentage-improvement claim, no policy named.
+        assert!(reco.summary.contains("gmail/write"));
+        assert!(!reco.summary.contains('%') || reco.summary.contains("of this agent's denials"));
+        assert!(!reco.summary.to_lowercase().contains("p-0"), "must not name a specific policy");
+    }
+
+    #[test]
+    fn recommendation_caps_at_top_n_and_reports_partial_share() {
+        // 4 distinct resources, 10 denials: 4,3,2,1. Only top 3 are named; their
+        // share is (4+3+2)/10 = 90%.
+        let mut entries = Vec::new();
+        for (res, n) in [("a", 4), ("b", 3), ("c", 2), ("d", 1)] {
+            for _ in 0..n {
+                entries.push(denial_entry(res));
+            }
+        }
+        let reco = build_denial_recommendation(&entries).unwrap();
+        assert_eq!(reco.top_resources.len(), CONFIG_RECO_TOP_N);
+        assert_eq!(reco.total_denials, 10);
+        assert!((reco.top_resources_share_pct - 90.0).abs() < 1e-9);
+    }
+
+    /// ADR-0022 validation requirement: the recommendation returns empty rather
+    /// than a low-confidence finding when the agent has too few denials to rank.
+    #[test]
+    fn recommendation_withheld_below_confidence_floor() {
+        let entries: Vec<AuditEntry> = (0..(CONFIG_RECO_MIN_DENIALS - 1))
+            .map(|_| denial_entry("gmail/write"))
+            .collect();
+        assert!(
+            build_denial_recommendation(&entries).is_none(),
+            "below the floor the finding must be withheld, not shipped low-confidence"
+        );
+        // No denials at all → also withheld.
+        assert!(build_denial_recommendation(&[]).is_none());
+    }
+
+    /// The config endpoint sources `enforcement_mode` from `AgentRecord`, not
+    /// from `metadata["mode"]` (ADR-0022), and projects the effective cascade.
+    #[tokio::test]
+    async fn config_sources_mode_from_record_not_metadata() {
+        let mut rec = record(0x01, Some("team-alpha"));
+        rec.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
+        // A conflicting free-form metadata mode must NOT be what the endpoint reports.
+        rec.metadata.insert("mode".to_string(), "enforce".to_string());
+
+        let state = state_with_policies(
+            vec![rec],
+            vec![policy_doc(
+                "team-rules",
+                aa_gateway::policy::PolicyScope::Team("team-alpha".to_string()),
+                aa_core::CapabilitySet::default(),
+            )],
+        );
+
+        let (status, Json(body)) =
+            get_agent_config(admin(), Extension(state), axum::extract::Path(hex::encode([0x01u8; 16])))
+                .await
+                .expect("admin may read config");
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body.enforcement_mode,
+            Some(EnforcementModeLabel::Observe),
+            "mode must come from enforcement_mode (Observe), not metadata[\"mode\"] (enforce)"
+        );
+        assert!(
+            body.policies.iter().any(|p| p.scope == "team:team-alpha"),
+            "the team policy must appear in the cascade: {:?}",
+            body.policies.iter().map(|p| &p.id).collect::<Vec<_>>()
+        );
+        // No denials seeded → recommendation withheld, not fabricated.
+        assert!(body.recommendation.is_none());
+    }
+
+    /// Tenant scoping: a caller from another team may not read the agent's config
+    /// — a per-agent config leak across tenants would be an IDOR (ADR-0022).
+    #[tokio::test]
+    async fn config_denies_cross_tenant_caller() {
+        let state = state_with_policies(vec![record(0x02, Some("team-alpha"))], vec![]);
+
+        let err = get_agent_config(
+            team_caller("team-beta"),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x02u8; 16])),
+        )
+        .await
+        .expect_err("a team-beta caller must not read a team-alpha agent's config");
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
+    }
 }
