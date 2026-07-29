@@ -594,8 +594,7 @@ fn over_permission_offenders(cells: &BTreeMap<String, CapCell>, tier: aa_core::R
                 Verb::Exec => cell.exec,
                 Verb::Read => cell.read,
             };
-            (decision == Decision::Allow && over_permission::is_over_permission(tier, &cap))
-                .then(|| cap.to_string())
+            (decision == Decision::Allow && over_permission::is_over_permission(tier, &cap)).then(|| cap.to_string())
         })
         .collect()
 }
@@ -1197,9 +1196,16 @@ mod tests {
         let state = state_with_policies(vec![record_with_tier(0x01, "a", &[], 1)], permissive_cascade());
         let agent = &matrix_for(&state).await.agents[0];
 
-        assert_eq!(agent.flagged, Some(true), "a Low agent with destructive grants is over-permissioned");
+        assert_eq!(
+            agent.flagged,
+            Some(true),
+            "a Low agent with destructive grants is over-permissioned"
+        );
         assert!(agent.caps["terminal"].flag == Some(true), "the driving cell is marked");
-        assert!(agent.caps["filesystem"].flag == Some(true), "file_delete drives the filesystem cell");
+        assert!(
+            agent.caps["filesystem"].flag == Some(true),
+            "file_delete drives the filesystem cell"
+        );
         let note = agent.note.as_deref().expect("a flag carries a note");
         assert!(note.contains("file_delete"), "note names the offending grant: {note}");
         assert!(note.contains("terminal_exec"), "note names the offending grant: {note}");
@@ -1212,7 +1218,11 @@ mod tests {
         let state = state_with_policies(vec![record_with_tier(0x01, "a", &[], 3)], permissive_cascade());
         let agent = &matrix_for(&state).await.agents[0];
 
-        assert_eq!(agent.flagged, Some(false), "High permits these grants; evaluated but not flagged");
+        assert_eq!(
+            agent.flagged,
+            Some(false),
+            "High permits these grants; evaluated but not flagged"
+        );
         assert!(agent.note.is_none(), "a within-baseline agent carries no note");
         assert!(
             agent.caps.values().all(|c| c.flag.is_none()),
@@ -1240,8 +1250,15 @@ mod tests {
         let state = state_with(vec![record_with_tier(0x01, "a", &[], 1)]);
         let agent = &matrix_for(&state).await.agents[0];
 
-        assert_eq!(agent.caps["terminal"].exec, Decision::Allow, "empty cascade allows by fall-through");
-        assert!(agent.flagged.is_none(), "an empty cascade is not evaluated for over-permission");
+        assert_eq!(
+            agent.caps["terminal"].exec,
+            Decision::Allow,
+            "empty cascade allows by fall-through"
+        );
+        assert!(
+            agent.flagged.is_none(),
+            "an empty cascade is not evaluated for over-permission"
+        );
         assert!(agent.note.is_none());
         assert!(agent.caps.values().all(|c| c.flag.is_none()));
     }
