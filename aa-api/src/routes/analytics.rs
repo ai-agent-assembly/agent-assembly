@@ -297,7 +297,10 @@ pub struct FleetHealthResponse {
 /// `YYYY-MM-DD..YYYY-MM-DD` ranges (inclusive of both endpoints). Any
 /// unrecognised or absent value falls back to the `7d` default the dashboard
 /// uses.
-fn window_secs_from_range(range: Option<&str>) -> u64 {
+// AAASM-5174: `pub(crate)` so the scrub routes can reuse this exact grammar
+// rather than copying it — one definition of the window presets + custom-range
+// parsing across every windowed read surface.
+pub(crate) fn window_secs_from_range(range: Option<&str>) -> u64 {
     const DAY: u64 = 86_400;
     match range {
         Some("24h") => DAY,
@@ -311,7 +314,7 @@ fn window_secs_from_range(range: Option<&str>) -> u64 {
 
 /// Parse a `YYYY-MM-DD..YYYY-MM-DD` custom range into an inclusive window in
 /// seconds. Returns `None` for malformed input or an inverted range.
-fn parse_custom_range(s: &str) -> Option<u64> {
+pub(crate) fn parse_custom_range(s: &str) -> Option<u64> {
     let (start, end) = s.split_once("..")?;
     let start = chrono::NaiveDate::parse_from_str(start.trim(), "%Y-%m-%d").ok()?;
     let end = chrono::NaiveDate::parse_from_str(end.trim(), "%Y-%m-%d").ok()?;

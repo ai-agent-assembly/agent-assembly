@@ -157,33 +157,11 @@ pub struct PostureResponse {
 /// Resolve a dashboard range filter to a window length in seconds.
 ///
 /// Accepts the presets `24h` / `7d` / `30d` / `90d` and custom
-/// `YYYY-MM-DD..YYYY-MM-DD` ranges (inclusive of both endpoints), matching the
-/// analytics routes' grammar. Any unrecognised or absent value falls back to
-/// the `7d` default.
-fn window_secs_from_range(range: Option<&str>) -> u64 {
-    const DAY: u64 = 86_400;
-    match range {
-        Some("24h") => DAY,
-        Some("7d") => 7 * DAY,
-        Some("30d") => 30 * DAY,
-        Some("90d") => 90 * DAY,
-        Some(custom) if custom.contains("..") => parse_custom_range(custom).unwrap_or(7 * DAY),
-        _ => 7 * DAY,
-    }
-}
-
-/// Parse a `YYYY-MM-DD..YYYY-MM-DD` custom range into an inclusive window in
-/// seconds. Returns `None` for malformed input or an inverted range.
-fn parse_custom_range(s: &str) -> Option<u64> {
-    let (start, end) = s.split_once("..")?;
-    let start = chrono::NaiveDate::parse_from_str(start.trim(), "%Y-%m-%d").ok()?;
-    let end = chrono::NaiveDate::parse_from_str(end.trim(), "%Y-%m-%d").ok()?;
-    let days = (end - start).num_days();
-    if days < 0 {
-        return None;
-    }
-    Some((days as u64 + 1) * 86_400)
-}
+/// Window-range parsing is shared with the analytics routes (AAASM-5174):
+/// [`crate::routes::analytics::window_secs_from_range`] owns the `24h`/`7d`/
+/// `30d`/`90d` presets and the `YYYY-MM-DD..YYYY-MM-DD` custom grammar, so the
+/// scrub surface accepts exactly the same windows without a second copy.
+use crate::routes::analytics::window_secs_from_range;
 
 /// Upper bound on the number of alerts a single scrub aggregation pulls from the
 /// store, mirroring [`crate::routes::analytics`]'s bounded-read policy
