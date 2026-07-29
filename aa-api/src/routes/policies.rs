@@ -956,6 +956,67 @@ pub struct ReplayPolicyRequest {
     pub sample_size: Option<usize>,
 }
 
+/// One per-request before/after diff in a replay response: the recorded verdict
+/// vs. the verdict the proposed policy would have produced for the same action.
+///
+/// Only entries whose verdict actually *changed* are returned as samples — an
+/// unchanged entry carries no impact to illustrate.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ReplaySampleDiff {
+    /// Tool/capability the recorded action invoked (from the audit entry's
+    /// persisted `detail.tool_name`).
+    pub tool: String,
+    /// Verdict recorded when this action actually ran, mapped from the audit
+    /// entry's persisted decision.
+    pub before: SimulateVerdict,
+    /// Verdict the proposed policy would produce for the same action.
+    pub after: SimulateVerdict,
+}
+
+/// Response body for `POST /api/v1/policies/replay` (AAASM-5094).
+///
+/// Aggregate impact of the proposed policy over the replayed corpus, plus a
+/// bounded sample of the per-request verdict changes. Every count is a real
+/// tally of re-evaluating recorded actions — an empty corpus yields all-zero
+/// counts and no samples, never a fabricated figure.
+///
+/// ## Fidelity caveat
+///
+/// The audit log deliberately persists only non-secret action *metadata* (tool
+/// name, path, host) and never the raw tool arguments/target
+/// (`aa_runtime::audit_publisher::conversion::build_payload`). Replay therefore
+/// reconstructs each action from its persisted tool name with **empty
+/// arguments**, so target-sensitive predicates and the credential/PII scrubber
+/// cannot be re-exercised from the corpus. Verdict changes driven purely by
+/// per-tool allow/deny/approval rules are faithful; changes that would depend on
+/// argument content are out of reach and are not counted. See
+/// [`replayable_actions`] and the endpoint doc comment.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ReplayPolicyResponse {
+    /// Number of corpus entries the proposed policy would newly block (recorded
+    /// verdict allowed/narrowed/approval, proposed verdict `deny`).
+    pub newly_blocked: u64,
+    /// Number of corpus entries the proposed policy would newly narrow — allowed
+    /// but with sensitive content scrubbed (recorded verdict `allow`, proposed
+    /// verdict `narrow`).
+    pub newly_narrowed: u64,
+    /// Number of corpus entries whose recorded verdict was a block/deny but the
+    /// proposed policy would now allow — a regression that opens previously
+    /// closed traffic.
+    pub regressions: u64,
+    /// Number of corpus entries whose recorded verdict was a clean `allow` but
+    /// the proposed policy would now require human approval — a false-positive /
+    /// friction increase short of an outright block.
+    pub false_positives: u64,
+    /// Total corpus entries replayed (tool-call decisions in the window that
+    /// carried a recorded verdict and a tool name). Denominator for the counts
+    /// above; `0` when the corpus is empty.
+    pub replayed: u64,
+    /// A bounded sample of the per-request verdict changes, capped by the
+    /// request's `sample_size`. Empty when no verdict changed.
+    pub samples: Vec<ReplaySampleDiff>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
