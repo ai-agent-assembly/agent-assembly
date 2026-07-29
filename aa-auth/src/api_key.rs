@@ -587,4 +587,82 @@ mod tests {
         let store = ApiKeyStore::from_entries(vec![entry]);
         assert_eq!(store.validate(key.as_str()).map(|e| e.id.as_str()), Some("legacy"));
     }
+
+    // ── AAASM-5177 — expiry enforcement at authentication ──
+
+    /// Build a store holding one key with the given `expires_at`.
+    fn store_with_expiry(id: &str, expires_at: Option<u64>) -> (ApiKey, ApiKeyStore) {
+        let key = ApiKey::generate();
+        let entry = ApiKeyEntry {
+            id: id.to_string(),
+            key_hash: key.hash().expect("hash"),
+            scopes: vec![Scope::Read],
+            created_at: 0,
+            expires_at,
+            label: None,
+            team_id: None,
+            org_id: None,
+            key_lookup: Some(key.lookup()),
+        };
+        (key, ApiKeyStore::from_entries(vec![entry]))
+    }
+
+    #[test]
+    fn is_expired_never_expires_when_none() {
+        assert!(!is_expired(None));
+    }
+
+    #[test]
+    fn is_expired_true_for_past_and_false_for_future() {
+        let now = now_unix_secs();
+        assert!(is_expired(Some(now.saturating_sub(60))), "past instant is expired");
+        assert!(!is_expired(Some(now + 3600)), "future instant is not expired");
+    }
+
+    #[test]
+    fn expired_key_is_rejected_at_authentication() {
+        // A key whose expiry is one hour in the past must fail validation with
+        // the dedicated Expired reason — never Ok.
+        let past = now_unix_secs().saturating_sub(3600);
+        let (key, store) = store_with_expiry("expired-key", Some(past));
+        assert!(
+            matches!(store.validate_detailed(key.as_str()), Err(KeyNotValid::Expired)),
+            "an expired key must be rejected as Expired"
+        );
+        assert!(store.validate(key.as_str()).is_none(), "validate() must also reject it");
+    }
+
+    #[test]
+    fn not_yet_expired_key_still_validates() {
+        let future = now_unix_secs() + 3600;
+        let (key, store) = store_with_expiry("live-key", Some(future));
+        assert_eq!(
+            store.validate(key.as_str()).map(|e| e.id.as_str()),
+            Some("live-key"),
+            "a key before its expiry must authenticate"
+        );
+    }
+
+    #[test]
+    fn key_without_expiry_still_validates_backward_compat() {
+        let (key, store) = store_with_expiry("eternal-key", None);
+        assert_eq!(
+            store.validate(key.as_str()).map(|e| e.id.as_str()),
+            Some("eternal-key"),
+            "a key with no expiry must authenticate (backward compat)"
+        );
+    }
+
+    #[test]
+    fn revocation_takes_precedence_over_expiry() {
+        // A key that is both revoked and expired reports Revoked — the explicit
+        // administrative action wins over the passive expiry.
+        let past = now_unix_secs().saturating_sub(3600);
+        let (key, store) = store_with_expiry("revoked-and-expired", Some(past));
+        store.revoke("revoked-and-expired");
+        assert!(matches!(
+            store.validate_detailed(key.as_str()),
+            Err(KeyNotValid::Revoked)
+        ));
+    }
 }
