@@ -1639,6 +1639,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/scrub/pattern-counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/scrub/pattern-counts` — per-kind detection counts over a window.
+         * @description Aggregates the persisted `secret_detected` alerts by their recorded
+         *     `detected_pattern_type` (the [`CredentialKind`] string) over the requested
+         *     window. Only kinds that actually fired appear, so an idle window returns an
+         *     empty list rather than zero-filled fabricated rows. The alert read is
+         *     bounded by [`MAX_SCRUB_ALERTS`] and confined to the caller's tenant.
+         */
+        get: operations["get_pattern_counts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scrub/patterns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/scrub/patterns` — the effective built-in pattern catalogue.
+         * @description Returns every built-in [`CredentialKind`] detector with its canonical kind
+         *     label, `[REDACTED:<kind>]` replacement string, coarse category, and fixed
+         *     severity. This is the real detector set the gateway scanner enforces — the
+         *     dashboard Scrub page can render it directly instead of the static fixtures
+         *     it used before AAASM-5174.
+         *
+         *     Custom policy-defined patterns (`data.sensitive_patterns`) are intentionally
+         *     **not** listed here: they are per-policy, not built-in, and exposing/managing
+         *     them is scoped as an AAASM-5174 follow-up. `builtin` is therefore always
+         *     `true` on the current response.
+         */
+        get: operations["get_patterns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scrub/posture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/scrub/posture` — leak posture over a window.
+         * @description Reports `leaks_intercepted` (the count of `secret_detected` alerts in the
+         *     window) and `distinct_kinds`. A leak *rate* is not derivable — the store
+         *     does not persist the total-payloads-scanned denominator — so `leak_rate` is
+         *     surfaced as explicitly absent with `rate_computed: false` rather than
+         *     fabricated (AAASM-5174 truthfulness requirement). Confined to the caller's
+         *     tenant and bounded by [`MAX_SCRUB_ALERTS`].
+         */
+        get: operations["get_posture"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tools": {
         parameters: {
             query?: never;
@@ -3843,6 +3921,38 @@ export interface components {
              */
             total: number;
         };
+        /** @description A per-kind hit count within the queried window. */
+        PatternCount: {
+            /**
+             * Format: int64
+             * @description Number of `secret_detected` alerts of this kind in the window.
+             */
+            hits: number;
+            /**
+             * @description Detected credential kind, e.g. `"AwsAccessKey"`. This is the
+             *     `detected_pattern_type` recorded on each `secret_detected` alert.
+             */
+            kind: string;
+        };
+        /** @description Response for `GET /api/v1/scrub/pattern-counts`. */
+        PatternCountsResponse: {
+            /**
+             * @description Per-kind counts, ordered by kind. Only kinds that fired at least once in
+             *     the window appear (an idle window yields an empty list — no fabricated
+             *     activity).
+             */
+            counts: components["schemas"]["PatternCount"][];
+            /**
+             * Format: int64
+             * @description Total `secret_detected` alerts counted across all kinds in the window.
+             */
+            total_hits: number;
+            /**
+             * Format: int64
+             * @description Length of the aggregation window in seconds.
+             */
+            window_seconds: number;
+        };
         /** @description Per-scope contribution to an agent's effective permissions. */
         PermissionSourceResponse: {
             /** @description Capability identifiers this scope explicitly allows. */
@@ -4008,6 +4118,51 @@ export interface components {
          * @enum {string}
          */
         PolicyStatus: "active" | "proposed" | "archived";
+        /**
+         * @description Response for `GET /api/v1/scrub/posture`.
+         *
+         *     The v1 leak-posture figure is the count of distinct outbound payloads that
+         *     the gateway's credential scanner **caught and redacted** in the window —
+         *     i.e. the number of `secret_detected` alerts. This is a real, defensible
+         *     "leaks intercepted" figure derived entirely from persisted alerts.
+         *
+         *     A *leak-rate* (leaks caught ÷ payloads scanned) is deliberately **not**
+         *     reported: the alert store persists only the detections, not the denominator
+         *     of total payloads scanned, so a rate could not be computed without inventing
+         *     the denominator. When that denominator is unavailable the rate fields are
+         *     surfaced as explicitly absent (`leak_rate: null`, `rate_computed: false`)
+         *     rather than fabricated.
+         */
+        PostureResponse: {
+            /**
+             * Format: int64
+             * @description Number of distinct credential kinds observed leaking in the window.
+             */
+            distinct_kinds: number;
+            /**
+             * Format: double
+             * @description Fraction of scanned payloads that contained a leak, or `null` when it is
+             *     not computable from the available state (see the type doc). Never
+             *     fabricated.
+             */
+            leak_rate?: number | null;
+            /**
+             * Format: int64
+             * @description Number of outbound payloads that were caught and redacted in the window
+             *     (count of `secret_detected` alerts). Always a real figure.
+             */
+            leaks_intercepted: number;
+            /**
+             * @description Whether [`leak_rate`](Self::leak_rate) was computable. `false` today
+             *     because the total-payloads-scanned denominator is not persisted.
+             */
+            rate_computed: boolean;
+            /**
+             * Format: int64
+             * @description Length of the posture window in seconds.
+             */
+            window_seconds: number;
+        };
         /**
          * @description RFC 7807 Problem Details JSON body.
          * @example {
@@ -4426,6 +4581,39 @@ export interface components {
          * @enum {string}
          */
         Scope: "read" | "write" | "admin";
+        /** @description Response for `GET /api/v1/scrub/patterns`. */
+        ScrubCatalogueResponse: {
+            /** @description Every built-in detector, in the scanner's stable declaration order. */
+            patterns: components["schemas"]["ScrubPattern"][];
+            /** @description Total number of built-in detectors (equals `patterns.len()`). */
+            total: number;
+        };
+        /** @description One entry in the effective pattern catalogue. */
+        ScrubPattern: {
+            /**
+             * @description Whether this is a built-in detector (always `true` here — custom
+             *     policy-defined patterns are not yet exposed through this endpoint; see
+             *     the AAASM-5174 follow-up notes).
+             */
+            builtin: boolean;
+            /**
+             * @description Coarse detector family: `api_key` | `cloud_credential` | `auth_token` |
+             *     `database_url` | `private_key` | `pii` | `generic`.
+             */
+            category: string;
+            /**
+             * @description Canonical detector kind label, e.g. `"AwsAccessKey"`. Stable identifier
+             *     and the value that appears in the `[REDACTED:<kind>]` replacement.
+             */
+            kind: string;
+            /**
+             * @description The exact replacement string this detector emits when it redacts a
+             *     match, e.g. `"[REDACTED:AwsAccessKey]"`.
+             */
+            redaction_label: string;
+            /** @description Fixed leak severity: `critical` | `high` | `medium` | `low`. */
+            severity: string;
+        };
         /** @description A single time-series point: `t` is epoch milliseconds, `value` the count. */
         SeriesPoint: {
             /**
@@ -8010,6 +8198,101 @@ export interface operations {
             };
             /** @description Caller lacks admin scope or membership in this team */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_pattern_counts: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Time range preset (`24h`, `7d`, `30d`, `90d`) or custom
+                 *     `YYYY-MM-DD..YYYY-MM-DD`. Defaults to `7d`. Matches the analytics
+                 *     routes' range grammar.
+                 */
+                range?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-pattern-kind detection counts over the window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PatternCountsResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_patterns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective built-in pattern catalogue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScrubCatalogueResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_posture: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Time range preset (`24h`, `7d`, `30d`, `90d`) or custom
+                 *     `YYYY-MM-DD..YYYY-MM-DD`. Defaults to `7d`. Matches the analytics
+                 *     routes' range grammar.
+                 */
+                range?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Leak posture over the window (leak rate absent when not derivable) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostureResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
