@@ -14,6 +14,13 @@ use moka::sync::Cache;
 
 use crate::engine::decision::PolicyDecision;
 
+/// A cached cascade verdict: the merged [`PolicyDecision`] plus the content
+/// digest of the deciding policy document (AAASM-5107). The digest is part of
+/// the cached value so a cache hit carries the same document attribution a fresh
+/// evaluation would have produced — the deciding document is fixed for a given
+/// `(agent, epoch, action)` key within one policy epoch.
+pub type CachedVerdict = (PolicyDecision, Option<String>);
+
 /// Stable key identifying one (agent, epoch, action) evaluation result.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CacheKey {
@@ -100,7 +107,7 @@ fn action_discriminant(action: &aa_core::GovernanceAction) -> u64 {
 /// Hit and miss counters are tracked via `AtomicU64` for observability.
 #[derive(Clone)]
 pub struct DecisionCache {
-    inner: Cache<CacheKey, PolicyDecision>,
+    inner: Cache<CacheKey, CachedVerdict>,
     hits: Arc<AtomicU64>,
     misses: Arc<AtomicU64>,
 }
@@ -120,7 +127,7 @@ impl DecisionCache {
     }
 
     /// Look up an existing decision. Increments hit/miss counters.
-    pub fn get(&self, key: &CacheKey) -> Option<PolicyDecision> {
+    pub fn get(&self, key: &CacheKey) -> Option<CachedVerdict> {
         let result = self.inner.get(key);
         if result.is_some() {
             self.hits.fetch_add(1, Ordering::Relaxed);
@@ -132,8 +139,9 @@ impl DecisionCache {
         result
     }
 
-    /// Insert a decision. `PolicyDecision` is `Clone` so callers can keep a copy.
-    pub fn insert(&self, key: CacheKey, value: PolicyDecision) {
+    /// Insert a decision and its deciding-document digest. Both are `Clone` so
+    /// callers can keep a copy.
+    pub fn insert(&self, key: CacheKey, value: CachedVerdict) {
         self.inner.insert(key, value);
     }
 
@@ -180,8 +188,8 @@ mod tests {
     fn cache_hit_after_insert() {
         let cache = DecisionCache::new(128);
         let key = CacheKey::new(&[1u8; 16], 1, &tool_action("bash"));
-        cache.insert(key.clone(), PolicyDecision::Allow);
-        assert_eq!(cache.get(&key), Some(PolicyDecision::Allow));
+        cache.insert(key.clone(), (PolicyDecision::Allow, None));
+        assert_eq!(cache.get(&key), Some((PolicyDecision::Allow, None)));
         assert_eq!(cache.cache_hits(), 1);
         assert_eq!(cache.cache_misses(), 0);
     }
@@ -331,7 +339,7 @@ mod tests {
     fn invalidate_all_evicts_every_entry() {
         let cache = DecisionCache::new(128);
         let key = CacheKey::new(&[1u8; 16], 1, &tool_action("bash"));
-        cache.insert(key.clone(), PolicyDecision::Allow);
+        cache.insert(key.clone(), (PolicyDecision::Allow, None));
         assert!(cache.get(&key).is_some());
         cache.invalidate_all();
         cache.inner.run_pending_tasks();
@@ -342,7 +350,7 @@ mod tests {
     fn invalidate_for_agent_evicts_the_agents_entry() {
         let cache = DecisionCache::new(128);
         let key = CacheKey::new(&[7u8; 16], 1, &tool_action("deploy"));
-        cache.insert(key.clone(), PolicyDecision::Allow);
+        cache.insert(key.clone(), (PolicyDecision::Allow, None));
         assert!(cache.get(&key).is_some());
         cache.invalidate_for_agent(&[7u8; 16]);
         cache.inner.run_pending_tasks();

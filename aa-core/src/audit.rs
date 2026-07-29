@@ -265,6 +265,15 @@ pub struct AuditEntry {
     #[cfg(feature = "std")]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     redacted_payload: Option<String>,
+    /// AAASM-5107 — content digest (`"sha256:<hex>"`) of the policy document that
+    /// produced this decision. `None` for entries not emitted from a cascade
+    /// policy decision (e.g. lifecycle / approval-routing events, or the
+    /// primary-policy path that carries no cascade document). Appended last in
+    /// the hash input and contributing zero bytes when `None`, so entries
+    /// without it hash identically to pre-AAASM-5107 output and existing chains
+    /// keep verifying.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    policy_doc_id: Option<String>,
 }
 
 impl AuditEntry {
@@ -319,6 +328,7 @@ impl AuditEntry {
             &Lineage::default(),
             #[cfg(feature = "std")]
             &Redaction::default(),
+            None,
         );
         Self {
             seq,
@@ -340,6 +350,7 @@ impl AuditEntry {
             credential_findings: alloc::vec::Vec::new(),
             #[cfg(feature = "std")]
             redacted_payload: None,
+            policy_doc_id: None,
         }
     }
 
@@ -371,6 +382,7 @@ impl AuditEntry {
             &lineage,
             #[cfg(feature = "std")]
             &Redaction::default(),
+            None,
         );
         Self {
             seq,
@@ -392,6 +404,7 @@ impl AuditEntry {
             credential_findings: alloc::vec::Vec::new(),
             #[cfg(feature = "std")]
             redacted_payload: None,
+            policy_doc_id: None,
         }
     }
 
@@ -419,6 +432,46 @@ impl AuditEntry {
         lineage: Lineage,
         redaction: Redaction,
     ) -> Self {
+        Self::new_with_lineage_redaction_and_attribution(
+            seq,
+            timestamp_ns,
+            event_type,
+            agent_id,
+            session_id,
+            payload,
+            previous_hash,
+            lineage,
+            redaction,
+            None,
+        )
+    }
+
+    /// Create a new [`AuditEntry`] carrying lineage, credential-scanner output,
+    /// **and** the deciding policy document's content digest (`policy_doc_id`),
+    /// computing `entry_hash` over all tamper-meaningful fields (AAASM-5107).
+    ///
+    /// When `policy_doc_id == None`, the resulting `entry_hash` is identical to
+    /// [`AuditEntry::new_with_lineage_and_redaction`] with the same base fields —
+    /// the digest contributes zero bytes to the hash — so existing chains on disk
+    /// verify unchanged. The digest is a decision-attribution attribute derived
+    /// independently of this chain hash and never weakens it.
+    ///
+    /// Gated on `std` because [`Redaction`] holds
+    /// [`CredentialFinding`](aa_security::CredentialFinding) values.
+    #[cfg(feature = "std")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_lineage_redaction_and_attribution(
+        seq: u64,
+        timestamp_ns: u64,
+        event_type: AuditEventType,
+        agent_id: AgentId,
+        session_id: SessionId,
+        payload: String,
+        previous_hash: [u8; 32],
+        lineage: Lineage,
+        redaction: Redaction,
+        policy_doc_id: Option<String>,
+    ) -> Self {
         let entry_hash = Self::compute_hash(
             seq,
             timestamp_ns,
@@ -429,6 +482,7 @@ impl AuditEntry {
             &payload,
             &lineage,
             &redaction,
+            policy_doc_id.as_deref(),
         );
         Self {
             seq,
@@ -448,6 +502,7 @@ impl AuditEntry {
             depth: lineage.depth,
             credential_findings: redaction.credential_findings,
             redacted_payload: redaction.redacted_payload,
+            policy_doc_id,
         }
     }
 
@@ -569,6 +624,15 @@ impl AuditEntry {
         self.redacted_payload.as_deref()
     }
 
+    /// AAASM-5107 — content digest (`"sha256:<hex>"`) of the policy document that
+    /// produced the decision this entry records, if it was emitted from a
+    /// cascade policy decision. `None` otherwise. This is the stable, version-
+    /// distinguishing identity a per-document 24h hit count is keyed on.
+    #[inline]
+    pub fn policy_doc_id(&self) -> Option<&str> {
+        self.policy_doc_id.as_deref()
+    }
+
     // -----------------------------------------------------------------------
     // Integrity
     // -----------------------------------------------------------------------
@@ -604,6 +668,7 @@ impl AuditEntry {
             &lineage,
             #[cfg(feature = "std")]
             &redaction,
+            self.policy_doc_id.as_deref(),
         );
         expected == self.entry_hash
     }
@@ -631,6 +696,7 @@ impl AuditEntry {
         payload: &str,
         lineage: &Lineage,
         #[cfg(feature = "std")] redaction: &Redaction,
+        policy_doc_id: Option<&str>,
     ) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(seq.to_be_bytes());
@@ -688,6 +754,14 @@ impl AuditEntry {
                     hasher.update([0u8]);
                 }
             }
+        }
+        // AAASM-5107 — policy_doc_id appended last so that entries with
+        // policy_doc_id=None hash identically to pre-AAASM-5107 output and the
+        // existing audit chain on disk keeps verifying. Length-prefixed so it is
+        // unambiguous against whatever follows in a future revision.
+        if let Some(s) = policy_doc_id {
+            hasher.update((s.len() as u32).to_be_bytes());
+            hasher.update(s.as_bytes());
         }
         hasher.finalize().into()
     }
@@ -1864,6 +1938,150 @@ mod redaction_tests {
             entry.verify_integrity(),
             "verify_integrity must pass on a freshly constructed redacted entry",
         );
+    }
+
+    // --- policy_doc_id attribution (AAASM-5107) ---
+
+    #[test]
+    fn attribution_default_none_preserves_legacy_hash() {
+        // new_with_lineage_and_redaction(..) and
+        // new_with_lineage_redaction_and_attribution(.., None) must produce an
+        // identical entry_hash for the same base fields, so an entry carrying no
+        // policy_doc_id hashes exactly as it did pre-AAASM-5107 and the audit
+        // chain on disk keeps verifying.
+        let payload = String::from(r#"{"tool":"bash"}"#);
+        let legacy = AuditEntry::new_with_lineage_and_redaction(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            payload.clone(),
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+        );
+        let with_none = AuditEntry::new_with_lineage_redaction_and_attribution(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            payload,
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+            None,
+        );
+        assert_eq!(
+            legacy.entry_hash(),
+            with_none.entry_hash(),
+            "policy_doc_id=None must contribute 0 bytes to the hash",
+        );
+        assert!(with_none.policy_doc_id().is_none());
+    }
+
+    #[test]
+    fn attribution_present_changes_hash_and_is_stored() {
+        let base = || (0u64, 1_700_000_000_000_000_000u64, AuditEventType::PolicyViolation);
+        let (seq, ts, et) = base();
+        let no_id = AuditEntry::new_with_lineage_redaction_and_attribution(
+            seq,
+            ts,
+            et,
+            AGENT,
+            SESSION,
+            "{}".into(),
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+            None,
+        );
+        let with_id = AuditEntry::new_with_lineage_redaction_and_attribution(
+            seq,
+            ts,
+            et,
+            AGENT,
+            SESSION,
+            "{}".into(),
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+            Some("sha256:abc123".to_string()),
+        );
+        assert_ne!(
+            no_id.entry_hash(),
+            with_id.entry_hash(),
+            "a present policy_doc_id must be committed to the hash",
+        );
+        assert_eq!(with_id.policy_doc_id(), Some("sha256:abc123"));
+        assert!(with_id.verify_integrity(), "entry with attribution must self-verify");
+    }
+
+    #[test]
+    fn attribution_distinguishes_two_document_versions_at_audit_level() {
+        // Two audit entries identical except for the deciding document's digest
+        // must be distinct records — this is what lets a per-document 24h count
+        // separate two versions of the same (scope, name).
+        let build = |doc_id: &str| {
+            AuditEntry::new_with_lineage_redaction_and_attribution(
+                0,
+                1_700_000_000_000_000_000,
+                AuditEventType::PolicyViolation,
+                AGENT,
+                SESSION,
+                "{}".into(),
+                [0u8; 32],
+                Lineage::default(),
+                Redaction::default(),
+                Some(doc_id.to_string()),
+            )
+        };
+        let v1 = build("sha256:1111");
+        let v2 = build("sha256:2222");
+        assert_ne!(v1.policy_doc_id(), v2.policy_doc_id());
+        assert_ne!(v1.entry_hash(), v2.entry_hash());
+    }
+
+    #[test]
+    fn attribution_survives_serde_round_trip() {
+        let entry = AuditEntry::new_with_lineage_redaction_and_attribution(
+            0,
+            1_000,
+            AuditEventType::PolicyViolation,
+            AGENT,
+            SESSION,
+            "{}".into(),
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+            Some("sha256:deadbeef".to_string()),
+        );
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("policy_doc_id"), "present id must serialize");
+        let restored: AuditEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.policy_doc_id(), Some("sha256:deadbeef"));
+        assert!(restored.verify_integrity());
+    }
+
+    #[test]
+    fn legacy_jsonl_without_policy_doc_id_deserialises_and_verifies() {
+        // An entry written before AAASM-5107 carries no policy_doc_id key; it
+        // must deserialize (field defaults to None) and still verify.
+        let pre = AuditEntry::new(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            r#"{"tool":"bash"}"#.into(),
+            [0u8; 32],
+        );
+        let json = serde_json::to_string(&pre).unwrap();
+        assert!(!json.contains("policy_doc_id"), "None must not appear in JSON");
+        let restored: AuditEntry = serde_json::from_str(&json).unwrap();
+        assert!(restored.policy_doc_id().is_none());
+        assert!(restored.verify_integrity());
     }
 
     #[test]

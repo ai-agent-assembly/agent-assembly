@@ -15,6 +15,7 @@
 
 pub(crate) mod canonical;
 pub(crate) mod context;
+pub mod digest;
 pub mod document;
 pub mod error;
 pub(crate) mod expr;

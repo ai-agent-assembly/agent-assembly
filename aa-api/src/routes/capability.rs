@@ -201,7 +201,10 @@ pub struct MatrixQueryParams {
 /// agents and resources exist at this instant.
 async fn projected_matrix(state: &AppState) -> CapabilityMatrix {
     let records = state.agent_registry.list();
-    let mut matrix = project_matrix(&records, state);
+    // AAASM-5107 — per-document 24h decision counts, read once per request and
+    // handed to the (sync) projection so each policy row can carry `hits24h`.
+    let hits = crate::routes::policy_hits::PolicyHitCounts::from_window(&state.audit_reader).await;
+    let mut matrix = project_matrix(&records, state, &hits);
     state.capability_store.apply_overlay(&mut matrix).await;
     matrix
 }
@@ -663,7 +666,11 @@ fn collect_policy_rows(
 /// fallback no longer fires in the shipped composition root — this projection
 /// keeps the explicit lineage anyway so it stays correct under any engine,
 /// registry-wired or not.
-fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppState) -> CapabilityMatrix {
+fn project_matrix(
+    records: &[aa_gateway::registry::AgentRecord],
+    state: &AppState,
+    hits: &crate::routes::policy_hits::PolicyHitCounts,
+) -> CapabilityMatrix {
     use aa_core::Capability as C;
 
     // Resource columns: the three system families, then every tool any visible
@@ -800,7 +807,10 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
                 // definition the active one for its scope. `Proposed` /
                 // `Archived` have no representation in the loaded engine.
                 status: PolicyStatus::Active,
-                hits_24h: None,
+                // AAASM-5107 — join this document's content digest against the
+                // per-document 24h decision counts. Absent (never 0) when the
+                // document recorded no decision in the window.
+                hits_24h: hits.count(&doc.content_digest()),
                 affects,
                 rules: project_rules(&doc),
             }
@@ -1074,7 +1084,9 @@ mod tests {
         // No enforcement_mode override was declared.
         assert!(agent.mode.is_none());
         for policy in &m.policies {
-            assert!(policy.hits_24h.is_none(), "24h hit counts have no source here");
+            // AAASM-5107 sources hits24h from the 24h audit window; this fixture
+            // seeds no decisions, so every document is absent (never a faked 0).
+            assert!(policy.hits_24h.is_none(), "no seeded decisions → hits24h absent, not 0");
         }
         let json = serde_json::to_value(agent).unwrap();
         // AAASM-5104 — `trust` is required-but-nullable: the key is always on the

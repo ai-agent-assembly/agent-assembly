@@ -83,6 +83,14 @@ impl DocSet {
     fn version(&self) -> Option<String> {
         self.unique().and_then(|doc| doc.policy_version.clone())
     }
+
+    /// AAASM-5107 — content digest of the unambiguous document under this key,
+    /// the identity a per-document hit count joins on. Absent when the key is
+    /// shared by two distinct live documents (nothing "the" document could be
+    /// counted for).
+    fn digest(&self) -> Option<String> {
+        self.unique().map(|doc| doc.content_digest())
+    }
 }
 
 /// Which agents a cascade-carried policy document is in force for, together with
@@ -228,20 +236,21 @@ pub struct PolicyResponse {
     /// which is a different and stronger claim than "not currently loaded".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub affects: Option<Vec<String>>,
-    /// Number of times this policy fired in the last 24 hours.
+    /// Number of times this policy document fired in the last 24 hours.
     ///
-    /// **Always absent.** Nothing on the audit write path records which policy
-    /// document produced a decision: `AuditEntry` has no policy field, and the
-    /// payload's `policy_rule` is the free-text deny *reason*
-    /// (`aa_gateway::service::policy_service::evaluate_one`), empty on every
-    /// allow. `aa_gateway::engine::decision::PolicyDecision::Deny` does carry a
-    /// `source_scope`, but `into_policy_result` drops it before the audit write —
-    /// and it is scope-granular, not document-granular, so it could not name a
-    /// document even if it survived. Capturing the deciding document at decision
-    /// time is enforcement-boundary work owned by AAASM-5107; until it lands this
-    /// is reported absent rather than as a `0` that would be indistinguishable
-    /// from "fired zero times". The same field is absent for the same reason on
-    /// the capability matrix's `Policy`.
+    /// Sourced (AAASM-5107) by joining this row's document content digest against
+    /// the per-document decision counts tallied from the last-24h audit window —
+    /// each policy decision now records the deciding document's digest on its
+    /// audit entry (`AuditEntry::policy_doc_id`, stamped at the enforcement
+    /// boundary from `PolicyDocument::content_digest`). The digest distinguishes
+    /// two versions of the same `(scope, name)` pair.
+    ///
+    /// **Absent, never `0`.** A document that recorded no decision in the window,
+    /// a row whose snapshot cannot be parsed to a digest, or a key shared by two
+    /// distinct live documents (no single "the" document to count) all report
+    /// absent — preserving the absent-vs-"fired zero times" distinction
+    /// AAASM-5096 established. The same sourcing applies to the capability
+    /// matrix's `Policy.hits24h`.
     #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
     pub hits_24h: Option<u64>,
 }
@@ -329,6 +338,10 @@ pub async fn list_policies(
     // Resolved once per request, not per row: the walk is O(visible agents) and
     // every row looks its document up in the same map.
     let reach = policy_reach(&state, &caller);
+    // AAASM-5107 — per-document 24h decision counts, read once per request. A row
+    // whose parsed document fired at least once carries `hits24h`; one that did
+    // not stays absent (never 0) — see [`crate::routes::policy_hits`].
+    let hits = crate::routes::policy_hits::PolicyHitCounts::from_window(&state.audit_reader).await;
 
     let mut items: Vec<PolicyResponse> = Vec::with_capacity(paged.len());
     for (i, meta) in paged.into_iter().enumerate() {
@@ -341,13 +354,18 @@ pub async fn list_policies(
             .await
             .map(|snap| snap.yaml_content)
             .unwrap_or_default();
+        // The deciding-document digest is the content digest of the parsed
+        // snapshot — the same identity the gateway stamps on the audit write, so
+        // this joins to the recorded hits even across two versions of one
+        // (scope, name). An unreadable snapshot yields no digest → absent.
+        let hits_24h = document_from_yaml(&yaml).and_then(|doc| hits.count(&doc.content_digest()));
         items.push(PolicyResponse {
             name: meta.sha256[..12].to_string(),
             version: meta.timestamp,
             active: i == 0 && params.page() == 1,
             rule_count: 0,
             affects: affects_for(&yaml, &reach),
-            hits_24h: None,
+            hits_24h,
             policy_yaml: yaml,
         });
     }
@@ -594,8 +612,10 @@ pub struct TeamPolicyResponse {
     /// that declares none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Number of times this policy fired in the last 24 hours. **Always absent**
-    /// — see [`PolicyResponse::hits_24h`] for why no source exists.
+    /// Number of times this policy document fired in the last 24 hours. Sourced
+    /// from per-document decision counts (AAASM-5107); absent, never `0`, when
+    /// the document recorded no decision in the window — see
+    /// [`PolicyResponse::hits_24h`] for the full sourcing and absent-vs-zero rule.
     #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
     pub hits_24h: Option<u64>,
 }
@@ -676,6 +696,9 @@ pub async fn list_team_policies(
 
     let (by_key, visible_members) = team_cascade(&state, &caller, &team_id);
 
+    // AAASM-5107 — per-document 24h decision counts, read once per request.
+    let hits = crate::routes::policy_hits::PolicyHitCounts::from_window(&state.audit_reader).await;
+
     // Absent, not empty, when the team has agents whose cascade resolved nothing:
     // those agents fall back to the primary policy slot, which this projection
     // cannot enumerate (AAASM-5106). `[]` is reserved for the one case where
@@ -691,7 +714,10 @@ pub async fn list_team_policies(
                     name: key.1.clone().unwrap_or_else(|| key.0.clone()),
                     scope: key.0.clone(),
                     version: docs.version(),
-                    hits_24h: None,
+                    // Only an unambiguous key names one document, so only then can
+                    // a hit count be attributed; a key shared by two distinct live
+                    // documents stays absent rather than summing colliding docs.
+                    hits_24h: docs.digest().and_then(|d| hits.count(&d)),
                 })
                 .collect(),
         )
