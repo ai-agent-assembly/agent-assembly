@@ -373,6 +373,19 @@ export function AuditLogPage() {
                       </td>
                       <td className="audit-session">{e.session_id}</td>
                       <td>
+                        {/* The mock (design/v1/hi-fi/audit-log.jsx:145,197-199)
+                            carries a ▼/▲ disclosure glyph reflecting the row's
+                            expand state; the port dropped it for the View link
+                            alone. Both are restored — the glyph mirrors the
+                            row's click-to-expand, the link is the stable
+                            cross-reference (AAASM-5172). */}
+                        <span
+                          className="audit-expand-glyph"
+                          aria-hidden="true"
+                          data-testid={`audit-expand-glyph-${e.seq}`}
+                        >
+                          {isExp ? '▲' : '▼'}
+                        </span>
                         <Link
                           to={auditEventHref(e.seq)}
                           className="audit-event-link"
