@@ -1113,6 +1113,159 @@ pub async fn get_agent_enforcement(
 }
 
 // ---------------------------------------------------------------------------
+// agent-decision-mix — per-agent allow/narrow/scrub/pending/deny mix (AAASM-5085)
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /api/v1/analytics/agent-decision-mix`.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+pub struct AgentDecisionMixParams {
+    /// Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+    /// `24h` — the window the Agent-Detail "traffic mix · last 24h" card shows;
+    /// any unrecognised value also falls back to `24h`.
+    pub window: Option<String>,
+}
+
+/// One agent's decision-outcome distribution over the requested window.
+///
+/// The five fields are the Agent-Detail traffic-mix vocabulary
+/// (`allowed / narrowed / scrubbed / pending / denied`, see
+/// `dashboard/src/features/trace/decision.ts`). Four are sourced from the audit
+/// log's recorded decision event types; `narrow` has no audit source and is
+/// always `0` (see [`get_agent_decision_mix`]).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AgentDecisionMixCounts {
+    /// Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+    /// uses, so the dashboard can join this mix directly onto its fleet/agent rows.
+    pub agent_id: String,
+    /// Allowed decisions: `ToolCallIntercepted` audit events (the gateway records
+    /// proto `Decision::ALLOW` as this event type).
+    pub allow: u64,
+    /// Narrowed decisions. **No audit source exists**: the proto `Decision` enum
+    /// has no `NARROW` variant and the gateway never writes a narrow event type
+    /// (narrowing is a capability-plane concept, not a per-invocation audit
+    /// decision), so this is always `0` — a truthful absence rather than a
+    /// fabricated count.
+    pub narrow: u64,
+    /// Scrubbed decisions: `CredentialLeakBlocked` audit events (the gateway
+    /// records proto `Decision::REDACT` as this event type).
+    pub scrub: u64,
+    /// Pending decisions: `ApprovalRequested` audit events (the gateway records
+    /// proto `Decision::PENDING` as this event type).
+    pub pending: u64,
+    /// Denied decisions: `PolicyViolation` audit events (the gateway records
+    /// proto `Decision::DENY` as this event type).
+    pub deny: u64,
+}
+
+/// The decision-mix buckets that have an audit source.
+///
+/// A dedicated enum rather than reusing the enforcement-timeline [`Verdict`]:
+/// that type labels `ApprovalRequested` as `Narrow`, but in the decision-mix
+/// vocabulary `ApprovalRequested` is the **pending** (held-for-approval) lane
+/// and `narrow` is a separate, unsourced bucket — so a shared enum would
+/// mislabel the pending count. There is no `Narrow` member here because no
+/// audit event maps to it (see [`AgentDecisionMixCounts::narrow`]).
+enum MixBucket {
+    Allow,
+    Scrub,
+    Pending,
+    Deny,
+}
+
+/// Map an audit event type onto the decision-mix bucket it contributes to, or
+/// `None` for event types the mix does not track.
+///
+/// Mirrors the gateway write path `decision_to_event_type_from_response`
+/// (`aa-gateway/src/service/policy_service.rs`), which records each proto
+/// `Decision` as a distinct [`AuditEventType`]: `Allow→ToolCallIntercepted`,
+/// `Pending→ApprovalRequested`, `Deny→PolicyViolation`,
+/// `Redact→CredentialLeakBlocked`. Counting those four discriminants
+/// reconstructs the decision distribution without a new data source. There is
+/// deliberately no `narrow` arm: the proto `Decision` enum has no `NARROW`
+/// variant, so no audit event maps to it (see [`AgentDecisionMixCounts::narrow`]).
+fn decision_mix_bucket(ev: AuditEventType) -> Option<MixBucket> {
+    match ev {
+        AuditEventType::ToolCallIntercepted => Some(MixBucket::Allow),
+        AuditEventType::CredentialLeakBlocked => Some(MixBucket::Scrub),
+        AuditEventType::ApprovalRequested => Some(MixBucket::Pending),
+        AuditEventType::PolicyViolation => Some(MixBucket::Deny),
+        _ => None,
+    }
+}
+
+/// `GET /api/v1/analytics/agent-decision-mix` — per-agent decision distribution.
+///
+/// Aggregates the existing audit log over the requested window, grouping by
+/// agent id and tallying each recorded decision into the Agent-Detail
+/// traffic-mix buckets `allow` / `narrow` / `scrub` / `pending` / `deny` (the
+/// vocabulary in `dashboard/src/features/trace/decision.ts`). The audit
+/// event-type → bucket mapping is [`decision_mix_bucket`], identical to the
+/// gateway's own decision write path (`decision_to_event_type_from_response`)
+/// and to the enforcement timeline (AAASM-5031): read-only observability over
+/// data the API already holds — no enforcement or audit-write path is touched.
+///
+/// **Truthfulness.** Only the four proto `Decision` outcomes the gateway records
+/// are populated. `narrow` is always `0`: the proto `Decision` enum has no
+/// `NARROW` variant, so no audit event can be attributed to it, and inventing a
+/// count would fabricate governance activity that never happened. Agents with no
+/// tracked decision in the window are omitted entirely (the dashboard renders an
+/// empty state rather than a synthetic all-zero row). Confined to the caller's
+/// tenant via [`fetch_window_entries`] and bounded by [`MAX_ANALYTICS_AUDIT_EVENTS`],
+/// matching the sibling per-agent route (`agent-enforcement`, AAASM-5084).
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/agent-decision-mix",
+    params(AgentDecisionMixParams),
+    responses(
+        (status = 200, description = "Per-agent allow/narrow/scrub/pending/deny decision distribution over the window", body = Vec<AgentDecisionMixCounts>),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_agent_decision_mix(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Query(params): Query<AgentDecisionMixParams>,
+) -> (StatusCode, Json<Vec<AgentDecisionMixCounts>>) {
+    let (_, window_secs) = resolve_window(params.window.as_deref());
+    let now = now_ns();
+    let since = now.saturating_sub(window_secs.saturating_mul(1_000_000_000));
+
+    let entries = fetch_window_entries(&caller, &state, since).await;
+
+    // agent id bytes -> (allow, scrub, pending, deny). BTreeMap keeps the output
+    // ordered by agent id so the response is deterministic across requests.
+    // `narrow` has no audit source, so it is not tracked here and always emits 0.
+    let mut by_agent: BTreeMap<[u8; 16], (u64, u64, u64, u64)> = BTreeMap::new();
+    for e in &entries {
+        let Some(bucket) = decision_mix_bucket(e.event_type()) else {
+            continue;
+        };
+        let slot = by_agent.entry(*e.agent_id().as_bytes()).or_insert((0, 0, 0, 0));
+        match bucket {
+            MixBucket::Allow => slot.0 += 1,
+            MixBucket::Scrub => slot.1 += 1,
+            MixBucket::Pending => slot.2 += 1,
+            MixBucket::Deny => slot.3 += 1,
+        }
+    }
+
+    let agents: Vec<AgentDecisionMixCounts> = by_agent
+        .into_iter()
+        .map(|(bytes, (allow, scrub, pending, deny))| AgentDecisionMixCounts {
+            agent_id: format_id(&bytes),
+            allow,
+            narrow: 0,
+            scrub,
+            pending,
+            deny,
+        })
+        .collect();
+
+    (StatusCode::OK, Json(agents))
+}
+
+// ---------------------------------------------------------------------------
 // enforcement-timeline — windowed decision counts by verdict (AAASM-5031)
 // ---------------------------------------------------------------------------
 
