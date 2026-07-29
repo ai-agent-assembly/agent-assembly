@@ -1016,6 +1016,17 @@ mod tests {
         }
     }
 
+    /// Submit a fresh 60s pending request and return its id — the submit
+    /// boilerplate the decide/forward/conditions tests would otherwise repeat
+    /// (AAASM-5095). The returned future is dropped; these tests inspect queue
+    /// state rather than await the caller side.
+    fn submit_pending(q: &Arc<ApprovalQueue>) -> ApprovalRequestId {
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+        id
+    }
+
     // --- routing metadata (record_routing / update_routing_status) ---
 
     #[tokio::test]
@@ -1119,9 +1130,7 @@ mod tests {
     #[tokio::test]
     async fn forward_reassigns_pending_request_and_keeps_it_pending() {
         let q = ApprovalQueue::new();
-        let req = make_request(60);
-        let id = req.request_id;
-        let (_rid, _fut) = q.submit(req);
+        let id = submit_pending(&q);
 
         // Establish an initial target role so the forward records a from_role.
         assert!(q.record_routing(id, "routed".to_string(), Some("oncall".to_string()), None, None, None,));
@@ -1149,9 +1158,7 @@ mod tests {
         assert!(!q.forward(Uuid::new_v4(), "manager"));
 
         // Resolved id.
-        let req = make_request(60);
-        let id = req.request_id;
-        let (_rid, _fut) = q.submit(req);
+        let id = submit_pending(&q);
         q.decide(
             id,
             ApprovalDecision::Approved {
@@ -1172,9 +1179,7 @@ mod tests {
     #[tokio::test]
     async fn approve_with_conditions_carries_conditions_into_resolved_record() {
         let q = ApprovalQueue::new();
-        let req = make_request(60);
-        let id = req.request_id;
-        let (_rid, _fut) = q.submit(req);
+        let id = submit_pending(&q);
 
         q.decide(
             id,
@@ -1198,12 +1203,8 @@ mod tests {
     #[tokio::test]
     async fn rejected_and_unconditional_approval_have_empty_conditions() {
         let q = ApprovalQueue::new();
-        let approved = make_request(60);
-        let approved_id = approved.request_id;
-        let rejected = make_request(60);
-        let rejected_id = rejected.request_id;
-        let (_a, _fa) = q.submit(approved);
-        let (_r, _fr) = q.submit(rejected);
+        let approved_id = submit_pending(&q);
+        let rejected_id = submit_pending(&q);
 
         q.decide(
             approved_id,
