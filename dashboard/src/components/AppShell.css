@@ -161,7 +161,7 @@
   padding: 0.0625rem 0.3125rem;
   border-radius: 0.125rem;
   background: var(--danger);
-  color: #fff;
+  color: var(--paper-2);
 }
 
 .appshell__nav-badge--absent {
