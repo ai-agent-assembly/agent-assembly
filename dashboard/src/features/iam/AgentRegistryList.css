@@ -28,11 +28,13 @@
 }
 
 .iam-agent-list__row--selected {
-  background: rgba(37, 99, 235, 0.08);
+  background: var(--shell-surface-subtle);
+  box-shadow: inset 3px 0 0 0 var(--button-primary-bg);
 }
 
 .iam-agent-list__row--selected:hover {
-  background: rgba(37, 99, 235, 0.12);
+  background: var(--shell-surface-muted);
+  box-shadow: inset 3px 0 0 0 var(--button-primary-bg);
 }
 
 .iam-agent-list__loading,
