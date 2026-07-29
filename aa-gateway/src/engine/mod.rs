@@ -305,6 +305,8 @@ struct ParsedCascade {
     budget_tz: chrono_tz::Tz,
     daily_limit: Option<rust_decimal::Decimal>,
     monthly_limit: Option<rust_decimal::Decimal>,
+    team_daily_limit: Option<rust_decimal::Decimal>,
+    team_monthly_limit: Option<rust_decimal::Decimal>,
     org_daily_limit: Option<rust_decimal::Decimal>,
     org_monthly_limit: Option<rust_decimal::Decimal>,
 }
@@ -361,6 +363,19 @@ impl PolicyEngine {
             .as_ref()
             .and_then(|bp| bp.monthly_limit_usd)
             .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+        // AAASM-5087 — Lift team-tier limits from BudgetPolicy into the tracker.
+        let team_daily_limit = output
+            .document
+            .budget
+            .as_ref()
+            .and_then(|bp| bp.team_daily_limit_usd)
+            .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+        let team_monthly_limit = output
+            .document
+            .budget
+            .as_ref()
+            .and_then(|bp| bp.team_monthly_limit_usd)
+            .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
         // AAASM-2022 — Lift org-tier limits from BudgetPolicy into the tracker.
         let org_daily_limit = output
             .document
@@ -381,6 +396,12 @@ impl PolicyEngine {
             budget_tz,
             budget_alert_tx,
         );
+        if let Some(limit) = team_daily_limit {
+            budget_tracker = budget_tracker.with_team_daily_limit(limit);
+        }
+        if let Some(limit) = team_monthly_limit {
+            budget_tracker = budget_tracker.with_team_monthly_limit(limit);
+        }
         if let Some(limit) = org_daily_limit {
             budget_tracker = budget_tracker.with_org_daily_limit(limit);
         }
@@ -468,6 +489,12 @@ impl PolicyEngine {
             parsed.budget_tz,
             budget_alert_tx,
         );
+        if let Some(limit) = parsed.team_daily_limit {
+            budget_tracker = budget_tracker.with_team_daily_limit(limit);
+        }
+        if let Some(limit) = parsed.team_monthly_limit {
+            budget_tracker = budget_tracker.with_team_monthly_limit(limit);
+        }
         if let Some(limit) = parsed.org_daily_limit {
             budget_tracker = budget_tracker.with_org_daily_limit(limit);
         }
@@ -539,6 +566,9 @@ impl PolicyEngine {
         let mut budget_tz = chrono_tz::UTC;
         let mut daily_limit: Option<rust_decimal::Decimal> = None;
         let mut monthly_limit: Option<rust_decimal::Decimal> = None;
+        // AAASM-5087 — Team-tier limits from the Global-scoped doc.
+        let mut team_daily_limit: Option<rust_decimal::Decimal> = None;
+        let mut team_monthly_limit: Option<rust_decimal::Decimal> = None;
         // AAASM-2022 — Org-tier limits from the Global-scoped doc.
         let mut org_daily_limit: Option<rust_decimal::Decimal> = None;
         let mut org_monthly_limit: Option<rust_decimal::Decimal> = None;
@@ -586,6 +616,16 @@ impl PolicyEngine {
                     .as_ref()
                     .and_then(|bp| bp.monthly_limit_usd)
                     .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+                team_daily_limit = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.team_daily_limit_usd)
+                    .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+                team_monthly_limit = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.team_monthly_limit_usd)
+                    .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
                 org_daily_limit = doc
                     .budget
                     .as_ref()
@@ -609,6 +649,8 @@ impl PolicyEngine {
             budget_tz,
             daily_limit,
             monthly_limit,
+            team_daily_limit,
+            team_monthly_limit,
             org_daily_limit,
             org_monthly_limit,
         })
@@ -3055,6 +3097,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3081,6 +3125,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(10.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3116,6 +3162,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3155,6 +3203,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(10.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3208,6 +3258,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: None,
             monthly_limit_usd: Some(5.0),
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3234,6 +3286,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: None,
             monthly_limit_usd: Some(10.0),
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3255,6 +3309,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(2.0),
             monthly_limit_usd: Some(5.0),
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3282,6 +3338,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3308,6 +3366,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3334,6 +3394,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: None,
             monthly_limit_usd: Some(5.0),
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3360,6 +3422,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(10.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3773,6 +3837,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(10.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3797,6 +3863,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
