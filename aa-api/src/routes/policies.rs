@@ -12,9 +12,9 @@ use utoipa::{IntoParams, ToSchema};
 use aa_core::identity::{AgentId, SessionId};
 use aa_core::time::Timestamp;
 use aa_core::{AgentContext, GovernanceAction};
+use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
-use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::{PolicyDocument, PolicyValidator};
 use aa_gateway::registry::AgentRecord;
 use aa_gateway::service::convert::hash_to_16;
@@ -1084,7 +1084,10 @@ fn replayable_actions(entries: &[aa_core::audit::AuditEntry]) -> Vec<ReplayableA
             if detail.get("kind").and_then(|v| v.as_str()) != Some("tool_call") {
                 return None;
             }
-            let tool = detail.get("tool_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
+            let tool = detail
+                .get("tool_name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())?;
             let recorded = recorded_verdict(payload.get("decision").and_then(|v| v.as_i64())?)?;
 
             let ctx = AgentContext {
@@ -1740,7 +1743,10 @@ mod tests {
         assert_eq!(resp.newly_narrowed, 0);
         assert_eq!(resp.regressions, 0);
         assert_eq!(resp.false_positives, 0);
-        assert!(resp.samples.is_empty(), "an empty corpus must yield no fabricated samples");
+        assert!(
+            resp.samples.is_empty(),
+            "an empty corpus must yield no fabricated samples"
+        );
     }
 
     #[test]
@@ -1821,7 +1827,10 @@ mod tests {
         assert_eq!(corpus.len(), 1, "only the well-formed tool-call decision is replayable");
         assert_eq!(corpus[0].tool, "bash");
         assert_eq!(corpus[0].recorded, SimulateVerdict::Allow);
-        assert_eq!(corpus[0].ctx.agent_id, agent, "the reconstructed ctx carries the entry's agent id");
+        assert_eq!(
+            corpus[0].ctx.agent_id, agent,
+            "the reconstructed ctx carries the entry's agent id"
+        );
         assert!(
             matches!(&corpus[0].action, GovernanceAction::ToolCall { name, args } if name == "bash" && args == "{}"),
             "args are not persisted, so replay reconstructs an empty-arg tool call",
