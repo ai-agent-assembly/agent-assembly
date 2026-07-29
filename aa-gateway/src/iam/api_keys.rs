@@ -33,6 +33,11 @@ pub enum ApiKeyScope {
 pub enum ApiKeyStatus {
     Active,
     Revoked,
+    /// AAASM-5177 — the key has passed its `expires_at` instant. This is a
+    /// *computed* display status (see [`ApiKeyEntry::effective_status`]); it is
+    /// never stored — the persisted `status` stays `Active` until an operator
+    /// revokes it, so an expiry that is later extended re-activates cleanly.
+    Expired,
 }
 
 /// One entry in the "Recent activity" timeline shown in the dashboard's
@@ -59,6 +64,11 @@ pub struct ApiKeyEntry {
     pub scopes: Vec<ApiKeyScope>,
     pub status: ApiKeyStatus,
     pub created_at: DateTime<Utc>,
+    /// AAASM-5177 — when the key expires. `None` means it never expires. Once
+    /// this instant passes, [`IamApiKeyStore::list`] reports the key's status as
+    /// `Expired` (see [`ApiKeyEntry::effective_status`]); the enforcing gate for
+    /// *incoming* auth is `aa-auth::api_key::ApiKeyStore::validate_detailed`.
+    pub expires_at: Option<DateTime<Utc>>,
     pub last_used: Option<DateTime<Utc>>,
     /// Operator who owns the key (display only).
     pub owner: String,
@@ -68,6 +78,23 @@ pub struct ApiKeyEntry {
     pub assigned_policies: Vec<String>,
     /// Audit-style activity feed for the IdentityDetailCard.
     pub recent_activity: Vec<RecentActivityEntry>,
+}
+
+impl ApiKeyEntry {
+    /// AAASM-5177 — the status to *display*, folding expiry into the stored
+    /// state. A `Revoked` key stays revoked (revocation wins). An `Active` key
+    /// whose `expires_at` has passed (relative to `now`) displays as `Expired`;
+    /// otherwise the stored status is returned unchanged. The stored `status`
+    /// field is never mutated by this.
+    pub fn effective_status(&self, now: DateTime<Utc>) -> ApiKeyStatus {
+        match self.status {
+            ApiKeyStatus::Revoked => ApiKeyStatus::Revoked,
+            ApiKeyStatus::Active | ApiKeyStatus::Expired => match self.expires_at {
+                Some(exp) if now >= exp => ApiKeyStatus::Expired,
+                _ => ApiKeyStatus::Active,
+            },
+        }
+    }
 }
 
 /// One-shot reveal returned by `generate` and `rotate`. The `secret` field
@@ -109,8 +136,22 @@ impl IamApiKeyStore {
     }
 
     /// Return every entry, sorted by `created_at` descending (newest first).
+    ///
+    /// AAASM-5177 — each returned entry's `status` is projected through
+    /// [`ApiKeyEntry::effective_status`] so a key past its `expires_at` reads as
+    /// `Expired`. The stored records are not mutated; only the returned clones
+    /// carry the computed status.
     pub fn list(&self) -> Vec<ApiKeyEntry> {
-        let mut out: Vec<ApiKeyEntry> = self.keys.iter().map(|e| e.value().clone()).collect();
+        let now = Utc::now();
+        let mut out: Vec<ApiKeyEntry> = self
+            .keys
+            .iter()
+            .map(|e| {
+                let mut entry = e.value().clone();
+                entry.status = entry.effective_status(now);
+                entry
+            })
+            .collect();
         out.sort_by_key(|e| std::cmp::Reverse(e.created_at));
         out
     }
@@ -130,6 +171,7 @@ impl IamApiKeyStore {
             scopes,
             status: ApiKeyStatus::Active,
             created_at: now,
+            expires_at: None,
             last_used: None,
             owner: owner.to_string(),
             role: "service:reader".to_string(),
