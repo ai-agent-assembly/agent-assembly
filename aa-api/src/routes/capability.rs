@@ -26,9 +26,11 @@
 //! is owned by the policy-replay story (AAASM-5094), so those decisions simply
 //! never appear here rather than being approximated.
 //!
-//! Fields with no source in the gateway at all (trust score, over-permission
-//! flags, per-policy 24h hit counts) are emitted as absent — see the field docs
-//! on [`crate::models::capability`] for which story owns each one.
+//! Over-permission flags (`CapabilityAgent.flagged` / `CapCell.flag`) ARE
+//! evaluated here — a structural grant-vs-declared-`RiskTier` comparison per
+//! ADR 0029 (AAASM-5175); see [`over_permission`]. Fields still without a source
+//! (trust score, per-policy 24h hit counts) are emitted as absent — see the field
+//! docs on [`crate::models::capability`] for which story owns each one.
 //!
 //! ## Overrides are a display overlay
 //!
