@@ -367,10 +367,9 @@ pub async fn generate_api_key(
     let expires_at = resolve_expires_at(body.ttl_seconds)?;
 
     let scopes: Vec<GwApiKeyScope> = body.scopes.into_iter().map(Into::into).collect();
-    let generated =
-        state
-            .iam_api_key_store
-            .generate(&body.label, scopes, &policy_auth.caller.key_id, Some(expires_at));
+    let generated = state
+        .iam_api_key_store
+        .generate(&body.label, scopes, &policy_auth.caller.key_id, Some(expires_at));
     Ok((StatusCode::OK, Json(generated.into())))
 }
 
@@ -391,7 +390,7 @@ fn resolve_expires_at(ttl_seconds: Option<u64>) -> Result<chrono::DateTime<chron
         Some(secs) => secs,
     };
     let secs = i64::try_from(ttl).ok();
-    secs.and_then(|s| chrono::Duration::try_seconds(s))
+    secs.and_then(chrono::Duration::try_seconds)
         .and_then(|d| chrono::Utc::now().checked_add_signed(d))
         .ok_or_else(|| {
             IamHandlerError::BadRequest(
