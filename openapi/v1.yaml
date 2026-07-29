@@ -2856,6 +2856,105 @@ paths:
                 $ref: '#/components/schemas/TeamPoliciesResponse'
         '403':
           description: Caller lacks admin scope or membership in this team
+  /api/v1/scrub/pattern-counts:
+    get:
+      tags:
+      - scrub
+      summary: '`GET /api/v1/scrub/pattern-counts` — per-kind detection counts over a window.'
+      description: |-
+        Aggregates the persisted `secret_detected` alerts by their recorded
+        `detected_pattern_type` (the [`CredentialKind`] string) over the requested
+        window. Only kinds that actually fired appear, so an idle window returns an
+        empty list rather than zero-filled fabricated rows. The alert read is
+        bounded by [`MAX_SCRUB_ALERTS`] and confined to the caller's tenant.
+      operationId: get_pattern_counts
+      parameters:
+      - name: range
+        in: query
+        description: |-
+          Time range preset (`24h`, `7d`, `30d`, `90d`) or custom
+          `YYYY-MM-DD..YYYY-MM-DD`. Defaults to `7d`. Matches the analytics
+          routes' range grammar.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Per-pattern-kind detection counts over the window
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatternCountsResponse'
+        '401':
+          description: Missing or invalid credentials
+      security:
+      - bearer_auth: []
+  /api/v1/scrub/patterns:
+    get:
+      tags:
+      - scrub
+      summary: '`GET /api/v1/scrub/patterns` — the effective built-in pattern catalogue.'
+      description: |-
+        Returns every built-in [`CredentialKind`] detector with its canonical kind
+        label, `[REDACTED:<kind>]` replacement string, coarse category, and fixed
+        severity. This is the real detector set the gateway scanner enforces — the
+        dashboard Scrub page can render it directly instead of the static fixtures
+        it used before AAASM-5174.
+
+        Custom policy-defined patterns (`data.sensitive_patterns`) are intentionally
+        **not** listed here: they are per-policy, not built-in, and exposing/managing
+        them is scoped as an AAASM-5174 follow-up. `builtin` is therefore always
+        `true` on the current response.
+      operationId: get_patterns
+      responses:
+        '200':
+          description: Effective built-in pattern catalogue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScrubCatalogueResponse'
+        '401':
+          description: Missing or invalid credentials
+      security:
+      - bearer_auth: []
+  /api/v1/scrub/posture:
+    get:
+      tags:
+      - scrub
+      summary: '`GET /api/v1/scrub/posture` — leak posture over a window.'
+      description: |-
+        Reports `leaks_intercepted` (the count of `secret_detected` alerts in the
+        window) and `distinct_kinds`. A leak *rate* is not derivable — the store
+        does not persist the total-payloads-scanned denominator — so `leak_rate` is
+        surfaced as explicitly absent with `rate_computed: false` rather than
+        fabricated (AAASM-5174 truthfulness requirement). Confined to the caller's
+        tenant and bounded by [`MAX_SCRUB_ALERTS`].
+      operationId: get_posture
+      parameters:
+      - name: range
+        in: query
+        description: |-
+          Time range preset (`24h`, `7d`, `30d`, `90d`) or custom
+          `YYYY-MM-DD..YYYY-MM-DD`. Defaults to `7d`. Matches the analytics
+          routes' range grammar.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: Leak posture over the window (leak rate absent when not derivable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostureResponse'
+        '401':
+          description: Missing or invalid credentials
+      security:
+      - bearer_auth: []
   /api/v1/tools:
     get:
       tags:
@@ -6462,6 +6561,49 @@ components:
           format: int64
           description: Total policy versions across all pages.
           minimum: 0
+    PatternCount:
+      type: object
+      description: A per-kind hit count within the queried window.
+      required:
+      - kind
+      - hits
+      properties:
+        hits:
+          type: integer
+          format: int64
+          description: Number of `secret_detected` alerts of this kind in the window.
+          minimum: 0
+        kind:
+          type: string
+          description: |-
+            Detected credential kind, e.g. `"AwsAccessKey"`. This is the
+            `detected_pattern_type` recorded on each `secret_detected` alert.
+    PatternCountsResponse:
+      type: object
+      description: Response for `GET /api/v1/scrub/pattern-counts`.
+      required:
+      - counts
+      - total_hits
+      - window_seconds
+      properties:
+        counts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PatternCount'
+          description: |-
+            Per-kind counts, ordered by kind. Only kinds that fired at least once in
+            the window appear (an idle window yields an empty list — no fabricated
+            activity).
+        total_hits:
+          type: integer
+          format: int64
+          description: Total `secret_detected` alerts counted across all kinds in the window.
+          minimum: 0
+        window_seconds:
+          type: integer
+          format: int64
+          description: Length of the aggregation window in seconds.
+          minimum: 0
     PermissionSourceResponse:
       type: object
       description: Per-scope contribution to an agent's effective permissions.
@@ -6724,6 +6866,59 @@ components:
       - active
       - proposed
       - archived
+    PostureResponse:
+      type: object
+      description: |-
+        Response for `GET /api/v1/scrub/posture`.
+
+        The v1 leak-posture figure is the count of distinct outbound payloads that
+        the gateway's credential scanner **caught and redacted** in the window —
+        i.e. the number of `secret_detected` alerts. This is a real, defensible
+        "leaks intercepted" figure derived entirely from persisted alerts.
+
+        A *leak-rate* (leaks caught ÷ payloads scanned) is deliberately **not**
+        reported: the alert store persists only the detections, not the denominator
+        of total payloads scanned, so a rate could not be computed without inventing
+        the denominator. When that denominator is unavailable the rate fields are
+        surfaced as explicitly absent (`leak_rate: null`, `rate_computed: false`)
+        rather than fabricated.
+      required:
+      - leaks_intercepted
+      - distinct_kinds
+      - rate_computed
+      - window_seconds
+      properties:
+        distinct_kinds:
+          type: integer
+          format: int64
+          description: Number of distinct credential kinds observed leaking in the window.
+          minimum: 0
+        leak_rate:
+          type:
+          - number
+          - 'null'
+          format: double
+          description: |-
+            Fraction of scanned payloads that contained a leak, or `null` when it is
+            not computable from the available state (see the type doc). Never
+            fabricated.
+        leaks_intercepted:
+          type: integer
+          format: int64
+          description: |-
+            Number of outbound payloads that were caught and redacted in the window
+            (count of `secret_detected` alerts). Always a real figure.
+          minimum: 0
+        rate_computed:
+          type: boolean
+          description: |-
+            Whether [`leak_rate`](Self::leak_rate) was computable. `false` today
+            because the total-payloads-scanned denominator is not persisted.
+        window_seconds:
+          type: integer
+          format: int64
+          description: Length of the posture window in seconds.
+          minimum: 0
     ProblemDetail:
       type: object
       description: RFC 7807 Problem Details JSON body.
@@ -7367,6 +7562,56 @@ components:
       - read
       - write
       - admin
+    ScrubCatalogueResponse:
+      type: object
+      description: Response for `GET /api/v1/scrub/patterns`.
+      required:
+      - patterns
+      - total
+      properties:
+        patterns:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScrubPattern'
+          description: Every built-in detector, in the scanner's stable declaration order.
+        total:
+          type: integer
+          description: Total number of built-in detectors (equals `patterns.len()`).
+          minimum: 0
+    ScrubPattern:
+      type: object
+      description: One entry in the effective pattern catalogue.
+      required:
+      - kind
+      - redaction_label
+      - category
+      - severity
+      - builtin
+      properties:
+        builtin:
+          type: boolean
+          description: |-
+            Whether this is a built-in detector (always `true` here — custom
+            policy-defined patterns are not yet exposed through this endpoint; see
+            the AAASM-5174 follow-up notes).
+        category:
+          type: string
+          description: |-
+            Coarse detector family: `api_key` | `cloud_credential` | `auth_token` |
+            `database_url` | `private_key` | `pii` | `generic`.
+        kind:
+          type: string
+          description: |-
+            Canonical detector kind label, e.g. `"AwsAccessKey"`. Stable identifier
+            and the value that appears in the `[REDACTED:<kind>]` replacement.
+        redaction_label:
+          type: string
+          description: |-
+            The exact replacement string this detector emits when it redacts a
+            match, e.g. `"[REDACTED:AwsAccessKey]"`.
+        severity:
+          type: string
+          description: 'Fixed leak severity: `critical` | `high` | `medium` | `low`.'
     SeriesPoint:
       type: object
       description: 'A single time-series point: `t` is epoch milliseconds, `value` the count.'
@@ -8544,3 +8789,5 @@ tags:
   description: Secret Injection — tool dispatch with placeholder resolution (AAASM-1920)
 - name: tools
   description: Auto-discovered AI dev tools on the gateway host
+- name: scrub
+  description: DLP / secret-scrub — effective pattern catalogue, per-pattern detection counts, and leak posture (AAASM-5174)

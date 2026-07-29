@@ -28,6 +28,7 @@ pub mod ops;
 pub(crate) mod over_permission;
 pub mod policies;
 pub mod policy_hits;
+pub mod scrub;
 pub mod tools;
 pub mod topology;
 pub mod traces;
@@ -216,6 +217,11 @@ fn protected_router() -> Router {
         // Cost observability: 7-day spend history + budget-inheritance tree (AAASM-5032)
         .route("/costs/history", get(analytics::get_cost_history))
         .route("/costs/budget-tree", get(analytics::get_budget_tree))
+        // DLP / secret-scrub read surface (AAASM-5174): effective pattern
+        // catalogue, per-pattern-kind detection counts, and leak posture.
+        .route("/scrub/patterns", get(scrub::get_patterns))
+        .route("/scrub/pattern-counts", get(scrub::get_pattern_counts))
+        .route("/scrub/posture", get(scrub::get_posture))
         // Deny-by-default auth gate over every protected route (AAASM-3125).
         .route_layer(axum::middleware::from_fn(crate::auth::gate::require_authentication))
 }

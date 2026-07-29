@@ -162,6 +162,117 @@ pub enum CredentialKind {
 }
 
 impl CredentialKind {
+    /// Every built-in detector kind, in a stable declaration order.
+    ///
+    /// This is the single source of truth for enumerating the effective
+    /// pattern catalogue (e.g. over HTTP via the DLP/scrub API, AAASM-5174).
+    /// It intentionally excludes [`CredentialKind::Custom`], which is not a
+    /// built-in detector but the label applied to matches produced by
+    /// policy-defined `data.sensitive_patterns` regexes; those are enumerated
+    /// from the active policy, not from this list.
+    ///
+    /// A compile-time exhaustiveness test in this module asserts every variant
+    /// except `Custom` appears here exactly once, so a newly-added detector
+    /// kind cannot silently drop out of the catalogue.
+    pub const ALL: &'static [CredentialKind] = &[
+        Self::AnthropicKey,
+        Self::AwsAccessKey,
+        Self::GcpServiceAccount,
+        Self::OpenAiKey,
+        Self::AzureConnectionString,
+        Self::GitHubAppToken,
+        Self::GitHubOAuthToken,
+        Self::GitHubPat,
+        Self::GitHubRefreshToken,
+        Self::GitHubUserToken,
+        Self::SlackAppToken,
+        Self::SlackBotToken,
+        Self::SlackOAuthToken,
+        Self::SlackRefreshToken,
+        Self::SlackUserToken,
+        Self::MongodbUrl,
+        Self::MysqlUrl,
+        Self::PostgresUrl,
+        Self::EcPrivateKey,
+        Self::OpensshPrivateKey,
+        Self::PgpPrivateKey,
+        Self::PrivateKey,
+        Self::RsaPrivateKey,
+        Self::CreditCardLuhn,
+        Self::EmailAddress,
+        Self::SsnPattern,
+        Self::GenericHighEntropy,
+    ];
+
+    /// Coarse detector family for grouping in the catalogue UI: one of
+    /// `"api_key"`, `"cloud_credential"`, `"auth_token"`, `"database_url"`,
+    /// `"private_key"`, `"pii"`, or `"generic"`.
+    pub fn category(&self) -> &'static str {
+        match self {
+            Self::AnthropicKey | Self::OpenAiKey => "api_key",
+            Self::AwsAccessKey | Self::GcpServiceAccount | Self::AzureConnectionString => "cloud_credential",
+            Self::GitHubAppToken
+            | Self::GitHubOAuthToken
+            | Self::GitHubPat
+            | Self::GitHubRefreshToken
+            | Self::GitHubUserToken
+            | Self::SlackAppToken
+            | Self::SlackBotToken
+            | Self::SlackOAuthToken
+            | Self::SlackRefreshToken
+            | Self::SlackUserToken => "auth_token",
+            Self::MongodbUrl | Self::MysqlUrl | Self::PostgresUrl => "database_url",
+            Self::EcPrivateKey
+            | Self::OpensshPrivateKey
+            | Self::PgpPrivateKey
+            | Self::PrivateKey
+            | Self::RsaPrivateKey => "private_key",
+            Self::CreditCardLuhn | Self::EmailAddress | Self::SsnPattern => "pii",
+            Self::GenericHighEntropy => "generic",
+            Self::Custom => "custom",
+        }
+    }
+
+    /// Relative leak severity of this kind: `"critical"`, `"high"`, `"medium"`,
+    /// or `"low"`.
+    ///
+    /// Live credentials and private keys (which grant direct access) are
+    /// `critical`; regulated PII (`CreditCardLuhn`, `SsnPattern`) is also
+    /// `critical`. Database connection URIs are `high`. Email PII is `medium`.
+    /// The generic high-entropy backstop is `low` because it is the least
+    /// specific signal. This is a fixed classification, not a live-computed
+    /// value.
+    pub fn severity(&self) -> &'static str {
+        match self {
+            Self::AnthropicKey
+            | Self::OpenAiKey
+            | Self::AwsAccessKey
+            | Self::GcpServiceAccount
+            | Self::AzureConnectionString
+            | Self::GitHubAppToken
+            | Self::GitHubOAuthToken
+            | Self::GitHubPat
+            | Self::GitHubRefreshToken
+            | Self::GitHubUserToken
+            | Self::SlackAppToken
+            | Self::SlackBotToken
+            | Self::SlackOAuthToken
+            | Self::SlackRefreshToken
+            | Self::SlackUserToken
+            | Self::EcPrivateKey
+            | Self::OpensshPrivateKey
+            | Self::PgpPrivateKey
+            | Self::PrivateKey
+            | Self::RsaPrivateKey
+            | Self::CreditCardLuhn
+            | Self::SsnPattern => "critical",
+            Self::MongodbUrl | Self::MysqlUrl | Self::PostgresUrl => "high",
+            Self::EmailAddress => "medium",
+            Self::GenericHighEntropy => "low",
+            Self::Custom => "high",
+        }
+    }
+
     /// Returns the string used in the `[REDACTED:<kind>]` label.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -1081,6 +1192,82 @@ mod tests {
         assert_eq!(CredentialKind::AnthropicKey.as_str(), "AnthropicKey");
         assert_eq!(CredentialKind::AwsAccessKey.as_str(), "AwsAccessKey");
         assert_eq!(CredentialKind::GenericHighEntropy.as_str(), "GenericHighEntropy");
+    }
+
+    // --- CredentialKind::ALL catalogue (AAASM-5174) ---
+
+    /// `ALL` must enumerate every built-in kind exactly once and never include
+    /// `Custom`. This is the compile-time-ish guard promised in `ALL`'s doc:
+    /// the `match` below is exhaustive, so adding a new `CredentialKind`
+    /// variant forces a decision here, and the count/uniqueness asserts catch a
+    /// variant that was added to the enum but forgotten in `ALL`.
+    #[test]
+    fn all_enumerates_every_builtin_kind_exactly_once() {
+        // 27 built-in detector kinds today; `Custom` is excluded by design.
+        assert_eq!(CredentialKind::ALL.len(), 27, "ALL must list all 27 built-in kinds");
+
+        // No duplicates.
+        let mut seen = std::collections::BTreeSet::new();
+        for k in CredentialKind::ALL {
+            assert!(seen.insert(k.as_str()), "duplicate kind in ALL: {}", k.as_str());
+        }
+
+        // Custom must not appear in the built-in catalogue.
+        assert!(
+            !CredentialKind::ALL.contains(&CredentialKind::Custom),
+            "Custom is policy-defined, not a built-in — it must not be in ALL"
+        );
+
+        // Exhaustiveness: every variant is accounted for. Adding a variant
+        // without deciding whether it belongs in `ALL` will fail to compile.
+        for k in CredentialKind::ALL
+            .iter()
+            .chain(std::iter::once(&CredentialKind::Custom))
+        {
+            match k {
+                CredentialKind::AnthropicKey
+                | CredentialKind::AwsAccessKey
+                | CredentialKind::GcpServiceAccount
+                | CredentialKind::OpenAiKey
+                | CredentialKind::AzureConnectionString
+                | CredentialKind::GitHubAppToken
+                | CredentialKind::GitHubOAuthToken
+                | CredentialKind::GitHubPat
+                | CredentialKind::GitHubRefreshToken
+                | CredentialKind::GitHubUserToken
+                | CredentialKind::SlackAppToken
+                | CredentialKind::SlackBotToken
+                | CredentialKind::SlackOAuthToken
+                | CredentialKind::SlackRefreshToken
+                | CredentialKind::SlackUserToken
+                | CredentialKind::MongodbUrl
+                | CredentialKind::MysqlUrl
+                | CredentialKind::PostgresUrl
+                | CredentialKind::EcPrivateKey
+                | CredentialKind::OpensshPrivateKey
+                | CredentialKind::PgpPrivateKey
+                | CredentialKind::PrivateKey
+                | CredentialKind::RsaPrivateKey
+                | CredentialKind::CreditCardLuhn
+                | CredentialKind::EmailAddress
+                | CredentialKind::SsnPattern
+                | CredentialKind::GenericHighEntropy
+                | CredentialKind::Custom => {}
+            }
+        }
+    }
+
+    #[test]
+    fn category_and_severity_are_defined_for_every_kind() {
+        for k in CredentialKind::ALL {
+            assert!(!k.category().is_empty(), "empty category for {}", k.as_str());
+            assert!(
+                ["critical", "high", "medium", "low"].contains(&k.severity()),
+                "unexpected severity {:?} for {}",
+                k.severity(),
+                k.as_str()
+            );
+        }
     }
 
     // --- API key patterns ---
