@@ -25,6 +25,24 @@ fn make_approval_request(timeout_secs: u64) -> ApprovalRequest {
     }
 }
 
+/// Build a `POST` request with a JSON body — the request-builder boilerplate the
+/// approve/reject/forward integration tests would otherwise repeat verbatim
+/// (AAASM-5095).
+fn post_json(uri: impl AsRef<str>, body: &'static str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri.as_ref())
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Read a response body as parsed JSON.
+async fn json_body(resp: axum::response::Response) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
 #[tokio::test]
 async fn list_approvals_returns_empty_when_no_pending() {
     let app = common::test_app();
@@ -671,16 +689,10 @@ async fn approve_with_conditions_records_conditions_on_resolved_record() {
 
     let resp = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/approvals/{id}/approve"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"by": "alice", "conditions": ["this-once", "  ", "time-boxed"]}"#,
-                ))
-                .unwrap(),
-        )
+        .oneshot(post_json(
+            format!("/api/v1/approvals/{id}/approve"),
+            r#"{"by": "alice", "conditions": ["this-once", "  ", "time-boxed"]}"#,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -717,19 +729,14 @@ async fn forward_action_reassigns_pending_and_keeps_it_pending() {
     let app = aa_api::server::build_app(state);
 
     let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/approvals/{id}/forward"))
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"to": "manager", "by": "alice"}"#))
-                .unwrap(),
-        )
+        .oneshot(post_json(
+            format!("/api/v1/approvals/{id}/forward"),
+            r#"{"to": "manager", "by": "alice"}"#,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(resp).await;
     // Still pending after forward; routing target updated to the new approver.
     assert_eq!(json["id"], id);
     assert_eq!(json["status"], "pending");
@@ -743,14 +750,10 @@ async fn forward_action_returns_404_for_unknown_id() {
 
     let fake_id = uuid::Uuid::new_v4();
     let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/approvals/{fake_id}/forward"))
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"to": "manager"}"#))
-                .unwrap(),
-        )
+        .oneshot(post_json(
+            format!("/api/v1/approvals/{fake_id}/forward"),
+            r#"{"to": "manager"}"#,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -765,19 +768,11 @@ async fn forward_action_returns_400_for_empty_target() {
     let app = aa_api::server::build_app(state);
 
     let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/approvals/{id}/forward"))
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"to": "   "}"#))
-                .unwrap(),
-        )
+        .oneshot(post_json(format!("/api/v1/approvals/{id}/forward"), r#"{"to": "   "}"#))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let json = json_body(resp).await;
     assert!(json["detail"].as_str().unwrap_or_default().contains("non-empty"));
 }
 
@@ -786,14 +781,10 @@ async fn forward_action_returns_400_for_invalid_uuid() {
     let app = common::test_app();
 
     let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/approvals/not-a-uuid/forward")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"to": "manager"}"#))
-                .unwrap(),
-        )
+        .oneshot(post_json(
+            "/api/v1/approvals/not-a-uuid/forward",
+            r#"{"to": "manager"}"#,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
