@@ -1,29 +1,38 @@
-import type { Severity } from './types'
+import type { AlertSeverity, RuleSeverity } from './types'
 
 /**
- * 4-bucket severity colour scheme — each severity gets its own token
- * (red / orange / yellow / blue). The Sub-task AC for AAASM-1073
- * originally specified only 3 buckets (CRITICAL+HIGH share red), but
- * the parent Story (AAASM-118) AC prescribed 4 distinct colours; the
- * more specific spec wins.
- *
- * AAASM-1374 formalised this decision (Option 1 — keep 4 colours).
- * AAASM-1395's design-fidelity spec asserts each of the four
- * `--severity-*` tokens; collapsing buckets here would break it.
+ * The badge renders both vocabularies (AAASM-5193): an *alert's*
+ * {@link AlertSeverity} (`CRITICAL` / `WARNING` / `INFO`) and a *rule's*
+ * {@link RuleSeverity} (`CRITICAL` / `HIGH` / `MEDIUM` / `LOW`). Its accepted
+ * input is therefore the union of the two — the one place the two severity
+ * ladders visibly meet — so it carries a colour token for every level either
+ * can produce.
  */
-// Severity is a closed 4-member app union, validated onto an Alert by
-// `canonicalSeverity` in parseAlert.ts before this component ever sees one —
-// narrow-union Record gap (AAASM-5245 gap 2).
+export type BadgeSeverity = AlertSeverity | RuleSeverity
+
+/**
+ * Per-level colour scheme — each severity gets its own token. Historic
+ * decisions: AAASM-1073/118 kept distinct buckets; AAASM-1374 formalised it;
+ * AAASM-1395's design-fidelity spec asserts the `--severity-*` tokens.
+ */
+// BadgeSeverity is a closed union; alert values are validated by
+// `canonicalSeverity` in parseAlert.ts before this component sees them, and the
+// `isSeverity` guard below fails closed for anything else — narrow-union Record
+// gap (AAASM-5245 gap 2).
 // eslint-disable-next-line no-restricted-syntax
-const SEVERITY_BG: Record<Severity, string> = {
+const SEVERITY_BG: Record<BadgeSeverity, string> = {
   CRITICAL: 'var(--severity-critical)',
+  WARNING: 'var(--severity-warning)',
+  INFO: 'var(--severity-info)',
   HIGH: 'var(--severity-high)',
   MEDIUM: 'var(--severity-medium)',
   LOW: 'var(--severity-low)',
 }
 
-const KNOWN_SEVERITIES: ReadonlySet<string> = new Set<Severity>([
+const KNOWN_SEVERITIES: ReadonlySet<string> = new Set<BadgeSeverity>([
   'CRITICAL',
+  'WARNING',
+  'INFO',
   'HIGH',
   'MEDIUM',
   'LOW',
@@ -42,11 +51,11 @@ const KNOWN_SEVERITIES: ReadonlySet<string> = new Set<Severity>([
  * (`background: undefined`, a silently blank badge) or an inherited
  * `Object.prototype` member.
  */
-function isSeverity(value: string): value is Severity {
+function isSeverity(value: string): value is BadgeSeverity {
   return KNOWN_SEVERITIES.has(value)
 }
 
-export function SeverityBadge({ severity }: Readonly<{ severity: Severity }>) {
+export function SeverityBadge({ severity }: Readonly<{ severity: BadgeSeverity }>) {
   const known = isSeverity(severity)
   return (
     <span

@@ -207,11 +207,16 @@
   --trend-positive: #10b981;
   --trend-negative: #f43f5e;
 
-  /* ── Severity palette (alert badges) ─────────────────────── */
-  /* Ordered from highest to lowest severity. CRITICAL matches
-     --status-danger-solid; HIGH matches --chart-cat-8; MEDIUM/LOW
-     introduce new yellow-500 / blue-400 tokens for alerts only. */
+  /* ── Severity palette ─────────────────────────────────────── */
+  /* Two ladders share this palette (AAASM-5193). Alerts carry the
+     three backend-emittable levels CRITICAL / WARNING / INFO; rules
+     are authored on the four-level CRITICAL / HIGH / MEDIUM / LOW
+     ladder. CRITICAL matches --status-danger-solid; HIGH matches
+     --chart-cat-8. WARNING reuses the amber HIGH hue and INFO reuses
+     the blue LOW hue so the two ladders read consistently. */
   --severity-critical: #dc2626;
+  --severity-warning: #f97316;
+  --severity-info: #60a5fa;
   --severity-high: #f97316;
   --severity-medium: #eab308;
   --severity-low: #60a5fa;
