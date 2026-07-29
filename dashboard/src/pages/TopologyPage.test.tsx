@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -16,9 +17,11 @@ function makeClient() {
 function renderPage() {
   return render(
     <QueryClientProvider client={makeClient()}>
-      <TraceDrawerProvider>
-        <TopologyPage />
-      </TraceDrawerProvider>
+      <MemoryRouter>
+        <TraceDrawerProvider>
+          <TopologyPage />
+        </TraceDrawerProvider>
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -49,6 +52,19 @@ describe('TopologyPage', () => {
     expect(heading).toHaveTextContent('Topology')
     // 3 nodes across 2 teams (support × 2, analytics × 1).
     expect(screen.getByTestId('topology-meta')).toHaveTextContent('3 agents · 2 teams')
+  })
+
+  it('renders the shared empty state — not a blank canvas — for an empty graph', () => {
+    // A resolved graph with no nodes must not draw the control sidebar over a
+    // blank canvas; it shows the shared EmptyState, same as the other empty
+    // surfaces (AAASM-5172).
+    vi.spyOn(topologyApi, 'useTopologyQuery').mockReturnValue(
+      mockQuery({ data: { nodes: [], edges: [] }, isLoading: false, isError: false, refetch: vi.fn() }),
+    )
+    renderPage()
+
+    expect(screen.getByTestId('empty-state-overview')).toBeInTheDocument()
+    expect(screen.queryByTestId('topology-graph-wrapper')).not.toBeInTheDocument()
   })
 
   // ── The unclaimed group is not a team (AAASM-5184) ────────────────────────
