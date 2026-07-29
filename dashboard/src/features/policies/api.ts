@@ -54,7 +54,13 @@ export function usePoliciesQuery({
     enabled,
     queryFn: async () => {
       const { data, error } = await api.GET('/api/v1/policies', {
-        params: { query: { include_archived: includeArchived } },
+        // Only send the param in history mode. The endpoint already defaults to
+        // active-only, so omitting it when false keeps the default request URL
+        // exactly `/api/v1/policies` (no query string) — the URL every existing
+        // caller, nav badge and route mock already targets. Sending
+        // `include_archived=false` would silently change that URL and slip past
+        // consumers matching the bare path (AAASM-5143).
+        params: { query: includeArchived ? { include_archived: true } : {} },
       })
       if (error) throw new Error('Failed to fetch policies')
       // AAASM-4892: /policies returns a paginated { items, total } object.
