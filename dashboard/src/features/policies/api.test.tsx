@@ -92,15 +92,17 @@ describe('usePoliciesQuery', () => {
     expect(result.current.error?.message).toBe('Failed to fetch policies')
   })
 
-  it('requests active-only versions by default', async () => {
-    // AAASM-5143: the endpoint returns only the in-force version unless
-    // include_archived is set, so the default query must send `false`.
+  it('requests active-only versions by default without a query string', async () => {
+    // AAASM-5143: the endpoint already defaults to active-only, so the default
+    // query sends NO param — keeping the request URL exactly `/api/v1/policies`,
+    // the bare path every existing caller, nav badge and e2e route mock targets.
+    // Sending `include_archived=false` would change that URL and slip past them.
     get.mockResolvedValue({ data: { items: [POLICY], page: 1, per_page: 50, total: 1 } } satisfies FetchResult)
     const { wrapper } = makeWrapper()
     const { result } = renderHook(() => usePoliciesQuery(), { wrapper })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(get).toHaveBeenCalledWith('/api/v1/policies', {
-      params: { query: { include_archived: false } },
+      params: { query: {} },
     })
   })
 
