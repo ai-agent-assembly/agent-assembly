@@ -776,3 +776,51 @@ describe('PoliciesPage list-row reach and hits', () => {
     expect(screen.getByTestId('policy-row-hits')).toHaveTextContent('142')
   })
 })
+
+// ── AAASM-5143: history toggle for archived policy versions ─────────────────
+
+describe('PoliciesPage — history toggle', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('starts with history off — queries active-only versions', () => {
+    const spy = mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(spy).toHaveBeenCalledWith({ includeArchived: false })
+    expect(screen.getByTestId('policy-history-toggle')).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('re-runs the query with include_archived when the toggle is clicked', async () => {
+    const user = userEvent.setup()
+    const spy = mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('policy-history-toggle'))
+    expect(spy).toHaveBeenLastCalledWith({ includeArchived: true })
+    expect(screen.getByTestId('policy-history-toggle')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('marks inactive rows as archived only once history is on', async () => {
+    const user = userEvent.setup()
+    // An active + an inactive (archived) version, as the endpoint returns them
+    // under include_archived.
+    mockPolicies({
+      data: [ACTIVE_POLICY, PROPOSED_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    // History off: no archived marker even though a row is inactive.
+    expect(screen.queryByTestId('policy-row-archived-tag')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('policy-history-toggle'))
+
+    // History on: exactly the inactive row carries the archived tag.
+    const tags = screen.getAllByTestId('policy-row-archived-tag')
+    expect(tags).toHaveLength(1)
+    const rows = screen.getAllByTestId('policy-row')
+    expect(rows[0]).not.toHaveAttribute('data-archived')
+    expect(rows[1]).toHaveAttribute('data-archived', 'true')
+  })
+})

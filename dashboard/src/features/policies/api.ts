@@ -20,14 +20,48 @@ export interface PoliciesQueryOptions {
    * log (AAASM-5186).
    */
   readonly enabled?: boolean
+
+  /**
+   * Include older (inactive) policy versions in the response (AAASM-5143).
+   *
+   * Maps to `GET /api/v1/policies?include_archived` (`openapi/v1.yaml`). Off by
+   * default: the endpoint returns only the currently in-force version unless
+   * this is set, so the archived history is fetched on demand — when the
+   * page-header `history` toggle asks for it — rather than on every load.
+   */
+  readonly includeArchived?: boolean
 }
 
-export function usePoliciesQuery({ enabled = true }: PoliciesQueryOptions = {}) {
+/**
+ * Prefix shared by every policies-list query variant. `cancelQueries` /
+ * `invalidateQueries` match it by prefix, so they cover both the default
+ * (active-only) view and the `includeArchived` history view (AAASM-5143).
+ */
+const POLICIES_QUERY_KEY = ['policies'] as const
+
+/** Exact cache key for the default (active-only) policies-list view. */
+const POLICIES_DEFAULT_QUERY_KEY = [...POLICIES_QUERY_KEY, { includeArchived: false }] as const
+
+export function usePoliciesQuery({
+  enabled = true,
+  includeArchived = false,
+}: PoliciesQueryOptions = {}) {
   return useQuery({
-    queryKey: ['policies'],
+    // includeArchived is part of the key so flipping the history toggle
+    // refetches (and caches the two result sets independently) rather than
+    // reusing the active-only page for the archived view.
+    queryKey: [...POLICIES_QUERY_KEY, { includeArchived }],
     enabled,
     queryFn: async () => {
-      const { data, error } = await api.GET('/api/v1/policies', {})
+      const { data, error } = await api.GET('/api/v1/policies', {
+        // Only send the param in history mode. The endpoint already defaults to
+        // active-only, so omitting it when false keeps the default request URL
+        // exactly `/api/v1/policies` (no query string) — the URL every existing
+        // caller, nav badge and route mock already targets. Sending
+        // `include_archived=false` would silently change that URL and slip past
+        // consumers matching the bare path (AAASM-5143).
+        params: { query: includeArchived ? { include_archived: true } : {} },
+      })
       if (error) throw new Error('Failed to fetch policies')
       // AAASM-4892: /policies returns a paginated { items, total } object.
       // AAASM-5186: a 200 whose body carries no `items` is a malformed
@@ -94,8 +128,11 @@ export function useCreatePolicy() {
     // the editor overlay can close without a flash of stale data. On error
     // we restore the snapshot taken before the mutation fired.
     onMutate: async (body) => {
-      await queryClient.cancelQueries({ queryKey: ['policies'] })
-      const previous = queryClient.getQueryData<Policy[]>(['policies'])
+      await queryClient.cancelQueries({ queryKey: POLICIES_QUERY_KEY })
+      // Exact key: getQueryData/setQueryData match exactly, so the optimistic
+      // placeholder lands in the default (active-only) view — the one visible
+      // when a policy is created (history is off by default).
+      const previous = queryClient.getQueryData<Policy[]>(POLICIES_DEFAULT_QUERY_KEY)
       const optimistic: Policy = {
         name: nameFromYaml(body.policy_yaml),
         version: 'pending',
@@ -103,7 +140,7 @@ export function useCreatePolicy() {
         active: false,
         policy_yaml: body.policy_yaml,
       }
-      queryClient.setQueryData<Policy[]>(['policies'], (prev) => [
+      queryClient.setQueryData<Policy[]>(POLICIES_DEFAULT_QUERY_KEY, (prev) => [
         ...(prev ?? []),
         optimistic,
       ])
@@ -112,7 +149,7 @@ export function useCreatePolicy() {
 
     onError: (_err, _vars, context) => {
       if (context && 'previous' in context) {
-        queryClient.setQueryData(['policies'], context.previous)
+        queryClient.setQueryData(POLICIES_DEFAULT_QUERY_KEY, context.previous)
       }
     },
 
@@ -120,7 +157,7 @@ export function useCreatePolicy() {
     // replaced by the real `PolicyResponse` (with the server-assigned
     // version, rule_count, and active flag).
     onSettled: () => {
-      ignorePromise(queryClient.invalidateQueries({ queryKey: ['policies'] }))
+      ignorePromise(queryClient.invalidateQueries({ queryKey: POLICIES_QUERY_KEY }))
     },
   })
 }

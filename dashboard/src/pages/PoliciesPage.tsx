@@ -146,7 +146,11 @@ function PolicyRowAffects({ affects }: Readonly<{ affects: Policy['affects'] }>)
   )
 }
 
-function PolicyRow({ policy, onEdit }: Readonly<{ policy: Policy; onEdit: () => void }>) {
+function PolicyRow({
+  policy,
+  archived,
+  onEdit,
+}: Readonly<{ policy: Policy; archived: boolean; onEdit: () => void }>) {
   const proposed = !policy.active
   // The aa-api `PolicyResponse` has no `scope` field, so recover it from the
   // raw `policy_yaml` via the same parse the editor's draftFromPolicy uses.
@@ -155,13 +159,26 @@ function PolicyRow({ policy, onEdit }: Readonly<{ policy: Policy; onEdit: () => 
     <li>
       <button
         type="button"
-        className="policies-list__row"
+        className={
+          archived
+            ? 'policies-list__row policies-list__row--archived'
+            : 'policies-list__row'
+        }
         data-testid="policy-row"
+        data-archived={archived ? 'true' : undefined}
         onClick={onEdit}
       >
         <span className="policies-list__row-main">
           <span className="policies-list__row-name">
             {policy.name}
+            {archived ? (
+              <span
+                className="policies-list__chip-archived"
+                data-testid="policy-row-archived-tag"
+              >
+                archived
+              </span>
+            ) : null}
             {proposed ? (
               <span className="policies-list__chip-draft">draft</span>
             ) : null}
@@ -294,6 +311,12 @@ interface PoliciesContentProps {
   readonly onNew: () => void
   readonly onEdit: (policy: Policy) => void
   readonly canWrite: boolean
+  /**
+   * History mode is on (AAASM-5143). When true, inactive rows are the older
+   * archived versions the gateway only returns under include_archived, so they
+   * carry the archived marker.
+   */
+  readonly showHistory: boolean
 }
 
 /**
@@ -310,6 +333,7 @@ function PoliciesContent({
   onNew,
   onEdit,
   canWrite,
+  showHistory,
 }: PoliciesContentProps) {
   if (isError) {
     return (
@@ -359,6 +383,7 @@ function PoliciesContent({
         <PolicyRow
           key={`${policy.name}-${policy.version}`}
           policy={policy}
+          archived={showHistory && !policy.active}
           onEdit={() => onEdit(policy)}
         />
       ))}
@@ -367,7 +392,12 @@ function PoliciesContent({
 }
 
 export function PoliciesPage() {
-  const { data: policies, isLoading, isError, refetch } = usePoliciesQuery()
+  // History toggle (AAASM-5143): off shows only the in-force version, on asks
+  // the gateway for older (archived) versions too via include_archived.
+  const [showHistory, setShowHistory] = useState(false)
+  const { data: policies, isLoading, isError, refetch } = usePoliciesQuery({
+    includeArchived: showHistory,
+  })
   const { data: sandboxSummary } = useSandboxSummaryQuery({ window: '24h' })
   const [filter, setFilter] = useState<FilterTab>('all')
   const { openOverlay, closeOverlay } = useOverlay('policy-editor')
@@ -381,6 +411,8 @@ export function PoliciesPage() {
   // by the editor overlay's footer "Simulate impact" (AAASM-5142).
   const openSimulate = useCallback(() => setSimulateOpen(true), [])
   const closeSimulate = useCallback(() => setSimulateOpen(false), [])
+
+  const toggleHistory = useCallback(() => setShowHistory((on) => !on), [])
 
   // Observe-mode policies detected by parsing each policy_yaml client-side.
   // The aa-api `PolicyResponse` doesn't expose `enforcement_mode` as a
@@ -474,6 +506,19 @@ export function PoliciesPage() {
         <div className="policies-page__head-actions">
           <button
             type="button"
+            className={
+              showHistory
+                ? 'policies-page__history-btn policies-page__history-btn--on'
+                : 'policies-page__history-btn'
+            }
+            data-testid="policy-history-toggle"
+            aria-pressed={showHistory}
+            onClick={toggleHistory}
+          >
+            history
+          </button>
+          <button
+            type="button"
             className="policies-page__simulate-btn"
             data-testid="open-simulate-btn"
             onClick={openSimulate}
@@ -513,6 +558,7 @@ export function PoliciesPage() {
         onNew={handleNew}
         onEdit={handleEdit}
         canWrite={canWrite}
+        showHistory={showHistory}
       />
 
       <OverlayHost name="policy-editor" onRequestClose={attemptCloseEditor}>
