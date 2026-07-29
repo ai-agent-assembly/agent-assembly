@@ -14,6 +14,7 @@ use aa_core::time::Timestamp;
 use aa_core::{AgentContext, GovernanceAction};
 use aa_gateway::policy::rbac::MutationKind;
 use aa_gateway::policy::scope::PolicyScope;
+use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::{PolicyDocument, PolicyValidator};
 use aa_gateway::registry::AgentRecord;
 use aa_gateway::service::convert::hash_to_16;
@@ -1015,6 +1016,170 @@ pub struct ReplayPolicyResponse {
     /// A bounded sample of the per-request verdict changes, capped by the
     /// request's `sample_size`. Empty when no verdict changed.
     pub samples: Vec<ReplaySampleDiff>,
+}
+
+/// A single corpus action reconstructed from an audit entry, ready to re-evaluate
+/// against a proposed policy: the agent context, the action, the tool name (for
+/// sample diffs), and the verdict recorded when it actually ran.
+struct ReplayableAction {
+    ctx: AgentContext,
+    action: GovernanceAction,
+    tool: String,
+    recorded: SimulateVerdict,
+}
+
+/// Map an audit entry's persisted proto `decision` integer to a
+/// [`SimulateVerdict`], mirroring `assembly.common.v1.Decision`
+/// (1=ALLOW, 2=DENY, 3=PENDING, 4=REDACT). `None` for `DECISION_UNSPECIFIED`
+/// (0) or any unrecognised value — such an entry carries no verdict to diff.
+fn recorded_verdict(decision: i64) -> Option<SimulateVerdict> {
+    match decision {
+        1 => Some(SimulateVerdict::Allow),
+        2 => Some(SimulateVerdict::Deny),
+        3 => Some(SimulateVerdict::Approval),
+        4 => Some(SimulateVerdict::Narrow),
+        _ => None,
+    }
+}
+
+/// Map an engine [`aa_gateway::engine::EvaluationResult`] to the wire
+/// [`SimulateVerdict`], applying the exact same rules the single-request
+/// `simulate_policy` handler applies (a scrubbed allow is a `narrow`).
+fn evaluation_verdict(eval: &aa_gateway::engine::EvaluationResult) -> SimulateVerdict {
+    let redacted = !eval.credential_findings.is_empty();
+    match &eval.decision {
+        aa_core::PolicyResult::Allow if redacted => SimulateVerdict::Narrow,
+        aa_core::PolicyResult::Allow => SimulateVerdict::Allow,
+        aa_core::PolicyResult::Deny { .. } => SimulateVerdict::Deny,
+        aa_core::PolicyResult::RequiresApproval { .. } => SimulateVerdict::Approval,
+    }
+}
+
+/// Reconstruct the replayable tool-call actions from a window of audit entries.
+///
+/// The audit payload persists only non-secret action metadata — tool name,
+/// paths, hosts — and never the raw tool arguments (see
+/// `aa_runtime::audit_publisher::conversion::build_payload`). We can therefore
+/// faithfully reconstruct a [`GovernanceAction::ToolCall`] from a persisted
+/// `detail.tool_name`, but only with **empty args**; any argument/target-sensitive
+/// predicate or credential scan cannot be re-exercised from the corpus. Entries
+/// that are not tool calls, carry no recognisable tool name, or have no recorded
+/// verdict are skipped rather than replayed on fabricated inputs.
+///
+/// The `AgentContext` is rebuilt from the entry's persisted `agent_id` (the
+/// one-way 16-byte hash the audit entry stores) plus its `org_id`/`team_id`, so
+/// the proposed policy's cascade lineage resolves the same tier the live request
+/// did.
+fn replayable_actions(entries: &[aa_core::audit::AuditEntry]) -> Vec<ReplayableAction> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let payload: serde_json::Value = serde_json::from_str(entry.payload()).ok()?;
+            // Only tool-call decisions carry a (tool_name, verdict) pair we can
+            // faithfully re-evaluate; other action classes are out of scope.
+            if payload.get("action_type").and_then(|v| v.as_str()) != Some("TOOL_CALL") {
+                return None;
+            }
+            let detail = payload.get("detail")?;
+            if detail.get("kind").and_then(|v| v.as_str()) != Some("tool_call") {
+                return None;
+            }
+            let tool = detail.get("tool_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
+            let recorded = recorded_verdict(payload.get("decision").and_then(|v| v.as_i64())?)?;
+
+            let ctx = AgentContext {
+                agent_id: entry.agent_id(),
+                session_id: SessionId::from_bytes(hash_to_16("replay")),
+                pid: 0,
+                started_at: Timestamp::from_nanos(0),
+                metadata: BTreeMap::new(),
+                governance_level: aa_core::GovernanceLevel::default(),
+                parent_agent_id: None,
+                team_id: entry.team_id().map(str::to_string),
+                depth: 0,
+                delegation_reason: None,
+                spawned_by_tool: None,
+                root_agent_id: None,
+            };
+            // Args are not persisted (see doc comment) — replay with empty args.
+            let action = GovernanceAction::ToolCall {
+                name: tool.to_string(),
+                args: "{}".to_string(),
+            };
+            Some(ReplayableAction {
+                ctx,
+                action,
+                tool: tool.to_string(),
+                recorded,
+            })
+        })
+        .collect()
+}
+
+/// Replay a reconstructed corpus against a proposed policy and tally aggregate
+/// impact plus a bounded sample of verdict changes.
+///
+/// Pure over its inputs (`engine`, `proposed`, `corpus`, `sample_size`) so it is
+/// unit-testable without the HTTP layer. For each corpus action it re-evaluates
+/// against `proposed` via [`aa_gateway::engine::PolicyEngine::simulate_against`]
+/// (no live-state mutation), diffs the new verdict against the recorded one, and
+/// buckets the change:
+///
+/// - **newly_blocked** — was allowed/narrowed/approval, now `deny`.
+/// - **newly_narrowed** — was `allow`, now `narrow` (allowed but scrubbed).
+/// - **regressions** — was `deny`, now allowed/narrowed/approval.
+/// - **false_positives** — was `allow`, now `approval` (new friction short of a block).
+///
+/// An unchanged verdict is counted only toward `replayed`. Samples are collected
+/// for changed entries up to `sample_size`.
+fn replay_corpus(
+    engine: &PolicyEngine,
+    proposed: Arc<PolicyDocument>,
+    corpus: &[ReplayableAction],
+    sample_size: usize,
+) -> ReplayPolicyResponse {
+    let mut resp = ReplayPolicyResponse {
+        newly_blocked: 0,
+        newly_narrowed: 0,
+        regressions: 0,
+        false_positives: 0,
+        replayed: corpus.len() as u64,
+        samples: Vec::new(),
+    };
+
+    for item in corpus {
+        let eval = engine.simulate_against(proposed.clone(), &item.ctx, &item.action);
+        let after = evaluation_verdict(&eval);
+        let before = item.recorded;
+        if before == after {
+            continue;
+        }
+
+        use SimulateVerdict::{Allow, Approval, Deny, Narrow};
+        match (before, after) {
+            // Newly blocked: anything short of a deny becomes a deny.
+            (Allow | Narrow | Approval, Deny) => resp.newly_blocked += 1,
+            // Newly narrowed: a clean allow now scrubs sensitive content.
+            (Allow, Narrow) => resp.newly_narrowed += 1,
+            // Regression: a recorded block now lets traffic through.
+            (Deny, Allow | Narrow | Approval) => resp.regressions += 1,
+            // False positive: a clean allow now demands human approval.
+            (Allow, Approval) => resp.false_positives += 1,
+            // Any other verdict change is a real change worth sampling but not
+            // one of the four headline buckets.
+            _ => {}
+        }
+
+        if resp.samples.len() < sample_size {
+            resp.samples.push(ReplaySampleDiff {
+                tool: item.tool.clone(),
+                before,
+                after,
+            });
+        }
+    }
+
+    resp
 }
 
 #[cfg(test)]
