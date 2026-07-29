@@ -72,9 +72,36 @@ describe('BudgetTree', () => {
     expect(screen.getByTestId('budget-node-team-a')).toBeInTheDocument()
     expect(screen.getByTestId('budget-node-root-a')).toBeInTheDocument()
     expect(screen.queryByTestId('budget-node-child-a')).not.toBeInTheDocument()
-    // Kind badge and governance level surface on the agent row.
+    // Kind badge and governance level surface on the agent row. The level is
+    // shown in its two-char form (L0), with the full enum in the chip title
+    // (AAASM-5172).
     expect(screen.getByTestId('budget-node-root-a')).toHaveAttribute('data-kind', 'agent')
-    expect(screen.getAllByText('L0Discover').length).toBeGreaterThan(0)
+    const govChips = screen.getAllByText('L0')
+    expect(govChips.length).toBeGreaterThan(0)
+    expect(govChips[0]).toHaveAttribute('title', 'L0Discover')
+  })
+
+  it('renders each governance level as its two-char tag', () => {
+    const levels: BudgetTreeData = {
+      root: {
+        id: 'org',
+        label: 'org',
+        kind: 'org',
+        depth: 0,
+        budget_limit_usd: '100',
+        own_spend_usd: '0',
+        subtree_spend_usd: '0',
+        children: [
+          { id: 'e', label: 'e', kind: 'agent', depth: 1, budget_limit_usd: '10', own_spend_usd: '1', subtree_spend_usd: '1', governance_level: 'L2Enforce', children: [] },
+          { id: 'n', label: 'n', kind: 'agent', depth: 1, budget_limit_usd: '10', own_spend_usd: '1', subtree_spend_usd: '1', governance_level: 'L3Native', children: [] },
+        ],
+      },
+    }
+    render(<BudgetTree data={levels} isLoading={false} isError={false} />)
+
+    expect(screen.getByText('L2')).toHaveAttribute('title', 'L2Enforce')
+    expect(screen.getByText('L3')).toHaveAttribute('title', 'L3Native')
+    expect(screen.queryByText('L2Enforce')).not.toBeInTheDocument()
   })
 
   it('expands and collapses a node with children on click', async () => {
