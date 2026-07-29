@@ -589,6 +589,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/agent-decision-mix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/agent-decision-mix` — per-agent decision distribution.
+         * @description Aggregates the existing audit log over the requested window, grouping by
+         *     agent id and tallying each recorded decision into the Agent-Detail
+         *     traffic-mix buckets `allow` / `narrow` / `scrub` / `pending` / `deny` (the
+         *     vocabulary in `dashboard/src/features/trace/decision.ts`). The audit
+         *     event-type → bucket mapping is [`decision_mix_bucket`], identical to the
+         *     gateway's own decision write path (`decision_to_event_type_from_response`)
+         *     and to the enforcement timeline (AAASM-5031): read-only observability over
+         *     data the API already holds — no enforcement or audit-write path is touched.
+         *
+         *     **Truthfulness.** Only the four proto `Decision` outcomes the gateway records
+         *     are populated. `narrow` is always `0`: the proto `Decision` enum has no
+         *     `NARROW` variant, so no audit event can be attributed to it, and inventing a
+         *     count would fabricate governance activity that never happened. Agents with no
+         *     tracked decision in the window are omitted entirely (the dashboard renders an
+         *     empty state rather than a synthetic all-zero row). Confined to the caller's
+         *     tenant via [`fetch_window_entries`] and bounded by [`MAX_ANALYTICS_AUDIT_EVENTS`],
+         *     matching the sibling per-agent route (`agent-enforcement`, AAASM-5084).
+         */
+        get: operations["get_agent_decision_mix"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analytics/agent-enforcement": {
         parameters: {
             query?: never;
@@ -2000,6 +2036,11 @@ export interface components {
         };
         /** @description Summary of an active session in the API response. */
         ActiveSessionResponse: {
+            /**
+             * Format: int32
+             * @description Number of governed actions observed on this session so far (AAASM-5088).
+             */
+            actions_count: number;
             /** @description Hex-encoded session UUID. */
             session_id: string;
             /** @description ISO 8601 timestamp when the session started. */
@@ -2017,6 +2058,55 @@ export interface components {
             date: string;
             /** @description Total spend this month in USD for this agent (if monthly tracking is enabled). */
             monthly_spend_usd?: string | null;
+        };
+        /**
+         * @description One agent's decision-outcome distribution over the requested window.
+         *
+         *     The five fields are the Agent-Detail traffic-mix vocabulary
+         *     (`allowed / narrowed / scrubbed / pending / denied`, see
+         *     `dashboard/src/features/trace/decision.ts`). Four are sourced from the audit
+         *     log's recorded decision event types; `narrow` has no audit source and is
+         *     always `0` (see [`get_agent_decision_mix`]).
+         */
+        AgentDecisionMixCounts: {
+            /**
+             * @description Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+             *     uses, so the dashboard can join this mix directly onto its fleet/agent rows.
+             */
+            agent_id: string;
+            /**
+             * Format: int64
+             * @description Allowed decisions: `ToolCallIntercepted` audit events (the gateway records
+             *     proto `Decision::ALLOW` as this event type).
+             */
+            allow: number;
+            /**
+             * Format: int64
+             * @description Denied decisions: `PolicyViolation` audit events (the gateway records
+             *     proto `Decision::DENY` as this event type).
+             */
+            deny: number;
+            /**
+             * Format: int64
+             * @description Narrowed decisions. **No audit source exists**: the proto `Decision` enum
+             *     has no `NARROW` variant and the gateway never writes a narrow event type
+             *     (narrowing is a capability-plane concept, not a per-invocation audit
+             *     decision), so this is always `0` — a truthful absence rather than a
+             *     fabricated count.
+             */
+            narrow: number;
+            /**
+             * Format: int64
+             * @description Pending decisions: `ApprovalRequested` audit events (the gateway records
+             *     proto `Decision::PENDING` as this event type).
+             */
+            pending: number;
+            /**
+             * Format: int64
+             * @description Scrubbed decisions: `CredentialLeakBlocked` audit events (the gateway
+             *     records proto `Decision::REDACT` as this event type).
+             */
+            scrub: number;
         };
         /**
          * @description One row of the agent's recent decision stream (AAASM-5058).
@@ -3352,12 +3442,18 @@ export interface components {
          *
          *     Enriches the per-agent [`ActiveSessionResponse`] with the owning agent's
          *     identity so the dashboard Fleet → Active Sessions tab can render one flat,
-         *     fleet-wide table without a second lookup. `actions_count` / `current_task`
-         *     from the design mock are deliberately omitted: the registry does not track
-         *     them per session, and this endpoint only surfaces state that already exists
-         *     (it must not invent a session store).
+         *     fleet-wide table without a second lookup. `actions_count` is now sourced
+         *     from real gateway traffic (AAASM-5088): each CheckAction / BatchCheck the
+         *     gateway evaluates for the session increments it. `current_task` from the
+         *     design mock stays omitted — the session layer has no real source for a task
+         *     label, and this endpoint surfaces only state that already exists.
          */
         FleetActiveSessionResponse: {
+            /**
+             * Format: int32
+             * @description Number of governed actions observed on this session so far (AAASM-5088).
+             */
+            actions_count: number;
             /** @description Hex-encoded UUID of the agent that owns the session. */
             agent_id: string;
             /** @description Human-readable name of the owning agent. */
@@ -6533,6 +6629,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActionVolumeResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_decision_mix: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+                 *     `24h` — the window the Agent-Detail "traffic mix · last 24h" card shows;
+                 *     any unrecognised value also falls back to `24h`.
+                 */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-agent allow/narrow/scrub/pending/deny decision distribution over the window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDecisionMixCounts"][];
                 };
             };
             /** @description Missing or invalid credentials */

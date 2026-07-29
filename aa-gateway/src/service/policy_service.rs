@@ -1461,6 +1461,37 @@ impl PolicyServiceImpl {
     /// typical setup for unit tests that don't exercise the live-ops view) or
     /// when the request lacks a trace identifier (a malformed request the
     /// engine will reject anyway).
+    /// AAASM-5088: record this action against the agent's session in the
+    /// registry so `active_sessions` (and the Fleet Active-Sessions surface)
+    /// populate from real gateway traffic.
+    ///
+    /// The session is keyed by the hex-encoded 16-byte hash of `trace_id` —
+    /// the same derivation the audit pipeline uses for `SessionId`, so a
+    /// session's id here matches its audit / trace records. The first action
+    /// for a `(agent, session)` pair opens the session; each subsequent action
+    /// increments its `actions_count`.
+    ///
+    /// No-op when the registry is absent (test fixtures / untenanted
+    /// deployments) or the request omits `trace_id` / `agent_id`. A
+    /// `NotFound` (agent not registered) is logged and swallowed — session
+    /// tracking must never fail an otherwise-valid policy check.
+    fn record_session_activity(&self, req: &CheckActionRequest) {
+        let Some(registry) = self.registry.as_ref() else {
+            return;
+        };
+        if req.trace_id.is_empty() {
+            return;
+        }
+        let Some(proto_agent) = req.agent_id.as_ref() else {
+            return;
+        };
+        let agent_key = proto_agent_id_to_key(proto_agent);
+        let session_id = hex::encode(convert::hash_to_16(&req.trace_id));
+        if let Err(err) = registry.record_session_activity(&agent_key, &session_id) {
+            tracing::trace!(?err, "record_session_activity no-op (agent not registered)");
+        }
+    }
+
     fn ingest_op(&self, req: &CheckActionRequest) -> Option<String> {
         let registry = self.ops_registry.as_ref()?;
         if req.trace_id.is_empty() {
@@ -1537,6 +1568,11 @@ impl PolicyService for PolicyServiceImpl {
         if let Some(rejection) = self.validate_credential_token(&req).await {
             return Ok(Response::new(rejection));
         }
+
+        // AAASM-5088: register this action against the agent's session so
+        // `active_sessions` populates from live traffic. Runs after credential
+        // validation so a rejected impersonator never opens a forged session.
+        self.record_session_activity(&req);
 
         // AAASM-1422: ingest the op into the live-ops registry before
         // evaluation so the dashboard sees the in-flight check even when
@@ -1634,6 +1670,10 @@ impl PolicyService for PolicyServiceImpl {
                 responses.push(rejection);
                 continue;
             }
+
+            // AAASM-5088: same session tracking as check_action, per batch entry
+            // (after the per-entry credential validation above).
+            self.record_session_activity(req);
 
             let (eval, latency_us, policy_rule) = self.evaluate_one(req)?;
             self.maybe_emit_secret_alert(req, &eval);

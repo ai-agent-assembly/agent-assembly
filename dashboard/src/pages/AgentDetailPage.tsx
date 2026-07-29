@@ -17,6 +17,7 @@ import { AgentLineageTab } from '../components/agentDetail/AgentLineageTab'
 import { AgentCapabilityTab } from '../components/agentDetail/AgentCapabilityTab'
 import { AgentCapabilityOverviewPanel } from '../components/agentDetail/AgentCapabilityOverviewPanel'
 import { AgentPostureSummary } from '../components/agentDetail/AgentPostureSummary'
+import { AgentTrafficMixBar } from '../components/agentDetail/AgentTrafficMixBar'
 import { AgentConfigTab } from '../components/agentDetail/AgentConfigTab'
 // AAASM-1055 "how to approach": "Lazy-load the chart component so the agent
 // detail page does not pay its bundle cost up front" (recharts is large).
@@ -337,14 +338,7 @@ export function AgentDetailPage() {
 
                   <section className="ad-card">
                     <h2 className="ad-card__title">traffic mix · last 24h</h2>
-                    <div className="ad-traffic-mix" data-testid="agent-detail-traffic-mix">
-                      <div
-                        className="ad-traffic-mix__seg ad-traffic-mix__seg--placeholder"
-                        data-testid="agent-detail-traffic-mix-empty"
-                      >
-                        Decision mix is not available yet
-                      </div>
-                    </div>
+                    <AgentTrafficMixBar agentId={agent.id} />
                   </section>
 
                   <section

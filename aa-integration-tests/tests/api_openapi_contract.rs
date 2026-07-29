@@ -74,13 +74,15 @@ fn openapi_spec_loads_without_errors() {
     // blocked + scrubbed 24h counts), bringing it to 72. AAASM-5096 added
     // /api/v1/policies/team/{team_id} (policies in force for one team — a separate
     // path because /api/v1/policies is Admin-only), bringing it to 73.
+    // AAASM-5085 added /api/v1/analytics/agent-decision-mix (per-agent
+    // allow/narrow/scrub/pending/deny distribution), bringing it to 74.
     // AAASM-5174 added the DLP/secret-scrub read surface: /api/v1/scrub/patterns
     // (effective pattern catalogue), /api/v1/scrub/pattern-counts (per-kind hit
     // counts over a window), and /api/v1/scrub/posture (leak posture or explicit
-    // not-computed), bringing it to 76.
+    // not-computed), bringing it to 77.
     assert_eq!(
-        path_count, 76,
-        "openapi/v1.yaml must declare exactly 76 paths, found {path_count}"
+        path_count, 77,
+        "openapi/v1.yaml must declare exactly 77 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -114,6 +116,8 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/admin/retention-policy",
         "/api/v1/admin/retention-policy/run",
         "/api/v1/analytics/action-volume",
+        // AAASM-5085 — per-agent allow/narrow/scrub/pending/deny distribution.
+        "/api/v1/analytics/agent-decision-mix",
         // AAASM-5084 — per-agent blocked + scrubbed 24h counts.
         "/api/v1/analytics/agent-enforcement",
         "/api/v1/analytics/approvals",
