@@ -74,9 +74,11 @@ fn openapi_spec_loads_without_errors() {
     // blocked + scrubbed 24h counts), bringing it to 72. AAASM-5096 added
     // /api/v1/policies/team/{team_id} (policies in force for one team — a separate
     // path because /api/v1/policies is Admin-only), bringing it to 73.
+    // AAASM-5085 added /api/v1/analytics/agent-decision-mix (per-agent
+    // allow/narrow/scrub/pending/deny distribution), bringing it to 74.
     assert_eq!(
-        path_count, 73,
-        "openapi/v1.yaml must declare exactly 73 paths, found {path_count}"
+        path_count, 74,
+        "openapi/v1.yaml must declare exactly 74 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -110,6 +112,8 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/admin/retention-policy",
         "/api/v1/admin/retention-policy/run",
         "/api/v1/analytics/action-volume",
+        // AAASM-5085 — per-agent allow/narrow/scrub/pending/deny distribution.
+        "/api/v1/analytics/agent-decision-mix",
         // AAASM-5084 — per-agent blocked + scrubbed 24h counts.
         "/api/v1/analytics/agent-enforcement",
         "/api/v1/analytics/approvals",
