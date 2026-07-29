@@ -30,7 +30,7 @@ interface RowMetrics {
   readonly limit: number
   readonly own: number
   readonly subtree: number
-  readonly totalPct: number
+  readonly totalPct: number | null
   readonly ownPct: number
   readonly childPct: number
   readonly parentPct: number | null
@@ -41,6 +41,14 @@ interface RowMetrics {
  * Derive the spend/limit percentages a row renders. A subtree burn is capped at
  * 100%; the own-spend band never overflows the remaining track. `parentPct` is
  * null at the root (no parent budget to consume a share of).
+ *
+ * `totalPct` is `null` when the node has no configured limit: a burn is a
+ * fraction of a ceiling, and with no ceiling there is no fraction — the row
+ * that printed `0.0%` was reporting a measured non-burn where nothing was
+ * measured, the same false negative the Limit column already dashes
+ * (AAASM-5172). The `ownPct` / `childPct` bar widths stay `0` (they draw an
+ * empty track, which honestly matches the em-dash figure) and `color` falls
+ * back to the neutral `ok` token.
  */
 function rowMetrics(node: BudgetTreeNode, parentLimit: number): RowMetrics {
   const limit = num(node.budget_limit_usd)
@@ -48,32 +56,51 @@ function rowMetrics(node: BudgetTreeNode, parentLimit: number): RowMetrics {
   const subtree = num(node.subtree_spend_usd)
   const childSpend = Math.max(0, subtree - own)
 
-  const totalPct = limit > 0 ? Math.min(100, (subtree / limit) * 100) : 0
+  const totalPct = limit > 0 ? Math.min(100, (subtree / limit) * 100) : null
   const ownPct = limit > 0 ? Math.min(100, (own / limit) * 100) : 0
   const childPct = limit > 0 ? Math.min(100 - ownPct, (childSpend / limit) * 100) : 0
   const parentPct = parentLimit > 0 ? Math.min(100, (subtree / parentLimit) * 100) : null
 
-  return { limit, own, subtree, totalPct, ownPct, childPct, parentPct, color: burnColor(totalPct) }
+  return {
+    limit,
+    own,
+    subtree,
+    totalPct,
+    ownPct,
+    childPct,
+    parentPct,
+    color: burnColor(totalPct ?? 0),
+  }
 }
 
 interface BurnMeterProps {
-  readonly totalPct: number
+  readonly totalPct: number | null
   readonly ownPct: number
   readonly childPct: number
   readonly color: string
   readonly showSub: boolean
 }
 
-/** Subtree-burn cell: total percent, an optional sub-agent share, and the bar. */
+/**
+ * Subtree-burn cell: total percent, an optional sub-agent share, and the bar.
+ *
+ * A `null` `totalPct` means the node has no limit, so there is no burn fraction
+ * to state — the meta renders an em-dash rather than a fabricated `0.0%`
+ * (AAASM-5172), and the bar draws an empty track.
+ */
 function BurnMeter({ totalPct, ownPct, childPct, color, showSub }: BurnMeterProps) {
   return (
     <div className="budget-tree__burn">
       <div className="budget-tree__burn-meta">
-        <span style={{ color, fontWeight: 600 }}>{totalPct.toFixed(1)}%</span>
+        {totalPct == null ? (
+          <span className="budget-tree__burn-absent">—</span>
+        ) : (
+          <span style={{ color, fontWeight: 600 }}>{totalPct.toFixed(1)}%</span>
+        )}
         {showSub && <span className="budget-tree__burn-sub">+{childPct.toFixed(0)}% sub-agents</span>}
       </div>
       <div className="budget-tree__burn-track">
-        <div className="budget-tree__burn-total" style={{ width: `${totalPct}%`, background: color }} />
+        <div className="budget-tree__burn-total" style={{ width: `${totalPct ?? 0}%`, background: color }} />
         {ownPct > 0 && (
           <div className="budget-tree__burn-own" style={{ width: `${ownPct}%`, background: color }} />
         )}
@@ -179,7 +206,7 @@ function BudgetRow({ node, parentLimit, expanded, onToggle }: RowProps) {
   return (
     <>
       <div
-        className={`budget-tree__row${m.totalPct >= 85 ? ' budget-tree__row--critical' : ''}`}
+        className={`budget-tree__row${m.totalPct != null && m.totalPct >= 85 ? ' budget-tree__row--critical' : ''}`}
         data-testid={`budget-node-${node.id}`}
         data-kind={node.kind}
       >

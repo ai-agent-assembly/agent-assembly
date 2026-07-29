@@ -150,6 +150,12 @@
   color: var(--ink-4);
 }
 
+/* No limit configured → no burn fraction. Neutral ink, matching the em-dash
+   tone of the sibling "Limit" and "% parent" cells (AAASM-5172). */
+.budget-tree__burn-absent {
+  color: var(--ink-4);
+}
+
 .budget-tree__burn-track {
   position: relative;
   height: 5px;
