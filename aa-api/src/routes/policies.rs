@@ -83,6 +83,14 @@ impl DocSet {
     fn version(&self) -> Option<String> {
         self.unique().and_then(|doc| doc.policy_version.clone())
     }
+
+    /// AAASM-5107 — content digest of the unambiguous document under this key,
+    /// the identity a per-document hit count joins on. Absent when the key is
+    /// shared by two distinct live documents (nothing "the" document could be
+    /// counted for).
+    fn digest(&self) -> Option<String> {
+        self.unique().map(|doc| doc.content_digest())
+    }
 }
 
 /// Which agents a cascade-carried policy document is in force for, together with
@@ -329,6 +337,10 @@ pub async fn list_policies(
     // Resolved once per request, not per row: the walk is O(visible agents) and
     // every row looks its document up in the same map.
     let reach = policy_reach(&state, &caller);
+    // AAASM-5107 — per-document 24h decision counts, read once per request. A row
+    // whose parsed document fired at least once carries `hits24h`; one that did
+    // not stays absent (never 0) — see [`crate::routes::policy_hits`].
+    let hits = crate::routes::policy_hits::PolicyHitCounts::from_window(&state.audit_reader).await;
 
     let mut items: Vec<PolicyResponse> = Vec::with_capacity(paged.len());
     for (i, meta) in paged.into_iter().enumerate() {
@@ -341,13 +353,18 @@ pub async fn list_policies(
             .await
             .map(|snap| snap.yaml_content)
             .unwrap_or_default();
+        // The deciding-document digest is the content digest of the parsed
+        // snapshot — the same identity the gateway stamps on the audit write, so
+        // this joins to the recorded hits even across two versions of one
+        // (scope, name). An unreadable snapshot yields no digest → absent.
+        let hits_24h = document_from_yaml(&yaml).and_then(|doc| hits.count(&doc.content_digest()));
         items.push(PolicyResponse {
             name: meta.sha256[..12].to_string(),
             version: meta.timestamp,
             active: i == 0 && params.page() == 1,
             rule_count: 0,
             affects: affects_for(&yaml, &reach),
-            hits_24h: None,
+            hits_24h,
             policy_yaml: yaml,
         });
     }
@@ -676,6 +693,9 @@ pub async fn list_team_policies(
 
     let (by_key, visible_members) = team_cascade(&state, &caller, &team_id);
 
+    // AAASM-5107 — per-document 24h decision counts, read once per request.
+    let hits = crate::routes::policy_hits::PolicyHitCounts::from_window(&state.audit_reader).await;
+
     // Absent, not empty, when the team has agents whose cascade resolved nothing:
     // those agents fall back to the primary policy slot, which this projection
     // cannot enumerate (AAASM-5106). `[]` is reserved for the one case where
@@ -691,7 +711,10 @@ pub async fn list_team_policies(
                     name: key.1.clone().unwrap_or_else(|| key.0.clone()),
                     scope: key.0.clone(),
                     version: docs.version(),
-                    hits_24h: None,
+                    // Only an unambiguous key names one document, so only then can
+                    // a hit count be attributed; a key shared by two distinct live
+                    // documents stays absent rather than summing colliding docs.
+                    hits_24h: docs.digest().and_then(|d| hits.count(&d)),
                 })
                 .collect(),
         )
