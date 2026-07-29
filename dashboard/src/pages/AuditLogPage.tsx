@@ -319,7 +319,10 @@ export function AuditLogPage() {
                     >
                       <td className="audit-mono audit-session">{e.seq}</td>
                       <td>
-                        <div className="audit-cell-time">{e.timestamp.slice(11, 19)}</div>
+                        {/* The wire timestamp is UTC; on a compliance surface an
+                            unlabelled clock time invites the reader to assume it
+                            is local. Label the zone explicitly (AAASM-5172). */}
+                        <div className="audit-cell-time">{e.timestamp.slice(11, 19)} UTC</div>
                         <div className="audit-cell-date">{e.timestamp.slice(0, 10)}</div>
                       </td>
                       <td>
