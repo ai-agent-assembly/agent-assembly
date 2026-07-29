@@ -133,12 +133,13 @@ pub struct Policy {
     pub version: Option<String>,
     pub scope: String,
     pub status: PolicyStatus,
-    /// Number of times this policy fired in the last 24 hours.
+    /// Number of times this policy document fired in the last 24 hours.
     ///
-    /// Always absent here: attributing audit events back to the policy document
-    /// that produced them needs the deciding document captured at the
-    /// enforcement boundary, which is owned by AAASM-5107. A `0` would be
-    /// indistinguishable from "fired zero times".
+    /// Sourced (AAASM-5107) by joining this row's document content digest against
+    /// the per-document decision counts from the last-24h audit window — each
+    /// policy decision records the deciding document's digest on its audit entry.
+    /// Absent, never `0`, when the document recorded no decision in the window: a
+    /// `0` would be indistinguishable from "fired zero times".
     #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
     pub hits_24h: Option<u64>,
     /// Ids of the agents whose cascade includes this policy scope.

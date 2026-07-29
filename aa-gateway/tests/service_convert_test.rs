@@ -290,6 +290,7 @@ fn eval_result_with_credential_findings_returns_redact() {
         redacted_payload: Some("redacted text".into()),
         credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 10)],
         deny_action: None,
+        policy_doc_id: None,
     };
     let resp = eval_result_to_response(&eval, 77, "");
     assert_eq!(resp.decision, Decision::Redact as i32);

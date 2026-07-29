@@ -27,6 +27,7 @@ pub mod ops;
 /// it is a projection helper, not an HTTP surface.
 pub(crate) mod over_permission;
 pub mod policies;
+pub mod policy_hits;
 pub mod tools;
 pub mod topology;
 pub mod traces;
