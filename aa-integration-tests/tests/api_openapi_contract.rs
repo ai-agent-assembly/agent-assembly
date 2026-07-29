@@ -79,10 +79,13 @@ fn openapi_spec_loads_without_errors() {
     // AAASM-5174 added the DLP/secret-scrub read surface: /api/v1/scrub/patterns
     // (effective pattern catalogue), /api/v1/scrub/pattern-counts (per-kind hit
     // counts over a window), and /api/v1/scrub/posture (leak posture or explicit
-    // not-computed), bringing it to 77.
+    // not-computed), bringing it to 77. AAASM-5094 added
+    // /api/v1/policies/replay (replay recorded traffic against a proposed policy
+    // for aggregate impact — distinct from the single-request /policies/simulate),
+    // bringing it to 78.
     assert_eq!(
-        path_count, 77,
-        "openapi/v1.yaml must declare exactly 77 paths, found {path_count}"
+        path_count, 78,
+        "openapi/v1.yaml must declare exactly 78 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -178,6 +181,8 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/overview/enforcement-timeline",
         "/api/v1/policies",
         "/api/v1/policies/active",
+        // AAASM-5094 — replay recorded traffic against a proposed policy for aggregate impact.
+        "/api/v1/policies/replay",
         "/api/v1/policies/simulate",
         // AAASM-5096 — policies in force for one team (Teams Active-policies card).
         "/api/v1/policies/team/{team_id}",
