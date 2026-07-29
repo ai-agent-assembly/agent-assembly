@@ -1682,4 +1682,149 @@ mod tests {
             "an unparseable snapshot is not a document"
         );
     }
+
+    // ── AAASM-5094: policy-impact traffic replay ────────────────────────────
+
+    /// A Global-scoped proposed policy that denies the `bash` tool.
+    fn deny_bash_yaml() -> String {
+        "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: draft\nspec:\n  scope: global\n  tools:\n    bash:\n      allow: false\n"
+            .to_string()
+    }
+
+    /// A reconstructed corpus item for `tool`, recorded at `recorded`, with a
+    /// bare agent context (no lineage) — mirrors what `replayable_actions`
+    /// produces for a tool-call audit entry.
+    fn corpus_item(tool: &str, recorded: SimulateVerdict) -> ReplayableAction {
+        ReplayableAction {
+            ctx: AgentContext {
+                agent_id: AgentId::from_bytes(hash_to_16(tool)),
+                session_id: SessionId::from_bytes(hash_to_16("replay")),
+                pid: 0,
+                started_at: Timestamp::from_nanos(0),
+                metadata: BTreeMap::new(),
+                governance_level: aa_core::GovernanceLevel::default(),
+                parent_agent_id: None,
+                team_id: None,
+                depth: 0,
+                delegation_reason: None,
+                spawned_by_tool: None,
+                root_agent_id: None,
+            },
+            action: GovernanceAction::ToolCall {
+                name: tool.to_string(),
+                args: "{}".to_string(),
+            },
+            tool: tool.to_string(),
+            recorded,
+        }
+    }
+
+    #[test]
+    fn recorded_verdict_maps_proto_decision_ints() {
+        assert_eq!(recorded_verdict(1), Some(SimulateVerdict::Allow));
+        assert_eq!(recorded_verdict(2), Some(SimulateVerdict::Deny));
+        assert_eq!(recorded_verdict(3), Some(SimulateVerdict::Approval));
+        assert_eq!(recorded_verdict(4), Some(SimulateVerdict::Narrow));
+        // DECISION_UNSPECIFIED and unknown values carry no verdict to diff.
+        assert_eq!(recorded_verdict(0), None);
+        assert_eq!(recorded_verdict(99), None);
+    }
+
+    #[test]
+    fn replay_empty_corpus_yields_zeroed_stats_not_fabricated() {
+        let engine = PolicyEngine::for_testing();
+        let proposed = Arc::new(document_from_yaml(&deny_bash_yaml()).expect("fixture yaml is valid"));
+        let resp = replay_corpus(&engine, proposed, &[], REPLAY_DEFAULT_SAMPLE_SIZE);
+        assert_eq!(resp.replayed, 0);
+        assert_eq!(resp.newly_blocked, 0);
+        assert_eq!(resp.newly_narrowed, 0);
+        assert_eq!(resp.regressions, 0);
+        assert_eq!(resp.false_positives, 0);
+        assert!(resp.samples.is_empty(), "an empty corpus must yield no fabricated samples");
+    }
+
+    #[test]
+    fn replay_tallies_newly_blocked_on_a_known_verdict_flip() {
+        let engine = PolicyEngine::for_testing();
+        let proposed = Arc::new(document_from_yaml(&deny_bash_yaml()).expect("fixture yaml is valid"));
+
+        // Corpus: a `bash` call that was recorded as Allow. The proposed policy
+        // denies `bash`, so this is a real newly-blocked flip.
+        let corpus = vec![corpus_item("bash", SimulateVerdict::Allow)];
+        let resp = replay_corpus(&engine, proposed, &corpus, REPLAY_DEFAULT_SAMPLE_SIZE);
+
+        assert_eq!(resp.replayed, 1);
+        assert_eq!(resp.newly_blocked, 1, "an allow→deny flip must count as newly_blocked");
+        assert_eq!(resp.regressions, 0);
+        assert_eq!(resp.false_positives, 0);
+        assert_eq!(resp.samples.len(), 1, "the changed entry must be sampled");
+        assert_eq!(resp.samples[0].tool, "bash");
+        assert_eq!(resp.samples[0].before, SimulateVerdict::Allow);
+        assert_eq!(resp.samples[0].after, SimulateVerdict::Deny);
+    }
+
+    #[test]
+    fn replay_does_not_count_or_sample_an_unchanged_verdict() {
+        let engine = PolicyEngine::for_testing();
+        let proposed = Arc::new(document_from_yaml(&deny_bash_yaml()).expect("fixture yaml is valid"));
+
+        // A tool the proposed policy does not restrict, recorded as Allow, still
+        // evaluates to Allow — no bucket increments, no sample.
+        let corpus = vec![corpus_item("web_search", SimulateVerdict::Allow)];
+        let resp = replay_corpus(&engine, proposed, &corpus, REPLAY_DEFAULT_SAMPLE_SIZE);
+
+        assert_eq!(resp.replayed, 1);
+        assert_eq!(resp.newly_blocked, 0);
+        assert!(resp.samples.is_empty(), "an unchanged verdict must not be sampled");
+    }
+
+    #[test]
+    fn replayable_actions_reconstructs_tool_calls_and_skips_others() {
+        use aa_core::audit::{AuditEntry, AuditEventType};
+
+        let agent = AgentId::from_bytes([7u8; 16]);
+        let session = SessionId::from_bytes([9u8; 16]);
+
+        // A tool-call decision recorded as Allow (decision=1) — replayable.
+        let tool_call = AuditEntry::new(
+            0,
+            1_000,
+            AuditEventType::ToolCallIntercepted,
+            agent,
+            session,
+            r#"{"action_type":"TOOL_CALL","decision":1,"detail":{"kind":"tool_call","tool_name":"bash"}}"#.into(),
+            [0u8; 32],
+        );
+        // A network call — not a tool call, so out of scope for replay.
+        let network = AuditEntry::new(
+            1,
+            2_000,
+            AuditEventType::ToolCallIntercepted,
+            agent,
+            session,
+            r#"{"action_type":"NETWORK_CALL","decision":1,"detail":{"kind":"network_call","host":"example.com"}}"#
+                .into(),
+            [0u8; 32],
+        );
+        // A tool call with no recognisable decision — no recorded verdict to diff.
+        let no_decision = AuditEntry::new(
+            2,
+            3_000,
+            AuditEventType::ToolCallIntercepted,
+            agent,
+            session,
+            r#"{"action_type":"TOOL_CALL","decision":0,"detail":{"kind":"tool_call","tool_name":"bash"}}"#.into(),
+            [0u8; 32],
+        );
+
+        let corpus = replayable_actions(&[tool_call, network, no_decision]);
+        assert_eq!(corpus.len(), 1, "only the well-formed tool-call decision is replayable");
+        assert_eq!(corpus[0].tool, "bash");
+        assert_eq!(corpus[0].recorded, SimulateVerdict::Allow);
+        assert_eq!(corpus[0].ctx.agent_id, agent, "the reconstructed ctx carries the entry's agent id");
+        assert!(
+            matches!(&corpus[0].action, GovernanceAction::ToolCall { name, args } if name == "bash" && args == "{}"),
+            "args are not persisted, so replay reconstructs an empty-arg tool call",
+        );
+    }
 }
