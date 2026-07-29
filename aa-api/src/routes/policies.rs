@@ -1182,6 +1182,102 @@ fn replay_corpus(
     resp
 }
 
+/// `POST /api/v1/policies/replay` — replay recent traffic against a proposed
+/// policy and report aggregate impact (AAASM-5094).
+///
+/// Distinct from `POST /api/v1/policies/simulate`, which dry-runs a *single*
+/// hypothetical `(agent, tool, target)` probe against the *live* policy. This
+/// endpoint replays a **corpus** of recorded real traffic (the audit window)
+/// against a **proposed** policy that is never loaded, and returns aggregate
+/// impact stats — newly-blocked, newly-narrowed, regressions, false-positives —
+/// plus a bounded sample of per-request before/after verdict diffs.
+///
+/// Read-only and non-mutating: the proposed policy is validated but never
+/// applied ([`PolicyEngine::simulate_against`] runs on a throwaway engine), no
+/// audit entry is written, and no live state changes.
+///
+/// ## What is and is not replayed
+///
+/// The corpus is the recorded audit log. The audit payload persists only
+/// non-secret action metadata — tool name, paths, hosts — and never the raw tool
+/// arguments (`aa_runtime::audit_publisher::conversion::build_payload`). Replay
+/// therefore reconstructs each recorded **tool call** from its persisted tool
+/// name with empty arguments and diffs the proposed policy's verdict against the
+/// recorded one. Argument/target-sensitive rules and the credential/PII scrubber
+/// cannot be faithfully re-exercised from the corpus and are not counted; an
+/// empty corpus returns all-zero counts, never a fabricated figure.
+#[utoipa::path(
+    post,
+    path = "/api/v1/policies/replay",
+    request_body = ReplayPolicyRequest,
+    responses(
+        (status = 200, description = "Aggregate impact of the proposed policy over the replayed corpus", body = ReplayPolicyResponse),
+        (status = 400, description = "Proposed policy YAML failed validation"),
+        (status = 403, description = "Caller lacks read scope")
+    ),
+    tag = "policies"
+)]
+pub async fn replay_policy(
+    // Replay discloses aggregate policy behaviour over recorded traffic and
+    // mutates nothing, so plain Read suffices — the same scope the sibling
+    // `simulate` endpoint requires.
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    Json(body): Json<ReplayPolicyRequest>,
+) -> Result<(StatusCode, Json<ReplayPolicyResponse>), ProblemDetail> {
+    // Validate the proposed policy exactly like a create/apply body would, so a
+    // malformed draft is a 400 rather than a silently-empty replay.
+    let validated = PolicyValidator::from_yaml(&body.policy_yaml).map_err(|errs| {
+        ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail(format!("proposed policy failed validation: {errs:?}"))
+    })?;
+    let proposed = Arc::new(validated.document);
+
+    // Read the corpus window, tenant-scoped and bounded exactly like the
+    // analytics/policy-hits aggregations (AAASM-4145/4147/5107): entries older
+    // than the window are dropped in the scan, the read is capped at
+    // REPLAY_MAX_EVENTS, and a non-admin caller sees only its own org's entries.
+    let window_hours = body.window_hours.unwrap_or(REPLAY_DEFAULT_WINDOW_HOURS);
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(u64::MAX);
+    let since_ns = now_ns.saturating_sub(window_hours.saturating_mul(60 * 60 * 1_000_000_000));
+
+    let (entries, _total) = state
+        .audit_reader
+        .list_windowed(since_ns, REPLAY_MAX_EVENTS, 0, None, None, None)
+        .await
+        .unwrap_or_default();
+    let entries = scope_replay_entries(&caller, entries);
+
+    let corpus = replayable_actions(&entries);
+    let sample_size = body
+        .sample_size
+        .unwrap_or(REPLAY_DEFAULT_SAMPLE_SIZE)
+        .min(REPLAY_MAX_SAMPLE_SIZE);
+
+    let response = replay_corpus(&state.policy_engine, proposed, &corpus, sample_size);
+    Ok((StatusCode::OK, Json(response)))
+}
+
+/// Confine a corpus window to the caller's tenant: admin sees every entry, a
+/// tenant-scoped caller sees only its own org's entries, and a caller with no
+/// org scope sees none. Mirrors the analytics `scope_entries` posture so replay
+/// cannot leak cross-tenant traffic.
+fn scope_replay_entries(
+    caller: &AuthenticatedCaller,
+    entries: Vec<aa_core::audit::AuditEntry>,
+) -> Vec<aa_core::audit::AuditEntry> {
+    if caller.scopes.contains(&Scope::Admin) {
+        return entries;
+    }
+    match caller.tenant.org_id.as_deref() {
+        Some(org) => entries.into_iter().filter(|e| e.org_id() == Some(org)).collect(),
+        None => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
