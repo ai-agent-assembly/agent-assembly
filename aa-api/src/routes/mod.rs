@@ -205,6 +205,8 @@ fn protected_router() -> Router {
         .route("/analytics/fleet-health", get(analytics::get_fleet_health))
         // Per-agent blocked + scrubbed 24h counts for the Fleet columns (AAASM-5084)
         .route("/analytics/agent-enforcement", get(analytics::get_agent_enforcement))
+        // Per-agent decision distribution for the Agent-Detail traffic-mix bar (AAASM-5085)
+        .route("/analytics/agent-decision-mix", get(analytics::get_agent_decision_mix))
         // Overview enforcement timeline: windowed decision counts (AAASM-5031)
         .route(
             "/overview/enforcement-timeline",
