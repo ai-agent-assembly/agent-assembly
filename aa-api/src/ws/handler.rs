@@ -757,6 +757,7 @@ mod tests {
                 op_type,
                 resource,
                 status,
+                decision: _,
                 latency_ms,
                 team,
                 call_stack: _,
