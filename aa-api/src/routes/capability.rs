@@ -198,7 +198,10 @@ pub struct MatrixQueryParams {
 /// agents and resources exist at this instant.
 async fn projected_matrix(state: &AppState) -> CapabilityMatrix {
     let records = state.agent_registry.list();
-    let mut matrix = project_matrix(&records, state);
+    // AAASM-5107 — per-document 24h decision counts, read once per request and
+    // handed to the (sync) projection so each policy row can carry `hits24h`.
+    let hits = crate::routes::policy_hits::PolicyHitCounts::from_window(&state.audit_reader).await;
+    let mut matrix = project_matrix(&records, state, &hits);
     state.capability_store.apply_overlay(&mut matrix).await;
     matrix
 }
@@ -590,7 +593,11 @@ fn collect_policy_rows(
 /// fallback no longer fires in the shipped composition root — this projection
 /// keeps the explicit lineage anyway so it stays correct under any engine,
 /// registry-wired or not.
-fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppState) -> CapabilityMatrix {
+fn project_matrix(
+    records: &[aa_gateway::registry::AgentRecord],
+    state: &AppState,
+    hits: &crate::routes::policy_hits::PolicyHitCounts,
+) -> CapabilityMatrix {
     use aa_core::Capability as C;
 
     // Resource columns: the three system families, then every tool any visible
