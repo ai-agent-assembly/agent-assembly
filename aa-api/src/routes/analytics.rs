@@ -2254,4 +2254,135 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // --- agent-decision-mix (AAASM-5085) -----------------------------------
+
+    /// The mapping is the exact inverse of the gateway's decision write path:
+    /// the four recorded decision event types each land in their own bucket, and
+    /// there is deliberately no audit event mapping to `narrow`.
+    #[test]
+    fn decision_mix_bucket_maps_recorded_decision_event_types() {
+        assert!(matches!(
+            decision_mix_bucket(AuditEventType::ToolCallIntercepted),
+            Some(MixBucket::Allow)
+        ));
+        assert!(matches!(
+            decision_mix_bucket(AuditEventType::CredentialLeakBlocked),
+            Some(MixBucket::Scrub)
+        ));
+        assert!(matches!(
+            decision_mix_bucket(AuditEventType::ApprovalRequested),
+            Some(MixBucket::Pending)
+        ));
+        assert!(matches!(
+            decision_mix_bucket(AuditEventType::PolicyViolation),
+            Some(MixBucket::Deny)
+        ));
+        // Event types outside the four recorded decisions contribute to nothing —
+        // in particular none maps to a `narrow` bucket (there is no such variant).
+        assert!(decision_mix_bucket(AuditEventType::ToolDispatched).is_none());
+        assert!(decision_mix_bucket(AuditEventType::ApprovalGranted).is_none());
+        assert!(decision_mix_bucket(AuditEventType::BudgetLimitExceeded).is_none());
+    }
+
+    /// Each decision event type tallies onto the right per-agent bucket; unrelated
+    /// event types and events outside the window are ignored; agents with no
+    /// tracked decision are omitted; and `narrow` is always 0 (no audit source).
+    #[tokio::test]
+    async fn get_agent_decision_mix_tallies_each_bucket_in_window() {
+        let now = now_ns();
+        let a1 = [0xC1; 16];
+        let a2 = [0xC2; 16];
+        // Older than a 24h window (must be dropped by the window reader).
+        let stale = now.saturating_sub(48 * 3_600 * 1_000_000_000);
+        let entries = [
+            ae_entry(0, now, AuditEventType::ToolCallIntercepted, a1, None), // allow
+            ae_entry(1, now, AuditEventType::ToolCallIntercepted, a1, None), // allow
+            ae_entry(2, now, AuditEventType::ApprovalRequested, a1, None),   // pending
+            ae_entry(3, now, AuditEventType::CredentialLeakBlocked, a1, None), // scrub
+            ae_entry(4, now, AuditEventType::PolicyViolation, a2, None),     // deny
+            // Untracked event type -> ignored (no row emitted for a3).
+            ae_entry(5, now, AuditEventType::ToolDispatched, [0xC3; 16], None),
+            // In-window agent but stale timestamp -> dropped.
+            ae_entry(6, stale, AuditEventType::PolicyViolation, a2, None),
+        ];
+        let (state, dir) = state_with_audit(&entries, "mix-window").await;
+
+        let (status, Json(rows)) = get_agent_decision_mix(
+            RequireRead(caller(vec![Scope::Admin], None)),
+            Extension(state),
+            Query(AgentDecisionMixParams {
+                window: Some("24h".to_string()),
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(rows.len(), 2, "only agents with a tracked decision appear");
+
+        let a1_row = rows.iter().find(|r| r.agent_id == format_id(&a1)).expect("a1 present");
+        assert_eq!(a1_row.allow, 2, "two ToolCallIntercepted -> allow=2");
+        assert_eq!(a1_row.pending, 1, "one ApprovalRequested -> pending=1");
+        assert_eq!(a1_row.scrub, 1, "one CredentialLeakBlocked -> scrub=1");
+        assert_eq!(a1_row.deny, 0);
+        assert_eq!(a1_row.narrow, 0, "narrow has no audit source -> always 0");
+
+        let a2_row = rows.iter().find(|r| r.agent_id == format_id(&a2)).expect("a2 present");
+        assert_eq!(a2_row.deny, 1, "the in-window PolicyViolation; the stale one is dropped");
+        assert_eq!(a2_row.allow, 0);
+        assert_eq!(a2_row.narrow, 0);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An empty window yields an empty list — no synthetic all-zero rows — so the
+    /// dashboard renders its honest empty state rather than fabricated activity.
+    #[tokio::test]
+    async fn get_agent_decision_mix_empty_window_is_absent_not_zeroed() {
+        let (state, dir) = state_with_audit(&[], "mix-empty").await;
+
+        let (status, Json(rows)) = get_agent_decision_mix(
+            RequireRead(caller(vec![Scope::Admin], None)),
+            Extension(state),
+            Query(AgentDecisionMixParams { window: None }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(rows.is_empty(), "no decisions -> no rows, not a fabricated zero row");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A tenant-scoped (non-admin) caller only sees decision mix for its own org —
+    /// another org's audit entries never contribute.
+    #[tokio::test]
+    async fn get_agent_decision_mix_is_tenant_scoped() {
+        let now = now_ns();
+        let mine = [0xD1; 16];
+        let theirs = [0xD2; 16];
+        let entries = [
+            ae_entry(0, now, AuditEventType::ToolCallIntercepted, mine, Some("acme")),
+            ae_entry(1, now, AuditEventType::PolicyViolation, mine, Some("acme")),
+            ae_entry(2, now, AuditEventType::ToolCallIntercepted, theirs, Some("other")),
+        ];
+        let (state, dir) = state_with_audit(&entries, "mix-tenant").await;
+
+        let (status, Json(rows)) = get_agent_decision_mix(
+            RequireRead(caller(vec![Scope::Read], Some("acme"))),
+            Extension(state),
+            Query(AgentDecisionMixParams { window: None }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(rows.len(), 1, "only the caller's own org contributes");
+        let row = &rows[0];
+        assert_eq!(row.agent_id, format_id(&mine));
+        assert_eq!(row.allow, 1);
+        assert_eq!(row.deny, 1);
+        assert_eq!(row.narrow, 0);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
