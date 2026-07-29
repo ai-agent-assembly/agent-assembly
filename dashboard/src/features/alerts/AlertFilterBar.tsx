@@ -1,11 +1,11 @@
-import type { AlertFilters, AlertStatus, Severity, TimeRangePreset } from './types'
+import type { AlertFilters, AlertSeverity, AlertStatus, TimeRangePreset } from './types'
 
 interface AlertFilterBarProps {
   value: AlertFilters
   onChange: (next: AlertFilters) => void
 }
 
-const ALL_SEVERITIES: readonly Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
+const ALL_SEVERITIES: readonly AlertSeverity[] = ['CRITICAL', 'WARNING', 'INFO']
 const ALL_STATUSES: readonly AlertStatus[] = ['FIRING', 'RESOLVED', 'SUPPRESSED']
 const TIME_RANGES: readonly TimeRangePreset[] = ['24h', '7d', '30d', 'custom']
 

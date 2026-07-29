@@ -10,17 +10,16 @@ import { useState } from 'react'
 import { SeverityBadge } from './SeverityBadge'
 import { StatusBadge } from './StatusBadge'
 import { CATEGORY_META, deriveCategory } from './alertCategory'
-import type { Alert, AlertRule, Severity } from './types'
+import type { Alert, AlertRule, AlertSeverity } from './types'
 
-// Severity is a closed 4-member app union; `normaliseAlert`/`canonicalSeverity`
-// in parseAlert.ts validate the wire value into it before an Alert ever exists
-// — narrow-union Record gap (AAASM-5245 gap 2).
+// AlertSeverity is the closed 3-member alert-emission union (AAASM-5193);
+// `normaliseAlert`/`canonicalSeverity` in parseAlert.ts validate the wire value
+// into it before an Alert ever exists — narrow-union Record gap (AAASM-5245 gap 2).
 // eslint-disable-next-line no-restricted-syntax
-const SEVERITY_BORDER: Record<Severity, string> = {
+const SEVERITY_BORDER: Record<AlertSeverity, string> = {
   CRITICAL: 'var(--severity-critical)',
-  HIGH: 'var(--severity-high)',
-  MEDIUM: 'var(--severity-medium)',
-  LOW: 'var(--severity-low)',
+  WARNING: 'var(--severity-warning)',
+  INFO: 'var(--severity-info)',
 }
 
 function formatDuration(firstFiredAt: string, resolvedAt: string | null): string {

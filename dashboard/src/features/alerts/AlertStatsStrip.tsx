@@ -1,10 +1,10 @@
 // Clickable 5-tile stats strip — the signature element of
 // design/v1/hi-fi/alerts.jsx, adapted to this dashboard's taxonomy.
 //
-// The spec strip mixes two severities + three categories. This impl keeps its
-// own enum (CRITICAL / HIGH / MEDIUM / LOW + FIRING / RESOLVED / SUPPRESSED),
-// so the strip surfaces the four severity buckets plus the FIRING headline
-// count. Each tile toggles the SAME filter model the filter bar drives (single
+// The spec strip mixes two severities + three categories. This impl surfaces
+// the three backend-emittable severity buckets (CRITICAL / WARNING / INFO —
+// AAASM-5193) plus the FIRING headline count. Each tile toggles the SAME filter
+// model the filter bar drives (single
 // source of truth). Categories are a separate, client-derived filter (see
 // AlertCategoryFilter) because no first-class category field exists.
 //
@@ -18,28 +18,27 @@
 import { TruthfulValue } from '../../components/truthfulness'
 import { isKnown, mapCertain, type Certain } from '../../lib/truthfulness'
 import { statsScopeNote } from './alertsCoverage'
-import type { Alert, AlertStatus, Severity } from './types'
+import type { Alert, AlertSeverity, AlertStatus } from './types'
 
 interface AlertStatsStripProps {
   /** The loaded page of alerts, or the absence that stands in for it. */
   alerts: Certain<readonly Alert[]>
   /** Alerts across all pages per the server envelope; absent when unknown. */
   total: Certain<number>
-  activeSeverities: readonly Severity[]
+  activeSeverities: readonly AlertSeverity[]
   activeStatuses: readonly AlertStatus[]
-  onToggleSeverity: (severity: Severity) => void
+  onToggleSeverity: (severity: AlertSeverity) => void
   onToggleStatus: (status: AlertStatus) => void
 }
 
 type Tile =
-  | { kind: 'severity'; key: Severity; label: string; color: string }
+  | { kind: 'severity'; key: AlertSeverity; label: string; color: string }
   | { kind: 'status'; key: AlertStatus; label: string; color: string }
 
 const TILES: readonly Tile[] = [
   { kind: 'severity', key: 'CRITICAL', label: 'critical', color: 'var(--severity-critical)' },
-  { kind: 'severity', key: 'HIGH', label: 'high', color: 'var(--severity-high)' },
-  { kind: 'severity', key: 'MEDIUM', label: 'medium', color: 'var(--severity-medium)' },
-  { kind: 'severity', key: 'LOW', label: 'low', color: 'var(--severity-low)' },
+  { kind: 'severity', key: 'WARNING', label: 'warning', color: 'var(--severity-warning)' },
+  { kind: 'severity', key: 'INFO', label: 'info', color: 'var(--severity-info)' },
   { kind: 'status', key: 'FIRING', label: 'firing', color: 'var(--danger)' },
 ]
 
@@ -67,7 +66,7 @@ export function AlertStatsStrip({
         data-testid="alerts-stats-strip"
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(5, 1fr)',
+          gridTemplateColumns: 'repeat(4, 1fr)',
           gap: '1px',
           background: 'var(--surface-card-border)',
           border: '1px solid var(--surface-card-border)',
