@@ -2563,6 +2563,8 @@ export interface components {
         ApiKeyResponse: {
             assigned_policies: string[];
             created_at: string;
+            /** @description AAASM-5177 — RFC3339 expiry instant, or `null` for a non-expiring key. */
+            expires_at?: string | null;
             id: string;
             label: string;
             last_used?: string | null;
@@ -2579,7 +2581,7 @@ export interface components {
          */
         ApiKeyScopeResponse: "read:members" | "write:members" | "read:policies" | "write:policies" | "read:audit" | "admin";
         /** @enum {string} */
-        ApiKeyStatusResponse: "active" | "revoked";
+        ApiKeyStatusResponse: "active" | "revoked" | "expired";
         /** @description Response for `GET /api/v1/analytics/approvals`. */
         ApprovalAnalyticsResponse: {
             /**
@@ -3281,6 +3283,13 @@ export interface components {
         GenerateApiKeyRequest: {
             label: string;
             scopes: components["schemas"]["ApiKeyScopeResponse"][];
+            /**
+             * Format: int64
+             * @description AAASM-5177 — optional time-to-live in seconds. When omitted, the server
+             *     applies [`DEFAULT_API_KEY_TTL_SECS`] (a safe, bounded default) rather than
+             *     issuing a non-expiring key. Must be positive; `0` is rejected.
+             */
+            ttl_seconds?: number | null;
         };
         /**
          * @description One-shot reveal shape returned by generate / rotate. `secret` MUST be
@@ -7288,6 +7297,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["GeneratedApiKeyResponse"];
                 };
+            };
+            /** @description ttl_seconds is zero or out of range */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Caller lacks the role required to mutate IAM state */
             403: {

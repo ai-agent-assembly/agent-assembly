@@ -531,6 +531,8 @@ impl AppState {
                         .map(|d| d.as_secs())
                         .unwrap_or(0),
                     label: Some("local single-process admin key".to_string()),
+                    // The local single-process admin key does not expire.
+                    expires_at: None,
                     team_id: None,
                     org_id: None,
                     // AAASM-4075 — index this key so credential validation runs

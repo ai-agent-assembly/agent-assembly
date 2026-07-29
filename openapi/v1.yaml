@@ -2162,6 +2162,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GeneratedApiKeyResponse'
+        '400':
+          description: ttl_seconds is zero or out of range
         '403':
           description: Caller lacks the role required to mutate IAM state
   /api/v1/iam/api-keys/{id}/revoke:
@@ -4348,6 +4350,11 @@ components:
             type: string
         created_at:
           type: string
+        expires_at:
+          type:
+          - string
+          - 'null'
+          description: AAASM-5177 — RFC3339 expiry instant, or `null` for a non-expiring key.
         id:
           type: string
         label:
@@ -4387,6 +4394,7 @@ components:
       enum:
       - active
       - revoked
+      - expired
     ApprovalAnalyticsResponse:
       type: object
       description: Response for `GET /api/v1/analytics/approvals`.
@@ -5571,6 +5579,16 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ApiKeyScopeResponse'
+        ttl_seconds:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: |-
+            AAASM-5177 — optional time-to-live in seconds. When omitted, the server
+            applies [`DEFAULT_API_KEY_TTL_SECS`] (a safe, bounded default) rather than
+            issuing a non-expiring key. Must be positive; `0` is rejected.
+          minimum: 0
     GeneratedApiKeyResponse:
       type: object
       description: |-

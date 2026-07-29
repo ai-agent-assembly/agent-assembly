@@ -76,6 +76,9 @@ impl From<ApiKeyScopeResponse> for GwApiKeyScope {
 pub enum ApiKeyStatusResponse {
     Active,
     Revoked,
+    /// AAASM-5177 — the key is past its `expires_at`. Computed by the gateway
+    /// store on read; the dashboard renders it as a distinct terminal state.
+    Expired,
 }
 
 impl From<GwApiKeyStatus> for ApiKeyStatusResponse {
@@ -83,6 +86,7 @@ impl From<GwApiKeyStatus> for ApiKeyStatusResponse {
         match s {
             GwApiKeyStatus::Active => Self::Active,
             GwApiKeyStatus::Revoked => Self::Revoked,
+            GwApiKeyStatus::Expired => Self::Expired,
         }
     }
 }
@@ -114,6 +118,8 @@ pub struct ApiKeyResponse {
     pub scopes: Vec<ApiKeyScopeResponse>,
     pub status: ApiKeyStatusResponse,
     pub created_at: String,
+    /// AAASM-5177 — RFC3339 expiry instant, or `null` for a non-expiring key.
+    pub expires_at: Option<String>,
     pub last_used: Option<String>,
     pub owner: String,
     pub role: String,
@@ -130,6 +136,7 @@ impl From<ApiKeyEntry> for ApiKeyResponse {
             scopes: e.scopes.into_iter().map(Into::into).collect(),
             status: e.status.into(),
             created_at: e.created_at.to_rfc3339(),
+            expires_at: e.expires_at.map(|d| d.to_rfc3339()),
             last_used: e.last_used.map(|d| d.to_rfc3339()),
             owner: e.owner,
             role: e.role,
@@ -158,10 +165,24 @@ impl From<GwGeneratedApiKey> for GeneratedApiKeyResponse {
     }
 }
 
+/// AAASM-5177 — default API-key lifetime when the request omits `ttl_seconds`.
+///
+/// 90 days. Chosen as a safe default: long enough not to disrupt long-lived
+/// service integrations, short enough to bound the blast radius of a leaked key
+/// and force periodic rotation. Keys never expire only when explicitly seeded
+/// with `expires_at: None` at the store layer — this request path always sets a
+/// finite expiry, so the default is fail-safe rather than fail-open.
+pub const DEFAULT_API_KEY_TTL_SECS: u64 = 90 * 24 * 60 * 60;
+
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct GenerateApiKeyRequest {
     pub label: String,
     pub scopes: Vec<ApiKeyScopeResponse>,
+    /// AAASM-5177 — optional time-to-live in seconds. When omitted, the server
+    /// applies [`DEFAULT_API_KEY_TTL_SECS`] (a safe, bounded default) rather than
+    /// issuing a non-expiring key. Must be positive; `0` is rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<u64>,
 }
 
 // ── Role → capability grants (AAASM-5046) ──
@@ -326,6 +347,7 @@ pub async fn list_api_keys(
     request_body = GenerateApiKeyRequest,
     responses(
         (status = 200, description = "Generated key (with one-shot secret)", body = GeneratedApiKeyResponse),
+        (status = 400, description = "ttl_seconds is zero or out of range"),
         (status = 403, description = "Caller lacks the role required to mutate IAM state")
     ),
     tag = "iam"
@@ -339,11 +361,43 @@ pub async fn generate_api_key(
         .check_mutation(&PolicyScope::Global, MutationKind::Create)
         .map_err(IamHandlerError::Forbidden)?;
 
+    // AAASM-5177 — resolve the key's expiry. An omitted ttl_seconds applies the
+    // safe default; an explicit 0 is rejected (a zero-lifetime key is a caller
+    // error, never a way to opt out of expiry through this path).
+    let expires_at = resolve_expires_at(body.ttl_seconds)?;
+
     let scopes: Vec<GwApiKeyScope> = body.scopes.into_iter().map(Into::into).collect();
     let generated = state
         .iam_api_key_store
-        .generate(&body.label, scopes, &policy_auth.caller.key_id);
+        .generate(&body.label, scopes, &policy_auth.caller.key_id, Some(expires_at));
     Ok((StatusCode::OK, Json(generated.into())))
+}
+
+/// AAASM-5177 — compute an API key's expiry instant from a requested TTL.
+///
+/// `None` applies [`DEFAULT_API_KEY_TTL_SECS`]. An explicit `0` is a client
+/// error (`400`). The TTL is added to the current time; an overflow (absurdly
+/// large TTL) is also a `400` rather than a silently non-expiring key.
+fn resolve_expires_at(ttl_seconds: Option<u64>) -> Result<chrono::DateTime<chrono::Utc>, IamHandlerError> {
+    let ttl = match ttl_seconds {
+        None => DEFAULT_API_KEY_TTL_SECS,
+        Some(0) => {
+            return Err(IamHandlerError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+                    .with_detail("ttl_seconds must be greater than zero".to_string()),
+            ));
+        }
+        Some(secs) => secs,
+    };
+    let secs = i64::try_from(ttl).ok();
+    secs.and_then(chrono::Duration::try_seconds)
+        .and_then(|d| chrono::Utc::now().checked_add_signed(d))
+        .ok_or_else(|| {
+            IamHandlerError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+                    .with_detail("ttl_seconds is out of range".to_string()),
+            )
+        })
 }
 
 /// `POST /api/v1/iam/api-keys/{id}/revoke` — revoke an existing key.
@@ -433,13 +487,14 @@ pub async fn rotate_api_key(
 pub enum IamHandlerError {
     NotFound(ProblemDetail),
     Conflict(ProblemDetail),
+    BadRequest(ProblemDetail),
     Forbidden(PolicyAuthorizationDenied),
 }
 
 impl IntoResponse for IamHandlerError {
     fn into_response(self) -> axum::response::Response {
         match self {
-            Self::NotFound(p) | Self::Conflict(p) => p.into_response(),
+            Self::NotFound(p) | Self::Conflict(p) | Self::BadRequest(p) => p.into_response(),
             Self::Forbidden(d) => d.into_response(),
         }
     }
@@ -466,6 +521,7 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
             scopes: vec![GwApiKeyScope::ReadMembers, GwApiKeyScope::ReadPolicies],
             status: GwApiKeyStatus::Active,
             created_at: ts("2026-04-30T09:12:00Z"),
+            expires_at: None,
             last_used: Some(ts("2026-05-13T07:55:00Z")),
             owner: "alice".into(),
             role: "service:reader".into(),
@@ -498,6 +554,7 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
             scopes: vec![GwApiKeyScope::ReadAudit],
             status: GwApiKeyStatus::Active,
             created_at: ts("2026-05-02T14:30:00Z"),
+            expires_at: None,
             last_used: None,
             owner: "carol".into(),
             role: "service:observer".into(),
@@ -516,6 +573,7 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
             scopes: vec![GwApiKeyScope::Admin],
             status: GwApiKeyStatus::Revoked,
             created_at: ts("2026-03-14T11:00:00Z"),
+            expires_at: None,
             last_used: Some(ts("2026-04-21T10:18:00Z")),
             owner: "bob".into(),
             role: "service:admin".into(),
@@ -637,6 +695,50 @@ mod tests {
                 "{role} must not grant any write capability, got {caps:?}"
             );
         }
+    }
+
+    // ── AAASM-5177 — TTL resolution ──
+
+    #[test]
+    fn resolve_expires_at_applies_default_ttl_when_omitted() {
+        let before = chrono::Utc::now();
+        let expiry = resolve_expires_at(None).expect("default ttl must resolve");
+        let expected = before + chrono::Duration::seconds(DEFAULT_API_KEY_TTL_SECS as i64);
+        // Allow a small window for the clock advancing between reads.
+        let delta = (expiry - expected).num_seconds().abs();
+        assert!(delta <= 5, "omitted ttl must apply the 90-day default (delta {delta}s)");
+    }
+
+    #[test]
+    fn resolve_expires_at_honors_explicit_ttl() {
+        let before = chrono::Utc::now();
+        let expiry = resolve_expires_at(Some(3600)).expect("explicit ttl must resolve");
+        let delta = (expiry - (before + chrono::Duration::hours(1))).num_seconds().abs();
+        assert!(delta <= 5, "explicit ttl_seconds must be honored (delta {delta}s)");
+    }
+
+    #[test]
+    fn resolve_expires_at_rejects_zero_ttl() {
+        assert!(
+            matches!(resolve_expires_at(Some(0)), Err(IamHandlerError::BadRequest(_))),
+            "ttl_seconds=0 must be a 400, never a non-expiring key"
+        );
+    }
+
+    #[test]
+    fn resolve_expires_at_rejects_overflowing_ttl() {
+        assert!(
+            matches!(resolve_expires_at(Some(u64::MAX)), Err(IamHandlerError::BadRequest(_))),
+            "an out-of-range ttl must be a 400, never a silently non-expiring key"
+        );
+    }
+
+    #[test]
+    fn expired_gateway_status_maps_to_expired_wire_status() {
+        assert_eq!(
+            ApiKeyStatusResponse::from(GwApiKeyStatus::Expired),
+            ApiKeyStatusResponse::Expired
+        );
     }
 
     #[test]

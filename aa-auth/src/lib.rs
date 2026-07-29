@@ -226,6 +226,11 @@ where
                 Err(KeyNotValid::Revoked) => {
                     return Err(AuthError::InvalidToken("revoked API key".into()));
                 }
+                Err(KeyNotValid::Expired) => {
+                    // AAASM-5177 — an expired API key is rejected here, mirroring
+                    // the JWT expiry path, so it can never authorize a request.
+                    return Err(AuthError::ExpiredToken);
+                }
                 Err(KeyNotValid::NotFound) => {
                     return Err(AuthError::InvalidToken("invalid API key".into()));
                 }

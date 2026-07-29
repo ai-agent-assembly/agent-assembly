@@ -128,6 +128,12 @@ pub struct ApiKeyEntry {
     pub scopes: Vec<Scope>,
     /// Unix timestamp when the key was created.
     pub created_at: u64,
+    /// AAASM-5177 — optional expiry as a Unix timestamp (seconds). When set, the
+    /// key is rejected at authentication once the wall clock passes this instant
+    /// (see [`ApiKeyStore::validate_detailed`]). `None` means the key never
+    /// expires, preserving legacy keys that predate this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
     /// Optional human-readable label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -242,7 +248,14 @@ impl ApiKeyStore {
             None => Err(KeyNotValid::NotFound),
             Some(entry) => {
                 if self.revoked_ids.contains_key(&entry.id) {
+                    // Explicit administrative revocation takes precedence over
+                    // expiry when both apply — the operator revoked it.
                     Err(KeyNotValid::Revoked)
+                } else if is_expired(entry.expires_at) {
+                    // AAASM-5177 — a matched, un-revoked key whose expiry has
+                    // passed is rejected here, at authentication, so it can
+                    // never authorize a request regardless of how it displays.
+                    Err(KeyNotValid::Expired)
                 } else {
                     Ok(entry)
                 }
@@ -270,6 +283,27 @@ impl ApiKeyStore {
     }
 }
 
+/// AAASM-5177 — has `expires_at` (Unix seconds) passed relative to now?
+///
+/// `None` means the key never expires (always `false`). A clock read that
+/// fails (pre-epoch) is treated as time 0, so a set expiry is considered
+/// passed — failing closed rather than granting an expired key.
+fn is_expired(expires_at: Option<u64>) -> bool {
+    match expires_at {
+        None => false,
+        Some(exp) => now_unix_secs() >= exp,
+    }
+}
+
+/// Current wall-clock time in Unix seconds, or 0 if the clock is before the
+/// epoch (which makes any set expiry compare as passed — fail closed).
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Reason a key lookup failed during authentication.
 #[derive(Debug)]
 pub enum KeyNotValid {
@@ -277,6 +311,10 @@ pub enum KeyNotValid {
     NotFound,
     /// The key exists but has been revoked.
     Revoked,
+    /// AAASM-5177 — the key exists and matches, but its `expires_at` instant
+    /// has passed. Rejected at authentication so an expired credential can
+    /// never authorize a request.
+    Expired,
 }
 
 /// Errors related to API key operations.
@@ -397,6 +435,7 @@ mod tests {
             key_hash: hash,
             scopes: vec![Scope::Read, Scope::Write],
             created_at: 1700000000,
+            expires_at: None,
             label: Some("test key".to_string()),
             team_id: None,
             org_id: None,
@@ -419,6 +458,7 @@ mod tests {
             key_hash: hash,
             scopes: vec![Scope::Read],
             created_at: 1700000000,
+            expires_at: None,
             label: None,
             team_id: None,
             org_id: None,
@@ -452,6 +492,7 @@ mod tests {
             key_hash: key.hash().expect("hash"),
             scopes: vec![Scope::Admin],
             created_at: 1700000000,
+            expires_at: None,
             label: None,
             team_id: None,
             org_id: None,
@@ -510,6 +551,7 @@ mod tests {
             key_hash: probe_hash,
             scopes: vec![Scope::Admin],
             created_at: 0,
+            expires_at: None,
             label: None,
             team_id: None,
             org_id: None,
@@ -536,6 +578,7 @@ mod tests {
             key_hash: key.hash().expect("hash"),
             scopes: vec![Scope::Read],
             created_at: 0,
+            expires_at: None,
             label: None,
             team_id: None,
             org_id: None,
@@ -543,5 +586,83 @@ mod tests {
         };
         let store = ApiKeyStore::from_entries(vec![entry]);
         assert_eq!(store.validate(key.as_str()).map(|e| e.id.as_str()), Some("legacy"));
+    }
+
+    // ── AAASM-5177 — expiry enforcement at authentication ──
+
+    /// Build a store holding one key with the given `expires_at`.
+    fn store_with_expiry(id: &str, expires_at: Option<u64>) -> (ApiKey, ApiKeyStore) {
+        let key = ApiKey::generate();
+        let entry = ApiKeyEntry {
+            id: id.to_string(),
+            key_hash: key.hash().expect("hash"),
+            scopes: vec![Scope::Read],
+            created_at: 0,
+            expires_at,
+            label: None,
+            team_id: None,
+            org_id: None,
+            key_lookup: Some(key.lookup()),
+        };
+        (key, ApiKeyStore::from_entries(vec![entry]))
+    }
+
+    #[test]
+    fn is_expired_never_expires_when_none() {
+        assert!(!is_expired(None));
+    }
+
+    #[test]
+    fn is_expired_true_for_past_and_false_for_future() {
+        let now = now_unix_secs();
+        assert!(is_expired(Some(now.saturating_sub(60))), "past instant is expired");
+        assert!(!is_expired(Some(now + 3600)), "future instant is not expired");
+    }
+
+    #[test]
+    fn expired_key_is_rejected_at_authentication() {
+        // A key whose expiry is one hour in the past must fail validation with
+        // the dedicated Expired reason — never Ok.
+        let past = now_unix_secs().saturating_sub(3600);
+        let (key, store) = store_with_expiry("expired-key", Some(past));
+        assert!(
+            matches!(store.validate_detailed(key.as_str()), Err(KeyNotValid::Expired)),
+            "an expired key must be rejected as Expired"
+        );
+        assert!(store.validate(key.as_str()).is_none(), "validate() must also reject it");
+    }
+
+    #[test]
+    fn not_yet_expired_key_still_validates() {
+        let future = now_unix_secs() + 3600;
+        let (key, store) = store_with_expiry("live-key", Some(future));
+        assert_eq!(
+            store.validate(key.as_str()).map(|e| e.id.as_str()),
+            Some("live-key"),
+            "a key before its expiry must authenticate"
+        );
+    }
+
+    #[test]
+    fn key_without_expiry_still_validates_backward_compat() {
+        let (key, store) = store_with_expiry("eternal-key", None);
+        assert_eq!(
+            store.validate(key.as_str()).map(|e| e.id.as_str()),
+            Some("eternal-key"),
+            "a key with no expiry must authenticate (backward compat)"
+        );
+    }
+
+    #[test]
+    fn revocation_takes_precedence_over_expiry() {
+        // A key that is both revoked and expired reports Revoked — the explicit
+        // administrative action wins over the passive expiry.
+        let past = now_unix_secs().saturating_sub(3600);
+        let (key, store) = store_with_expiry("revoked-and-expired", Some(past));
+        store.revoke("revoked-and-expired");
+        assert!(matches!(
+            store.validate_detailed(key.as_str()),
+            Err(KeyNotValid::Revoked)
+        ));
     }
 }
