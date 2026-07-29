@@ -896,6 +896,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/approvals/{id}/forward": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/approvals/:id/forward` — reassign a pending approval to a
+         *     different approver (AAASM-5095).
+         * @description Forwarding does **not** decide the request: it stays pending so the new
+         *     target must still approve or reject it. This is a governance action and
+         *     carries the *same* write-scope + tenant-ownership guard as approve/reject
+         *     (an operator may only forward approvals in a team it can access, or any
+         *     approval when it holds admin scope). Returns the still-pending approval on
+         *     success, 404 when the id is unknown or already resolved (no pending request
+         *     to forward), and 400 for a missing target or invalid UUID.
+         */
+        post: operations["forward_action"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/approvals/{id}/reject": {
         parameters: {
             query?: never;
@@ -2889,6 +2916,7 @@ export interface components {
             expires_at: string;
             /** @description Unique approval request identifier. */
             id: string;
+            quorum?: null | components["schemas"]["QuorumStatus"];
             /** @description Human-readable reason for the approval request. */
             reason: string;
             routing_status?: null | components["schemas"]["RoutingStatusInfo"];
@@ -3254,6 +3282,13 @@ export interface components {
         DecideRequest: {
             /** @description Identity of the operator making the decision. */
             by?: string | null;
+            /**
+             * @description Structured approval conditions attached to an approve decision
+             *     (AAASM-5095). Each entry is a condition slug such as `"this-once"`,
+             *     `"policy-exception"`, or `"time-boxed"`. Ignored on reject. Absent or
+             *     empty ⇒ an unconditional approval.
+             */
+            conditions?: string[] | null;
             /** @description Optional reason for the decision. */
             reason?: string | null;
         };
@@ -3512,6 +3547,18 @@ export interface components {
         FleetHealthResponse: {
             /** @description One entry per agent the caller may see. */
             agents: components["schemas"]["AgentHealth"][];
+        };
+        /** @description Request body for the forward/reassign action (AAASM-5095). */
+        ForwardRequest: {
+            /**
+             * @description Identity of the operator performing the forward. Optional; recorded for
+             *     audit context.
+             */
+            by?: string | null;
+            /** @description Optional reason for the reassignment. */
+            reason?: string | null;
+            /** @description Approver identifier (user id or role) to reassign the request to. */
+            to: string;
         };
         GenerateApiKeyRequest: {
             label: string;
@@ -4337,6 +4384,48 @@ export interface components {
             title: string;
             /** @description URI reference identifying the problem type. */
             type: string;
+        };
+        /** @description Response state of a single approver in a multi-approver quorum (AAASM-5095). */
+        QuorumApproverStatus: {
+            /** @description Approver identifier (user id or role) participating in the quorum. */
+            approver: string;
+            /**
+             * @description This approver's response so far: `"pending"`, `"approved"`, or
+             *     `"rejected"`. Never fabricated — reflects the approver's real recorded
+             *     response.
+             */
+            status: string;
+        };
+        /**
+         * @description Multi-approver quorum status for an approval request (AAASM-5095).
+         *
+         *     Present **only** when the approval is a quorum approval (more than one
+         *     approver is required). It carries a truthful "`responded` of `required`
+         *     responded" tally plus the per-approver breakdown — the counts always
+         *     reflect real approver responses and are never fabricated. Absent
+         *     (serialized as omitted) for single-target approvals.
+         *
+         *     NOTE: full N-approver quorum *enforcement* (gateway-side routing that
+         *     blocks resolution until the quorum is met) is scoped as a follow-up. This
+         *     type is the wire contract; until the gateway can supply real per-approver
+         *     responses the field is emitted as absent rather than with a fabricated
+         *     count.
+         */
+        QuorumStatus: {
+            /** @description Per-approver response breakdown. Length is the quorum size. */
+            approvers: components["schemas"]["QuorumApproverStatus"][];
+            /**
+             * Format: int32
+             * @description Number of approver responses required to satisfy the quorum (N).
+             */
+            required: number;
+            /**
+             * Format: int32
+             * @description Number of approvers that have responded so far — a real count of the
+             *     entries in `approvers` whose status is not `"pending"`. Never a
+             *     fabricated value.
+             */
+            responded: number;
         };
         RecentActivityResponse: {
             action: string;
@@ -7174,6 +7263,47 @@ export interface operations {
                 };
             };
             /** @description Approval request not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    forward_action: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Approval request identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForwardRequest"];
+            };
+        };
+        responses: {
+            /** @description Approval reassigned; still pending */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalResponse"];
+                };
+            };
+            /** @description Missing forward target or invalid UUID */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Approval request not found or already resolved */
             404: {
                 headers: {
                     [name: string]: unknown;

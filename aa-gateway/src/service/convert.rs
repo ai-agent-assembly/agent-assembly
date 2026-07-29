@@ -337,6 +337,9 @@ pub fn decide_request_to_core(
             } else {
                 Some(req.reason.clone())
             },
+            // The gRPC decide contract does not yet carry approval conditions
+            // (AAASM-5095 extends the HTTP contract only); record none.
+            conditions: Vec::new(),
         },
         ApprovalDecisionType::Rejected => {
             if req.reason.is_empty() {

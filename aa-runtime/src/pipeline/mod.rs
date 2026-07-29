@@ -773,7 +773,7 @@ async fn try_local_approval(
         tokio::spawn(async move {
             if let Ok(decision) = fut.await {
                 let (approved, decided_by, reason) = match decision {
-                    RuntimeApprovalDecision::Approved { by, reason } => (true, by, reason.unwrap_or_default()),
+                    RuntimeApprovalDecision::Approved { by, reason, .. } => (true, by, reason.unwrap_or_default()),
                     RuntimeApprovalDecision::Rejected { by, reason } => (false, by, reason),
                     RuntimeApprovalDecision::TimedOut { .. } => {
                         (false, "timeout".to_string(), "approval timed out".to_string())
@@ -2664,6 +2664,7 @@ mod tests {
                 RuntimeApprovalDecision::Approved {
                     by: "test-operator".to_string(),
                     reason: Some("looks safe".to_string()),
+                    conditions: vec![],
                 },
             )
             .expect("decide should succeed");

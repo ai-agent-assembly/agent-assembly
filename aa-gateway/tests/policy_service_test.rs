@@ -598,6 +598,7 @@ tools:
             ApprovalDecision::Approved {
                 by: "test".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .unwrap();

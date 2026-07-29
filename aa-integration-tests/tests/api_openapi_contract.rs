@@ -82,10 +82,12 @@ fn openapi_spec_loads_without_errors() {
     // not-computed), bringing it to 77. AAASM-5094 added
     // /api/v1/policies/replay (replay recorded traffic against a proposed policy
     // for aggregate impact — distinct from the single-request /policies/simulate),
-    // bringing it to 78.
+    // bringing it to 78. AAASM-5095 added /api/v1/approvals/{id}/forward
+    // (reassign a pending approval to a different approver — distinct from the
+    // approve/reject decide endpoints), bringing it to 79.
     assert_eq!(
-        path_count, 78,
-        "openapi/v1.yaml must declare exactly 78 paths, found {path_count}"
+        path_count, 79,
+        "openapi/v1.yaml must declare exactly 79 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -152,6 +154,8 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/approvals",
         "/api/v1/approvals/{id}",
         "/api/v1/approvals/{id}/approve",
+        // AAASM-5095 — reassign a pending approval to a different approver.
+        "/api/v1/approvals/{id}/forward",
         "/api/v1/approvals/{id}/reject",
         "/api/v1/audit/sandbox-summary",
         "/api/v1/audit/violations-by-lineage",

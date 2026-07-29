@@ -121,6 +121,8 @@ fn protected_router() -> Router {
         .route("/approvals/{id}", get(approvals::get_approval))
         .route("/approvals/{id}/approve", post(approvals::approve_action))
         .route("/approvals/{id}/reject", post(approvals::reject_action))
+        // AAASM-5095 — reassign a pending approval to a different approver.
+        .route("/approvals/{id}/forward", post(approvals::forward_action))
         // Costs
         .route("/costs", get(costs::get_cost_summary))
         // Capability matrix (dashboard) — AAASM-1366

@@ -1661,6 +1661,7 @@ mod tests {
                 crate::approval::ApprovalDecision::Approved {
                     by: "alice".to_string(),
                     reason: None,
+                    conditions: vec![],
                 },
             )
             .expect("decide");

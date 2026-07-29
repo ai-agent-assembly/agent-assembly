@@ -344,6 +344,7 @@ fn approved_decision_maps_to_allow() {
     let decision = ApprovalDecision::Approved {
         by: "alice".to_string(),
         reason: Some("looks good".to_string()),
+        conditions: vec![],
     };
     let resp = approval_decision_to_response(&decision, &id, 55, "requires_approval");
     assert_eq!(resp.decision, Decision::Allow as i32);

@@ -1626,6 +1626,46 @@ paths:
                 $ref: '#/components/schemas/ApprovalResponse'
         '404':
           description: Approval request not found
+  /api/v1/approvals/{id}/forward:
+    post:
+      tags:
+      - approvals
+      summary: |-
+        `POST /api/v1/approvals/:id/forward` — reassign a pending approval to a
+        different approver (AAASM-5095).
+      description: |-
+        Forwarding does **not** decide the request: it stays pending so the new
+        target must still approve or reject it. This is a governance action and
+        carries the *same* write-scope + tenant-ownership guard as approve/reject
+        (an operator may only forward approvals in a team it can access, or any
+        approval when it holds admin scope). Returns the still-pending approval on
+        success, 404 when the id is unknown or already resolved (no pending request
+        to forward), and 400 for a missing target or invalid UUID.
+      operationId: forward_action
+      parameters:
+      - name: id
+        in: path
+        description: Approval request identifier
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForwardRequest'
+        required: true
+      responses:
+        '200':
+          description: Approval reassigned; still pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalResponse'
+        '400':
+          description: Missing forward target or invalid UUID
+        '404':
+          description: Approval request not found or already resolved
   /api/v1/approvals/{id}/reject:
     post:
       tags:
@@ -4788,6 +4828,15 @@ components:
         id:
           type: string
           description: Unique approval request identifier.
+        quorum:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/QuorumStatus'
+            description: |-
+              Multi-approver quorum status (AAASM-5095). Present only when the
+              approval is a quorum approval; absent for single-target approvals. When
+              present the tally reflects real approver responses and is never
+              fabricated.
         reason:
           type: string
           description: Human-readable reason for the approval request.
@@ -5407,6 +5456,17 @@ components:
           - string
           - 'null'
           description: Identity of the operator making the decision.
+        conditions:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: |-
+            Structured approval conditions attached to an approve decision
+            (AAASM-5095). Each entry is a condition slug such as `"this-once"`,
+            `"policy-exception"`, or `"time-boxed"`. Ignored on reject. Absent or
+            empty ⇒ an unconditional approval.
         reason:
           type:
           - string
@@ -5850,6 +5910,27 @@ components:
           items:
             $ref: '#/components/schemas/AgentHealth'
           description: One entry per agent the caller may see.
+    ForwardRequest:
+      type: object
+      description: Request body for the forward/reassign action (AAASM-5095).
+      required:
+      - to
+      properties:
+        by:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Identity of the operator performing the forward. Optional; recorded for
+            audit context.
+        reason:
+          type:
+          - string
+          - 'null'
+          description: Optional reason for the reassignment.
+        to:
+          type: string
+          description: Approver identifier (user id or role) to reassign the request to.
     GenerateApiKeyRequest:
       type: object
       required:
@@ -7014,6 +7095,61 @@ components:
         status: 404
         title: Not Found
         type: about:blank
+    QuorumApproverStatus:
+      type: object
+      description: Response state of a single approver in a multi-approver quorum (AAASM-5095).
+      required:
+      - approver
+      - status
+      properties:
+        approver:
+          type: string
+          description: Approver identifier (user id or role) participating in the quorum.
+        status:
+          type: string
+          description: |-
+            This approver's response so far: `"pending"`, `"approved"`, or
+            `"rejected"`. Never fabricated — reflects the approver's real recorded
+            response.
+    QuorumStatus:
+      type: object
+      description: |-
+        Multi-approver quorum status for an approval request (AAASM-5095).
+
+        Present **only** when the approval is a quorum approval (more than one
+        approver is required). It carries a truthful "`responded` of `required`
+        responded" tally plus the per-approver breakdown — the counts always
+        reflect real approver responses and are never fabricated. Absent
+        (serialized as omitted) for single-target approvals.
+
+        NOTE: full N-approver quorum *enforcement* (gateway-side routing that
+        blocks resolution until the quorum is met) is scoped as a follow-up. This
+        type is the wire contract; until the gateway can supply real per-approver
+        responses the field is emitted as absent rather than with a fabricated
+        count.
+      required:
+      - required
+      - responded
+      - approvers
+      properties:
+        approvers:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuorumApproverStatus'
+          description: Per-approver response breakdown. Length is the quorum size.
+        required:
+          type: integer
+          format: int32
+          description: Number of approver responses required to satisfy the quorum (N).
+          minimum: 0
+        responded:
+          type: integer
+          format: int32
+          description: |-
+            Number of approvers that have responded so far — a real count of the
+            entries in `approvers` whose status is not `"pending"`. Never a
+            fabricated value.
+          minimum: 0
     RecentActivityResponse:
       type: object
       required:

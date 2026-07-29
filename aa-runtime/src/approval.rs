@@ -186,6 +186,12 @@ pub struct ResolvedRecord {
     /// Optional free-text rationale recorded with the decision. `None` for
     /// approvals with no reason and for `"timed_out"` records.
     pub decision_reason: Option<String>,
+    /// Structured approval conditions recorded with an approval (AAASM-5095).
+    ///
+    /// Carries the [`ApprovalDecision::Approved::conditions`] slugs through to
+    /// the resolved record. Always empty for `"rejected"` and `"timed_out"`
+    /// records and for unconditional approvals.
+    pub decision_conditions: Vec<String>,
     /// Team identifier carried from the originating request, if any.
     pub team_id: Option<String>,
 }
@@ -203,6 +209,14 @@ pub enum ApprovalDecision {
         by: String,
         /// Optional free-text rationale.
         reason: Option<String>,
+        /// Structured approval conditions attached to the grant (AAASM-5095).
+        ///
+        /// Each entry is a machine-readable condition slug such as
+        /// `"this-once"`, `"policy-exception"`, or `"time-boxed"`, recorded
+        /// verbatim on the resolved decision so downstream consumers (audit,
+        /// dashboard) can render the qualified nature of the approval. Empty
+        /// when the operator approved unconditionally.
+        conditions: Vec<String>,
     },
     /// A human operator rejected the action.
     Rejected {
@@ -547,6 +561,40 @@ impl ApprovalQueue {
         self.record_routing(id, status, None, None, None, Some(entry))
     }
 
+    /// Forward (reassign) a still-pending request to a different approver
+    /// target (AAASM-5095).
+    ///
+    /// Unlike [`decide`](Self::decide), forwarding does **not** resolve the
+    /// request — it remains pending so the new target must still approve or
+    /// reject it. The current target becomes the `from_role` of a `"forwarded"`
+    /// routing-history entry and `to` becomes the new `target_role`; the
+    /// routing status is set to `"forwarded_to_<to>"`.
+    ///
+    /// Returns `true` if the request was still pending and was reassigned,
+    /// `false` if the id is unknown or already resolved (no-op) — mirroring the
+    /// contract of [`record_routing`](Self::record_routing).
+    pub fn forward(&self, id: ApprovalRequestId, to: &str) -> bool {
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let from_role = self.routing_meta.get(&id).and_then(|m| m.target_role.clone());
+        let entry = RoutingHistoryEntry {
+            at: now,
+            action: "forwarded".to_string(),
+            from_role,
+            to_role: to.to_string(),
+        };
+        self.record_routing(
+            id,
+            format!("forwarded_to_{to}"),
+            Some(to.to_string()),
+            None,
+            None,
+            Some(entry),
+        )
+    }
+
     /// Apply an [`ApprovalDecision`] to the request identified by `id`.
     ///
     /// Returns:
@@ -577,10 +625,10 @@ impl ApprovalQueue {
     /// filter can observe the decision (AAASM-1477). Evicts the oldest entry
     /// once the history cap is reached.
     fn record_resolution(&self, req: &ApprovalRequest, decision: &ApprovalDecision, decided_by: &str) {
-        let (status_str, decision_reason) = match decision {
-            ApprovalDecision::Approved { reason, .. } => ("approved", reason.clone()),
-            ApprovalDecision::Rejected { reason, .. } => ("rejected", Some(reason.clone())),
-            ApprovalDecision::TimedOut { .. } => ("timed_out", None),
+        let (status_str, decision_reason, decision_conditions) = match decision {
+            ApprovalDecision::Approved { reason, conditions, .. } => ("approved", reason.clone(), conditions.clone()),
+            ApprovalDecision::Rejected { reason, .. } => ("rejected", Some(reason.clone()), Vec::new()),
+            ApprovalDecision::TimedOut { .. } => ("timed_out", None, Vec::new()),
         };
         let decided_at = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -596,6 +644,7 @@ impl ApprovalQueue {
             status: status_str.to_string(),
             decided_by: decided_by.to_string(),
             decision_reason,
+            decision_conditions,
             team_id: req.team_id.clone(),
         };
         if let Ok(mut guard) = self.resolved_history.lock() {
@@ -849,10 +898,12 @@ mod tests {
         let d = ApprovalDecision::Approved {
             by: "alice".to_string(),
             reason: Some("looks safe".to_string()),
+            conditions: vec!["this-once".to_string()],
         };
-        if let ApprovalDecision::Approved { by, reason } = d {
+        if let ApprovalDecision::Approved { by, reason, conditions } = d {
             assert_eq!(by, "alice");
             assert_eq!(reason, Some("looks safe".to_string()));
+            assert_eq!(conditions, vec!["this-once".to_string()]);
         } else {
             panic!("wrong variant");
         }
@@ -942,6 +993,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         );
         assert_eq!(result, Err(ApprovalError::NotFound));
@@ -962,6 +1014,17 @@ mod tests {
             timeout_override_secs: None,
             escalation_role_override: None,
         }
+    }
+
+    /// Submit a fresh 60s pending request and return its id — the submit
+    /// boilerplate the decide/forward/conditions tests would otherwise repeat
+    /// (AAASM-5095). The returned future is dropped; these tests inspect queue
+    /// state rather than await the caller side.
+    fn submit_pending(q: &Arc<ApprovalQueue>) -> ApprovalRequestId {
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+        id
     }
 
     // --- routing metadata (record_routing / update_routing_status) ---
@@ -1062,6 +1125,113 @@ mod tests {
         assert!(!q.record_routing(id, "routed".to_string(), None, None, None, None));
     }
 
+    // --- forward / reassign (AAASM-5095) ---
+
+    #[tokio::test]
+    async fn forward_reassigns_pending_request_and_keeps_it_pending() {
+        let q = ApprovalQueue::new();
+        let id = submit_pending(&q);
+
+        // Establish an initial target role so the forward records a from_role.
+        assert!(q.record_routing(id, "routed".to_string(), Some("oncall".to_string()), None, None, None,));
+
+        assert!(q.forward(id, "manager"), "forward of a pending request must succeed");
+
+        // The request must still be pending — forwarding does not resolve it.
+        let p = q
+            .list()
+            .into_iter()
+            .find(|p| p.request_id == id)
+            .expect("request must remain pending after forward");
+        assert_eq!(p.routing_status.as_deref(), Some("forwarded_to_manager"));
+        assert_eq!(p.target_role.as_deref(), Some("manager"));
+        let last = p.routing_history.last().expect("forward appends a history entry");
+        assert_eq!(last.action, "forwarded");
+        assert_eq!(last.from_role.as_deref(), Some("oncall"));
+        assert_eq!(last.to_role, "manager");
+    }
+
+    #[tokio::test]
+    async fn forward_is_noop_for_unknown_or_resolved_request() {
+        let q = ApprovalQueue::new();
+        // Unknown id.
+        assert!(!q.forward(Uuid::new_v4(), "manager"));
+
+        // Resolved id.
+        let id = submit_pending(&q);
+        q.decide(
+            id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: None,
+                conditions: vec![],
+            },
+        )
+        .expect("decide");
+        assert!(
+            !q.forward(id, "manager"),
+            "forward of a resolved request must be a no-op"
+        );
+    }
+
+    // --- approve-with-conditions (AAASM-5095) ---
+
+    #[tokio::test]
+    async fn approve_with_conditions_carries_conditions_into_resolved_record() {
+        let q = ApprovalQueue::new();
+        let id = submit_pending(&q);
+
+        q.decide(
+            id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: Some("one-time exception".to_string()),
+                conditions: vec!["this-once".to_string(), "time-boxed".to_string()],
+            },
+        )
+        .expect("decide should succeed");
+
+        let history = snapshot_resolved(&q);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, "approved");
+        assert_eq!(
+            history[0].decision_conditions,
+            vec!["this-once".to_string(), "time-boxed".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_and_unconditional_approval_have_empty_conditions() {
+        let q = ApprovalQueue::new();
+        let approved_id = submit_pending(&q);
+        let rejected_id = submit_pending(&q);
+
+        q.decide(
+            approved_id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: None,
+                conditions: vec![],
+            },
+        )
+        .unwrap();
+        q.decide(
+            rejected_id,
+            ApprovalDecision::Rejected {
+                by: "bob".to_string(),
+                reason: "denied".to_string(),
+            },
+        )
+        .unwrap();
+
+        for r in q.list_resolved(None, None) {
+            assert!(
+                r.decision_conditions.is_empty(),
+                "conditions must be empty for unconditional/ rejected decisions"
+            );
+        }
+    }
+
     // --- ApprovalQueue::submit ---
 
     #[tokio::test]
@@ -1076,6 +1246,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1116,6 +1287,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("first decide should succeed");
@@ -1175,6 +1347,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1204,6 +1377,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1249,6 +1423,7 @@ mod tests {
                 ApprovalDecision::Approved {
                     by: "operator".to_string(),
                     reason: None,
+                    conditions: vec![],
                 },
             )
             .expect("decide should succeed for each request");
@@ -1295,6 +1470,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1360,6 +1536,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1388,6 +1565,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1416,6 +1594,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: Some("looks good".to_string()),
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1497,6 +1676,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1532,6 +1712,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .unwrap();
@@ -1574,6 +1755,7 @@ mod tests {
                 ApprovalDecision::Approved {
                     by: "tester".to_string(),
                     reason: None,
+                    conditions: vec![],
                 },
             )
             .unwrap();
@@ -1600,6 +1782,7 @@ mod tests {
                 ApprovalDecision::Approved {
                     by: "tester".to_string(),
                     reason: None,
+                    conditions: vec![],
                 },
             )
             .expect("decide should succeed");

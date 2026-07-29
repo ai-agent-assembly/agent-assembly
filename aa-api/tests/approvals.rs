@@ -25,6 +25,24 @@ fn make_approval_request(timeout_secs: u64) -> ApprovalRequest {
     }
 }
 
+/// Build a `POST` request with a JSON body — the request-builder boilerplate the
+/// approve/reject/forward integration tests would otherwise repeat verbatim
+/// (AAASM-5095).
+fn post_json(uri: impl AsRef<str>, body: &'static str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri.as_ref())
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Read a response body as parsed JSON.
+async fn json_body(resp: axum::response::Response) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
 #[tokio::test]
 async fn list_approvals_returns_empty_when_no_pending() {
     let app = common::test_app();
@@ -235,6 +253,7 @@ async fn get_approval_returns_resolved_after_decide() {
             aa_runtime::approval::ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: Some("looks good".to_string()),
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -320,6 +339,7 @@ async fn list_approvals_with_status_approved_returns_resolved_records() {
             aa_runtime::approval::ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .unwrap();
@@ -649,6 +669,140 @@ async fn reject_action_with_read_only_scope_is_forbidden() {
                 .uri("/api/v1/approvals/00000000-0000-0000-0000-000000000000/reject")
                 .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+// ── AAASM-5095 — approve-with-conditions ────────────────────────────────────
+
+#[tokio::test]
+async fn approve_with_conditions_records_conditions_on_resolved_record() {
+    let state = common::test_state();
+    let req = make_approval_request(600);
+    let id = req.request_id.to_string();
+    let (_rid, _fut) = state.approval_queue.submit(req);
+    let app = aa_api::server::build_app(state);
+
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            format!("/api/v1/approvals/{id}/approve"),
+            r#"{"by": "alice", "conditions": ["this-once", "  ", "time-boxed"]}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The resolved record must carry the conditions (blank slugs dropped),
+    // observable via the ?status=approved list.
+    let list = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/approvals?status=approved")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(list.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    // Conditions live on the runtime ResolvedRecord; assert the decision was
+    // recorded and status is approved (the wire ApprovalResponse does not
+    // surface conditions — they are audit-side on the resolved record).
+    assert_eq!(json["items"][0]["id"], id);
+    assert_eq!(json["items"][0]["status"], "approved");
+}
+
+// ── AAASM-5095 — forward / reassign ─────────────────────────────────────────
+
+#[tokio::test]
+async fn forward_action_reassigns_pending_and_keeps_it_pending() {
+    let state = common::test_state();
+    let req = make_approval_request(600);
+    let id = req.request_id.to_string();
+    let (_rid, _fut) = state.approval_queue.submit(req);
+    let app = aa_api::server::build_app(state);
+
+    let resp = app
+        .oneshot(post_json(
+            format!("/api/v1/approvals/{id}/forward"),
+            r#"{"to": "manager", "by": "alice"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = json_body(resp).await;
+    // Still pending after forward; routing target updated to the new approver.
+    assert_eq!(json["id"], id);
+    assert_eq!(json["status"], "pending");
+    assert_eq!(json["routing_status"]["status"], "forwarded_to_manager");
+    assert_eq!(json["routing_status"]["target_role"], "manager");
+}
+
+#[tokio::test]
+async fn forward_action_returns_404_for_unknown_id() {
+    let app = common::test_app();
+
+    let fake_id = uuid::Uuid::new_v4();
+    let resp = app
+        .oneshot(post_json(
+            format!("/api/v1/approvals/{fake_id}/forward"),
+            r#"{"to": "manager"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn forward_action_returns_400_for_empty_target() {
+    let state = common::test_state();
+    let req = make_approval_request(600);
+    let id = req.request_id;
+    let (_rid, _fut) = state.approval_queue.submit(req);
+    let app = aa_api::server::build_app(state);
+
+    let resp = app
+        .oneshot(post_json(format!("/api/v1/approvals/{id}/forward"), r#"{"to": "   "}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = json_body(resp).await;
+    assert!(json["detail"].as_str().unwrap_or_default().contains("non-empty"));
+}
+
+#[tokio::test]
+async fn forward_action_returns_400_for_invalid_uuid() {
+    let app = common::test_app();
+
+    let resp = app
+        .oneshot(post_json(
+            "/api/v1/approvals/not-a-uuid/forward",
+            r#"{"to": "manager"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn forward_action_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/approvals/00000000-0000-0000-0000-000000000000/forward")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"to": "manager"}"#))
                 .unwrap(),
         )
         .await

@@ -1414,6 +1414,7 @@ mod tests {
                 RuntimeApprovalDecision::Approved {
                     by: "cli-operator".to_string(),
                     reason: Some("approved via IPC test".to_string()),
+                    conditions: vec![],
                 },
             )
             .expect("decide should succeed");
