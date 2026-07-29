@@ -60,6 +60,21 @@ fn authorize_approval_access(
     Ok(lookup)
 }
 
+/// Parse the path `id` as a UUID and run the write-scope + tenant-ownership
+/// guard in one step, returning the parsed id alongside the resolved approval.
+/// The get / approve / reject / forward handlers share this exact preamble
+/// (AAASM-5095), so it lives here once rather than repeated per handler.
+fn parse_and_authorize(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    id: &str,
+) -> Result<(Uuid, ApprovalLookup), ProblemDetail> {
+    let uuid = Uuid::parse_str(id)
+        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
+    let lookup = authorize_approval_access(caller, state, uuid, id)?;
+    Ok((uuid, lookup))
+}
+
 /// Query parameters for `GET /api/v1/approvals` (AAASM-1477).
 ///
 /// Adds `status` and `agent` filters on top of [`PaginationParams`].
@@ -373,11 +388,8 @@ pub async fn get_approval(
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
-
     // AAASM-3790: read-scope + tenant ownership before exposing the approval.
-    let resp = match authorize_approval_access(&caller, &state, uuid, &id)? {
+    let resp = match parse_and_authorize(&caller, &state, &id)?.1 {
         ApprovalLookup::Pending(p) => pending_to_response(p),
         ApprovalLookup::Resolved(r) => resolved_to_response(r),
     };
@@ -404,11 +416,8 @@ pub async fn approve_action(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<DecideRequest>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
-
     // AAASM-3790: write-scope + tenant ownership before resolving the approval.
-    authorize_approval_access(&caller, &state, uuid, &id)?;
+    let (uuid, _) = parse_and_authorize(&caller, &state, &id)?;
 
     // Normalize conditions: drop empty/whitespace-only slugs so an empty or
     // blank list is recorded as an unconditional approval (AAASM-5095).
@@ -470,11 +479,8 @@ pub async fn reject_action(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<DecideRequest>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
-
     // AAASM-3790: write-scope + tenant ownership before resolving the approval.
-    authorize_approval_access(&caller, &state, uuid, &id)?;
+    let (uuid, _) = parse_and_authorize(&caller, &state, &id)?;
 
     let reason = body.reason.filter(|r| !r.trim().is_empty()).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail("Rejection requires a non-empty reason")
@@ -537,12 +543,9 @@ pub async fn forward_action(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<ForwardRequest>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
-
     // Same guard as approve/reject: write scope + tenant ownership. Forwarding
     // must not let a caller act on an approval outside its authority.
-    authorize_approval_access(&caller, &state, uuid, &id)?;
+    let (uuid, _) = parse_and_authorize(&caller, &state, &id)?;
 
     let to = body.to.trim();
     if to.is_empty() {
