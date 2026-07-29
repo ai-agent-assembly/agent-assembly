@@ -24,7 +24,7 @@ use crate::engine::cache::{CacheKey, DecisionCache};
 
 use crate::budget::BudgetTracker;
 
-use crate::engine::decision::{merge_decisions, PolicyDecision};
+use crate::engine::decision::PolicyDecision;
 use crate::engine::scope_index::ScopeIndex;
 use crate::policy::document::{ActionOnExceed, CredentialAction};
 use crate::policy::{PolicyDocument, PolicyValidator};
@@ -59,6 +59,16 @@ pub struct EvaluationResult {
     /// Optional side-effect action for the service layer when the decision is `Deny`.
     /// `None` means no side-effect beyond denying the request.
     pub deny_action: Option<DenyAction>,
+    /// AAASM-5107 — content digest of the policy document that produced this
+    /// decision (`"sha256:<hex>"`), as reported by
+    /// [`decision::merge_decisions_attributed`]. Carried to the audit write so a
+    /// per-document 24h hit count is queryable and the deciding document is
+    /// unambiguous even across two versions of the same `(scope, name)`.
+    ///
+    /// `None` on the pre-cascade / primary-policy paths and the empty-cascade
+    /// fail-closed deny — those verdicts are produced without a nameable cascade
+    /// document, so no digest is attributed rather than a misleading one.
+    pub policy_doc_id: Option<String>,
 }
 
 impl EvaluationResult {
@@ -71,6 +81,7 @@ impl EvaluationResult {
             redacted_payload: None,
             credential_findings: vec![],
             deny_action: None,
+            policy_doc_id: None,
         }
     }
 
@@ -88,6 +99,7 @@ impl EvaluationResult {
             redacted_payload,
             credential_findings,
             deny_action,
+            policy_doc_id: None,
         }
     }
 }
@@ -165,6 +177,10 @@ pub fn transform_for_observe_mode(
         redacted_payload: None,
         credential_findings: result.credential_findings,
         deny_action: None,
+        // AAASM-5107 — observe mode rewrites the verdict to Allow but the policy
+        // document still fired; preserve its attribution so the dry-run audit
+        // entry still names the document that would have decided in enforce mode.
+        policy_doc_id: result.policy_doc_id,
     };
 
     (transformed, Some(shadow))
@@ -1074,6 +1090,7 @@ impl PolicyEngine {
                 redacted_payload: None,
                 credential_findings: vec![],
                 deny_action: None,
+                policy_doc_id: None,
             });
         }
         None
@@ -1222,6 +1239,7 @@ impl PolicyEngine {
                 redacted_payload: None,
                 credential_findings: all_findings,
                 deny_action: None,
+                policy_doc_id: None,
             });
         }
 
@@ -1336,6 +1354,7 @@ impl PolicyEngine {
             redacted_payload,
             credential_findings,
             deny_action: None,
+            policy_doc_id: None,
         }
     }
 
@@ -1476,20 +1495,22 @@ impl PolicyEngine {
         action: &aa_core::GovernanceAction,
         cache_key: CacheKey,
         pctx_dyn: Option<&dyn crate::policy::context::PolicyContext>,
-    ) -> PolicyDecision {
+    ) -> (PolicyDecision, Option<String>) {
         let context_dependent = Self::cascade_has_live_context_approval(cascade);
         if context_dependent {
             // ADR 0015 §4: surface any graph-context resolution failures for audit
             // on the fresh-evaluation path (context-dependent verdicts are never
             // cached, so this is the only place they can arise).
             let mut failures = Vec::new();
-            let v = decision::merge_decisions_audited(cascade, ctx, action, pctx_dyn, &mut failures);
+            // AAASM-5107 — attribute the verdict to the deciding document's digest.
+            let v = decision::merge_decisions_attributed(cascade, ctx, action, pctx_dyn, &mut failures);
             Self::emit_resolution_failures(&failures);
             v
         } else if let Some(cached) = self.decision_cache.get(&cache_key) {
             cached
         } else {
-            let v = merge_decisions(cascade, ctx, action, pctx_dyn);
+            let mut failures = Vec::new();
+            let v = decision::merge_decisions_attributed(cascade, ctx, action, pctx_dyn, &mut failures);
             self.decision_cache.insert(cache_key, v.clone());
             v
         }
@@ -1511,6 +1532,7 @@ impl PolicyEngine {
                 redacted_payload: None,
                 credential_findings: vec![],
                 deny_action: None,
+                policy_doc_id: None,
             };
         }
 
@@ -1529,7 +1551,7 @@ impl PolicyEngine {
         });
         let pctx_dyn: Option<&dyn crate::policy::context::PolicyContext> = pctx.as_ref().map(|c| c as _);
 
-        let verdict = self.resolve_merge_verdict(&cascade, ctx, action, cache_key, pctx_dyn);
+        let (verdict, policy_doc_id) = self.resolve_merge_verdict(&cascade, ctx, action, cache_key, pctx_dyn);
 
         // If already denied, return immediately.
         if let PolicyDecision::Deny { reason, .. } = verdict {
@@ -1538,6 +1560,7 @@ impl PolicyEngine {
                 redacted_payload: None,
                 credential_findings: vec![],
                 deny_action: None,
+                policy_doc_id,
             };
         }
 
@@ -1585,6 +1608,7 @@ impl PolicyEngine {
             redacted_payload,
             credential_findings,
             deny_action,
+            policy_doc_id,
         }
     }
 

@@ -219,6 +219,7 @@ pub fn result_to_response(result: &PolicyResult, latency_us: i64, policy_rule: &
         redacted_payload: None,
         credential_findings: Vec::new(),
         deny_action: None,
+        policy_doc_id: None,
     };
     eval_result_to_response(&eval, latency_us, policy_rule)
 }

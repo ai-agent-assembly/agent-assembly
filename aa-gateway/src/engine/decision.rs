@@ -25,8 +25,15 @@ pub enum PolicyDecision {
 }
 
 impl PolicyDecision {
-    /// Convert to `aa_core::PolicyResult`, dropping the `source_scope` audit
-    /// field that is not part of the core protocol type.
+    /// Convert to `aa_core::PolicyResult`, dropping the `source_scope` field
+    /// that is not part of the core protocol type.
+    ///
+    /// AAASM-5107: `source_scope` is scope-granular (global/org/team/agent) and
+    /// never named a *document*, so document attribution does not travel on this
+    /// conversion. The deciding document's content digest is captured separately
+    /// via [`merge_decisions_attributed`] and carried to the audit write on
+    /// [`crate::engine::EvaluationResult::policy_doc_id`], so it is no longer
+    /// lost here.
     pub fn into_policy_result(self) -> aa_core::PolicyResult {
         match self {
             PolicyDecision::Allow => aa_core::PolicyResult::Allow,
@@ -331,29 +338,71 @@ pub fn merge_decisions_audited(
     policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
     failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
 ) -> PolicyDecision {
+    merge_decisions_attributed(cascade, ctx, action, policy_ctx, failures).0
+}
+
+/// Like [`merge_decisions_audited`], but additionally reports the **content
+/// digest of the deciding policy document** (AAASM-5107).
+///
+/// The returned `Option<String>` is [`PolicyDocument::content_digest`] of the
+/// single document that produced the terminal verdict:
+///
+/// * a `Deny` — the document whose stage fired the short-circuit deny;
+/// * a `RequireApproval` — the most-specific document that required approval
+///   (the one whose decision the merge kept);
+/// * an `Allow` — the most-specific document evaluated (the last in cascade
+///   order), i.e. the narrowest policy that let the action through.
+///
+/// `None` only for the empty-cascade fail-closed deny, which no document
+/// produced. This is the stable identity carried to the audit write so a
+/// per-document 24h hit count is queryable (AAASM-5107 §3), and it distinguishes
+/// two versions of the same `(scope, name)` because the digest is content-derived.
+pub fn merge_decisions_attributed(
+    cascade: &[Arc<PolicyDocument>],
+    ctx: &aa_core::AgentContext,
+    action: &aa_core::GovernanceAction,
+    policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+    failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
+) -> (PolicyDecision, Option<String>) {
     if cascade.is_empty() {
-        return PolicyDecision::Deny {
-            reason: "no policy — fail-closed".into(),
-            source_scope: PolicyScope::Global,
-        };
+        return (
+            PolicyDecision::Deny {
+                reason: "no policy — fail-closed".into(),
+                source_scope: PolicyScope::Global,
+            },
+            None,
+        );
     }
 
     let mut running = PolicyDecision::Allow;
+    // The document whose verdict `running` currently holds. Seeded to the first
+    // (broadest) document so an all-Allow cascade still attributes the allow to
+    // a concrete document rather than dropping the attribution.
+    let mut decided_by: &Arc<PolicyDocument> = &cascade[0];
 
     for doc in cascade {
         let verdict = evaluate_single_doc(doc, ctx, action, policy_ctx, failures);
         match verdict {
-            // Short-circuit: Deny always wins.
-            PolicyDecision::Deny { .. } => return verdict,
+            // Short-circuit: Deny always wins — attribute to the denying doc.
+            PolicyDecision::Deny { .. } => return (verdict, Some(doc.content_digest())),
             // Most-specific scope wins: always overwrite with the narrower scope's decision.
             PolicyDecision::RequireApproval { .. } => {
                 running = verdict;
+                decided_by = doc;
             }
-            PolicyDecision::Allow => {}
+            // An allow from this doc does not change the verdict, but the
+            // most-specific evaluated doc is the effective decider for an
+            // all-Allow cascade.
+            PolicyDecision::Allow => {
+                if matches!(running, PolicyDecision::Allow) {
+                    decided_by = doc;
+                }
+            }
         }
     }
 
-    running
+    let doc_id = decided_by.content_digest();
+    (running, Some(doc_id))
 }
 
 #[cfg(test)]
