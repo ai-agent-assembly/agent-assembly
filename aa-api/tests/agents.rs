@@ -324,6 +324,7 @@ async fn get_agent_response_includes_active_sessions_and_recent_events() {
         session_id: "sess-001".into(),
         started_at: chrono::Utc::now(),
         status: "running".into(),
+        actions_count: 3,
     }];
     agent.recent_events.push_back(RecentEvent {
         event_type: "violation".into(),
@@ -354,6 +355,7 @@ async fn get_agent_response_includes_active_sessions_and_recent_events() {
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["session_id"], "sess-001");
     assert_eq!(sessions[0]["status"], "running");
+    assert_eq!(sessions[0]["actions_count"], 3);
     assert!(sessions[0]["started_at"].as_str().is_some());
 
     let events = json["recent_events"].as_array().unwrap();

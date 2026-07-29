@@ -56,11 +56,12 @@ fn agent_with_sessions(id_byte: u8, team: Option<&str>, sessions: Vec<ActiveSess
     }
 }
 
-fn session(id: &str, offset_secs: i64, status: &str) -> ActiveSession {
+fn session(id: &str, offset_secs: i64, status: &str, actions_count: u32) -> ActiveSession {
     ActiveSession {
         session_id: id.to_string(),
         started_at: chrono::Utc::now() - chrono::Duration::seconds(offset_secs),
         status: status.to_string(),
+        actions_count,
     }
 }
 
@@ -105,7 +106,10 @@ async fn active_sessions_flattens_all_agents_newest_first() {
         .register(agent_with_sessions(
             0xAA,
             None,
-            vec![session("sess-old", 300, "idle"), session("sess-new", 5, "running")],
+            vec![
+                session("sess-old", 300, "idle", 2),
+                session("sess-new", 5, "running", 7),
+            ],
         ))
         .unwrap();
     state
@@ -113,7 +117,7 @@ async fn active_sessions_flattens_all_agents_newest_first() {
         .register(agent_with_sessions(
             0xBB,
             None,
-            vec![session("sess-mid", 60, "running")],
+            vec![session("sess-mid", 60, "running", 4)],
         ))
         .unwrap();
 
@@ -142,6 +146,7 @@ async fn active_sessions_flattens_all_agents_newest_first() {
     let first = &rows[0];
     assert_eq!(first["session_id"], "sess-new");
     assert_eq!(first["status"], "running");
+    assert_eq!(first["actions_count"], 7);
     assert_eq!(first["agent_id"], hex_id(0xAA));
     assert_eq!(first["agent_name"], "agent-170");
     assert!(first["started_at"].as_str().is_some());
@@ -155,7 +160,7 @@ async fn active_sessions_are_scoped_to_caller_team() {
         .register(agent_with_sessions(
             0xAA,
             Some("alpha"),
-            vec![session("alpha-sess", 10, "running")],
+            vec![session("alpha-sess", 10, "running", 1)],
         ))
         .unwrap();
     state
@@ -163,7 +168,7 @@ async fn active_sessions_are_scoped_to_caller_team() {
         .register(agent_with_sessions(
             0xBB,
             Some("beta"),
-            vec![session("beta-sess", 10, "running")],
+            vec![session("beta-sess", 10, "running", 1)],
         ))
         .unwrap();
     let app = aa_api::build_app(state);

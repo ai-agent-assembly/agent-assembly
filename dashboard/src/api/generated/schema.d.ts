@@ -1922,6 +1922,11 @@ export interface components {
         };
         /** @description Summary of an active session in the API response. */
         ActiveSessionResponse: {
+            /**
+             * Format: int32
+             * @description Number of governed actions observed on this session so far (AAASM-5088).
+             */
+            actions_count: number;
             /** @description Hex-encoded session UUID. */
             session_id: string;
             /** @description ISO 8601 timestamp when the session started. */
@@ -3274,12 +3279,18 @@ export interface components {
          *
          *     Enriches the per-agent [`ActiveSessionResponse`] with the owning agent's
          *     identity so the dashboard Fleet → Active Sessions tab can render one flat,
-         *     fleet-wide table without a second lookup. `actions_count` / `current_task`
-         *     from the design mock are deliberately omitted: the registry does not track
-         *     them per session, and this endpoint only surfaces state that already exists
-         *     (it must not invent a session store).
+         *     fleet-wide table without a second lookup. `actions_count` is now sourced
+         *     from real gateway traffic (AAASM-5088): each CheckAction / BatchCheck the
+         *     gateway evaluates for the session increments it. `current_task` from the
+         *     design mock stays omitted — the session layer has no real source for a task
+         *     label, and this endpoint surfaces only state that already exists.
          */
         FleetActiveSessionResponse: {
+            /**
+             * Format: int32
+             * @description Number of governed actions observed on this session so far (AAASM-5088).
+             */
+            actions_count: number;
             /** @description Hex-encoded UUID of the agent that owns the session. */
             agent_id: string;
             /** @description Human-readable name of the owning agent. */
