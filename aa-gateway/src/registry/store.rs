@@ -19,6 +19,15 @@ use crate::storage::StorageBackend;
 /// Maximum number of recent events retained per agent.
 pub const MAX_RECENT_EVENTS: usize = 20;
 
+/// Maximum number of concurrently-tracked active sessions retained per agent.
+///
+/// The gateway has no per-session end RPC (see [`AgentRegistry::close_session`]),
+/// so on a long-lived agent `active_sessions` would otherwise grow without
+/// bound. When a newly-observed session would exceed this cap, the oldest
+/// session (by `started_at`) is evicted — mirroring the `MAX_RECENT_EVENTS`
+/// bound on `recent_events`.
+pub const MAX_ACTIVE_SESSIONS: usize = 50;
+
 /// Maximum allowed delegation depth. Agents that would exceed this depth are rejected at registration.
 pub const DEFAULT_MAX_AGENT_DEPTH: u32 = 10;
 
@@ -774,6 +783,76 @@ impl AgentRegistry {
             .ok_or(RegistryError::NotFound(*agent_id))?;
         entry.last_heartbeat = Utc::now();
         Ok(())
+    }
+
+    /// Record activity for a session and return its current action count.
+    ///
+    /// AAASM-5088 — the gateway's session-lifecycle hook. On the first activity
+    /// seen for `session_id`, opens a new [`ActiveSession`] (status `"running"`,
+    /// `actions_count = 1`) on the agent's record and increments the agent's
+    /// lifetime `session_count`. On subsequent activity for the same
+    /// `session_id`, increments that session's `actions_count`. This is what
+    /// makes `active_sessions` — and therefore the Fleet Active-Sessions surface
+    /// — populate in production rather than staying empty.
+    ///
+    /// Returns `Ok(count)` with the session's new `actions_count`, or
+    /// [`RegistryError::NotFound`] when the agent is not registered (an
+    /// unregistered agent has no record to attach a session to).
+    pub fn record_session_activity(&self, agent_id: &[u8; 16], session_id: &str) -> Result<u32, RegistryError> {
+        let mut entry = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or(RegistryError::NotFound(*agent_id))?;
+        if let Some(session) = entry.active_sessions.iter_mut().find(|s| s.session_id == session_id) {
+            session.actions_count = session.actions_count.saturating_add(1);
+            Ok(session.actions_count)
+        } else {
+            entry.active_sessions.push(ActiveSession {
+                session_id: session_id.to_string(),
+                started_at: Utc::now(),
+                status: "running".to_string(),
+                actions_count: 1,
+            });
+            entry.session_count = entry.session_count.saturating_add(1);
+            // Bound the tracked set: with no per-session end signal, evict the
+            // oldest session once the cap is exceeded so a long-lived agent's
+            // `active_sessions` stays bounded (mirrors MAX_RECENT_EVENTS).
+            if entry.active_sessions.len() > MAX_ACTIVE_SESSIONS {
+                if let Some((idx, _)) = entry
+                    .active_sessions
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, s)| s.started_at)
+                {
+                    entry.active_sessions.remove(idx);
+                }
+            }
+            Ok(1)
+        }
+    }
+
+    /// Close a single active session on an agent, removing it from
+    /// `active_sessions`.
+    ///
+    /// AAASM-5088 — the per-session end primitive. A full agent deregister
+    /// already drops every open session with the record (the record is removed
+    /// wholesale), so the only end this primitive adds is closing one session
+    /// while its agent stays registered. The gateway has no per-session end
+    /// signal today (no SessionEnd RPC and `recent_traces` is likewise never
+    /// populated at runtime), so this stands ready for a first-class end RPC
+    /// rather than being called on a live path yet — see the ticket's
+    /// "remained absent" note. Returns `Ok(true)` when a matching session was
+    /// found and removed, `Ok(false)` when the agent had no such open session
+    /// (idempotent — a double-close is not an error), or
+    /// [`RegistryError::NotFound`] when the agent is not registered.
+    pub fn close_session(&self, agent_id: &[u8; 16], session_id: &str) -> Result<bool, RegistryError> {
+        let mut entry = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or(RegistryError::NotFound(*agent_id))?;
+        let before = entry.active_sessions.len();
+        entry.active_sessions.retain(|s| s.session_id != session_id);
+        Ok(entry.active_sessions.len() != before)
     }
 
     /// Open a control stream for a registered agent.
