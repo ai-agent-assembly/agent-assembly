@@ -20,7 +20,7 @@ use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
     admin, agents, alert_rules, alerts, analytics, approvals, audit, auth, capability, costs, destinations, dispatch,
-    edges, iam, logs, ops, policies, tools, topology, traces,
+    edges, iam, logs, ops, policies, scrub, tools, topology, traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -59,6 +59,7 @@ use crate::routes::{
         (name = "admin", description = "Admin operations — retention policy hot-reload and on-demand run (AAASM-1592 S-K)"),
         (name = "dispatch", description = "Secret Injection — tool dispatch with placeholder resolution (AAASM-1920)"),
         (name = "tools", description = "Auto-discovered AI dev tools on the gateway host"),
+        (name = "scrub", description = "DLP / secret-scrub — effective pattern catalogue, per-pattern detection counts, and leak posture (AAASM-5174)"),
     ),
     paths(
         crate::routes::health::health,
@@ -147,6 +148,9 @@ use crate::routes::{
         admin::update_retention_policy,
         admin::run_retention_policy,
         dispatch::dispatch_tool,
+        scrub::get_patterns,
+        scrub::get_pattern_counts,
+        scrub::get_posture,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
@@ -311,6 +315,11 @@ use crate::routes::{
         RetentionRunStatsDto,
         RunRetentionRequest,
         UpdateRetentionPolicyRequest,
+        scrub::ScrubPattern,
+        scrub::ScrubCatalogueResponse,
+        scrub::PatternCount,
+        scrub::PatternCountsResponse,
+        scrub::PostureResponse,
     )),
     modifiers(&SecurityAddon, &AlertsWsSubprotocolAddon),
 )]
