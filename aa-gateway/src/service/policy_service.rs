@@ -937,12 +937,21 @@ impl PolicyServiceImpl {
         // core-type follow-up — see PR body.)
         let trace_id_str: Option<&str> = (!req.trace_id.is_empty()).then_some(req.trace_id.as_str());
         let span_id_str: Option<&str> = (!req.span_id.is_empty()).then_some(req.span_id.as_str());
+        // AAASM-5107 — the content digest of the deciding policy document. Carried
+        // in the payload JSON so the per-document 24h hit-count query
+        // (`aa_api::routes::analytics`) can group audit events by document, and
+        // mirrored onto the top-level `policy_doc_id` field below. `None` on
+        // paths that resolved no cascade document (primary policy, credential /
+        // budget engine-level denies, empty cascade) — absent, never a
+        // misleading id.
+        let policy_doc_id: Option<&str> = eval.policy_doc_id.as_deref();
         let payload = match shadow {
             Some(s) => serde_json::json!({
                 "action_type": req.action_type,
                 "decision": response.decision,
                 "reason": &response.reason,
                 "policy_rule": &response.policy_rule,
+                "policy_doc_id": policy_doc_id,
                 "latency_us": response.decision_latency_us,
                 "dry_run": true,
                 "shadow_decision": &s.shadow_decision,
@@ -964,6 +973,7 @@ impl PolicyServiceImpl {
                 "decision": response.decision,
                 "reason": &response.reason,
                 "policy_rule": &response.policy_rule,
+                "policy_doc_id": policy_doc_id,
                 "latency_us": response.decision_latency_us,
                 "caller_agent_id": caller_agent_id_str,
                 "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
@@ -986,34 +996,31 @@ impl PolicyServiceImpl {
         // redacted payload) to the audit entry via the redaction-aware constructor.
         // Both fields carry the [REDACTED:<kind>] form only — the raw secret bytes
         // never reach the audit pipeline.
-        let entry = if eval.credential_findings.is_empty() {
-            AuditEntry::new_with_lineage(
-                seq,
-                timestamp_ns,
-                event_type,
-                agent_id,
-                session_id,
-                payload,
-                *last_hash,
-                lineage,
-            )
+        // AAASM-5107 — always route through the attribution-aware constructor so
+        // the deciding document's digest is committed to the entry hash. A clean
+        // scan passes `Redaction::default()`, which contributes zero bytes and so
+        // hashes exactly as `new_with_lineage` did; a policy_doc_id of `None`
+        // likewise contributes nothing. Only a *present* digest changes the hash.
+        let redaction = if eval.credential_findings.is_empty() {
+            Redaction::default()
         } else {
-            let redaction = Redaction {
+            Redaction {
                 credential_findings: eval.credential_findings.clone(),
                 redacted_payload: eval.redacted_payload.clone(),
-            };
-            AuditEntry::new_with_lineage_and_redaction(
-                seq,
-                timestamp_ns,
-                event_type,
-                agent_id,
-                session_id,
-                payload,
-                *last_hash,
-                lineage,
-                redaction,
-            )
+            }
         };
+        let entry = AuditEntry::new_with_lineage_redaction_and_attribution(
+            seq,
+            timestamp_ns,
+            event_type,
+            agent_id,
+            session_id,
+            payload,
+            *last_hash,
+            lineage,
+            redaction,
+            eval.policy_doc_id.clone(),
+        );
 
         // Update the chain head before sending — even if try_send fails (the entry
         // is dropped), we advance the chain so subsequent entries don't duplicate
