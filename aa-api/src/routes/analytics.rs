@@ -2328,7 +2328,10 @@ mod tests {
         assert_eq!(a1_row.narrow, 0, "narrow has no audit source -> always 0");
 
         let a2_row = rows.iter().find(|r| r.agent_id == format_id(&a2)).expect("a2 present");
-        assert_eq!(a2_row.deny, 1, "the in-window PolicyViolation; the stale one is dropped");
+        assert_eq!(
+            a2_row.deny, 1,
+            "the in-window PolicyViolation; the stale one is dropped"
+        );
         assert_eq!(a2_row.allow, 0);
         assert_eq!(a2_row.narrow, 0);
 
