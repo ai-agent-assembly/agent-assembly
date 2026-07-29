@@ -72,9 +72,36 @@ describe('BudgetTree', () => {
     expect(screen.getByTestId('budget-node-team-a')).toBeInTheDocument()
     expect(screen.getByTestId('budget-node-root-a')).toBeInTheDocument()
     expect(screen.queryByTestId('budget-node-child-a')).not.toBeInTheDocument()
-    // Kind badge and governance level surface on the agent row.
+    // Kind badge and governance level surface on the agent row. The level is
+    // shown in its two-char form (L0), with the full enum in the chip title
+    // (AAASM-5172).
     expect(screen.getByTestId('budget-node-root-a')).toHaveAttribute('data-kind', 'agent')
-    expect(screen.getAllByText('L0Discover').length).toBeGreaterThan(0)
+    const govChips = screen.getAllByText('L0')
+    expect(govChips.length).toBeGreaterThan(0)
+    expect(govChips[0]).toHaveAttribute('title', 'L0Discover')
+  })
+
+  it('renders each governance level as its two-char tag', () => {
+    const levels: BudgetTreeData = {
+      root: {
+        id: 'org',
+        label: 'org',
+        kind: 'org',
+        depth: 0,
+        budget_limit_usd: '100',
+        own_spend_usd: '0',
+        subtree_spend_usd: '0',
+        children: [
+          { id: 'e', label: 'e', kind: 'agent', depth: 1, budget_limit_usd: '10', own_spend_usd: '1', subtree_spend_usd: '1', governance_level: 'L2Enforce', children: [] },
+          { id: 'n', label: 'n', kind: 'agent', depth: 1, budget_limit_usd: '10', own_spend_usd: '1', subtree_spend_usd: '1', governance_level: 'L3Native', children: [] },
+        ],
+      },
+    }
+    render(<BudgetTree data={levels} isLoading={false} isError={false} />)
+
+    expect(screen.getByText('L2')).toHaveAttribute('title', 'L2Enforce')
+    expect(screen.getByText('L3')).toHaveAttribute('title', 'L3Native')
+    expect(screen.queryByText('L2Enforce')).not.toBeInTheDocument()
   })
 
   it('expands and collapses a node with children on click', async () => {
@@ -152,5 +179,28 @@ describe('BudgetTree', () => {
     render(<BudgetTree data={{ root: null }} isLoading={false} isError={false} />)
     expect(screen.getByTestId('budget-tree-empty')).toBeInTheDocument()
     expect(screen.queryByTestId('budget-tree-grid')).not.toBeInTheDocument()
+  })
+
+  it('dashes the subtree burn for a node with no configured limit', () => {
+    // A node that has spent money but has no ceiling has no burn fraction to
+    // report. It must read as an em-dash, never a fabricated 0.0% that scans as
+    // a measured zero burn (AAASM-5172).
+    const noLimit: BudgetTreeData = {
+      root: {
+        id: 'acme',
+        label: 'acme',
+        kind: 'org',
+        depth: 0,
+        budget_limit_usd: null,
+        own_spend_usd: '12.00',
+        subtree_spend_usd: '12.00',
+        children: [],
+      },
+    }
+    render(<BudgetTree data={noLimit} isLoading={false} isError={false} />)
+
+    const row = screen.getByTestId('budget-node-acme')
+    expect(row).toHaveTextContent('—')
+    expect(row).not.toHaveTextContent('0.0%')
   })
 })

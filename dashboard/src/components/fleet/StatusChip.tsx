@@ -19,8 +19,20 @@ const GLYPH: Record<FleetStatusKind, string> = {
 
 const KNOWN: readonly FleetStatusKind[] = ['active', 'idle', 'suspended', 'error']
 
+// Synonyms the wire emits for one of the known kinds. The fleet registry and
+// `GET /api/v1/fleet/active-sessions` both live behind this chip, and the
+// sessions endpoint reports a live session as `running` where the fleet uses
+// `active`. Aliasing it here maps the *tone* (active-green glyph) without
+// widening the agent `FleetStatusKind` vocabulary — a session that is running
+// still reads "running", it just no longer falls into the grey unknown bucket
+// (AAASM-5172).
+const ALIAS: Readonly<Record<string, FleetStatusKind>> = {
+  running: 'active',
+}
+
 function classify(status: string): FleetStatusKind | 'unknown' {
-  return (KNOWN as readonly string[]).includes(status) ? (status as FleetStatusKind) : 'unknown'
+  if ((KNOWN as readonly string[]).includes(status)) return status as FleetStatusKind
+  return ALIAS[status] ?? 'unknown'
 }
 
 /**

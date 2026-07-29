@@ -394,6 +394,13 @@
   text-align: center;
 }
 
+.audit-expand-glyph {
+  color: var(--ink-4);
+  font-size: 0.65rem;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  margin-right: 0.4rem;
+}
+
 /* ── Chips ───────────────────────────────────────────────────────────── */
 .audit-chip {
   display: inline-block;

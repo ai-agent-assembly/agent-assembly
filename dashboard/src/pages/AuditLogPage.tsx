@@ -319,7 +319,10 @@ export function AuditLogPage() {
                     >
                       <td className="audit-mono audit-session">{e.seq}</td>
                       <td>
-                        <div className="audit-cell-time">{e.timestamp.slice(11, 19)}</div>
+                        {/* The wire timestamp is UTC; on a compliance surface an
+                            unlabelled clock time invites the reader to assume it
+                            is local. Label the zone explicitly (AAASM-5172). */}
+                        <div className="audit-cell-time">{e.timestamp.slice(11, 19)} UTC</div>
                         <div className="audit-cell-date">{e.timestamp.slice(0, 10)}</div>
                       </td>
                       <td>
@@ -370,6 +373,19 @@ export function AuditLogPage() {
                       </td>
                       <td className="audit-session">{e.session_id}</td>
                       <td>
+                        {/* The mock (design/v1/hi-fi/audit-log.jsx:145,197-199)
+                            carries a ▼/▲ disclosure glyph reflecting the row's
+                            expand state; the port dropped it for the View link
+                            alone. Both are restored — the glyph mirrors the
+                            row's click-to-expand, the link is the stable
+                            cross-reference (AAASM-5172). */}
+                        <span
+                          className="audit-expand-glyph"
+                          aria-hidden="true"
+                          data-testid={`audit-expand-glyph-${e.seq}`}
+                        >
+                          {isExp ? '▲' : '▼'}
+                        </span>
                         <Link
                           to={auditEventHref(e.seq)}
                           className="audit-event-link"
