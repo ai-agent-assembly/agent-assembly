@@ -10,6 +10,7 @@ import * as agentsApi from '../features/agents/api'
 import * as agentsMutations from '../features/agents/mutations'
 import * as topologyApi from '../features/topology/api'
 import * as trafficApi from '../features/analytics/useAgentTrafficQuery'
+import * as decisionMixApi from '../features/analytics/useAgentDecisionMixQuery'
 import * as agentPoliciesApi from '../features/capability/useAgentPolicies'
 import { capabilityClient } from '../api/capability'
 import type { Agent, LogEntry } from '../features/agents/api'
@@ -134,6 +135,17 @@ function mockTabHooks() {
   vi.spyOn(agentPoliciesApi, 'useAgentPoliciesQuery').mockReturnValue(
     mockQuery<Policy[]>({
       data: [],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+  )
+  // AAASM-5085: the Overview traffic-mix bar reads the per-agent decision-mix
+  // endpoint. Default to `null` (agent has no tracked decision) so the bar hits
+  // its honest empty state; the dedicated mix-bar unit test covers populated data.
+  vi.spyOn(decisionMixApi, 'useAgentDecisionMixQuery').mockReturnValue(
+    mockQuery<decisionMixApi.AgentDecisionMix | null>({
+      data: null,
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
@@ -284,13 +296,16 @@ describe('AgentDetailPage identity last-seen (AAASM-5163)', () => {
   })
 })
 
-describe('AgentDetailPage decision-mix empty state (AAASM-5164)', () => {
-  it('shows an honest empty state and not the internal placeholder shorthand', async () => {
+describe('AgentDetailPage decision-mix empty state (AAASM-5164 / AAASM-5085)', () => {
+  it('renders an honest empty state when the agent has no tracked decisions', async () => {
+    // mockHappyPath defaults the decision-mix hook to `null` (no data for this
+    // agent), so the traffic-mix bar shows its empty state rather than the old
+    // "not available yet" placeholder now that the endpoint exists (AAASM-5085).
     mockHappyPath()
     renderApp('/agents/abc123')
     const empty = await screen.findByTestId('agent-detail-traffic-mix-empty')
-    expect(empty).toHaveTextContent('Decision mix is not available yet')
-    expect(screen.queryByText(/wired in a follow-up sub-task/i)).not.toBeInTheDocument()
+    expect(empty).toHaveTextContent('No decisions recorded in the last 24h')
+    expect(screen.queryByText(/not available yet/i)).not.toBeInTheDocument()
   })
 })
 
