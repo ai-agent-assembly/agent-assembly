@@ -951,6 +951,22 @@ mod tests {
         assert_eq!(fields.status.as_deref(), Some("running"));
     }
 
+    #[test]
+    fn decision_bucket_separates_allow_from_scrub_unlike_status() {
+        // The Live-Ops counters (AAASM-5089) need allow and scrub distinct — the
+        // `status` field collapses both into "running", so the bucket must not.
+        assert_eq!(decision_bucket_label(Decision::Allow as i32).as_deref(), Some("allow"));
+        assert_eq!(decision_bucket_label(Decision::Redact as i32).as_deref(), Some("scrub"));
+        assert_eq!(
+            decision_bucket_label(Decision::Pending as i32).as_deref(),
+            Some("pending")
+        );
+        assert_eq!(decision_bucket_label(Decision::Deny as i32).as_deref(), Some("deny"));
+        // Unspecified / unknown carry no bucket rather than a fabricated one.
+        assert_eq!(decision_bucket_label(Decision::Unspecified as i32), None);
+        assert_eq!(decision_bucket_label(9999), None);
+    }
+
     fn extract_call_stack(p: ViolationPayload) -> Option<Vec<CallStackNode>> {
         match p {
             ViolationPayload::Audit { call_stack, .. } => call_stack,
