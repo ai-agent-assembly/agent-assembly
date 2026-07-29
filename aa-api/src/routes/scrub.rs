@@ -229,6 +229,29 @@ fn within_window(ts: &str, since: chrono::DateTime<chrono::Utc>, now: chrono::Da
     }
 }
 
+/// Tally secret alerts by their `detected_pattern_type`, dropping any without a
+/// kind. The single grouping both `get_pattern_counts` and its test rely on, so
+/// the count semantics are defined in exactly one place.
+fn tally_by_kind(alerts: &[StoredAlert]) -> BTreeMap<String, u64> {
+    let mut by_kind: BTreeMap<String, u64> = BTreeMap::new();
+    for a in alerts {
+        if let Some(kind) = a.detected_pattern_type.as_deref() {
+            *by_kind.entry(kind.to_string()).or_insert(0) += 1;
+        }
+    }
+    by_kind
+}
+
+/// The number of distinct pattern kinds present across the alerts — the
+/// `distinct_kinds` posture figure, defined once for handler and test.
+fn distinct_kinds(alerts: &[StoredAlert]) -> u64 {
+    alerts
+        .iter()
+        .filter_map(|a| a.detected_pattern_type.as_deref())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len() as u64
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -297,13 +320,7 @@ pub async fn get_pattern_counts(
     let window_seconds = window_secs_from_range(params.range.as_deref());
     let alerts = windowed_secret_alerts(&caller, &state, window_seconds);
 
-    let mut by_kind: BTreeMap<String, u64> = BTreeMap::new();
-    for a in &alerts {
-        if let Some(kind) = a.detected_pattern_type.as_deref() {
-            *by_kind.entry(kind.to_string()).or_insert(0) += 1;
-        }
-    }
-
+    let by_kind = tally_by_kind(&alerts);
     let total_hits: u64 = by_kind.values().sum();
     let counts: Vec<PatternCount> = by_kind
         .into_iter()
@@ -348,11 +365,7 @@ pub async fn get_posture(
     let alerts = windowed_secret_alerts(&caller, &state, window_seconds);
 
     let leaks_intercepted = alerts.len() as u64;
-    let distinct_kinds = alerts
-        .iter()
-        .filter_map(|a| a.detected_pattern_type.as_deref())
-        .collect::<std::collections::BTreeSet<_>>()
-        .len() as u64;
+    let distinct_kinds = distinct_kinds(&alerts);
 
     (
         StatusCode::OK,
@@ -476,23 +489,12 @@ mod tests {
         assert_eq!(secret_alerts.len(), 3, "only the three secret alerts are counted");
 
         // pattern-counts: two kinds — AwsAccessKey x2, OpenAiKey x1.
-        let mut counts: BTreeMap<String, u64> = BTreeMap::new();
-        for a in &secret_alerts {
-            if let Some(k) = a.detected_pattern_type.as_deref() {
-                *counts.entry(k.to_string()).or_insert(0) += 1;
-            }
-        }
+        let counts = tally_by_kind(&secret_alerts);
         assert_eq!(counts.get("AwsAccessKey"), Some(&2));
         assert_eq!(counts.get("OpenAiKey"), Some(&1));
 
         // posture: 3 intercepted, 2 distinct kinds.
-        let leaks = secret_alerts.len() as u64;
-        let distinct = secret_alerts
-            .iter()
-            .filter_map(|a| a.detected_pattern_type.as_deref())
-            .collect::<std::collections::BTreeSet<_>>()
-            .len() as u64;
-        assert_eq!(leaks, 3);
-        assert_eq!(distinct, 2);
+        assert_eq!(secret_alerts.len() as u64, 3);
+        assert_eq!(distinct_kinds(&secret_alerts), 2);
     }
 }
