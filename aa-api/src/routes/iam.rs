@@ -118,6 +118,8 @@ pub struct ApiKeyResponse {
     pub scopes: Vec<ApiKeyScopeResponse>,
     pub status: ApiKeyStatusResponse,
     pub created_at: String,
+    /// AAASM-5177 — RFC3339 expiry instant, or `null` for a non-expiring key.
+    pub expires_at: Option<String>,
     pub last_used: Option<String>,
     pub owner: String,
     pub role: String,
@@ -134,6 +136,7 @@ impl From<ApiKeyEntry> for ApiKeyResponse {
             scopes: e.scopes.into_iter().map(Into::into).collect(),
             status: e.status.into(),
             created_at: e.created_at.to_rfc3339(),
+            expires_at: e.expires_at.map(|d| d.to_rfc3339()),
             last_used: e.last_used.map(|d| d.to_rfc3339()),
             owner: e.owner,
             role: e.role,
@@ -162,10 +165,24 @@ impl From<GwGeneratedApiKey> for GeneratedApiKeyResponse {
     }
 }
 
+/// AAASM-5177 — default API-key lifetime when the request omits `ttl_seconds`.
+///
+/// 90 days. Chosen as a safe default: long enough not to disrupt long-lived
+/// service integrations, short enough to bound the blast radius of a leaked key
+/// and force periodic rotation. Keys never expire only when explicitly seeded
+/// with `expires_at: None` at the store layer — this request path always sets a
+/// finite expiry, so the default is fail-safe rather than fail-open.
+pub const DEFAULT_API_KEY_TTL_SECS: u64 = 90 * 24 * 60 * 60;
+
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct GenerateApiKeyRequest {
     pub label: String,
     pub scopes: Vec<ApiKeyScopeResponse>,
+    /// AAASM-5177 — optional time-to-live in seconds. When omitted, the server
+    /// applies [`DEFAULT_API_KEY_TTL_SECS`] (a safe, bounded default) rather than
+    /// issuing a non-expiring key. Must be positive; `0` is rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<u64>,
 }
 
 // ── Role → capability grants (AAASM-5046) ──
@@ -330,6 +347,7 @@ pub async fn list_api_keys(
     request_body = GenerateApiKeyRequest,
     responses(
         (status = 200, description = "Generated key (with one-shot secret)", body = GeneratedApiKeyResponse),
+        (status = 400, description = "ttl_seconds is zero or out of range"),
         (status = 403, description = "Caller lacks the role required to mutate IAM state")
     ),
     tag = "iam"
@@ -343,11 +361,44 @@ pub async fn generate_api_key(
         .check_mutation(&PolicyScope::Global, MutationKind::Create)
         .map_err(IamHandlerError::Forbidden)?;
 
+    // AAASM-5177 — resolve the key's expiry. An omitted ttl_seconds applies the
+    // safe default; an explicit 0 is rejected (a zero-lifetime key is a caller
+    // error, never a way to opt out of expiry through this path).
+    let expires_at = resolve_expires_at(body.ttl_seconds)?;
+
     let scopes: Vec<GwApiKeyScope> = body.scopes.into_iter().map(Into::into).collect();
-    let generated = state
-        .iam_api_key_store
-        .generate(&body.label, scopes, &policy_auth.caller.key_id);
+    let generated =
+        state
+            .iam_api_key_store
+            .generate(&body.label, scopes, &policy_auth.caller.key_id, Some(expires_at));
     Ok((StatusCode::OK, Json(generated.into())))
+}
+
+/// AAASM-5177 — compute an API key's expiry instant from a requested TTL.
+///
+/// `None` applies [`DEFAULT_API_KEY_TTL_SECS`]. An explicit `0` is a client
+/// error (`400`). The TTL is added to the current time; an overflow (absurdly
+/// large TTL) is also a `400` rather than a silently non-expiring key.
+fn resolve_expires_at(ttl_seconds: Option<u64>) -> Result<chrono::DateTime<chrono::Utc>, IamHandlerError> {
+    let ttl = match ttl_seconds {
+        None => DEFAULT_API_KEY_TTL_SECS,
+        Some(0) => {
+            return Err(IamHandlerError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+                    .with_detail("ttl_seconds must be greater than zero".to_string()),
+            ));
+        }
+        Some(secs) => secs,
+    };
+    let secs = i64::try_from(ttl).ok();
+    secs.and_then(|s| chrono::Duration::try_seconds(s))
+        .and_then(|d| chrono::Utc::now().checked_add_signed(d))
+        .ok_or_else(|| {
+            IamHandlerError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+                    .with_detail("ttl_seconds is out of range".to_string()),
+            )
+        })
 }
 
 /// `POST /api/v1/iam/api-keys/{id}/revoke` — revoke an existing key.
@@ -437,13 +488,14 @@ pub async fn rotate_api_key(
 pub enum IamHandlerError {
     NotFound(ProblemDetail),
     Conflict(ProblemDetail),
+    BadRequest(ProblemDetail),
     Forbidden(PolicyAuthorizationDenied),
 }
 
 impl IntoResponse for IamHandlerError {
     fn into_response(self) -> axum::response::Response {
         match self {
-            Self::NotFound(p) | Self::Conflict(p) => p.into_response(),
+            Self::NotFound(p) | Self::Conflict(p) | Self::BadRequest(p) => p.into_response(),
             Self::Forbidden(d) => d.into_response(),
         }
     }
