@@ -363,9 +363,20 @@ pub async fn approve_action(
     // AAASM-3790: write-scope + tenant ownership before resolving the approval.
     authorize_approval_access(&caller, &state, uuid, &id)?;
 
+    // Normalize conditions: drop empty/whitespace-only slugs so an empty or
+    // blank list is recorded as an unconditional approval (AAASM-5095).
+    let conditions: Vec<String> = body
+        .conditions
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect();
+
     let decision = ApprovalDecision::Approved {
         by: body.by.unwrap_or_else(|| "api".to_string()),
         reason: body.reason,
+        conditions,
     };
 
     state.approval_queue.decide(uuid, decision).map_err(|e| match e {
@@ -457,6 +468,12 @@ pub struct DecideRequest {
     pub by: Option<String>,
     /// Optional reason for the decision.
     pub reason: Option<String>,
+    /// Structured approval conditions attached to an approve decision
+    /// (AAASM-5095). Each entry is a condition slug such as `"this-once"`,
+    /// `"policy-exception"`, or `"time-boxed"`. Ignored on reject. Absent or
+    /// empty ⇒ an unconditional approval.
+    #[serde(default)]
+    pub conditions: Option<Vec<String>>,
 }
 
 /// Paginated wire-format envelope for `GET /api/v1/approvals`.
