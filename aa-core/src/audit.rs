@@ -1983,13 +1983,7 @@ mod redaction_tests {
 
     #[test]
     fn attribution_present_changes_hash_and_is_stored() {
-        let base = || {
-            (
-                0u64,
-                1_700_000_000_000_000_000u64,
-                AuditEventType::PolicyViolation,
-            )
-        };
+        let base = || (0u64, 1_700_000_000_000_000_000u64, AuditEventType::PolicyViolation);
         let (seq, ts, et) = base();
         let no_id = AuditEntry::new_with_lineage_redaction_and_attribution(
             seq,
