@@ -12,8 +12,8 @@ import type { TopologyEdgeKind } from './types'
  * the sidebar.
  *
  * `color` is a CSS value (token where one exists) so swatches and edges
- * re-theme in light/dark — the design's raw hex would not. `approves` has no
- * matching token, so it keeps the design's violet hex.
+ * re-theme in light/dark — the design's raw hex would not. `approves` uses
+ * the `--edge-approves` token pair (violet in light, #cfa3eb in dark).
  */
 export interface EdgeKindMeta {
   /** Design vocabulary id, also used as the checkbox key and CSS class suffix. */
@@ -37,7 +37,7 @@ export const EDGE_KINDS: readonly EdgeKindMeta[] = [
   { id: 'calls', label: 'calls', available: true, modelKind: 'call', color: 'var(--info)', dash: '7 3', width: 1.5 },
   { id: 'reads', label: 'reads', available: true, modelKind: 'reads', color: 'var(--ok)', dash: '3 4', width: 1.5 },
   { id: 'writes', label: 'writes', available: true, modelKind: 'writes', color: 'var(--warn)', dash: '3 4', width: 1.5 },
-  { id: 'approves', label: 'approves', available: true, modelKind: 'approves', color: '#7c3aed', dash: '8 3', width: 1.5 },
+  { id: 'approves', label: 'approves', available: true, modelKind: 'approves', color: 'var(--edge-approves)', dash: '8 3', width: 1.5 },
   { id: 'messages', label: 'messages', available: true, modelKind: 'messages', color: 'var(--ink-4)', dash: '2 5', width: 1 },
 ]
 

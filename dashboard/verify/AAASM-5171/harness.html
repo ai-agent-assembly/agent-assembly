@@ -1,0 +1,60 @@
+<!doctype html>
+<!--
+  AAASM-5171 verification harness (not shipped; lives under dashboard/verify/).
+  Imports the SHIPPED stylesheets and renders each of the five fixed elements
+  with their real class names so getComputedStyle reports the exact colours the
+  tokens resolve to in each theme. Toggle theme via data-theme on <html>.
+-->
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="/src/styles.css" />
+  <link rel="stylesheet" href="/src/components/AppShell.css" />
+  <link rel="stylesheet" href="/src/pages/FleetPage.css" />
+  <link rel="stylesheet" href="/src/features/iam/AgentRegistryList.css" />
+  <link rel="stylesheet" href="/src/features/scrub/PayloadDiff.css" />
+  <link rel="stylesheet" href="/src/components/topology/TopologyGraph.css" />
+  <style>
+    body { background: var(--paper); color: var(--ink); padding: 24px; font-family: sans-serif; }
+    section { margin-bottom: 16px; }
+    table { border-collapse: collapse; }
+  </style>
+</head>
+<body>
+  <!-- Fix 1: nav badge text over --danger -->
+  <section>
+    <span class="appshell__nav-badge" id="fix1-badge">3</span>
+  </section>
+
+  <!-- Fix 2: fleet flagged row tint -->
+  <section>
+    <table>
+      <tr class="fleet-table__row fleet-table__row--flagged" id="fix2-row">
+        <td class="fleet-table__cell">flagged agent</td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- Fix 3: identity selected row -->
+  <section>
+    <table>
+      <tr class="iam-agent-list__row iam-agent-list__row--selected" id="fix3-row">
+        <td>selected agent</td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- Fix 4: scrub diff strike -->
+  <section>
+    <span class="scrub-diff-match" id="fix4-strike">redacted-value</span>
+  </section>
+
+  <!-- Fix 5: topology approves edge (svg stroke + arrow fill) -->
+  <section>
+    <svg width="120" height="20">
+      <line class="topology-edge topology-edge--approves" id="fix5-stroke" x1="0" y1="10" x2="100" y2="10" />
+      <circle class="topology-edge__arrow--approves" id="fix5-fill" cx="110" cy="10" r="5" />
+    </svg>
+  </section>
+</body>
+</html>

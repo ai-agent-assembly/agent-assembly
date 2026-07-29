@@ -389,7 +389,7 @@
 }
 
 .fleet-table__row:hover { background: var(--paper-3); }
-.fleet-table__row--flagged { background: rgba(184, 41, 30, 0.04); }
+.fleet-table__row--flagged { background: var(--danger-row-tint); }
 
 .fleet-table__cell {
   padding: 7px 10px;

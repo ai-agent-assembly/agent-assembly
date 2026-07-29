@@ -297,7 +297,7 @@
 }
 
 .topology-edge--approves {
-  stroke: #7c3aed;
+  stroke: var(--edge-approves);
   opacity: 0.7;
 }
 
@@ -316,7 +316,7 @@
 }
 
 .topology-edge__arrow--approves {
-  fill: #7c3aed;
+  fill: var(--edge-approves);
 }
 
 .topology-edge__arrow--messages {

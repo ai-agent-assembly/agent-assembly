@@ -30,6 +30,7 @@
   /* ── Hi-fi semantic palette (status / accent) ────────────── */
   --danger: #b8291e;
   --danger-bg: #f6dad6;
+  --danger-row-tint: rgba(184, 41, 30, 0.04);
   --warn: #8a5a00;
   --warn-bg: #f5e6c4;
   --ok: #22592a;
@@ -38,6 +39,7 @@
   --info-bg: #d6dfee;
   --scrub: #5a1a8a;
   --scrub-bg: #e0d2ec;
+  --edge-approves: #7c3aed;
 
   /* ── App shell semantic tokens ───────────────────────────── */
   /* These name the colors used by the current AppShell so the
@@ -242,6 +244,7 @@
   /* semantic — brighter foreground, deeper tinted background */
   --danger: #f08a82;
   --danger-bg: #3a1a16;
+  --danger-row-tint: rgba(240, 138, 130, 0.10);
   --warn: #e6b86b;
   --warn-bg: #382810;
   --ok: #8ec898;
@@ -250,6 +253,7 @@
   --info-bg: #16233f;
   --scrub: #cfa3eb;
   --scrub-bg: #2a1838;
+  --edge-approves: #cfa3eb;
 
   /* app shell — nav rail stays dark in both modes; topbar mirrors paper */
   --shell-topbar-bg: #1c1a16;
