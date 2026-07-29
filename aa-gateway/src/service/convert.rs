@@ -404,6 +404,7 @@ mod tests {
             redacted_payload: None,
             credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 4)],
             deny_action: None,
+            policy_doc_id: None,
         };
         let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
         assert_eq!(resp.decision, Decision::Deny as i32);
@@ -421,6 +422,7 @@ mod tests {
             redacted_payload: None,
             credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 4)],
             deny_action: None,
+            policy_doc_id: None,
         };
         let resp = eval_result_to_response(&eval, 0, "");
         assert_eq!(resp.decision, Decision::Allow as i32);

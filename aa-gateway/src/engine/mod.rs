@@ -2892,7 +2892,7 @@ mod tests {
         // Pre-seed the cache with the stale Allow a prior in-window eval stored.
         let epoch = engine.policy_epoch.load(Ordering::Relaxed);
         let key = CacheKey::new(ctx.agent_id.as_bytes(), epoch, &action);
-        engine.decision_cache.insert(key, PolicyDecision::Allow);
+        engine.decision_cache.insert(key, (PolicyDecision::Allow, None));
 
         let cascade = vec![Arc::new(doc)];
         assert_eq!(
@@ -4398,6 +4398,7 @@ mod tests {
             redacted_payload: None,
             credential_findings: vec![],
             deny_action: None,
+            policy_doc_id: None,
         }
     }
 
@@ -4420,6 +4421,7 @@ mod tests {
             redacted_payload: None,
             credential_findings: vec![],
             deny_action: Some(DenyAction::Block),
+            policy_doc_id: None,
         }
     }
 
@@ -4446,6 +4448,7 @@ mod tests {
             redacted_payload: None,
             credential_findings: vec![],
             deny_action: None,
+            policy_doc_id: None,
         };
         let (out, shadow) = transform_for_observe_mode(pending, aa_core::EnforcementMode::Observe);
         assert_eq!(out.decision, PolicyResult::Allow);
