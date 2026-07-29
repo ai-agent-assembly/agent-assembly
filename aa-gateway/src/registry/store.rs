@@ -31,6 +31,14 @@ pub struct ActiveSession {
     pub started_at: DateTime<Utc>,
     /// Current status of the session (e.g. "running", "idle").
     pub status: String,
+    /// Number of governed actions observed on this session so far.
+    ///
+    /// Incremented once per `CheckAction` / `BatchCheck` the gateway evaluates
+    /// for the owning agent under this session's trace id (AAASM-5088). Starts
+    /// at 1 when the session is first observed. There is no `current_task`
+    /// counterpart: the session layer has no real source for a task label, so
+    /// that column stays absent rather than fabricated.
+    pub actions_count: u32,
 }
 
 /// Summary of a recent event emitted by an agent.
