@@ -63,6 +63,7 @@ use crate::models::capability::{
     Verb,
 };
 use crate::routes::enforcement_mirror::{agent_tool_ids, cascade_denies_all_egress, cascade_denies_tool};
+use crate::routes::over_permission;
 use crate::state::AppState;
 
 /// Reasons a revoke request can fail.
@@ -494,35 +495,70 @@ fn decide(caps: &aa_core::CapabilitySet, cap: &aa_core::Capability) -> Decision 
 /// `egress_denied` carries the network stage's verdict (see
 /// [`cascade_denies_all_egress`]); the capability set alone cannot see an
 /// allowlist-based deny.
-fn system_cell(caps: &aa_core::CapabilitySet, resource_id: &str, egress_denied: bool) -> CapCell {
+///
+/// `tier` is the agent's resolved [`aa_core::RiskTier`] baseline (ADR 0029). When
+/// present, a verb's grant that is *effectively* `Allow` **and** exceeds the tier
+/// baseline (`over_permission::is_over_permission`) marks the cell
+/// `flag: Some(true)`. When `tier` is `None` (undeclared / UNSPECIFIED) the agent
+/// is not evaluated for over-permission and the flag stays `None` — never a
+/// fabricated `false`.
+fn system_cell(
+    caps: &aa_core::CapabilitySet,
+    resource_id: &str,
+    egress_denied: bool,
+    tier: Option<aa_core::RiskTier>,
+) -> CapCell {
     use aa_core::Capability as C;
     let na = Decision::Na;
+    // A (decision, capability) pair is over-permission when the grant is
+    // effectively allowed and the tier baseline does not warrant it. A denied or
+    // `na` verb is never flagged, so an egress-denied network cell cannot flag.
+    let over = |decision: Decision, cap: &C| match tier {
+        Some(t) => decision == Decision::Allow && over_permission::is_over_permission(t, cap),
+        None => false,
+    };
+    // Per-cell, only the *offending* marker is emitted: `Some(true)` when a verb
+    // in this cell is over-permission, else absent (ADR 0029). A cell-level
+    // `false` on every non-offending cell would be a negative marker the UI does
+    // not consume — the agent-level `flagged` carries the "evaluated, clean"
+    // signal instead.
+    let flag_of = |flagged: bool| flagged.then_some(true);
     match resource_id {
-        "filesystem" => CapCell {
-            read: decide(caps, &C::FileRead),
-            write: decide(caps, &C::FileWrite),
-            delete: decide(caps, &C::FileDelete),
-            exec: na,
-            flag: None,
-        },
-        "terminal" => CapCell {
-            read: na,
-            write: na,
-            delete: na,
-            exec: decide(caps, &C::TerminalExec),
-            flag: None,
-        },
-        _ => CapCell {
-            read: na,
-            write: na,
-            delete: na,
-            exec: if egress_denied {
+        "filesystem" => {
+            let write = decide(caps, &C::FileWrite);
+            let delete = decide(caps, &C::FileDelete);
+            CapCell {
+                read: decide(caps, &C::FileRead),
+                write,
+                delete,
+                exec: na,
+                flag: flag_of(over(write, &C::FileWrite) || over(delete, &C::FileDelete)),
+            }
+        }
+        "terminal" => {
+            let exec = decide(caps, &C::TerminalExec);
+            CapCell {
+                read: na,
+                write: na,
+                delete: na,
+                exec,
+                flag: flag_of(over(exec, &C::TerminalExec)),
+            }
+        }
+        _ => {
+            let exec = if egress_denied {
                 Decision::Deny
             } else {
                 decide(caps, &C::NetworkOutbound)
-            },
-            flag: None,
-        },
+            };
+            CapCell {
+                read: na,
+                write: na,
+                delete: na,
+                exec,
+                flag: flag_of(over(exec, &C::NetworkOutbound)),
+            }
+        }
     }
 }
 
@@ -612,10 +648,21 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
         collect_policy_rows(&cascade, &id_hex, &mut policy_rows);
         tool_ids.extend(agent_tools.iter().cloned());
 
+        // Over-permission baseline (ADR 0029). The agent is evaluated only when
+        // it declares a resolvable RiskTier *and* has a non-empty cascade: an
+        // empty cascade makes `decide` fall through to `Allow` for every cell
+        // (ADR 0024), which would mass-flag every low-tier agent against grants no
+        // policy actually made. An unevaluated agent carries no flag anywhere.
+        let over_perm_tier = if cascade.is_empty() {
+            None
+        } else {
+            aa_core::RiskTier::from_proto_i32(record.risk_tier)
+        };
+
         let egress_denied = cascade_denies_all_egress(&cascade);
         let mut cells: BTreeMap<String, CapCell> = BTreeMap::new();
         for (rid, _, _) in SYSTEM_RESOURCES {
-            cells.insert(rid.to_string(), system_cell(&caps, rid, egress_denied));
+            cells.insert(rid.to_string(), system_cell(&caps, rid, egress_denied, over_perm_tier));
         }
         for tool in agent_tools.iter().filter(|t| !is_system_resource(t)) {
             // A tool is invoked, never read/written/deleted — the capability
@@ -1146,20 +1193,22 @@ mod tests {
     #[test]
     fn system_cell_leaves_unmodelled_verbs_na() {
         let caps = aa_core::CapabilitySet::default();
-        let fs = system_cell(&caps, "filesystem", false);
+        // `None` tier: no over-permission evaluation, so this pins decision
+        // placement only (the flag concern is covered separately).
+        let fs = system_cell(&caps, "filesystem", false, None);
         assert_eq!(fs.exec, Decision::Na, "the capability model has no filesystem exec");
         assert_eq!(fs.read, Decision::Allow);
 
-        let term = system_cell(&caps, "terminal", false);
+        let term = system_cell(&caps, "terminal", false, None);
         assert_eq!(term.read, Decision::Na);
         assert_eq!(term.write, Decision::Na);
         assert_eq!(term.delete, Decision::Na);
         assert_eq!(term.exec, Decision::Allow);
 
         // The egress verdict only reaches the network family.
-        let net = system_cell(&caps, "network_outbound", true);
+        let net = system_cell(&caps, "network_outbound", true, None);
         assert_eq!(net.exec, Decision::Deny);
-        assert_eq!(system_cell(&caps, "terminal", true).exec, Decision::Allow);
+        assert_eq!(system_cell(&caps, "terminal", true, None).exec, Decision::Allow);
     }
 
     /// Pins the rule flattening directly, covering the capability variants no
