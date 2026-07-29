@@ -1612,6 +1612,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/policies/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/policies/replay` — replay recent traffic against a proposed
+         *     policy and report aggregate impact (AAASM-5094).
+         * @description Distinct from `POST /api/v1/policies/simulate`, which dry-runs a *single*
+         *     hypothetical `(agent, tool, target)` probe against the *live* policy. This
+         *     endpoint replays a **corpus** of recorded real traffic (the audit window)
+         *     against a **proposed** policy that is never loaded, and returns aggregate
+         *     impact stats — newly-blocked, newly-narrowed, regressions, false-positives —
+         *     plus a bounded sample of per-request before/after verdict diffs.
+         *
+         *     Read-only and non-mutating: the proposed policy is validated but never
+         *     applied ([`PolicyEngine::simulate_against`] runs on a throwaway engine), no
+         *     audit entry is written, and no live state changes.
+         *
+         *     ## What is and is not replayed
+         *
+         *     The corpus is the recorded audit log. The audit payload persists only
+         *     non-secret action metadata — tool name, paths, hosts — and never the raw tool
+         *     arguments (`aa_runtime::audit_publisher::conversion::build_payload`). Replay
+         *     therefore reconstructs each recorded **tool call** from its persisted tool
+         *     name with empty arguments and diffs the proposed policy's verdict against the
+         *     recorded one. Argument/target-sensitive rules and the credential/PII scrubber
+         *     cannot be faithfully re-exercised from the corpus and are not counted; an
+         *     empty corpus returns all-zero counts, never a fabricated figure.
+         */
+        post: operations["replay_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/policies/simulate": {
         parameters: {
             query?: never;
@@ -4323,6 +4364,118 @@ export interface components {
         RegisterOpRequest: {
             /** @description Stable identifier for the operation, typically a `GovernanceEvent.id`. */
             op_id: string;
+        };
+        /**
+         * @description Request body for `POST /api/v1/policies/replay` (AAASM-5094).
+         *
+         *     Describes a *proposed* (unloaded) policy plus the corpus window to replay it
+         *     against. Nothing here is persisted and the proposed policy is never applied —
+         *     it is a pure, read-only what-if over recorded traffic.
+         */
+        ReplayPolicyRequest: {
+            /**
+             * @description Proposed policy document as raw YAML. Parsed and validated exactly like a
+             *     `create_policy` body, but evaluated through an ephemeral engine
+             *     ([`aa_gateway::engine::PolicyEngine::simulate_against`]) so it is never
+             *     loaded, applied, or persisted.
+             */
+            policy_yaml: string;
+            /**
+             * @description Maximum number of per-request before/after sample diffs to return.
+             *     Defaults to [`REPLAY_DEFAULT_SAMPLE_SIZE`], capped at
+             *     [`REPLAY_MAX_SAMPLE_SIZE`]. Does not affect the aggregate counts, which
+             *     always reflect the whole replayed corpus.
+             */
+            sample_size?: number | null;
+            /**
+             * Format: int64
+             * @description How many hours of recent recorded traffic to replay. Defaults to
+             *     [`REPLAY_DEFAULT_WINDOW_HOURS`] (24h) when omitted. The read is bounded to
+             *     the most recent [`REPLAY_MAX_EVENTS`] events within the window.
+             */
+            window_hours?: number | null;
+        };
+        /**
+         * @description Response body for `POST /api/v1/policies/replay` (AAASM-5094).
+         *
+         *     Aggregate impact of the proposed policy over the replayed corpus, plus a
+         *     bounded sample of the per-request verdict changes. Every count is a real
+         *     tally of re-evaluating recorded actions — an empty corpus yields all-zero
+         *     counts and no samples, never a fabricated figure.
+         *
+         *     ## Fidelity caveat
+         *
+         *     The audit log deliberately persists only non-secret action *metadata* (tool
+         *     name, path, host) and never the raw tool arguments/target
+         *     (`aa_runtime::audit_publisher::conversion::build_payload`). Replay therefore
+         *     reconstructs each action from its persisted tool name with **empty
+         *     arguments**, so target-sensitive predicates and the credential/PII scrubber
+         *     cannot be re-exercised from the corpus. Verdict changes driven purely by
+         *     per-tool allow/deny/approval rules are faithful; changes that would depend on
+         *     argument content are out of reach and are not counted. See
+         *     [`replayable_actions`] and the endpoint doc comment.
+         */
+        ReplayPolicyResponse: {
+            /**
+             * Format: int64
+             * @description Number of corpus entries whose recorded verdict was a clean `allow` but
+             *     the proposed policy would now require human approval — a false-positive /
+             *     friction increase short of an outright block.
+             */
+            false_positives: number;
+            /**
+             * Format: int64
+             * @description Number of corpus entries the proposed policy would newly block (recorded
+             *     verdict allowed/narrowed/approval, proposed verdict `deny`).
+             */
+            newly_blocked: number;
+            /**
+             * Format: int64
+             * @description Number of corpus entries the proposed policy would newly narrow — allowed
+             *     but with sensitive content scrubbed (recorded verdict `allow`, proposed
+             *     verdict `narrow`).
+             */
+            newly_narrowed: number;
+            /**
+             * Format: int64
+             * @description Number of corpus entries whose recorded verdict was a block/deny but the
+             *     proposed policy would now allow — a regression that opens previously
+             *     closed traffic.
+             */
+            regressions: number;
+            /**
+             * Format: int64
+             * @description Total corpus entries replayed (tool-call decisions in the window that
+             *     carried a recorded verdict and a tool name). Denominator for the counts
+             *     above; `0` when the corpus is empty.
+             */
+            replayed: number;
+            /**
+             * @description A bounded sample of the per-request verdict changes, capped by the
+             *     request's `sample_size`. Empty when no verdict changed.
+             */
+            samples: components["schemas"]["ReplaySampleDiff"][];
+        };
+        /**
+         * @description One per-request before/after diff in a replay response: the recorded verdict
+         *     vs. the verdict the proposed policy would have produced for the same action.
+         *
+         *     Only entries whose verdict actually *changed* are returned as samples — an
+         *     unchanged entry carries no impact to illustrate.
+         */
+        ReplaySampleDiff: {
+            /** @description Verdict the proposed policy would produce for the same action. */
+            after: components["schemas"]["SimulateVerdict"];
+            /**
+             * @description Verdict recorded when this action actually ran, mapped from the audit
+             *     entry's persisted decision.
+             */
+            before: components["schemas"]["SimulateVerdict"];
+            /**
+             * @description Tool/capability the recorded action invoked (from the audit entry's
+             *     persisted `detail.tool_name`).
+             */
+            tool: string;
         };
         /** @description Request body for recording a new directed edge. */
         ReportEdgeRequest: {
@@ -8271,6 +8424,44 @@ export interface operations {
             };
             /** @description No active policy loaded */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    replay_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplayPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Aggregate impact of the proposed policy over the replayed corpus */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayPolicyResponse"];
+                };
+            };
+            /** @description Proposed policy YAML failed validation */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks read scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
