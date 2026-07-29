@@ -279,10 +279,24 @@ export function LiveOpsPage() {
 
   let streamBody
   if (status === 'error') {
+    // AAASM-5153: a severed runtime stream is the highest-severity state on this
+    // surface, so it carries the design's P1 framing and the policy-propagation
+    // warning — both static, always-true facts about a disconnected runtime.
+    // The design mock's live telemetry (last-heartbeat clock, stream-halt
+    // timestamp) is deliberately NOT rendered: the frontend has no backed value
+    // for it here, and a fabricated clock would be exactly the kind of unbacked
+    // data the truthfulness vocabulary exists to forbid. `ErrorState` maps to
+    // StatusState's `unavailable` (role="alert"), so the severity is announced.
     streamBody = (
       <ErrorState
-        title="Connection lost"
-        description="Lost the connection to the gateway event stream after several attempts."
+        title="P1 · Runtime disconnected"
+        description={
+          <>
+            Lost the connection to the enforcement runtime&rsquo;s event stream after several attempts.
+            Agents keep operating under their <b>last known policy snapshot</b>; no new policy changes
+            will propagate until the stream reconnects.
+          </>
+        }
         onRetry={reconnect}
         retryLabel="Reconnect"
       />

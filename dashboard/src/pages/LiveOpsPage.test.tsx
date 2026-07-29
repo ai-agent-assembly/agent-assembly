@@ -321,6 +321,19 @@ describe('LiveOpsPage', () => {
     expect(reconnect).toHaveBeenCalledTimes(1)
   })
 
+  it('frames the stream error as P1 with the policy-propagation warning (AAASM-5153)', () => {
+    mockStream({ status: 'error' })
+    renderWithProviders(<LiveOpsPage />)
+    const surface = screen.getByTestId('error-state')
+    // P1 severity framing + the always-true fact that a severed runtime keeps
+    // enforcing the last policy snapshot — no fabricated heartbeat/clock telemetry.
+    expect(surface).toHaveTextContent(/P1 · Runtime disconnected/i)
+    expect(surface).toHaveTextContent(/last known policy snapshot/i)
+    expect(surface).toHaveTextContent(/no new policy changes will propagate/i)
+    // A failure is announced assertively, not as a mild empty state.
+    expect(surface).toHaveAttribute('role', 'alert')
+  })
+
   it('pauses the displayed list on toggle-off, counts new ops, and flushes on click', async () => {
     const user = userEvent.setup()
     mockStream({ ops: [makeOp('op-1')] })
