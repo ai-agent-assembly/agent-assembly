@@ -4,7 +4,6 @@ import './StateView.css'
 export type EmptyStatePage =
   | 'overview'
   | 'fleet'
-  | 'policy'
   | 'scrub'
   | 'capability'
   | 'live'
@@ -51,19 +50,6 @@ const COPY: Record<EmptyStatePage, CopyEntry> = {
     ),
     cta: 'Clear filters',
     secondary: null,
-  },
-  policy: {
-    icon: '⌬',
-    tag: 'policies · 0 active',
-    title: 'No policies defined',
-    msg: (
-      <>
-        Without policies, all agent calls fall through to the runtime default (<code>sandbox · log-only</code>).
-        Define your first allow-list rule to start enforcing.
-      </>
-    ),
-    cta: '+ New policy',
-    secondary: 'Import from preset',
   },
   scrub: {
     icon: '✶',

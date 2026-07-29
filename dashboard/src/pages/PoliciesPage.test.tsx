@@ -222,16 +222,13 @@ describe('PoliciesPage — list states', () => {
     expect(screen.queryByTestId('new-policy-empty-btn')).not.toBeInTheDocument()
   })
 
-  it('shows the canonical error state with a Retry button that calls refetch', async () => {
-    // AAASM-5152: Policies now renders the shared full-page ErrorState (generic
-    // kind), so the surface carries the `error-state-generic` test id and the
-    // copy-table "↻ Retry" primary action rather than the old inline card.
+  it('shows the error state with a Retry button that calls refetch', async () => {
     const user = userEvent.setup()
     const refetch = vi.fn()
     mockPolicies({ data: undefined, isLoading: false, isError: true, refetch })
     render(<PoliciesPage />, { wrapper: Wrapper })
-    expect(screen.getByTestId('error-state-generic')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /Retry/ }))
+    expect(screen.getByTestId('error-state')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(refetch).toHaveBeenCalledTimes(1)
   })
 })
