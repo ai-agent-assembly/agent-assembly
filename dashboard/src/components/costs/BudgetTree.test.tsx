@@ -153,4 +153,27 @@ describe('BudgetTree', () => {
     expect(screen.getByTestId('budget-tree-empty')).toBeInTheDocument()
     expect(screen.queryByTestId('budget-tree-grid')).not.toBeInTheDocument()
   })
+
+  it('dashes the subtree burn for a node with no configured limit', () => {
+    // A node that has spent money but has no ceiling has no burn fraction to
+    // report. It must read as an em-dash, never a fabricated 0.0% that scans as
+    // a measured zero burn (AAASM-5172).
+    const noLimit: BudgetTreeData = {
+      root: {
+        id: 'acme',
+        label: 'acme',
+        kind: 'org',
+        depth: 0,
+        budget_limit_usd: null,
+        own_spend_usd: '12.00',
+        subtree_spend_usd: '12.00',
+        children: [],
+      },
+    }
+    render(<BudgetTree data={noLimit} isLoading={false} isError={false} />)
+
+    const row = screen.getByTestId('budget-node-acme')
+    expect(row).toHaveTextContent('—')
+    expect(row).not.toHaveTextContent('0.0%')
+  })
 })
