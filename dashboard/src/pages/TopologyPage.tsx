@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ignorePromise } from '../lib/ignorePromise'
 import { useTopologyQuery } from '../features/topology/api'
 import { detectDelegationCycles } from '../features/topology/hierarchy'
@@ -6,6 +7,7 @@ import { crossTeamEdges, hiddenCrossTeamCount, teamById } from '../features/topo
 import { defaultVisibleKinds } from '../features/topology/edgeKinds'
 import { countUnclaimed, realTeams } from '../features/topology/unclaimed'
 import { exportGraphJson, exportGraphSvg } from '../features/topology/exportGraph'
+import { EmptyState } from '../components/EmptyState'
 import { TopologyGraph } from '../components/topology/TopologyGraph'
 import { TopologySidebar } from '../components/topology/TopologySidebar'
 import { NodeDetailPanel } from '../components/topology/NodeDetailPanel'
@@ -30,6 +32,7 @@ const ALL_TEAMS = 'all'
 export function TopologyPage() {
   const { data, isLoading, isError, refetch } = useTopologyQuery()
   const { open: openTraceDrawer } = useTraceDrawer()
+  const navigate = useNavigate()
 
   // The selection is held as an *id*, not as the node object.
   //
@@ -212,7 +215,20 @@ export function TopologyPage() {
         </div>
       )}
 
-      {!isLoading && !isError && (
+      {/* A resolved graph with no nodes is a registered-but-empty fleet, not a
+          blank canvas beside a control sidebar that governs nothing. It gets the
+          shared EmptyState the other empty surfaces use — honest "no agents have
+          phoned home" copy, no fabricated stats (AAASM-5172; cf. CapabilityPage,
+          PoliciesPage). */}
+      {!isLoading && !isError && allNodes.length === 0 && (
+        <EmptyState
+          page="overview"
+          onCta={() => navigate('/onboarding')}
+          onSecondary={() => navigate('/onboarding')}
+        />
+      )}
+
+      {!isLoading && !isError && allNodes.length > 0 && (
         <div className="topology-page__body">
           <TopologySidebar
             stats={stats}
