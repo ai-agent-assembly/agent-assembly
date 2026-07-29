@@ -23,6 +23,9 @@ pub mod health;
 pub mod iam;
 pub mod logs;
 pub mod ops;
+/// Over-permission derivation for the capability matrix (ADR 0029). Crate-internal:
+/// it is a projection helper, not an HTTP surface.
+pub(crate) mod over_permission;
 pub mod policies;
 pub mod tools;
 pub mod topology;

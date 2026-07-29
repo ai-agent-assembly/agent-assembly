@@ -26,9 +26,11 @@
 //! is owned by the policy-replay story (AAASM-5094), so those decisions simply
 //! never appear here rather than being approximated.
 //!
-//! Fields with no source in the gateway at all (trust score, over-permission
-//! flags, per-policy 24h hit counts) are emitted as absent — see the field docs
-//! on [`crate::models::capability`] for which story owns each one.
+//! Over-permission flags (`CapabilityAgent.flagged` / `CapCell.flag`) ARE
+//! evaluated here — a structural grant-vs-declared-`RiskTier` comparison per
+//! ADR 0029 (AAASM-5175); see [`over_permission`]. Fields still without a source
+//! (trust score, per-policy 24h hit counts) are emitted as absent — see the field
+//! docs on [`crate::models::capability`] for which story owns each one.
 //!
 //! ## Overrides are a display overlay
 //!
@@ -63,6 +65,7 @@ use crate::models::capability::{
     Verb,
 };
 use crate::routes::enforcement_mirror::{agent_tool_ids, cascade_denies_all_egress, cascade_denies_tool};
+use crate::routes::over_permission;
 use crate::state::AppState;
 
 /// Reasons a revoke request can fail.
@@ -494,36 +497,106 @@ fn decide(caps: &aa_core::CapabilitySet, cap: &aa_core::Capability) -> Decision 
 /// `egress_denied` carries the network stage's verdict (see
 /// [`cascade_denies_all_egress`]); the capability set alone cannot see an
 /// allowlist-based deny.
-fn system_cell(caps: &aa_core::CapabilitySet, resource_id: &str, egress_denied: bool) -> CapCell {
+///
+/// `tier` is the agent's resolved [`aa_core::RiskTier`] baseline (ADR 0029). When
+/// present, a verb's grant that is *effectively* `Allow` **and** exceeds the tier
+/// baseline (`over_permission::is_over_permission`) marks the cell
+/// `flag: Some(true)`. When `tier` is `None` (undeclared / UNSPECIFIED) the agent
+/// is not evaluated for over-permission and the flag stays `None` — never a
+/// fabricated `false`.
+fn system_cell(
+    caps: &aa_core::CapabilitySet,
+    resource_id: &str,
+    egress_denied: bool,
+    tier: Option<aa_core::RiskTier>,
+) -> CapCell {
     use aa_core::Capability as C;
     let na = Decision::Na;
+    // A (decision, capability) pair is over-permission when the grant is
+    // effectively allowed and the tier baseline does not warrant it. A denied or
+    // `na` verb is never flagged, so an egress-denied network cell cannot flag.
+    let over = |decision: Decision, cap: &C| match tier {
+        Some(t) => decision == Decision::Allow && over_permission::is_over_permission(t, cap),
+        None => false,
+    };
+    // Per-cell, only the *offending* marker is emitted: `Some(true)` when a verb
+    // in this cell is over-permission, else absent (ADR 0029). A cell-level
+    // `false` on every non-offending cell would be a negative marker the UI does
+    // not consume — the agent-level `flagged` carries the "evaluated, clean"
+    // signal instead.
+    let flag_of = |flagged: bool| flagged.then_some(true);
     match resource_id {
-        "filesystem" => CapCell {
-            read: decide(caps, &C::FileRead),
-            write: decide(caps, &C::FileWrite),
-            delete: decide(caps, &C::FileDelete),
-            exec: na,
-            flag: None,
-        },
-        "terminal" => CapCell {
-            read: na,
-            write: na,
-            delete: na,
-            exec: decide(caps, &C::TerminalExec),
-            flag: None,
-        },
-        _ => CapCell {
-            read: na,
-            write: na,
-            delete: na,
-            exec: if egress_denied {
+        "filesystem" => {
+            let write = decide(caps, &C::FileWrite);
+            let delete = decide(caps, &C::FileDelete);
+            CapCell {
+                read: decide(caps, &C::FileRead),
+                write,
+                delete,
+                exec: na,
+                flag: flag_of(over(write, &C::FileWrite) || over(delete, &C::FileDelete)),
+            }
+        }
+        "terminal" => {
+            let exec = decide(caps, &C::TerminalExec);
+            CapCell {
+                read: na,
+                write: na,
+                delete: na,
+                exec,
+                flag: flag_of(over(exec, &C::TerminalExec)),
+            }
+        }
+        _ => {
+            let exec = if egress_denied {
                 Decision::Deny
             } else {
                 decide(caps, &C::NetworkOutbound)
-            },
-            flag: None,
-        },
+            };
+            CapCell {
+                read: na,
+                write: na,
+                delete: na,
+                exec,
+                flag: flag_of(over(exec, &C::NetworkOutbound)),
+            }
+        }
     }
+}
+
+/// The over-permission-eligible capabilities and the (system resource, verb)
+/// cell coordinates they occupy in the matrix. The single source both
+/// [`system_cell`] flags and [`over_permission_offenders`] names offenders from,
+/// so the two can never disagree about which grant drove a flag (ADR 0029).
+fn high_privilege_cells() -> [(&'static str, Verb, aa_core::Capability); 4] {
+    use aa_core::Capability as C;
+    [
+        ("filesystem", Verb::Write, C::FileWrite),
+        ("filesystem", Verb::Delete, C::FileDelete),
+        ("terminal", Verb::Exec, C::TerminalExec),
+        ("network_outbound", Verb::Exec, C::NetworkOutbound),
+    ]
+}
+
+/// Read the display names of the capabilities that drove an agent's
+/// over-permission flag, in stable column order. A capability offends when its
+/// cell is effectively `Allow` and the tier baseline does not warrant it — the
+/// same test [`system_cell`] applied per cell — so the agent-level note names
+/// exactly the grants the per-cell flags mark.
+fn over_permission_offenders(cells: &BTreeMap<String, CapCell>, tier: aa_core::RiskTier) -> Vec<String> {
+    high_privilege_cells()
+        .into_iter()
+        .filter_map(|(resource, verb, cap)| {
+            let cell = cells.get(resource)?;
+            let decision = match verb {
+                Verb::Write => cell.write,
+                Verb::Delete => cell.delete,
+                Verb::Exec => cell.exec,
+                Verb::Read => cell.read,
+            };
+            (decision == Decision::Allow && over_permission::is_over_permission(tier, &cap)).then(|| cap.to_string())
+        })
+        .collect()
 }
 
 /// Map the registry's liveness status onto the matrix's. `Idle` is never
@@ -612,10 +685,21 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
         collect_policy_rows(&cascade, &id_hex, &mut policy_rows);
         tool_ids.extend(agent_tools.iter().cloned());
 
+        // Over-permission baseline (ADR 0029). The agent is evaluated only when
+        // it declares a resolvable RiskTier *and* has a non-empty cascade: an
+        // empty cascade makes `decide` fall through to `Allow` for every cell
+        // (ADR 0024), which would mass-flag every low-tier agent against grants no
+        // policy actually made. An unevaluated agent carries no flag anywhere.
+        let over_perm_tier = if cascade.is_empty() {
+            None
+        } else {
+            aa_core::RiskTier::from_proto_i32(record.risk_tier)
+        };
+
         let egress_denied = cascade_denies_all_egress(&cascade);
         let mut cells: BTreeMap<String, CapCell> = BTreeMap::new();
         for (rid, _, _) in SYSTEM_RESOURCES {
-            cells.insert(rid.to_string(), system_cell(&caps, rid, egress_denied));
+            cells.insert(rid.to_string(), system_cell(&caps, rid, egress_denied, over_perm_tier));
         }
         for tool in agent_tools.iter().filter(|t| !is_system_resource(t)) {
             // A tool is invoked, never read/written/deleted — the capability
@@ -641,6 +725,26 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
             );
         }
 
+        // Agent-level over-permission signal (ADR 0029). Present only for an
+        // evaluated agent (resolvable tier + non-empty cascade); `Some(true)`
+        // when any system cell is flagged, else the honest `Some(false)`
+        // "evaluated, within baseline". Unevaluated agents stay `None` — never a
+        // fabricated verdict.
+        let (flagged, note) = match over_perm_tier {
+            Some(tier) => {
+                let offenders = over_permission_offenders(&cells, tier);
+                let flagged = !offenders.is_empty();
+                let note = flagged.then(|| {
+                    format!(
+                        "{tier:?}-risk agent granted {} beyond its tier baseline",
+                        offenders.join(", ")
+                    )
+                });
+                (Some(flagged), note)
+            }
+            None => (None, None),
+        };
+
         agents.push(CapabilityAgent {
             id: id_hex,
             name: record.name.clone(),
@@ -650,8 +754,8 @@ fn project_matrix(records: &[aa_gateway::registry::AgentRecord], state: &AppStat
             mode: project_mode(record.enforcement_mode),
             status: project_status(&record.status),
             last_seen: record.last_heartbeat.to_rfc3339(),
-            flagged: None,
-            note: None,
+            flagged,
+            note,
             caps: cells,
         });
     }
@@ -1063,6 +1167,134 @@ mod tests {
         assert_eq!(cells["terminal"].exec, Decision::Allow);
     }
 
+    // ── Over-permission (ADR 0029) ───────────────────────────────────────────
+
+    /// `record` with an explicit proto risk-tier value (`record` fixes Low = 1).
+    fn record_with_tier(id_byte: u8, name: &str, tools: &[&str], risk_tier: i32) -> AgentRecord {
+        AgentRecord {
+            risk_tier,
+            ..record(id_byte, name, tools)
+        }
+    }
+
+    /// A Global policy that constrains nothing — enough to give the agent a
+    /// non-empty cascade so over-permission is evaluated rather than skipped.
+    fn permissive_cascade() -> Vec<aa_gateway::policy::PolicyDocument> {
+        vec![policy_doc(
+            "baseline",
+            PolicyScope::Global,
+            Some(aa_core::CapabilitySet::default()),
+            &[],
+            None,
+        )]
+    }
+
+    #[tokio::test]
+    async fn low_tier_granted_a_destructive_verb_is_flagged_with_a_note() {
+        // Low (risk_tier 1) with an unconstrained cascade: file_delete and
+        // terminal_exec fall through to Allow, both beyond the Low baseline.
+        let state = state_with_policies(vec![record_with_tier(0x01, "a", &[], 1)], permissive_cascade());
+        let agent = &matrix_for(&state).await.agents[0];
+
+        assert_eq!(
+            agent.flagged,
+            Some(true),
+            "a Low agent with destructive grants is over-permissioned"
+        );
+        assert!(agent.caps["terminal"].flag == Some(true), "the driving cell is marked");
+        assert!(
+            agent.caps["filesystem"].flag == Some(true),
+            "file_delete drives the filesystem cell"
+        );
+        let note = agent.note.as_deref().expect("a flag carries a note");
+        assert!(note.contains("file_delete"), "note names the offending grant: {note}");
+        assert!(note.contains("terminal_exec"), "note names the offending grant: {note}");
+    }
+
+    #[tokio::test]
+    async fn high_tier_with_the_same_grants_is_within_baseline() {
+        // High (risk_tier 3) permits every modelled system verb, so the same
+        // grants are evaluated and found clean — Some(false), not a flag.
+        let state = state_with_policies(vec![record_with_tier(0x01, "a", &[], 3)], permissive_cascade());
+        let agent = &matrix_for(&state).await.agents[0];
+
+        assert_eq!(
+            agent.flagged,
+            Some(false),
+            "High permits these grants; evaluated but not flagged"
+        );
+        assert!(agent.note.is_none(), "a within-baseline agent carries no note");
+        assert!(
+            agent.caps.values().all(|c| c.flag.is_none()),
+            "no cell is marked when nothing is over-permission"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_no_declared_tier_is_not_evaluated() {
+        // risk_tier 0 is the proto UNSPECIFIED sentinel: no baseline, no
+        // comparison. flagged and every flag stay absent — never a false false.
+        let state = state_with_policies(vec![record_with_tier(0x01, "a", &[], 0)], permissive_cascade());
+        let agent = &matrix_for(&state).await.agents[0];
+
+        assert!(agent.flagged.is_none(), "no tier -> not evaluated, not Some(false)");
+        assert!(agent.note.is_none());
+        assert!(agent.caps.values().all(|c| c.flag.is_none()));
+    }
+
+    #[tokio::test]
+    async fn an_empty_cascade_is_not_mass_flagged() {
+        // No policy loaded: every cell is Allow by fall-through (ADR 0024).
+        // Flagging a Low agent against those phantom grants would be a false
+        // positive, so an empty cascade is not evaluated at all.
+        let state = state_with(vec![record_with_tier(0x01, "a", &[], 1)]);
+        let agent = &matrix_for(&state).await.agents[0];
+
+        assert_eq!(
+            agent.caps["terminal"].exec,
+            Decision::Allow,
+            "empty cascade allows by fall-through"
+        );
+        assert!(
+            agent.flagged.is_none(),
+            "an empty cascade is not evaluated for over-permission"
+        );
+        assert!(agent.note.is_none());
+        assert!(agent.caps.values().all(|c| c.flag.is_none()));
+    }
+
+    #[tokio::test]
+    async fn a_denied_destructive_grant_is_never_flagged() {
+        use aa_core::Capability as C;
+
+        // Low agent, but terminal_exec is explicitly denied: a denied grant is
+        // not a grant, so it cannot be over-permission.
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.deny.insert(C::FileDelete);
+        caps.deny.insert(C::TerminalExec);
+        caps.deny.insert(C::FileWrite);
+        let state = state_with_policies(
+            vec![record_with_tier(0x01, "a", &[], 1)],
+            vec![policy_doc(
+                "deny-destructive",
+                PolicyScope::Global,
+                Some(caps),
+                &[],
+                // Deny-all egress too, so no high-privilege verb is granted.
+                Some(Vec::new()),
+            )],
+        );
+        let agent = &matrix_for(&state).await.agents[0];
+
+        assert_eq!(agent.caps["terminal"].exec, Decision::Deny);
+        assert_eq!(
+            agent.flagged,
+            Some(false),
+            "the agent is evaluated but nothing is granted beyond baseline"
+        );
+        assert!(agent.caps.values().all(|c| c.flag.is_none()));
+    }
+
     /// The `"*"` tools key is a fallback pattern, not a tool. A column named `*`
     /// reading `allow` is the exact inverse of what `"*": { allow: false }` says.
     #[tokio::test]
@@ -1146,20 +1378,22 @@ mod tests {
     #[test]
     fn system_cell_leaves_unmodelled_verbs_na() {
         let caps = aa_core::CapabilitySet::default();
-        let fs = system_cell(&caps, "filesystem", false);
+        // `None` tier: no over-permission evaluation, so this pins decision
+        // placement only (the flag concern is covered separately).
+        let fs = system_cell(&caps, "filesystem", false, None);
         assert_eq!(fs.exec, Decision::Na, "the capability model has no filesystem exec");
         assert_eq!(fs.read, Decision::Allow);
 
-        let term = system_cell(&caps, "terminal", false);
+        let term = system_cell(&caps, "terminal", false, None);
         assert_eq!(term.read, Decision::Na);
         assert_eq!(term.write, Decision::Na);
         assert_eq!(term.delete, Decision::Na);
         assert_eq!(term.exec, Decision::Allow);
 
         // The egress verdict only reaches the network family.
-        let net = system_cell(&caps, "network_outbound", true);
+        let net = system_cell(&caps, "network_outbound", true, None);
         assert_eq!(net.exec, Decision::Deny);
-        assert_eq!(system_cell(&caps, "terminal", true).exec, Decision::Allow);
+        assert_eq!(system_cell(&caps, "terminal", true, None).exec, Decision::Allow);
     }
 
     /// Pins the rule flattening directly, covering the capability variants no

@@ -76,7 +76,12 @@ pub struct CapCell {
     pub write: Decision,
     pub delete: Decision,
     pub exec: Decision,
-    /// Marks this cell for UI attention (e.g. over-permissioned).
+    /// `Some(true)` when this cell's grant is over-permission — the agent is
+    /// effectively allowed a destructive system verb its declared `RiskTier`
+    /// baseline does not warrant (AAASM-5175, ADR 0029). Absent when the cell is
+    /// within baseline, or when the agent is not evaluated (no resolvable tier,
+    /// or an empty cascade). Only the offending marker is emitted; a per-cell
+    /// `false` is not, so the UI highlights positives without negative clutter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flag: Option<bool>,
 }
@@ -226,11 +231,20 @@ pub struct CapabilityAgent {
     pub status: AgentStatus,
     /// ISO 8601 UTC timestamp of the agent's most recent heartbeat.
     pub last_seen: String,
-    /// Always absent: flagging an agent as over-permissioned is a scoring rule
-    /// with no implementation in the gateway (see `trust`).
+    /// Over-permission verdict (AAASM-5175, ADR 0029): `Some(true)` when the
+    /// agent is effectively granted a destructive system capability its declared
+    /// `RiskTier` baseline does not warrant, `Some(false)` when it was evaluated
+    /// and found within baseline. Absent when the agent is *not* evaluated — it
+    /// declared no resolvable risk tier, or its policy cascade is empty (in which
+    /// case every cell is `Allow` by fall-through and flagging would be a false
+    /// positive). This is a structural grant-vs-posture signal, distinct from the
+    /// behavioural `trust` score (ADR 0019) and the topology violation-volume flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flagged: Option<bool>,
-    /// Always absent: no operator-authored per-agent note exists in the registry.
+    /// When `flagged` is `Some(true)`, a human-readable explanation naming the
+    /// tier and the offending grants (e.g. "Low-risk agent granted file_delete,
+    /// terminal_exec beyond its tier baseline"). Absent otherwise — there is no
+    /// operator-authored note source, so a note only ever accompanies a flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// Resource-id → CapCell mapping for this agent.
