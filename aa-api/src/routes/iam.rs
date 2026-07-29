@@ -698,6 +698,50 @@ mod tests {
         }
     }
 
+    // ── AAASM-5177 — TTL resolution ──
+
+    #[test]
+    fn resolve_expires_at_applies_default_ttl_when_omitted() {
+        let before = chrono::Utc::now();
+        let expiry = resolve_expires_at(None).expect("default ttl must resolve");
+        let expected = before + chrono::Duration::seconds(DEFAULT_API_KEY_TTL_SECS as i64);
+        // Allow a small window for the clock advancing between reads.
+        let delta = (expiry - expected).num_seconds().abs();
+        assert!(delta <= 5, "omitted ttl must apply the 90-day default (delta {delta}s)");
+    }
+
+    #[test]
+    fn resolve_expires_at_honors_explicit_ttl() {
+        let before = chrono::Utc::now();
+        let expiry = resolve_expires_at(Some(3600)).expect("explicit ttl must resolve");
+        let delta = (expiry - (before + chrono::Duration::hours(1))).num_seconds().abs();
+        assert!(delta <= 5, "explicit ttl_seconds must be honored (delta {delta}s)");
+    }
+
+    #[test]
+    fn resolve_expires_at_rejects_zero_ttl() {
+        assert!(
+            matches!(resolve_expires_at(Some(0)), Err(IamHandlerError::BadRequest(_))),
+            "ttl_seconds=0 must be a 400, never a non-expiring key"
+        );
+    }
+
+    #[test]
+    fn resolve_expires_at_rejects_overflowing_ttl() {
+        assert!(
+            matches!(resolve_expires_at(Some(u64::MAX)), Err(IamHandlerError::BadRequest(_))),
+            "an out-of-range ttl must be a 400, never a silently non-expiring key"
+        );
+    }
+
+    #[test]
+    fn expired_gateway_status_maps_to_expired_wire_status() {
+        assert_eq!(
+            ApiKeyStatusResponse::from(GwApiKeyStatus::Expired),
+            ApiKeyStatusResponse::Expired
+        );
+    }
+
     #[test]
     fn every_role_has_a_description_and_at_least_one_capability() {
         for role in ROLE_ORDER {
