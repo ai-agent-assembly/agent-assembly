@@ -39,6 +39,7 @@
   --info-bg: #d6dfee;
   --scrub: #5a1a8a;
   --scrub-bg: #e0d2ec;
+  --edge-approves: #7c3aed;
 
   /* ── App shell semantic tokens ───────────────────────────── */
   /* These name the colors used by the current AppShell so the
@@ -252,6 +253,7 @@
   --info-bg: #16233f;
   --scrub: #cfa3eb;
   --scrub-bg: #2a1838;
+  --edge-approves: #cfa3eb;
 
   /* app shell — nav rail stays dark in both modes; topbar mirrors paper */
   --shell-topbar-bg: #1c1a16;
