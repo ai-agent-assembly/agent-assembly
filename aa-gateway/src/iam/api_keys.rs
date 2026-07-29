@@ -440,4 +440,104 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].id, b.id, "newest entry should appear first");
     }
+
+    // ── AAASM-5177 — expiry status computation ──
+
+    /// A minimal entry with a given status and expiry, for status tests.
+    fn entry_with_expiry(id: &str, status: ApiKeyStatus, expires_at: Option<DateTime<Utc>>) -> ApiKeyEntry {
+        ApiKeyEntry {
+            id: id.to_string(),
+            label: id.to_string(),
+            prefix: "aa_live_test".to_string(),
+            scopes: vec![],
+            status,
+            created_at: Utc::now(),
+            expires_at,
+            last_used: None,
+            owner: "alice".to_string(),
+            role: "service:reader".to_string(),
+            assigned_policies: vec![],
+            recent_activity: vec![],
+        }
+    }
+
+    #[test]
+    fn effective_status_active_without_expiry_stays_active() {
+        let e = entry_with_expiry("k", ApiKeyStatus::Active, None);
+        assert_eq!(e.effective_status(Utc::now()), ApiKeyStatus::Active);
+    }
+
+    #[test]
+    fn effective_status_reports_expired_once_past_expiry() {
+        let now = Utc::now();
+        let past = now - chrono::Duration::hours(1);
+        let e = entry_with_expiry("k", ApiKeyStatus::Active, Some(past));
+        assert_eq!(
+            e.effective_status(now),
+            ApiKeyStatus::Expired,
+            "an active key past its expiry displays as Expired"
+        );
+    }
+
+    #[test]
+    fn effective_status_active_before_expiry_stays_active() {
+        let now = Utc::now();
+        let future = now + chrono::Duration::hours(1);
+        let e = entry_with_expiry("k", ApiKeyStatus::Active, Some(future));
+        assert_eq!(e.effective_status(now), ApiKeyStatus::Active);
+    }
+
+    #[test]
+    fn effective_status_revoked_wins_over_expiry() {
+        let now = Utc::now();
+        let past = now - chrono::Duration::hours(1);
+        let e = entry_with_expiry("k", ApiKeyStatus::Revoked, Some(past));
+        assert_eq!(
+            e.effective_status(now),
+            ApiKeyStatus::Revoked,
+            "revocation takes precedence over expiry"
+        );
+    }
+
+    #[test]
+    fn list_projects_expired_status_without_mutating_storage() {
+        let s = store();
+        let past = Utc::now() - chrono::Duration::hours(1);
+        s.seed([entry_with_expiry("expired-1", ApiKeyStatus::Active, Some(past))]);
+
+        let listed = s.list();
+        assert_eq!(listed[0].status, ApiKeyStatus::Expired, "list() surfaces Expired");
+
+        // The stored record's status is untouched — only the returned clone is
+        // projected. A later expiry extension can therefore re-activate it.
+        s.seed([entry_with_expiry(
+            "expired-1",
+            ApiKeyStatus::Active,
+            Some(Utc::now() + chrono::Duration::hours(1)),
+        )]);
+        assert_eq!(
+            s.list()[0].status,
+            ApiKeyStatus::Active,
+            "extending the expiry re-activates the displayed status"
+        );
+    }
+
+    #[test]
+    fn generated_key_carries_supplied_expiry() {
+        let s = store();
+        let expiry = Utc::now() + chrono::Duration::days(90);
+        let gen = s.generate("ttl-key", vec![], "alice", Some(expiry));
+        let entry = s.list().into_iter().find(|e| e.id == gen.id).unwrap();
+        assert_eq!(entry.expires_at, Some(expiry), "generate stores the supplied expiry");
+    }
+
+    #[test]
+    fn rotate_preserves_source_key_expiry() {
+        let s = store();
+        let expiry = Utc::now() + chrono::Duration::days(30);
+        let gen = s.generate("rot", vec![ApiKeyScope::ReadAudit], "alice", Some(expiry));
+        let rotated = s.rotate(&gen.id, "alice").unwrap();
+        let new = s.list().into_iter().find(|e| e.id == rotated.id).unwrap();
+        assert_eq!(new.expires_at, Some(expiry), "rotation carries the expiry over");
+    }
 }
