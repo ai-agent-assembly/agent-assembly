@@ -248,7 +248,14 @@ impl ApiKeyStore {
             None => Err(KeyNotValid::NotFound),
             Some(entry) => {
                 if self.revoked_ids.contains_key(&entry.id) {
+                    // Explicit administrative revocation takes precedence over
+                    // expiry when both apply — the operator revoked it.
                     Err(KeyNotValid::Revoked)
+                } else if is_expired(entry.expires_at) {
+                    // AAASM-5177 — a matched, un-revoked key whose expiry has
+                    // passed is rejected here, at authentication, so it can
+                    // never authorize a request regardless of how it displays.
+                    Err(KeyNotValid::Expired)
                 } else {
                     Ok(entry)
                 }
@@ -276,6 +283,27 @@ impl ApiKeyStore {
     }
 }
 
+/// AAASM-5177 — has `expires_at` (Unix seconds) passed relative to now?
+///
+/// `None` means the key never expires (always `false`). A clock read that
+/// fails (pre-epoch) is treated as time 0, so a set expiry is considered
+/// passed — failing closed rather than granting an expired key.
+fn is_expired(expires_at: Option<u64>) -> bool {
+    match expires_at {
+        None => false,
+        Some(exp) => now_unix_secs() >= exp,
+    }
+}
+
+/// Current wall-clock time in Unix seconds, or 0 if the clock is before the
+/// epoch (which makes any set expiry compare as passed — fail closed).
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Reason a key lookup failed during authentication.
 #[derive(Debug)]
 pub enum KeyNotValid {
@@ -283,6 +311,10 @@ pub enum KeyNotValid {
     NotFound,
     /// The key exists but has been revoked.
     Revoked,
+    /// AAASM-5177 — the key exists and matches, but its `expires_at` instant
+    /// has passed. Rejected at authentication so an expired credential can
+    /// never authorize a request.
+    Expired,
 }
 
 /// Errors related to API key operations.
