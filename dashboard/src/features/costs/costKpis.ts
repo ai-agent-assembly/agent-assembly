@@ -67,7 +67,7 @@ export interface CostKpis {
   readonly monthly: PeriodSpend
   /** Number of agents with a per-agent cost row today. */
   readonly agentsTracked: Certain<number>
-  /** Number of teams with a per-team cost row today (the "across N teams" figure). */
+  /** Number of teams in the joined roster (the "across N teams" figure). */
   readonly teamsTracked: Certain<number>
   /**
    * `daily.spend / agentsTracked` — the mock's "Avg / agent today" KPI
@@ -222,7 +222,13 @@ export function deriveCostKpis(
     daily,
     monthly: periodSpend(summary?.monthly_spend_usd, summary?.monthly_limit_usd),
     agentsTracked,
-    teamsTracked: trackedCount(costs, summary?.per_team),
+    // The "across N teams" caption counts the same joined roster the Per-team
+    // tab counts (`teamRows`), not the summary's `per_team` breakdown array.
+    // The two are different populations — a team with agents but no cost row
+    // appears in the roster and not in the breakdown — so sourcing them
+    // separately let the KPI strip and the tab report two different team
+    // counts on one page (AAASM-5172).
+    teamsTracked: mapCertain(teamRows, rows => rows.length),
     avgPerAgent: averagePerAgent(daily.spend, agentsTracked),
   }
 }
