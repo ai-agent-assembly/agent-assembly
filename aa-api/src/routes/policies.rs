@@ -910,6 +910,52 @@ pub async fn simulate_policy(
     ))
 }
 
+// ---------------------------------------------------------------------------
+// Policy-impact traffic replay (AAASM-5094)
+// ---------------------------------------------------------------------------
+
+/// Default corpus window for `POST /api/v1/policies/replay` when the caller
+/// supplies no `window_hours`: the last 24 hours of recorded traffic.
+const REPLAY_DEFAULT_WINDOW_HOURS: u64 = 24;
+
+/// Upper bound on audit events a single replay pulls from the audit log,
+/// matching the analytics/policy-hits 100k cap so a hot window can never turn
+/// one replay into an unbounded scan (AAASM-4145 / AAASM-5107).
+const REPLAY_MAX_EVENTS: usize = 100_000;
+
+/// Default number of per-request before/after diffs returned when the caller
+/// supplies no `sample_size`.
+const REPLAY_DEFAULT_SAMPLE_SIZE: usize = 10;
+
+/// Hard ceiling on `sample_size` so a caller cannot ask the response to carry
+/// an unbounded number of sample diffs.
+const REPLAY_MAX_SAMPLE_SIZE: usize = 100;
+
+/// Request body for `POST /api/v1/policies/replay` (AAASM-5094).
+///
+/// Describes a *proposed* (unloaded) policy plus the corpus window to replay it
+/// against. Nothing here is persisted and the proposed policy is never applied —
+/// it is a pure, read-only what-if over recorded traffic.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ReplayPolicyRequest {
+    /// Proposed policy document as raw YAML. Parsed and validated exactly like a
+    /// `create_policy` body, but evaluated through an ephemeral engine
+    /// ([`aa_gateway::engine::PolicyEngine::simulate_against`]) so it is never
+    /// loaded, applied, or persisted.
+    pub policy_yaml: String,
+    /// How many hours of recent recorded traffic to replay. Defaults to
+    /// [`REPLAY_DEFAULT_WINDOW_HOURS`] (24h) when omitted. The read is bounded to
+    /// the most recent [`REPLAY_MAX_EVENTS`] events within the window.
+    #[serde(default)]
+    pub window_hours: Option<u64>,
+    /// Maximum number of per-request before/after sample diffs to return.
+    /// Defaults to [`REPLAY_DEFAULT_SAMPLE_SIZE`], capped at
+    /// [`REPLAY_MAX_SAMPLE_SIZE`]. Does not affect the aggregate counts, which
+    /// always reflect the whole replayed corpus.
+    #[serde(default)]
+    pub sample_size: Option<usize>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
