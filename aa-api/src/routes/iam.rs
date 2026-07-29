@@ -76,6 +76,9 @@ impl From<ApiKeyScopeResponse> for GwApiKeyScope {
 pub enum ApiKeyStatusResponse {
     Active,
     Revoked,
+    /// AAASM-5177 — the key is past its `expires_at`. Computed by the gateway
+    /// store on read; the dashboard renders it as a distinct terminal state.
+    Expired,
 }
 
 impl From<GwApiKeyStatus> for ApiKeyStatusResponse {
@@ -83,6 +86,7 @@ impl From<GwApiKeyStatus> for ApiKeyStatusResponse {
         match s {
             GwApiKeyStatus::Active => Self::Active,
             GwApiKeyStatus::Revoked => Self::Revoked,
+            GwApiKeyStatus::Expired => Self::Expired,
         }
     }
 }
@@ -466,6 +470,7 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
             scopes: vec![GwApiKeyScope::ReadMembers, GwApiKeyScope::ReadPolicies],
             status: GwApiKeyStatus::Active,
             created_at: ts("2026-04-30T09:12:00Z"),
+            expires_at: None,
             last_used: Some(ts("2026-05-13T07:55:00Z")),
             owner: "alice".into(),
             role: "service:reader".into(),
@@ -498,6 +503,7 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
             scopes: vec![GwApiKeyScope::ReadAudit],
             status: GwApiKeyStatus::Active,
             created_at: ts("2026-05-02T14:30:00Z"),
+            expires_at: None,
             last_used: None,
             owner: "carol".into(),
             role: "service:observer".into(),
@@ -516,6 +522,7 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
             scopes: vec![GwApiKeyScope::Admin],
             status: GwApiKeyStatus::Revoked,
             created_at: ts("2026-03-14T11:00:00Z"),
+            expires_at: None,
             last_used: Some(ts("2026-04-21T10:18:00Z")),
             owner: "bob".into(),
             role: "service:admin".into(),
