@@ -897,6 +897,66 @@ impl PolicyEngine {
         self.ephemeral_for_simulation().evaluate(ctx, action)
     }
 
+    /// Dry-run an action against a **proposed** policy document, returning the
+    /// verdict that document would produce **without touching any live state**
+    /// (AAASM-5094).
+    ///
+    /// This is the per-request evaluation primitive behind the policy-impact
+    /// traffic-replay endpoint (`POST /api/v1/policies/replay`): it lets a caller
+    /// score a corpus of recorded actions against a draft policy that is *not*
+    /// loaded, so the endpoint can diff the draft's verdict against the recorded
+    /// one and tally aggregate impact.
+    ///
+    /// Unlike [`Self::simulate`] — which evaluates against this engine's *live*
+    /// primary document and cascade — this seeds a throwaway engine with
+    /// `proposed` as the sole primary document and an **empty cascade**, so the
+    /// verdict reflects the proposed document's rules alone. It reuses the same
+    /// no-mutation guarantees as [`Self::ephemeral_for_simulation`]: fresh
+    /// rate-limit, decision-cache, and zero-spend budget state, all discarded
+    /// after the call. The live engine's `registry` is shared read-only so the
+    /// agent's org/team lineage still resolves for cascade-tier selection, but
+    /// because the ephemeral cascade is empty the evaluation always falls through
+    /// to [`Self::evaluate_primary`] against `proposed`.
+    pub fn simulate_against(
+        &self,
+        proposed: Arc<PolicyDocument>,
+        ctx: &aa_core::AgentContext,
+        action: &aa_core::GovernanceAction,
+    ) -> EvaluationResult {
+        let compiled_patterns = proposed
+            .data
+            .as_ref()
+            .map(|dp| {
+                dp.sensitive_patterns
+                    .iter()
+                    .filter_map(|p| regex::Regex::new(p).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ephemeral = PolicyEngine {
+            policy: Arc::new(ArcSwap::new(proposed)),
+            scanner: aa_security::CredentialScanner::new(),
+            rate_state: DashMap::new(),
+            budget: Arc::new(BudgetTracker::new(
+                crate::budget::PricingTable::default_table(),
+                None,
+                None,
+                chrono_tz::UTC,
+            )),
+            cascade: Arc::new(ArcSwap::from_pointee(CascadeState {
+                scope_index: ScopeIndex::new(),
+                compiled_patterns,
+            })),
+            _cascade_watcher: None,
+            _watcher: None,
+            registry: self.registry.clone(),
+            policy_epoch: self.policy_epoch.clone(),
+            invalidation_hub: None,
+            decision_cache: DecisionCache::new(1),
+        };
+        ephemeral.evaluate(ctx, action)
+    }
+
     /// Build a throwaway [`PolicyEngine`] for a single dry-run evaluation
     /// (see [`Self::simulate`]).
     ///
