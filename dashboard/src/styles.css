@@ -30,6 +30,7 @@
   /* ── Hi-fi semantic palette (status / accent) ────────────── */
   --danger: #b8291e;
   --danger-bg: #f6dad6;
+  --danger-row-tint: rgba(184, 41, 30, 0.04);
   --warn: #8a5a00;
   --warn-bg: #f5e6c4;
   --ok: #22592a;
@@ -242,6 +243,7 @@
   /* semantic — brighter foreground, deeper tinted background */
   --danger: #f08a82;
   --danger-bg: #3a1a16;
+  --danger-row-tint: rgba(240, 138, 130, 0.10);
   --warn: #e6b86b;
   --warn-bg: #382810;
   --ok: #8ec898;
