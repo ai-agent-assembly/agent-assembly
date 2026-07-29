@@ -240,6 +240,50 @@ paths:
           description: Invalid agent ID format
         '404':
           description: Agent not found
+  /api/v1/agents/{id}/config:
+    get:
+      tags:
+      - agents
+      summary: '`GET /api/v1/agents/:id/config` — per-agent config projection (AAASM-5098).'
+      description: |-
+        Read-only projection backing the Agent-Detail Config-YAML tab (ADR-0022,
+        narrow Option C). Returns **only fields with a real per-agent source**: the
+        registered `enforcement_mode` (the field the enforcement path consults, not
+        `metadata["mode"]`), the agent's effective policy cascade, and a *qualitative*
+        recommendation naming the resources that dominate its recent denials. The
+        mock's `fail_open`, `rate_limit`, `observability`, and `issuer` are omitted
+        from the contract entirely — ADR-0022 verified none has a per-agent source,
+        and emitting them as `null` would imply a concept that does not exist. The
+        recommendation carries no quantified improvement estimate: the `−N%`
+        counterfactual is blocked on AAASM-5094's traffic replay.
+
+        Deny-by-default and tenant-scoped: [`authorize_agent_access`] confines the
+        caller to an agent in its own team (admin sees any; a caller with no team
+        scope is denied before any read), so neither the cascade nor the denial
+        rollup crosses a tenant boundary. No enforcement or audit-write path is touched.
+      operationId: get_agent_config
+      parameters:
+      - name: id
+        in: path
+        description: Hex-encoded agent UUID
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Per-agent config projection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConfigResponse'
+        '400':
+          description: Invalid agent ID format
+        '401':
+          description: Missing or invalid credentials
+        '403':
+          description: Caller lacks access to the agent's team
+        '404':
+          description: Agent not found
   /api/v1/agents/{id}/decisions:
     get:
       tags:
@@ -3566,6 +3610,126 @@ components:
         status:
           type: string
           description: Current status of the session.
+    AgentConfigPolicyRef:
+      type: object
+      description: |-
+        One policy document in the agent's effective cascade.
+
+        AAASM-5098 — the honest identity of a document already loaded in the engine:
+        its scope-qualified id, human name, optional version, and scope label. Mirrors
+        the `Policy` identity the capability matrix emits (`{scope}/{name}` id) so the
+        Config-YAML tab and the Capability page name the same document the same way.
+      required:
+      - id
+      - name
+      - scope
+      properties:
+        id:
+          type: string
+          description: |-
+            Scope-qualified id (`{scope}/{name}`, or the bare scope when the document
+            is unnamed) — matches the capability matrix's per-policy id.
+        name:
+          type: string
+          description: Human-readable document name, falling back to the scope label when unnamed.
+        scope:
+          type: string
+          description: Wire-format scope label (e.g. `"global"`, `"team:platform"`).
+        version:
+          type:
+          - string
+          - 'null'
+          description: Document `policy_version`, if the source declared one.
+    AgentConfigRecommendation:
+      type: object
+      description: |-
+        A qualitative posture recommendation for the agent (AAASM-5098, ADR-0022).
+
+        Names the resources that dominate the agent's recent denials so an operator
+        can see *what* to narrow, without asserting a quantified improvement. The
+        `−N%` counterfactual is deliberately withheld — producing it requires the
+        traffic replay AAASM-5094 builds, and fabricating a percentage would ship a
+        number the product cannot stand behind (ADR-0022 §Option C). Every count here
+        is a historical denial tally over the window, not a prediction.
+      required:
+      - window
+      - total_denials
+      - top_resources
+      - top_resources_share_pct
+      - summary
+      properties:
+        summary:
+          type: string
+          description: |-
+            Human-readable qualitative finding, e.g. "3 resources account for 78% of
+            this agent's denials in the last 7 days". Names resources, never a policy
+            (naming a specific policy needs a matcher that does not exist) and never a
+            projected improvement percentage.
+        top_resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeniedResourceShare'
+          description: The resources responsible for the most denials, most-denied first.
+        top_resources_share_pct:
+          type: number
+          format: double
+          description: |-
+            Share of the window's denials the `top_resources` together account for,
+            as a 0–100 percentage of `total_denials` (a historical count ratio, not a
+            projected improvement).
+        total_denials:
+          type: integer
+          format: int64
+          description: Total denials (`PolicyViolation` audit events) counted in the window.
+          minimum: 0
+        window:
+          type: string
+          description: Recent window the finding covers (e.g. `"7d"`).
+    AgentConfigResponse:
+      type: object
+      description: |-
+        Per-agent config projection returned by `GET /api/v1/agents/{id}/config`.
+
+        AAASM-5098 (ADR-0022, narrow Option C). Backs the Agent-Detail Config-YAML
+        tab. **Every field carries a real per-agent server-side source** — the
+        contract deliberately omits the mock's `fail_open`, `rate_limit`,
+        `observability`, and `issuer` because ADR-0022 verified none of them has a
+        per-agent source. They are absent from this schema entirely rather than
+        emitted as `null`: a null `observability` would imply the concept exists and
+        is unset, a stronger claim than the truth.
+      required:
+      - agent_id
+      - policies
+      properties:
+        agent_id:
+          type: string
+          description: Hex-encoded agent UUID.
+        enforcement_mode:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/EnforcementModeLabel'
+            description: |-
+              The agent's registered enforcement-mode override, sourced from
+              `AgentRecord.enforcement_mode` — the field the enforcement path consults,
+              **not** the free-form `metadata["mode"]` the Topology/Fleet views render
+              (ADR-0021 / ADR-0022). `None` (omitted) when the agent declares no
+              per-agent override, in which case the effective mode is decided per policy
+              document, not per agent — omitted rather than defaulted so the response
+              never fabricates a posture the agent did not set.
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConfigPolicyRef'
+          description: The policy documents in the agent's effective cascade, broadest → narrowest.
+        recommendation:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/AgentConfigRecommendation'
+            description: |-
+              Qualitative posture recommendation, or `None` (omitted) when the agent has
+              too few denials in the window to rank a dominant resource. Qualitative
+              only — no quantified improvement estimate (ADR-0022; the `−N%` is blocked
+              on AAASM-5094's replay).
     AgentCostEntry:
       type: object
       description: Per-agent cost entry within the budget summary.
@@ -5497,6 +5661,26 @@ components:
       - pending
       - redact
       - unspecified
+    DeniedResourceShare:
+      type: object
+      description: One resource's contribution to an agent's recent denials.
+      required:
+      - resource
+      - denials
+      - share_pct
+      properties:
+        denials:
+          type: integer
+          format: int64
+          description: Denials attributed to this resource in the window.
+          minimum: 0
+        resource:
+          type: string
+          description: The denied resource (the audit `blocked_action`, e.g. `"gmail/write"`).
+        share_pct:
+          type: number
+          format: double
+          description: This resource's share of `total_denials`, as a 0–100 percentage.
     DestinationConfig:
       oneOf:
       - type: object
@@ -5801,6 +5985,20 @@ components:
           type: integer
           format: int64
           description: Bucket-start timestamp, epoch milliseconds.
+    EnforcementModeLabel:
+      type: string
+      description: |-
+        Wire vocabulary for [`AgentConfigResponse::enforcement_mode`].
+
+        AAASM-5098 / ADR-0022 — the agent's registered enforcement-mode override,
+        serialized as the same `snake_case` labels the core [`aa_core::EnforcementMode`]
+        uses. A dedicated schema (rather than surfacing the core enum) so the
+        generated OpenAPI advertises a closed enum. Emitted only when the agent
+        declares an override; see [`AgentConfigResponse::enforcement_mode`].
+      enum:
+      - enforce
+      - observe
+      - disabled
     EnforcementTimelineResponse:
       type: object
       description: Response for `GET /api/v1/overview/enforcement-timeline`.
