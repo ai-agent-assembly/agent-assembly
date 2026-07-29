@@ -1166,6 +1166,116 @@ mod tests {
         assert_eq!(cells["terminal"].exec, Decision::Allow);
     }
 
+    // ── Over-permission (ADR 0029) ───────────────────────────────────────────
+
+    /// `record` with an explicit proto risk-tier value (`record` fixes Low = 1).
+    fn record_with_tier(id_byte: u8, name: &str, tools: &[&str], risk_tier: i32) -> AgentRecord {
+        AgentRecord {
+            risk_tier,
+            ..record(id_byte, name, tools)
+        }
+    }
+
+    /// A Global policy that constrains nothing — enough to give the agent a
+    /// non-empty cascade so over-permission is evaluated rather than skipped.
+    fn permissive_cascade() -> Vec<aa_gateway::policy::PolicyDocument> {
+        vec![policy_doc(
+            "baseline",
+            PolicyScope::Global,
+            Some(aa_core::CapabilitySet::default()),
+            &[],
+            None,
+        )]
+    }
+
+    #[tokio::test]
+    async fn low_tier_granted_a_destructive_verb_is_flagged_with_a_note() {
+        // Low (risk_tier 1) with an unconstrained cascade: file_delete and
+        // terminal_exec fall through to Allow, both beyond the Low baseline.
+        let state = state_with_policies(vec![record_with_tier(0x01, "a", &[], 1)], permissive_cascade());
+        let agent = &matrix_for(&state).await.agents[0];
+
+        assert_eq!(agent.flagged, Some(true), "a Low agent with destructive grants is over-permissioned");
+        assert!(agent.caps["terminal"].flag == Some(true), "the driving cell is marked");
+        assert!(agent.caps["filesystem"].flag == Some(true), "file_delete drives the filesystem cell");
+        let note = agent.note.as_deref().expect("a flag carries a note");
+        assert!(note.contains("file_delete"), "note names the offending grant: {note}");
+        assert!(note.contains("terminal_exec"), "note names the offending grant: {note}");
+    }
+
+    #[tokio::test]
+    async fn high_tier_with_the_same_grants_is_within_baseline() {
+        // High (risk_tier 3) permits every modelled system verb, so the same
+        // grants are evaluated and found clean — Some(false), not a flag.
+        let state = state_with_policies(vec![record_with_tier(0x01, "a", &[], 3)], permissive_cascade());
+        let agent = &matrix_for(&state).await.agents[0];
+
+        assert_eq!(agent.flagged, Some(false), "High permits these grants; evaluated but not flagged");
+        assert!(agent.note.is_none(), "a within-baseline agent carries no note");
+        assert!(
+            agent.caps.values().all(|c| c.flag.is_none()),
+            "no cell is marked when nothing is over-permission"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_no_declared_tier_is_not_evaluated() {
+        // risk_tier 0 is the proto UNSPECIFIED sentinel: no baseline, no
+        // comparison. flagged and every flag stay absent — never a false false.
+        let state = state_with_policies(vec![record_with_tier(0x01, "a", &[], 0)], permissive_cascade());
+        let agent = &matrix_for(&state).await.agents[0];
+
+        assert!(agent.flagged.is_none(), "no tier -> not evaluated, not Some(false)");
+        assert!(agent.note.is_none());
+        assert!(agent.caps.values().all(|c| c.flag.is_none()));
+    }
+
+    #[tokio::test]
+    async fn an_empty_cascade_is_not_mass_flagged() {
+        // No policy loaded: every cell is Allow by fall-through (ADR 0024).
+        // Flagging a Low agent against those phantom grants would be a false
+        // positive, so an empty cascade is not evaluated at all.
+        let state = state_with(vec![record_with_tier(0x01, "a", &[], 1)]);
+        let agent = &matrix_for(&state).await.agents[0];
+
+        assert_eq!(agent.caps["terminal"].exec, Decision::Allow, "empty cascade allows by fall-through");
+        assert!(agent.flagged.is_none(), "an empty cascade is not evaluated for over-permission");
+        assert!(agent.note.is_none());
+        assert!(agent.caps.values().all(|c| c.flag.is_none()));
+    }
+
+    #[tokio::test]
+    async fn a_denied_destructive_grant_is_never_flagged() {
+        use aa_core::Capability as C;
+
+        // Low agent, but terminal_exec is explicitly denied: a denied grant is
+        // not a grant, so it cannot be over-permission.
+        let mut caps = aa_core::CapabilitySet::default();
+        caps.deny.insert(C::FileDelete);
+        caps.deny.insert(C::TerminalExec);
+        caps.deny.insert(C::FileWrite);
+        let state = state_with_policies(
+            vec![record_with_tier(0x01, "a", &[], 1)],
+            vec![policy_doc(
+                "deny-destructive",
+                PolicyScope::Global,
+                Some(caps),
+                &[],
+                // Deny-all egress too, so no high-privilege verb is granted.
+                Some(Vec::new()),
+            )],
+        );
+        let agent = &matrix_for(&state).await.agents[0];
+
+        assert_eq!(agent.caps["terminal"].exec, Decision::Deny);
+        assert_eq!(
+            agent.flagged,
+            Some(false),
+            "the agent is evaluated but nothing is granted beyond baseline"
+        );
+        assert!(agent.caps.values().all(|c| c.flag.is_none()));
+    }
+
     /// The `"*"` tools key is a fallback pattern, not a tool. A column named `*`
     /// reading `allow` is the exact inverse of what `"*": { allow: false }` says.
     #[tokio::test]
