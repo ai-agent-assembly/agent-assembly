@@ -42,7 +42,7 @@ describe('deriveCostKpis — daily / monthly / tracked figures', () => {
     expect(kpis.monthly).toEqual({ spend: 3200, limit: 5000, pct: 64 })
   })
 
-  it('counts agents and teams tracked from the summary rows', () => {
+  it('counts agents from the summary rows and teams from the joined roster', () => {
     const kpis = deriveCostKpis(known(COSTS), known(TEAM_ROWS))
 
     expect(kpis.agentsTracked).toEqual(known(2))
@@ -195,12 +195,26 @@ describe('deriveCostKpis — AAASM-5185: a count states its own coverage', () =>
     expect(kpis.daily).toEqual({ spend: null, limit: null, pct: null })
   })
 
-  it('reports tracked counts as absent when the summary carries no breakdown', () => {
+  it('reports agentsTracked as absent when the summary carries no breakdown', () => {
     const bare: CostSummary = { date: '2026-05-13', daily_spend_usd: '42.00' }
     const kpis = deriveCostKpis(known(bare), known([]))
 
     expect(isAbsent(kpis.agentsTracked) && kpis.agentsTracked.state).toBe('unconfigured')
-    expect(isAbsent(kpis.teamsTracked) && kpis.teamsTracked.state).toBe('unconfigured')
+  })
+
+  it('counts teamsTracked from the joined roster, not the summary breakdown', () => {
+    // The "across N teams" caption must agree with the Per-team tab count, which
+    // is `teamRows.length`. Sourcing it from `summary.per_team` let the two
+    // report different team totals on one page (AAASM-5172). A resolved roster
+    // of two teams reads two teams even when the summary carried no per-team
+    // cost breakdown at all.
+    const bare: CostSummary = { date: '2026-05-13', daily_spend_usd: '42.00' }
+    const kpis = deriveCostKpis(
+      known(bare),
+      known([row({ team_id: 'a' }), row({ team_id: 'b' })]),
+    )
+
+    expect(kpis.teamsTracked).toEqual(known(2))
   })
 
   it('keeps an empty breakdown a measured zero', () => {
