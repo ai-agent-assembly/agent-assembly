@@ -141,7 +141,7 @@
   padding: 0 2px;
   border-radius: 2px;
   text-decoration: line-through;
-  text-decoration-color: rgba(184, 41, 30, 0.6);
+  text-decoration-color: color-mix(in srgb, var(--danger) 60%, transparent);
 }
 
 .scrub-diff-redacted {
