@@ -83,6 +83,17 @@ A cell answers: *"At this tier, is this capability available?"*
 - VS Code settings sync writes `settings.json` at the workspace level; a user can override at the user-settings level. Enterprise-grade enforcement requires VS Code managed device policies (outside AAASM scope).
 - Network-egress block via proxy does not cover VS Code's built-in Copilot HTTPS calls unless the proxy CA is trusted by the VS Code process.
 
+> **Why the per-capability rows above were left unchanged when `AAASM-5274` normalised Copilot's
+> overall level to `L2Enforce`.** `AAASM-5274` §3 resolved the *tool-wide* `governance_level()`
+> declaration in favour of the dedicated `aa-devtool-copilot` crate (`L2Enforce`) over the deleted
+> minimal stub (`L1Observe`). That same section states explicitly that `governance_level()` is the
+> tool's **overall** declaration and that per-capability tiers belong in this matrix — the two are
+> not the same number, which is why Codex declares `L2Enforce` overall while holding L3 on three
+> dimensions. Raising the rows here would require per-capability evidence for Copilot, and no
+> Copilot Spike exists: unlike Claude Code, its tiers come from the adapter's own declarations. The
+> rows therefore stay as `AAASM-1064` set them, and the inconsistency is recorded here rather than
+> resolved by a guess. A Copilot equivalent of `AAASM-5276` is what would settle it.
+
 ---
 
 ### Windsurf Cascade
