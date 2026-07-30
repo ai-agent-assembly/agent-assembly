@@ -67,6 +67,35 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
         resolve_tool(&mut session, &args.tool, false).await?;
         let runtime = RuntimeInfo::from_session(&session);
 
+        // Removing twice is a success, not an error: a caller that has already
+        // removed the integration got what it asked for, and a script that
+        // tears down in a loop should not have to special-case the second run.
+        // Decided from the lifecycle *phase* rather than by reading the error
+        // the service would otherwise return — prose is for people.
+        let status = session.client.status(&args.tool).await.map_err(verb_failure)?;
+        if !matches!(
+            status.phase.as_str(),
+            "installed" | "partially_installed" | "removal_pending"
+        ) {
+            eprintln!(
+                "{} has no Agent Assembly integration to remove (lifecycle phase: {}).",
+                args.tool, status.phase
+            );
+            emit(
+                &RemoveReport {
+                    runtime,
+                    tool_id: args.tool.clone(),
+                    dry_run: args.dry_run,
+                    plan_id: String::new(),
+                    steps: Vec::new(),
+                    residual: Vec::new(),
+                    warnings: vec!["nothing was installed, so nothing was removed".to_string()],
+                },
+                output,
+            );
+            return Ok(Outcome::Success);
+        }
+
         // Author first: no plan id means the service returns the reversal
         // without performing it.
         let preview = session.client.remove(&args.tool, "").await.map_err(verb_failure)?;

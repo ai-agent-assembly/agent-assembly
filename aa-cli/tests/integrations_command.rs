@@ -421,6 +421,30 @@ fn remove_previews_then_restores_the_users_own_configuration() {
     );
 }
 
+/// Removing twice is a success. A teardown script that runs in a loop should
+/// not have to special-case the run where there is nothing left to do.
+#[test]
+fn removing_twice_is_idempotent() {
+    let h = Harness::start(|f| f);
+    std::fs::write(&h.settings, r#"{"theme":"solarized"}"#).expect("seed");
+    assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
+    assert_eq!(code(&h.aasm(&["remove", "claude-code", "--yes"])), exit::SUCCESS);
+
+    let after_first = h.settings_contents().expect("settings");
+    let second = h.aasm(&["remove", "claude-code", "--yes"]);
+    assert_eq!(code(&second), exit::SUCCESS, "{}", combined(&second));
+    assert!(
+        stderr(&second).contains("no Agent Assembly integration to remove"),
+        "{}",
+        stderr(&second)
+    );
+    assert_eq!(
+        h.settings_contents().expect("settings"),
+        after_first,
+        "the second removal changed the file"
+    );
+}
+
 // ── exit codes ───────────────────────────────────────────────────────────────
 
 /// Each outcome a caller might branch on must be reachable and distinct. If
