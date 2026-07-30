@@ -51,10 +51,12 @@
 //!
 //! Everything above runs on every platform: the adapter, the engine, the
 //! receipt store, the proxy, the scanner and the provider are all pure Rust and
-//! the tool binary is stood in for by a path plus a version override. The two
-//! scenarios that need the real `claude` binary print `SKIP [...]` with the
-//! reason and return, so a skip is visible in the output rather than looking
-//! like a pass.
+//! the tool binary is stood in for by a path plus a version override. The one
+//! scenario that needs the real `claude` binary
+//! ([`the_real_binary_launched_through_the_installed_environment_is_protected`])
+//! prints `SKIP [...]` with the reason and returns, so a skip is visible in the
+//! output rather than looking like a pass — and a run that captures no traffic
+//! prints `NOT MEASURED` rather than passing on an empty capture set.
 //!
 //! # Safety
 //!
