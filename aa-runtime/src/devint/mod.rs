@@ -58,11 +58,13 @@
 //! Minimisation is the shape of the response types, not a redaction pass
 //! someone might forget (§5.5).
 
+pub mod negotiate;
 pub mod scope;
 pub mod socket;
 pub mod token;
 pub mod verb;
 
+pub use negotiate::{Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
 pub use scope::TokenScope;
 pub use socket::{devint_socket_path, SocketDiscovery, SocketError};
 pub use token::{CapabilityToken, TokenDenial, TokenId, TokenRecord, TokenStore};
