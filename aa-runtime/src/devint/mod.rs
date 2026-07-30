@@ -58,6 +58,9 @@
 //! Minimisation is the shape of the response types, not a redaction pass
 //! someone might forget (§5.5).
 
+// strip-for-publish:begin devtool
+pub mod adapters;
+// strip-for-publish:end devtool
 pub mod audit;
 pub mod client;
 pub mod codec;
