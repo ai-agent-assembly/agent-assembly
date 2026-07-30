@@ -1697,14 +1697,27 @@ mod tests {
         assert_eq!(row.verb.as_deref(), Some("TOOL_CALL"));
         assert_eq!(row.resource.as_deref(), Some("pg.users"));
         assert_eq!(row.matched_policy, None);
-        // No per-decision latency source exists — it must be reported as absent.
+        // A legacy payload carrying no verdict/latency_ms keys (written before
+        // AAASM-5100 capture landed) must still read null — the capture is
+        // additive, never fabricated for rows that lack a source.
         assert_eq!(row.latency_ms, None);
-        // The verdict + trace id are frozen in the schema but not yet captured
-        // at decision time (ADR-0018 hot-path follow-up); they must read null.
         assert_eq!(row.verdict, None);
         assert_eq!(row.trace_id, None);
         assert_eq!(row.seq, 7);
         assert_eq!(row.session_id, "ee".repeat(16));
+    }
+
+    #[test]
+    fn scrubbed_action_records_scrub_verdict_distinct_from_allow() {
+        // AAASM-5100 item A — a DLP-scrubbed action is forwarded (proto Redact,
+        // decision=4) but its captured verdict must be `scrub`, never `allow`,
+        // so scrubbed traffic is visible as distinct from a clean allow.
+        let entry = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":4,"verdict":"scrub","latency_ms":3,"detail":{"kind":"tool_call","tool_name":"gmail.send"}}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("redact carries a decision");
+        assert_eq!(row.verdict, Some(RuntimeVerdict::Scrub));
+        assert_ne!(row.verdict, Some(RuntimeVerdict::Allow));
     }
 
     #[test]
