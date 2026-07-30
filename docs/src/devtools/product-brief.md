@@ -356,7 +356,48 @@ sequenceDiagram
 
 ## 6. Protection profiles
 
-<!-- populated in a later commit -->
+A profile is a **named bundle of concrete core settings**, not a mood. Every profile below is
+defined by the five things a user can actually observe a difference in: the `EnforcementMode`, what
+happens to a sensitive-data finding, the approval posture, the network-egress posture, and what
+the user sees. Adjectives like "balanced" or "maximum" are deliberately absent — if a profile
+cannot be distinguished by one of those five columns, it should not exist.
+
+`EnforcementMode` (`aa-core/src/policy.rs`) has exactly three values, and only two of them are
+reachable from a profile:
+
+| Mode | Effect | Reachable from a profile? |
+|---|---|---|
+| `Enforce` (default) | Deny blocks, redact strips, pending halts execution. | Yes — `Recommended`, `Strict` |
+| `Observe` | Decisions computed and audited as shadow events; nothing applied. | Yes — `Observe only` |
+| `Disabled` | Policy evaluation skipped entirely. | **No.** Valid only in hermetic test environments; no user-facing profile maps to it, ever. |
+
+### 6.1 Profile definitions
+
+| | **Recommended** (default) | **Strict** | **Observe only** |
+|---|---|---|---|
+| **`EnforcementMode`** | `Enforce` | `Enforce` | `Observe` |
+| **Sensitive-data finding on a model-bound path** | **Redact and proceed.** The match is replaced with a `[REDACTED:<kind>]` placeholder and the request continues (`aa-security` `redact()`; policy pipeline Stage 6 redacts and never denies). | **Redact and proceed by default; block the request when the finding is in a configured high-severity class** — _planned_ (`AAASM-5277`, `AAASM-5281`). Blocking on a scanner finding is **not** core behaviour today; Stage 6 redacts unconditionally. Until that lands, `Strict` differs from `Recommended` on the other four rows only. | **Record only.** The finding is audited; the payload is forwarded unchanged. |
+| **Unscannable (oversized) field** | Replaced wholesale with `[REDACTED:OVERSIZED]` — fail-closed (`aa-runtime` `OversizedPolicy::RedactWhole`). | Same. | Recorded; forwarded unchanged, because `Observe` applies nothing. |
+| **Approval posture** | Approval required only where policy declares it (`requires_approval_if` → `RequireApproval`). Pending halts execution until decided. | Approval required for the declared cases **plus** destructive tool classes; an approval that times out resolves as deny. | No approval prompts. A would-be `RequireApproval` is audited as a shadow decision and the action proceeds. |
+| **Network egress** | Policy allowlist enforced at Stage 2 and at the wire by `aa-proxy`; hosts outside a non-empty allowlist are denied. | Same enforcement, with a narrower default allowlist: model provider endpoints and the local gateway only. | Egress evaluated and audited; nothing blocked. |
+| **Budget** | Enforced (`action_on_exceed`, default `Deny`). | Enforced; `Suspend` available. | Tracked and audited; not enforced. |
+| **What the user sees** | Occasional "a secret was removed from this request" notices; approval prompts only where policy asks for them. | More prompts and more blocked egress; the trade is explicit. | No interruptions at all, plus a **standing warning that nothing is being enforced**. |
+| **Intended for** | Default for every persona unless org policy says otherwise. | Regulated repositories, shared machines, high-sensitivity work. | Evaluating impact before enforcing, and diagnosing whether AASM is the cause of a tool problem. |
+
+### 6.2 Rules that bind all profiles
+
+- **`Observe only` must never be displayed as protection.** Status output for `Observe only` says
+  *monitoring*, and any protection level shown alongside it is annotated as not enforced. This is
+  the single most likely place for the product to accidentally lie.
+- **Org policy clamps the profile.** Profiles resolve into policy inputs that merge with the org
+  cascade under most-restrictive-wins. A local profile can tighten; it can never loosen. Choosing
+  `Observe only` on an org-managed machine whose policy is `Enforce` yields `Enforce`, and the UI
+  says why.
+- **A profile never changes what is *detected*** — only what is *done* about it. Detection and
+  audit run identically across all three, which is what makes `Observe only` a usable dry run for
+  `Recommended`.
+- **Switching profile is not a reinstall.** It re-resolves policy inputs; managed settings that
+  encode policy are re-applied through the same plan/receipt path so drift detection stays valid.
 
 ## 7. Protection levels
 
