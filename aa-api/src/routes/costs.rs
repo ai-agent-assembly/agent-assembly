@@ -30,6 +30,13 @@ pub struct TeamCostEntry {
     pub daily_spend_usd: String,
     /// Total spend this month in USD for this team (if monthly tracking is enabled).
     pub monthly_spend_usd: Option<String>,
+    /// Configured per-team calendar-month budget limit in USD, if set
+    /// (AAASM-5087). This is the tracker-wide team envelope — the same limit
+    /// applies to every team — surfaced so the Teams monthly-budget card can
+    /// render spend against limit. `None` when no team monthly limit is
+    /// configured. This is a calendar-month window, not a rolling window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monthly_limit_usd: Option<String>,
     /// Calendar date (YYYY-MM-DD) the daily spend applies to.
     pub date: String,
 }
@@ -107,6 +114,9 @@ pub async fn get_cost_summary(
         Vec::new()
     };
 
+    // AAASM-5087 — the per-team calendar-month limit is a single tracker-wide
+    // envelope, so resolve it once and stamp it on every team row.
+    let team_monthly_limit = state.budget_tracker.team_monthly_limit_usd().map(|d| d.to_string());
     let per_team: Vec<TeamCostEntry> = if is_admin || caller_team.is_some() {
         let mut rows: Vec<TeamCostEntry> = snapshot
             .team_budgets
@@ -117,6 +127,7 @@ pub async fn get_cost_summary(
                 team_id: team_id.clone(),
                 daily_spend_usd: state.spent_usd.to_string(),
                 monthly_spend_usd: state.monthly_spent_usd.map(|d| d.to_string()),
+                monthly_limit_usd: team_monthly_limit.clone(),
                 date: state.date.to_string(),
             })
             .collect();
@@ -213,6 +224,7 @@ mod tests {
                 team_id: "platform".to_string(),
                 daily_spend_usd: "12.00".to_string(),
                 monthly_spend_usd: None,
+                monthly_limit_usd: None,
                 date: "2026-04-30".to_string(),
             }],
         };
@@ -221,5 +233,23 @@ mod tests {
         assert_eq!(json["per_team"][0]["team_id"], "platform");
         assert_eq!(json["per_team"][0]["daily_spend_usd"], "12.00");
         assert!(json["per_team"][0]["monthly_spend_usd"].is_null());
+        // AAASM-5087: an unset team monthly limit is omitted from the wire.
+        assert!(json["per_team"][0].get("monthly_limit_usd").is_none());
+    }
+
+    // AAASM-5087 — when a team monthly limit is configured it is surfaced on
+    // every team row so the Teams monthly-budget card can render spend/limit.
+    #[test]
+    fn team_cost_entry_surfaces_configured_monthly_limit() {
+        let entry = TeamCostEntry {
+            team_id: "platform".to_string(),
+            daily_spend_usd: "12.00".to_string(),
+            monthly_spend_usd: Some("340.00".to_string()),
+            monthly_limit_usd: Some("2000.00".to_string()),
+            date: "2026-04-30".to_string(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["monthly_limit_usd"], "2000.00");
+        assert_eq!(json["monthly_spend_usd"], "340.00");
     }
 }

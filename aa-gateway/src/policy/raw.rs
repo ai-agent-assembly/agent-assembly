@@ -48,6 +48,12 @@ pub struct RawBudgetPolicy {
     pub daily_limit_usd: Option<f64>,
     /// Maximum USD spend per calendar month; `None` means no limit.
     pub monthly_limit_usd: Option<f64>,
+    /// AAASM-5087 — Maximum USD spend per calendar day, per team.
+    /// `None` means no per-team daily limit.
+    pub team_daily_limit_usd: Option<f64>,
+    /// AAASM-5087 — Maximum USD spend per calendar month, per team.
+    /// `None` means no per-team monthly limit.
+    pub team_monthly_limit_usd: Option<f64>,
     /// AAASM-2022 — Maximum USD spend per calendar day, per organisation.
     /// `None` means no per-org daily limit.
     pub org_daily_limit_usd: Option<f64>,

@@ -81,6 +81,21 @@
           "description": "Maximum USD spend allowed per calendar day across all LLM API calls. Calls that would exceed this limit are denied. Must be greater than 0.",
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "monthly_limit_usd": {
+          "description": "Maximum USD spend allowed per calendar month across all LLM API calls. Calls that would exceed this limit are denied. Must be greater than 0 and >= daily_limit_usd.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "team_daily_limit_usd": {
+          "description": "Maximum USD spend allowed per calendar day, applied to each team. Calls that would exceed a team's daily limit are denied. Must be greater than 0.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "team_monthly_limit_usd": {
+          "description": "Maximum USD spend allowed per calendar month, applied to each team. Calls that would exceed a team's monthly limit are denied. Must be greater than 0 and >= team_daily_limit_usd.",
+          "type": "number",
+          "exclusiveMinimum": 0
         }
       }
     },

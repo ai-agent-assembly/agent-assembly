@@ -286,6 +286,16 @@ impl PolicyValidator {
             errors,
         );
 
+        // AAASM-5087 — Per-team limits use the same validation rules as the
+        // global limits: positive, and monthly >= daily.
+        validate_budget_limit_pair(
+            raw.team_daily_limit_usd,
+            raw.team_monthly_limit_usd,
+            "budget.team_daily_limit_usd",
+            "budget.team_monthly_limit_usd",
+            errors,
+        );
+
         // AAASM-2022 — Per-org limits use the same validation rules as the
         // global limits: positive, and monthly >= daily.
         validate_budget_limit_pair(
@@ -345,6 +355,8 @@ impl PolicyValidator {
         Some(BudgetPolicy {
             daily_limit_usd: raw.daily_limit_usd,
             monthly_limit_usd: raw.monthly_limit_usd,
+            team_daily_limit_usd: raw.team_daily_limit_usd,
+            team_monthly_limit_usd: raw.team_monthly_limit_usd,
             org_daily_limit_usd: raw.org_daily_limit_usd,
             org_monthly_limit_usd: raw.org_monthly_limit_usd,
             timezone: raw.timezone,
@@ -1616,6 +1628,8 @@ schedule:
 budget:
   daily_limit_usd: 25.0
   monthly_limit_usd: 400.0
+  team_daily_limit_usd: 40.0
+  team_monthly_limit_usd: 600.0
   org_daily_limit_usd: 50.0
   org_monthly_limit_usd: 800.0
   timezone: "UTC"
@@ -1644,6 +1658,42 @@ approval:
             out.warnings.is_empty(),
             "a fully-valid policy must produce no warnings, got: {:?}",
             out.warnings
+        );
+    }
+
+    // AAASM-5087 — the team-tier calendar-month limit parses off `budget:` and
+    // lands on the validated document so the engine can lift it into the tracker.
+    #[test]
+    fn team_monthly_limit_parses_into_budget_policy() {
+        let yaml =
+            "version: \"1.0\"\nscope: global\nbudget:\n  team_daily_limit_usd: 10.0\n  team_monthly_limit_usd: 250.0\n";
+        let out = PolicyValidator::from_yaml(yaml).expect("valid policy must load");
+        let budget = out.document.budget.expect("budget block present");
+        assert_eq!(budget.team_daily_limit_usd, Some(10.0));
+        assert_eq!(budget.team_monthly_limit_usd, Some(250.0));
+    }
+
+    // AAASM-5087 — team limits reuse the shared pair validation: a non-positive
+    // value is rejected, and monthly must be >= daily (a mis-ordered pair must
+    // fail closed rather than silently loosen the cap).
+    #[test]
+    fn team_monthly_below_daily_is_rejected() {
+        let yaml =
+            "version: \"1.0\"\nscope: global\nbudget:\n  team_daily_limit_usd: 100.0\n  team_monthly_limit_usd: 50.0\n";
+        let errs = PolicyValidator::from_yaml(yaml).expect_err("monthly < daily must be rejected");
+        assert!(
+            errs.iter().any(|e| e.field == "budget.team_monthly_limit_usd"),
+            "expected a team_monthly_limit_usd error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn team_daily_limit_must_be_positive() {
+        let yaml = "version: \"1.0\"\nscope: global\nbudget:\n  team_daily_limit_usd: 0\n";
+        let errs = PolicyValidator::from_yaml(yaml).expect_err("non-positive team limit must be rejected");
+        assert!(
+            errs.iter().any(|e| e.field == "budget.team_daily_limit_usd"),
+            "expected a team_daily_limit_usd error, got: {errs:?}"
         );
     }
 }

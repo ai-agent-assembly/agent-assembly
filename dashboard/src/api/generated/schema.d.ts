@@ -3106,6 +3106,14 @@ export interface components {
             /** @description Human-readable label: org/team id, or the agent's registered name. */
             label: string;
             /**
+             * @description Configured calendar-month budget limit in USD for this node, if any
+             *     (decimal string). Populated for team nodes from the tracker-wide team
+             *     monthly envelope (AAASM-5087) so the Teams monthly-budget card can read
+             *     the limit off the tree; `None` for tiers without a configured monthly
+             *     cap. This is a calendar-month window, not a rolling window.
+             */
+            monthly_budget_limit_usd?: string | null;
+            /**
              * @description Spend attributable to this node itself, excluding descendants (USD
              *     string). Org and team nodes never spend directly, so this is `"0"`.
              */
@@ -5251,6 +5259,14 @@ export interface components {
             daily_spend_usd: string;
             /** @description Calendar date (YYYY-MM-DD) the daily spend applies to. */
             date: string;
+            /**
+             * @description Configured per-team calendar-month budget limit in USD, if set
+             *     (AAASM-5087). This is the tracker-wide team envelope — the same limit
+             *     applies to every team — surfaced so the Teams monthly-budget card can
+             *     render spend against limit. `None` when no team monthly limit is
+             *     configured. This is a calendar-month window, not a rolling window.
+             */
+            monthly_limit_usd?: string | null;
             /** @description Total spend this month in USD for this team (if monthly tracking is enabled). */
             monthly_spend_usd?: string | null;
             /** @description Team identifier. */

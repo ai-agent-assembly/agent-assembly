@@ -1535,6 +1535,13 @@ pub struct BudgetTreeNode {
     /// per-agent override, mirroring the enforcement path's resolution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_limit_usd: Option<String>,
+    /// Configured calendar-month budget limit in USD for this node, if any
+    /// (decimal string). Populated for team nodes from the tracker-wide team
+    /// monthly envelope (AAASM-5087) so the Teams monthly-budget card can read
+    /// the limit off the tree; `None` for tiers without a configured monthly
+    /// cap. This is a calendar-month window, not a rolling window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monthly_budget_limit_usd: Option<String>,
     /// Spend attributable to this node itself, excluding descendants (USD
     /// string). Org and team nodes never spend directly, so this is `"0"`.
     pub own_spend_usd: String,
@@ -1610,6 +1617,7 @@ fn build_agent_node(state: &AppState, record: &AgentRecord, depth: u32, visible:
         kind: "agent".to_string(),
         depth,
         budget_limit_usd: budget_limit.map(|d| d.to_string()),
+        monthly_budget_limit_usd: None,
         own_spend_usd: own_spend.to_string(),
         subtree_spend_usd: subtree_spend.to_string(),
         governance_level: Some(format!("{:?}", record.governance_level)),
@@ -1672,12 +1680,16 @@ pub async fn get_budget_tree(
                 .filter_map(|c| c.subtree_spend_usd.parse::<Decimal>().ok())
                 .sum();
             let budget_limit = state.budget_tracker.team_daily_limit_usd();
+            // AAASM-5087 — surface the team calendar-month limit alongside the
+            // daily one so the Teams monthly-budget card renders it.
+            let monthly_budget_limit = state.budget_tracker.team_monthly_limit_usd();
             BudgetTreeNode {
                 id: team_id.clone(),
                 label: team_id,
                 kind: "team".to_string(),
                 depth: 1,
                 budget_limit_usd: budget_limit.map(|d| d.to_string()),
+                monthly_budget_limit_usd: monthly_budget_limit.map(|d| d.to_string()),
                 own_spend_usd: Decimal::ZERO.to_string(),
                 subtree_spend_usd: subtree.to_string(),
                 governance_level: None,
@@ -1702,6 +1714,7 @@ pub async fn get_budget_tree(
         kind: "org".to_string(),
         depth: 0,
         budget_limit_usd: org_limit.map(|d| d.to_string()),
+        monthly_budget_limit_usd: None,
         own_spend_usd: Decimal::ZERO.to_string(),
         subtree_spend_usd: org_subtree.to_string(),
         governance_level: None,

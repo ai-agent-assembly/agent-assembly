@@ -378,6 +378,17 @@ impl BudgetTracker {
         self.team_daily_limit_usd
     }
 
+    /// Returns the per-team calendar-month spend limit applied to each team, if set.
+    ///
+    /// Read-only companion to [`team_daily_limit_usd`](Self::team_daily_limit_usd)
+    /// for the monthly window (AAASM-5087). Like the daily variant it is the
+    /// tracker-wide team envelope, exposed so the Costs monthly KPI and the
+    /// Teams monthly-budget card can render each team's configured monthly limit
+    /// without touching the private enforcement path.
+    pub fn team_monthly_limit_usd(&self) -> Option<Decimal> {
+        self.team_monthly_limit_usd
+    }
+
     /// Returns the per-org daily spend limit applied to each org, if set.
     ///
     /// Read-only companion to [`team_daily_limit_usd`](Self::team_daily_limit_usd)
