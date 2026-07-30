@@ -1750,6 +1750,19 @@ mod tests {
     }
 
     #[test]
+    fn trace_id_stays_null_item_c_not_implemented() {
+        // AAASM-5100 scope guard — item C (trace-id propagation) is Phase 2 and
+        // NOT implemented here. Even when the payload carries a trace_id (used by
+        // the /traces surface), the decision row's trace_id must stay null so no
+        // consumer assumes item C shipped with items A+B.
+        let entry = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":1,"verdict":"allow","latency_ms":2,"trace_id":"abc123"}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("allow carries a decision");
+        assert_eq!(row.trace_id, None, "trace_id must stay null until Phase 2");
+    }
+
+    #[test]
     fn entry_to_decision_row_skips_entry_without_decision() {
         let entry = decision_entry(r#"{"action_type":"AGENT_SPAWN","detail":{"kind":"spawn"}}"#);
         assert!(entry_to_decision_row(&entry).is_none());
