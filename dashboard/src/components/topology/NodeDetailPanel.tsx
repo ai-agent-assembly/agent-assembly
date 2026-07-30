@@ -19,6 +19,15 @@ const RECENT_EVENT_LIMIT = 5
 const NO_LIMIT_DETAIL = 'No daily budget limit is configured for this agent'
 
 /**
+ * Why the policy count and inheritance chain are unknown (AAASM-5106 / ADR 0024).
+ *
+ * When the engine carries no cascade, this projection resolves nothing for the
+ * agent — but a policy IS in force from the primary slot, which it cannot name.
+ * The honest surface is "unknown", not a confident "0 policies" / empty chain.
+ */
+const NO_CASCADE_DETAIL = 'Policy cascade is not loaded — a policy may still be in force but cannot be resolved here'
+
+/**
  * Why the two governance buttons are inert (AAASM-5140).
  *
  * Cascade-apply and the enforcement-mode toggle have no write endpoint: the
@@ -202,9 +211,20 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
           <Field
             label="Applied"
             value={
-              <span data-testid="node-detail-policy-count">
-                {node.policyCount} {node.policyCount === 1 ? 'policy' : 'policies'}
-              </span>
+              node.policyCount === null ? (
+                // AAASM-5106 / ADR 0024 — no cascade loaded: the count is not a
+                // measurement, so it renders "unknown" rather than a fabricated
+                // "0 policies" that would read as "nothing governs this agent".
+                <AbsenceMarker
+                  state="unconfigured"
+                  detail={NO_CASCADE_DETAIL}
+                  testId="node-detail-policy-count-absent"
+                />
+              ) : (
+                <span data-testid="node-detail-policy-count">
+                  {node.policyCount} {node.policyCount === 1 ? 'policy' : 'policies'}
+                </span>
+              )
             }
           />
         </section>
@@ -456,12 +476,30 @@ function effectiveSummary(permissions: NodeEffectivePermissions): string {
  * Renders the no-data affordance when the payload carries no chain at all — an
  * empty chain would read as "no policies apply", which is a different claim.
  * A tier that applies but carries no document is real state and reads "none".
+ *
+ * When the payload's `cascadeLoaded` is `false` (AAASM-5106 / ADR 0024) the
+ * whole chain is the fall-through of an unloaded cascade, not a real cascade
+ * that happens to carry no documents — so it renders a single "unknown" state
+ * rather than a chain of "none" rows that would read as an authored absence of
+ * policy.
  */
 function PolicyInheritance({ permissions }: Readonly<{ permissions?: NodeEffectivePermissions | null }>) {
   if (!permissions) {
     return (
       <div className="node-detail-panel__hint" data-testid="node-detail-inheritance-empty">
         —
+      </div>
+    )
+  }
+  if (!permissions.cascadeLoaded) {
+    return (
+      <div className="node-detail-panel__hint" data-testid="node-detail-inheritance-unloaded">
+        <AbsenceMarker
+          state="unconfigured"
+          detail={NO_CASCADE_DETAIL}
+          showLabel
+          testId="node-detail-inheritance-unloaded-marker"
+        />
       </div>
     )
   }

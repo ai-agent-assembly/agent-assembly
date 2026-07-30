@@ -114,6 +114,8 @@ const MATRIX = {
     },
   ],
   sampleCalls: [],
+  // AAASM-5106: a real cascade is loaded, so the summary reports real counts.
+  cascadeLoaded: true,
 }
 
 /** The agent record `GET /api/v1/agents/{id}` returns for a matrix row. */

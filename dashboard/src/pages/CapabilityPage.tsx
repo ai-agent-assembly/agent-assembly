@@ -11,6 +11,7 @@ import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingState } from '../components/LoadingState'
 import { useToast } from '../components/Toast'
+import { StatusState } from '../components/truthfulness'
 import { BulkActionBar } from '../features/capability/BulkActionBar'
 import { CapabilityMatrixGrid, type CellSelection } from '../features/capability/CapabilityMatrixGrid'
 import { CapabilityFilterBar } from '../features/capability/CapabilityFilterBar'
@@ -257,6 +258,31 @@ export function CapabilityPage() {
           </div>
         </div>
       </nav>
+
+      {/* AAASM-5106 / ADR 0024 — when the engine carries no policy cascade,
+          every grid cell falls through to `allow` because nothing constrained
+          it, so the grid's ALLOW readings are not measurements. Surface a
+          matrix-level "not evaluated" banner that tells the operator the grid
+          cannot be trusted, rather than letting a uniform wall of ALLOW read as
+          a clean bill of health. This is the interim honesty fix; per-cell
+          rendering is a scoped follow-up. */}
+      {tab === 'matrix' && matrix && !matrix.cascadeLoaded && (
+        <div className="capability-cascade-banner" data-testid="capability-cascade-unloaded">
+          <StatusState
+            state="unconfigured"
+            title="Capability matrix not evaluated"
+            description={
+              <>
+                No policy cascade is loaded, so these cells are not a measurement of what each
+                agent can do — an unconstrained cell reads as <code>allow</code> by default.
+                Enforcement is unaffected and still applies the active policy; this page cannot
+                resolve it until the cascade is loaded.
+              </>
+            }
+            testId="capability-cascade-unloaded-state"
+          />
+        </div>
+      )}
 
       {tab === 'matrix' && matrix && (
         <CapabilityFilterBar

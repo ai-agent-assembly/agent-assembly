@@ -48,6 +48,9 @@ const NODES = [
       allow: ['file_read'],
       deny: ['terminal_exec'],
       allow_restricted: true,
+      // AAASM-5106 / ADR 0024: the cascade is loaded for this node, so the panel
+      // renders the real inheritance chain rather than the "unloaded" marker.
+      cascade_loaded: true,
     },
   },
   {
@@ -110,7 +113,7 @@ async function bootstrap(page: Page, theme: Theme): Promise<Harness> {
   // Permissive fallback first (least specific); specific fixtures registered
   // afterwards win, since Playwright matches most-recently-added first.
   await page.route('**/api/**', (r) => r.fulfill({ json: {} }))
-  await page.route('**/api/v1/topology', (r) => r.fulfill({ json: { nodes: NODES, edges: EDGES } }))
+  await page.route('**/api/v1/topology', (r) => r.fulfill({ json: { nodes: NODES, edges: EDGES, cascade_loaded: true } }))
   await page.route('**/api/v1/topology/nodes/*/events', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/v1/topology/lineage/**', (r) => r.fulfill({ json: LINEAGE }))
   await page.route('**/api/v1/approvals**', (r) => r.fulfill({ json: [] }))

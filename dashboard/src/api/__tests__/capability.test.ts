@@ -27,6 +27,7 @@ function stubMatrix(): CapabilityMatrix {
     ],
     policies: [],
     sampleCalls: [],
+    cascadeLoaded: true,
   }
 }
 

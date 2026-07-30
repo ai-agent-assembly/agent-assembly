@@ -312,6 +312,7 @@ describe('NodeDetailPanel — lineage, cross-team, suspend/resume', () => {
     allow: ['file_read'],
     deny: ['terminal_exec'],
     allowRestricted: true,
+    cascadeLoaded: true,
   } as const
 
   function stubLineageOnly() {
@@ -358,6 +359,7 @@ describe('NodeDetailPanel — lineage, cross-team, suspend/resume', () => {
         allow: [],
         deny: [],
         allowRestricted: false,
+        cascadeLoaded: true,
       },
     })
     expect(screen.getByTestId('node-detail-inheritance-effective')).toHaveTextContent('baseline')
@@ -372,6 +374,7 @@ describe('NodeDetailPanel — lineage, cross-team, suspend/resume', () => {
         allow: [],
         deny: [],
         allowRestricted: true,
+        cascadeLoaded: true,
       },
     })
     // An empty allow-list with the flag set is deny-all (AAASM-4154); reading it
@@ -387,6 +390,32 @@ describe('NodeDetailPanel — lineage, cross-team, suspend/resume', () => {
 
     expect(screen.queryByTestId('node-detail-inheritance-chain')).toBeNull()
     expect(screen.getByTestId('node-detail-inheritance-empty')).toHaveTextContent('—')
+  })
+
+  it('renders the chain and policy count as unknown when the cascade is unloaded', () => {
+    // AAASM-5106 / ADR 0024 — with no cascade loaded, the empty chain and zero
+    // policy count are the fall-through of missing data, not a real "no policies
+    // apply". Both render as an "unknown" state rather than a confident answer.
+    stubLineageOnly()
+    renderWith({
+      ...NODE,
+      policyCount: null,
+      effectivePermissions: {
+        chain: [{ tier: 'global', scope: 'global', policies: [] }],
+        allow: [],
+        deny: [],
+        allowRestricted: false,
+        cascadeLoaded: false,
+      },
+    })
+
+    // The chain collapses to a single "unknown" marker — not a stack of "none"
+    // rows, which would read as an authored absence of policy.
+    expect(screen.getByTestId('node-detail-inheritance-unloaded')).toBeInTheDocument()
+    expect(screen.queryByTestId('node-detail-inheritance-chain')).toBeNull()
+    // The policy count is unknown, never a fabricated "0 policies".
+    expect(screen.getByTestId('node-detail-policy-count-absent')).toBeInTheDocument()
+    expect(screen.queryByTestId('node-detail-policy-count')).toBeNull()
   })
 
   it('renders the delegation lineage chain from the lineage query', () => {
