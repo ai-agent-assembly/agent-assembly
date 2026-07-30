@@ -69,6 +69,8 @@ pub mod server;
 pub mod socket;
 #[cfg(test)]
 pub mod testkit;
+#[cfg(test)]
+mod threat_model;
 pub mod token;
 pub mod verb;
 
