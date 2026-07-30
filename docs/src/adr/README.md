@@ -4,6 +4,10 @@ This directory contains Architecture Decision Records (ADRs) for `agent-assembly
 
 The format follows a lightweight variant of [Michael Nygard's template](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions). New ADRs are numbered sequentially and never rewritten; superseded decisions are recorded by adding a new ADR that links back.
 
+An ADR records **only** durable product or system decisions — product and business semantics, user-visible behaviour, security and enforcement semantics, public API and data contracts, OSS-vs-SaaS boundaries, durable architecture and component boundaries, and long-term direction that constrains future implementations. Development-process instructions are **not** ADR material: CI, review, release and test-execution procedure, merge and branch policy, and contributor workflow conventions belong in [`CONTRIBUTING.md`](../../../CONTRIBUTING.md), `.claude/`, a runbook, a PR template, or a CI workflow. Being technical is not the test — the test is whether the primary subject is a *decision* or a *procedure*.
+
+**Numbers are permanent identifiers.** A number, once used, is never reassigned — so the gaps below are deliberate and must stay empty: **0005** never existed, and **0028** is retired (its CI trigger-scoping rule moved to `CONTRIBUTING.md` as development process). There are **27** active ADRs.
+
 ## Index
 
 | ADR | Title | Status |
@@ -34,5 +38,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0025](0025-design-v2-authoritative-visual-spec.md) | `design/v2/` Is the Authoritative Visual Specification | Proposed |
 | [0026](0026-open-dashboard-product-semantics.md) | Seven Open Dashboard Product-Semantics Decisions | Proposed (Decision 2 Accepted) |
 | [0027](0027-accessibility-floor-overrides-visual-spec.md) | The Accessibility Floor Overrides the Visual Specification | Accepted |
-| [0028](0028-ci-trigger-scoping-allowlist-by-filetype.md) | CI Trigger-Scoping — Path Filters Must Allow-List by File Type | Proposed |
 | [0029](0029-capability-over-permission-derivation.md) | Capability Over-Permission Derivation | Proposed |
