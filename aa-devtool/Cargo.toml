@@ -19,14 +19,11 @@ aa-devtool-claude-code = { path = "../aa-devtool-claude-code" }
 aa-devtool-codex = { path = "../aa-devtool-codex" }
 aa-devtool-copilot = { path = "../aa-devtool-copilot" }
 aa-devtool-windsurf = { path = "../aa-devtool-windsurf" }
-async-trait = { workspace = true }
 futures = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-dirs = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
 [lints]

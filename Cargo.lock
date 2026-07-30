@@ -170,10 +170,7 @@ dependencies = [
  "aa-devtool-copilot",
  "aa-devtool-windsurf",
  "async-trait",
- "dirs",
  "futures",
- "serde",
- "serde_json",
  "tokio",
 ]
 
