@@ -69,6 +69,15 @@ pub struct EvaluationResult {
     /// fail-closed deny — those verdicts are produced without a nameable cascade
     /// document, so no digest is attributed rather than a misleading one.
     pub policy_doc_id: Option<String>,
+    /// AAASM-5100 / ADR-0018 item A — `true` when this action was **permitted but
+    /// scoped down** by an in-force policy allow-list rather than blocked: the
+    /// action's capability was admitted only because it fell inside the merged
+    /// cascade's restricted allow-list. Purely observational metadata carried to
+    /// the audit write so the read-side can render the `narrow` runtime verdict
+    /// (distinct from a plain `allow`); it never changes the decision. Always
+    /// `false` for non-`Allow` decisions and for a default-allow with no allow-
+    /// list restriction in force.
+    pub narrowed: bool,
 }
 
 impl EvaluationResult {
@@ -82,6 +91,7 @@ impl EvaluationResult {
             credential_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            narrowed: false,
         }
     }
 
@@ -100,6 +110,7 @@ impl EvaluationResult {
             credential_findings,
             deny_action,
             policy_doc_id: None,
+            narrowed: false,
         }
     }
 }
@@ -181,6 +192,9 @@ pub fn transform_for_observe_mode(
         // document still fired; preserve its attribution so the dry-run audit
         // entry still names the document that would have decided in enforce mode.
         policy_doc_id: result.policy_doc_id,
+        // The observe-mode allow masks a would-be deny/pending, not a scoping —
+        // it is a dry-run allow, never a `narrow`.
+        narrowed: false,
     };
 
     (transformed, Some(shadow))
@@ -1193,6 +1207,7 @@ impl PolicyEngine {
                 credential_findings: vec![],
                 deny_action: None,
                 policy_doc_id: None,
+                narrowed: false,
             });
         }
         None
@@ -1342,6 +1357,7 @@ impl PolicyEngine {
                 credential_findings: all_findings,
                 deny_action: None,
                 policy_doc_id: None,
+                narrowed: false,
             });
         }
 
@@ -1451,12 +1467,20 @@ impl PolicyEngine {
             }
         }
 
+        // AAASM-5100 / ADR-0018 item A — the action was permitted; record whether
+        // an in-force allow-list scoped it down (`narrow`) vs. a default allow.
+        let narrowed = policy
+            .capabilities
+            .as_ref()
+            .is_some_and(|caps| Self::capability_narrowed(caps, action));
+
         EvaluationResult {
             decision: aa_core::PolicyResult::Allow,
             redacted_payload,
             credential_findings,
             deny_action: None,
             policy_doc_id: None,
+            narrowed,
         }
     }
 
@@ -1505,6 +1529,24 @@ impl PolicyEngine {
             return Some(EvaluationResult::deny("capability not in allow list"));
         }
         None
+    }
+
+    /// AAASM-5100 / ADR-0018 item A — `true` when `caps` **permits** the action
+    /// but only because it fell inside an in-force allow-list restriction, i.e.
+    /// a policy scoped the action down rather than blocking it.
+    ///
+    /// This is the `narrow` runtime-verdict signal: the action's capability is
+    /// present in a *restricted* merged allow-list (`allow_is_restricted()` — an
+    /// explicit whitelist is in force, not the empty "no restriction" default),
+    /// so it was admitted by a scoping match rather than by default-allow.
+    /// Returns `false` when the action maps to no capability, when no allow-list
+    /// restriction is in force, or when the action would be denied — the caller
+    /// only consults this on a permitted (`capability_guard` → `None`) action.
+    fn capability_narrowed(caps: &aa_core::CapabilitySet, action: &aa_core::GovernanceAction) -> bool {
+        let Some(cap) = aa_core::action_to_capability(action) else {
+            return false;
+        };
+        caps.allow_is_restricted() && caps.allow.contains(&cap)
     }
 
     /// Stage 4 across a cascade: apply the most restrictive (minimum)
@@ -1635,6 +1677,7 @@ impl PolicyEngine {
                 credential_findings: vec![],
                 deny_action: None,
                 policy_doc_id: None,
+                narrowed: false,
             };
         }
 
@@ -1663,6 +1706,7 @@ impl PolicyEngine {
                 credential_findings: vec![],
                 deny_action: None,
                 policy_doc_id,
+                narrowed: false,
             };
         }
 
@@ -1705,12 +1749,21 @@ impl PolicyEngine {
             .filter_map(|doc| doc.budget.as_ref().and_then(Self::budget_deny_action))
             .next_back();
 
+        // AAASM-5100 / ADR-0018 item A — an allowed action was `narrow`ed when the
+        // merged cascade allow-list scoped it down rather than blocking it. Only
+        // an Allow verdict can be narrowed; a surviving RequireApproval is
+        // `pending`, not `narrow`.
+        let decision = verdict.into_policy_result();
+        let narrowed = matches!(decision, aa_core::PolicyResult::Allow)
+            && Self::capability_narrowed(&Self::collect_merged_capabilities(&cascade), action);
+
         EvaluationResult {
-            decision: verdict.into_policy_result(),
+            decision,
             redacted_payload,
             credential_findings,
             deny_action,
             policy_doc_id,
+            narrowed,
         }
     }
 
@@ -4029,6 +4082,57 @@ mod tests {
         );
     }
 
+    // ── narrowed flag (AAASM-5100 / ADR-0018 item A) ──────────────────────────
+
+    #[test]
+    fn allow_admitted_by_restricted_allowlist_sets_narrowed() {
+        // An in-force allow-list (Global {FileRead,FileWrite} ∩ Agent {FileRead})
+        // permits FileRead only because it fell inside the scoped whitelist — a
+        // narrowing, not a default allow. The result must flag `narrowed = true`
+        // so the audit write can render the `narrow` runtime verdict.
+        let agent_id = AgentId::from_bytes([1u8; 16]);
+        let mut engine = make_engine(empty_doc());
+        let global_caps = cap_set_cascade(&[aa_core::Capability::FileRead, aa_core::Capability::FileWrite], &[]);
+        engine.load_policy(scoped_doc(crate::policy::scope::PolicyScope::Global, Some(global_caps)));
+        let agent_caps = cap_set_cascade(&[aa_core::Capability::FileRead], &[]);
+        engine.load_policy(scoped_doc(
+            crate::policy::scope::PolicyScope::Agent(agent_id),
+            Some(agent_caps),
+        ));
+
+        let ctx = make_ctx();
+        let read_action = aa_core::GovernanceAction::FileAccess {
+            path: "/tmp/f".into(),
+            mode: aa_core::FileMode::Read,
+        };
+        let result = engine.evaluate(&ctx, &read_action);
+        assert_eq!(
+            result.decision,
+            PolicyResult::Allow,
+            "FileRead is inside the allow-list"
+        );
+        assert!(result.narrowed, "a scoped allow-list match must flag narrowed");
+    }
+
+    #[test]
+    fn default_allow_with_no_capability_restriction_is_not_narrowed() {
+        // No capabilities block anywhere → the action is permitted by default,
+        // not scoped by any allow-list, so it must NOT be flagged as narrowed.
+        let mut engine = make_engine(empty_doc());
+        engine.load_policy(scoped_doc(crate::policy::scope::PolicyScope::Global, None));
+        let agent_id = AgentId::from_bytes([1u8; 16]);
+        engine.load_policy(scoped_doc(crate::policy::scope::PolicyScope::Agent(agent_id), None));
+
+        let ctx = make_ctx();
+        let action = aa_core::GovernanceAction::FileAccess {
+            path: "/tmp/f".into(),
+            mode: aa_core::FileMode::Write,
+        };
+        let result = engine.evaluate(&ctx, &action);
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert!(!result.narrowed, "a default allow must not be flagged narrowed");
+    }
+
     // ── Primary-path capability stage regression (AAASM-4123) ─────────────────
 
     /// Load a single-file policy via the same public loader `aasm policy
@@ -4585,6 +4689,7 @@ mod tests {
             credential_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            narrowed: false,
         }
     }
 
@@ -4608,6 +4713,7 @@ mod tests {
             credential_findings: vec![],
             deny_action: Some(DenyAction::Block),
             policy_doc_id: None,
+            narrowed: false,
         }
     }
 
@@ -4635,6 +4741,7 @@ mod tests {
             credential_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            narrowed: false,
         };
         let (out, shadow) = transform_for_observe_mode(pending, aa_core::EnforcementMode::Observe);
         assert_eq!(out.decision, PolicyResult::Allow);
