@@ -658,3 +658,41 @@ sequenceDiagram
     S-->>C: Status { state: GatewayProtected, evidence, achieved vs planned level }
     C->>U: Render status (never derive or upgrade it locally)
 ```
+
+### 6. Packaging — four artifact classes, and no dynamic library loading
+
+| Class | What it is | How it is built and shipped | Privilege |
+| --- | --- | --- | --- |
+| **6.1 In-tree adapter crates** (`aa-devtool-*`) | Per-tool knowledge (L-C) | **Statically linked at build time** into the AASM binaries. Registration is an explicit construction into an in-memory registry at startup — no `inventory::submit!`, no `dlopen`. | Inside the trusted process, restricted at compile time to `aa-devtool-contract` |
+| **6.2 User-facing plugin / extension packages** | The thin client (L-A): VS Code extension, JetBrains plugin, installer, `aasm` itself | Distributed through each tool's own marketplace / package manager, on an **independent release cadence** from the core | None. A DI-API client and nothing more — no policy, no DLP, no audit authority |
+| **6.3 Out-of-tree / community adapters** | A third-party `DevToolIntegration` impl | Supported **as a source crate** consumed by a build of AASM — the pattern `docs/devtools/plugins.md` already documents. Getting into an official binary requires a PR and a CODEOWNERS review | Exactly `aa-devtool-contract`, same as in-tree. No additional capability is available to them, and none is granted by being third-party |
+| **6.4 Core runtime distribution and update** | `aa-runtime` + `aa-gateway` + the linked adapters | **One versioned unit**, owned by the AASM release process (Homebrew tap, container image, installer). Version is reported over the DI-API `HelloAck` | Trusted. Its updates are never triggered silently by a thin client |
+
+#### 6.5 Why build-time linking is sufficient — and why dynamic loading is forbidden, not merely absent
+
+The only thing that must vary at run time is **which integrations a given developer
+installs**, and that is *data*: a plan, a receipt, a capability set, a protection state.
+The set of *tools the product knows how to integrate* changes at the pace of releases, not
+at the pace of user actions, and it is bounded by what shipped in the binary. So the
+architecture needs no loader:
+
+- Adding a tool = a new crate + a registry entry + a release. That is a normal, reviewed,
+  signed artifact.
+- Everything the lifecycle does with a tool afterwards is data-driven, so a shipped binary
+  handles new profiles, new policies and new plans without a rebuild.
+
+Dynamic loading would add nothing the product needs and would **place unreviewed
+third-party code inside the trusted process** (L-B/L-C), which is the exact boundary this
+ADR exists to protect: `aa-devtool-contract`'s compile-time restriction has no force over
+a `.so` that was never compiled against it. It is therefore forbidden, not deferred.
+
+#### 6.6 Privileged host components are always explicit
+
+Anything that changes host state outside the developer's own tool configuration —
+installing the proxy CA into the system trust store
+(`aa-proxy/src/tls/{ca,keychain}.rs`, macOS `security add-trusted-cert` /
+`remove_trusted_cert`), attaching eBPF probes, installing a launch agent — is a
+**distinct, user-visible, individually consentable plan step**, with a matching removal
+step recorded in the receipt. It is never bundled into "install", never implied by a
+profile selection, and never performed by a thin client on its own authority. Silent
+installation of a privileged host component is a forbidden design.
