@@ -22,6 +22,10 @@ members = [
     "aa-cli",
     "conformance",
     "examples/aa-devtool-sample-myeditor",
+    # Serves a real DI-API socket for the TypeScript reference client's contract
+    # tests (AAASM-5282). A binary rather than a `#[cfg(test)]` helper because the
+    # consumer under test is a separate process in another language.
+    "examples/aa-devint-reference-client/harness",
     "aa-devtool-contract",
     "aa-devtool",
     "aa-devtool-claude-code",
