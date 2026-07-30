@@ -42,6 +42,7 @@ pub mod capability;
 pub mod contract;
 pub mod drift;
 pub mod fingerprint;
+pub mod journal;
 pub mod plan;
 pub mod receipt;
 pub mod shim;
@@ -61,6 +62,7 @@ pub use fingerprint::{
     managed_fingerprint, managed_projection, merge_managed_keys, restore_managed_keys, screen_managed_values,
     sha256_hex, FingerprintError, FINGERPRINT_PREFIX,
 };
+pub use journal::{recovery_action, JournalEntry, JournalOperation, OperationJournal, RecoveryAction, StepProgress};
 pub use plan::{
     IntegrationPlan, IntegrationRequest, PlanError, PolicyProfileRef, ProtectionProfile, RemovalPlan,
     UnsupportedMechanism,
