@@ -1,8 +1,6 @@
 # ADR 0024: Semantics of an Empty or Unavailable Policy Cascade
 
-**Status**: Proposed — **requires product sign-off (UI representation, backward
-compatibility) and architecture sign-off (enforcement behaviour, audit evidence)
-before any implementation ticket is opened**
+**Status**: Accepted (2026-07-30, product + architecture). The interim rule already shipped and validated in AAASM-5106 (PR #1825) is ratified as the **permanent** semantics: an empty or unavailable policy cascade renders as **Unconfigured / Not evaluated / Unknown**, never a green Allow or a confident "no policy in force", and permission is never inferred from missing policy data. This decides only the *meaning* of an empty cascade; whether `aa-api` should carry one at all is the orthogonal question in ADR-0023.
 **Date**: 2026-07
 **Ticket**: [AAASM-5106](https://lightning-dust-mite.atlassian.net/browse/AAASM-5106)
 (Epic [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082))
