@@ -1,6 +1,6 @@
 # ADR 0018: Canonical Runtime Verdict & Enriched Decision Record
 
-**Status**: Accepted (schema freeze) — decision-capture plan **requires product/architecture sign-off before implementation**
+**Status**: Accepted (schema freeze). Decision-capture plan **partially authorised 2026-07-30**: capture items **A (5-way verdict derived in `aa-runtime`) and B (per-decision latency via a monotonic clock) are approved for implementation** under AAASM-5100 Phase 1, subject to the latency semantics for held/approval-pending actions being defined in that ticket. Item **C (trace_id propagation) remains gated** — it is distributed-tracing plumbing across the SDK→runtime→gateway path and is split into a separate Phase 2 ticket; any externally-supplied trace id must be format/length-validated before use. See the *Decision-capture plan* section below.
 **Date**: 2026-07
 **Ticket**: [AAASM-5086](https://lightning-dust-mite.atlassian.net/browse/AAASM-5086) (Epic [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082))
 
