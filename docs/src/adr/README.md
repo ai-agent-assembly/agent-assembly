@@ -37,4 +37,4 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 | [0028](0028-ci-trigger-scoping-allowlist-by-filetype.md) | CI Trigger-Scoping — Path Filters Must Allow-List by File Type | Proposed |
 | [0029](0029-capability-over-permission-derivation.md) | Capability Over-Permission Derivation | Proposed |
 | [0030](0030-developer-integration-boundaries-and-trust-model.md) | Developer Integration Boundaries, Capability Model & Local Trust Model | Proposed |
-| [0031](0031-oss-native-account-authentication.md) | OSS Native Account Authentication | Proposed |
+| [0031](0031-oss-native-account-authentication.md) | OSS Native Account Authentication | Accepted |
