@@ -10,6 +10,10 @@
 //! * **Builds** the launch command wired for AA proxy and identity
 //!   env vars (AAASM-959).
 //!
+//! The AAASM-5281 lifecycle implementation lives alongside it in
+//! [`lifecycle::ClaudeCodeIntegration`], which **reuses** this adapter for
+//! detection and launch-command construction rather than duplicating either.
+//!
 //! [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
 
 #![warn(missing_docs)]
@@ -20,10 +24,12 @@ mod settings;
 pub mod bypass;
 pub mod executor;
 pub mod launch_env;
+pub mod lifecycle;
 pub mod probe;
 pub mod scope;
 
 pub use executor::ClaudeCodeStepExecutor;
+pub use lifecycle::ClaudeCodeIntegration;
 pub use probe::{ProbeReport, ProbeRequest, ProtectionProbe};
 pub use scope::{ClaudeCodePaths, ScopeError};
 
