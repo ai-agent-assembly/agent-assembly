@@ -49,6 +49,10 @@ pub mod shim;
 pub mod state;
 pub mod status;
 pub mod step;
+// Persistence serializes the lifecycle types, so it exists only where their
+// `Serialize`/`Deserialize` derives do.
+#[cfg(feature = "serde")]
+pub mod store;
 pub mod version;
 
 pub use capability::{CapabilityResolution, CapabilitySupport, DevToolCapabilities, IntegrationCapability};
@@ -77,6 +81,10 @@ pub use status::{IntegrationStatus, LifecyclePhase, NextLevel, VerificationOutco
 pub use step::{
     ArtifactOperation, EnvValue, IntegrationStep, ProbeDescriptor, SettingsMerge, SettingsScope, StepAction,
     StepPrivilege, StepRequirement, TrustMaterialKind,
+};
+#[cfg(feature = "serde")]
+pub use store::{
+    ReceiptEnvelope, ReceiptStore, StoreError, SupersededReceipt, MAX_SUPERSEDED_RECEIPTS, RECEIPT_ENVELOPE_VERSION,
 };
 pub use version::{
     core_version, ComponentVersions, SupportedToolVersions, ToolVersion, VersionCompatibility, VersionParseError,
