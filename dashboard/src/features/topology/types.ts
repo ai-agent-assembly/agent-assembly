@@ -130,8 +130,9 @@ export interface TopologyNode {
   readonly mode?: TopologyMode
   /**
    * Whether the agent is policy-flagged (danger-tinted card + ⚑ marker). Carried
-   * by the topology API, derived from `policy_violations_count >= threshold` —
-   * the same rule as the Fleet page's `FLEET_FLAGGED_THRESHOLD`.
+   * by the topology API, derived from a recorded `PolicyViolation` audit event
+   * (`count > 0`, AAASM-5103) — the same audit source the Fleet page's
+   * `is_flagged` uses, so the two surfaces cannot diverge.
    * Optional/undefined = not flagged.
    */
   readonly flagged?: boolean
