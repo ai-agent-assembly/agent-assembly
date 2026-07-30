@@ -97,6 +97,7 @@
 
 - [Product Capability Brief](devtools/product-brief.md)
 - [Developer Integration API](devtools/developer-integration-api.md)
+- [`aasm integrations` CLI](devtools/cli.md)
 - [Thin-Client Reference Implementation](devtools/reference-client.md)
 
 # Protocol
