@@ -8,7 +8,7 @@ import { TeamsPage } from './TeamsPage'
 import * as teamsApi from '../features/teams/api'
 import * as costsApi from '../features/costs/api'
 import * as approvalsApi from '../features/approvals/api'
-import type { AgentNode, CostSummary, TeamTopology, TopologyOverview } from '../features/teams/api'
+import type { AgentNode, CostSummary, TeamTopology, TopologyAgents, TopologyOverview } from '../features/teams/api'
 import type { BudgetTree } from '../features/costs/api'
 import type { Approval } from '../features/approvals/api'
 
@@ -108,7 +108,7 @@ function setupMocks(overview: TopologyOverview, nodes: AgentNode[] = [], costs: 
     mockQuery<TopologyOverview>({ data: overview, isLoading: false, isFetching: false, isError: false, refetch: vi.fn() }),
   )
   vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
-    mockQuery<AgentNode[]>({ data: nodes, isPending: false, isFetching: false, isError: false, error: null }),
+    mockQuery<TopologyAgents>({ data: { nodes, unclaimedObservable: true }, isPending: false, isFetching: false, isError: false, error: null }),
   )
   vi.spyOn(teamsApi, 'useCostSummaryQuery').mockReturnValue(
     mockQuery<CostSummary>({ data: costs, isLoading: false, isError: false, refetch: vi.fn() }),
@@ -142,7 +142,7 @@ describe('TeamsPage (two-pane)', () => {
       mockQuery<TopologyOverview>({ data: undefined, isLoading: false, isFetching: false, isError: true, refetch }),
     )
     vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
-      mockQuery<AgentNode[]>({ data: [], isPending: false, isFetching: false, isError: false, error: null }),
+      mockQuery<TopologyAgents>({ data: { nodes: [], unclaimedObservable: true }, isPending: false, isFetching: false, isError: false, error: null }),
     )
     vi.spyOn(teamsApi, 'useCostSummaryQuery').mockReturnValue(mockQuery<CostSummary>({ data: undefined, isLoading: false, isError: false }))
     vi.spyOn(teamsApi, 'useTeamTopologyQuery').mockReturnValue({ data: undefined, notFound: false, isLoading: false, isError: false })
@@ -274,8 +274,8 @@ describe('TeamsPage — every agent is reachable from some grouping (AAASM-5157)
     const overview = makeOverview(2, ORPHANS)
     setupMocks({ ...overview, total_agent_count: overview.total_agent_count + 1 }, [...TEAM_MEMBERS, ...ORPHANS])
     vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
-      mockQuery<AgentNode[]>({
-        data: [...TEAM_MEMBERS, ...ORPHANS],
+      mockQuery<TopologyAgents>({
+        data: { nodes: [...TEAM_MEMBERS, ...ORPHANS], unclaimedObservable: true },
         isPending: false,
         isFetching: true,
         isError: false,
@@ -320,7 +320,7 @@ describe('TeamsPage — every agent is reachable from some grouping (AAASM-5157)
   it('reports a failed fleet request as unavailable rather than as zero unclaimed', async () => {
     setupMocks(makeOverview(2), TEAM_MEMBERS)
     vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
-      mockQuery<AgentNode[]>({
+      mockQuery<TopologyAgents>({
         data: undefined,
         isPending: false,
         isFetching: false,

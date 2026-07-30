@@ -3,7 +3,9 @@ import { mapTopologyGraph } from './mapGraph'
 import { UNCLAIMED_TEAM } from './unclaimed'
 import type { components } from '../../api/generated/schema'
 
-type ApiGraph = components['schemas']['TopologyGraphResponse']
+// Only the nodes + edges subset the mapper reads — `unclaimed_observable`
+// (AAASM-5183) is not consumed by mapTopologyGraph.
+type ApiGraph = Pick<components['schemas']['TopologyGraphResponse'], 'nodes' | 'edges'>
 
 function node(over: Partial<components['schemas']['AgentNode']> = {}): components['schemas']['AgentNode'] {
   return { id: 'a', name: 'agent', depth: 0, status: 'active', mode: 'enforce', flagged: false, trust: null, ...over }
