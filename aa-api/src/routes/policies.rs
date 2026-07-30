@@ -720,9 +720,13 @@ pub async fn list_team_policies(
     // Only once a cascade *is* loaded does `[]` become a claim the data can
     // support: it is then reserved for the one case where "nothing is in force"
     // is genuinely true — a loaded cascade plus no visible agent to govern.
-    let policies = if !state.policy_engine.cascade_loaded() {
-        None
-    } else if by_key.is_empty() && visible_members > 0 {
+    // Absent (never `Some([])`) in two distinct cases that share one honest
+    // answer — "this view cannot assert nothing is in force":
+    //   1. the engine carries no cascade at all (AAASM-5106) — a `[]` here would
+    //      falsely read as "No policy in force" while the primary slot enforces;
+    //   2. a loaded cascade resolved nothing for agents that fell back to the
+    //      primary slot this projection cannot enumerate.
+    let policies = if !state.policy_engine.cascade_loaded() || (by_key.is_empty() && visible_members > 0) {
         None
     } else {
         Some(

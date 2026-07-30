@@ -1301,7 +1301,13 @@ mod tests {
         // A real policy in the engine's cascade.
         let loaded = state_with_policies(
             vec![record_with_tier(0x01, "a", &[], 1)],
-            vec![policy_doc("baseline", PolicyScope::Global, None, &[("bash", true)], None)],
+            vec![policy_doc(
+                "baseline",
+                PolicyScope::Global,
+                None,
+                &[("bash", true)],
+                None,
+            )],
         );
         let loaded_matrix = matrix_for(&loaded).await;
         assert!(

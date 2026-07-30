@@ -500,9 +500,14 @@ fn project_graph_nodes(records: &[AgentRecord], state: &AppState) -> Vec<AgentNo
             let agent_id = AgentId::from_bytes(record.agent_id);
             let lineage = state.agent_registry.lineage(&record.agent_id).unwrap_or_default();
             let cascade = state.policy_engine.collect_cascade_with_lineage(&agent_id, &lineage);
-            node.policy_count = cascade_loaded.then(|| cascade.len() as u32);
-            node.effective_permissions =
-                Some(project_effective_permissions(record, &cascade, &agent_id, &lineage, cascade_loaded));
+            node.policy_count = cascade_loaded.then_some(cascade.len() as u32);
+            node.effective_permissions = Some(project_effective_permissions(
+                record,
+                &cascade,
+                &agent_id,
+                &lineage,
+                cascade_loaded,
+            ));
             let limit_usd = state
                 .budget_tracker
                 .agent_daily_limit_usd(&agent_id)
