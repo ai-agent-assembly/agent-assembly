@@ -825,6 +825,12 @@ fn project_matrix(
         // that nothing computes today; the policy-replay story (AAASM-5094) owns
         // that surface, so the dimension is reported empty rather than invented.
         sample_calls: Vec::new(),
+        // AAASM-5106 / ADR 0024 — the matrix-level loaded/unavailable signal. With
+        // no cascade loaded, every `decide()` cell falls through to `Allow`
+        // (nothing constrains it), so the grid's ALLOW readings are not
+        // measurements. The dashboard renders the whole grid as "not evaluated"
+        // when this is `false` rather than trusting those cells.
+        cascade_loaded: state.policy_engine.cascade_loaded(),
     }
 }
 
@@ -1273,6 +1279,41 @@ mod tests {
         );
         assert!(agent.note.is_none());
         assert!(agent.caps.values().all(|c| c.flag.is_none()));
+    }
+
+    #[tokio::test]
+    async fn matrix_reports_cascade_unloaded_and_distinguishes_it_from_a_real_policy() {
+        // AAASM-5106 / ADR 0024 §6(2): an empty cascade and a genuinely loaded
+        // policy must produce *different* responses, or the honesty fix is
+        // cosmetic. The cells themselves may still read Allow by fall-through
+        // (that is `decide()`'s documented behaviour and left to the enforcement
+        // twin), but the matrix-level `cascade_loaded` flag is what lets the
+        // dashboard tell the fabricated grid apart from a real one.
+
+        // No policy loaded — the state of every shipped aa-api deployment.
+        let unloaded = state_with(vec![record_with_tier(0x01, "a", &[], 1)]);
+        let unloaded_matrix = matrix_for(&unloaded).await;
+        assert!(
+            !unloaded_matrix.cascade_loaded,
+            "no cascade loaded -> the matrix must report cascade_loaded=false, not a confident grid"
+        );
+
+        // A real policy in the engine's cascade.
+        let loaded = state_with_policies(
+            vec![record_with_tier(0x01, "a", &[], 1)],
+            vec![policy_doc("baseline", PolicyScope::Global, None, &[("bash", true)], None)],
+        );
+        let loaded_matrix = matrix_for(&loaded).await;
+        assert!(
+            loaded_matrix.cascade_loaded,
+            "a loaded cascade must report cascade_loaded=true so its verdicts read as real"
+        );
+
+        // The two are distinguishable on the wire — the whole point of the flag.
+        assert_ne!(
+            unloaded_matrix.cascade_loaded, loaded_matrix.cascade_loaded,
+            "an unloaded cascade must not be indistinguishable from a real default-allow policy"
+        );
     }
 
     #[tokio::test]

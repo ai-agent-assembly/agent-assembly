@@ -188,6 +188,24 @@ pub struct CapabilityMatrix {
     pub agents: Vec<CapabilityAgent>,
     pub policies: Vec<Policy>,
     pub sample_calls: Vec<SampleCall>,
+    /// Whether the projecting engine actually carries a policy cascade
+    /// (`PolicyEngine::cascade_loaded`). AAASM-5106 / ADR 0024: when the cascade
+    /// is unloaded — the state of every shipped aa-api deployment today, which
+    /// loads its policy through `load_from_file` and leaves `scope_index` empty —
+    /// `decide()` falls through to `Allow` for every cell, so the grid asserts an
+    /// unbroken wall of `ALLOW` for capabilities the primary policy actually
+    /// denies. `false` here is the matrix-level "not evaluated — policy cascade
+    /// not loaded" signal the dashboard renders as an unavailable state, so an
+    /// operator never reads a fabricated `Allow` as a real grant. It is a fact
+    /// about the projection's *data*, never an operator choice; the enforcement
+    /// path (`evaluate_primary`) is unaffected.
+    ///
+    /// Required-but-always-present, not optional: the key is always on the wire,
+    /// so a client reads an explicit `false` it must handle rather than a missing
+    /// field it can shrug off — the same absent-vs-unknown discipline as
+    /// [`CapabilityAgent::trust`] and `TeamPoliciesResponse::policies`.
+    #[schema(required = true)]
+    pub cascade_loaded: bool,
 }
 
 /// One agent row in the dashboard Capability Matrix.
@@ -464,6 +482,7 @@ mod tests {
             agents: vec![],
             policies: vec![],
             sample_calls: vec![],
+            cascade_loaded: false,
         };
         let json = serde_json::to_value(&matrix).unwrap();
         assert!(json["resources"].is_array());
@@ -471,6 +490,11 @@ mod tests {
         assert!(json["policies"].is_array());
         assert!(json["sampleCalls"].is_array(), "field must be `sampleCalls`");
         assert!(json.get("sample_calls").is_none());
+        // AAASM-5106 — the loaded/unavailable signal is always on the wire in
+        // camelCase, so a client cannot silently drop it and read a fabricated
+        // Allow as real.
+        assert_eq!(json["cascadeLoaded"], serde_json::json!(false));
+        assert!(json.get("cascade_loaded").is_none(), "snake_case must not appear");
     }
 
     #[test]
