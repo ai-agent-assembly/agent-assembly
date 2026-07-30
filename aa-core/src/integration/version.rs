@@ -206,18 +206,35 @@ pub fn core_version() -> ToolVersion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SupportedToolVersions {
-    /// Lowest tool version this adapter supports, inclusive.
-    pub min: ToolVersion,
+    /// Lowest tool version this adapter supports, inclusive. `None` means the
+    /// adapter claims no known lower bound.
+    ///
+    /// A bound is `Option` on both ends rather than defaulting the lower one to
+    /// `0.0.0`, because `0.0.0` is *not* the bottom of the ordering: a
+    /// pre-release sorts below its release, so `0.0.0-sample` is below `0.0.0`
+    /// and a "no lower bound" expressed as `0.0.0` would reject it. That is not
+    /// hypothetical — it is exactly what `examples/aa-devtool-sample-myeditor`
+    /// reports, and an adapter that has declared no range must not be able to
+    /// call a version incompatible by accident.
+    pub min: Option<ToolVersion>,
     /// First tool version this adapter does **not** support, exclusive. `None`
     /// means the adapter claims no known upper bound.
     pub max_exclusive: Option<ToolVersion>,
 }
 
 impl SupportedToolVersions {
+    /// A range with no bound at either end — every version is inside it.
+    pub fn any() -> Self {
+        Self {
+            min: None,
+            max_exclusive: None,
+        }
+    }
+
     /// A range with a lower bound and no known upper bound.
     pub fn at_least(min: ToolVersion) -> Self {
         Self {
-            min,
+            min: Some(min),
             max_exclusive: None,
         }
     }
@@ -225,7 +242,7 @@ impl SupportedToolVersions {
     /// A half-open range `[min, max_exclusive)`.
     pub fn between(min: ToolVersion, max_exclusive: ToolVersion) -> Self {
         Self {
-            min,
+            min: Some(min),
             max_exclusive: Some(max_exclusive),
         }
     }
@@ -234,7 +251,8 @@ impl SupportedToolVersions {
     pub fn contains(&self, version: &ToolVersion) -> bool {
         // `Option::is_none_or` would read better but is stable only from 1.82;
         // this crate's MSRV is 1.75.
-        version >= &self.min && self.max_exclusive.as_ref().map_or(true, |max| version < max)
+        self.min.as_ref().map_or(true, |min| version >= min)
+            && self.max_exclusive.as_ref().map_or(true, |max| version < max)
     }
 
     /// Classify a detected version against this range.
@@ -256,8 +274,12 @@ impl SupportedToolVersions {
             };
         }
 
-        let remediation = if detected < &self.min {
-            format!("upgrade the tool to {} or newer", self.min)
+        let below_min = self.min.as_ref().is_some_and(|min| detected < min);
+        let remediation = if below_min {
+            format!(
+                "upgrade the tool to {} or newer",
+                self.min.as_ref().expect("below_min implies a lower bound")
+            )
         } else {
             format!(
                 "this Agent Assembly build supports tool versions below {}; upgrade Agent Assembly",
@@ -438,6 +460,20 @@ mod tests {
             }
             other => panic!("expected Incompatible, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_unbounded_range_accepts_pre_releases_below_zero() {
+        // `0.0.0` is not the bottom of the ordering: a pre-release sorts below
+        // its release. An adapter that declared no range must not reject the
+        // public sample's own "0.0.0-sample".
+        let any = SupportedToolVersions::any();
+        let sample: ToolVersion = "0.0.0-sample".parse().unwrap();
+        assert!(any.contains(&sample));
+        assert!(any.classify(Some(&sample)).is_compatible());
+
+        // Whereas an explicit `>= 0.0.0` genuinely does exclude it.
+        assert!(!SupportedToolVersions::at_least(ToolVersion::new(0, 0, 0)).contains(&sample));
     }
 
     #[test]

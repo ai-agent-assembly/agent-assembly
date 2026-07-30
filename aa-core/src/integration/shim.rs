@@ -97,12 +97,15 @@ impl<A: DevToolAdapter> LegacyAdapterShim<A> {
             adapter,
             policy,
             // A legacy adapter declares no version range of its own, so the shim
-            // accepts every version and lets the resulting `Unknown`/`Compatible`
-            // classification flow through the normal state derivation.
+            // declares an unbounded one and lets the resulting
+            // `Unknown`/`Compatible` classification flow through the normal state
+            // derivation. It must be genuinely unbounded rather than `>= 0.0.0`:
+            // a pre-release sorts below its release, so `0.0.0` would reject the
+            // public sample's own `0.0.0-sample`.
             version_support: VersionSupport {
                 adapter_version: super::version::core_version(),
                 lifecycle_schema_version: LIFECYCLE_SCHEMA_VERSION,
-                supported_tool_versions: SupportedToolVersions::at_least(ToolVersion::new(0, 0, 0)),
+                supported_tool_versions: SupportedToolVersions::any(),
             },
         }
     }
