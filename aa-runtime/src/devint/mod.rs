@@ -61,6 +61,7 @@
 pub mod audit;
 pub mod client;
 pub mod codec;
+pub mod enrolment;
 pub mod lifecycle;
 pub mod negotiate;
 pub mod projection;
@@ -76,6 +77,7 @@ pub mod verb;
 
 pub use audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
 pub use client::{ClientError, DevIntClient, Negotiated};
+pub use enrolment::{enrol_local_client, enrolment_path, read_local_token, EnrolmentError};
 pub use lifecycle::{IntegrationLifecycle, LifecycleError};
 pub use negotiate::{Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
 pub use scope::{TokenScope, ToolScope};
