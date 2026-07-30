@@ -50,6 +50,11 @@ pub enum FixtureVerification {
     ReadBackOnly,
     /// The adapter has no verification mechanism at all.
     Unverifiable,
+    /// The adversarial case: the adapter reports `Passed` while having
+    /// exercised nothing — a configuration check wearing a measurement's
+    /// clothes. Exists so a client's "did the protected path actually run?"
+    /// guard has something that can defeat it if the guard is removed.
+    VacuousPass,
     /// The probe ran and reached the provider unprotected.
     Leaked,
 }
@@ -158,7 +163,9 @@ impl FixtureIntegration {
             FixtureVerification::Exercised => EvidenceKind::Exercised {
                 outcome: ExerciseOutcome::Redacted,
             },
-            FixtureVerification::ReadBackOnly => EvidenceKind::ReadBack { matches_receipt: true },
+            FixtureVerification::ReadBackOnly | FixtureVerification::VacuousPass => {
+                EvidenceKind::ReadBack { matches_receipt: true }
+            }
             FixtureVerification::Leaked => EvidenceKind::Exercised {
                 outcome: ExerciseOutcome::Leaked,
             },
@@ -172,7 +179,9 @@ impl FixtureIntegration {
             observed_at_unix_secs: now,
             detail: match self.verification {
                 FixtureVerification::Exercised => "the synthetic secret was redacted before egress".to_string(),
-                FixtureVerification::ReadBackOnly => "the managed keys read back equal to the receipt".to_string(),
+                FixtureVerification::ReadBackOnly | FixtureVerification::VacuousPass => {
+                    "the managed keys read back equal to the receipt".to_string()
+                }
                 FixtureVerification::Leaked => "the synthetic secret reached the provider unprotected".to_string(),
                 FixtureVerification::Unverifiable => "no protection test is available for this tool".to_string(),
             },
@@ -282,7 +291,8 @@ impl DevToolIntegration for FixtureIntegration {
     async fn verify_integration(&self, _receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError> {
         let now = now_unix_secs();
         let outcome = match self.verification {
-            FixtureVerification::Exercised => VerificationOutcome::Passed,
+            // Both claim a pass; only the first has traffic behind it.
+            FixtureVerification::Exercised | FixtureVerification::VacuousPass => VerificationOutcome::Passed,
             // Read-back alone is not a pass. The configuration is present and
             // nothing was shown to be protected, which is `PartiallyPassed`
             // with the protection test named as what is missing.

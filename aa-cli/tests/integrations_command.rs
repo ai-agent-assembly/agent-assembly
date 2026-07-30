@@ -243,12 +243,13 @@ fn a_non_interactive_install_without_yes_aborts_and_changes_nothing() {
 
 // ── verify: the anti-vacuous-pass guard ──────────────────────────────────────
 
-/// **The** load-bearing test. The fixture's configuration reads back exactly as
-/// the receipt records it and nothing was exercised. That is a statement about
-/// a file, so `verify` must fail — and must say why.
+/// **The** load-bearing test, and it is deliberately adversarial: the fixture
+/// reports `Passed` while having exercised nothing at all. An implementation
+/// that trusted the outcome token would exit 0 here. `verify` must fail anyway,
+/// because a pass with no traffic behind it is a statement about a file.
 #[test]
 fn verify_fails_when_the_protected_path_was_not_exercised() {
-    let h = Harness::start(|f| f.verifying(FixtureVerification::ReadBackOnly));
+    let h = Harness::start(|f| f.verifying(FixtureVerification::VacuousPass));
     assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
 
     let output = h.aasm(&["verify", "claude-code"]);
@@ -293,7 +294,7 @@ fn an_unverifiable_integration_fails_rather_than_passing_quietly() {
 /// on the assertion without reading prose.
 #[test]
 fn verify_emits_machine_readable_assertions() {
-    let h = Harness::start(|f| f.verifying(FixtureVerification::ReadBackOnly));
+    let h = Harness::start(|f| f.verifying(FixtureVerification::VacuousPass));
     assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
     let output = h.aasm(&["verify", "claude-code", "--output", "json"]);
     let json: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("valid JSON");
