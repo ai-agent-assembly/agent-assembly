@@ -12,8 +12,8 @@ productization (`AAASM-5281`) all implement against.
 > builds it. Nothing here should be read as a shipped capability unless it is cited to code.
 >
 > This document deliberately does **not** fill in the Claude Code row of the
-> [L0–L3 Capability Matrix](../governance/capability-matrix.md) — that row stays `TBD` until
-> `AAASM-5276` produces evidence and `AAASM-5284` publishes it.
+> [L0–L3 Capability Matrix](../governance/capability-matrix.md). That row was filled by
+> `AAASM-5284` from the `AAASM-5276` evidence and is canonical there, not here.
 
 ---
 
@@ -818,7 +818,12 @@ corresponding section of this document changes rather than being quietly worked 
 ## References
 
 - [L0–L3 Governance Capability Matrix](../governance/capability-matrix.md) — canonical tier
-  definitions and per-tool declarations. The Claude Code row is `TBD` by design.
+  definitions and per-tool declarations, including the Claude Code row.
+- [Onboarding a Developer Integration](onboarding.md) — the install → verify → operate → remove
+  path with the commands and exit codes that exist today.
+- [Protection levels](protection-levels.md) — §7 restated as an operational reference.
+- [Limitations and known bypasses](limitations.md) — the demonstrated-versus-inferred bypass
+  split and the other honest limits.
 - [Protection and enforcement](../security/protection-model.md) — the policy pipeline, redaction
   semantics and fail-closed behaviour this brief's guarantees rest on.
 - [Three-layer defense in depth](../security/three-layer-defense.md) — SDK / proxy / eBPF.
