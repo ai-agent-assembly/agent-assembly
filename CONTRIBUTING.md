@@ -133,7 +133,7 @@ To add a new crate to the workspace:
 
 ## Developer Certificate of Origin (DCO)
 
-We ask that you sign off each commit under the [Developer Certificate of Origin v1.1](https://developercertificate.org/) — this licenses your contribution to the project under the [Apache License 2.0](LICENSE). Sign-off is **currently advisory** (see the note below), consistent with the org-wide [contribution guide](https://github.com/ai-agent-assembly/.github/blob/master/CONTRIBUTING.md).
+We ask that you sign off each commit under the [Developer Certificate of Origin v1.1](https://developercertificate.org/) — this licenses your contribution to the project under the [Apache License 2.0](LICENSE). Sign-off is **currently advisory** (see the note below), consistent with the org-wide [contribution guide](https://github.com/ai-agent-assembly/.github/blob/HEAD/CONTRIBUTING.md).
 
 Sign off by adding a `Signed-off-by` trailer to each commit message:
 
@@ -218,6 +218,12 @@ mdbook serve docs --open
 ```
 
 Mermaid diagrams use the `mdbook-mermaid` preprocessor, which is wired in `docs/book.toml`. The `Docs` GitHub Actions workflow runs `mdbook build docs` on every PR that touches `docs/**`, `README.md`, or `CONTRIBUTING.md` and fails the build on errors.
+
+### Linking to another repository
+
+Every active repo in the org defaults to `main` (see [ADR 0016](docs/src/adr/0016-default-branch-master-to-main-migration.md)). When you write a cross-repo link, ref, or automation target, use the **default-branch-tracking `HEAD` form** — `…/blob/HEAD/…`, `raw.githubusercontent.com/<org>/<repo>/HEAD/…` — rather than hardcoding a branch name, so the reference survives any future rename.
+
+A rename's redirect is not a safety net for all of these: `github.com` web `blob`/`commits` links do redirect, but **`raw.githubusercontent.com/…/<branch>/` does not** (it 404s), and neither does `git fetch <branch>` or an action pinned with `uses: <org>/<action>@<branch>`. Those break outright, so write them against `HEAD` from the start. The same rule applies to a workflow that opens a PR into another repo: its `base:` must name that repo's current default branch, which `scripts/check-release-completeness.sh` checks for the release fan-out.
 
 ## Version metadata: single source of truth & drift gate
 
