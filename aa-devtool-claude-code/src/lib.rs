@@ -17,6 +17,19 @@
 mod apply;
 mod settings;
 
+pub mod scope;
+
+pub use scope::{ClaudeCodePaths, ScopeError};
+
+/// Directory, under the Agent Assembly state root, holding one MitM host list
+/// per integration.
+///
+/// The proxy unions every file here into its interception set. One file per
+/// integration is what makes AAASM-5276 condition C5 possible without flipping
+/// the global `llm_only` default: scoping one tool's side channels never changes
+/// what the proxy does for anything else on the machine.
+pub const MITM_HOSTS_DIR: &str = "mitm-hosts.d";
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
