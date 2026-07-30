@@ -177,7 +177,63 @@ adapter is less trusted than the service.
 **Inside L-D nothing changes.** The runtime↔gateway relationship, the mandatory
 chokepoint, and the SDK fast-path remain exactly as ADR 0002 and ADR 0004 specify.
 
-#### 1.1 Reconciliation with ADR 0004 — the DI-API is a lifecycle surface, not a second transport
+#### 1.1 Component and trust-boundary diagram
+
+```mermaid
+flowchart TB
+    subgraph UNTRUSTED["L-A · UNTRUSTED — developer's session, arbitrary distribution"]
+        EXT["IDE extension<br/>(VS Code · JetBrains)"]
+        INST["Installer / launcher"]
+        CLI["aasm CLI<br/>(integration commands)"]
+        SDKAPP["Agent process<br/>(SDK-instrumented)"]
+    end
+
+    subgraph TRUSTED["L-B / L-C / L-D · TRUSTED — aa-runtime process + gateway"]
+        subgraph DIS["L-B · Developer Integration Service"]
+            TOK["Capability-token<br/>issue · verify · revoke"]
+            ORCH["Lifecycle orchestrator<br/>plan · apply · status<br/>verify · repair · remove"]
+            REC["Receipt store + drift<br/>fingerprints (0600)"]
+            PST["Protection-state<br/>derivation (evidence)"]
+        end
+        subgraph ADAPTERS["L-C · DevToolAdapters — statically linked, aa-devtool-contract only"]
+            A1["claude-code"]
+            A2["codex"]
+            A3["copilot"]
+            A4["windsurf"]
+            A5["saas"]
+        end
+        subgraph CORE["L-D · Core runtime / gateway — the security authority"]
+            RT["aa-runtime pipeline<br/>scan · redact · normalize"]
+            GW["aa-gateway<br/>policy SoT · approvals · audit"]
+        end
+    end
+
+    EXT -->|"DI-API · UDS 0600 + peercred + capability token"| TOK
+    INST -->|"DI-API"| TOK
+    CLI -->|"DI-API"| TOK
+    TOK --> ORCH
+    ORCH --> REC
+    ORCH --> PST
+    ORCH -->|"in-process call<br/>(modularity boundary)"| ADAPTERS
+    ADAPTERS -->|"aa-devtool-contract<br/>(compile-time capability boundary)"| CORE
+    ORCH --> CORE
+
+    SDKAPP -->|"aa-sdk-client · ADR 0004<br/>separate socket, separate verb space"| RT
+    RT --> GW
+
+    EXT -.->|"FORBIDDEN — no policy decision,<br/>no agent-action traffic over DI-API"| CORE
+
+    classDef untrusted fill:#fdecea,stroke:#c0392b,stroke-width:2px,color:#3c1512
+    classDef trusted fill:#eaf6ec,stroke:#1e8449,stroke-width:2px,color:#123021
+    class UNTRUSTED untrusted
+    class TRUSTED trusted
+```
+
+The single red arrow is the whole point of the ADR: the untrusted layer reaches the
+trusted layer through exactly one authenticated, capability-scoped, closed-verb-set
+socket, and there is no edge from it to the policy/audit path at all.
+
+#### 1.2 Reconciliation with ADR 0004 — the DI-API is a lifecycle surface, not a second transport
 
 ADR 0004 forbids ad-hoc transports: *"The user-facing SDK public API NEVER calls a core
 or REST endpoint directly"*, and all client↔core governance traffic goes through the one
