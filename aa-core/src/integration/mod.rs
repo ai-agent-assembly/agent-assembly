@@ -63,7 +63,7 @@ pub use plan::{
     IntegrationPlan, IntegrationRequest, PlanError, PolicyProfileRef, ProtectionProfile, RemovalPlan,
     UnsupportedMechanism,
 };
-pub use receipt::{IntegrationReceipt, ReceiptError, StepReceipt};
+pub use receipt::{IntegrationReceipt, PriorSettingsState, ReceiptError, StepReceipt};
 pub use shim::{LegacyAdapterShim, LEGACY_UNSUPPORTED_REASON};
 pub use state::{
     EvidenceKind, ExerciseOutcome, ProtectionEvidence, ProtectionLevel, ProtectionState, StateDerivation,
