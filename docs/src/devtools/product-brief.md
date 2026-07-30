@@ -110,7 +110,61 @@ required substrate.
 
 ## 3. Personas and entry points
 
-<!-- populated in a later commit -->
+Four personas. They differ less in *what* protection they need than in **what they must never be
+required to understand** — which is the constraint that actually shapes the product. The
+"must not have to understand" column is therefore normative: if an integration forces a persona to
+learn one of those concepts, the integration has failed for that persona regardless of whether
+protection works.
+
+### 3.1 Individual developer (local)
+
+| | |
+|---|---|
+| **Entry point** | A single command (`aasm integrations install claude-code` — _planned_, `AAASM-5280`) or an install action inside the tool. |
+| **Mental model** | "I want my coding agent not to leak my secrets." No org, no policy authoring. |
+| **Must not have to understand** | MCP, proxies, CA certificates, `settings.json` paths, gateway endpoints, enforcement modes, `GovernanceLevel`. |
+| **Policy source** | The chosen protection profile's built-in defaults. |
+| **Success signal** | A status line naming the protection level and the profile, plus a passing protection test — not "installed successfully". |
+| **Primary failure risk** | Silent no-op: the config was written, the tool never routed through it, and status still claims protection. §7 entry criteria exist to make this impossible. |
+
+### 3.2 Team developer (org-managed policy)
+
+| | |
+|---|---|
+| **Entry point** | Same install surface, plus a connect step that binds the machine to an org/team identity. |
+| **Mental model** | "My employer has rules; I want to be compliant without babysitting it." |
+| **Must not have to understand** | Policy YAML, cascade merge order, RBAC, where policy is stored. |
+| **Policy source** | Org/team policy cascade resolved by the gateway — the local profile choice is bounded by it and cannot loosen it. |
+| **Success signal** | Status shows the governing team and that the effective policy came from the org, not from a local default. |
+| **Primary failure risk** | A local profile silently overriding org policy. The merge is most-restrictive-wins (`aa-gateway/src/engine/decision.rs`), so a local profile may only *tighten*. |
+
+### 3.3 CLI-first user
+
+| | |
+|---|---|
+| **Entry point** | Terminal, scripted or interactive; expects exit codes and machine-readable output. |
+| **Mental model** | "This is a tool in my shell; it should compose." |
+| **Must not have to understand** | Any GUI concept. Prompts must be skippable with explicit flags. |
+| **Requirements it adds** | Non-interactive mode, deterministic exit codes, stable structured output, and idempotent re-invocation (running install twice must not double-apply or fail). |
+| **Success signal** | `verify` exits zero and prints the exercised protection level. |
+| **Primary failure risk** | Interactive-only flows that break automation, and status output that is human prose only. |
+
+### 3.4 IDE / plugin-first user
+
+| | |
+|---|---|
+| **Entry point** | The tool's own extension or plugin surface; may never open a terminal. |
+| **Mental model** | "I installed a thing in my editor and now I'm protected." |
+| **Must not have to understand** | That a separate core runtime exists at all — until it stops, at which point they must be told plainly. |
+| **Requirements it adds** | The extension must discover or start the core, degrade visibly (not silently) when it cannot, and never make an enforcement decision locally. |
+| **Success signal** | A persistent, honest status indicator that distinguishes *protected*, *degraded* and *off* — three states, never two. |
+| **Primary failure risk** | A green indicator that reflects plugin health rather than core-observed protection. The indicator must be driven by core-reported evidence (§7). |
+
+### 3.5 What is common to all four
+
+Every persona shares one requirement: **the difference between "configured" and "protected" must
+be visible in the product, not only in the docs.** That single requirement is what §7's entry
+criteria and §11's acceptance scenarios exist to enforce.
 
 ## 4. The canonical journey
 
