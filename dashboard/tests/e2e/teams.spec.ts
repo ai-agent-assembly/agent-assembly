@@ -62,7 +62,7 @@ async function stubTeamsApi(page: Page, memberStatusRef: { value: 'active' | 'su
   await page.route('**/api/v1/topology/overview', route => route.fulfill({ json: OVERVIEW }))
   // The whole fleet, which is what the unclaimed section is derived from since
   // AAASM-5157 — every agent here is claimed, so that section stays empty.
-  await page.route('**/api/v1/topology', route => route.fulfill({ json: { nodes: TEAM_MEMBERS, edges: [] } }))
+  await page.route('**/api/v1/topology', route => route.fulfill({ json: { nodes: TEAM_MEMBERS, edges: [], unclaimed_observable: true } }))
   await page.route('**/api/v1/costs', route => route.fulfill({ json: COSTS }))
   await page.route('**/api/v1/costs/budget-tree', route => route.fulfill({ json: BUDGET_TREE }))
   await page.route('**/api/v1/approvals**', route => route.fulfill({ json: APPROVALS }))

@@ -151,7 +151,7 @@ async function bootstrap(page: Page, theme: Theme, scenario: Scenario): Promise<
   await page.route('**/api/v1/topology', (r) =>
     scenario === 'degraded'
       ? r.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"service_unavailable"}' })
-      : r.fulfill({ json: { nodes: FLEET, edges: [] } }),
+      : r.fulfill({ json: { nodes: FLEET, edges: [], unclaimed_observable: true } }),
   )
   await page.route('**/api/v1/ws/events**', (r) => r.abort())
   await page.route('**/api/v1/alerts/ws**', (r) => r.abort())
