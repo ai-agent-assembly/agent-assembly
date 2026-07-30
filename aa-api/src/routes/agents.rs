@@ -1182,6 +1182,19 @@ fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
+    // AAASM-5100 / ADR-0018 item A — the 5-way runtime verdict, now captured at
+    // decision time on the audit write path (`policy_service::record_audit`).
+    // Parsed from the payload string into the canonical enum; absent on legacy
+    // rows written before capture landed, which stay `null`.
+    let verdict = payload
+        .get("verdict")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| serde_json::from_value::<RuntimeVerdict>(serde_json::Value::String(s.to_string())).ok());
+
+    // AAASM-5100 / ADR-0018 item B — per-decision latency in ms, now recorded on
+    // the audit write path. Absent on legacy rows, which stay `null`.
+    let latency_ms = payload.get("latency_ms").and_then(serde_json::Value::as_u64);
+
     Some(AgentDecisionResponse {
         timestamp,
         session_id: hex::encode(entry.session_id().as_bytes()),
@@ -1190,18 +1203,12 @@ fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
         resource,
         decision,
         decision_label: decision_label(decision),
-        // The 5-way runtime verdict is not captured at decision time yet;
-        // deriving it is the ADR-0018-gated hot-path follow-up. Surface null
-        // rather than lossily mapping the coarse proto `decision` onto it.
-        // populated once decision-capture lands (ADR 0018 / AAASM-5086 follow-up)
-        verdict: None,
+        verdict,
         matched_policy,
-        // No per-decision latency source exists in the audit log (AAASM-5058);
-        // report it honestly as absent rather than inventing a value.
-        latency_ms: None,
-        // No per-decision trace id is recorded on the audit write path yet;
-        // trace-id propagation is the ADR-0018-gated hot-path follow-up.
-        // populated once decision-capture lands (ADR 0018 / AAASM-5086 follow-up)
+        latency_ms,
+        // Item C (trace-id propagation) is NOT implemented — it is gated to a
+        // separate Phase 2 ticket. The audit write records no per-decision trace
+        // id, so this stays null.
         trace_id: None,
     })
 }
