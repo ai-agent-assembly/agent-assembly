@@ -1,0 +1,170 @@
+name: Claude Code conformance
+
+permissions:
+  contents: read
+
+# AAASM-5283 — the executable completion gate for the Claude Code Developer
+# Integration (AAASM-5281) and for every future tool productisation.
+#
+# Why a dedicated workflow rather than a job in ci.yml
+# ----------------------------------------------------
+# ci.yml has a two-layer trigger model: the workflow's own `on.*.paths` decides
+# whether CI runs at all, and a `dorny/paths-filter` router decides which jobs
+# run inside it. A router filter with no matching `on.*.paths` entry is a dead
+# trigger. Keeping this gate in its own file gives it one unambiguous trigger
+# surface, and lets the three lanes below carry different prerequisites without
+# threading three more filters through that router.
+#
+# The lanes
+# ---------
+# 1. `hermetic` (ubuntu)  — the default gate. Needs nothing external: the tool
+#    binary is stood in for by a path plus a version override, and the proxy,
+#    scanner, receipt store and provider are all in-process. Required.
+# 2. `macos`              — the same suite on the platform the integration
+#    targets, where file modes, temp paths and TLS differ. Required.
+# 3. `real-tool`          — `workflow_dispatch` only. Installs the real
+#    `claude` binary and points `AA_SPIKE_CLAUDE_BIN` at it, so the one
+#    assertion a mock cannot make (does Claude Code's embedded Node runtime
+#    accept the Agent Assembly certificate authority through
+#    `NODE_EXTRA_CA_CERTS`) is actually taken. Not required: it depends on a
+#    third-party npm package whose availability this repository does not
+#    control. It uses no credentials and reaches no external model provider —
+#    every request is redirected to an in-process mock.
+#
+# The security-regression assertions are not a separate lane. They live in the
+# same binary as the scenarios they guard, because a regression set that can be
+# skipped independently of the suite it protects will eventually be skipped.
+#
+# Skipping vs passing
+# -------------------
+# Scenarios that need the real binary print `SKIP [...]` with the reason and
+# return. `--no-capture` is deliberate: a skip must be legible in the log rather
+# than indistinguishable from a green assertion.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "aa-integration-tests/tests/conformance_claude_code.rs"
+      - "aa-integration-tests/tests/conformance_support/**"
+      - "aa-integration-tests/tests/spike_support/**"
+      - "aa-devtool-claude-code/**"
+      - "aa-devtool-contract/**"
+      - "aa-core/src/integration/**"
+      - "aa-runtime/src/devint/**"
+      - "aa-proxy/**"
+      - "aa-security/**"
+      - "aa-cli/src/commands/integrations/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/claude-code-conformance.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "aa-integration-tests/tests/conformance_claude_code.rs"
+      - "aa-integration-tests/tests/conformance_support/**"
+      - "aa-integration-tests/tests/spike_support/**"
+      - "aa-devtool-claude-code/**"
+      - "aa-devtool-contract/**"
+      - "aa-core/src/integration/**"
+      - "aa-runtime/src/devint/**"
+      - "aa-proxy/**"
+      - "aa-security/**"
+      - "aa-cli/src/commands/integrations/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/claude-code-conformance.yml"
+  workflow_dispatch:
+    inputs:
+      real_tool:
+        description: "Also run the optional real Claude Code lane"
+        type: boolean
+        default: false
+
+jobs:
+  conformance:
+    name: Conformance (${{ matrix.lane }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: hermetic
+            os: ubuntu-latest
+          - lane: macos
+            os: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install protobuf compiler (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: claude-code-conformance-${{ matrix.lane }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+
+      - name: Run the conformance suite
+        # --no-capture so a `SKIP [...]` line is visible in the log. Without it
+        # a skipped scenario reads exactly like a passing one.
+        run: cargo nextest run -p aa-integration-tests --test conformance_claude_code --no-capture
+
+  real-tool:
+    name: Conformance (real Claude Code)
+    # Opt-in only. Depends on a third-party npm package; a transient
+    # unavailability there must not read as a product regression.
+    if: github.event_name == 'workflow_dispatch' && inputs.real_tool
+    runs-on: macos-latest
+    timeout-minutes: 30
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install protobuf compiler
+        run: brew install protobuf
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Install Claude Code
+        # No credential is configured and none is needed: every request the
+        # binary makes is redirected onto an in-process mock provider by the
+        # proxy under test.
+        run: npm install -g @anthropic-ai/claude-code
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: claude-code-conformance-real-tool
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+
+      - name: Report the tool version under test
+        run: claude --version
+
+      - name: Run the conformance suite against the real binary
+        run: |
+          set -euo pipefail
+          AA_SPIKE_CLAUDE_BIN="$(command -v claude)" \
+            cargo nextest run -p aa-integration-tests --test conformance_claude_code --no-capture
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
