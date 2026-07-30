@@ -176,6 +176,18 @@ impl ClaudeCodeAdapter {
         let marker = self.home_dir()?.join(".claude");
         marker.is_dir().then_some(marker)
     }
+
+    /// The paths a launch reads its injected environment from.
+    ///
+    /// Resolved from the environment, with this adapter's home override applied
+    /// so a test never reaches the developer's real state directory.
+    fn launch_paths(&self) -> ClaudeCodePaths {
+        let paths = ClaudeCodePaths::from_env();
+        match &self.home_dir_override {
+            Some(home) => paths.with_home(home.clone()),
+            None => paths,
+        }
+    }
 }
 
 /// Locate a binary via the `which` command.
@@ -294,6 +306,25 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         apply::apply_settings_at(&path, settings)
     }
 
+    /// Build the governed launch command.
+    ///
+    /// # Why this reads an installed integration's launch environment
+    ///
+    /// AAASM-5276 measured, against the real `claude 2.1.220` binary, that the
+    /// proxy's MitM handshake only succeeds when `NODE_EXTRA_CA_CERTS` points at
+    /// the Agent Assembly certificate authority — and that this method used to
+    /// inject `HTTPS_PROXY` and nothing else, so the handshake failed and the
+    /// tool's traffic was never inspected. **Silently**: a proxy that cannot
+    /// terminate TLS still lets the connection through.
+    ///
+    /// `aasm integrations install claude-code` materialises the CA and records
+    /// the variable; this is where it reaches the child process. A host with no
+    /// installed integration contributes nothing, so the behaviour is unchanged
+    /// where nothing was installed.
+    ///
+    /// A `proxy_addr` the caller pins for this run wins over the receipted one:
+    /// the address is a runtime fact, and routing a session at a proxy that is
+    /// not listening is worse than routing it at the live one.
     fn build_launch_command(
         &self,
         tool_args: &[String],
@@ -308,8 +339,17 @@ impl DevToolAdapter for ClaudeCodeAdapter {
         if let Some(tid) = team_id {
             cmd.env("AA_TEAM_ID", tid);
         }
+        for (name, value) in launch_env::installed_environment(&self.launch_paths()) {
+            cmd.env(name, value);
+        }
         if let Some(px) = proxy_addr {
-            cmd.env("HTTPS_PROXY", px);
+            let url = if px.starts_with("http") {
+                px.to_string()
+            } else {
+                format!("http://{px}")
+            };
+            cmd.env("HTTPS_PROXY", &url);
+            cmd.env("HTTP_PROXY", &url);
         }
         Ok(cmd)
     }
@@ -577,9 +617,16 @@ mod tests {
             envs[std::ffi::OsStr::new("AA_TEAM_ID")],
             Some(std::ffi::OsStr::new("team-a"))
         );
+        // AAASM-5281: a bare `host:port` is not a proxy URL any HTTP client
+        // accepts, so the adapter normalises it to one. The spike's own harness
+        // had to do the same thing by hand before every launch.
         assert_eq!(
             envs[std::ffi::OsStr::new("HTTPS_PROXY")],
-            Some(std::ffi::OsStr::new("127.0.0.1:8080"))
+            Some(std::ffi::OsStr::new("http://127.0.0.1:8080"))
+        );
+        assert_eq!(
+            envs[std::ffi::OsStr::new("HTTP_PROXY")],
+            Some(std::ffi::OsStr::new("http://127.0.0.1:8080"))
         );
     }
 
