@@ -110,6 +110,17 @@ export interface CapabilityMatrix {
   agents: CapabilityAgent[]
   policies: Policy[]
   sampleCalls: SampleCall[]
+  /**
+   * Whether the projecting engine actually carries a policy cascade
+   * (AAASM-5106 / ADR 0024). `false` — the state of every shipped deployment —
+   * means every cell fell through to `allow` because nothing constrained it, so
+   * the grid's ALLOW readings are not measurements. The page renders the grid as
+   * "not evaluated — policy cascade not loaded" in that case rather than trusting
+   * the fabricated allows. Read authoritatively rather than inferred from an
+   * empty `policies` array: an empty list can also mean a loaded cascade with no
+   * capability-declaring document, which is a different, real answer.
+   */
+  cascadeLoaded: boolean
 }
 
 export interface OverrideRequest {

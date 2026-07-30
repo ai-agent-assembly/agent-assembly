@@ -106,6 +106,7 @@ const EXEC_HEAVY_MATRIX: CapabilityMatrix = {
   ],
   policies: FIXTURE.policies,
   sampleCalls: [],
+  cascadeLoaded: true,
 }
 
 /**
@@ -185,6 +186,25 @@ describe('CapabilityPage', () => {
     const readRadio = screen.getByRole('radio', { name: 'read' })
     fireEvent.click(readRadio)
     expect(readRadio).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('shows the "cascade not loaded" banner when the matrix reports it, not for a loaded one', async () => {
+    // AAASM-5106 / ADR 0024 — an unloaded cascade means every ALLOW cell is a
+    // fall-through, not a measurement, so the page warns rather than presenting
+    // a confident grid.
+    getMatrix.mockResolvedValue({ ...FIXTURE, cascadeLoaded: false })
+    renderPage()
+    await screen.findByTestId('capability-cascade-unloaded')
+    expect(screen.getByTestId('capability-cascade-unloaded-state')).toHaveTextContent(
+      /not evaluated/i,
+    )
+  })
+
+  it('does not show the "cascade not loaded" banner for a loaded matrix', async () => {
+    getMatrix.mockResolvedValue(FIXTURE) // fixture is cascadeLoaded: true
+    renderPage()
+    await screen.findByRole('heading', { name: /Capability/ })
+    expect(screen.queryByTestId('capability-cascade-unloaded')).not.toBeInTheDocument()
   })
 
   it('shows the matrix tab count badge and the summary row', async () => {

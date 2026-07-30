@@ -3,7 +3,7 @@ import { isAbsent, isKnown } from '../../../lib/truthfulness'
 import { cascadeEvidenceFromQuery } from '../api'
 import type { CapabilityMatrix } from '../types'
 
-function matrix(policyCount: number): CapabilityMatrix {
+function matrix(policyCount: number, cascadeLoaded = true): CapabilityMatrix {
   return {
     resources: [],
     agents: [],
@@ -16,6 +16,7 @@ function matrix(policyCount: number): CapabilityMatrix {
       rules: [],
     })),
     sampleCalls: [],
+    cascadeLoaded,
   }
 }
 
@@ -71,5 +72,14 @@ describe('cascadeEvidenceFromQuery', () => {
     const evidence = cascadeEvidenceFromQuery({ data: null })
     expect(isKnown(evidence)).toBe(false)
     expect(isAbsent(evidence) && evidence.state).toBe('unknown')
+  })
+
+  it('treats an unloaded cascade as zero documents even when policies are listed', () => {
+    // AAASM-5106 / ADR 0024: the engine's authoritative `cascadeLoaded=false`
+    // wins over the policy-list length. A matrix that happens to carry a policy
+    // row but reports no cascade loaded is still `unconfigured`, so the summary
+    // cannot read those rows as measured verdicts.
+    const evidence = cascadeEvidenceFromQuery({ data: matrix(2, false) })
+    expect(isKnown(evidence) && evidence.value.documentCount).toBe(0)
   })
 })
