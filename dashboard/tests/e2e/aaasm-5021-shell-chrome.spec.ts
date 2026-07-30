@@ -59,7 +59,7 @@ const POLICIES = [
 const ALERTS = {
   items: [
     { id: 'al-1', ruleId: 'r1', ruleName: 'budget breach', severity: 'CRITICAL', status: 'FIRING', agentId: 'agent-1', firstFiredAt: '2026-06-01T10:00:00Z', resolvedAt: null, destinationIds: [] },
-    { id: 'al-2', ruleId: 'r2', ruleName: 'anomaly', severity: 'HIGH', status: 'FIRING', agentId: 'agent-2', firstFiredAt: '2026-06-01T10:00:00Z', resolvedAt: null, destinationIds: [] },
+    { id: 'al-2', ruleId: 'r2', ruleName: 'anomaly', severity: 'WARNING', status: 'FIRING', agentId: 'agent-2', firstFiredAt: '2026-06-01T10:00:00Z', resolvedAt: null, destinationIds: [] },
   ],
 }
 

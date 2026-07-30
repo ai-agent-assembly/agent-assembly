@@ -94,7 +94,7 @@ function alert(id: string, severity: string, status: string, ageMinutes: number)
 const ALERTS = [
   alert('al-1', 'CRITICAL', 'FIRING', 5),
   alert('al-2', 'CRITICAL', 'FIRING', 20),
-  alert('al-3', 'HIGH', 'FIRING', 45),
+  alert('al-3', 'WARNING', 'FIRING', 45),
 ]
 
 /** A page of 3 rows out of a fleet of 214 — the truncation the mock never had. */
@@ -269,7 +269,7 @@ test.describe('AAASM-5150 review — the Alerts surface tells the truth', () => 
       await expect(page.getByTestId('alerts-empty-no-alerts')).toHaveCount(0)
 
       // No tile may report a business value it does not have.
-      for (const key of ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'FIRING']) {
+      for (const key of ['CRITICAL', 'WARNING', 'INFO', 'FIRING']) {
         await expect(page.getByTestId(`alerts-stat-count-${key}`)).toContainText('—')
         await expect(page.getByTestId(`alerts-stat-tile-${key}`)).toBeDisabled()
       }
@@ -310,7 +310,7 @@ test.describe('AAASM-5150 review — the Alerts surface tells the truth', () => 
       }
 
       // The chip that used to return an identical list now narrows the feed.
-      await page.getByTestId('alerts-filter-severity-HIGH').click()
+      await page.getByTestId('alerts-filter-severity-WARNING').click()
       await expect(page.getByTestId('alert-row')).toHaveCount(1)
       // Narrowed: shown and loaded are both page figures, named together.
       await expect(page.getByTestId('alerts-count')).toContainText('1 of 3 alerts')
