@@ -882,6 +882,425 @@ async fn a_tool_upgrade_is_a_migration_and_an_unsupported_version_is_refused() -
     Ok(())
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Security regressions
+//
+// This set exists to fail loudly on the five ways this integration could look
+// healthy while being unsafe: a raw secret reaching a persisted or printed
+// surface, a protection claim without exercised evidence, a repair reaching
+// into a key the user owns, a removal leaving an Agent Assembly artifact
+// behind, and condition C1 silently coming un-wired.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── 11.5 The raw secret reaches no artifact ─────────────────────────────────
+
+/// Collect everything one protected run produces — the proxy's audit entries,
+/// the verification result, the status, every file under the state root and the
+/// settings document — and assert the raw value is in none of them **while** the
+/// finding metadata survives.
+///
+/// The second half is what separates "detected and redacted" from "never seen".
+/// An artifact set carrying neither the secret nor any finding would satisfy a
+/// naive absence check while proving the scanner never ran.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_raw_secret_is_absent_from_every_artifact_while_the_finding_survives() -> anyhow::Result<()> {
+    let (audit_tx, mut audit_rx) = tokio::sync::mpsc::channel(64);
+    let h = ConformanceHarness::with_options(conformance_support::HarnessOptions {
+        audit_tx: Some(audit_tx),
+        ..Default::default()
+    })
+    .await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+
+    let verification = h.verify().await?;
+    assert_eq!(verification.outcome, VerificationOutcome::Passed);
+    let status = h.status().await?;
+    assert!(
+        h.upstream.request_count() > 0,
+        "traffic must have flowed for an absence assertion to mean anything"
+    );
+
+    let mut audit_entries = Vec::new();
+    while let Ok(entry) = audit_rx.try_recv() {
+        audit_entries.push(entry);
+    }
+    assert!(!audit_entries.is_empty(), "the proxy produced no audit entries");
+    let audit_json = serde_json::to_string(&audit_entries)?;
+
+    let mut surfaces = h.persisted_surfaces();
+    surfaces.push(("proxy-audit".to_string(), audit_json.clone()));
+    surfaces.push(("verification".to_string(), serde_json::to_string(&verification)?));
+    surfaces.push(("status".to_string(), serde_json::to_string(&status)?));
+    surfaces.push(("status-rendered".to_string(), format!("{status:?}")));
+    conformance_support::assert_no_raw_secret(&surfaces, SYNTHETIC_SECRET, "11.5");
+
+    // The finding must still be there: kind and count, never the value.
+    let findings: usize = audit_entries.iter().map(|e| e.credential_findings.len()).sum();
+    assert!(
+        findings > 0,
+        "the audit recorded zero findings — the scanner never detected anything"
+    );
+    assert!(
+        audit_json.contains("AnthropicKey"),
+        "the audit does not name the detected credential kind: {audit_json}"
+    );
+    let evidence = serde_json::to_string(&verification.evidence)?;
+    assert!(
+        evidence.to_lowercase().contains("redacted"),
+        "the adjudicated outcome must survive into the evidence: {evidence}"
+    );
+    println!(
+        "MEASURED: {findings} finding(s) across {} audit entries",
+        audit_entries.len()
+    );
+
+    h.finish("11.5 no raw secret in any artifact");
+    Ok(())
+}
+
+// ── C1 The injected certificate authority is load-bearing ───────────────────
+
+/// Identical to a passing run in every respect but one: the probe does not trust
+/// the certificate authority the install materialised and `NODE_EXTRA_CA_CERTS`
+/// points at.
+///
+/// AAASM-5276 condition C1 is the single highest-value item in the whole Epic —
+/// without it the MitM handshake fails, nothing is inspected, and the headline
+/// protection claim is a no-op. This pins it so a future change cannot silently
+/// un-inject the CA and still look green: the reading must be a *failed TLS
+/// handshake*, not a pass and not a generic error.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_the_injected_certificate_authority_protection_cannot_pass() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+
+    // Establish the baseline: with trust, this run passes.
+    assert_eq!(h.verify().await?.outcome, VerificationOutcome::Passed);
+    assert_eq!(h.status().await?.achieved_level(), ProtectionLevel::GatewayProtected);
+
+    // Turn the one variable.
+    h.set_ca_trust(false);
+    let untrusted = h.verify().await?;
+    assert!(
+        !matches!(untrusted.outcome, VerificationOutcome::Passed),
+        "a failed MitM handshake must not read as a pass: {:?}",
+        untrusted.outcome
+    );
+    let reason = format!("{:?}", untrusted.outcome);
+    assert!(
+        reason.contains("certificate was not trusted"),
+        "the reading must name the CA-trust failure, so a regression is diagnosable rather than \
+         merely red: {reason}"
+    );
+    let status = h.status().await?;
+    assert!(
+        status.achieved_level() < ProtectionLevel::GatewayProtected,
+        "with the CA untrusted the model path is not intercepted, so protection must not be \
+         claimed: {:?}",
+        status.state
+    );
+
+    h.finish("C1 injected certificate authority");
+    Ok(())
+}
+
+// ── A tampered receipt fails safely ─────────────────────────────────────────
+
+/// Editing a receipt in place breaks its integrity hash, and every lifecycle
+/// operation refuses rather than acting on it.
+///
+/// A corrupt receipt must never be reported as "not installed": that reading
+/// would invite an install on top of state nobody can account for. It must also
+/// never be reported as protected — a receipt is the only record of what was
+/// applied, and one that cannot be trusted cannot substantiate a claim.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tampered_receipt_is_refused_rather_than_believed() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+    assert_eq!(h.verify().await?.outcome, VerificationOutcome::Passed);
+
+    // Forge freshness without touching the integrity hash: move the recorded
+    // verification far into the future so a status read would answer "verified
+    // now" for evidence that is nothing of the sort. That is the exact class of
+    // edit a receipt hash exists to catch.
+    let path = h.store.receipt_path(&h.tool(), SettingsScope::User);
+    let mut envelope: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let recorded = envelope["receipt"]["verified_at_unix_secs"]
+        .as_u64()
+        .expect("precondition: a passing verification recorded its timestamp");
+    envelope["receipt"]["verified_at_unix_secs"] = serde_json::json!(recorded + 86_400 * 365);
+    std::fs::write(&path, serde_json::to_string_pretty(&envelope)?)?;
+
+    for (operation, result) in [
+        ("status", h.status().await.err()),
+        ("verify", h.verify().await.err()),
+        ("repair", h.repair().await.err().map(|e| anyhow::anyhow!("{e}"))),
+        ("remove", h.removal_preview().await.err()),
+    ] {
+        let error = result.unwrap_or_else(|| panic!("`{operation}` accepted a forged receipt"));
+        let message = error.to_string();
+        assert!(
+            message.contains("receipt"),
+            "`{operation}` must say the receipt is the problem: {message}"
+        );
+    }
+
+    h.finish("tampered receipt");
+    Ok(())
+}
+
+// ── An unscoped client cannot perform lifecycle operations ──────────────────
+
+/// A read-only capability token can see the integration and cannot change it,
+/// and a token scoped to a different tool cannot touch this one.
+///
+/// Asserted over a **real** DI-API socket rather than against the scope
+/// predicate, because the property under test belongs to the served surface: a
+/// check that exists but is not consulted by a handler would pass a unit test on
+/// the predicate and fail here.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
+    use aa_runtime::devint::{
+        DevIntClient, DevIntServer, DevIntServerConfig, DevIntServices, TokenScope, TokenStore, ToolScope,
+    };
+
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+
+    let dir = tempfile::tempdir()?;
+    let socket = dir.path().join("devint.sock");
+    let tokens = TokenStore::new();
+    let now = aa_core::integration::now_unix_secs();
+    // A dashboard-shaped client: it may look, and may change nothing.
+    let (read_only, _) = tokens.issue(
+        "conformance-read-only",
+        TokenScope::read_only(ToolScope::tools(["claude-code"])),
+        now,
+        3600,
+    );
+    // A full-lifecycle client for a *different* tool: the blast radius of a
+    // stolen per-tool token must stop at that tool.
+    let (other_tool, _) = tokens.issue(
+        "conformance-other-tool",
+        TokenScope::full_lifecycle(ToolScope::tools(["codex"])),
+        now,
+        3600,
+    );
+
+    let services = DevIntServices {
+        lifecycle: std::sync::Arc::new(h.service_reporting_version(conformance_support::MEASURED_TOOL_VERSION)),
+        tokens,
+        audit: std::sync::Arc::new(aa_runtime::devint::audit::TracingAuditSink),
+    };
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let server_token = shutdown.clone();
+    let config = DevIntServerConfig {
+        socket_path: socket.clone(),
+        max_connections: 8,
+    };
+    let server = DevIntServer::bind(config)?;
+    let tracker = tokio_util::task::TaskTracker::new();
+    let serving = tokio::spawn({
+        let tracker = tracker.clone();
+        async move {
+            server.run(tracker.clone(), server_token, services).await;
+            tracker.close();
+            tracker.wait().await;
+        }
+    });
+
+    for (label, token) in [("read-only", &read_only), ("other-tool", &other_tool)] {
+        let mut client = DevIntClient::connect(
+            &socket,
+            "conformance",
+            env!("CARGO_PKG_VERSION"),
+            Some(token.expose().to_string()),
+        )
+        .await?;
+        for (verb, outcome) in [
+            (
+                "plan",
+                client.plan("claude-code", "recommended", "user", "", false).await.err(),
+            ),
+            ("apply", client.apply("claude-code", "any-plan").await.err()),
+            ("repair", client.repair("claude-code").await.err()),
+            ("remove", client.remove("claude-code", "any-plan").await.err()),
+        ] {
+            assert!(outcome.is_some(), "the {label} token performed `{verb}` on claude-code");
+        }
+    }
+
+    // The read-only token can still do the thing it is for; the other tool's
+    // token cannot even look.
+    let mut reader = DevIntClient::connect(
+        &socket,
+        "conformance",
+        env!("CARGO_PKG_VERSION"),
+        Some(read_only.expose().to_string()),
+    )
+    .await?;
+    assert!(
+        reader.status("claude-code").await.is_ok(),
+        "a read-only token must still be able to read status"
+    );
+    let mut stranger = DevIntClient::connect(
+        &socket,
+        "conformance",
+        env!("CARGO_PKG_VERSION"),
+        Some(other_tool.expose().to_string()),
+    )
+    .await?;
+    assert!(
+        stranger.status("claude-code").await.is_err(),
+        "a token scoped to another tool must not read this one's status"
+    );
+
+    // A connection with no token at all is denied every verb, with no anonymous
+    // tier to fall back to.
+    let mut anonymous = DevIntClient::connect(&socket, "conformance", env!("CARGO_PKG_VERSION"), None).await?;
+    assert!(anonymous.status("claude-code").await.is_err());
+    assert!(anonymous.repair("claude-code").await.is_err());
+
+    shutdown.cancel();
+    let _ = serving.await;
+    h.finish("unscoped client");
+    Ok(())
+}
+
+// ── Repair must not reach into a key the user owns ──────────────────────────
+
+/// The isolated repair guard: every managed key is drifted at once, alongside a
+/// user-authored key with a value repair might plausibly overwrite.
+///
+/// Kept separate from the drift scenario so its failure message says exactly one
+/// thing. A repair that rewrote the document from the receipt would restore the
+/// managed keys correctly and still fail here.
+#[tokio::test(flavor = "multi_thread")]
+async fn repair_restores_every_managed_key_and_touches_no_user_key() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    let user_keys = serde_json::json!({
+        "theme": USER_THEME,
+        "model": "claude-opus-4-1",
+        "env": {"USER_AUTHORED": "keep-me"},
+        "statusLine": {"type": "command", "command": "echo hi"},
+        "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]},
+    });
+    h.write_settings(&serde_json::to_string_pretty(&user_keys)?);
+    h.install(ProtectionProfile::Recommended).await?;
+
+    // Drift every managed key, and move every user key to a different value in
+    // the same write.
+    let mut doc = h.read_settings();
+    doc["permissions"] = serde_json::json!({"allow": ["Bash"], "deny": [], "defaultMode": "bypassPermissions"});
+    doc["permissionMode"] = serde_json::json!("bypassPermissions");
+    doc["enabledMcpjsonServers"] = serde_json::json!(["everything"]);
+    doc["disabledMcpjsonServers"] = serde_json::json!(["nothing"]);
+    for key in ["theme", "model"] {
+        doc[key] = serde_json::json!("user-changed-this-after-install");
+    }
+    doc["env"]["USER_AUTHORED"] = serde_json::json!("user-changed-this-too");
+    h.write_settings(&serde_json::to_string_pretty(&doc)?);
+    let perturbed = h.read_settings();
+
+    h.repair().await?;
+    let repaired = h.read_settings();
+
+    for key in MANAGED_KEYS {
+        assert_ne!(
+            repaired[key], perturbed[key],
+            "repair left the drifted managed key `{key}` as the user set it"
+        );
+    }
+    assert_eq!(repaired["permissionMode"], serde_json::json!("default"));
+    for key in ["theme", "model"] {
+        assert_eq!(
+            repaired[key], perturbed[key],
+            "repair overwrote the user-authored key `{key}`, which Agent Assembly does not own"
+        );
+    }
+    assert_eq!(
+        repaired["env"]["USER_AUTHORED"],
+        serde_json::json!("user-changed-this-too"),
+        "repair reached into a nested user-authored value"
+    );
+    assert_eq!(
+        repaired["statusLine"], perturbed["statusLine"],
+        "repair mutated an untouched user-authored key"
+    );
+    assert_eq!(repaired["hooks"], perturbed["hooks"], "repair mutated the user's hooks");
+
+    h.finish("repair touches only owned state");
+    Ok(())
+}
+
+// ── The known limitation, encoded deliberately ──────────────────────────────
+
+/// `verify` cannot pass in production today, and that is correct-for-now.
+///
+/// The shipped [`UnadjudicatedProbe`] reports `Inconclusive` because a client on
+/// the near side of the proxy cannot see the forwarded body, and reporting
+/// `Redacted` without observing it is the vacuous pass the evidence model
+/// forbids. So `aasm integrations verify claude-code` exits **6**
+/// (`verification_failed`) on a correctly installed integration.
+///
+/// This test asserts that behaviour rather than asserting a green verify that
+/// does not exist. It fails if `verify` ever starts passing without adjudicated
+/// evidence — which is the point: when an adjudicating probe lands, this is the
+/// thing that gets updated deliberately, by someone who has to state what now
+/// observes the forwarded payload.
+///
+/// The CLI half is pinned by reading the shipped mapping, because
+/// `aa-integration-tests` cannot link `aa-cli`'s private exit module and a
+/// hard-coded `6` here would assert nothing about the binary.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shipped_probe_cannot_pass_verification_and_the_cli_exits_six() -> anyhow::Result<()> {
+    use aa_devtool_claude_code::probe::{ProbeRequest, ProtectionProbe, UnadjudicatedProbe};
+
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+
+    // The shipped default, run against a correctly installed integration.
+    let report = UnadjudicatedProbe
+        .run(&ProbeRequest {
+            proxy_url: h.proxy.url(),
+            ca_pem: h.ca_pem_path(),
+            target_host: "api.anthropic.com".to_string(),
+            synthetic_secret: SYNTHETIC_SECRET.to_string(),
+        })
+        .await;
+    assert_eq!(
+        report.outcome,
+        ExerciseOutcome::Inconclusive,
+        "the shipped probe must stay honest about what it cannot establish"
+    );
+    assert!(
+        !report.outcome.is_protective(),
+        "an unadjudicated outcome must never raise the ladder"
+    );
+    assert!(
+        !report.detail.contains(SYNTHETIC_SECRET),
+        "no probe report may carry the secret: {}",
+        report.detail
+    );
+
+    // And the CLI still maps a non-passing verification to exit 6.
+    let exit_source = conformance_support::read_repo_file("aa-cli/src/commands/integrations/exit.rs");
+    assert!(
+        exit_source.contains("Outcome::VerificationFailed => 6"),
+        "the exit code a user scripts against changed; if verification can now pass with \
+         adjudicated evidence, update this test deliberately and say what observes the \
+         forwarded payload"
+    );
+
+    h.finish("shipped probe cannot pass verification");
+    Ok(())
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// A rustls client trusting exactly the certificate authority at `pem`.
