@@ -18,6 +18,7 @@ mod apply;
 mod settings;
 
 pub mod bypass;
+pub mod launch_env;
 pub mod scope;
 
 pub use scope::{ClaudeCodePaths, ScopeError};
