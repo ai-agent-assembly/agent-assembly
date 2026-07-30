@@ -59,6 +59,7 @@
 //! someone might forget (§5.5).
 
 pub mod codec;
+pub mod lifecycle;
 pub mod negotiate;
 pub mod scope;
 pub mod socket;
