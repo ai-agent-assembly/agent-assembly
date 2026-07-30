@@ -268,7 +268,91 @@ follows from that split.
 
 ## 5. Journey diagrams
 
-<!-- populated in a later commit -->
+Both entry points drive the **same** lifecycle against the **same** core. They differ only in
+where the user stands and how status is surfaced. That is the point of the diagrams: if the two
+paths could reach different protection outcomes, the integration surface would be making security
+decisions, which §1 forbids.
+
+### 5.1 CLI-first onboarding
+
+```mermaid
+flowchart TD
+    classDef user fill:#e8f1ff,stroke:#5b8def
+    classDef core fill:#eaf6ee,stroke:#3aa55b
+    classDef check fill:#fff3d6,stroke:#c98a00
+    classDef bad fill:#fdecea,stroke:#d75748
+
+    U0["Developer runs<br/>integrations install &lt;tool&gt;"]:::user --> D["Discover:<br/>detect tool + version + config scopes"]:::core
+    D -->|not found / below minimum| E1["Report unsupported<br/>no changes made"]:::bad
+    D -->|supported| C["Connect:<br/>find or start core, health + version check"]:::core
+    C -->|unreachable| E2["Fail closed:<br/>abort install, nothing written"]:::bad
+    C --> P["Choose profile<br/>(default: Recommended)"]:::user
+    P --> PL["Compute integration plan<br/>show diff of intended changes"]:::core
+    PL --> A["Apply transactionally<br/>+ write receipt"]:::core
+    A -->|write fails| RB["Roll back to pre-apply state<br/>report NOT installed"]:::bad
+    A --> V{"Verify"}:::check
+    V --> V1["Read back managed values<br/>vs plan"]:::core
+    V --> V2["Exercise synthetic secret<br/>through model-bound path"]:::core
+    V1 --> LV{"Evidence<br/>sufficient?"}:::check
+    V2 --> LV
+    LV -->|read-back only| LI["Level: Integrated"]:::core
+    LV -->|protection exercised| LG["Level: Gateway Protected"]:::core
+    LV -->|secret escaped| E3["HARD FAIL<br/>report unprotected"]:::bad
+    LI --> USE["Use tool normally"]:::user
+    LG --> USE
+    USE --> ST["status / verify on demand"]:::user
+    ST -->|drift found| REP["repair:<br/>re-apply AASM-owned values only"]:::core
+    REP --> ST
+    ST -->|done with it| RM["remove:<br/>restore from receipt"]:::core
+```
+
+### 5.2 Plugin / extension-first onboarding
+
+The plugin never decides anything. Every arrow that crosses into the core is a request for a
+verdict or for evidence; every status the plugin renders is something the core told it.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer
+    participant Plug as Plugin / extension<br/>(thin surface)
+    participant Core as AASM core<br/>(gateway + runtime)
+    participant Tool as AI dev tool
+
+    Dev->>Plug: Install / enable the plugin
+    Plug->>Core: Discover core (running? version compatible?)
+    alt core missing or incompatible
+        Core--xPlug: unavailable
+        Plug-->>Dev: Show "Not protected" + one recovery action
+        Note over Plug,Dev: Never shows a green state on a<br/>failed core handshake
+    else core ready
+        Core-->>Plug: ready (version, endpoint, org/team if any)
+        Plug->>Core: Request integration plan for this tool
+        Core-->>Plug: Plan (files, keys, env to be changed)
+        Plug-->>Dev: Show plan + profile choice
+        Dev->>Plug: Confirm profile
+        Plug->>Core: Apply plan
+        Core-->>Plug: Receipt (change inventory + hashes)
+        Plug->>Core: Verify
+        Core->>Tool: Launch through managed path
+        Tool->>Core: Model-bound request containing synthetic secret
+        Core-->>Tool: Redacted payload with placeholder
+        Core-->>Plug: Verification record (mechanisms exercised vs read back)
+        Plug-->>Dev: Protection level + profile + honest limits
+    end
+
+    loop Normal use
+        Tool->>Core: Governed actions
+        Core-->>Core: Evaluate policy, scan, redact, audit
+        Core-->>Plug: Status changes (protected / degraded / off)
+        Plug-->>Dev: Update indicator
+    end
+
+    Dev->>Plug: Remove
+    Plug->>Core: Remove using receipt
+    Core-->>Plug: Pre-install state restored
+    Plug-->>Dev: Confirm removal (no AASM residue)
+```
 
 ## 6. Protection profiles
 
