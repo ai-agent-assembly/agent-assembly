@@ -176,6 +176,15 @@ A job's status is chosen by applying that rule, **never inherited from whichever
 
 Note that `ci-success` treats a **skipped** need as passing, so a job behind a `dorny/paths-filter` router is only as sound as its filter. If your job can be broken by a change outside its own filter, it needs a different guard.
 
+Because a filter's soundness is what the gate reduces to, the filter's *shape* is itself something to get right — and there are two ways to get it wrong, in this repo and org-wide:
+
+- **Too broad a filter.** A path filter must allow-list by **file extension or exact filename** — never by a bare `dir/**` or `dir/*` with no type qualifier. A directory wildcard matches every future non-code addition under that tree (screenshots, generated reports, fixtures, docs) as though it were a source change that must re-run the gated job. Enumerate instead the file types or exact filenames that constitute a real change to the gated surface — e.g. `dashboard/**/*.{ts,tsx,css}`, or `paths-ignore: ['**/*.md', 'docs/**']`. Qualify every entry before merging rather than deferring it to a follow-up; `e2e-private/preview-e2e.yml` and `python-sdk`'s core CI are the in-org examples of a compliant shape.
+- **No filter at all.** Every job whose cost is non-trivial — e2e/integration suites, native builds, Docker builds — must have *some* form of change-based gating. An unconditional full-suite run on every push/PR is equally out of policy, just reached by omission rather than by a wrong pattern, and a job is not exempt merely because it currently has no filter. Add the gating when you introduce the job, not after a wasted-minutes complaint forces it retroactively.
+
+These trade against each other, so neither is an escape from the other: leaving an expensive job unfiltered to sidestep getting the file-type qualifier right swaps one violation for the other. Writing a compliant filter requires knowing which file types genuinely affect the gated job, which is marginally more work than typing `dir/**` — that is the intended trade, since the failure mode being closed is exactly "wildcard now, discover the gap later".
+
+**One exception**, so the rule is not miscited: a repo whose entire purpose *is* non-code content — a docs site where `docs/**` / `*.md` legitimately *is* the source, such as `internal-docs` — needs no file-type qualification. There the content directory itself is the correct trigger surface, and over-qualifying its filter would exclude legitimate changes.
+
 ## Performance and Latency Tests
 
 Latency and performance tests assert absolute timing thresholds (e.g. p99 < 15 ms). They **must not run under `cargo llvm-cov`** or any other coverage/instrumentation tool, because instrumentation adds 2–10× overhead per instruction and makes timing guarantees unreliable on shared CI runners.
