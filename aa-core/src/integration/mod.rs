@@ -40,6 +40,7 @@
 
 pub mod capability;
 pub mod contract;
+pub mod drift;
 pub mod fingerprint;
 pub mod plan;
 pub mod receipt;
@@ -54,6 +55,7 @@ pub use contract::{
     capability_conformance, ConformanceViolation, DevToolIntegration, HookableTool, LaunchSpec, LaunchableTool,
     McpGovernedTool,
 };
+pub use drift::{ArtifactObservation, DriftFinding, DriftInputs, DriftKind, DriftReport, ObservedStep};
 pub use fingerprint::{
     absent_managed_keys, canonicalize, contains_credential_material, document_fingerprint, fingerprint_raw,
     managed_fingerprint, managed_projection, merge_managed_keys, restore_managed_keys, screen_managed_values,
