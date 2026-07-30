@@ -96,6 +96,7 @@
 # Developer Integrations
 
 - [Product Capability Brief](devtools/product-brief.md)
+- [Developer Integration API](devtools/developer-integration-api.md)
 
 # Protocol
 
