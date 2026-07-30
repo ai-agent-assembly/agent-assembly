@@ -1986,6 +1986,27 @@ impl PolicyEngine {
         self.cascade.load().scope_index.policies_for_scope(scope).to_vec()
     }
 
+    /// Whether this engine actually carries a policy cascade — i.e. its
+    /// `scope_index` holds at least one scoped document.
+    ///
+    /// This is the *loaded / unavailable* signal for cascade-derived **reporting
+    /// projections** (AAASM-5106): the capability matrix, the topology permission
+    /// chain, and the Teams active-policies list all read the cascade, and when it
+    /// is empty they would otherwise render a confident but false answer (an
+    /// all-`allow` grid, a zero-policy chain, "no policy is in force") that the
+    /// enforcement path — which falls back to the primary policy slot — does not
+    /// agree with. `false` here means those projections must render
+    /// *Unknown / Unconfigured / Not evaluated* rather than inferring permission
+    /// from the absence of cascade data. This never changes enforcement: it only
+    /// tells a read-only projection whether the cascade slot it is about to
+    /// summarise carries anything. See ADR 0024.
+    ///
+    /// Returns an owned `bool` computed under the [`ArcSwap`] guard; the guard
+    /// cannot outlive the call.
+    pub fn cascade_loaded(&self) -> bool {
+        !self.cascade.load().scope_index.is_empty()
+    }
+
     /// Look up a policy previously registered via [`Self::load_policy`]
     /// by its [`scope_index::PolicyId`].
     ///
@@ -4170,6 +4191,43 @@ mod tests {
         assert!(
             !engine.cascade.load().scope_index.is_empty(),
             "directory loader must populate the scope_index (cascade active)"
+        );
+    }
+
+    /// AAASM-5106 — `cascade_loaded()` is the loaded/unavailable signal the
+    /// reporting projections read to tell "the engine carries no cascade" apart
+    /// from "this agent/team genuinely has no policy". A primary-only engine
+    /// (`load_from_file` semantics, which every shipped aa-api deployment uses)
+    /// reports `false`; a directory-loaded cascade reports `true`.
+    #[test]
+    fn cascade_loaded_reflects_scope_index_population() {
+        // Primary-only engine: empty scope_index, so the cascade is not loaded.
+        let primary_only = make_engine(empty_doc());
+        assert!(
+            !primary_only.cascade_loaded(),
+            "a primary-only engine carries no cascade — cascade_loaded() must be false"
+        );
+
+        // Directory-loaded engine: a populated scope_index means a live cascade.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: reg-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let cascade_engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("loads");
+        assert!(
+            cascade_engine.cascade_loaded(),
+            "a directory-loaded engine carries a cascade — cascade_loaded() must be true"
         );
     }
 
