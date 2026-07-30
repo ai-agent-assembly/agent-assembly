@@ -41,6 +41,10 @@
 pub mod capability;
 pub mod contract;
 pub mod drift;
+// The engine writes receipts, so like the store it exists only where the
+// lifecycle types can be serialized.
+#[cfg(feature = "serde")]
+pub mod engine;
 pub mod fingerprint;
 pub mod journal;
 pub mod plan;
@@ -61,6 +65,11 @@ pub use contract::{
     McpGovernedTool,
 };
 pub use drift::{ArtifactObservation, DriftFinding, DriftInputs, DriftKind, DriftReport, ObservedStep};
+#[cfg(feature = "serde")]
+pub use engine::{
+    ApplyContext, ApplyOutcome, EngineError, ExecutionError, FilesystemExecutor, IntegrationEngine, RemovalOutcome,
+    RepairOutcome, StepExecutor, StepOutcome,
+};
 pub use fingerprint::{
     absent_managed_keys, canonicalize, contains_credential_material, document_fingerprint, fingerprint_raw,
     managed_fingerprint, managed_projection, merge_managed_keys, restore_managed_keys, screen_managed_values,

@@ -44,6 +44,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use super::receipt::StepReceipt;
 use super::step::SettingsScope;
 use super::version::LIFECYCLE_SCHEMA_VERSION;
 use crate::dev_tool::DevToolKind;
@@ -86,6 +87,14 @@ pub struct JournalEntry {
     pub step_id: String,
     /// How far it got.
     pub progress: StepProgress,
+    /// What the step left behind, recorded at the moment it completed.
+    ///
+    /// This is what makes an interrupted *apply* reversible at all: no receipt
+    /// exists yet by definition, so if the journal did not carry the prior state
+    /// and the reversal action, a rollback would have nothing to work from and
+    /// would quietly do nothing. It is dropped with the journal as soon as the
+    /// receipt — the durable home for the same information — is written.
+    pub outcome: Option<StepReceipt>,
 }
 
 /// The write-ahead record of an operation in flight.
@@ -132,6 +141,7 @@ impl OperationJournal {
                 .map(|step_id| JournalEntry {
                     step_id,
                     progress: StepProgress::Pending,
+                    outcome: None,
                 })
                 .collect(),
         }
@@ -145,8 +155,36 @@ impl OperationJournal {
             None => self.entries.push(JournalEntry {
                 step_id: step_id.to_string(),
                 progress,
+                outcome: None,
             }),
         }
+    }
+
+    /// Record a completed mutation together with what it left behind.
+    pub fn record_applied(&mut self, outcome: StepReceipt) {
+        let step_id = outcome.step_id.clone();
+        match self.entries.iter_mut().find(|e| e.step_id == step_id) {
+            Some(entry) => {
+                entry.progress = StepProgress::Applied;
+                entry.outcome = Some(outcome);
+            }
+            None => self.entries.push(JournalEntry {
+                step_id,
+                progress: StepProgress::Applied,
+                outcome: Some(outcome),
+            }),
+        }
+    }
+
+    /// What each completed step left behind, in execution order.
+    ///
+    /// The only reversal information an interrupted apply has.
+    pub fn applied_outcomes(&self) -> Vec<StepReceipt> {
+        self.entries
+            .iter()
+            .filter(|e| e.progress == StepProgress::Applied)
+            .filter_map(|e| e.outcome.clone())
+            .collect()
     }
 
     /// Steps whose mutation completed, in execution order.
@@ -365,6 +403,36 @@ mod tests {
         let mut j = journal(JournalOperation::Apply);
         j.mark("surprise", StepProgress::Applied);
         assert_eq!(j.applied_step_ids(), vec!["surprise".to_string()]);
+    }
+
+    #[test]
+    fn an_applied_step_carries_its_own_reversal_information() {
+        use crate::integration::step::{ArtifactOperation, IntegrationStep, StepAction};
+        use std::path::PathBuf;
+
+        let step = IntegrationStep::new(
+            "ca",
+            StepAction::ManageArtifact {
+                operation: ArtifactOperation::Create,
+                path: PathBuf::from("/home/dev/.aa/ca/aasm-ca.pem"),
+            },
+            "write the CA",
+        )
+        .with_reversal(StepAction::ManageArtifact {
+            operation: ArtifactOperation::Remove,
+            path: PathBuf::from("/home/dev/.aa/ca/aasm-ca.pem"),
+        });
+
+        let mut j = journal(JournalOperation::Apply);
+        j.record_applied(StepReceipt::applied(&step, Some("sha256:ca".to_string())));
+
+        assert_eq!(j.applied_step_ids(), vec!["ca".to_string()]);
+        let outcomes = j.applied_outcomes();
+        assert_eq!(outcomes.len(), 1);
+        assert!(
+            outcomes[0].reversal.is_some(),
+            "an interrupted apply has no receipt, so the journal must carry the reversal itself"
+        );
     }
 
     #[cfg(feature = "serde")]
