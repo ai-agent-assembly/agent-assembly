@@ -23,7 +23,8 @@ use rust_decimal::prelude::ToPrimitive;
 use crate::auth::scope::{RequireRead, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
-use crate::models::topology::{agent_flagged, agent_mode, format_id, status_str};
+use crate::models::topology::{agent_mode, format_id, status_str};
+use crate::routes::agent_violations::AgentViolationCounts;
 pub use crate::models::topology::{
     AgentLineage, AgentNode, AgentNodeStatus, AgentTree, LineageStep, NodeBudget, NodeEffectivePermissions,
     PolicyChainTier, TeamSummary, TeamTopology, TopologyGraphEdge, TopologyGraphResponse, TopologyOverview,
@@ -227,6 +228,7 @@ fn build_tree(
     remaining_depth: u32,
     status_filter: Option<&str>,
     show_budget: bool,
+    violations: &AgentViolationCounts,
 ) -> Option<AgentTree> {
     let record = registry.get(agent_id)?;
     // AAASM-4819 — the handler authorizes only the root; `children_of` recursion
@@ -256,6 +258,7 @@ fn build_tree(
                     remaining_depth - 1,
                     status_filter,
                     show_budget,
+                    violations,
                 )
             })
             .collect()
@@ -263,9 +266,10 @@ fn build_tree(
         vec![]
     };
     // Derive the badge fields before moving the record's owned fields into the
-    // struct literal below (both helpers borrow `record`).
+    // struct literal below (`agent_mode` borrows `record`). `flagged` comes from
+    // the per-agent audit aggregate (AAASM-5103), not the record.
     let mode = agent_mode(&record);
-    let flagged = agent_flagged(&record);
+    let flagged = violations.is_flagged(agent_id);
     Some(AgentTree {
         id: format_id(agent_id),
         name: record.name,
@@ -462,7 +466,7 @@ fn project_effective_permissions(
 /// shipped engine no longer takes that fallback — the explicit lineage stays as
 /// the guard that keeps this projection correct under any engine. Same guard as
 /// `capability::project_matrix` (AAASM-5090).
-fn project_graph_nodes(records: &[AgentRecord], state: &AppState) -> Vec<AgentNode> {
+fn project_graph_nodes(records: &[AgentRecord], state: &AppState, violations: &AgentViolationCounts) -> Vec<AgentNode> {
     // Budget: snapshot once (not per node) and index today's per-agent spend by
     // the same 32-char hex the node id uses, mirroring the `/api/v1/costs`
     // per-agent breakdown that reads the identical tracker state.
@@ -481,6 +485,10 @@ fn project_graph_nodes(records: &[AgentRecord], state: &AppState) -> Vec<AgentNo
         .iter()
         .map(|record| {
             let mut node = AgentNode::from(record);
+            // AAASM-5103 — flag from the audit aggregate (count > 0), the same
+            // source every other topology surface uses, so the graph and the
+            // Fleet page can never disagree about a given agent.
+            node.flagged = violations.is_flagged(&record.agent_id);
             let agent_id = AgentId::from_bytes(record.agent_id);
             let lineage = state.agent_registry.lineage(&record.agent_id).unwrap_or_default();
             let cascade = state.policy_engine.collect_cascade_with_lineage(&agent_id, &lineage);
@@ -662,11 +670,14 @@ pub async fn get_overview(
     // AAASM-5182 — the same definition of "no team" as `team_map` above, so a
     // blank-team root is listed here instead of falling out of the team
     // breakdown and this list both, present only in `total_agent_count`.
+    // AAASM-5103 — one grouped audit pass, looked up per node below (no N+1).
+    let violations = AgentViolationCounts::from_audit(&state.audit_reader).await;
     let mut standalone_root_agents: Vec<AgentNode> = filtered
         .iter()
         .filter(|r| r.depth == 0 && team_of(r).is_none())
         .map(|r| {
             let mut node = AgentNode::from(*r);
+            node.flagged = violations.is_flagged(&r.agent_id);
             if show_budget {
                 node.governance_level = Some(format!("{:?}", r.governance_level));
             }
@@ -759,6 +770,9 @@ pub async fn get_tree(
         return Ok((StatusCode::OK, Json((*cached).clone())));
     }
 
+    // AAASM-5103 — one grouped audit pass, looked up per tree node in build_tree
+    // (no per-node scan).
+    let violations = AgentViolationCounts::from_audit(&state.audit_reader).await;
     let tree = build_tree(
         &state.agent_registry,
         &caller,
@@ -766,6 +780,7 @@ pub async fn get_tree(
         max_depth,
         params.status.as_deref(),
         show_budget,
+        &violations,
     )
     .ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {root_id}"))
@@ -829,6 +844,8 @@ pub async fn get_team(
     // the team yet — distinguishes "team known but empty" from "route not found".
     let show_budget = params.show_budget.unwrap_or(false);
 
+    // AAASM-5103 — one grouped audit pass, looked up per member below (no N+1).
+    let violations = AgentViolationCounts::from_audit(&state.audit_reader).await;
     let mut members: Vec<AgentNode> = member_ids
         .iter()
         .filter_map(|id| state.agent_registry.get(id))
@@ -844,6 +861,7 @@ pub async fn get_team(
         })
         .map(|r| {
             let mut node = AgentNode::from(&r);
+            node.flagged = violations.is_flagged(&r.agent_id);
             if show_budget {
                 node.governance_level = Some(format!("{:?}", r.governance_level));
             }
@@ -1136,7 +1154,11 @@ pub async fn get_topology_graph(
     // of neutral placeholders. `owner` is set by the `From<&AgentRecord>` impl
     // (a pure metadata read); the rest need the stores only this whole-fleet
     // handler reaches — the list / tree endpoints leave them `null`.
-    let nodes = project_graph_nodes(&records, &state);
+    // AAASM-5103 — build the per-agent violation aggregate once (a single grouped
+    // pass over the audit log, no per-node scan) and hand it to the projection so
+    // each node's `flagged` is a real audit-derived value.
+    let violations = AgentViolationCounts::from_audit(&state.audit_reader).await;
+    let nodes = project_graph_nodes(&records, &state, &violations);
     let edges = collect_graph_edges(&state, &teams_by_id).await?;
 
     Ok((StatusCode::OK, Json(TopologyGraphResponse { nodes, edges })))
