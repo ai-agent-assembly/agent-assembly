@@ -1,7 +1,7 @@
 # ADR 0019: Agent Trust-Score Derivation
 
-**Status**: Proposed — **requires product sign-off before any implementation**
-**Date**: 2026-07
+**Status**: Accepted (2026-07-30, **Option D — Option A with tenant-configurable weights**). Product owns the default weights and the configuration surface: the clean-rate formula of Option A ships as the default, and each penalty signal is operator-configurable at the tenant layer (toggle on/off + adjust weight); bucket thresholds and window stay at sensible defaults for v1. The two truthfulness guardrails are binding: the score is labelled with which weight-set produced it, and cold-start / truncated-window still return `null` regardless of the configured weights. See [§ Decision](#decision-2026-07-30) below.
+**Date**: 2026-07 (accepted 2026-07-30)
 **Ticket**: [AAASM-5083](https://lightning-dust-mite.atlassian.net/browse/AAASM-5083) (Epic [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082))
 
 This ADR proposes options for deriving the per-agent `trust` score the dashboard
