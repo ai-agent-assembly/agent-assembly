@@ -1,0 +1,22 @@
+# TypeScript bindings for the DI-API, generated from the same `proto/devint.proto`
+# the Rust server and the Rust reference client are generated from.
+#
+# The wire schema is transcribed nowhere in this package. `src/generated/` is
+# machine output, and `pnpm generate:check` fails if it drifts from the proto —
+# a hand-maintained mirror of a wire schema is the failure mode AAASM-5282
+# exists to avoid, and a mirror nobody diffs is the same thing with extra steps.
+version: v2
+plugins:
+  - local: protoc-gen-es
+    out: src/generated
+    opt:
+      # `target=ts` emits types + descriptors; `import_extension=js` keeps the
+      # output importable under NodeNext resolution without a bundler.
+      - target=ts
+      - import_extension=js
+inputs:
+  - directory: ../../proto
+    paths:
+      # Only the DI-API. This client has no business decoding policy, audit or
+      # agent frames, so it is never given the types to do it with.
+      - ../../proto/devint.proto
