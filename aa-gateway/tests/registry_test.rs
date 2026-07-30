@@ -25,7 +25,6 @@ fn make_record(key: [u8; 16]) -> AgentRecord {
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: Vec::new(),
         recent_events: VecDeque::new(),
         recent_traces: Vec::new(),
@@ -231,7 +230,6 @@ async fn concurrent_registration_of_100_agents() {
                 pid: None,
                 session_count: 0,
                 last_event: None,
-                policy_violations_count: 0,
                 active_sessions: Vec::new(),
                 recent_events: VecDeque::new(),
                 recent_traces: Vec::new(),
@@ -331,7 +329,6 @@ fn new_fields_default_values_on_registration() {
     assert!(record.pid.is_none());
     assert_eq!(record.session_count, 0);
     assert!(record.last_event.is_none());
-    assert_eq!(record.policy_violations_count, 0);
     assert!(record.active_sessions.is_empty());
     assert!(record.recent_events.is_empty());
 }
@@ -343,14 +340,12 @@ fn new_fields_survive_clone_and_retrieval() {
     record.pid = Some(5678);
     record.session_count = 10;
     record.last_event = Some(Utc::now());
-    record.policy_violations_count = 3;
     reg.register(record).unwrap();
 
     let retrieved = reg.get(&key(2)).unwrap();
     assert_eq!(retrieved.pid, Some(5678));
     assert_eq!(retrieved.session_count, 10);
     assert!(retrieved.last_event.is_some());
-    assert_eq!(retrieved.policy_violations_count, 3);
 }
 
 #[test]

@@ -65,7 +65,6 @@ fn make_agent(
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: vec![],
         recent_events: VecDeque::new(),
         recent_traces: vec![],
@@ -576,11 +575,30 @@ async fn topology_graph_returns_nodes_with_badges_and_every_edge_kind() {
         .expect("register A");
     let mut b = root_agent(B, Some(TEAM));
     b.metadata.insert("mode".to_string(), "shadow".to_string());
-    b.policy_violations_count = 50; // == FLAGGED_VIOLATION_THRESHOLD
     env.agent_registry.register(b).expect("register B");
     env.agent_registry
         .register(root_agent(C, Some(TEAM)))
         .expect("register C");
+
+    // AAASM-5103 — B is flagged because it has a recorded PolicyViolation audit
+    // event (count > 0), the canonical source the badge now derives from. The
+    // record no longer carries a violation counter, so seed the audit log
+    // directly in the dir the AuditReader reads.
+    {
+        use aa_core::audit::{AuditEntry, AuditEventType};
+        use aa_core::{AgentId, SessionId};
+        let entry = AuditEntry::new(
+            0,
+            1_000,
+            AuditEventType::PolicyViolation,
+            AgentId::from_bytes(B),
+            SessionId::from_bytes([0xEE; 16]),
+            "{}".to_string(),
+            [0u8; 32],
+        );
+        let line = serde_json::to_string(&entry).expect("serialize audit entry");
+        std::fs::write(env.audit_dir.join("seed.jsonl"), format!("{line}\n")).expect("write audit seed");
+    }
 
     let client = Client::new();
     let base = env.base_url();
@@ -630,7 +648,7 @@ async fn topology_graph_returns_nodes_with_badges_and_every_edge_kind() {
     // B's live badges flow through from the registry record.
     let node_b = nodes.iter().find(|n| n["id"] == hex(&B)).expect("node B present");
     assert_eq!(node_b["mode"], "shadow", "B's mode badge reflects metadata.mode");
-    assert_eq!(node_b["flagged"], true, "B is flagged at the violation threshold");
+    assert_eq!(node_b["flagged"], true, "B is flagged by its recorded PolicyViolation");
 
     // Edges: every stored kind is graphed (AAASM-5099). The two structural kinds
     // keep the graph vocabulary AAASM-5040 shipped; the other four pass their

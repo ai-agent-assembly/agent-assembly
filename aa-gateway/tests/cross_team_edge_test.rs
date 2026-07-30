@@ -35,7 +35,6 @@ fn make_record(n: u8, team_id: Option<&str>) -> AgentRecord {
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: vec![],
         recent_events: std::collections::VecDeque::new(),
         recent_traces: vec![],

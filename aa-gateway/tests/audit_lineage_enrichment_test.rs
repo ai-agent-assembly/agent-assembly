@@ -56,7 +56,6 @@ fn child_record(key: [u8; 16], parent_key: [u8; 16], root_key: [u8; 16]) -> Agen
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: vec![],
         recent_events: VecDeque::new(),
         recent_traces: vec![],

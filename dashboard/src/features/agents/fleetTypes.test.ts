@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Agent } from './api'
-import { FLEET_FLAGGED_THRESHOLD, formatLastSeen, toFleetAgent } from './fleetTypes'
+import { formatLastSeen, toFleetAgent } from './fleetTypes'
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -16,6 +16,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     active_sessions: [],
     session_count: 0,
     policy_violations_count: 0,
+    is_flagged: false,
     tool_names: [],
     metadata: {},
     pid: null,
@@ -51,10 +52,9 @@ describe('toFleetAgent', () => {
     expect(toFleetAgent(makeAgent({ metadata: {} })).mode).toBe('enforce')
   })
 
-  it('marks the agent flagged at or above the violations threshold', () => {
-    expect(toFleetAgent(makeAgent({ policy_violations_count: FLEET_FLAGGED_THRESHOLD - 1 })).flagged).toBe(false)
-    expect(toFleetAgent(makeAgent({ policy_violations_count: FLEET_FLAGGED_THRESHOLD })).flagged).toBe(true)
-    expect(toFleetAgent(makeAgent({ policy_violations_count: FLEET_FLAGGED_THRESHOLD + 100 })).flagged).toBe(true)
+  it('reflects the backend is_flagged decision (AAASM-5103, count>0)', () => {
+    expect(toFleetAgent(makeAgent({ is_flagged: false })).flagged).toBe(false)
+    expect(toFleetAgent(makeAgent({ is_flagged: true })).flagged).toBe(true)
   })
 
   it('surfaces last_event as lastSeen; null when absent', () => {

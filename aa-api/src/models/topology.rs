@@ -57,15 +57,6 @@ impl From<&AgentStatus> for AgentNodeStatus {
     }
 }
 
-/// Policy-violation count at or above which a node is surfaced as "flagged"
-/// (danger-tinted card + ⚑ marker) in the topology graph.
-///
-/// Kept in lock-step with the dashboard Fleet page's `FLEET_FLAGGED_THRESHOLD`
-/// (`dashboard/src/features/agents/fleetTypes.ts`) so the topology node badge and
-/// the Fleet row light up on exactly the same agents — the two surfaces must not
-/// disagree about whether a given agent is flagged.
-pub(crate) const FLAGGED_VIOLATION_THRESHOLD: u32 = 50;
-
 /// Enforcement-mode badge value for a node — `enforce`, `shadow`, or `off`.
 ///
 /// Read from the agent record's `metadata["mode"]`, mirroring the Fleet page's
@@ -78,12 +69,6 @@ pub(crate) fn agent_mode(record: &AgentRecord) -> String {
         Some(m @ ("enforce" | "shadow" | "off")) => m.to_owned(),
         _ => "enforce".to_owned(),
     }
-}
-
-/// Whether an agent is policy-flagged for the topology view — the same
-/// derivation the Fleet page uses (`policy_violations_count >= threshold`).
-pub(crate) fn agent_flagged(record: &AgentRecord) -> bool {
-    record.policy_violations_count >= FLAGGED_VIOLATION_THRESHOLD
 }
 
 // ---------------------------------------------------------------------------
@@ -316,9 +301,16 @@ pub struct AgentNode {
     /// agent record's `metadata["mode"]` (defaulting to `enforce`) so the
     /// topology mode badge matches the Fleet page's mode chip for the same agent.
     pub mode: String,
-    /// Whether the agent is policy-flagged — `policy_violations_count` is at or
-    /// above [`FLAGGED_VIOLATION_THRESHOLD`]. Drives the danger-tinted node card
-    /// and ⚑ marker in the topology graph.
+    /// Whether the agent is policy-flagged — it has recorded at least one
+    /// `PolicyViolation` audit event (`count > 0`, AAASM-5103). Drives the
+    /// danger-tinted node card and ⚑ marker in the topology graph.
+    ///
+    /// Derived from the per-agent audit aggregate
+    /// ([`crate::routes::agent_violations::AgentViolationCounts`]), which the
+    /// topology handlers build once per request and set here — the
+    /// `From<&AgentRecord>` conversion leaves it `false` because the record no
+    /// longer carries a violation counter (the dead field it used to read was
+    /// removed in AAASM-5103).
     pub flagged: bool,
     /// Trust score as an integer on a 0–100 scale, or `null` when no
     /// trust-analytics source exists yet.
@@ -368,7 +360,11 @@ impl From<&AgentRecord> for AgentNode {
             team_id: r.team_id.clone(),
             governance_level: None,
             mode: agent_mode(r),
-            flagged: agent_flagged(r),
+            // Left `false` here: the record no longer carries a violation counter
+            // (AAASM-5103 removed it). The topology handlers enrich `flagged` from
+            // the per-agent audit aggregate so every topology surface flags the
+            // same agents the Fleet page does.
+            flagged: false,
             trust: None,
             // `owner` is a pure record field (agent metadata), so it is resolved
             // here and carried by every AgentNode consumer. `policy_count` /
@@ -495,8 +491,8 @@ pub struct AgentTree {
     /// Enforcement-mode badge: `enforce`, `shadow`, or `off`. Same
     /// `metadata["mode"]` derivation as [`AgentNode::mode`].
     pub mode: String,
-    /// Whether the agent is policy-flagged. Same derivation as
-    /// [`AgentNode::flagged`].
+    /// Whether the agent is policy-flagged (`count > 0`). Same derivation and
+    /// audit source as [`AgentNode::flagged`] (AAASM-5103).
     pub flagged: bool,
     /// Trust score as an integer on a 0–100 scale, or `null` when no
     /// trust-analytics source exists yet.
@@ -673,8 +669,9 @@ mod tests {
     }
 
     /// Minimal `AgentRecord` for exercising the badge-derivation helpers and the
-    /// `From<&AgentRecord>` impl. Only the fields the helpers read
-    /// (`metadata`, `policy_violations_count`) are meaningful here.
+    /// `From<&AgentRecord>` impl. Only the `metadata` the `agent_mode` helper
+    /// reads is meaningful here; `flagged` is enriched by the handlers from the
+    /// audit aggregate, not the record (AAASM-5103).
     fn make_record() -> AgentRecord {
         AgentRecord {
             agent_id: [0x01; 16],
@@ -692,7 +689,6 @@ mod tests {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: Vec::new(),
             recent_events: std::collections::VecDeque::new(),
             recent_traces: Vec::new(),
@@ -799,22 +795,23 @@ mod tests {
     }
 
     #[test]
-    fn agent_flagged_uses_violation_threshold() {
-        let mut record = make_record();
-        record.policy_violations_count = FLAGGED_VIOLATION_THRESHOLD - 1;
-        assert!(!agent_flagged(&record));
-        record.policy_violations_count = FLAGGED_VIOLATION_THRESHOLD;
-        assert!(agent_flagged(&record));
+    fn agent_node_from_record_leaves_flagged_false_for_handler_enrichment() {
+        // AAASM-5103 — the record carries no violation counter, so the
+        // record-only conversion cannot know whether an agent is flagged. It
+        // leaves `flagged = false`; the topology handlers set it from the audit
+        // aggregate so every surface flags the same agents.
+        let record = make_record();
+        assert!(!AgentNode::from(&record).flagged);
     }
 
     #[test]
     fn agent_node_from_record_derives_badge_fields() {
         let mut record = make_record();
         record.metadata.insert("mode".to_string(), "shadow".to_string());
-        record.policy_violations_count = FLAGGED_VIOLATION_THRESHOLD + 5;
         let node = AgentNode::from(&record);
         assert_eq!(node.mode, "shadow");
-        assert!(node.flagged);
+        // `flagged` is enriched by the handler, not the conversion (AAASM-5103).
+        assert!(!node.flagged);
         assert!(node.trust.is_none());
         // AAASM-5045 — `owner` is a pure record field, resolved from metadata by
         // the `From` impl; `policy_count` / `budget` need external stores the

@@ -57,7 +57,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     active_sessions: [],
     session_count: 0,
     policy_violations_count: 0,
-    tool_names: [],
+    is_flagged: false,    tool_names: [],
     metadata: {},
     pid: null,
     ...overrides,
@@ -144,8 +144,8 @@ describe('FleetPage filter bar', () => {
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
       mockQuery<Agent[]>({
         data: [
-          makeAgent({ id: '1', policy_violations_count: 0 }),
-          makeAgent({ id: '2', policy_violations_count: 200 }),
+          makeAgent({ id: '1', is_flagged: false }),
+          makeAgent({ id: '2', is_flagged: true }),
         ],
         isLoading: false,
         isError: false,

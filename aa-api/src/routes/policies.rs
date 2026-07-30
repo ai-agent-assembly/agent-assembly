@@ -1343,7 +1343,6 @@ mod tests {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: Vec::new(),
             recent_events: std::collections::VecDeque::new(),
             recent_traces: Vec::new(),

@@ -50,7 +50,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     active_sessions: [],
     session_count: 0,
     policy_violations_count: 0,
-    tool_names: [],
+    is_flagged: false,    tool_names: [],
     metadata: {},
     registered_at: '2026-01-01T00:00:00Z',
     policy_id: null,
@@ -432,7 +432,7 @@ describe('OverviewPage', () => {
     setup({
       agents: [
         makeAgent({ id: 'a1', name: 'ok-bot' }),
-        makeAgent({ id: 'a2', name: 'bad-bot', policy_violations_count: 99 }),
+        makeAgent({ id: 'a2', name: 'bad-bot', is_flagged: true }),
       ],
     })
     renderPage()
@@ -442,8 +442,8 @@ describe('OverviewPage', () => {
   it('pluralises the over-permissioned hero message for multiple flagged agents', () => {
     setup({
       agents: [
-        makeAgent({ id: 'a1', name: 'bad-1', policy_violations_count: 60 }),
-        makeAgent({ id: 'a2', name: 'bad-2', policy_violations_count: 70 }),
+        makeAgent({ id: 'a1', name: 'bad-1', is_flagged: true }),
+        makeAgent({ id: 'a2', name: 'bad-2', is_flagged: true }),
       ],
     })
     renderPage()
@@ -486,7 +486,7 @@ describe('OverviewPage', () => {
           id: 'f1',
           name: 'flag-1',
           metadata: { mode: 'enforce' },
-          policy_violations_count: 80,
+          is_flagged: true,
         }),
       ],
     })

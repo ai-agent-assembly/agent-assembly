@@ -1,12 +1,5 @@
 import type { Agent } from './api'
 
-/**
- * `policy_violations_count` at or above this threshold marks an agent as
- * "flagged" in the Fleet view (rendered with a danger-tinted row in
- * `design/v1/fleet.jsx`).
- */
-export const FLEET_FLAGGED_THRESHOLD = 50
-
 /** One agent's blocked + scrubbed decision counts over the metrics window. */
 export interface AgentEnforcementCount {
   readonly blocked: number
@@ -104,7 +97,10 @@ export function toFleetAgent(agent: Agent, enforcement?: AgentEnforcementLookup)
     status: agent.status,
     owner: metadata.owner ?? null,
     mode: parseMode(metadata.mode),
-    flagged: agent.policy_violations_count >= FLEET_FLAGGED_THRESHOLD,
+    // AAASM-5103 — consume the backend's audit-derived flag (`is_flagged`,
+    // count>0) rather than re-deriving a threshold client-side, so the Fleet and
+    // Topology surfaces cannot disagree about whether an agent is flagged.
+    flagged: agent.is_flagged,
     lastSeen: agent.last_event ?? null,
     trust: null,
     blocked24h: counts ? counts.blocked : null,
