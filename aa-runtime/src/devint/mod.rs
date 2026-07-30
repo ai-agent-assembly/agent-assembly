@@ -58,6 +58,8 @@
 //! Minimisation is the shape of the response types, not a redaction pass
 //! someone might forget (§5.5).
 
+pub mod scope;
 pub mod verb;
 
+pub use scope::TokenScope;
 pub use verb::DiVerb;
