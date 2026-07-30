@@ -20,9 +20,11 @@ mod settings;
 pub mod bypass;
 pub mod executor;
 pub mod launch_env;
+pub mod probe;
 pub mod scope;
 
 pub use executor::ClaudeCodeStepExecutor;
+pub use probe::{ProbeReport, ProbeRequest, ProtectionProbe};
 pub use scope::{ClaudeCodePaths, ScopeError};
 
 /// Directory, under the Agent Assembly state root, holding one MitM host list
