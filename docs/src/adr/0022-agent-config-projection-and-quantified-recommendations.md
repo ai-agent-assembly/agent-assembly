@@ -1,7 +1,7 @@
 # ADR 0022: Agent-Detail Config Projection & Quantified Posture Recommendations
 
-**Status**: Proposed — the recommendation half **requires product sign-off before any implementation**
-**Date**: 2026-07
+**Status**: Accepted (2026-07-30, narrow Option C) — the config endpoint is ratified scoped to the fields with real per-agent sources (`enforcement_mode`, `policies`); unsupported fields (`fail_open`, `rate_limit`, `observability`, `issuer`) are **omitted from the contract**, never emitted as null/fabricated. The recommendation is **qualitative only** (grounded in real denial data); NO quantified improvement percentage is emitted until replay/counterfactual analysis genuinely computes one. Implemented under AAASM-5098.
+**Date**: 2026-07 (ratified 2026-07-30)
 **Ticket**: [AAASM-5098](https://lightning-dust-mite.atlassian.net/browse/AAASM-5098) (Epic [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082))
 
 This ADR proposes options for the two halves of AAASM-5098 — the agent Config-YAML
