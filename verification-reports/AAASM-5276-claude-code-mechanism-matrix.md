@@ -93,3 +93,61 @@ to make the measurements possible. They deliberately omit transactional
 multi-mechanism apply, receipt schema versioning, tamper-evidence, concurrent
 install locking, partial-install detection, and receipt storage outside the
 tool's own config tree. AAASM-5278 owns the production model.
+
+---
+
+# Spike decision
+
+## Verdict: **Conditional Go**
+
+The Spike's central uncertainty was whether Agent Assembly can actually see, and
+act on, Claude Code's model-bound traffic on macOS. **It can.** The real
+`claude 2.1.220` binary accepted the `aa-proxy` MitM CA via `NODE_EXTRA_CA_CERTS`,
+every upstream request it made traversed the proxy, the deterministic scanner
+matched the synthetic secret, and the forwarded body carried
+`[REDACTED:AnthropicKey]` while remaining valid Messages JSON — with sub-millisecond
+added latency. That is a stronger result than the design assumed, because the
+proxy also captured the binary's MCP-registry call and a 130 KB telemetry batch,
+not just `/v1/messages`.
+
+It is **Conditional**, not an unqualified Go, because the mechanism that makes
+this work is **not wired up in the product today**. `aasm run claude` injects
+`HTTPS_PROXY` and no CA-trust variable, so on `main` the MitM handshake would fail
+and `Gateway Protected` would be unachievable — silently. The conditions below are
+what turn a proven mechanism into a shipped one. All of them fit inside existing
+Epic children; none requires new architecture, and none contradicts ADR 0030.
+
+## Conditions
+
+| # | Condition | Why it blocks the claim | Owner |
+|---|---|---|---|
+| **C1** | Materialise the proxy CA as a PEM and inject **`NODE_EXTRA_CA_CERTS`** on the managed launch path. | Without it the MitM handshake fails and the entire `Gateway Protected` level is unreachable. `aa-devtool-claude-code/src/lib.rs:272-290` and `aa-cli/src/commands/run.rs:326-330` both inject proxy vars only. **Highest priority in the Epic.** | AAASM-5281 |
+| **C2** | Make the settings scope an **explicit, caller-selected** parameter. | `apply.rs:24-29` silently prefers `<cwd>/.claude/settings.json` whenever a `.claude/` directory exists in cwd. A lifecycle tool that writes to a different file depending on the caller's working directory cannot produce a trustworthy receipt, cannot detect drift reliably, and can surprise a user by mutating a checked-in project file. | AAASM-5277 (contract), AAASM-5281 (adapter) |
+| **C3** | Accept and document **semantics-exact, not byte-exact**, restore — or preserve the original document. | `apply.rs:85` reserialises the whole JSON document, so a user file in non-canonical formatting cannot survive an install→remove cycle byte-for-byte no matter how good the receipt is. This must be an accepted, stated constraint rather than an implied guarantee. | AAASM-5278 |
+| **C4** | Classify `ANTHROPIC_BASE_URL` redirection as **Unsuitable for protection**, in the capability model and in user-facing docs. | Measured: with base-URL redirection the raw secret reached the provider with no AASM component in the path. It is a *routing* feature, not a protection mechanism, and shipping it as one would be a direct over-claim. It additionally suppresses Claude Code's server-managed-settings fetch when set in the shell. | AAASM-5277, AAASM-5284 |
+| **C5** | Ensure the Claude Code integration plan intercepts the binary's **side channels**, not only the model endpoint. | One headless run produced a 130 KB `POST /api/event_logging/v2/batch`. `aa-proxy`'s `llm_only` default (`aa-proxy/src/config.rs`) is `true`, which would leave that channel unscanned. Scope this per-integration rather than by flipping a global default — changing `llm_only` wholesale would MitM every host on the machine. | AAASM-5281 |
+| **C6** | Treat the endpoint **managed-settings file as unproven** until measured on a managed device. | `/Library/Application Support/ClaudeCode/managed-settings.json` is root-owned and was deliberately not attempted (no privileged writes were made during this Spike). Its managed-only keys are the strongest bypass counters available, and they remain unmeasured — so no non-overridable-enforcement claim may be made. | AAASM-5284 + follow-up |
+
+## Recommended lifecycle-contract changes (input to AAASM-5277)
+
+1. **An integration step kind for trust material and environment**, not just settings writes. The plan must be able to express "materialise CA PEM at path P" and "inject env var E at launch" as first-class, receipted, reversible steps. C1 is otherwise unrepresentable.
+2. **Separate the capabilities `ModelPathInterception` and `ModelGatewayBaseUrl`.** They look alike and are opposites: the first is a protection capability, the second is routing that *removes* protection. Collapsing them invites exactly the over-claim C4 forbids.
+3. **`SettingsScope` must be explicit** (`User` / `Project` / `Managed`) and carried in both the plan and the receipt — see C2.
+4. **`VerificationResult` must distinguish *exercised* from *read-back* evidence.** Scenario 11.8 shows this is load-bearing: a configuration can be fully applied and verified by read-back while no traffic has ever been protected. Only exercised evidence may raise the level to `GatewayProtected`.
+5. **Protection state must be re-derived on read, never cached.** Scenario 11.9 measured ~66 µs from core stop to connections refused; a cached level would keep displaying protection that no longer exists.
+6. **The receipt must record the achieved level *and* the evidence that justified it**, so a later `status` can tell "verified once, long ago" from "verified now".
+
+## Backlog amendments
+
+* **AAASM-5281** takes on C1 (CA-trust plumbing) and C5 (side-channel coverage). C1 is the single highest-value item in the remaining Epic — without it the product's headline protection claim is a no-op.
+* **AAASM-5277** takes on the six contract changes above; the capability enum gains the `ModelPathInterception` / `ModelGatewayBaseUrl` split and an explicit `SettingsScope`.
+* **AAASM-5278** must state the byte-exactness limitation (C3) as an accepted constraint with its reconsideration trigger, and owns replacing `tests/spike_support/{receipt,status}.rs`.
+* **AAASM-5283** should promote scenarios 11.1–11.11 from this harness rather than rewriting them, keeping the two negative assertions (11.10 observe-mode forwards, 11.11 unmanaged launch bypasses) — they are what stop "monitoring" being displayed as "protected".
+* **AAASM-5284** must publish the demonstrated-versus-inferred bypass split verbatim, and must not claim non-overridable enforcement (C6).
+* **New follow-up required:** measure the endpoint managed-settings path on a managed/MDM macOS device. It is independently deliverable, needs hardware and privilege this Spike deliberately did not use, and introduces a **privileged install step** — so it is a product decision, not an engineering default.
+
+## What the Spike does *not* license
+
+* No claim of host-level bypass prevention. Ten bypasses remain inferred-but-undemonstrated and three are demonstrated.
+* No claim that protection survives an unmanaged launch — measured, and it does not.
+* No claim that the deterministic scanner recognises secret shapes outside its pattern set.
