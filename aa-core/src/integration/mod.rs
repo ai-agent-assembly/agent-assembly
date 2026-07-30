@@ -39,6 +39,7 @@
 
 pub mod capability;
 pub mod plan;
+pub mod receipt;
 pub mod state;
 pub mod status;
 pub mod step;
@@ -49,6 +50,7 @@ pub use plan::{
     IntegrationPlan, IntegrationRequest, PlanError, PolicyProfileRef, ProtectionProfile, RemovalPlan,
     UnsupportedMechanism,
 };
+pub use receipt::{IntegrationReceipt, ReceiptError, StepReceipt};
 pub use state::{
     EvidenceKind, ExerciseOutcome, ProtectionEvidence, ProtectionLevel, ProtectionState, StateDerivation,
     DEFAULT_FRESHNESS_WINDOW_SECS,
