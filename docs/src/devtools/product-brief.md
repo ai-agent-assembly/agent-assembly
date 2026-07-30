@@ -593,7 +593,47 @@ cases the product says it is not protecting.
 
 ## 10. MVP scope and non-goals
 
-<!-- populated in a later commit -->
+### 10.1 What the MVP is
+
+**macOS + Claude Code + the existing deterministic scanner + a local runtime/gateway.**
+
+That narrowness is the point. Proving one vertical slice end-to-end — install, verify with real
+evidence, use, detect drift, repair, remove — tells us whether the *lifecycle* works. Adding tools
+before the lifecycle is proven multiplies unvalidated surface by unvalidated tools, and the first
+honest failure would then be indistinguishable from an integration bug.
+
+| Dimension | MVP | Rationale |
+|---|---|---|
+| Platform | macOS | One host platform; host-level enforcement is out of scope anyway, so a second platform adds no new security property. |
+| Tool | Claude Code | Adapter primitives already exist (`aa-devtool-claude-code`), and it is a CLI, so managed launch and proxy routing are viable. |
+| Detection | The existing deterministic `aa-security` scanner | Deterministic and testable. No new detection engine is in scope. |
+| Runtime | Local core (gateway + runtime + proxy) on the developer's machine | Keeps raw-content processing local (G3) and removes control-plane dependencies from the critical path. |
+| Distribution | CLI installer; a reference plugin shell may be prototyped (`AAASM-5282`) | A marketplace-grade extension is a distribution problem, not a lifecycle problem. |
+
+### 10.2 The model stays multi-tool
+
+Restricting the *MVP* to one tool must not restrict the *model* to one tool. The following stay
+tool-neutral and are validated against the existing Codex / Copilot / Windsurf adapters as well:
+the nine-stage journey (§4), the three profiles (§6), the three protection levels and their entry
+criteria (§7), the guarantee set (§8), the failure taxonomy (§9), and the lifecycle contract those
+imply. Any design that can only be expressed for Claude Code is a design defect, and `AAASM-5277`
+is where that is caught.
+
+### 10.3 Explicit non-goals
+
+Each of these is a thing someone will reasonably propose. Each is out of scope, with a reason —
+because "no" without a reason gets re-litigated.
+
+| Non-goal | Why |
+|---|---|
+| **macOS Endpoint Security / Network Extension** | The only route to `Host Enforced` on macOS, and it carries entitlement, signing and distribution burdens far beyond MVP validation. Its absence is what makes §7.3 unavailable — a stated limitation, not a hidden gap. |
+| **Windows / Linux host enforcement** | Same reasoning; different mechanisms. `aa-ebpf` is Linux-only and is a detection layer that cannot modify traffic, so it is not a substitute. |
+| **Marketplace extensions** | Publishing to a tool's extension marketplace is a distribution and review-process problem. A reference shell (`AAASM-5282`) is enough to prove the plugin path. |
+| **Dynamic Rust plugin loading** | Adapters are build-time linked today; there is no `inventory`-style registration and no shared-library loading (`docs/devtools/plugins.md`). Adding dynamic loading would introduce a code-loading trust boundary for no MVP benefit. |
+| **Claiming protection for unmanaged direct provider connections** | A connection AASM never sees cannot be protected by AASM. Claiming otherwise would invalidate every guarantee in §8. |
+| **Selecting the final IPC transport** | Owned by `AAASM-5279`; a product brief must not prejudge it. |
+| **Additional detection providers** (e.g. richer PII/secret engines) | The deterministic scanner is the MVP's detection surface. Swapping it changes what G1 means and needs its own evaluation. |
+| **Codex / Copilot / Windsurf / JetBrains productization** | Their adapters exist; productizing their *lifecycle* comes after the lifecycle is proven once. |
 
 ## 11. Acceptance-test scenarios for the `AAASM-5276` Spike
 
@@ -601,7 +641,46 @@ cases the product says it is not protecting.
 
 ## 12. Assumptions register
 
-<!-- populated in a later commit -->
+The two tables below are deliberately separated. **Accepted constraints** are decisions already
+made — they are not open questions and should not be re-argued in implementation tickets.
+**Assumptions requiring validation** are beliefs this brief rests on that could turn out to be
+wrong; each names the ticket that would prove or disprove it. If one is invalidated, the
+corresponding section of this document changes rather than being quietly worked around.
+
+### 12.1 Accepted constraints (decided — do not re-litigate)
+
+| # | Constraint | Consequence |
+|---|---|---|
+| C1 | The security core lives in Agent Assembly; integration surfaces are thin and non-authoritative. | §1. No enforcement logic ships inside a plugin. |
+| C2 | MCP is optional, never the plugin architecture. | §2. No lifecycle stage may require MCP. |
+| C3 | `Integrated` and `Gateway Protected` cannot claim host-level bypass prevention. | §7. Stated in product copy, not only in docs. |
+| C4 | `Host Enforced` is unavailable in this MVP, and its absence is reported rather than hidden. | §7.3, §10.3. |
+| C5 | Default posture is fail-closed. | §9. |
+| C6 | MVP is macOS + Claude Code; the model stays multi-tool. | §10. |
+| C7 | Detection is the existing deterministic scanner; it is incomplete by nature. | G1. Never claim complete detection. |
+| C8 | `EnforcementMode::Disabled` is never reachable from a user-facing profile. | §6. |
+| C9 | Local policy may only tighten org policy, never loosen it (most-restrictive-wins). | §3.2, §6.2. |
+| C10 | Raw secret material never enters logs, traces, audit, receipts, API responses or diagnostics. | G4. |
+
+### 12.2 Assumptions requiring validation
+
+| # | Type | Assumption | If wrong | Validated by |
+|---|---|---|---|---|
+| A1 | Product | Low-friction, verifiable onboarding materially improves adoption over manually composing adapter + launcher + gateway primitives. | The install surface is not where the adoption barrier is; effort should move elsewhere. | Post-MVP usage evidence; no ticket yet. |
+| A2 | Product | Three profiles are enough, and `Recommended` is the right default for all four personas. | Profile set is re-cut before it reaches public docs. | `AAASM-5281`, `AAASM-5284` |
+| A3 | Product | Developers accept a protection level that honestly excludes host-level bypass. | Product must either narrow its claims further or fund host enforcement. | `AAASM-5276` UX evidence |
+| A4 | Architecture | Claude Code exposes a stable managed-settings surface, and the four managed keys are sufficient to express the profile behaviours. | Managed settings drop to defence-in-depth; more weight moves onto gateway/proxy. | `AAASM-5276` §A |
+| A5 | Architecture | Model-bound traffic can be reliably routed through the gateway/proxy via base URL or proxy env, surviving streaming, tool calls, retries and history compaction. | `Gateway Protected` is unreachable for some flows and must be scoped per-flow. | `AAASM-5276` §A, §D |
+| A6 | Architecture | A plan → apply → receipt → drift → rollback model can be implemented transactionally over the tool's config surfaces. | Idempotence and clean removal (G6) cannot be guaranteed as written. | `AAASM-5278` |
+| A7 | Architecture | The existing primitives compose into the lifecycle with only limited extension. | Larger build than the backlog assumes; Stories need rescoping. | `AAASM-5276` (Go / Conditional Go / No-Go) |
+| A8 | Architecture | A capability-based contract expresses all four current adapters without Claude-Code-specific leakage. | §10.2's multi-tool claim fails. | `AAASM-5277` |
+| A9 | Security | Redaction on a model-bound path preserves enough semantics that the agent still functions. | Users disable protection to get work done — worse than not shipping it. | `AAASM-5276` §D |
+| A10 | Security | A local integration API can be exposed to CLI and plugin clients without creating a privilege-escalation path into the core. | The plugin path is blocked until the boundary is redesigned. | `AAASM-5279` |
+| A11 | Security | Drift across managed mechanisms is detectable by comparison against a receipt, with no false "protected" state in the window between checks. | Periodic or event-driven verification becomes mandatory, not optional. | `AAASM-5278`, `AAASM-5283` |
+| A12 | Security | The deterministic scanner's coverage is adequate for a credible MVP protection claim. | G1's limitation must be stated more prominently, or detection must be extended (currently a non-goal). | `AAASM-5276` §D |
+| A13 | UX | Users can tell "configured" from "protected" when the product distinguishes them. | The distinction needs stronger UI treatment than status text. | `AAASM-5280`, `AAASM-5282` |
+| A14 | UX | A three-state indicator (protected / degraded / off) is understood without documentation. | Indicator design is revised before public docs. | `AAASM-5282`, `AAASM-5284` |
+| A15 | UX | Install-time latency and per-request overhead stay within what developers tolerate. | Profiles or interception points must be re-tuned. | `AAASM-5276` (latency/startup observations) |
 
 ---
 
