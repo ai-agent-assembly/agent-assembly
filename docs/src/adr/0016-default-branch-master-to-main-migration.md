@@ -82,11 +82,17 @@ Therefore **cross-repo links must use the default-branch-tracking `HEAD` form**
 
 #### A consumer's PR `base:` must track the target repo's current default branch
 
-Any `base:` a *consumer* workflow uses to open a PR into another repo must name that
+Any `base:` a *consumer* workflow uses to open a PR into another repo **MUST** name that
 repo's current default branch. This is a permanent coupling, not a migration artifact: it
 is wrong the moment the target's default branch differs, whatever the reason. It is
 machine-checked — `scripts/check-release-completeness.sh` pins each downstream bot-PR
 `base:` to its target's default branch and fails CI on a mismatch.
+
+This is the durable form of the pilot's central lesson. The break it caught was not in
+the repo being renamed but in a *consumer* that reached into it, so the obligation is on
+whoever writes the cross-repo reference — permanently, not only during a migration. The
+one-time "audit both directions" procedure that discovers such references is a migration
+step and lives in the runbook.
 
 ---
 

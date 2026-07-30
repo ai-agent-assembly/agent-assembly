@@ -221,7 +221,7 @@ Mermaid diagrams use the `mdbook-mermaid` preprocessor, which is wired in `docs/
 
 ## Linking to another repository
 
-Every active repo in the org defaults to `main` (see [ADR 0016](docs/src/adr/0016-default-branch-master-to-main-migration.md)). When you write a cross-repo link, ref, or automation target, use the **default-branch-tracking `HEAD` form** — `…/blob/HEAD/…`, `raw.githubusercontent.com/<org>/<repo>/HEAD/…` — rather than hardcoding a branch name, so the reference survives any future rename.
+Every active repo in the org defaults to `main` (see [ADR 0016](docs/src/adr/0016-default-branch-master-to-main-migration.md)). When you write a link, ref, or automation target pointing at **another `ai-agent-assembly` repository**, use the **default-branch-tracking `HEAD` form** — `…/blob/HEAD/…`, `raw.githubusercontent.com/<org>/<repo>/HEAD/…` — rather than hardcoding a branch name, so the reference survives any future rename. This rule is scoped to repos in this org: a link into a third-party repository is that project's business, and its branch names are not ours to track.
 
 A rename's redirect is not a safety net for all of these: `github.com` web `blob`/`commits` links do redirect, but **`raw.githubusercontent.com/…/<branch>/` does not** (it 404s), and neither does `git fetch <branch>` or an action pinned with `uses: <org>/<action>@<branch>`. Those break outright, so write them against `HEAD` from the start. The same rule applies to a workflow that opens a PR into another repo: its `base:` must name that repo's current default branch, which `scripts/check-release-completeness.sh` checks for the release fan-out.
 
