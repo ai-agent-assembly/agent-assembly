@@ -24,7 +24,7 @@ function rule(id: string, name: string, metric: string) {
     operator: '>',
     threshold: 80,
     evaluationWindowSeconds: 300,
-    severity: 'HIGH',
+    severity: 'WARNING',
     destinationIds: [],
     dedupWindowSeconds: 600,
     suppressionLabels: {},
