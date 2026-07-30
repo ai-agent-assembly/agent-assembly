@@ -168,7 +168,103 @@ criteria and §11's acceptance scenarios exist to enforce.
 
 ## 4. The canonical journey
 
-<!-- populated in a later commit -->
+Every tool integration implements the same nine stages. A tool that cannot support a stage
+declares it unsupported rather than skipping it silently — a skipped stage is indistinguishable
+from a broken one, and the failure surfaces later as an over-claimed protection level.
+
+```text
+Discover → Install → Connect → Choose profile → Apply → Verify → Use → Diagnose/Repair → Remove
+```
+
+The stage order encodes one deliberate decision: **Verify comes after Apply and before Use, and
+it is the only stage permitted to raise the displayed protection level.** Apply changes
+configuration; only Verify produces evidence that protection was exercised. Everything in §7
+follows from that split.
+
+### 4.1 Discover
+
+| | |
+|---|---|
+| **User does** | Nothing, or runs a status/list command. |
+| **AASM does** | Probes for the tool and its version. For Claude Code, `detect()` resolves the `claude` binary and validates the reported version against `MIN_VERSION` (`1.0.0`), treating anything lower as *absent* rather than partially supported (`aa-devtool-claude-code/src/lib.rs`). Resolves which settings scopes exist (project `.claude/settings.json` when a `.claude/` directory is present in the working directory, otherwise `~/.claude/settings.json`). |
+| **Evidence produced** | A tool inventory record: kind, version, config paths, and the adapter's declared `GovernanceLevel` cap. |
+| **Can fail** | Tool absent; version below minimum; config directory unreadable (`AdapterError::DetectionFailed` — distinct from `ToolNotFound`, because "permission denied" must not be reported as "not installed"). |
+
+### 4.2 Install
+
+| | |
+|---|---|
+| **User does** | Issues one install action and, if the plan touches something they own, confirms it. |
+| **AASM does** | Computes an **integration plan** before mutating anything — the exact set of files, keys and env changes it intends to make — then applies it transactionally and writes an **installation receipt** (_planned_, `AAASM-5278`). Today the primitive underneath exists: managed-key merge with atomic write (temp file + rename) preserving all unmanaged keys. |
+| **Evidence produced** | The plan (reviewable before apply) and the receipt (the sole basis for later drift detection and removal). |
+| **Can fail** | Insufficient permissions; a conflicting managed configuration already present from another tool; partial application (see §9.3). |
+| **Invariant** | **Idempotent.** A second install on an unchanged system produces no additional change and no error. |
+
+### 4.3 Connect
+
+| | |
+|---|---|
+| **User does** | Nothing for local-only use. A team developer authenticates to their org. |
+| **AASM does** | Discovers a running local core, or starts one; performs a health/readiness check and a version-compatibility check before declaring the integration usable. Acquires the gateway/proxy endpoint to be injected at launch. |
+| **Evidence produced** | A recorded core version, endpoint and connection identity; for team users, the resolved org/team. |
+| **Can fail** | Core missing or not ready (§9.1); version mismatch between the integration client and the core (§9.6); org authentication failure. |
+
+### 4.4 Choose profile
+
+| | |
+|---|---|
+| **User does** | Picks `Recommended`, `Strict` or `Observe only` — or accepts the default, which is `Recommended`. |
+| **AASM does** | Resolves the profile into concrete policy settings (§6). For an org-managed machine the profile is *bounded by* org policy and may only tighten it. |
+| **Evidence produced** | The effective resolved settings, with each value attributed to its source (profile default vs org policy). |
+| **Can fail** | A requested profile is looser than org policy — resolved by clamping to the org value and saying so, never by silently accepting the looser choice. |
+
+### 4.5 Apply
+
+| | |
+|---|---|
+| **User does** | Waits. |
+| **AASM does** | Executes the plan: writes managed settings, registers the tool with the gateway, and prepares managed launch. Writes only AASM-owned keys. |
+| **Evidence produced** | Receipt updated with the applied change inventory and a content hash per managed value, so later drift can be detected by comparison rather than by guessing. |
+| **Can fail** | Write failure mid-plan → roll back to the pre-apply state recorded in the receipt; report the integration as *not installed*, never as partially protected. |
+
+### 4.6 Verify
+
+| | |
+|---|---|
+| **User does** | Runs verify, or it runs automatically at the end of install. |
+| **AASM does** | Reads back every managed value and compares it to the plan, **and** exercises protection end-to-end with a synthetic secret: a value that matches the deterministic scanner is placed into a model-bound path, routed to a controlled endpoint, and the result is asserted (§11.3–§11.5). |
+| **Evidence produced** | A verification record naming which mechanisms were confirmed *by exercise* and which only *by read-back*. These are reported separately; only the former raises the protection level. |
+| **Can fail** | Read-back mismatch; the synthetic secret reaching the endpoint (§9.5) — a hard failure that must never be reported as a warning. |
+
+### 4.7 Use
+
+| | |
+|---|---|
+| **User does** | Uses the tool exactly as before. |
+| **AASM does** | Applies the profile's enforcement posture on every governed action, records audit events, and holds the protection level current — including downgrading it if the core stops mid-session. |
+| **Evidence produced** | Audit events carrying finding *metadata* only, never raw secret values (`aa-security/src/redaction.rs`). |
+| **Can fail** | Core stops mid-session (§9.1); the tool is upgraded underneath the integration (§9.7); the user launches the tool outside the managed path, which is a **bypass, not a failure**, and is reported as such. |
+| **Invariant** | Normal operation must not be degraded into something the developer works around. A protection that makes the tool unpleasant gets uninstalled, which is a net security loss. |
+
+### 4.8 Diagnose / Repair
+
+| | |
+|---|---|
+| **User does** | Runs status, and repair if status reports drift. |
+| **AASM does** | Compares live state against the receipt across *every* managed mechanism, classifies each difference as AASM-repairable drift or a deliberate user change, and re-applies only AASM-owned values. |
+| **Evidence produced** | A per-mechanism drift report: expected, actual, and the action taken. |
+| **Can fail** | Drift that repair cannot resolve (e.g. the tool removed the config surface entirely) → escalate to reinstall, and drop the protection level in the meantime. |
+| **Invariant** | Repair never rewrites a key AASM does not own, even when that key is the cause of the drift. It reports it instead. |
+
+### 4.9 Remove
+
+| | |
+|---|---|
+| **User does** | Runs remove. |
+| **AASM does** | Uses the receipt to restore the pre-install value of every managed key — restoring the original value where one existed, deleting the key where none did — and removes only AASM-owned artifacts. |
+| **Evidence produced** | A removal report, and a post-removal state that a test can compare byte-for-byte against the pre-install snapshot. |
+| **Can fail** | Receipt missing or corrupt → refuse to guess. Report what AASM believes it owns and require explicit confirmation before touching anything. |
+| **Invariant** | Unrelated user configuration is preserved through the whole install→remove cycle. Removal must leave no AASM residue and no collateral deletion. |
 
 ## 5. Journey diagrams
 
