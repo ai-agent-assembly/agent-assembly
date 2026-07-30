@@ -59,6 +59,7 @@
 //! someone might forget (§5.5).
 
 pub mod audit;
+pub mod client;
 pub mod codec;
 pub mod lifecycle;
 pub mod negotiate;
@@ -72,6 +73,7 @@ pub mod token;
 pub mod verb;
 
 pub use audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
+pub use client::{ClientError, DevIntClient, Negotiated};
 pub use lifecycle::{IntegrationLifecycle, LifecycleError};
 pub use negotiate::{Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
 pub use scope::{TokenScope, ToolScope};
