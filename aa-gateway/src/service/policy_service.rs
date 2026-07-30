@@ -945,10 +945,35 @@ impl PolicyServiceImpl {
         // budget engine-level denies, empty cascade) — absent, never a
         // misleading id.
         let policy_doc_id: Option<&str> = eval.policy_doc_id.as_deref();
+
+        // AAASM-5100 / ADR-0018 items A+B — capture the finer 5-way runtime
+        // verdict and the per-decision latency onto the audit payload (the
+        // *source* the read-side `GET /agents/{id}/decisions` projection reads;
+        // its `verdict`/`latencyMs` were frozen nullable under AAASM-5086).
+        //
+        // Item A — verdict: derived alongside the proto `decision`, never
+        // replacing it. Written as a lowercase string because `RuntimeVerdict`
+        // lives in `aa-api` (which depends on `aa-gateway`, not the reverse);
+        // the read-side parses the string back into the enum.
+        //
+        // Item B — latency: `decision_latency_us` is measured with a MONOTONIC
+        // clock (`Instant::now()` / `.elapsed()`) around `engine.evaluate` only
+        // (see `evaluate_one`). For a held / approval-pending action this is the
+        // scanner's DECISION time, NOT the human approval wait — the wait happens
+        // later in `maybe_submit_approval`, outside this measurement window. All
+        // actions are measured (no sampling). Recorded in ms (floor via integer
+        // division; a sub-ms decision floors to 0), matching the read-side's
+        // `latencyMs`. `trace_id` is deliberately left to the existing
+        // (nullable) `trace_id` field — trace-id propagation is ADR-0018 item C,
+        // gated to Phase 2 and NOT implemented here.
+        let verdict = convert::runtime_verdict(response.decision, eval.narrowed);
+        let latency_ms: u64 = (response.decision_latency_us.max(0) as u64) / 1_000;
         let payload = match shadow {
             Some(s) => serde_json::json!({
                 "action_type": req.action_type,
                 "decision": response.decision,
+                "verdict": verdict,
+                "latency_ms": latency_ms,
                 "reason": &response.reason,
                 "policy_rule": &response.policy_rule,
                 "policy_doc_id": policy_doc_id,
@@ -971,6 +996,8 @@ impl PolicyServiceImpl {
             None => serde_json::json!({
                 "action_type": req.action_type,
                 "decision": response.decision,
+                "verdict": verdict,
+                "latency_ms": latency_ms,
                 "reason": &response.reason,
                 "policy_rule": &response.policy_rule,
                 "policy_doc_id": policy_doc_id,

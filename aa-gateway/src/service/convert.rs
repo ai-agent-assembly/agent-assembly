@@ -209,6 +209,47 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
     }
 }
 
+/// Derive the canonical 5-way runtime verdict (ADR-0018 item A, AAASM-5100) for
+/// the decision an action actually received, as the lowercase wire string the
+/// read-side deserializes into `aa_api::models::verdict::RuntimeVerdict`.
+///
+/// The verdict is a *finer* label emitted **alongside** the proto
+/// [`Decision`] — it never changes what is allowed or blocked. The proto enum is
+/// intentionally coarse: it folds a scoped-but-permitted action into `Allow` and
+/// a DLP-scrubbed-but-forwarded action into `Redact`; this function recovers the
+/// distinction the dashboard renders.
+///
+/// The verdict is written into the audit payload JSON as a string rather than a
+/// typed field because the `RuntimeVerdict` enum lives in `aa-api`, which depends
+/// on `aa-gateway` (not the reverse) — so the gateway cannot name the type, and
+/// the audit payload is a JSON string in any case. `aa-api`'s read-side
+/// (`entry_to_decision_row`) parses the string back into the enum.
+///
+/// Mapping (from the *recorded* proto `decision`, plus the finer signals the
+/// gateway holds at audit-write time):
+/// * `Deny`    → `"deny"`   — blocked outright.
+/// * `Pending` → `"pending"`— held awaiting human approval.
+/// * `Redact`  → `"scrub"`  — permitted, but the DLP layer rewrote the payload
+///   (secrets/PII stripped, ADR 0015) before forwarding. Distinct from `allow`.
+/// * `Allow` + `narrowed`   → `"narrow"` — permitted, but a policy match scoped
+///   the action down (a narrower cascade allow-list still admitted it) rather
+///   than blocking. Distinct from `deny` so the UI shows partial success.
+/// * `Allow`                → `"allow"` — permitted unchanged.
+/// * anything else (`Unspecified` / out-of-range) → `"deny"`, matching the
+///   fail-closed collapse the enforcement paths already apply to unknown codes.
+pub fn runtime_verdict(decision: i32, narrowed: bool) -> &'static str {
+    match Decision::try_from(decision) {
+        Ok(Decision::Allow) if narrowed => "narrow",
+        Ok(Decision::Allow) => "allow",
+        Ok(Decision::Redact) => "scrub",
+        Ok(Decision::Pending) => "pending",
+        Ok(Decision::Deny) => "deny",
+        // Unspecified, or an out-of-range code from a newer peer — fail closed,
+        // mirroring `normalize_gateway_decision` / `decision_from_response`.
+        _ => "deny",
+    }
+}
+
 /// Convert a [`PolicyResult`] into a [`CheckActionResponse`].
 ///
 /// Convenience wrapper for tests and callers that only have a `PolicyResult`
@@ -220,6 +261,7 @@ pub fn result_to_response(result: &PolicyResult, latency_us: i64, policy_rule: &
         credential_findings: Vec::new(),
         deny_action: None,
         policy_doc_id: None,
+        narrowed: false,
     };
     eval_result_to_response(&eval, latency_us, policy_rule)
 }
@@ -408,6 +450,7 @@ mod tests {
             credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 4)],
             deny_action: None,
             policy_doc_id: None,
+            narrowed: false,
         };
         let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
         assert_eq!(resp.decision, Decision::Deny as i32);
@@ -426,10 +469,65 @@ mod tests {
             credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 4)],
             deny_action: None,
             policy_doc_id: None,
+            narrowed: false,
         };
         let resp = eval_result_to_response(&eval, 0, "");
         assert_eq!(resp.decision, Decision::Allow as i32);
         assert!(resp.redact.is_none());
+    }
+
+    // ── runtime_verdict — 5-way vocabulary (ADR-0018 item A, AAASM-5100) ──────
+
+    #[test]
+    fn runtime_verdict_maps_each_decision_to_its_wire_label() {
+        // A plain (un-narrowed) allow, a scrub (proto Redact), a pending, and a
+        // deny each map to their distinct 5-way label.
+        assert_eq!(runtime_verdict(Decision::Allow as i32, false), "allow");
+        assert_eq!(runtime_verdict(Decision::Redact as i32, false), "scrub");
+        assert_eq!(runtime_verdict(Decision::Pending as i32, false), "pending");
+        assert_eq!(runtime_verdict(Decision::Deny as i32, false), "deny");
+    }
+
+    #[test]
+    fn runtime_verdict_narrowed_allow_is_narrow_not_allow() {
+        // The `narrowed` signal turns a permitted action into `narrow` — a
+        // policy scoped it down rather than blocking. Distinct from a plain
+        // allow so the UI can render partial success.
+        assert_eq!(runtime_verdict(Decision::Allow as i32, true), "narrow");
+        assert_ne!(
+            runtime_verdict(Decision::Allow as i32, true),
+            runtime_verdict(Decision::Allow as i32, false)
+        );
+    }
+
+    #[test]
+    fn runtime_verdict_scrub_is_distinct_from_allow() {
+        // A DLP-scrubbed action is still forwarded (proto Redact), but its
+        // verdict must be `scrub`, never `allow` — scrubbed traffic is visible.
+        assert_ne!(
+            runtime_verdict(Decision::Redact as i32, false),
+            runtime_verdict(Decision::Allow as i32, false)
+        );
+    }
+
+    #[test]
+    fn runtime_verdict_narrow_is_distinct_from_deny() {
+        // A narrowed action was permitted, not blocked — its verdict must not
+        // collapse onto `deny`.
+        assert_ne!(
+            runtime_verdict(Decision::Allow as i32, true),
+            runtime_verdict(Decision::Deny as i32, false)
+        );
+    }
+
+    #[test]
+    fn runtime_verdict_unknown_decision_fails_closed_to_deny() {
+        // An Unspecified or out-of-range code fails closed, mirroring the
+        // enforcement paths' unknown-decision collapse. `narrowed` on an unknown
+        // code is meaningless and must not upgrade it to `narrow`.
+        assert_eq!(runtime_verdict(Decision::Unspecified as i32, false), "deny");
+        assert_eq!(runtime_verdict(9999, false), "deny");
+        assert_eq!(runtime_verdict(9999, true), "deny");
     }
 
     #[test]
@@ -479,6 +577,38 @@ mod tests {
         let resp = approval_decision_to_response(&decision, &id, 0, "rule-x");
         assert_eq!(resp.decision, Decision::Deny as i32);
         assert_eq!(resp.reason, "approval timed out");
+    }
+
+    #[test]
+    fn held_approval_records_decision_latency_not_the_approval_wait() {
+        // AAASM-5100 item B — semantic guardrail. A held/approval-pending action
+        // may wait minutes for a human, but the recorded latency must be the
+        // scanner's DECISION time (the `latency_us` measured in `evaluate_one`
+        // around `engine.evaluate`, BEFORE the blocking wait), NOT the wall-clock
+        // until the operator responds.
+        //
+        // `approval_decision_to_response` is the sole path that builds the final
+        // response for a resolved approval, and it is called with that
+        // pre-computed decision latency. Whatever the approval wait was, the
+        // response carries exactly the decision latency it was given, and the
+        // derived `latency_ms` (ms floor) follows it — never the human wait.
+        let id: ApprovalRequestId = Uuid::new_v4().to_string().parse().unwrap();
+        let decision_latency_us: i64 = 1_500; // measured decision time: 1.5 ms
+        let approved = ApprovalDecision::Approved {
+            by: "operator".into(),
+            reason: None,
+            conditions: Vec::new(),
+        };
+
+        let resp = approval_decision_to_response(&approved, &id, decision_latency_us, "needs-approval");
+
+        // The recorded latency is the decision time it was handed, not the wait.
+        assert_eq!(resp.decision_latency_us, decision_latency_us);
+        // An approved approval is a permitted, un-narrowed action → `allow`, and
+        // the ms latency floors the decision time (1500us → 1ms), independent of
+        // however long the human took.
+        assert_eq!(runtime_verdict(resp.decision, false), "allow");
+        assert_eq!((resp.decision_latency_us.max(0) as u64) / 1_000, 1);
     }
 
     #[test]

@@ -1182,6 +1182,19 @@ fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
+    // AAASM-5100 / ADR-0018 item A — the 5-way runtime verdict, now captured at
+    // decision time on the audit write path (`policy_service::record_audit`).
+    // Parsed from the payload string into the canonical enum; absent on legacy
+    // rows written before capture landed, which stay `null`.
+    let verdict = payload
+        .get("verdict")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| serde_json::from_value::<RuntimeVerdict>(serde_json::Value::String(s.to_string())).ok());
+
+    // AAASM-5100 / ADR-0018 item B — per-decision latency in ms, now recorded on
+    // the audit write path. Absent on legacy rows, which stay `null`.
+    let latency_ms = payload.get("latency_ms").and_then(serde_json::Value::as_u64);
+
     Some(AgentDecisionResponse {
         timestamp,
         session_id: hex::encode(entry.session_id().as_bytes()),
@@ -1190,18 +1203,12 @@ fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
         resource,
         decision,
         decision_label: decision_label(decision),
-        // The 5-way runtime verdict is not captured at decision time yet;
-        // deriving it is the ADR-0018-gated hot-path follow-up. Surface null
-        // rather than lossily mapping the coarse proto `decision` onto it.
-        // populated once decision-capture lands (ADR 0018 / AAASM-5086 follow-up)
-        verdict: None,
+        verdict,
         matched_policy,
-        // No per-decision latency source exists in the audit log (AAASM-5058);
-        // report it honestly as absent rather than inventing a value.
-        latency_ms: None,
-        // No per-decision trace id is recorded on the audit write path yet;
-        // trace-id propagation is the ADR-0018-gated hot-path follow-up.
-        // populated once decision-capture lands (ADR 0018 / AAASM-5086 follow-up)
+        latency_ms,
+        // Item C (trace-id propagation) is NOT implemented — it is gated to a
+        // separate Phase 2 ticket. The audit write records no per-decision trace
+        // id, so this stays null.
         trace_id: None,
     })
 }
@@ -1690,14 +1697,69 @@ mod tests {
         assert_eq!(row.verb.as_deref(), Some("TOOL_CALL"));
         assert_eq!(row.resource.as_deref(), Some("pg.users"));
         assert_eq!(row.matched_policy, None);
-        // No per-decision latency source exists — it must be reported as absent.
+        // A legacy payload carrying no verdict/latency_ms keys (written before
+        // AAASM-5100 capture landed) must still read null — the capture is
+        // additive, never fabricated for rows that lack a source.
         assert_eq!(row.latency_ms, None);
-        // The verdict + trace id are frozen in the schema but not yet captured
-        // at decision time (ADR-0018 hot-path follow-up); they must read null.
         assert_eq!(row.verdict, None);
         assert_eq!(row.trace_id, None);
         assert_eq!(row.seq, 7);
         assert_eq!(row.session_id, "ee".repeat(16));
+    }
+
+    #[test]
+    fn scrubbed_action_records_scrub_verdict_distinct_from_allow() {
+        // AAASM-5100 item A — a DLP-scrubbed action is forwarded (proto Redact,
+        // decision=4) but its captured verdict must be `scrub`, never `allow`,
+        // so scrubbed traffic is visible as distinct from a clean allow.
+        let entry = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":4,"verdict":"scrub","latency_ms":3,"detail":{"kind":"tool_call","tool_name":"gmail.send"}}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("redact carries a decision");
+        assert_eq!(row.verdict, Some(RuntimeVerdict::Scrub));
+        assert_ne!(row.verdict, Some(RuntimeVerdict::Allow));
+    }
+
+    #[test]
+    fn narrowed_action_records_narrow_verdict_distinct_from_deny() {
+        // AAASM-5100 item A — a scoped-but-permitted action (proto Allow,
+        // decision=1, but the gateway flagged it narrowed) records the `narrow`
+        // verdict, distinct from `deny` — the UI shows partial success, not a
+        // block.
+        let entry = decision_entry(
+            r#"{"action_type":"FILE_OPERATION","decision":1,"verdict":"narrow","latency_ms":1,"detail":{"kind":"file_op","path":"/tmp/x"}}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("allow carries a decision");
+        assert_eq!(row.verdict, Some(RuntimeVerdict::Narrow));
+        assert_ne!(row.verdict, Some(RuntimeVerdict::Deny));
+    }
+
+    #[test]
+    fn normal_decision_records_positive_latency_ms() {
+        // AAASM-5100 item B — a normal allow decision now carries the captured
+        // per-decision latency (ms) rather than the frozen null.
+        let entry = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":1,"verdict":"allow","latency_ms":5,"detail":{"kind":"tool_call","tool_name":"pg.read"}}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("allow carries a decision");
+        assert_eq!(row.latency_ms, Some(5));
+        assert!(
+            row.latency_ms.unwrap() > 0,
+            "a measured decision reports positive latency"
+        );
+    }
+
+    #[test]
+    fn trace_id_stays_null_item_c_not_implemented() {
+        // AAASM-5100 scope guard — item C (trace-id propagation) is Phase 2 and
+        // NOT implemented here. Even when the payload carries a trace_id (used by
+        // the /traces surface), the decision row's trace_id must stay null so no
+        // consumer assumes item C shipped with items A+B.
+        let entry = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":1,"verdict":"allow","latency_ms":2,"trace_id":"abc123"}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("allow carries a decision");
+        assert_eq!(row.trace_id, None, "trace_id must stay null until Phase 2");
     }
 
     #[test]
