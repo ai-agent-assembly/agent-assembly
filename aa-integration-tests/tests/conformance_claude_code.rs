@@ -75,7 +75,9 @@ use aa_core::integration::{
 };
 use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, MANAGED_KEYS, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
 use aa_runtime::devint::IntegrationLifecycle;
-use conformance_support::ConformanceHarness;
+use conformance_support::{ConformanceHarness, SYNTHETIC_SECRET};
+use spike_support::proxy_harness::{drive_direct, drive_emulated_client};
+use spike_support::{assert_recorded_and_secret_absent, assert_recorded_and_secret_present, AnthropicMock};
 
 /// Unrelated user configuration that must survive every operation.
 const USER_THEME: &str = "gruvbox";
@@ -510,4 +512,395 @@ fn only_a_redacted_outcome_is_protective() {
         !ExerciseOutcome::Inconclusive.is_protective(),
         "an unadjudicated probe must never read as protection"
     );
+}
+
+// ── 11.3 / 11.4 The secret never reaches the provider ───────────────────────
+
+/// Drive secret-bearing traffic through the artifacts the **install** produced —
+/// the receipted endpoint and the materialised certificate authority — and
+/// assert the provider recorded traffic and never saw the raw value, while the
+/// forwarded payload stays a request the provider can serve.
+///
+/// The client is built from `h.ca_pem_path()` rather than from the proxy's own
+/// directory on purpose: that file is the artifact `NODE_EXTRA_CA_CERTS` points
+/// at, so a copy step that silently produced the wrong bytes fails here instead
+/// of passing on a certificate the tool would never have seen.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_synthetic_secret_never_reaches_the_provider_and_the_payload_stays_usable() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+
+    let endpoint = h
+        .injected_env()
+        .get("HTTPS_PROXY")
+        .cloned()
+        .expect("the install must inject HTTPS_PROXY");
+    let addr: std::net::SocketAddr = endpoint
+        .trim_start_matches("http://")
+        .parse()
+        .expect("the injected endpoint must be dialable");
+    let client = std::sync::Arc::new(client_trusting(&h.ca_pem_path()).await?);
+
+    let prompt = format!("Please review this config line: ANTHROPIC_API_KEY={SYNTHETIC_SECRET} and explain it.");
+    let result = drive_emulated_client(addr, client, &prompt).await?;
+    assert!(
+        result.connected(),
+        "CONNECT through the installed endpoint failed: {}",
+        result.connect_status
+    );
+
+    // 11.3 — the load-bearing clause first: traffic actually flowed.
+    let observed = h.upstream.wait_for_requests(1, Duration::from_secs(10)).await;
+    assert_eq!(
+        observed, 1,
+        "the provider recorded no request, so `no raw secret arrived` would prove nothing"
+    );
+    assert_recorded_and_secret_absent(&h.upstream.bodies(), SYNTHETIC_SECRET, "11.3 installed model path");
+
+    // 11.4 — the payload the provider got is still one it can serve.
+    let forwarded = h.upstream.last_body().expect("forwarded body is utf-8");
+    assert!(
+        forwarded.contains("[REDACTED:AnthropicKey]"),
+        "the forwarded payload lacks the semantics-preserving placeholder: {forwarded}"
+    );
+    assert!(
+        forwarded.contains("Please review this config line:") && forwarded.contains("and explain it."),
+        "redaction damaged the surrounding content: {forwarded}"
+    );
+    serde_json::from_str::<serde_json::Value>(&forwarded)
+        .expect("11.4: the redacted body must still be JSON the provider can parse");
+    assert_eq!(
+        h.upstream.request_lines(),
+        vec![("POST".to_owned(), "/v1/messages".to_owned())],
+    );
+    assert!(
+        h.upstream.last_header_names().contains(&"anthropic-version".to_owned()),
+        "provider-required headers were dropped in transit: {:?}",
+        h.upstream.last_header_names()
+    );
+    assert!(
+        result.inner_response.as_deref().unwrap_or_default().contains("200"),
+        "the session did not continue: {:?}",
+        result.inner_response
+    );
+
+    h.finish("11.3/11.4 secret redacted before the provider");
+    Ok(())
+}
+
+// ── Tool governance ─────────────────────────────────────────────────────────
+
+/// The profile a user chooses changes what the tool is allowed to do without
+/// asking, and re-enabling the mode the install displaced is detected.
+///
+/// Claude Code expresses "approval required" as `permissions.defaultMode:
+/// "plan"` — propose rather than act — which is the closest native equivalent of
+/// an approval gate for destructive classes. `Recommended` writes `"default"`,
+/// `Strict` writes `"plan"`, and both carry the MCP allow/deny lists, so a
+/// governance path is exercised in each of the allow, deny and approval
+/// directions.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_profile_selects_the_tool_action_governance_the_install_writes() -> anyhow::Result<()> {
+    for (profile, expected_mode) in [
+        (ProtectionProfile::Recommended, "default"),
+        (ProtectionProfile::Strict, "plan"),
+    ] {
+        let h = ConformanceHarness::start().await?;
+        h.write_settings("{}");
+        h.install(profile).await?;
+
+        let settings = h.read_settings();
+        assert_eq!(
+            settings["permissions"]["defaultMode"],
+            serde_json::json!(expected_mode),
+            "{profile:?} must resolve to the `{expected_mode}` action-governance mode: {settings}"
+        );
+        assert_eq!(
+            settings["permissionMode"],
+            serde_json::json!(expected_mode),
+            "the two surfaces Claude Code reads must agree: {settings}"
+        );
+        // The allow and deny halves both exist, so a policy has somewhere to
+        // land in each direction rather than one being implicit.
+        assert!(
+            settings["permissions"]["allow"].is_array() && settings["permissions"]["deny"].is_array(),
+            "both governance directions must be present: {settings}"
+        );
+        assert!(
+            settings["enabledMcpjsonServers"].is_array() && settings["disabledMcpjsonServers"].is_array(),
+            "MCP governance must be written in both directions: {settings}"
+        );
+
+        // Re-enabling the bypass mode the install displaced must be visible.
+        let mut doc = h.read_settings();
+        doc["permissions"]["defaultMode"] = serde_json::json!("bypassPermissions");
+        h.write_settings(&serde_json::to_string_pretty(&doc)?);
+        let status = h.status().await?;
+        let rendered = serde_json::to_string(&status)?;
+        assert!(
+            rendered.contains("bypassPermissions"),
+            "a re-enabled bypass must reach the status a user reads: {rendered}"
+        );
+        let verification = h.verify().await?;
+        assert!(
+            !matches!(verification.outcome, VerificationOutcome::Passed),
+            "verification must not pass while a known bypass is active: {:?}",
+            verification.outcome
+        );
+
+        h.finish("tool-action governance");
+    }
+    Ok(())
+}
+
+// ── 11.6 Drift in two mechanisms, repaired ──────────────────────────────────
+
+/// Two independent Agent Assembly-owned mechanisms are perturbed; both are
+/// reported; repair restores both and touches nothing else; a subsequent
+/// verification re-exercises protection rather than reading configuration back.
+///
+/// A user-authored key is perturbed **in the same edit** as the managed one.
+/// Asserting only that the managed key came back would not distinguish a correct
+/// repair from one that rewrote the whole file from the receipt.
+#[tokio::test(flavor = "multi_thread")]
+async fn drift_in_two_mechanisms_is_detected_and_repair_restores_only_owned_state() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    h.write_settings(&format!(r#"{{"theme":"{USER_THEME}"}}"#));
+    h.install(ProtectionProfile::Recommended).await?;
+    assert_eq!(h.verify().await?.outcome, VerificationOutcome::Passed);
+    assert_eq!(h.status().await?.achieved_level(), ProtectionLevel::GatewayProtected);
+
+    // Mechanism 1 — an Agent Assembly-owned settings key, edited by hand
+    // alongside a key of the user's own.
+    let mut doc = h.read_settings();
+    doc["permissions"]["defaultMode"] = serde_json::json!("bypassPermissions");
+    doc["theme"] = serde_json::json!("edited-by-the-user");
+    h.write_settings(&serde_json::to_string_pretty(&doc)?);
+
+    // Mechanism 2 — the trust material condition C1 depends on, deleted.
+    std::fs::remove_file(h.ca_pem_path())?;
+
+    let drifted = h.status().await?;
+    let mismatched = match &drifted.state {
+        ProtectionState::Drifted { mismatched, .. } => mismatched.clone(),
+        other => panic!("two perturbed mechanisms must read as Drifted, got {other:?}"),
+    };
+    assert!(
+        mismatched.len() >= 2,
+        "drift must be reported per mechanism, not collapsed into one finding: {mismatched:?}"
+    );
+    let joined = mismatched.join(" ");
+    assert!(
+        joined.contains("settings.json") && joined.contains("aasm-proxy-ca.pem"),
+        "both perturbed mechanisms must be named: {mismatched:?}"
+    );
+    assert!(
+        drifted.achieved_level() < ProtectionLevel::GatewayProtected
+            || !matches!(drifted.state, ProtectionState::Ladder(_)),
+        "the reported level must drop before repair is attempted: {:?}",
+        drifted.state
+    );
+
+    // ── repair ─────────────────────────────────────────────────────────────
+    let (report, repaired) = h.repair().await?;
+    assert!(!report.repaired.is_empty(), "repair must name what it restored");
+    assert!(
+        !matches!(repaired.state, ProtectionState::Drifted { .. }),
+        "drift persists after repair: {:?}",
+        repaired.state
+    );
+    assert!(h.ca_pem_path().is_file(), "repair did not restore the trust material");
+    let after = h.read_settings();
+    assert_eq!(after["permissions"]["defaultMode"], serde_json::json!("default"));
+    assert_eq!(
+        after["theme"],
+        serde_json::json!("edited-by-the-user"),
+        "repair overwrote a user-authored key it does not own"
+    );
+
+    // ── re-verify ──────────────────────────────────────────────────────────
+    let before_requests = h.upstream.request_count();
+    assert_eq!(h.verify().await?.outcome, VerificationOutcome::Passed);
+    assert!(
+        h.upstream.request_count() > before_requests,
+        "a verification after repair must re-exercise the path, not read configuration back"
+    );
+    assert_eq!(h.status().await?.achieved_level(), ProtectionLevel::GatewayProtected);
+
+    h.finish("11.6 drift detected and repaired");
+    Ok(())
+}
+
+// ── 11.10 Observe-only never reads as protection ────────────────────────────
+
+/// Under the observe-only profile the provider **does** receive the synthetic
+/// value, and no reading may call that protection.
+///
+/// Asserted positively, and deliberately so: the profile that does not protect
+/// must not be able to look like the one that does. If this ever starts failing
+/// because the secret was redacted, the profile has stopped being observe-only.
+#[tokio::test(flavor = "multi_thread")]
+async fn observe_only_forwards_the_secret_and_never_claims_protection() -> anyhow::Result<()> {
+    let h = ConformanceHarness::with_options(conformance_support::HarnessOptions {
+        // `EnforcementMode::Observe` maps onto the proxy's `AlertOnly` action:
+        // findings are computed and audited, the body is forwarded intact.
+        credential_action: aa_proxy::config::CredentialAction::AlertOnly,
+        ..Default::default()
+    })
+    .await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::ObserveOnly).await?;
+
+    let verification = h.verify().await?;
+    assert!(
+        h.upstream.request_count() > 0,
+        "the probe must have produced traffic for this scenario to mean anything"
+    );
+    assert_recorded_and_secret_present(&h.upstream.bodies(), SYNTHETIC_SECRET, "11.10 observe-only");
+    assert!(
+        !matches!(verification.outcome, VerificationOutcome::Passed),
+        "a forwarded credential must never read as a passed protection test: {:?}",
+        verification.outcome
+    );
+
+    let status = h.status().await?;
+    assert!(
+        status.achieved_level() < ProtectionLevel::GatewayProtected,
+        "observe-only must never reach GatewayProtected, even with exercised evidence: {:?}",
+        status.state
+    );
+
+    h.finish("11.10 observe-only is not protection");
+    Ok(())
+}
+
+// ── 11.11 Unmanaged launch is a bypass ──────────────────────────────────────
+
+/// A session that never goes through the managed path is unprotected, and the
+/// product says so as a bypass rather than as its own failure.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unmanaged_launch_is_unprotected_and_reported_as_a_bypass() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    let plan = h.plan(ProtectionProfile::Recommended).await?;
+    h.service()
+        .apply(&h.tool(), &plan.plan_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // The integration is installed; this session simply does not use it.
+    let mock = AnthropicMock::start().await?;
+    drive_direct(&mock.url, &format!("unmanaged launch carrying {SYNTHETIC_SECRET}")).await?;
+    assert_eq!(mock.wait_for_requests(1, Duration::from_secs(5)).await, 1);
+    assert_recorded_and_secret_present(&mock.bodies(), SYNTHETIC_SECRET, "11.11 unmanaged launch");
+
+    // The plan a user approves states it, in the warning a user reads before
+    // consenting rather than in a document they may never open.
+    let warnings = plan.warnings.join("\n");
+    assert!(
+        warnings.contains("is not protected") && warnings.contains("aasm run claude"),
+        "the plan must state that a direct launch is unprotected: {warnings}"
+    );
+
+    // And the installed state, having never been exercised, claims nothing.
+    let status = h.status().await?;
+    assert!(
+        !status.has_exercised_evidence() && status.achieved_level() < ProtectionLevel::GatewayProtected,
+        "an installation that has never been exercised must not claim protection: {:?}",
+        status.state
+    );
+    let rendered = serde_json::to_string(&status)?;
+    assert!(
+        rendered.contains("known bypasses this integration cannot observe"),
+        "status must distinguish what it cannot see from what it has disproved: {rendered}"
+    );
+
+    h.finish("11.11 unmanaged launch is a bypass");
+    Ok(())
+}
+
+// ── Upgrade and incompatibility ─────────────────────────────────────────────
+
+/// Upgrading the tool under an existing installation is a migration, not drift;
+/// a version below the adapter's floor is refused rather than integrated.
+///
+/// Both halves matter. A tool upgrade that read as drift would send users to
+/// `repair` for nothing; an unsupported version that installed anyway would
+/// produce a receipt for an integration whose mechanisms were never validated.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_upgrade_is_a_migration_and_an_unsupported_version_is_refused() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    h.write_settings(&format!(r#"{{"theme":"{USER_THEME}"}}"#));
+    let receipt = h.install(ProtectionProfile::Recommended).await?;
+    assert_eq!(
+        receipt.tool_version.as_ref().map(ToString::to_string).as_deref(),
+        Some(conformance_support::MEASURED_TOOL_VERSION),
+        "the receipt must record the version it was applied against"
+    );
+
+    // ── migration ──────────────────────────────────────────────────────────
+    let upgraded = h.service_reporting_version("3.4.5");
+    let status = upgraded.status(&h.tool()).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    assert!(
+        status.compatibility.is_compatible(),
+        "a newer tool inside the supported range must stay compatible: {:?}",
+        status.compatibility
+    );
+    assert!(
+        !matches!(status.state, ProtectionState::Drifted { .. }),
+        "a tool upgrade is not configuration drift: {:?}",
+        status.state
+    );
+
+    // ── incompatibility ────────────────────────────────────────────────────
+    let too_old = h.service_reporting_version("0.9.9");
+    let refused = too_old
+        .plan(aa_core::integration::IntegrationRequest::new(
+            h.tool(),
+            ProtectionProfile::Recommended,
+            SettingsScope::User,
+        ))
+        .await;
+    assert!(
+        refused.is_err(),
+        "a version below the adapter's floor must not produce an appliable plan"
+    );
+    let unsupported_status = too_old.status(&h.tool()).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    assert!(
+        !unsupported_status.compatibility.is_compatible(),
+        "an undetectable version must never resolve upward to compatible: {:?}",
+        unsupported_status.compatibility
+    );
+    assert!(
+        unsupported_status.achieved_level() < ProtectionLevel::GatewayProtected,
+        "an unsupported tool version must not carry a protection claim: {:?}",
+        unsupported_status.state
+    );
+
+    h.finish("upgrade and incompatibility");
+    Ok(())
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// A rustls client trusting exactly the certificate authority at `pem`.
+///
+/// Deliberately built from the **installed** PEM rather than from the proxy's
+/// own directory: that file is what `NODE_EXTRA_CA_CERTS` points at, so a copy
+/// step producing the wrong bytes fails a protection scenario instead of passing
+/// on a certificate the tool would never have been given.
+async fn client_trusting(pem: &std::path::Path) -> anyhow::Result<rustls::ClientConfig> {
+    use base64::Engine as _;
+    let body: String = tokio::fs::read_to_string(pem)
+        .await?
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .collect();
+    let der = base64::engine::general_purpose::STANDARD.decode(body)?;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(rustls::pki_types::CertificateDer::from(der))?;
+    Ok(rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth())
 }

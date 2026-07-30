@@ -86,6 +86,7 @@ pub struct ConformanceHarness {
     home: PathBuf,
     state: PathBuf,
     ca_dir: PathBuf,
+    stub_binary: PathBuf,
     service: EngineLifecycle,
     paths: ClaudeCodePaths,
     /// The provider that records every body it is given.
@@ -144,24 +145,23 @@ impl ConformanceHarness {
         let ca_trust = probe.trust_switch();
         ca_trust.store(options.trust_injected_ca, Ordering::SeqCst);
 
-        let integration = Arc::new(
-            ClaudeCodeIntegration::with_paths(paths.clone())
-                .with_adapter(
-                    ClaudeCodeAdapter::with_overrides(Some(stub_binary), Some(home.clone()))
-                        .with_version_override(Some(options.tool_version)),
-                )
-                .through_proxy(proxy.url())
-                .with_probe(Arc::new(probe)),
-        );
-
         let store = ReceiptStore::at(state.join("store"));
-        let service = EngineLifecycle::new(vec![claude_code_registration(integration)], store.clone());
+        let service = build_service(
+            &paths,
+            &stub_binary,
+            &home,
+            &options.tool_version,
+            &proxy.url(),
+            Arc::new(probe),
+            &store,
+        );
 
         Ok(Self {
             _dir: dir,
             home,
             state,
             ca_dir,
+            stub_binary,
             service,
             paths,
             upstream,
@@ -170,6 +170,30 @@ impl ConformanceHarness {
             ca_trust,
             guard,
         })
+    }
+
+    /// A second lifecycle service over the *same* installation, with the tool
+    /// reporting `version`.
+    ///
+    /// This is how a tool upgrade is modelled: the receipt, the settings file,
+    /// the trust material and the launch environment are all exactly as the
+    /// original install left them, and only the version the host reports has
+    /// moved. A migration that silently reads as drift, or an incompatible
+    /// version that silently reads as protected, shows up here.
+    pub fn service_reporting_version(&self, version: &str) -> EngineLifecycle {
+        let probe = AdjudicatingProbe::new(Arc::clone(&self.upstream));
+        probe
+            .trust_switch()
+            .store(self.ca_trust.load(Ordering::SeqCst), Ordering::SeqCst);
+        build_service(
+            &self.paths,
+            &self.stub_binary,
+            &self.home,
+            version,
+            &self.proxy.url(),
+            Arc::new(probe),
+            &self.store,
+        )
     }
 
     /// The tool every operation names.
@@ -312,6 +336,33 @@ impl ConformanceHarness {
     pub fn finish(&self, scenario: &str) {
         self.guard.assert_unchanged(scenario);
     }
+}
+
+/// Build a lifecycle service over one set of injected roots.
+///
+/// Factored out because the upgrade scenario needs a *second* service over the
+/// same installation, and two hand-rolled constructions could disagree about a
+/// path — which the digest check would then report as a plan nobody changed.
+#[allow(clippy::too_many_arguments)]
+fn build_service(
+    paths: &ClaudeCodePaths,
+    stub_binary: &Path,
+    home: &Path,
+    tool_version: &str,
+    proxy_url: &str,
+    probe: Arc<AdjudicatingProbe>,
+    store: &ReceiptStore,
+) -> EngineLifecycle {
+    let integration = Arc::new(
+        ClaudeCodeIntegration::with_paths(paths.clone())
+            .with_adapter(
+                ClaudeCodeAdapter::with_overrides(Some(stub_binary.to_path_buf()), Some(home.to_path_buf()))
+                    .with_version_override(Some(tool_version.to_string())),
+            )
+            .through_proxy(proxy_url)
+            .with_probe(probe),
+    );
+    EngineLifecycle::new(vec![claude_code_registration(integration)], store.clone())
 }
 
 /// Every file under `root`, recursively.
