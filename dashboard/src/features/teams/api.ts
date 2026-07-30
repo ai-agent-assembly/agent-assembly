@@ -99,8 +99,13 @@ export function useTopologyAgentsQuery() {
       // team-scoped caller structurally cannot see `team_id: None` agents, so an
       // empty orphan set must read as "not available in your scope", not a
       // confident "no unclaimed agents". The flag is the backend's scope-derived
-      // signal for that distinction.
-      return { nodes: data.nodes, unclaimedObservable: data.unclaimed_observable }
+      // signal for that distinction. Both fields default defensively (nodes → [],
+      // observable → false, fail-closed) so a partial/degraded payload renders an
+      // honest empty/absent state rather than crashing the page.
+      return {
+        nodes: data.nodes ?? [],
+        unclaimedObservable: data.unclaimed_observable ?? false,
+      }
     },
   })
 }
