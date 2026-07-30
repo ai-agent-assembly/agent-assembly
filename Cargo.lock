@@ -96,8 +96,6 @@ version = "0.0.1-rc.6"
 dependencies = [
  "aa-core",
  "aa-devtool",
- "aa-devtool-codex",
- "aa-devtool-windsurf",
  "aa-gateway",
  "aa-proxy",
  "aa-sandbox",

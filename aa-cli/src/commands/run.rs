@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::process::ExitCode;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use clap::Args;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -12,11 +11,7 @@ use uuid::Uuid;
 #[cfg(unix)]
 use tokio::signal::unix::SignalKind;
 
-use aa_core::{
-    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument, PolicyRule,
-};
-use aa_devtool_codex::CodexAdapter;
-use aa_devtool_windsurf::WindsurfCascadeAdapter;
+use aa_core::{DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, PolicyDocument, PolicyRule};
 
 use crate::commands::status::models::redact_database_url;
 use crate::config::ResolvedContext;
@@ -115,53 +110,6 @@ pub(crate) fn enforcement_mode_str(mode: aa_core::EnforcementMode) -> &'static s
         aa_core::EnforcementMode::Enforce => "enforce",
         aa_core::EnforcementMode::Observe => "observe",
         aa_core::EnforcementMode::Disabled => "disabled",
-    }
-}
-
-// Placeholder until per-tool adapter crates (AAASM-201..205) are ready.
-// Each of the four known tools maps to this struct; replace individual arms
-// in resolve_adapter() when the real crate lands.
-struct PlaceholderAdapter;
-
-#[async_trait]
-impl DevToolAdapter for PlaceholderAdapter {
-    fn detect(&self) -> Option<DevToolInfo> {
-        None
-    }
-
-    async fn generate_managed_settings(&self, _policy: &PolicyDocument) -> Result<String, AdapterError> {
-        Err(AdapterError::SettingsGenerationFailed(
-            "adapter not yet implemented".into(),
-        ))
-    }
-
-    async fn apply_settings(&self, _settings: &str) -> Result<(), AdapterError> {
-        Err(AdapterError::SettingsApplyFailed(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "adapter not yet implemented",
-        )))
-    }
-
-    fn build_launch_command(
-        &self,
-        _tool_args: &[String],
-        _agent_id: &str,
-        _team_id: Option<&str>,
-        _proxy_addr: Option<&str>,
-    ) -> Result<std::process::Command, AdapterError> {
-        Err(AdapterError::LaunchFailed("adapter not yet implemented".into()))
-    }
-
-    async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
-        Ok(vec![])
-    }
-
-    async fn apply_mcp_governance(&self, _allowed: &[String], _denied: &[String]) -> Result<(), AdapterError> {
-        Ok(())
-    }
-
-    fn governance_level(&self) -> GovernanceLevel {
-        GovernanceLevel::L0Discover
     }
 }
 
@@ -446,17 +394,19 @@ fn format_dry_run_output(
 }
 
 /// Return the adapter for `tool`, or an error for unrecognised tool names.
+///
+/// Resolution goes through [`aa_devtool::registry`] — the same table
+/// `aasm tools list` discovers with — so a tool cannot be launched with a
+/// different adapter than the one discovery advertised (AAASM-5274). There is
+/// no placeholder fallback: an unregistered tool is an error, never a silently
+/// inert adapter.
 fn resolve_adapter(tool: &str) -> Result<Box<dyn DevToolAdapter>> {
-    match tool {
-        // Real adapters replace PlaceholderAdapter here once their crates land.
-        "claude" => Ok(Box::new(PlaceholderAdapter)),
-        "codex" => Ok(Box::new(CodexAdapter::default())),
-        "copilot" => Ok(Box::new(PlaceholderAdapter)),
-        "windsurf" => Ok(Box::new(WindsurfCascadeAdapter::new())),
-        _ => Err(anyhow::anyhow!(
-            "unknown tool: {tool}, supported: claude, codex, copilot, windsurf"
-        )),
-    }
+    aa_devtool::registry::adapter_for(tool).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown tool: {tool}, supported: {}",
+            aa_devtool::registry::SUPPORTED_TOOLS.join(", ")
+        )
+    })
 }
 
 /// Send `DELETE /api/v1/agents/<registration_id>` using the async HTTP client.
@@ -529,8 +479,9 @@ pub async fn execute_with_adapters(
 ) -> Result<i32> {
     let adapter = adapters.get(args.tool.as_str()).ok_or_else(|| {
         anyhow::anyhow!(
-            "unknown tool: {}, supported: claude, codex, copilot, windsurf",
-            args.tool
+            "unknown tool: {}, supported: {}",
+            args.tool,
+            aa_devtool::registry::SUPPORTED_TOOLS.join(", ")
         )
     })?;
 
@@ -611,7 +562,7 @@ pub async fn execute_with_adapters(
 /// Launch the specified AI dev tool with governance wiring.
 pub async fn execute(args: RunArgs, ctx: &ResolvedContext) -> Result<i32> {
     let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
-    for tool in ["claude", "codex", "copilot", "windsurf"] {
+    for tool in aa_devtool::registry::SUPPORTED_TOOLS {
         adapters.insert(tool, resolve_adapter(tool)?);
     }
     execute_with_adapters(&args, ctx, &adapters).await
@@ -637,7 +588,10 @@ mod tests {
         Arc,
     };
 
-    use aa_core::{DevToolInfo, DevToolKind};
+    // Stub adapters below implement DevToolAdapter, so the test module carries
+    // the trait-object plumbing the production path no longer needs.
+    use aa_core::{AdapterError, DevToolInfo, DevToolKind, McpServerInfo};
+    use async_trait::async_trait;
     use clap::Parser;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
