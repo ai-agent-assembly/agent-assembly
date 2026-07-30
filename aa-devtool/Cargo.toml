@@ -25,6 +25,13 @@ tokio = { workspace = true, features = ["full"] }
 [dev-dependencies]
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+# AAASM-5277: `tests/legacy_shim_sample.rs` drives the *unmodified* public
+# sample adapter through the new lifecycle contract via `LegacyAdapterShim`,
+# which is what makes ADR 0030 §7's "nothing breaks on day one" checkable. The
+# test cannot live in the sample crate — the sample staying untouched is the
+# property under test. Dev-only and `publish = false` on both sides, so this
+# adds no crates.io surface.
+aa-devtool-sample-myeditor = { path = "../examples/aa-devtool-sample-myeditor" }
 
 [lints]
 workspace = true
