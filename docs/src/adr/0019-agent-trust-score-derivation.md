@@ -381,20 +381,35 @@ The three conditions:
 - The capability-matrix `trust <= N` filter
   (`dashboard/src/features/capability/filters.ts:28-30`).
 
-## Decision required from: product
+<a id="decision-2026-07-30"></a>
+## Decision (2026-07-30, product)
 
-1. **Which option** — a score (A), a richer score (B), or components only (C)?
-2. **If A: are the weights owned?** `1.0` violation / `1.5` credential-redaction /
-   `0.5` approval-rejection, and the `MIN_ACTIONS = 20` floor. These are the product
-   decision; they should be ratified explicitly, not inherited from this draft.
-3. **Bucketing** — adopt the shipped code bands (60/80) or the mock's (50/75)? They
-   currently disagree.
-4. **Cold start** — `null` (recommended) or the 50 the UI copy already promises?
-5. **Window** — is `7d` the right default, and should it be operator-selectable per
-   the existing `1h|24h|7d|30d` presets?
+The questions this ADR raised are now answered. Product owns the decision below;
+implementation of AAASM-5083 is authorised against it.
 
-Until items 1–2 are answered, **no implementation ticket should be opened**. Merging
-this ADR does not authorise any of the options.
+1. **Which option** — **Option D**: Option A's clean-rate formula as the default, with
+   tenant-configurable weights. Not plain A (the weights are contested and tenant-specific)
+   and not C (a single sortable score is the affordance Fleet triage needs).
+2. **Are the weights owned?** — **Yes, by each tenant.** The defaults (`1.0` violation /
+   `1.5` credential-redaction / `0.5` approval-rejection, `MIN_ACTIONS = 20`) are
+   product-owned starting values; each tenant may then toggle a signal off or reweight it.
+   A tenant-set weight is owned by construction, which is the cleanest answer to this
+   ADR's founding concern. The `credential_redaction` penalty in particular is
+   configurable precisely because whether "the DLP layer worked" should hurt the score is
+   a per-tenant posture question.
+3. **Bucketing** — adopt the **shipped code bands (60/80)**; correct the mock's 50/75 text.
+   Not tenant-tunable in v1.
+4. **Cold start** — **`null`, never 50.** The `—` placeholder is already correct; the
+   `EmptyState.tsx:110` "initialized at 50" copy is corrected to describe the
+   minimum-activity threshold. This holds regardless of configured weights (Guardrail 2).
+5. **Window** — **`7d` default**, fixed in v1 (not tenant-tunable yet). Widening to the
+   `1h|24h|7d|30d` presets is a later-ADR question.
+
+**Authorised for implementation** under AAASM-5083. Two adjacent defects the ADR
+surfaced are already handled: the dead `policy_violations_count` / permanently-false
+`flagged` badge was fixed in AAASM-5103 (derived from audit), and the `trust`
+type/serialization reconciliation (`Option<u8>`, explicit `null`) is condition 3 of the
+Option A block, to be done first.
 
 ## Reconsideration triggers
 
