@@ -650,8 +650,9 @@ mod tests {
     }
 
     /// Minimal `AgentRecord` for exercising the badge-derivation helpers and the
-    /// `From<&AgentRecord>` impl. Only the fields the helpers read
-    /// (`metadata`, `policy_violations_count`) are meaningful here.
+    /// `From<&AgentRecord>` impl. Only the `metadata` the `agent_mode` helper
+    /// reads is meaningful here; `flagged` is enriched by the handlers from the
+    /// audit aggregate, not the record (AAASM-5103).
     fn make_record() -> AgentRecord {
         AgentRecord {
             agent_id: [0x01; 16],
