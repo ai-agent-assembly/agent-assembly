@@ -46,6 +46,19 @@ on:
       - "dashboard/pnpm-lock.yaml"
       - "dashboard/index.html"
       - "sonar-project.properties"
+      # AAASM-5282: the DI-API TypeScript reference client and its Rust
+      # contract-test harness. Paired with the `devint_client` router filter
+      # below — a router filter without a matching `on.*.paths` entry is a dead
+      # trigger, and a trigger that looks like coverage but is not is worse than
+      # no trigger at all (ADR 0028).
+      - "examples/aa-devint-reference-client/**/*.ts"
+      - "examples/aa-devint-reference-client/**/*.mjs"
+      - "examples/aa-devint-reference-client/**/*.rs"
+      - "examples/aa-devint-reference-client/**/*.json"
+      - "examples/aa-devint-reference-client/**/*.yaml"
+      - "examples/aa-devint-reference-client/**/*.cjs"
+      - "examples/aa-devint-reference-client/**/*.toml"
+      - "examples/aa-devint-reference-client/.npmrc"
   pull_request:
     branches: [main]
     paths:
@@ -88,6 +101,19 @@ on:
       - "dashboard/pnpm-lock.yaml"
       - "dashboard/index.html"
       - "sonar-project.properties"
+      # AAASM-5282: the DI-API TypeScript reference client and its Rust
+      # contract-test harness. Paired with the `devint_client` router filter
+      # below — a router filter without a matching `on.*.paths` entry is a dead
+      # trigger, and a trigger that looks like coverage but is not is worse than
+      # no trigger at all (ADR 0028).
+      - "examples/aa-devint-reference-client/**/*.ts"
+      - "examples/aa-devint-reference-client/**/*.mjs"
+      - "examples/aa-devint-reference-client/**/*.rs"
+      - "examples/aa-devint-reference-client/**/*.json"
+      - "examples/aa-devint-reference-client/**/*.yaml"
+      - "examples/aa-devint-reference-client/**/*.cjs"
+      - "examples/aa-devint-reference-client/**/*.toml"
+      - "examples/aa-devint-reference-client/.npmrc"
   # AAASM-3446: the per-PR / per-push path-filter above gates the slow eBPF
   # jobs (ebpf-build, e2e-ebpf-linux) to aa-ebpf*/** changes for cost control,
   # which means the Layer 3 (eBPF) / three-layer suite is normally SKIPPED on
@@ -118,6 +144,7 @@ jobs:
       openapi: ${{ steps.filter.outputs.openapi }}
       storage: ${{ steps.filter.outputs.storage }}
       conformance: ${{ steps.filter.outputs.conformance }}
+      devint_client: ${{ steps.filter.outputs.devint_client }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
@@ -200,6 +227,17 @@ jobs:
             # so the contract still runs if `rust` is ever narrowed. Every path
             # here is covered by an `on.*.paths` entry (`aa-*/**/*.rs`,
             # `conformance/**/*.rs`), so this is a live trigger, not a dead one.
+            # AAASM-5282: the DI-API TypeScript reference client. Its contract
+            # tests run against the real `aa_runtime::devint` server through the
+            # `aa-devint-harness` binary, so the proto and the runtime's DI-API
+            # module are inputs too — a change to either can break the client
+            # without touching a single file under `examples/`. Every path here
+            # has a matching `on.*.paths` entry above, so this is a live trigger.
+            devint_client:
+              - 'examples/aa-devint-reference-client/**'
+              - 'proto/devint.proto'
+              - 'aa-runtime/src/devint/**'
+              - '.github/workflows/ci.yml'
             conformance:
               - 'aa-cli/src/commands/start.rs'
               - 'aa-gateway/src/local_mode.rs'
@@ -1371,6 +1409,45 @@ jobs:
   # that wipes the other side's coverage to 0. On pushes, whichever producer was
   # skipped/failed is backfilled from the last successful main run so the
   # snapshot is always complete. PR analysis (new-code-only) is left unchanged.
+  devint-reference-client:
+    name: DI-API reference client (typecheck, lint, bindings drift, contract tests)
+    needs: [changes]
+    if: needs.changes.outputs.devint_client == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/aa-devint-reference-client
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.9.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: examples/aa-devint-reference-client/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check the bindings still match proto/devint.proto
+        run: pnpm generate:check
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Build the DI-API test harness
+        # The contract suite talks to the real `aa_runtime::devint` server over a
+        # real Unix socket. Without this binary the suite fails loudly rather
+        # than silently degrading to a mock.
+        working-directory: .
+        run: cargo build -p aa-devint-harness
+      - name: Unit, guard and contract tests
+        run: pnpm test
+
   sonar:
     name: SonarCloud analysis
     needs: [changes, coverage, dashboard-test]
@@ -1576,6 +1653,7 @@ jobs:
       - dashboard-e2e
       - dashboard-codegen-drift
       - aa-cli-compat
+      - devint-reference-client
     steps:
       - name: Verify no required job failed or was cancelled
         run: |
