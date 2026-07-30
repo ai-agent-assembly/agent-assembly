@@ -59,7 +59,9 @@
 //! someone might forget (§5.5).
 
 pub mod scope;
+pub mod token;
 pub mod verb;
 
 pub use scope::TokenScope;
+pub use token::{CapabilityToken, TokenDenial, TokenId, TokenRecord, TokenStore};
 pub use verb::DiVerb;
