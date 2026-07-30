@@ -12,7 +12,7 @@
 //! None of those adapters implements
 //! [`DevToolIntegration`](aa_core::integration::DevToolIntegration) yet — the
 //! first native implementor is AAASM-5281. Until then
-//! [`LegacyAdapterShim`](aa_core::integration::LegacyAdapterShim) makes each of
+//! [`LegacyAdapterShim`] makes each of
 //! them satisfy the lifecycle contract, declaring honestly that it cannot
 //! substantiate the mechanisms it was never designed to expose (§7).
 //!

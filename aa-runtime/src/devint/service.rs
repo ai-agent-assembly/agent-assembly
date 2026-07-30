@@ -38,7 +38,7 @@
 //!
 //! # Where the bytes come from
 //!
-//! An [`IntegrationStep`] carries the *digest* of what will be written, never
+//! An [`aa_core::integration::IntegrationStep`] carries the *digest* of what will be written, never
 //! the content (§5.5). The adapter renders the content and the service writes
 //! it, so applying a plan needs a rendering that hashes to what the user
 //! reviewed. [`StepContentSource`] is that seam, and
