@@ -1735,6 +1735,21 @@ mod tests {
     }
 
     #[test]
+    fn normal_decision_records_positive_latency_ms() {
+        // AAASM-5100 item B — a normal allow decision now carries the captured
+        // per-decision latency (ms) rather than the frozen null.
+        let entry = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":1,"verdict":"allow","latency_ms":5,"detail":{"kind":"tool_call","tool_name":"pg.read"}}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("allow carries a decision");
+        assert_eq!(row.latency_ms, Some(5));
+        assert!(
+            row.latency_ms.unwrap() > 0,
+            "a measured decision reports positive latency"
+        );
+    }
+
+    #[test]
     fn entry_to_decision_row_skips_entry_without_decision() {
         let entry = decision_entry(r#"{"action_type":"AGENT_SPAWN","detail":{"kind":"spawn"}}"#);
         assert!(entry_to_decision_row(&entry).is_none());
