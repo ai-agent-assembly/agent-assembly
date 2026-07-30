@@ -15,6 +15,14 @@ interface TeamOrphanDetailProps {
   orphans: Certain<readonly AgentNode[]>
   /** Groupings-vs-registry cross-check; see {@link AgentCensus}. */
   census: Certain<AgentCensus>
+  /**
+   * Whether the caller's scope can observe unclaimed agents at all (AAASM-5183).
+   * A team-scoped caller structurally cannot see `team_id: None` agents, so when
+   * this is `false` the pane must say "not available in your scope" rather than
+   * render an empty list as a confident "no unclaimed agents" — a governance
+   * claim that scope cannot support. No count is shown in that case either.
+   */
+  unclaimedObservable: boolean
 }
 
 /**
@@ -80,7 +88,7 @@ function CensusNotice({ census }: Readonly<{ census: Certain<AgentCensus> }>) {
  * team to scope them to), so this is intentionally a lighter view than
  * `TeamDetailPane`.
  */
-export function TeamOrphanDetail({ orphans, census }: Readonly<TeamOrphanDetailProps>) {
+export function TeamOrphanDetail({ orphans, census, unclaimedObservable }: Readonly<TeamOrphanDetailProps>) {
   const list = isKnown(orphans) ? orphans.value : []
   const suspendedCount = list.filter(a => a.status === 'suspended').length
   const flaggedCount = list.filter(a => a.flagged).length
@@ -91,7 +99,15 @@ export function TeamOrphanDetail({ orphans, census }: Readonly<TeamOrphanDetailP
         <div className="teams-detail-header__eyebrow">unclaimed</div>
         <h2 className="teams-detail-header__name">orphan agents</h2>
         <div className="teams-detail-header__chips">
-          <OrphanCountChip orphans={orphans} />
+          {/* AAASM-5183: only show a count when the caller could actually observe
+              unclaimed agents. Out of scope → a "n/a" chip, never a "0". */}
+          {unclaimedObservable ? (
+            <OrphanCountChip orphans={orphans} />
+          ) : (
+            <span className="teams-chip" data-testid="orphan-detail-agent-count">
+              <span className="teams-chip__unit">not in scope</span>
+            </span>
+          )}
           {suspendedCount > 0 && (
             <span className="teams-chip is-warn">{suspendedCount} suspended</span>
           )}
@@ -113,7 +129,11 @@ export function TeamOrphanDetail({ orphans, census }: Readonly<TeamOrphanDetailP
 
         <section className="teams-card" aria-label="Orphan agents">
           <div className="teams-card__title">
-            Agents (<TruthfulValue value={mapCertain(orphans, l => l.length)} testId="orphan-agents-title-count" />)
+            {/* AAASM-5183: no parenthesised count when the scope can't observe
+                unclaimed agents — "Agents (0)" would be a false clean reading. */}
+            Agents{unclaimedObservable && (
+              <> (<TruthfulValue value={mapCertain(orphans, l => l.length)} testId="orphan-agents-title-count" />)</>
+            )}
           </div>
           {!isKnown(orphans) && (
             <StatusState
@@ -124,7 +144,18 @@ export function TeamOrphanDetail({ orphans, census }: Readonly<TeamOrphanDetailP
               detail={orphans.detail}
             />
           )}
-          {isKnown(orphans) && list.length === 0 && (
+          {isKnown(orphans) && list.length === 0 && !unclaimedObservable && (
+            // AAASM-5183: the caller's scope cannot see `team_id: None` agents, so
+            // an empty list here is not evidence there are none — it's the scope
+            // boundary. Say that, don't claim a clean fleet.
+            <StatusState
+              state="not-supported"
+              testId="orphan-agents-out-of-scope"
+              title="Unclaimed agents are not available in your current scope"
+              description="Your scope only covers agents assigned to your team, so this page cannot see agents that no team claims. Ask an operator with fleet-wide scope to review unclaimed agents."
+            />
+          )}
+          {isKnown(orphans) && list.length === 0 && unclaimedObservable && (
             <div className="teams-card__empty" data-testid="orphan-agents-empty">
               No unclaimed agents.
             </div>

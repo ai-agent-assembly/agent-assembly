@@ -13,6 +13,17 @@ export type LineageStep = components['schemas']['LineageStep']
 export type AgentNode = components['schemas']['AgentNode']
 export type TeamPolicy = components['schemas']['TeamPolicyResponse']
 
+/**
+ * The Teams-page view of the topology fleet: every agent node plus the
+ * scope-derived `unclaimedObservable` flag (AAASM-5183). `false` means the
+ * caller's scope structurally cannot see unclaimed agents, so an empty orphan
+ * set must not be reported as "no unclaimed agents".
+ */
+export interface TopologyAgents {
+  readonly nodes: readonly AgentNode[]
+  readonly unclaimedObservable: boolean
+}
+
 export interface TeamListRow {
   team_id: string
   agent_count: number
@@ -80,11 +91,16 @@ export function useTopologyAgentsQuery() {
     // The two hooks cannot share a cache entry: distinct keys are never deduped,
     // and prefix matching applies to invalidation only.
     staleTime: 5_000,
-    queryFn: async (): Promise<AgentNode[]> => {
+    queryFn: async (): Promise<TopologyAgents> => {
       const { data, error } = await api.GET('/api/v1/topology')
       if (error) throw new Error('Failed to fetch topology agents')
       if (!data) throw new Error('Topology response was empty')
-      return data.nodes
+      // AAASM-5183: carry `unclaimed_observable` alongside the nodes. A
+      // team-scoped caller structurally cannot see `team_id: None` agents, so an
+      // empty orphan set must read as "not available in your scope", not a
+      // confident "no unclaimed agents". The flag is the backend's scope-derived
+      // signal for that distinction.
+      return { nodes: data.nodes, unclaimedObservable: data.unclaimed_observable }
     },
   })
 }

@@ -125,7 +125,9 @@ function mapEdge(e: ApiEdge): TopologyEdge[] {
     : []
 }
 
-export function mapTopologyGraph(res: ApiGraph): TopologyGraph {
+// The graph view only needs nodes + edges; `unclaimed_observable` (AAASM-5183)
+// is a Teams-page concern, so this mapper accepts just the subset it reads.
+export function mapTopologyGraph(res: Pick<ApiGraph, 'nodes' | 'edges'>): TopologyGraph {
   return {
     nodes: (res.nodes ?? []).map(mapNode),
     edges: (res.edges ?? []).flatMap(mapEdge),
