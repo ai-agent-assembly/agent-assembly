@@ -37,8 +37,10 @@
 //! the public sample — satisfy the new contract on day one, declaring honestly
 //! that it cannot substantiate the mechanisms it was never designed to expose.
 
+pub mod capability;
 pub mod version;
 
+pub use capability::{CapabilityResolution, CapabilitySupport, DevToolCapabilities, IntegrationCapability};
 pub use version::{
     core_version, ComponentVersions, SupportedToolVersions, ToolVersion, VersionCompatibility, VersionParseError,
     VersionSupport, LIFECYCLE_SCHEMA_VERSION,
