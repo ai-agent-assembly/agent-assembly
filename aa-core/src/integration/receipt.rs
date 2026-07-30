@@ -26,6 +26,51 @@ use super::step::{IntegrationStep, SettingsScope, StepAction, StepRequirement};
 use super::version::{ComponentVersions, ToolVersion, LIFECYCLE_SCHEMA_VERSION};
 use crate::dev_tool::DevToolKind;
 
+/// What the step's target document held for the AASM-owned keys *before* the
+/// step ran — the restoration evidence removal is derived from.
+///
+/// # Why a structured key snapshot and not a file backup
+///
+/// A full-file backup would put every unmanaged key — including anything the
+/// user keeps in the same file — into a second copy AASM now owns and must
+/// protect, and it would restore the file as it was at install time, silently
+/// discarding everything the user changed afterwards. A structured snapshot of
+/// only the claimed keys restores exactly what AASM displaced and carries
+/// nothing else. That is also why AAASM-5278's non-goals rule out backing up a
+/// developer's home directory: the smallest sufficient record is the one that
+/// leaks least *and* preserves most.
+///
+/// # Fail closed when a prior value cannot be stored
+///
+/// A value that trips the credential screen is not stored, and its key is named
+/// in [`withheld_keys`](Self::withheld_keys). Removal then cannot prove it
+/// restored that key, so it declares a residual instead of writing a guess
+/// (ADR 0015: a resolution failure is observable, never silently permitted).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct PriorSettingsState {
+    /// Canonical JSON object of the AASM-owned keys that existed before the
+    /// step ran, minus anything withheld by the credential screen.
+    pub managed_values_json: String,
+    /// AASM-owned keys the document did not have before the step ran, and which
+    /// removal must therefore delete rather than restore.
+    pub absent_keys: Vec<String>,
+    /// Keys whose prior value was withheld because it contained material the
+    /// credential scanner recognised. Non-empty means removal is knowingly
+    /// incomplete for those keys.
+    pub withheld_keys: Vec<String>,
+    /// Fingerprint of the whole document before the step ran, so a restore can
+    /// be checked against the semantics it was aiming at.
+    pub document_fingerprint: String,
+}
+
+impl PriorSettingsState {
+    /// Whether every claimed key can be restored from this record.
+    pub fn is_fully_restorable(&self) -> bool {
+        self.withheld_keys.is_empty()
+    }
+}
+
 /// What one applied step left behind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -43,7 +88,20 @@ pub struct StepReceipt {
     /// Fingerprint of what was written, for drift detection. `None` means no
     /// fingerprint could be taken, which counts as unverified — never as
     /// verified.
+    ///
+    /// For a settings step this is the fingerprint of the **AASM-owned
+    /// projection**, not of the file: a mismatch here means an AASM-managed
+    /// value changed, and that is the only mismatch repair may act on.
     pub fingerprint: Option<String>,
+    /// Fingerprint of the whole target document immediately after the step ran.
+    ///
+    /// Its only job is to make "the user changed something of their own" a
+    /// distinguishable observation rather than an unexplained hash mismatch. It
+    /// never authorises a write — drift derived from it is reported and left
+    /// alone.
+    pub document_fingerprint: Option<String>,
+    /// What the target document held for the claimed keys before the step ran.
+    pub prior_state: Option<PriorSettingsState>,
     /// The action that undoes this one, copied from the plan so removal does not
     /// depend on the adapter still being able to re-derive it.
     pub reversal: Option<StepAction>,
@@ -58,6 +116,8 @@ impl StepReceipt {
             requirement: step.requirement,
             applied: true,
             fingerprint,
+            document_fingerprint: None,
+            prior_state: None,
             reversal: step.reversal.clone(),
         }
     }
@@ -70,14 +130,45 @@ impl StepReceipt {
             requirement: step.requirement,
             applied: false,
             fingerprint: None,
+            document_fingerprint: None,
+            prior_state: None,
             reversal: step.reversal.clone(),
         }
+    }
+
+    /// Attach the fingerprint of the whole target document after the step ran.
+    #[must_use]
+    pub fn with_document_fingerprint(mut self, fingerprint: impl Into<String>) -> Self {
+        self.document_fingerprint = Some(fingerprint.into());
+        self
+    }
+
+    /// Attach the restoration evidence captured before the step ran.
+    #[must_use]
+    pub fn with_prior_state(mut self, prior_state: PriorSettingsState) -> Self {
+        self.prior_state = Some(prior_state);
+        self
     }
 
     /// Whether this step counts towards the "every required step verifies"
     /// criterion: applied **and** fingerprinted.
     pub fn is_verified(&self) -> bool {
         self.applied && self.fingerprint.is_some()
+    }
+
+    /// Whether removal can prove it restored everything this step displaced.
+    ///
+    /// A step that was applied without capturing prior state is *not* provably
+    /// restorable — the absence of a record is not evidence there was nothing
+    /// to record.
+    pub fn is_provably_restorable(&self) -> bool {
+        if !self.applied {
+            return true;
+        }
+        match &self.prior_state {
+            Some(prior) => prior.is_fully_restorable(),
+            None => self.reversal.is_some(),
+        }
     }
 }
 
@@ -176,6 +267,29 @@ impl IntegrationReceipt {
             .iter()
             .filter(|s| s.applied && s.reversal.is_none())
             .collect()
+    }
+
+    /// Applied steps whose restoration this receipt cannot prove — either no
+    /// prior state was captured and no reversal is known, or the prior value was
+    /// withheld by the credential screen.
+    ///
+    /// Removal reports every one of these as a residual rather than writing a
+    /// value it cannot substantiate.
+    pub fn unrestorable_steps(&self) -> Vec<&StepReceipt> {
+        self.steps.iter().filter(|s| !s.is_provably_restorable()).collect()
+    }
+
+    /// The runtime or gateway endpoint the applied steps pointed the tool at,
+    /// when one was.
+    ///
+    /// Drift compares this against the endpoint currently in effect; a receipt
+    /// that names no endpoint simply cannot go stale in that direction, which is
+    /// different from being fresh.
+    pub fn receipted_endpoint(&self) -> Option<&str> {
+        self.steps.iter().filter(|s| s.applied).find_map(|s| match &s.action {
+            StepAction::ConfigureModelGatewayBaseUrl { base_url, .. } => Some(base_url.as_str()),
+            _ => None,
+        })
     }
 
     /// Whether this receipt was written by a core newer than the one reading it.
@@ -380,6 +494,61 @@ mod tests {
             reversals[0].affected_paths(),
             vec![PathBuf::from("/home/dev/.aa/ca/aasm-ca.pem")]
         );
+    }
+
+    #[test]
+    fn a_withheld_prior_value_makes_a_step_unrestorable() {
+        let mut r = receipt(ProtectionLevel::Integrated, vec![]);
+        r.steps[0] = r.steps[0].clone().with_prior_state(PriorSettingsState {
+            managed_values_json: "{}".to_string(),
+            absent_keys: vec![],
+            withheld_keys: vec!["permissions".to_string()],
+            document_fingerprint: "sha256:before".to_string(),
+        });
+        assert_eq!(r.unrestorable_steps().len(), 1);
+
+        r.steps[0] = r.steps[0].clone().with_prior_state(PriorSettingsState {
+            managed_values_json: "{}".to_string(),
+            absent_keys: vec!["permissions".to_string()],
+            withheld_keys: vec![],
+            document_fingerprint: "sha256:before".to_string(),
+        });
+        assert!(r.unrestorable_steps().is_empty());
+    }
+
+    #[test]
+    fn an_applied_step_with_neither_prior_state_nor_a_reversal_is_unrestorable() {
+        // The absence of a record is not evidence there was nothing to record.
+        let mut r = receipt(ProtectionLevel::Integrated, vec![]);
+        r.steps[0].reversal = None;
+        assert_eq!(r.unrestorable_steps().len(), 1);
+    }
+
+    #[test]
+    fn the_receipted_endpoint_comes_from_the_applied_steps() {
+        let mut r = receipt(ProtectionLevel::Integrated, vec![]);
+        assert_eq!(r.receipted_endpoint(), None);
+
+        let endpoint = IntegrationStep::new(
+            "base-url",
+            StepAction::ConfigureModelGatewayBaseUrl {
+                scope: SettingsScope::User,
+                variable: "ANTHROPIC_BASE_URL".to_string(),
+                base_url: "http://127.0.0.1:7391".to_string(),
+            },
+            "route the tool at the local gateway",
+        );
+        r.steps.push(StepReceipt::not_applied(&endpoint));
+        assert_eq!(
+            r.receipted_endpoint(),
+            None,
+            "a step that was never applied configured no endpoint"
+        );
+
+        r.steps.pop();
+        r.steps
+            .push(StepReceipt::applied(&endpoint, Some("sha256:e".to_string())));
+        assert_eq!(r.receipted_endpoint(), Some("http://127.0.0.1:7391"));
     }
 
     #[test]

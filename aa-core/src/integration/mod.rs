@@ -40,12 +40,23 @@
 
 pub mod capability;
 pub mod contract;
+pub mod drift;
+// The engine writes receipts, so like the store it exists only where the
+// lifecycle types can be serialized.
+#[cfg(feature = "serde")]
+pub mod engine;
+pub mod fingerprint;
+pub mod journal;
 pub mod plan;
 pub mod receipt;
 pub mod shim;
 pub mod state;
 pub mod status;
 pub mod step;
+// Persistence serializes the lifecycle types, so it exists only where their
+// `Serialize`/`Deserialize` derives do.
+#[cfg(feature = "serde")]
+pub mod store;
 pub mod version;
 
 pub use capability::{CapabilityResolution, CapabilitySupport, DevToolCapabilities, IntegrationCapability};
@@ -53,11 +64,23 @@ pub use contract::{
     capability_conformance, ConformanceViolation, DevToolIntegration, HookableTool, LaunchSpec, LaunchableTool,
     McpGovernedTool,
 };
+pub use drift::{ArtifactObservation, DriftFinding, DriftInputs, DriftKind, DriftReport, ObservedStep};
+#[cfg(feature = "serde")]
+pub use engine::{
+    ApplyContext, ApplyOutcome, EngineError, ExecutionError, FilesystemExecutor, IntegrationEngine, RemovalOutcome,
+    RepairOutcome, StepExecutor, StepOutcome,
+};
+pub use fingerprint::{
+    absent_managed_keys, canonicalize, contains_credential_material, document_fingerprint, fingerprint_raw,
+    managed_fingerprint, managed_projection, merge_managed_keys, restore_managed_keys, screen_managed_values,
+    sha256_hex, FingerprintError, FINGERPRINT_PREFIX,
+};
+pub use journal::{recovery_action, JournalEntry, JournalOperation, OperationJournal, RecoveryAction, StepProgress};
 pub use plan::{
     IntegrationPlan, IntegrationRequest, PlanError, PolicyProfileRef, ProtectionProfile, RemovalPlan,
     UnsupportedMechanism,
 };
-pub use receipt::{IntegrationReceipt, ReceiptError, StepReceipt};
+pub use receipt::{IntegrationReceipt, PriorSettingsState, ReceiptError, StepReceipt};
 pub use shim::{LegacyAdapterShim, LEGACY_UNSUPPORTED_REASON};
 pub use state::{
     EvidenceKind, ExerciseOutcome, ProtectionEvidence, ProtectionLevel, ProtectionState, StateDerivation,
@@ -67,6 +90,10 @@ pub use status::{IntegrationStatus, LifecyclePhase, NextLevel, VerificationOutco
 pub use step::{
     ArtifactOperation, EnvValue, IntegrationStep, ProbeDescriptor, SettingsMerge, SettingsScope, StepAction,
     StepPrivilege, StepRequirement, TrustMaterialKind,
+};
+#[cfg(feature = "serde")]
+pub use store::{
+    ReceiptEnvelope, ReceiptStore, StoreError, SupersededReceipt, MAX_SUPERSEDED_RECEIPTS, RECEIPT_ENVELOPE_VERSION,
 };
 pub use version::{
     core_version, ComponentVersions, SupportedToolVersions, ToolVersion, VersionCompatibility, VersionParseError,

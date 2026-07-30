@@ -30,6 +30,9 @@ test-utils = []
 [dev-dependencies]
 proptest   = { workspace = true }
 serde_json = { workspace = true }
+# AAASM-5278: the filesystem receipt store's tests assert real permission bits
+# and real atomic renames, so they need a real directory rather than a mock.
+tempfile   = { workspace = true }
 # Self dev-dependency: turns on `serde` + `schemars` for aa-core's own test
 # build so the `types::` property tests and JsonSchema derives compile and run
 # under `cargo nextest run -p aa-core` without making those features default
