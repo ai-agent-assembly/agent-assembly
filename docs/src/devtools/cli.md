@@ -180,11 +180,78 @@ runtime; enrolment happens on start.
 | `the capability token at … is mode 644` | The token is not a secret any more | `chmod 600` it and restart the runtime to re-issue |
 | `no integration receipt records <tool>` | Nothing has been installed to act on | Run `aasm integrations install <tool>` first |
 
+## Claude Code
+
+Claude Code is the first natively migrated integration
+([AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281)).
+`aasm integrations install claude-code` applies five steps and offers a sixth:
+
+| Step | What it does |
+|---|---|
+| `managed-settings` | Merges four Agent Assembly-owned keys into the settings file for the scope you chose. Every other key is left exactly as it was. |
+| `proxy-ca` | Copies the proxy's certificate authority to a PEM Agent Assembly owns. The system trust store is **not** touched. |
+| `node-extra-ca-certs` | Sets `NODE_EXTRA_CA_CERTS` for every governed launch. **Without this the interception handshake fails and nothing is inspected.** |
+| `proxy-env` | Routes governed launches through the local proxy. |
+| `side-channel-scope` | Asks the proxy to inspect `api.anthropic.com` and `*.anthropic.com` for this integration — Claude Code's telemetry and registry calls, not just `/v1/messages`. `llm_only` stays on, so nothing else on your machine is intercepted. |
+| `protection-test` | Optional. Sends a synthetic secret down the model path so the core can adjudicate what the provider received. |
+
+### Choose the scope; it is never inferred
+
+`--scope user` writes `$CLAUDE_CONFIG_DIR/settings.json` (or
+`~/.claude/settings.json`); `--scope project` writes
+`<cwd>/.claude/settings.json`. A `.claude/` directory in your working directory
+never redirects a user-scoped install — which file is written is a decision you
+make and the receipt records. `--scope managed` is refused: the endpoint
+managed-settings file is administrator-owned, its enforcement keys are
+unmeasured, and installing them would need a privileged step this integration
+does not take.
+
+### Protection applies to the managed launch
+
+Start Claude Code with `aasm run claude`. A `claude` started directly inherits
+neither the proxy nor `NODE_EXTRA_CA_CERTS` and is **not** protected — this is a
+measured bypass, not a theoretical one, and `status` says so rather than
+implying otherwise.
+
+### What is deliberately not offered
+
+* **`ANTHROPIC_BASE_URL` redirection.** Measured in AAASM-5276 delivering a
+  synthetic secret to the provider with no Agent Assembly component anywhere in
+  the path. It is routing, not protection, and setting it in the shell also
+  suppresses Claude Code's server-managed settings fetch.
+* **Hooks, for sensitive data.** They govern tool and action execution and
+  cannot see model-bound content, so no hook can carry a protection claim.
+* **`NODE_TLS_REJECT_UNAUTHORIZED`.** Never set. A TLS failure is a finding, not
+  something to suppress — and if you have it set, `status` reports it as a
+  bypass.
+* **The system keychain and the endpoint managed-settings file.** Both are
+  privileged host changes whose behaviour is unmeasured.
+
+### Bypasses that are detected
+
+`bypassPermissions` in a settings file, `ANTHROPIC_BASE_URL` /
+`CLAUDE_CODE_API_BASE_URL` in the shell or in a settings `env` block,
+`CLAUDE_CODE_USE_BEDROCK` / `_VERTEX`, and `NODE_TLS_REJECT_UNAUTHORIZED`.
+`aasm run claude --dangerously-skip-permissions` (and `--bare`) prints a warning
+and passes the flag through unchanged — Agent Assembly's interception sits below
+Claude Code's own permission enforcement, so stripping the flag would change
+your session without changing what is protected.
+
+Bypasses that **cannot** be observed are stated in every plan rather than left
+to be inferred from silence: launching outside `aasm run`, repointing
+`CLAUDE_CONFIG_DIR`, symlinking `.claude`, editing the settings file directly,
+replacing the binary, or calling the API from another program with your own key.
+
 ## Current limitation
 
-Adapters that have not yet migrated to the Developer Integration lifecycle are
-carried by `LegacyAdapterShim` (ADR 0030 §7). They can be **discovered,
-planned and reported on**, but their plan step names no destination file, so
-the service refuses to apply it rather than reporting a success nothing
-performed. The first natively migrated adapter is
-[AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281).
+Adapters other than Claude Code have not yet migrated to the Developer
+Integration lifecycle and are carried by `LegacyAdapterShim` (ADR 0030 §7). They
+can be **discovered, planned and reported on**, but their plan step names no
+destination file, so the service refuses to apply it rather than reporting a
+success nothing performed.
+
+`verify` needs a probe that can adjudicate what the provider received. A default
+build has none — a client on the near side of the proxy cannot see the forwarded
+body — so `verify` reports the model path as configured but never exercised, and
+the level stays at `Integrated`. That is the honest reading: configuration alone
+is not evidence that anything inspected the traffic.
