@@ -763,20 +763,103 @@ mod tests {
 
     #[test]
     fn known_tools_resolve_without_error() {
-        for tool in ["claude", "codex", "copilot", "windsurf"] {
+        for tool in aa_devtool::registry::SUPPORTED_TOOLS {
             assert!(resolve_adapter(tool).is_ok(), "resolve_adapter({tool}) should succeed");
         }
     }
 
+    /// Every tool must resolve to a real per-tool adapter. `L0Discover` was the
+    /// level the old in-file `PlaceholderAdapter` reported, so it is the exact
+    /// signature of the regression this asserts against: a tool that `aasm run`
+    /// accepts but cannot actually govern or launch (AAASM-5274; previously
+    /// this test covered codex only).
     #[test]
-    fn codex_adapter_is_not_placeholder() {
-        let adapter = resolve_adapter("codex").expect("codex must resolve");
-        // CodexAdapter reports L2Enforce; PlaceholderAdapter reports L0Discover.
+    fn no_tool_resolves_to_a_placeholder_adapter() {
+        for tool in aa_devtool::registry::SUPPORTED_TOOLS {
+            let adapter = resolve_adapter(tool).expect("registered tool must resolve");
+            assert_ne!(
+                adapter.governance_level(),
+                GovernanceLevel::L0Discover,
+                "{tool} resolved to a non-governing placeholder adapter"
+            );
+        }
+    }
+
+    /// AAASM-5274 regression guard: `aasm tools list` (via [`DiscoveryService`])
+    /// and `aasm run` (via [`resolve_adapter`]) must resolve the *same* adapter
+    /// for every supported tool.
+    ///
+    /// Before AAASM-5274 they did not: discovery constructed detection-only
+    /// stubs from `aa_devtool::adapters` (Claude Code declaring `L3Native`)
+    /// while `aasm run claude` got an inert placeholder declaring `L0Discover`
+    /// — so `aasm tools list` advertised governance the launcher could not
+    /// deliver. This fails if either consumer is ever pointed somewhere other
+    /// than `aa_devtool::registry`.
+    #[test]
+    fn discovery_and_run_resolve_the_same_adapter_metadata() {
+        let discovery = aa_devtool::DiscoveryService::new();
+        let discovered = discovery.adapters();
+
         assert_eq!(
-            adapter.governance_level(),
-            GovernanceLevel::L2Enforce,
-            "codex must use CodexAdapter (L2Enforce), not PlaceholderAdapter (L0Discover)"
+            discovered.len(),
+            aa_devtool::registry::SUPPORTED_TOOLS.len(),
+            "DiscoveryService must load exactly one adapter per supported tool"
         );
+
+        // `built_in_adapters()` yields adapters in SUPPORTED_TOOLS order, so the
+        // index identifies the tool.
+        for (idx, tool) in aa_devtool::registry::SUPPORTED_TOOLS.iter().enumerate() {
+            let run_adapter = resolve_adapter(tool).expect("registered tool must resolve");
+            let discovery_adapter = &discovered[idx];
+
+            assert_eq!(
+                run_adapter.governance_level(),
+                discovery_adapter.governance_level(),
+                "{tool}: `aasm run` reports {:?} but discovery reports {:?}",
+                run_adapter.governance_level(),
+                discovery_adapter.governance_level(),
+            );
+
+            // Detection identity. On a host without the tool both sides return
+            // None, which still proves they agree; when the tool *is* installed
+            // this pins the concrete DevToolKind each side reports.
+            let run_kind = run_adapter.detect().map(|i| i.kind);
+            let discovery_kind = discovery_adapter.detect().map(|i| i.kind);
+            assert_eq!(
+                run_kind, discovery_kind,
+                "{tool}: `aasm run` detects {run_kind:?} but discovery detects {discovery_kind:?}"
+            );
+            if let Some(kind) = run_kind {
+                assert_eq!(
+                    Some(&kind),
+                    aa_devtool::registry::kind_for(tool).as_ref(),
+                    "{tool}: detected kind disagrees with the registry's declared kind"
+                );
+            }
+        }
+    }
+
+    /// Pins each CLI tool token to the [`DevToolKind`] the registry declares for
+    /// it, expressed as the wire token `aasm run` sends to the gateway. Unlike
+    /// the parity test above this is load-bearing on any host, installed tools
+    /// or not — it fails if a registry entry is ever repointed at another tool.
+    #[test]
+    fn registry_tool_tokens_map_to_expected_dev_tool_kinds() {
+        let expected = [
+            ("claude", "claude_code"),
+            ("codex", "codex"),
+            ("copilot", "github_copilot"),
+            ("windsurf", "windsurf_cascade"),
+        ];
+        assert_eq!(
+            expected.len(),
+            aa_devtool::registry::SUPPORTED_TOOLS.len(),
+            "a tool was added to the registry without extending this mapping"
+        );
+        for (tool, wire) in expected {
+            let kind = aa_devtool::registry::kind_for(tool).expect("registered tool must have a kind");
+            assert_eq!(dev_tool_kind_str(&kind), wire, "{tool} maps to the wrong DevToolKind");
+        }
     }
 
     // --- build_child_env tests ---
