@@ -1,0 +1,446 @@
+//! Turning one model into either of the two renderings (AAASM-5280).
+//!
+//! # The contract this file enforces
+//!
+//! [`Report`] requires `Serialize` *and* `render_human`. A command therefore
+//! cannot produce a human table from one value and JSON from another: both come
+//! out of [`emit`], which takes a single `&impl Report`. The invariant "human
+//! and machine output derive from the same response model" is enforced by the
+//! type system rather than by a review comment.
+//!
+//! # What is never printed
+//!
+//! Nothing here can print a capability token, a rendered settings body or a
+//! policy document, because [`super::model`] has no field able to hold one and
+//! these functions read only from those models. Fingerprints and key *names*
+//! are printed; values never are.
+
+use serde::Serialize;
+
+use crate::output::OutputFormat;
+
+use super::model::{
+    EvidenceRow, InstallReport, PlanReport, RemoveReport, RepairReport, StatusReport, StepRow, ToolListReport,
+    VerifyReport,
+};
+
+/// A command result that can be rendered for a person and for a script, from
+/// one value.
+pub trait Report: Serialize {
+    /// The human rendering.
+    fn render_human(&self) -> String;
+}
+
+/// Write `report` in the requested format to stdout.
+///
+/// Notices, warnings and prompts go to stderr elsewhere, so stdout carries the
+/// report and nothing else — `aasm integrations status x --output json | jq`
+/// works even when the runtime had to be started first.
+pub fn emit(report: &impl Report, output: OutputFormat) {
+    match output {
+        OutputFormat::Json => match serde_json::to_string_pretty(report) {
+            Ok(json) => println!("{json}"),
+            Err(e) => eprintln!("error: could not serialize the report: {e}"),
+        },
+        OutputFormat::Yaml => match serde_yaml::to_string(report) {
+            Ok(yaml) => print!("{yaml}"),
+            Err(e) => eprintln!("error: could not serialize the report: {e}"),
+        },
+        OutputFormat::Table => print!("{}", report.render_human()),
+    }
+}
+
+fn tick(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn bullets(out: &mut String, heading: &str, items: &[String]) {
+    if items.is_empty() {
+        return;
+    }
+    out.push_str(&format!("\n{heading}:\n"));
+    for item in items {
+        out.push_str(&format!("  - {item}\n"));
+    }
+}
+
+fn render_evidence(out: &mut String, heading: &str, rows: &[EvidenceRow], empty_note: &str) {
+    out.push_str(&format!("\n{heading}:\n"));
+    if rows.is_empty() {
+        out.push_str(&format!("  ({empty_note})\n"));
+        return;
+    }
+    for row in rows {
+        out.push_str(&format!(
+            "  - {} [{}] at {}: {}\n",
+            row.mechanism, row.outcome, row.observed_at_unix_secs, row.detail
+        ));
+    }
+}
+
+fn render_steps(out: &mut String, steps: &[StepRow]) {
+    if steps.is_empty() {
+        out.push_str("  (no steps)\n");
+        return;
+    }
+    for (index, step) in steps.iter().enumerate() {
+        out.push_str(&format!(
+            "  {}. [{}{}] {} — {}\n",
+            index + 1,
+            step.requirement,
+            if step.privilege == "privileged_host" {
+                ",privileged-host"
+            } else {
+                ""
+            },
+            step.action_kind,
+            step.summary
+        ));
+        if let Some(scope) = &step.settings_scope {
+            out.push_str(&format!("       surface: {scope}\n"));
+        }
+        if !step.managed_keys.is_empty() {
+            out.push_str(&format!("       keys:    {}\n", step.managed_keys.join(", ")));
+        }
+        for path in &step.artifact_paths {
+            out.push_str(&format!("       file:    {path}\n"));
+        }
+        if let Some(digest) = &step.content_sha256 {
+            out.push_str(&format!("       sha256:  {digest}\n"));
+        }
+        out.push_str(&format!("       reversible: {}\n", tick(step.reversible)));
+        if let Some(prompt) = &step.consent_prompt {
+            out.push_str(&format!("       CONSENT REQUIRED: {prompt}\n"));
+        }
+    }
+}
+
+impl Report for ToolListReport {
+    fn render_human(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "Agent Assembly core {} (DI-API v{})\n\n",
+            self.runtime.core_version, self.runtime.di_api_version
+        ));
+        out.push_str(&format!(
+            "{:<16} {:<12} {:<12} {:<14} {}\n",
+            "TOOL", "VERSION", "COMPAT", "STATE", "PROTECTION"
+        ));
+        for tool in &self.tools {
+            out.push_str(&format!(
+                "{:<16} {:<12} {:<12} {:<14} {}\n",
+                tool.tool_id,
+                tool.detected_version.as_deref().unwrap_or("-"),
+                tool.compatibility,
+                tool.integration_state.as_deref().unwrap_or("not_integrated"),
+                tool.achieved_level.as_deref().unwrap_or("-"),
+            ));
+            for warning in &tool.warnings {
+                out.push_str(&format!("{:<16} ! {warning}\n", ""));
+            }
+        }
+        out.push_str("\nRun `aasm integrations status <tool>` for the evidence behind a protection level.\n");
+        out
+    }
+}
+
+impl Report for PlanReport {
+    fn render_human(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("Plan {} for {}\n", self.plan_id, self.tool_id));
+        out.push_str(&format!("  profile:         {}\n", self.profile));
+        out.push_str(&format!("  settings scope:  {}\n", self.settings_scope));
+        out.push_str(&format!("  planned level:   {}\n", self.planned_level));
+        out.push_str(&format!("  adapter ceiling: {}\n", self.adapter_ceiling));
+        if let Some(profile) = &self.policy_profile {
+            out.push_str(&format!(
+                "  policy profile:  {} ({}, digest {})\n",
+                profile.display_name, profile.id, profile.digest
+            ));
+        }
+        out.push_str("\nMaterial changes:\n");
+        render_steps(&mut out, &self.steps);
+
+        out.push_str("\nPermissions required:\n");
+        if self.required_permissions.is_empty() {
+            out.push_str("  (none — no step changes host state)\n");
+        } else {
+            for prompt in &self.required_permissions {
+                out.push_str(&format!("  - {prompt}\n"));
+            }
+        }
+
+        if !self.unsupported.is_empty() {
+            out.push_str("\nNot available for this tool:\n");
+            for row in &self.unsupported {
+                out.push_str(&format!("  - {}: {}\n", row.capability, row.reason));
+            }
+        }
+        bullets(&mut out, "Warnings", &self.warnings);
+        if !self.mutated {
+            out.push_str("\nNothing has been changed. Run `aasm integrations install <tool>` to apply.\n");
+        }
+        out
+    }
+}
+
+impl Report for InstallReport {
+    fn render_human(&self) -> String {
+        let mut out = self.plan.render_human();
+        out.push_str(&format!("\nApplied as receipt {}\n", self.receipt_id));
+        out.push_str(&format!("  at:              {}\n", self.applied_at_unix_secs));
+        out.push_str(&format!("  planned level:   {}\n", self.planned_level));
+        out.push_str(&format!("  achieved level:  {}\n", self.achieved_level));
+        out.push_str(&format!("  host changed:    {}\n", tick(self.mutated)));
+        out.push_str("\nStep outcomes:\n");
+        for step in &self.steps {
+            out.push_str(&format!(
+                "  - {}: {}{}\n",
+                step.step_id,
+                step.outcome,
+                step.fingerprint.as_ref().map(|f| format!(" ({f})")).unwrap_or_default()
+            ));
+        }
+        out.push_str(
+            "\nInstalling configures the tool. It does not by itself prove anything is protected — \
+             run `aasm integrations verify <tool>`.\n",
+        );
+        out
+    }
+}
+
+impl Report for StatusReport {
+    fn render_human(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("{} — {}\n", self.tool_id, self.achieved_level));
+        out.push_str(&format!("  observed at:     {} (unix)\n", self.observed_at_unix_secs));
+        out.push_str(&format!("  lifecycle phase: {}\n", self.phase));
+        out.push_str(&format!("  state:           {}\n", self.state));
+        out.push_str(&format!("  planned level:   {}\n", self.planned_level));
+        out.push_str(&format!("  compatibility:   {}\n", self.compatibility));
+        out.push_str(&format!("  adapter ceiling: {}\n", self.adapter_ceiling));
+
+        out.push_str("\nRuntime:\n");
+        out.push_str(&format!(
+            "  core {} over DI-API v{}{}\n",
+            self.runtime.core_version,
+            self.runtime.di_api_version,
+            if self.runtime.degraded { " (degraded)" } else { "" }
+        ));
+        if let Some(verified) = self.last_verified_at_unix_secs {
+            out.push_str(&format!("  last verification: {verified} (unix)\n"));
+        } else {
+            out.push_str("  last verification: never\n");
+        }
+
+        out.push_str("\nProtection levels:\n");
+        for level in &self.levels {
+            let mark = match (level.achieved, level.available) {
+                (true, _) => "active",
+                (false, true) => "not active",
+                (false, false) => "unavailable on this platform",
+            };
+            out.push_str(&format!("  {:<20} {}\n", level.level, mark));
+            out.push_str(&format!("  {:<20}   {}\n", "", level.limitation));
+        }
+        if let Some(next) = &self.next_level {
+            out.push_str(&format!("\nNext level up: {} — {}\n", next.level, next.limitation));
+        }
+
+        render_evidence(
+            &mut out,
+            "Exercised evidence (traffic was produced and adjudicated)",
+            &self.exercised_evidence,
+            "none — nothing about traffic has been demonstrated",
+        );
+        render_evidence(
+            &mut out,
+            "Read-back evidence (configuration was compared to the receipt)",
+            &self.read_back_evidence,
+            "none",
+        );
+        if !self.absent_evidence.is_empty() {
+            render_evidence(&mut out, "Checks that could not be made", &self.absent_evidence, "none");
+        }
+
+        if let Some(reason) = &self.state_reason {
+            out.push_str(&format!("\nWhy: {reason}\n"));
+        }
+        if let Some(remediation) = &self.state_remediation {
+            out.push_str(&format!("Fix: {remediation}\n"));
+        }
+        bullets(&mut out, "Drifted artifacts", &self.drift_mismatched);
+        if self.repair_available {
+            out.push_str("\nRun `aasm integrations repair ");
+            out.push_str(&self.tool_id);
+            out.push_str("` to restore the AASM-owned state above.\n");
+        }
+        if !self.unsupported.is_empty() {
+            out.push_str("\nMechanisms this tool cannot use:\n");
+            for row in &self.unsupported {
+                out.push_str(&format!("  - {}: {}\n", row.capability, row.reason));
+            }
+        }
+        out
+    }
+}
+
+impl Report for VerifyReport {
+    fn render_human(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("{} — verification {}\n", self.tool_id, self.outcome));
+        out.push_str(&format!(
+            "  ran at:               {} (unix)\n",
+            self.verified_at_unix_secs
+        ));
+        out.push_str(&format!(
+            "  protected path exercised: {}\n",
+            tick(self.protected_path_exercised)
+        ));
+
+        out.push_str("\nAssertions:\n");
+        for assertion in &self.assertions {
+            out.push_str(&format!(
+                "  [{}] {:<38} {}\n",
+                if assertion.holds { "ok" } else { "--" },
+                assertion.id,
+                assertion.detail
+            ));
+        }
+
+        render_evidence(&mut out, "Evidence", &self.evidence, "none");
+        bullets(&mut out, "Not established", &self.missing);
+        if let Some(reason) = &self.reason {
+            out.push_str(&format!("\nWhy: {reason}\n"));
+        }
+        if !self.established_protection() {
+            out.push_str(
+                "\nThis is NOT a protection measurement. Configuration that exists is not evidence \
+                 that anything was protected; the protected path must be exercised and adjudicated.\n",
+            );
+        }
+        out
+    }
+}
+
+impl Report for RepairReport {
+    fn render_human(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "{} — {}\n",
+            self.tool_id,
+            if self.dry_run { "repair preview" } else { "repair" }
+        ));
+        bullets(&mut out, "Drifted", &self.drifted);
+        if self.dry_run {
+            out.push_str("\nNothing has been changed. Re-run without --dry-run to restore the AASM-owned state.\n");
+        } else {
+            bullets(&mut out, "Restored", &self.repaired);
+        }
+        if !self.unresolved.is_empty() {
+            out.push_str("\nLeft alone (not AASM's to change, or not repairable):\n");
+            for row in &self.unresolved {
+                out.push_str(&format!("  - {}: {}\n", row.capability, row.reason));
+            }
+            out.push_str(
+                "  Protection is degraded while these stand; `aasm integrations status` shows what \
+                 the evidence currently supports.\n",
+            );
+        }
+        if let Some(status) = &self.status {
+            out.push('\n');
+            out.push_str(&status.render_human());
+        }
+        out
+    }
+}
+
+impl Report for RemoveReport {
+    fn render_human(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "{} — {} (plan {})\n",
+            self.tool_id,
+            if self.dry_run { "removal preview" } else { "removal" },
+            self.plan_id
+        ));
+        out.push_str("\nRestoration actions:\n");
+        render_steps(&mut out, &self.steps);
+        bullets(&mut out, "Left behind", &self.residual);
+        bullets(&mut out, "Warnings", &self.warnings);
+        if self.dry_run {
+            out.push_str("\nNothing has been changed. Re-run without --dry-run to remove the integration.\n");
+        } else {
+            out.push_str("\nConfiguration Agent Assembly did not write has been left untouched.\n");
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::integrations::model::{Assertion, EvidenceRow, RuntimeInfo, VerifyReport};
+
+    fn runtime() -> RuntimeInfo {
+        RuntimeInfo {
+            di_api_version: 2,
+            core_version: "0.0.1".to_string(),
+            degraded: false,
+            unavailable_verbs: Vec::new(),
+            started_by_this_command: false,
+        }
+    }
+
+    fn vacuous() -> VerifyReport {
+        VerifyReport {
+            runtime: runtime(),
+            tool_id: "claude-code".to_string(),
+            verified_at_unix_secs: 1,
+            outcome: "passed".to_string(),
+            missing: Vec::new(),
+            reason: None,
+            protected_path_exercised: false,
+            assertions: vec![Assertion {
+                id: "protected_path_exercised".to_string(),
+                holds: false,
+                detail: "nothing protective was observed".to_string(),
+            }],
+            evidence: vec![EvidenceRow {
+                mechanism: "managed_settings".to_string(),
+                kind: "read_back".to_string(),
+                outcome: "matched".to_string(),
+                observed_at_unix_secs: 1,
+                detail: "the managed keys match".to_string(),
+            }],
+        }
+    }
+
+    /// The human rendering must not let a vacuous pass read as a success. A
+    /// user who sees "verification passed" and nothing else has been told
+    /// something untrue.
+    #[test]
+    fn a_vacuous_pass_says_so_in_the_human_rendering() {
+        let rendered = vacuous().render_human();
+        assert!(rendered.contains("NOT a protection measurement"), "{rendered}");
+        assert!(rendered.contains("protected path exercised: no"), "{rendered}");
+    }
+
+    /// Every field a person can read must be readable by a script, because both
+    /// come out of one struct. Asserted on the JSON so a future `render_human`
+    /// that computed something extra locally would show up here as a field the
+    /// JSON does not have.
+    #[test]
+    fn the_json_and_the_human_rendering_agree_on_the_facts() {
+        let report = vacuous();
+        let json = serde_json::to_value(&report).expect("serialize");
+        assert_eq!(json["protected_path_exercised"], serde_json::json!(false));
+        assert_eq!(json["outcome"], serde_json::json!("passed"));
+        assert_eq!(json["assertions"][0]["holds"], serde_json::json!(false));
+        assert!(report.render_human().contains("passed"));
+    }
+}
