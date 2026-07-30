@@ -5,10 +5,20 @@ publish = false  # AAASM-2340: dev-tool subsystem held back from this alpha — 
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Dev tool auto-discovery for Agent Assembly"
+description = "Dev tool registry and auto-discovery for Agent Assembly"
 
 [dependencies]
 aa-devtool-contract = { path = "../aa-devtool-contract" }
+# AAASM-5274: the per-tool crates are the authoritative adapter implementations.
+# `aa-devtool` links them so `registry::adapter_for` can be the one place any
+# consumer (DiscoveryService, `aasm run`, the API) resolves a tool's adapter —
+# previously discovery and launch each picked their own and disagreed. All of
+# these are `publish = false`, as is `aa-devtool` itself, so this adds no
+# crates.io surface (aa-cli strips its `aa-devtool` dep before publishing).
+aa-devtool-claude-code = { path = "../aa-devtool-claude-code" }
+aa-devtool-codex = { path = "../aa-devtool-codex" }
+aa-devtool-copilot = { path = "../aa-devtool-copilot" }
+aa-devtool-windsurf = { path = "../aa-devtool-windsurf" }
 async-trait = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }

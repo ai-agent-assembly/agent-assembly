@@ -164,7 +164,11 @@ dependencies = [
 name = "aa-devtool"
 version = "0.0.1-rc.6"
 dependencies = [
+ "aa-devtool-claude-code",
+ "aa-devtool-codex",
  "aa-devtool-contract",
+ "aa-devtool-copilot",
+ "aa-devtool-windsurf",
  "async-trait",
  "dirs",
  "futures",
