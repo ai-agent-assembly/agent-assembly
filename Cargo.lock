@@ -204,6 +204,9 @@ name = "aa-devtool-contract"
 version = "0.0.1-rc.6"
 dependencies = [
  "aa-core",
+ "async-trait",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
