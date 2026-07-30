@@ -1,6 +1,6 @@
 # ADR 0023: Is `aa-api` Meant to Carry a Policy Cascade?
 
-**Status**: Proposed — **requires architecture sign-off before any implementation; product sign-off additionally required if Option C is chosen**
+**Status**: Accepted (2026-07-30, **Option (a)** — architecture). `aa-api` is wired to load a policy cascade from an operator-settable directory, using the **same `load_cascade_from_dir` loader `aa-gateway` already uses** (as AAASM-3499 did for the gateway), so the dashboard's cascade-derived projections reflect the same policy source the gateway enforces. Read-only projection only — no enforcement path is touched. The interim empty-cascade truthfulness mitigation (ADR-0024) is a prerequisite and has already landed (AAASM-5106 / #1825). Implemented under AAASM-5299.
 **Date**: 2026-07
 **Ticket**: [AAASM-5106](https://lightning-dust-mite.atlassian.net/browse/AAASM-5106) (Epic [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082))
 
