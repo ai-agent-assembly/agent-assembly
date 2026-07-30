@@ -245,9 +245,75 @@ denials and redactions over a selectable window, with a sparkline.
   fleet; two counts are harder to rank by. "Which of my 400 agents should I look at
   first" is a real operator question that a score answers and counts do not.
 
+### Option D — Option A's formula as a default, with tenant-configurable weights (ACCEPTED)
+
+Ship Option A's clean-rate formula as the **product-owned default**, and make each
+penalty signal **operator-configurable at the tenant layer**. This is the accepted
+option; it did not exist in the original draft and was added on 2026-07-30 after the
+product discussion below.
+
+The insight it resolves: every objection to Option A (§Con) — *should
+`CredentialLeakBlocked` be penalised at all?*, *is a redaction 1.5× a violation?*, *is
+this "friction" or "risk"?* — is a **tenant-specific value judgement**, not a
+derivation. A security-conservative tenant may want a blocked credential leak to hurt
+the score; a tenant whose whole thesis is "the LLM works fine never seeing the secret"
+may consider the DLP layer doing its job and want it to count for nothing. Both are
+correct *for that tenant*. So the weight is not a universal constant to be discovered —
+it is a policy each tenant sets.
+
+```
+# Per-tenant config (defaults = Option A, which every tenant inherits until they change it):
+[trust]
+window            = "7d"         # default; v1 keeps this fixed
+min_actions       = 20           # default; cold-start floor, not tenant-tunable in v1
+[trust.signals.policy_violation]      enabled = true  weight = 1.0   # default
+[trust.signals.credential_redaction]  enabled = true  weight = 1.5   # a tenant may disable or reweight
+[trust.signals.approval_rejection]    enabled = true  weight = 0.5
+
+# Score is then Option A's arithmetic over only the ENABLED signals, with the tenant's weights:
+penalty = Σ (weight_i × count_i)   for each enabled signal i
+trust   = clamp(round(100 * (1 - penalty / D)), 0, 100)
+```
+
+- **Scope of configurability (v1, deliberately narrow):** per-signal **on/off** + **weight**
+  only. Bucket thresholds (60/80) and the window (`7d`) stay at sensible defaults — they
+  are not tenant-tunable in v1, to avoid shipping an over-complex first version. A later
+  ADR can widen the surface if operators ask for it.
+- **Where config lives:** the **tenant layer** (per team/org), because different teams
+  have different security postures. This requires a durable per-tenant config store and
+  reuses the existing tenant-confinement path (`scope_entries`); a trust endpoint must
+  never read another tenant's config or another tenant's audit entries.
+- **Guardrail 1 — the score is labelled with the weight-set that produced it.** A
+  `trust: 78` computed under tenant A's weights is not comparable to a `78` under tenant
+  B's. The API response carries the effective config (or a hash/version of it) and the
+  UI states the score is "a policy-friction score under your configured weights", never
+  a universal objective measure. Cross-tenant ranking of raw scores is therefore not
+  offered as if the numbers were commensurable.
+- **Guardrail 2 — configurability never manufactures certainty.** Cold start
+  (`D < min_actions`) and a truncated window both return `null`, *regardless of how the
+  weights are set*. No weight configuration can turn "not enough data" into a number.
+  Disabling every signal yields a constant `100` only when `D ≥ min_actions` — and the
+  UI labels that as "no penalty signals enabled", not as "fully trusted".
+- **Pro:** puts the value judgement where it belongs — with the tenant who owns the
+  security posture — which is the cleanest possible answer to this ADR's founding
+  concern that an *unowned* weight is an invented derivation. A tenant-set weight is, by
+  construction, owned.
+- **Pro:** every deployment still gets a working score on day one from the defaults; the
+  configurability is opt-in.
+- **Con:** more work than plain Option A — needs a per-tenant config store, config
+  read/write endpoints, and the labelling plumbing. Accepted, because the flexibility
+  directly serves the product's multi-tenant governance thesis.
+- **Con:** two tenants' scores are not comparable, and that limitation must be surfaced
+  honestly (Guardrail 1) rather than hidden.
+
 ---
 
 ## Recommendation
+
+> **Superseded by the 2026-07-30 decision (Option D).** The original recommendation
+> below (Option A with three conditions) stands as the *default* Option D ships; Option
+> D wraps it with tenant-configurable weights. The three conditions remain binding and
+> are folded into Option D's guardrails. Retained verbatim for the reasoning trail.
 
 **Option A**, with three conditions.
 
