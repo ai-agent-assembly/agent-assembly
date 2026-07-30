@@ -38,7 +38,7 @@ function makeAgent(id: string, name: string): Agent {
     active_sessions: [],
     session_count: 0,
     policy_violations_count: 0,
-    tool_names: [],
+    is_flagged: false,    tool_names: [],
     metadata: {},
     pid: null,
   }

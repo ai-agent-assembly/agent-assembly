@@ -23,6 +23,7 @@ const AGENT = {
   active_sessions: [],
   session_count: 10,
   policy_violations_count: 4,
+  is_flagged: true,
   tool_names: [],
   metadata: { owner: 'alice', mode: 'shadow' },
   pid: null,

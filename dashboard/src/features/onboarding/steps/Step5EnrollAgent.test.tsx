@@ -24,7 +24,7 @@ const AGENT = {
   metadata: {},
   session_count: 0,
   policy_violations_count: 0,
-  active_sessions: [],
+  is_flagged: false,  active_sessions: [],
   recent_events: [],
   recent_traces: [],
   last_event: '2026-07-26T09:00:00Z',

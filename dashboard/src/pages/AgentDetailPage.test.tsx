@@ -97,6 +97,7 @@ const MOCK_AGENT: Agent = {
   active_sessions: [],
   session_count: 10,
   policy_violations_count: 4,
+  is_flagged: true,
   tool_names: ['web_search'],
   metadata: { owner: 'alice' },
   pid: null,

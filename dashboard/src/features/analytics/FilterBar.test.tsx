@@ -8,8 +8,8 @@ import type { TeamSummary } from './useTeamsQuery'
 const DEFAULT_FILTERS: FilterParams = { range: '7d', agents: [], teams: [] }
 
 const MOCK_AGENTS: Agent[] = [
-  { id: 'a1', name: 'Agent One', framework: 'langgraph', active_sessions: [], metadata: {}, policy_violations_count: 0, recent_events: [], recent_traces: [], session_count: 0, status: 'active', tool_names: [], version: '0.0.1' },
-  { id: 'a2', name: 'Agent Two', framework: 'crewai', active_sessions: [], metadata: {}, policy_violations_count: 0, recent_events: [], recent_traces: [], session_count: 0, status: 'active', tool_names: [], version: '0.0.1' },
+  { id: 'a1', name: 'Agent One', framework: 'langgraph', active_sessions: [], metadata: {}, policy_violations_count: 0, is_flagged: false, recent_events: [], recent_traces: [], session_count: 0, status: 'active', tool_names: [], version: '0.0.1' },
+  { id: 'a2', name: 'Agent Two', framework: 'crewai', active_sessions: [], metadata: {}, policy_violations_count: 0, is_flagged: false, recent_events: [], recent_traces: [], session_count: 0, status: 'active', tool_names: [], version: '0.0.1' },
 ]
 
 const MOCK_TEAMS: TeamSummary[] = [

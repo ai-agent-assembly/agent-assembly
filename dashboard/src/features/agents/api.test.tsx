@@ -44,6 +44,7 @@ const MOCK_AGENT: Agent = {
   active_sessions: [],
   session_count: 3,
   policy_violations_count: 1,
+  is_flagged: true,
   tool_names: ['web_search', 'code_exec'],
   metadata: {},
   pid: null,
