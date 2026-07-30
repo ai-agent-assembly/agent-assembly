@@ -238,6 +238,11 @@ pub(crate) fn verb_failure(error: aa_runtime::devint::ClientError) -> Failure {
                 }
                 _ => Outcome::InternalError,
             };
+            // `DENY_CODE_LIFECYCLE_ERROR` carries the service's own sentence
+            // and no remediation (§5.3 keeps deny codes coarse), so the
+            // remediation is supplied here — and it points at `status`, which
+            // is the one command that can say what is actually in place after a
+            // half-finished operation.
             let remediation = if denied.remediation.is_empty() {
                 default_remediation(outcome).to_string()
             } else {
@@ -266,7 +271,10 @@ const fn default_remediation(outcome: Outcome) -> &'static str {
         Outcome::Unsupported => "run `aasm integrations list` to see the tools this build knows about",
         Outcome::Incompatible => "upgrade aasm and the Agent Assembly runtime together — they ship as one unit",
         Outcome::Denied => "restart the Agent Assembly runtime to re-enrol this client",
-        _ => "re-run the command; if it persists, check the runtime's logs",
+        _ => {
+            "run `aasm integrations status <tool>` to see what is in place; \
+              the Agent Assembly runtime's log carries the detail"
+        }
     }
 }
 
