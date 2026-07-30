@@ -32,7 +32,8 @@
 //!
 //! # Migration
 //!
-//! Nothing here replaces [`DevToolAdapter`], which is retained unchanged.
+//! Nothing here replaces [`DevToolAdapter`](crate::DevToolAdapter), which is
+//! retained unchanged.
 //! [`LegacyAdapterShim`] makes any existing adapter — in-tree, out-of-tree, or
 //! the public sample — satisfy the new contract on day one, declaring honestly
 //! that it cannot substantiate the mechanisms it was never designed to expose.
