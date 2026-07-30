@@ -64,12 +64,18 @@ pub mod lifecycle;
 pub mod negotiate;
 pub mod projection;
 pub mod scope;
+pub mod server;
 pub mod socket;
+#[cfg(test)]
+pub mod testkit;
 pub mod token;
 pub mod verb;
 
+pub use audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
+pub use lifecycle::{IntegrationLifecycle, LifecycleError};
 pub use negotiate::{Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
-pub use scope::TokenScope;
+pub use scope::{TokenScope, ToolScope};
+pub use server::{DevIntServer, DevIntServerConfig, DevIntServices};
 pub use socket::{devint_socket_path, SocketDiscovery, SocketError};
 pub use token::{CapabilityToken, TokenDenial, TokenId, TokenRecord, TokenStore};
 pub use verb::DiVerb;
