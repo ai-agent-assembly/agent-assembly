@@ -162,7 +162,11 @@ impl StepReceipt {
     /// restorable — the absence of a record is not evidence there was nothing
     /// to record.
     pub fn is_provably_restorable(&self) -> bool {
-        if !self.applied {
+        // A step that was never applied, and a step that mutates nothing by
+        // construction, both have nothing to restore. Reporting a probe as
+        // unrestorable would make every removal leave a residual — and a
+        // residual is what keeps the receipt on disk.
+        if !self.applied || self.action.is_protection_test() {
             return true;
         }
         match &self.prior_state {
