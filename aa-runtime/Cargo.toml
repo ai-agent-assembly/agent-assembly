@@ -8,6 +8,11 @@ description = "Tokio async runtime wrapper and lifecycle management for Agent As
 
 [features]
 default = []
+# AAASM-5280: exposes `devint::fixture`, the configurable DevToolIntegration the
+# DI-API's end-to-end tests drive. `aa-cli` enables it as a dev-dependency so
+# its command tests run against the same boundary and the same adapter the
+# runtime's own tests do, rather than a second copy that would drift.
+test-fixtures = []
 # Enables integration tests that exercise both proxy and eBPF layers together.
 # Requires Linux + root (CAP_BPF + CAP_PERFMON). Not included in default features.
 # Usage: sudo cargo test -p aa-runtime --features integration-test --test layer_integration
