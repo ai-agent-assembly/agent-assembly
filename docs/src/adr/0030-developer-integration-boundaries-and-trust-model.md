@@ -696,3 +696,60 @@ installing the proxy CA into the system trust store
 step recorded in the receipt. It is never bundled into "install", never implied by a
 profile selection, and never performed by a thin client on its own authority. Silent
 installation of a privileged host component is a forbidden design.
+
+### 7. Migration — additive first, with a shim so nothing breaks on day one
+
+The migration mechanism is a **new, separate trait plus a blanket shim**, not an edit to
+`DevToolAdapter`. `aa-core`'s `DevToolAdapter` (`aa-core/src/dev_tool.rs:231-341`) is
+**retained unchanged** for the whole migration.
+
+```rust
+/// Lets any existing `DevToolAdapter` satisfy the new lifecycle contract
+/// without being rewritten.
+pub struct LegacyAdapterShim<A: DevToolAdapter>(A);
+```
+
+The shim maps `detect()` → discovery; `generate_managed_settings()` + `apply_settings()`
+→ a single-step `IntegrationPlan`; `governance_level()` → the plan's *planned* level
+ceiling; and declares every capability it cannot substantiate as
+`Unsupported { reason: "legacy adapter — not migrated" }`. Because the shim is generic,
+`examples/aa-devtool-sample-myeditor` continues to compile and pass its existing
+`tests/contract.rs` **untouched**, and yields a valid one-step plan through the new
+lifecycle. No third-party adapter breaks.
+
+#### 7.1 Impact per component
+
+| Component | Impact | Breaking? |
+| --- | --- | --- |
+| **`aa-devtool-contract`** | Adds a second, still-flat re-export group: `DevToolIntegration`, the optional sub-traits (`McpGovernedTool`, `LaunchableTool`, `HookableTool`), `DevToolCapabilities`, `IntegrationCapability`, `CapabilitySupport`, `IntegrationRequest`, `IntegrationPlan`, `IntegrationStep`, `IntegrationReceipt`, `IntegrationStatus`, `ProtectionState`, `ProtectionEvidence`, `VerificationResult`, `RemovalPlan`, `LegacyAdapterShim`. The prohibition is unchanged: **no whole `aa-core` modules, no `storage`/`identity`/`config`**. Naming these here does **not** pre-approve them — each is still a CODEOWNERS-reviewed widening at the PR that adds it. | No — additive |
+| **`aa-core`** | New domain types + the new trait alongside `DevToolAdapter`. `AdapterError` gains variants; it is `#[non_exhaustive]`, so that is not breaking. | No |
+| **`aa-devtool`** | `discovery.rs` (`DiscoveryService`) becomes the discovery half of the DIS. `capability_bridge.rs` keeps its current *agent-capability* meaning and must not be repurposed for `IntegrationCapability` (§3.1). | No |
+| **`aa-devtool-claude-code`** | First native implementor of `DevToolIntegration` (it already reaches `L2Enforce`). Which Claude Code adapter survives is [AAASM-5274](https://lightning-dust-mite.atlassian.net/browse/AAASM-5274)'s decision, on a parallel branch; this ADR only requires that afterwards there is **exactly one**. | No |
+| **`aa-devtool-codex`** | Deletes the `apply_mcp_governance` → `Ok(())` stub (`src/lib.rs:312`) by simply not declaring `McpGovernance`. The comment *"Codex does not expose MCP governance"* becomes a machine-readable fact. | No |
+| **`aa-devtool-copilot` / `aa-devtool-windsurf`** | `build_launch_command`'s `LaunchFailed("… is a VS Code extension …")` becomes `ManagedLaunch: Unsupported { reason }`, moving the failure from run time to plan time. The old method keeps its behaviour while the shim is in place. | No |
+| **`aa-devtool-saas`** | Declares the SaaS column of §3.5 — mostly `Unsupported` with reasons, `HostEnforcement` where egress interception applies. | No |
+| **`aa-cli`** | The largest shape change: `PlaceholderAdapter` (`src/commands/run.rs:124`) is retired, and `aasm` stops constructing adapters in-process for lifecycle operations, becoming a **DI-API client** ([AAASM-5280](https://lightning-dust-mite.atlassian.net/browse/AAASM-5280)). Consequence: lifecycle commands need the runtime running. An in-process `--local` fallback is **deliberately not offered** — it would be a second code path with a different trust model, which is what ADR 0004 rejected for transports. | Behavioural, gated on 5274/5280 |
+| **`aa-api`** | `DiscoveryService::with_adapters(vec![])` (`src/state.rs:370`) is why `GET /api/v1/tools` returns `[]`. REST may render an integration **read-only** projection for the dashboard (its ADR 0004 operator role), but must never carry a lifecycle **mutation** — those are DI-API only. | No |
+| **`examples/aa-devtool-sample-myeditor`** | Unchanged, compiles as-is via the shim. Its contract tests stay green. | No |
+
+#### 7.2 If a break becomes unavoidable
+
+`DevToolAdapter` is removed only in a **major `aa-core` bump**, with `LegacyAdapterShim`
+retained for at least one minor release after the last in-tree consumer migrates, and a
+migration section added to `docs/devtools/plugins.md` — a file this ADR deliberately does
+not edit (it is owned by a parallel branch); updating it is a follow-up on the
+implementing ticket. `docs/devtools/plugins.md` already states the pinning rule that makes
+this safe for third parties: *"Adapters are tightly coupled to the `aa-core` major version
+they were built against. Pin `aa-core` exactly."*
+
+#### 7.3 Sequencing
+
+1. **This ADR** (AAASM-5275) — ratified when 5277 lands.
+2. [AAASM-5274](https://lightning-dust-mite.atlassian.net/browse/AAASM-5274) — one adapter per tool (in flight, parallel).
+3. [AAASM-5277](https://lightning-dust-mite.atlassian.net/browse/AAASM-5277) — the lifecycle contract + capability types + shim.
+4. [AAASM-5278](https://lightning-dust-mite.atlassian.net/browse/AAASM-5278) — plan / receipt / drift / rollback.
+5. [AAASM-5279](https://lightning-dust-mite.atlassian.net/browse/AAASM-5279) — the DI-API (transport, tokens, versioning).
+6. [AAASM-5280](https://lightning-dust-mite.atlassian.net/browse/AAASM-5280) / [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281) — CLI commands and the productized Claude Code integration.
+
+Steps 4–6 are blocked on step 3 in the same boundary-first way ADR 0002's migration order
+gated its steps 6–9 on the runtime becoming authoritative.
