@@ -59,9 +59,11 @@
 //! someone might forget (§5.5).
 
 pub mod scope;
+pub mod socket;
 pub mod token;
 pub mod verb;
 
 pub use scope::TokenScope;
+pub use socket::{devint_socket_path, SocketDiscovery, SocketError};
 pub use token::{CapabilityToken, TokenDenial, TokenId, TokenRecord, TokenStore};
 pub use verb::DiVerb;
