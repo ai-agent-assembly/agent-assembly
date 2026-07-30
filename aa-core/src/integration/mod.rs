@@ -38,9 +38,14 @@
 //! that it cannot substantiate the mechanisms it was never designed to expose.
 
 pub mod capability;
+pub mod state;
 pub mod version;
 
 pub use capability::{CapabilityResolution, CapabilitySupport, DevToolCapabilities, IntegrationCapability};
+pub use state::{
+    EvidenceKind, ExerciseOutcome, ProtectionEvidence, ProtectionLevel, ProtectionState, StateDerivation,
+    DEFAULT_FRESHNESS_WINDOW_SECS,
+};
 pub use version::{
     core_version, ComponentVersions, SupportedToolVersions, ToolVersion, VersionCompatibility, VersionParseError,
     VersionSupport, LIFECYCLE_SCHEMA_VERSION,
