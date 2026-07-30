@@ -846,4 +846,43 @@ mod tests {
         let rate = LocalStateError::RateLimit("abc".to_string());
         assert_eq!(rate.to_string(), "invalid AA_RATE_LIMIT_RPM: abc");
     }
+
+    /// AAASM-5299 — `resolve_policy_source` routes on the *shape* of the
+    /// `$AA_POLICY` value exactly like `aa-gateway`: an existing directory is a
+    /// cascade source, an existing file is a single-policy source, and an
+    /// unset / empty / non-existent value is `Unset` (bootstrap-synthesis).
+    /// The env lookup is injected so this test never touches the real
+    /// process environment.
+    #[test]
+    fn resolve_policy_source_routes_on_path_shape() {
+        let dir = std::env::temp_dir().join(format!("aa-api-resolve-src-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = dir.join("policy.yaml");
+        std::fs::write(&file, "x").expect("temp file");
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let file_str = file.to_string_lossy().into_owned();
+
+        // Directory → Directory.
+        assert_eq!(
+            resolve_policy_source(|_| Some(dir_str.clone())),
+            PolicySource::Directory(dir.clone()),
+        );
+        // File → File.
+        assert_eq!(
+            resolve_policy_source(|_| Some(file_str.clone())),
+            PolicySource::File(file.clone()),
+        );
+        // Unset → Unset.
+        assert_eq!(resolve_policy_source(|_| None), PolicySource::Unset);
+        // Empty string → Unset.
+        assert_eq!(resolve_policy_source(|_| Some(String::new())), PolicySource::Unset);
+        // Non-existent path → Unset (never presented as an operator source).
+        assert_eq!(
+            resolve_policy_source(|_| Some("/nonexistent-aa-policy-path-xyz".to_string())),
+            PolicySource::Unset,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
