@@ -252,6 +252,15 @@ success nothing performed.
 
 `verify` needs a probe that can adjudicate what the provider received. A default
 build has none — a client on the near side of the proxy cannot see the forwarded
-body — so `verify` reports the model path as configured but never exercised, and
-the level stays at `Integrated`. That is the honest reading: configuration alone
-is not evidence that anything inspected the traffic.
+body — so `verify` reports the model path as configured but never exercised, the
+level stays at `Integrated`, and the command **exits `6`**. That is the honest
+reading: configuration alone is not evidence that anything inspected the traffic.
+See [Limitations](limitations.md#verify-cannot-adjudicate-so-it-exits-6).
+
+## See also
+
+* [Onboarding a Developer Integration](onboarding.md) — the same journey as a
+  walkthrough, with troubleshooting.
+* [Protection levels](protection-levels.md) — what `Integrated`,
+  `Gateway Protected` and `Host Enforced` mean.
+* [Limitations and known bypasses](limitations.md).

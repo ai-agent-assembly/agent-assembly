@@ -96,6 +96,9 @@
 # Developer Integrations
 
 - [Product Capability Brief](devtools/product-brief.md)
+- [Onboarding a Developer Integration](devtools/onboarding.md)
+- [Protection Levels](devtools/protection-levels.md)
+- [Limitations and Known Bypasses](devtools/limitations.md)
 - [Developer Integration API](devtools/developer-integration-api.md)
 - [`aasm integrations` CLI](devtools/cli.md)
 - [Thin-Client Reference Implementation](devtools/reference-client.md)

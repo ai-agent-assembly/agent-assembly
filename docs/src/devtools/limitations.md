@@ -1,0 +1,327 @@
+# Limitations and known bypasses
+
+Everything on this page is a limit that exists **today**, in the shipped code, on
+the platform the MVP targets. It is written so that a security reviewer can read
+it instead of reverse-engineering the integration, and so that nothing here has
+to be discovered the hard way.
+
+The evidence base is `verification-reports/AAASM-5276-claude-code-mechanism-matrix.md`
+— the measured mechanism matrix from the Claude Code lifecycle Spike — plus the
+adapter code that shipped in
+[AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281). A
+claim that traces to neither is not on this page.
+
+## Capability status legend
+
+| Status | Meaning |
+|---|---|
+| **Supported** | Shipped and exercised by tests. |
+| **Experimental** | Shipped, but its evidence is incomplete or its shape may change. |
+| **Planned** | Not built. The ticket that builds it is named. |
+| **Unsupported** | Deliberately not offered, with a reason. |
+
+| Capability | Status | Note |
+|---|---|---|
+| Managed settings write / merge / restore | **Supported** | Four owned keys; every other key preserved. |
+| Proxy CA materialisation + `NODE_EXTRA_CA_CERTS` injection | **Supported** | AAASM-5276 condition C1. |
+| HTTPS interception and redaction on the model path | **Supported** | Measured against the real binary; see [`verify`](#verify-cannot-adjudicate-so-it-exits-6) for why the *level* still does not rise. |
+| Side-channel scoping (`*.anthropic.com`) | **Supported** | Condition C5. |
+| MCP loading control (`enabledMcpjsonServers` / `disabledMcpjsonServers`) | **Supported** | Optional, defence-in-depth. Never required for protection. |
+| Drift detection and repair | **Supported** | Detected at `status`/`verify` time, not in real time. |
+| Adjudicating protection probe | **Planned** | The default probe cannot see the forwarded body. |
+| `strict` blocking on a high-severity scanner finding | **Planned** | [AAASM-5277](https://lightning-dust-mite.atlassian.net/browse/AAASM-5277), [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281). Today `strict` redacts, like `recommended`. |
+| Endpoint managed-settings enforcement keys | **Planned / unmeasured** | [AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298). |
+| Byte-exact configuration restore | **Unsupported** | Semantics-exact by accepted constraint (C3). |
+| `ANTHROPIC_BASE_URL` redirection as a protection mechanism | **Unsupported** | Measured delivering the raw secret. |
+| Host-level bypass prevention | **Unsupported** | Explicit non-goal. |
+| Lifecycle for Codex / Copilot / Windsurf | **Planned** | Carried by `LegacyAdapterShim`; apply is refused. |
+| Windows / Linux | **Unsupported** | macOS is the MVP platform. |
+
+---
+
+## Known bypasses: demonstrated versus inferred
+
+This split is published deliberately. Presenting the two groups as one
+undifferentiated list would overstate what has actually been tested — a
+demonstrated bypass is a measurement, an inferred one is a documented belief, and
+a reader deciding how much to trust this integration needs to know which is
+which.
+
+### Demonstrated by the AAASM-5276 harness
+
+Three, each asserted positively by a test:
+
+1. **`ANTHROPIC_BASE_URL` pointed at any endpoint removes Agent Assembly from
+   the path; the raw secret arrives.** Shown with both the real `claude 2.1.220`
+   binary and an emulated client.
+2. **Launching `claude` outside the managed path (no `HTTPS_PROXY`) is
+   unprotected.**
+3. **`Observe`/`AlertOnly` forwards the secret unchanged** — correct behaviour,
+   and the reason observe-only must never render as protection.
+
+### Inferred, not demonstrated
+
+Documented, **not measured** by the Spike:
+
+`--dangerously-skip-permissions` · `defaultMode: bypassPermissions` · `--bare` ·
+unsetting the proxy env in the shell · repointing `CLAUDE_CONFIG_DIR` ·
+symlinking `.claude` · replacing the binary · calling the API directly with the
+user's own key · switching provider (`CLAUDE_CODE_USE_BEDROCK` /
+`CLAUDE_CODE_USE_VERTEX`) · running a pre-managed-settings release · a hook
+exiting `1` instead of `2`.
+
+> The Spike's summary sentence counts these as *ten*; the enumeration above is
+> its own list and contains eleven items, because two permission-bypass flags are
+> enumerated separately. **The list is the claim, not the count.**
+
+Neither list is asserted to be exhaustive. "No finding" is not "no bypass".
+
+### Which of these the shipped integration can actually see
+
+Detection is not prevention. Where a bypass is detectable, the shipped adapter
+names it, lowers the reported protection level, and puts it in `status`; where it
+is not, the plan states so explicitly rather than leaving you to infer it from
+silence (`aa-devtool-claude-code/src/bypass.rs`).
+
+| Bypass | Detected? | Where it is looked for |
+|---|---|---|
+| `permissionMode` / `permissions.defaultMode` = `bypassPermissions` | **Yes** | The managed settings document. Becomes **Absent** evidence: the rules are still written and still read back, but nothing can be concluded from them about what the tool will do. |
+| `ANTHROPIC_BASE_URL` / `CLAUDE_CODE_API_BASE_URL` | **Yes** | The shell environment *and* a settings `env` block. |
+| `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` | **Yes** | The shell environment. |
+| `NODE_TLS_REJECT_UNAUTHORIZED` | **Yes** | The shell environment and a settings `env` block. |
+| `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--bare` | **Yes** | The launch arguments. Reported and **passed through unchanged** — Agent Assembly's interception sits *below* Claude Code's own permission enforcement, so stripping the flag would change your session without changing what is protected. |
+| Launching `claude` outside `aasm run` | **No** | No proxy or CA is injected; there is nothing to observe. |
+| Repointing `CLAUDE_CONFIG_DIR` | **No** | — |
+| Symlinking `.claude` | **No** | — |
+| Editing the settings file directly | **No** *(as a bypass)* | Surfaces later as **drift** at the next `status`/`verify`, not as a bypass at launch. |
+| Replacing the `claude` binary | **No** | — |
+| Calling the Anthropic API from another program with your own key | **No** | Not this tool, not this path. |
+| A hook exiting `1` instead of `2` | **No** | Hooks carry no sensitive-data claim here (see below). |
+
+**A bypass is not a failure.** An unprotected launch is reported as a bypass, not
+as an Agent Assembly error, because the remedy is different and blaming the
+system trains people to ignore real failures.
+
+---
+
+## `ANTHROPIC_BASE_URL` is routing, not protection
+
+Redirecting Claude Code's model endpoint is **unsuitable for protection** and is
+deliberately not offered as a mechanism (AAASM-5276 condition **C4**).
+
+It was measured, with both the real binary and an emulated client, delivering the
+synthetic secret to the provider **with no Agent Assembly component anywhere in
+the path**. Setting it in the shell additionally suppresses Claude Code's
+server-managed settings fetch.
+
+This is why the lifecycle contract keeps `ModelPathInterception` and
+`ModelGatewayBaseUrl` as separate capabilities. They look alike and they are
+opposites: the first is a protection capability, the second is routing that
+*removes* protection.
+
+## `verify` cannot adjudicate, so it exits `6`
+
+**On a default build, `aasm integrations verify claude-code` exits `6`
+(`verification_failed`) even on a completely correct installation.**
+
+Raising the level to `Gateway Protected` requires *exercised* evidence, and
+exercised means the traffic was produced **and adjudicated**. Adjudicating means
+knowing what the provider actually received — and a client on the **near side of
+the proxy cannot see the forwarded body**. The shipped default probe,
+`UnadjudicatedProbe`, therefore reports `Inconclusive` with its reason, and
+produces no traffic at all: sending a synthetic secret to a real provider for no
+evidential gain would be worse than saying nothing
+(`aa-devtool-claude-code/src/probe.rs`).
+
+A probe that returned `Redacted` because nothing obviously failed would be a
+**vacuous pass**, which is precisely what the evidence model exists to prevent.
+
+The consequence to be clear about: **you can reach `Integrated` and will
+correctly not be shown `Gateway Protected`, even though the protection genuinely
+works.** AAASM-5276 proved it end to end against the real `claude 2.1.220` binary
+and a TLS-terminating mock provider — every upstream request traversed the proxy,
+the scanner matched, and the forwarded body carried `[REDACTED:AnthropicKey]`
+while remaining valid Messages JSON.
+
+**Planned:** a deployment that can observe the forwarded payload supplies a probe
+that adjudicates, and only then does `GatewayProtected` become reachable. The
+probe is an injected capability specifically so that this can land without
+changing the evidence model.
+
+Read exit `6` on an otherwise-clean install as **"not measured"**, not as
+**"measured and failed"** — and read `status` for which it is.
+
+## The managed-settings path is unmeasured
+
+`/Library/Application Support/ClaudeCode/managed-settings.json` is the endpoint
+managed-settings file. Its managed-only keys —
+`allowManagedPermissionRulesOnly`, `disableBypassPermissionsMode`, and others —
+are **the strongest available counters to the bypasses listed above**.
+
+They are **unmeasured**. The directory did not exist on the Spike host, creating
+it requires root, and the Spike deliberately made no privileged writes. Nothing
+in `aa-devtool-claude-code` writes to it; `--scope managed` is refused, and the
+path is resolved only so a refusal can name it
+(`aa-devtool-claude-code/src/scope.rs`).
+
+> **Therefore: no non-overridable-enforcement claim is made anywhere in this
+> product** (AAASM-5276 condition **C6**). Nothing in these docs, the CLI or any
+> client should be read as implying that a bypass is prevented rather than
+> detected.
+
+Measuring this path on a managed/MDM macOS device is tracked as
+[AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298). It is
+a product decision rather than an engineering default, because it introduces a
+**privileged install step**.
+
+## Restore is semantics-exact, not byte-exact
+
+Accepted constraint C3
+([ADR 0030 — Accepted risks](../adr/0030-developer-integration-boundaries-and-trust-model.md);
+AAASM-5276 condition **C3**, accepted by
+[AAASM-5278](https://lightning-dust-mite.atlassian.net/browse/AAASM-5278)).
+
+`aa-devtool-claude-code/src/apply.rs` **reserialises the whole settings
+document** on every write. A user file in non-canonical formatting — hand-chosen
+key order, unusual indentation, trailing layout — therefore cannot survive an
+install → remove cycle byte-for-byte, no matter how good the receipt is.
+
+What removal **does** restore is the document's *meaning*:
+
+* every value Agent Assembly displaced is put back;
+* every key Agent Assembly added is deleted;
+* every key you changed after installation is carried through untouched.
+
+Two consequences follow deliberately from accepting this rather than working
+around it. Fingerprints are taken over **canonical JSON**, so a reformat is
+correctly reported as *no drift*. And a removal report **states the limitation**
+rather than implying a guarantee the write path cannot keep.
+
+The alternative — preserving the original document verbatim — was rejected as
+disproportionate for the MVP: it needs a format-preserving JSON editor no in-tree
+adapter has, and it buys byte-identity in a file the tool itself rewrites. If an
+adapter's write path ever stops reserialising, this becomes a *choice* rather
+than a constraint and should be revisited rather than inherited.
+
+## The scanner only recognises the shapes it knows
+
+Detection is deterministic and **pattern-based** (`aa-security`'s
+`CredentialScanner`). "Detected" means *matched by the pattern set*; it does not
+mean *understood*.
+
+A credential whose shape is not in the pattern set passes through
+unrecognised — a bespoke internal token, a secret with no distinguishing prefix,
+a value split across fields. There is no claim of complete detection, and the
+Spike explicitly does not license one.
+
+Two knock-on limits worth stating:
+
+* **An undetected secret is not absent from audit records.** If the scanner never
+  classified a value as a secret, it was never redacted, and it may appear in a
+  recorded payload like any other content.
+* **Redaction is not encryption and not a DLP product.** An oversized field that
+  cannot be scanned reliably is replaced wholesale with `[REDACTED:OVERSIZED]` —
+  the scanner fails closed — but that is a containment behaviour, not detection.
+
+## Hooks cannot carry a sensitive-data claim
+
+Claude Code hooks govern **tool and action execution**. They cannot see or modify
+model-bound prompt content, so no hook can support a sensitive-data protection
+claim. They remain available for tool governance; they are never a substitute for
+in-path interception.
+
+`NODE_TLS_REJECT_UNAUTHORIZED` is **never set** by Agent Assembly. Setting it
+would make interception "work" by disabling certificate verification, and a TLS
+failure is a finding, not something to suppress. If you have it set, `status`
+reports it as a bypass.
+
+## Other tools are not yet on this lifecycle
+
+Codex, GitHub Copilot and Windsurf Cascade are carried by `LegacyAdapterShim`
+(ADR 0030 §7). They can be **discovered, planned and reported on**, but their
+plan steps name no destination file, so the service **refuses to apply** rather
+than reporting a success that performed nothing. Their per-capability tiers in
+the [capability matrix](../governance/capability-matrix.md) come from their
+adapters' declarations, not from a measured Spike.
+
+## Timing and freshness
+
+* **Drift is found when `status`/`verify` runs**, so a window exists between a
+  change and its discovery. Between two verifications a state can be reported
+  that has since become false. The evidence carries its timestamp — the claim is
+  *"verified at T"*, not *"true now"* — but a consumer that ignores the timestamp
+  will over-read it.
+* **Protection state is re-derived on read, never cached.** AAASM-5276 measured
+  ~0.07 ms from core stop to connections being refused; a cached level would keep
+  displaying protection that no longer exists.
+* **Repair is deliberately narrow.** It will not overwrite a key it does not own,
+  even when that key is the cause of the drift — it reports and stops.
+
+---
+
+## What stays local, and what is never recorded
+
+These two are guarantees rather than limitations, but they belong beside the
+limitations because each has its own edge.
+
+**Raw content is processed locally.** Scanning and redaction happen in the Agent
+Assembly runtime on your machine. Raw file contents and raw prompt text are not
+shipped to Agent Assembly infrastructure in order to be analysed.
+
+> That is not the same as *your content stays on your machine*. The point of the
+> tool is to send prompts to a model provider; Agent Assembly's job is to make
+> what is sent safe, not to prevent sending. Where an org deployment is
+> configured, policy documents, audit **metadata** and decision records may be
+> forwarded to a control plane. Metadata is not raw content, but it is not
+> nothing either.
+
+**Raw secret material is never written** to logs, traces, audit events,
+installation receipts, API responses or diagnostic output. Findings are recorded
+as metadata — kind, position, count — and the redaction record deliberately
+stores no raw value (`aa-security/src/redaction.rs`). Diagnostics produced for
+support are subject to the same rule; troubleshooting is not an exemption.
+
+This is enforced by the **shape of the types**, not by a redaction pass someone
+can forget to call. Across the DI-API, a rendered settings body becomes a
+`content_sha256` plus the owned key names; an environment value becomes the
+variable's **name**; a model base URL becomes the setting's **name**, because a
+URL can carry a token in its query string. `StepView` — the sharpest edge — has
+**no field a step value could land in**. A bypass report likewise echoes variable
+names only and never their values, asserted by a test that plants a sentinel
+value and fails if it appears.
+
+> The edge: this does not govern the tool's own records. Claude Code's
+> transcripts, your shell history and your provider's server-side logs are
+> outside Agent Assembly's control entirely.
+
+---
+
+## What is never claimed
+
+Stated positively so it can be quoted:
+
+* **No host-level bypass prevention.** A user or process able to launch the tool
+  outside the managed path is outside enforcement, at every level available.
+* **No protection for unmanaged direct provider connections.**
+* **No complete secret detection.**
+* **No protection while the core is stopped.** Protection is a running-system
+  property; when the core is down the product says *not protected*, not
+  *protection unknown*.
+* **No universal interception of every AI development tool.**
+* **No claim that a settings file alone proves model-egress protection.** A
+  configuration is intent; a level is behaviour.
+* **No claim that MCP is required for, or equivalent to, protection.** It is one
+  optional mechanism among several.
+
+---
+
+## References
+
+* [Onboarding a Developer Integration](onboarding.md)
+* [Protection levels](protection-levels.md)
+* [Product Capability Brief](product-brief.md) §8 (guarantees and their limits),
+  §10.3 (non-goals)
+* [L0–L3 Capability Matrix](../governance/capability-matrix.md)
+* [ADR 0030 — Developer Integration boundaries and trust model](../adr/0030-developer-integration-boundaries-and-trust-model.md)
+* `verification-reports/AAASM-5276-claude-code-mechanism-matrix.md` — the measured
+  evidence this page is derived from (in-repo; not part of the published book)
