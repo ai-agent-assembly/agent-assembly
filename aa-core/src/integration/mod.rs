@@ -41,6 +41,7 @@ pub mod capability;
 pub mod contract;
 pub mod plan;
 pub mod receipt;
+pub mod shim;
 pub mod state;
 pub mod status;
 pub mod step;
@@ -56,6 +57,7 @@ pub use plan::{
     UnsupportedMechanism,
 };
 pub use receipt::{IntegrationReceipt, ReceiptError, StepReceipt};
+pub use shim::{LegacyAdapterShim, LEGACY_UNSUPPORTED_REASON};
 pub use state::{
     EvidenceKind, ExerciseOutcome, ProtectionEvidence, ProtectionLevel, ProtectionState, StateDerivation,
     DEFAULT_FRESHNESS_WINDOW_SECS,
