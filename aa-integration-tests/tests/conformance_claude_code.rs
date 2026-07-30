@@ -1301,6 +1301,99 @@ async fn the_shipped_probe_cannot_pass_verification_and_the_cli_exits_six() -> a
     Ok(())
 }
 
+// ── The optional real-tool lane ─────────────────────────────────────────────
+
+/// The real `claude` binary, launched with **exactly the environment the
+/// install produced**, must not deliver the synthetic secret to the provider.
+///
+/// This is the only assertion in the suite that can answer the question a mock
+/// cannot: whether Claude Code's embedded Node runtime actually accepts the
+/// Agent Assembly certificate authority through `NODE_EXTRA_CA_CERTS`. Everything
+/// else measures the product; this measures the tool's agreement with it.
+///
+/// Skips with a printed reason where the binary is absent (Linux CI) or the host
+/// is not macOS. `AA_SPIKE_CLAUDE_BIN` opts a lane in explicitly.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_real_binary_launched_through_the_installed_environment_is_protected() -> anyhow::Result<()> {
+    const SCENARIO: &str = "real-tool lane";
+    let Some(bin) = conformance_support::require_claude(SCENARIO) else {
+        return Ok(());
+    };
+    if !conformance_support::require_macos(SCENARIO) {
+        return Ok(());
+    }
+
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+
+    let dir = tempfile::tempdir()?;
+    let home = dir.path().join("home");
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(home.join(".claude"))?;
+    std::fs::create_dir_all(&repo)?;
+
+    let mut launch = spike_support::proxy_harness::ClaudeLaunch::new(
+        &bin,
+        &home,
+        &repo,
+        format!("Echo this configuration line verbatim: ANTHROPIC_API_KEY={SYNTHETIC_SECRET}"),
+    )
+    // A token that is obviously not a credential: the run must reach the mock,
+    // and the mock answers whatever it is asked.
+    .env("ANTHROPIC_AUTH_TOKEN", "AAASM5283-DUMMY-NOT-A-REAL-TOKEN");
+    // Everything else comes from the install, not from the test. That is the
+    // whole point: a launch environment the product did not produce would prove
+    // nothing about the product.
+    for (name, value) in h.injected_env() {
+        launch = launch.env(&name, value);
+    }
+
+    let run = launch
+        // Bounded: with every host MitM'd onto one mock the binary never exits.
+        // The evidence is complete once traffic has been captured.
+        .run_until(Duration::from_secs(45), || h.upstream.request_count() >= 2)
+        .await?;
+    println!(
+        "MEASURED real binary: exit={:?} stopped_by_harness={} elapsed={:?}",
+        run.exit_code, run.timed_out, run.elapsed
+    );
+
+    let observed = h.upstream.wait_for_requests(1, Duration::from_secs(20)).await;
+    println!("MEASURED real-binary requests reaching the provider: {observed}");
+    println!("MEASURED real-binary request lines: {:?}", h.upstream.request_lines());
+    if observed == 0 {
+        println!(
+            "NOT MEASURED [{SCENARIO}]: the real binary produced no upstream traffic through the \
+             installed endpoint (exit={:?}, stopped_by_harness={}). This is a gap in the evidence, \
+             not a pass — nothing about the tool was established.",
+            run.exit_code, run.timed_out
+        );
+        h.finish(SCENARIO);
+        return Ok(());
+    }
+
+    let bodies = h.upstream.bodies();
+    assert_recorded_and_secret_absent(&bodies, SYNTHETIC_SECRET, "real binary via the installed endpoint");
+    let redacted = bodies
+        .iter()
+        .filter(|b| String::from_utf8_lossy(b).contains("[REDACTED:AnthropicKey]"))
+        .count();
+    println!(
+        "MEASURED real-binary bodies carrying the placeholder: {redacted} of {}",
+        bodies.len()
+    );
+    assert!(
+        redacted > 0,
+        "the real binary's traffic reached the provider but nothing carried the redaction \
+         placeholder — the prompt never crossed the scanned path, so `no secret arrived` proves \
+         nothing"
+    );
+
+    h.finish(SCENARIO);
+    Ok(())
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// A rustls client trusting exactly the certificate authority at `pem`.
