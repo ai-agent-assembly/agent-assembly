@@ -71,6 +71,15 @@ trait VersionProbe: Send + Sync {
     fn probe_version(&self, bin: &Path) -> Option<String>;
 }
 
+/// [`VersionProbe`] that reports a canned answer, for tests.
+struct FixedVersionProbe(Option<String>);
+
+impl VersionProbe for FixedVersionProbe {
+    fn probe_version(&self, _bin: &Path) -> Option<String> {
+        self.0.clone()
+    }
+}
+
 /// Production [`VersionProbe`] backed by [`std::process::Command`].
 struct CommandVersionProbe;
 
@@ -145,6 +154,19 @@ impl ClaudeCodeAdapter {
     #[cfg(test)]
     fn with_version_probe(mut self, probe: Box<dyn VersionProbe>) -> Self {
         self.version_probe = probe;
+        self
+    }
+
+    /// Report `version` instead of running `<bin> --version`.
+    ///
+    /// Intended for tests only, and public because the lifecycle tests live in
+    /// other crates: they need a detectable Claude Code without a real binary,
+    /// and the alternative — putting a stub executable in a tmpdir — fails
+    /// wherever the temp filesystem is mounted `noexec`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_version_override(mut self, version: Option<String>) -> Self {
+        self.version_probe = Box::new(FixedVersionProbe(version));
         self
     }
 
