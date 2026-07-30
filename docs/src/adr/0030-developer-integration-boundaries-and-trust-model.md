@@ -421,3 +421,64 @@ is the evidence that the axis is the right one:
 Read down the `McpDiscovery` row: two of the five tool families support it. **MCP is one
 optional capability among ten, never the integration architecture.** A design in which
 "plugin" means "MCP server" is forbidden (see the forbidden-designs section).
+
+### 4. Protection-state model — a state is a claim, and a claim needs evidence
+
+#### 4.1 The states and the evidence required to enter each
+
+Protection state is **derived from evidence on every read**, never stored as a fact and
+replayed. Each state carries the evidence that justified it, so a user or an auditor can
+see *why* — never a bare boolean (this is [AAASM-5277](https://lightning-dust-mite.atlassian.net/browse/AAASM-5277)'s
+"achieved protection level plus evidence, not only booleans").
+
+| State | Evidence **required** to enter | Notes |
+| --- | --- | --- |
+| `NotInstalled` | `detect()` → `None`. | The tool is absent. |
+| `DetectedNotIntegrated` | `detect()` → `Some(info)`, **and** no receipt exists for this (tool, user) pair. | A settings file that AASM did not write lands here, not higher. |
+| `PartiallyIntegrated` | A receipt exists, **and** at least one but not all of the plan's *required* steps verify present by fingerprint. | Also the resting state of an interrupted apply. |
+| `Integrated` | A receipt exists; **every** required step's fingerprint matches the receipt; **and** a successful `verify_integration` was recorded within the freshness window. | Configuration is present *and* proven consistent. Still says nothing about traffic. |
+| `GatewayProtected` | `Integrated`, **plus** the protection test's probe traffic was observed and adjudicated by the core (`aa-runtime`/`aa-gateway`) and attributed to this integration's model path within the verification window. | The first state that claims traffic is actually governed. Requires a core-side observation, not a client-side or adapter-side assertion. |
+| `HostEnforced` | `GatewayProtected`, **plus** a host-enforcement layer reports healthy and attributes coverage to the tool's process — the proxy CA is present in the trust store and in use, or the eBPF probes are attached (Linux). | The only state that claims bypass resistance. |
+| `Drifted` | A receipt exists **and** ≥1 AASM-owned fingerprint mismatches or an AASM-owned artifact is missing. | Changes to keys the receipt does **not** claim never produce `Drifted` — that is a user-managed change and is none of AASM's business. |
+| `Degraded` | Integrated, but a runtime dependency of a planned capability is unavailable (runtime unreachable, gateway unreachable, proxy CA no longer trusted), so the *achieved* level is strictly below the *planned* level. | Carries both levels, so the gap is legible. |
+| `Incompatible` | The detected tool version is outside the adapter's supported range, **or** the receipt's schema version is newer than the running core. | Terminal until the user upgrades one side; must carry actionable remediation. |
+
+`NotInstalled → DetectedNotIntegrated → PartiallyIntegrated → Integrated →
+GatewayProtected → HostEnforced` is a monotone ladder. `Drifted`, `Degraded` and
+`Incompatible` are **overriding** states: they replace the ladder rung in what is
+reported, and carry the highest rung last held so the user sees what was lost.
+
+#### 4.2 The rules that keep the ladder honest
+
+1. **File existence is never sufficient for `Integrated` or above.** A settings file — even
+   one whose contents look exactly like what AASM would write — proves only that a file
+   exists. Without a receipt attributing it to AASM it is `DetectedNotIntegrated`; with a
+   receipt but no fresh verification it is at most `PartiallyIntegrated`. This is the
+   single most important rule in this decision and it is restated in the forbidden
+   designs.
+2. **Missing evidence lowers the state, never raises it.** An unreadable settings file, an
+   unreachable runtime, an unresolvable version — every one of them resolves *downward*.
+   This is ADR 0015's fail-closed discipline applied to reporting: a claim you cannot
+   substantiate is a claim you do not make.
+3. **Evidence has a freshness window.** `Integrated` and above decay to
+   `PartiallyIntegrated` (respectively `Integrated`) when the last successful verification
+   falls outside the window, rather than persisting on the strength of an old result.
+4. **The state is computed inside the trust boundary** (matrix row 14). A client renders
+   it; it never derives or upgrades it.
+
+#### 4.3 Protection state is not `GovernanceLevel`
+
+Two superficially similar signals must not be conflated — the same discipline ADR 0029
+applied to `flagged` vs. the trust score:
+
+| Signal | Question it answers | Kind |
+| --- | --- | --- |
+| `GovernanceLevel` (`aa-core/src/dev_tool.rs:33`, `L0Discover < L1Observe < L2Enforce < L3Native`, default `L0Discover`) | *What is the highest level this adapter could ever achieve for this tool?* | A static, build-time **ceiling** |
+| `ProtectionState` (this decision) | *What is proven to be true on this host right now, and by what evidence?* | A derived, evidence-backed **measurement** |
+
+An adapter capped at `L1Observe` can be `Integrated`; an `L3Native` adapter can be
+`DetectedNotIntegrated`. The ceiling never implies the measurement. `EnforcementMode`
+(`aa-core/src/policy.rs:74` — `Enforce` default / `Observe` / `Disabled`) is a third,
+independent axis: it says what the core does with a decision, not what is installed.
+`docs/src/governance/capability-matrix.md` remains the L0–L3 source of truth and is
+unchanged by this ADR.
