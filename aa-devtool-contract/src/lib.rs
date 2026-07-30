@@ -130,3 +130,28 @@ pub use aa_core::integration::{LegacyAdapterShim, LEGACY_UNSUPPORTED_REASON};
 // Timestamp helper. Every lifecycle timestamp is plain Unix seconds, and an
 // adapter that stamps evidence needs the same clock the service reads it with.
 pub use aa_core::integration::now_unix_secs;
+
+// --- The step-execution seam (AAASM-5281) --------------------------------
+//
+// The third re-export group, and the narrowest justification for one. ADR 0030
+// gives plan *execution* to the service, and `aa-core`'s [`FilesystemExecutor`]
+// implements it for every step whose mutation is "put these bytes at this path".
+// It deliberately refuses the rest — launch-environment injection, proxy
+// variables, MCP lists, runtime connection — because each needs mechanism the
+// filesystem cannot supply and each belongs to the adapter that knows its tool.
+//
+// A tool whose plan contains one of those steps therefore has to supply the
+// executor for it, and an executor it cannot name is an executor it cannot
+// write. The three properties in the second group's note still hold: these are
+// one trait plus flat value types, nothing here reaches an unrelated `aa-core`
+// subsystem, and no type gains a field that can hold a policy, a payload or a
+// credential. What it *does* widen is filesystem reach — which a plugin already
+// has through `DevToolAdapter::apply_settings`, and which is now at least
+// described by a reviewable plan step and recorded in a receipt.
+pub use aa_core::integration::{ArtifactObservation, ExecutionError, FilesystemExecutor, StepExecutor, StepOutcome};
+
+// The digest a step carries is over the *content* an adapter renders, and
+// `FilesystemExecutor` fails closed when the two disagree. An adapter that
+// hashed with its own copy of SHA-256 would be one dependency bump away from a
+// mismatch it could not explain, so it uses the same function the check does.
+pub use aa_core::integration::sha256_hex;
