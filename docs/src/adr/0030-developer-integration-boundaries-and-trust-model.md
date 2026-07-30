@@ -138,3 +138,66 @@ The design must hold against three distinct adversaries, which want different an
 The developer's own UID is *not* an adversary: nothing here defends against a user who
 edits their own settings file, and it is not supposed to. Host-level tamper prevention is
 out of scope (it is an explicit non-goal of AAASM-5278).
+
+---
+
+## Decision
+
+### 1. Four layers, two boundaries — and only one of them is a *trust* boundary
+
+Developer Integrations are structured as four layers. Naming them is not the point;
+saying which separations are **security** boundaries and which are merely **modularity**
+boundaries is.
+
+| # | Layer | Runs where | Trust |
+| --- | --- | --- | --- |
+| **L-A** | **Thin client** — IDE extension, marketplace plugin, installer, launcher, `aasm` CLI | The developer's session, developer's UID, arbitrary distribution channel | **Untrusted.** Carries no policy, no DLP, no audit authority. Its only powers are *ask* and *display*. |
+| **L-B** | **Developer Integration Service (DIS)** | Inside the `aa-runtime` process | **Trusted.** Owns lifecycle orchestration, capability-token issuance and verification, plan execution, receipt durability, drift detection, protection-state derivation. |
+| **L-C** | **Tool-specific `DevToolAdapter` / integration** | Statically linked into the same trusted process as L-B | **Trusted, but capability-restricted at compile time.** Reaches core only through `aa-devtool-contract`. |
+| **L-D** | **AASM core runtime / gateway** | `aa-runtime` pipeline + `aa-gateway` | **The security authority.** Policy, detection, redaction, approval, audit. Unchanged by this ADR. |
+
+**Boundary L-A ↔ L-B is a trust boundary.** It is crossed by the *restricted local
+Developer Integration API* (the **DI-API**, Decision 5) and enforced by the operating
+system (`0700` directory, `0600` socket, peercred UID) plus a capability token, not by
+convention or by the client's good behaviour.
+
+**Boundary L-C ↔ L-D is a capability boundary enforced at compile time** by
+`aa-devtool-contract`. It is honest about what it is: an adapter runs *inside* the
+trusted process, so it is not runtime-contained — a genuinely malicious in-tree adapter
+is game over. What the boundary buys is that the reachable API surface is small,
+mechanically enforced (`aa_core::storage::…` does not compile), and its widening is a
+reviewable diff in one file with a CODEOWNERS gate. That is why out-of-tree adapters are
+**not** linked into official binaries (Decision 6) — the compile-time boundary limits
+accident and review scope, not a determined in-process attacker.
+
+**Boundary L-B ↔ L-C is modularity only.** Same process, same privileges. It exists so
+that per-tool knowledge is replaceable without touching lifecycle logic, not because the
+adapter is less trusted than the service.
+
+**Inside L-D nothing changes.** The runtime↔gateway relationship, the mandatory
+chokepoint, and the SDK fast-path remain exactly as ADR 0002 and ADR 0004 specify.
+
+#### 1.1 Reconciliation with ADR 0004 — the DI-API is a lifecycle surface, not a second transport
+
+ADR 0004 forbids ad-hoc transports: *"The user-facing SDK public API NEVER calls a core
+or REST endpoint directly"*, and all client↔core governance traffic goes through the one
+`aa-sdk-client` boundary, which internally picks gRPC→`aa-gateway` or UDS→`aa-runtime`.
+It simultaneously carves out REST (`aa-api`) as the surface for *"dashboard, operators,
+CLI data commands"* — explicitly *"never on the SDK path"*.
+
+The DI-API sits in that same carve-out, one level more restricted:
+
+| | `aa-sdk-client` (ADR 0004) | REST `aa-api` (ADR 0004) | **DI-API (this ADR)** |
+| --- | --- | --- | --- |
+| Consumers | SDK fast-path only | Dashboard, operators, `aasm` data commands | Local lifecycle clients (extension, installer, `aasm` integration commands) |
+| Carries policy decisions? | **Yes** — `CheckAction` is the authoritative decision | No | **No — forbidden** |
+| Carries agent-action / audit-emit traffic? | Yes | No | **No — forbidden** |
+| Verb space | Governance RPCs | Read/administrative HTTP | **Closed enum: plan · apply · status · verify · repair · remove · scoped events · approval relay** |
+| Reachable from | In-process SDK shim | Network | **Local UDS only, peercred + token** |
+
+An agent that wants a decision still goes SDK → `aa-sdk-client` → runtime/gateway. A
+plugin that wants to *install governance* goes through the DI-API. These are disjoint
+verb spaces on disjoint sockets, so the DI-API cannot become "the other way to ask for an
+allow/deny" — there is no verb for it (see the forbidden-designs section, which states
+this as a standing prohibition, and Decision 5.6, which explains why it is structural
+rather than a rule to remember).
