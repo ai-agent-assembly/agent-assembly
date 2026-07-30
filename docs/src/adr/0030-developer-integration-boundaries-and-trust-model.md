@@ -936,4 +936,4 @@ that ticket rather than as checks present in this documentation-only change.
 | [ADR 0029](0029-capability-over-permission-derivation.md) | Complements — fail-absent, declared-vs-effective, never fabricate a grant (§3.4) |
 | AAASM-3565 | `aa-devtool-contract` — the compile-time restricted boundary this ADR preserves |
 | AAASM-3579 / AAASM-3581 / AAASM-3585 / AAASM-3666 / AAASM-3922 | The existing `aa-runtime` IPC trust model reused by Decision 5, including the "derived from a public identifier is not a secret" finding |
-| [#TBD](https://github.com/ai-agent-assembly/agent-assembly/pull/TBD) | Implementation PR — [AAASM-5277](https://lightning-dust-mite.atlassian.net/browse/AAASM-5277): the capability model (Decision 3), the protection-state model (Decision 4), the lifecycle traits and `LegacyAdapterShim` (§7). **Ratifies this ADR.** |
+| [#1821](https://github.com/ai-agent-assembly/agent-assembly/pull/1821) | Implementation PR — [AAASM-5277](https://lightning-dust-mite.atlassian.net/browse/AAASM-5277): the capability model (Decision 3), the protection-state model (Decision 4), the lifecycle traits and `LegacyAdapterShim` (§7). **Ratifies this ADR.** |
