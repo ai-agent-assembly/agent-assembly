@@ -58,6 +58,7 @@
 //! Minimisation is the shape of the response types, not a redaction pass
 //! someone might forget (§5.5).
 
+pub mod codec;
 pub mod negotiate;
 pub mod scope;
 pub mod socket;
