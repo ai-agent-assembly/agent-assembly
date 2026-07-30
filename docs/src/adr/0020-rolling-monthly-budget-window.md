@@ -1,7 +1,7 @@
 # ADR 0020: Rolling vs Calendar Monthly Budget Windows — and the Missing Team Tier
 
-**Status**: Proposed — **requires product + architecture sign-off before any implementation**
-**Date**: 2026-07
+**Status**: Accepted (2026-07-30, Option C) — the **team-tier limit on the existing calendar-month budget** is ratified for implementation (AAASM-5087). The rolling N-day window + persisted daily-usage ledger (timezone/boundary semantics, refunds/reversals, late events, retention/aggregation) remain **decision-gated** and are tracked separately in AAASM-5286; they are NOT authorised by this ratification.
+**Date**: 2026-07 (ratified 2026-07-30)
 **Ticket**: [AAASM-5087](https://lightning-dust-mite.atlassian.net/browse/AAASM-5087) (Epic [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082))
 
 This ADR proposes options for the monthly budget capability the Costs monthly KPI
