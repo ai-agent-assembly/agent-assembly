@@ -61,6 +61,7 @@
 pub mod codec;
 pub mod lifecycle;
 pub mod negotiate;
+pub mod projection;
 pub mod scope;
 pub mod socket;
 pub mod token;
