@@ -580,6 +580,38 @@ mod tests {
     }
 
     #[test]
+    fn held_approval_records_decision_latency_not_the_approval_wait() {
+        // AAASM-5100 item B — semantic guardrail. A held/approval-pending action
+        // may wait minutes for a human, but the recorded latency must be the
+        // scanner's DECISION time (the `latency_us` measured in `evaluate_one`
+        // around `engine.evaluate`, BEFORE the blocking wait), NOT the wall-clock
+        // until the operator responds.
+        //
+        // `approval_decision_to_response` is the sole path that builds the final
+        // response for a resolved approval, and it is called with that
+        // pre-computed decision latency. Whatever the approval wait was, the
+        // response carries exactly the decision latency it was given, and the
+        // derived `latency_ms` (ms floor) follows it — never the human wait.
+        let id: ApprovalRequestId = Uuid::new_v4().to_string().parse().unwrap();
+        let decision_latency_us: i64 = 1_500; // measured decision time: 1.5 ms
+        let approved = ApprovalDecision::Approved {
+            by: "operator".into(),
+            reason: None,
+            conditions: Vec::new(),
+        };
+
+        let resp = approval_decision_to_response(&approved, &id, decision_latency_us, "needs-approval");
+
+        // The recorded latency is the decision time it was handed, not the wait.
+        assert_eq!(resp.decision_latency_us, decision_latency_us);
+        // An approved approval is a permitted, un-narrowed action → `allow`, and
+        // the ms latency floors the decision time (1500us → 1ms), independent of
+        // however long the human took.
+        assert_eq!(runtime_verdict(resp.decision, false), "allow");
+        assert_eq!((resp.decision_latency_us.max(0) as u64) / 1_000, 1);
+    }
+
+    #[test]
     fn decide_request_unspecified_decision_is_an_error() {
         let req = DecideRequest {
             request_id: Uuid::new_v4().to_string(),
