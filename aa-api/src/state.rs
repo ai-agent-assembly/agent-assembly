@@ -288,10 +288,8 @@ impl AppState {
                 aa_gateway::engine::PolicyEngine::load_cascade_from_dir(&dir, budget_alert_tx)
                     .map_err(|e| LocalStateError::PolicyLoad(format!("{e:?}")))?
             }
-            PolicySource::File(file) => {
-                aa_gateway::engine::PolicyEngine::load_from_file(&file, budget_alert_tx)
-                    .map_err(|e| LocalStateError::PolicyLoad(format!("{e:?}")))?
-            }
+            PolicySource::File(file) => aa_gateway::engine::PolicyEngine::load_from_file(&file, budget_alert_tx)
+                .map_err(|e| LocalStateError::PolicyLoad(format!("{e:?}")))?,
             PolicySource::Unset => {
                 // No operator policy configured: synthesise the budget-only
                 // bootstrap envelope into a per-process temp file and load it
