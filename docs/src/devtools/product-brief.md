@@ -454,7 +454,108 @@ active`.
 
 ## 8. Product guarantees and their limits
 
-<!-- populated in a later commit -->
+The copy below is written to be used **verbatim** by the CLI, a future UI and public docs. Each
+guarantee is paired with its own limitation, and the two must always travel together — a guarantee
+quoted without its limit becomes an over-claim the moment it leaves this page.
+
+Two words carry weight throughout and are used precisely:
+
+- **"supported path"** — a path AASM actually observes: traffic through the managed launch and the
+  gateway/proxy, from the governed tool, in the current session. Everything else is unsupported,
+  which is not the same as unprotected-by-accident; it is out of scope by construction.
+- **"detected"** — matched by the deterministic scanner's pattern set. Detection is not
+  comprehension. AASM does not claim to recognise every secret, only the shapes it knows.
+
+### G1 — Sensitive-data handling on supported model-bound paths
+
+> **We guarantee:** on supported model-bound paths, content is scanned before it leaves the
+> machine, and every detected secret is replaced with a `[REDACTED:<kind>]` placeholder so the raw
+> value is not transmitted. A field too large to scan reliably is replaced wholesale with
+> `[REDACTED:OVERSIZED]` rather than forwarded — the scanner fails closed. The agent still
+> receives a semantics-preserving placeholder, so the request remains usable.
+
+> **This does NOT guarantee:** that every secret is found. Detection is deterministic and
+> pattern-based (`aa-security` `CredentialScanner`), so a credential whose shape is not in the
+> pattern set — a bespoke internal token, a secret with no distinguishing prefix, a value split
+> across fields — passes through unrecognised. It also does not cover unsupported paths: a direct
+> provider connection that ignores the managed proxy/base URL is never scanned. Redaction is not
+> encryption and not a data-loss-prevention product.
+
+### G2 — Tool and action monitoring, and approval
+
+> **We guarantee:** governed actions from the managed tool are evaluated against policy before
+> they take effect and are recorded in the audit log with agent attribution. Under an `Enforce`
+> profile, a denial blocks the action and an action requiring approval halts until a human
+> decides. With no applicable policy the system fails closed and denies.
+
+> **This does NOT guarantee:** that every action the tool takes is visible. Enforcement reaches
+> the surfaces AASM manages; an action performed through a mechanism the tool does not route
+> through those surfaces is neither seen nor blocked. Under an `Observe only` profile **nothing is
+> blocked at all** — decisions are computed and audited, and the action proceeds. Approval
+> coverage is bounded by what the tool's own hook/callback surface exposes, which varies per tool
+> and is declared in the [capability matrix](../governance/capability-matrix.md).
+
+### G3 — Local-only raw-content processing
+
+> **We guarantee:** scanning and redaction of your content happen locally, in the AASM runtime on
+> your machine. Raw file contents and raw prompt text are not shipped to Agent Assembly
+> infrastructure in order to be analysed.
+
+> **This does NOT guarantee:** that your content stays on your machine overall — the entire point
+> of the tool is to send prompts to a model provider, and AASM's job is to make what is sent safe,
+> not to prevent sending. Nor does it guarantee that a future org-managed deployment transmits
+> nothing: policy documents, audit *metadata* and decision records may be forwarded to a control
+> plane where one is configured. Metadata is not raw content, but it is not nothing either.
+
+### G4 — Audit data minimisation
+
+> **We guarantee:** raw secret material is never written to AASM logs, traces, audit events,
+> installation receipts, API responses or diagnostic output. Findings are recorded as metadata —
+> kind, position, count — and the redaction record deliberately stores no raw value
+> (`aa-security/src/redaction.rs`). Diagnostics intended for support are subject to the same rule.
+
+> **This does NOT guarantee:** that *undetected* secrets are absent from audit records. If the
+> scanner did not recognise a value (see G1), that value was never classified as a secret and may
+> appear in a recorded payload like any other content. Nor does it govern the tool's own logs:
+> Claude Code's transcripts, your shell history and your provider's server-side logs are outside
+> AASM's control entirely.
+
+### G5 — Drift detection and repair
+
+> **We guarantee:** the installation receipt records what AASM changed, so status can compare live
+> state against it across every managed mechanism, report each difference, and re-apply only
+> AASM-owned values. Where drift means protection is no longer active, the reported protection
+> level drops.
+
+> **This does NOT guarantee:** real-time detection. Drift is found when status/verify runs, so a
+> window exists between a change and its discovery. Repair is also deliberately narrow: AASM will
+> not overwrite a key it does not own, even when that key is the cause — it reports and stops.
+> Some drift is unrepairable in place (the tool removed the config surface, the tool's schema
+> changed) and requires a reinstall.
+
+### G6 — Removal and restoration
+
+> **We guarantee:** removal uses the receipt to restore the pre-install value of every managed
+> key — restoring the original where one existed and deleting the key where none did — and removes
+> only AASM-owned artifacts. Unrelated user configuration is preserved through the entire
+> install→use→remove cycle, because AASM writes only its four managed keys and merges them over
+> existing content with an atomic write (`aa-devtool-claude-code/src/apply.rs`).
+
+> **This does NOT guarantee:** restoration without a receipt. If the receipt is missing or
+> corrupt, AASM refuses to guess and requires explicit confirmation rather than deleting on a
+> hunch. It also does not undo changes AASM did not make: config the *user* edited after install
+> is left as the user left it, and any change made by the tool itself is out of scope.
+
+### G7 — What we never claim
+
+Stated positively so it can be quoted directly:
+
+- We do not claim host-level bypass prevention. A user or process able to launch the tool outside
+  the managed path is outside our enforcement, at every level available in this MVP.
+- We do not claim protection for unmanaged direct provider connections.
+- We do not claim complete secret detection.
+- We do not claim protection while the core is stopped. Protection is a running-system property;
+  when the core is down the product says *not protected*, not *protection unknown*.
 
 ## 9. Failure journeys
 
