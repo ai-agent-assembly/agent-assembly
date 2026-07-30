@@ -27,7 +27,6 @@ fn make_agent(id_byte: u8, name: &str, depth: u32, team_id: Option<&str>, parent
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: Vec::new(),
         recent_events: std::collections::VecDeque::new(),
         recent_traces: Vec::new(),
@@ -48,6 +47,45 @@ fn make_agent(id_byte: u8, name: &str, depth: u32, team_id: Option<&str>, parent
 
 fn hex_id(id_byte: u8) -> String {
     format!("{id_byte:02x}").repeat(16)
+}
+
+/// Seed a temp audit dir with one `PolicyViolation` event per `agent_ids` entry
+/// and point `state.audit_reader` at it, so the audit-derived `flagged` badge
+/// (AAASM-5103) reflects real recorded violations. Returns the state with the
+/// reader swapped in. The temp dir name is unique per call so parallel tests do
+/// not collide.
+fn state_with_violations(state: aa_api::state::AppState, agent_ids: &[[u8; 16]]) -> aa_api::state::AppState {
+    use aa_core::audit::{AuditEntry, AuditEventType};
+    use aa_core::{AgentId, SessionId};
+
+    let dir = std::env::temp_dir().join(format!(
+        "aa-5103-topo-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create audit dir");
+    let mut contents = String::new();
+    for (seq, id) in agent_ids.iter().enumerate() {
+        let entry = AuditEntry::new(
+            seq as u64,
+            1_000 + seq as u64,
+            AuditEventType::PolicyViolation,
+            AgentId::from_bytes(*id),
+            SessionId::from_bytes([0xEE; 16]),
+            "{}".to_string(),
+            [0u8; 32],
+        );
+        contents.push_str(&serde_json::to_string(&entry).unwrap());
+        contents.push('\n');
+    }
+    std::fs::write(dir.join("audit.jsonl"), contents).expect("write jsonl");
+
+    let mut state = state;
+    state.audit_reader = std::sync::Arc::new(aa_gateway::AuditReader::new(dir));
+    state
 }
 
 // ---------------------------------------------------------------------------
@@ -421,17 +459,20 @@ async fn topology_tree_returns_subtree_for_known_agent() {
     assert!(json["children"][0]["trust"].is_null());
 }
 
-/// AAASM-5036 — the overview (AgentNode) and tree (AgentTree) responses both
-/// carry per-node `mode` (from `metadata["mode"]`), `flagged`
-/// (`policy_violations_count >= threshold`), and a nullable `trust`.
+/// AAASM-5036 / AAASM-5103 — the overview (AgentNode) and tree (AgentTree)
+/// responses both carry per-node `mode` (from `metadata["mode"]`), `flagged`
+/// (a recorded `PolicyViolation`, count > 0), and a nullable `trust`.
 #[tokio::test]
 async fn topology_response_carries_mode_flagged_trust() {
     let state = common::test_state();
-    // Standalone root: shadow mode + enough violations to be flagged.
+    // Standalone root: shadow mode.
     let mut root = make_agent(0x01, "shadow-root", 0, None, None);
     root.metadata.insert("mode".to_string(), "shadow".to_string());
-    root.policy_violations_count = 50;
     state.agent_registry.register(root).unwrap();
+    // AAASM-5103 — flag it by seeding a real PolicyViolation audit event, the
+    // canonical source the badge now derives from (the record no longer carries a
+    // violation counter).
+    let state = state_with_violations(state, &[[0x01; 16]]);
 
     let app = aa_api::server::build_app(state);
 

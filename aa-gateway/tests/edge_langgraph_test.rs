@@ -42,7 +42,6 @@ fn make_record(id: [u8; 16]) -> AgentRecord {
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: vec![],
         recent_events: VecDeque::new(),
         recent_traces: vec![],

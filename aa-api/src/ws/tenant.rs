@@ -180,7 +180,6 @@ mod tests {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: vec![],
             recent_events: Default::default(),
             recent_traces: vec![],

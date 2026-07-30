@@ -37,7 +37,6 @@ fn agent_with_sessions(id_byte: u8, team: Option<&str>, sessions: Vec<ActiveSess
         pid: None,
         session_count: sessions.len() as u32,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: sessions,
         recent_events: VecDeque::new(),
         recent_traces: Vec::new(),
