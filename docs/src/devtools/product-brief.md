@@ -559,7 +559,37 @@ Stated positively so it can be quoted directly:
 
 ## 9. Failure journeys
 
-<!-- populated in a later commit -->
+**Default posture: fail closed.** When AASM cannot establish that protection is active, it reports
+*not protected* and — where a decision is required — denies. The gateway already behaves this way:
+an empty policy cascade returns `Deny { reason: "no policy — fail-closed" }` rather than allowing
+(`aa-gateway/src/engine/decision.rs`).
+
+Failing closed does *not* mean bricking the developer's tool. The tool remains usable; what fails
+closed is the **protection claim** and any decision AASM is asked to make. The two exceptions
+below are marked explicitly, and both are exceptions in *availability*, never in claim: in both
+cases the product says it is not protecting.
+
+| # | Failure | Detection signal | User-visible message intent | Recovery path | Fails |
+|---|---|---|---|---|---|
+| 9.1 | **Core runtime missing or stopped** | Health/readiness probe fails at connect, or the connection drops mid-session. | "Agent Assembly is not running. Your tool still works, but it is **not protected** right now." Never "protection status unknown". | Start the core; status re-evaluates and restores the level automatically. If it stopped mid-session, say when protection ended. | **Closed** — level drops to none, decisions deny. *Availability exception:* the tool is not prevented from running. |
+| 9.2 | **Unsupported tool version** | Detected version below the adapter minimum, or above a tested maximum. | "This version of the tool is not supported yet. Nothing was changed." Name the detected and required versions. | Upgrade or downgrade the tool; or wait for adapter support. | **Closed** — install refuses; a below-minimum install is treated as *absent* rather than partially governed. |
+| 9.3 | **Partial installation** | The plan did not complete: applied changes are a strict subset of the plan, or read-back disagrees with the plan. | "Installation did not complete and has been rolled back. You are not protected." Never present a partial install as reduced protection. | Automatic rollback to the pre-apply state from the receipt, then report the blocking cause. | **Closed** — never report a partially applied plan as any protection level. |
+| 9.4 | **Config conflict** | A managed key already holds a value AASM did not write, or another manager owns the same surface. | "Something else is managing this setting. Here is the conflict; choose whether to take it over." Show both values. | Explicit user decision. AASM records the pre-existing value in the receipt first, so removal can restore it. | **Closed** — do not silently overwrite; do not silently skip and claim success. |
+| 9.5 | **Protection test failure** (synthetic secret reached the endpoint) | The verify exercise observed the raw synthetic value at the controlled endpoint, or no redaction finding was recorded. | "Protection could not be verified — a test secret was not blocked. Treat this integration as **not protecting**." A hard failure, never a warning. | Report which mechanism was expected to redact and did not; keep the level at most `Integrated`; offer repair/reinstall. | **Closed** — this is the one result that must never be downgraded to advisory. |
+| 9.6 | **Plugin / core version mismatch** | Version compatibility check at connect, or a contract call rejected by the core. | "The plugin and Agent Assembly core versions are not compatible. Upgrade *this* component." Name which side to move. | Upgrade the mismatched component; the integration reconnects and re-verifies. | **Closed** — refuse to operate on an unverified contract rather than guessing at compatibility. |
+| 9.7 | **Tool update invalidates the integration** | Post-upgrade drift: managed keys missing, config schema changed, or the version moves outside the supported range. | "The tool updated and your protection needs re-applying. You are not protected until it is." Do not imply this was the user's mistake. | Re-run repair; if the schema changed, reinstall. If the new version is unsupported, fall back to 9.2. | **Closed** — level drops immediately on detected drift, before repair is attempted. |
+
+### 9.8 Cross-cutting rules for every failure
+
+- **One cause, one action.** Each message names what happened and the single next action. A
+  failure message that offers three options is a message the user will ignore.
+- **Never green on a failed check.** No failure path may leave a protection level displayed that
+  its criteria (§7) no longer support.
+- **Diagnostics are subject to G4.** Any diagnostic bundle produced during triage is scanned and
+  redacted like any other output; troubleshooting is not an exemption from data minimisation.
+- **A bypass is not a failure.** Launching the tool outside the managed path is reported as an
+  unprotected launch, not as an AASM error — the distinction matters because the remedy is
+  different and blaming the system trains users to ignore real failures.
 
 ## 10. MVP scope and non-goals
 
