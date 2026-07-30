@@ -753,3 +753,73 @@ they were built against. Pin `aa-core` exactly."*
 
 Steps 4–6 are blocked on step 3 in the same boundary-first way ADR 0002's migration order
 gated its steps 6–9 on the runtime becoming authoritative.
+
+---
+
+## Accepted risks
+
+- **An in-process adapter is not runtime-contained.** `aa-devtool-contract` is a
+  compile-time restriction; a genuinely malicious in-tree adapter runs with the runtime's
+  privileges. This is accepted because in-tree adapters are reviewed, CODEOWNERS-gated
+  code shipped in a signed release, and because the mitigation that would remove the risk
+  (out-of-process adapters) would multiply the local-IPC surface this ADR is trying to
+  keep to one socket. It is *why* out-of-tree adapters are never linked into official
+  binaries (§6.3).
+- **A capability token stolen from the developer's own home directory is indistinguishable
+  from the legitimate client.** Nothing local defends against an attacker who already has
+  the developer's UID and filesystem read access. The scope limits the blast radius (one
+  tool, one operation set, expiring, revocable) and every use is audited; it does not
+  prevent the theft.
+- **The developer can always defeat their own integration** by editing settings, removing
+  the CA, or not launching the tool through AASM. Detecting that is `Drifted`/`Degraded`;
+  preventing it is host-level tamper prevention, an explicit non-goal of AAASM-5278.
+- **Protection-state freshness windows admit a gap.** Between two verifications, a state
+  can be reported that has since become false. The window is bounded and the evidence
+  carries its timestamp, so the claim is "verified at T", not "true now" — but a consumer
+  that ignores the timestamp will over-read it.
+- **Windows named pipes are a different implementation of the same idea.** Peer attribution
+  uses `GetNamedPipeClientProcessId` rather than `SO_PEERCRED`, and DACLs rather than mode
+  bits. The decision assumes equivalence; it must be re-verified when a Windows client is
+  actually built (see Reconsideration triggers).
+
+## Explicitly forbidden designs
+
+1. **Embedding the policy engine or the sensitive-data engine independently in each
+   plugin.** Detection and redaction live in `aa-security`, run authoritatively inside the
+   trusted layers (ADR 0002/0015). A plugin-side copy is advisory at best and a divergent
+   second source of truth at worst.
+2. **Giving a plugin unrestricted `aa-core` access, or reusable gateway credentials.**
+   The compile-time restriction of `aa-devtool-contract` and the local-only,
+   non-relayable, per-tool-scoped capability token are both load-bearing. No DI token is
+   ever presented upstream, and no gateway/organization credential is ever handed to a
+   thin client.
+3. **Defining "plugin" as a synonym for MCP.** MCP is one of ten integration capabilities
+   and is supported by a minority of tool families (§3.5). A design in which the plugin
+   protocol *is* MCP couples the product to one vendor's extension model and forces
+   misleading no-ops on every other tool.
+4. **Reporting full protection because a settings file exists.** File existence is
+   evidence of a file. `Integrated` requires a receipt plus matching fingerprints plus a
+   fresh verification; `GatewayProtected` additionally requires a core-side observation of
+   probe traffic (§4.1, §4.2).
+5. **Installing privileged host components silently.** Trust-store changes, eBPF
+   attachment and launch agents are individually consented, individually reversible plan
+   steps (§6.6).
+6. **Using the Developer Integration API to obtain or shortcut a policy decision.** The
+   DI-API carries no policy decisions and no agent-action traffic. Agent decisions go
+   SDK → `aa-sdk-client` → runtime/gateway, exactly as
+   [ADR 0004](0004-governance-enforcement-flow.md) requires. Adding a `check`-like verb,
+   an approval *decision* verb (as opposed to the presentation relay of matrix row 12), or
+   any passthrough that could carry one, reopens this ADR **and** ADR 0004.
+7. **Loopback TCP for the DI-API.** Reachable by every local user and by a browser, with
+   no kernel-supplied peer identity (§5.2).
+8. **Dynamic shared-library loading of adapters, or `inventory`-style implicit
+   registration.** Forbidden, not deferred — it would place unreviewed code inside the
+   trusted process where the compile-time boundary has no force (§6.5).
+9. **A self-contained (JWT-style) capability token, or one derived from a public
+   identifier.** The first cannot be revoked; the second is not a secret at all — the
+   precise mistake AAASM-3922 documented for the SDK handshake key (§5.3).
+10. **Deriving or upgrading a protection state client-side.** The client renders what the
+    service computed; a locally derived state is a claim wearing a measurement's clothes.
+11. **A second, "convenient" ad-hoc local surface** (an extra socket, an HTTP shim, a
+    file-drop command queue) for lifecycle operations. One boundary, one verb space —
+    the same rule ADR 0004 applied to transports.
