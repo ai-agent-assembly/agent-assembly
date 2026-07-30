@@ -219,7 +219,7 @@ mdbook serve docs --open
 
 Mermaid diagrams use the `mdbook-mermaid` preprocessor, which is wired in `docs/book.toml`. The `Docs` GitHub Actions workflow runs `mdbook build docs` on every PR that touches `docs/**`, `README.md`, or `CONTRIBUTING.md` and fails the build on errors.
 
-### Linking to another repository
+## Linking to another repository
 
 Every active repo in the org defaults to `main` (see [ADR 0016](docs/src/adr/0016-default-branch-master-to-main-migration.md)). When you write a cross-repo link, ref, or automation target, use the **default-branch-tracking `HEAD` form** — `…/blob/HEAD/…`, `raw.githubusercontent.com/<org>/<repo>/HEAD/…` — rather than hardcoding a branch name, so the reference survives any future rename.
 
