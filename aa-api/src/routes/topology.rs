@@ -24,12 +24,12 @@ use crate::auth::scope::{RequireRead, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::models::topology::{agent_mode, format_id, status_str};
-use crate::routes::agent_violations::AgentViolationCounts;
 pub use crate::models::topology::{
     AgentLineage, AgentNode, AgentNodeStatus, AgentTree, LineageStep, NodeBudget, NodeEffectivePermissions,
     PolicyChainTier, TeamSummary, TeamTopology, TopologyGraphEdge, TopologyGraphResponse, TopologyOverview,
     TopologyStats,
 };
+use crate::routes::agent_violations::AgentViolationCounts;
 use crate::routes::enforcement_mirror::{agent_tool_ids, cascade_denies_all_egress, cascade_denies_tool};
 use crate::state::AppState;
 
