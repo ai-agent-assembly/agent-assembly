@@ -132,6 +132,32 @@ pub trait StepExecutor {
     fn observe(&self, step: &StepReceipt) -> ArtifactObservation;
 }
 
+/// A boxed executor is itself an executor.
+///
+/// [`FilesystemExecutor`] covers the steps whose mutation is "put these bytes at
+/// this path"; every other mechanism belongs to the adapter that knows its tool,
+/// which means the service has to be able to hold *whichever* executor the tool
+/// registered rather than one concrete type. The trait is already object-safe;
+/// this impl is what lets `IntegrationEngine<Box<dyn StepExecutor + Send>>` exist
+/// so a per-tool executor can be chosen at registration time (AAASM-5281).
+///
+/// `+ Send` is on the object type rather than on the trait: the service drives
+/// the engine from an async task pool and needs the future to be `Send`, while an
+/// executor used synchronously has no reason to be constrained.
+impl StepExecutor for Box<dyn StepExecutor + Send> {
+    fn apply(&mut self, step: &IntegrationStep) -> Result<StepOutcome, ExecutionError> {
+        (**self).apply(step)
+    }
+
+    fn reverse(&mut self, step: &StepReceipt) -> Result<(), ExecutionError> {
+        (**self).reverse(step)
+    }
+
+    fn observe(&self, step: &StepReceipt) -> ArtifactObservation {
+        (**self).observe(step)
+    }
+}
+
 /// Everything an apply needs that the plan does not carry.
 #[derive(Debug, Clone)]
 pub struct ApplyContext {

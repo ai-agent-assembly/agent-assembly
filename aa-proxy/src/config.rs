@@ -65,7 +65,10 @@ pub struct ProxyConfig {
     /// leaves only the built-in LLM hosts under MitM when `llm_only` is `true`.
     /// Has no effect when `llm_only` is `false` — every host is already MitM'd.
     ///
-    /// Comma-separated list from env var `AA_PROXY_MITM_HOSTS`.
+    /// Comma-separated list from env var `AA_PROXY_MITM_HOSTS`, **unioned** with
+    /// the host lists installed developer integrations wrote under
+    /// `${AASM_STATE_DIR:-~/.aasm}/integrations/mitm-hosts.d/` — see
+    /// [`integration_mitm_hosts`].
     pub mitm_hosts: Vec<String>,
 
     /// Hosts that the proxy will block at the CONNECT level (HTTP 403).
@@ -167,7 +170,7 @@ impl ProxyConfig {
             ca_dir: parse_ca_dir()?,
             cert_cache_capacity: parse_cert_cache_capacity()?,
             llm_only: parse_llm_only(),
-            mitm_hosts: env_csv("AA_PROXY_MITM_HOSTS"),
+            mitm_hosts: union_mitm_hosts(env_csv("AA_PROXY_MITM_HOSTS"), integration_mitm_hosts()),
             denied_hosts: env_csv("AA_PROXY_DENIED_HOSTS"),
             network_allowlist: env_csv("AA_PROXY_NETWORK_ALLOWLIST"),
             skip_upstream_tls_verify: resolve_skip_upstream_tls_verify(),
@@ -181,6 +184,72 @@ impl ProxyConfig {
             allow_private_connect_targets: false,
         })
     }
+}
+
+/// Directory, under the Agent Assembly state root, holding one MitM host list
+/// per installed developer integration.
+const MITM_HOSTS_DIR: &str = "mitm-hosts.d";
+
+/// Hosts the installed developer integrations asked to have inspected.
+///
+/// AAASM-5276 condition C5: one headless `claude -p` run produced four upstream
+/// requests, only two of which were `/v1/messages` — an MCP-registry GET and a
+/// 130 KB `POST /api/event_logging/v2/batch` went out alongside them. Under the
+/// `llm_only` default those side channels are transparent-tunnelled and never
+/// scanned.
+///
+/// The fix has to be **per integration**, not global: setting `llm_only = false`
+/// would bring every host on the machine under MitM, which is a far larger
+/// change than "inspect the tool you just installed". Each integration's install
+/// writes one file here and its removal deletes it, so the proxy's interception
+/// set follows exactly what is installed. The proxy still MitMs nothing else.
+///
+/// A directory that does not exist, a file that cannot be read, and a blank or
+/// `#`-commented line all contribute nothing — this widens the DLP surface, so
+/// failing to read it can only ever narrow the result, never open a host up.
+fn integration_mitm_hosts() -> Vec<String> {
+    let Some(dir) = integration_state_dir().map(|d| d.join(MITM_HOSTS_DIR)) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut hosts = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(body) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        for line in body.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            hosts.push(line.to_string());
+        }
+    }
+    hosts
+}
+
+/// `${AASM_STATE_DIR:-~/.aasm}/integrations`, the same root the receipt store
+/// uses, so an integration's artifacts and its receipt live and die together.
+fn integration_state_dir() -> Option<PathBuf> {
+    let base = match std::env::var_os("AASM_STATE_DIR") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => dirs::home_dir()?.join(".aasm"),
+    };
+    Some(base.join("integrations"))
+}
+
+/// Merge the operator's list with the integrations', preserving first-seen order
+/// and dropping duplicates.
+fn union_mitm_hosts(operator: Vec<String>, integrations: Vec<String>) -> Vec<String> {
+    let mut merged = operator;
+    for host in integrations {
+        if !merged.iter().any(|existing| existing.eq_ignore_ascii_case(&host)) {
+            merged.push(host);
+        }
+    }
+    merged
 }
 
 /// Parse the `AA_PROXY_ADDR` env var or return the default bind address.
@@ -317,6 +386,56 @@ mod tests {
         std::env::remove_var("AA_PROXY_CREDENTIAL_ACTION");
         std::env::remove_var("AA_PROXY_GATEWAY_ENDPOINT");
         std::env::remove_var("AA_PROXY_MCP_FAIL_OPEN");
+        std::env::remove_var("AASM_STATE_DIR");
+    }
+
+    /// AAASM-5276 condition C5. An installed integration extends the DLP
+    /// surface to the hosts it named, and `llm_only` stays on — the alternative
+    /// (turning it off) would MitM every host on the machine.
+    #[test]
+    fn an_installed_integration_extends_the_mitm_set_without_disabling_llm_only() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+
+        let dir = tempfile::tempdir().unwrap();
+        let hosts_dir = dir.path().join("integrations").join(MITM_HOSTS_DIR);
+        std::fs::create_dir_all(&hosts_dir).unwrap();
+        std::fs::write(
+            hosts_dir.join("claude-code--user.hosts"),
+            "# written by an install\napi.anthropic.com\n\n*.anthropic.com\n",
+        )
+        .unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert!(cfg.llm_only, "extending the set must not disable llm_only");
+        assert_eq!(cfg.mitm_hosts, vec!["api.anthropic.com", "*.anthropic.com"]);
+
+        // Removing the integration removes its hosts from the proxy's set.
+        std::fs::remove_file(hosts_dir.join("claude-code--user.hosts")).unwrap();
+        assert!(ProxyConfig::from_env().unwrap().mitm_hosts.is_empty());
+        std::env::remove_var("AASM_STATE_DIR");
+    }
+
+    #[test]
+    fn an_absent_state_directory_contributes_no_hosts() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AASM_STATE_DIR", "/nonexistent/aasm-state-for-tests");
+        assert!(ProxyConfig::from_env().unwrap().mitm_hosts.is_empty());
+        std::env::remove_var("AASM_STATE_DIR");
+    }
+
+    #[test]
+    fn the_operator_list_and_the_integration_list_merge_without_duplicates() {
+        assert_eq!(
+            union_mitm_hosts(
+                vec!["api.groq.com".to_string(), "API.ANTHROPIC.COM".to_string()],
+                vec!["api.anthropic.com".to_string(), "*.anthropic.com".to_string()],
+            ),
+            vec!["api.groq.com", "API.ANTHROPIC.COM", "*.anthropic.com"],
+            "a host the operator already listed must not be added twice"
+        );
     }
 
     #[test]

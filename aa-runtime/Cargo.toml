@@ -30,6 +30,13 @@ aa-core                     = { path = "../aa-core", version = "0.0.1-rc.6", fea
 # `src/devint/adapters.rs` before `cargo workspaces publish`. A published
 # aa-runtime still binds the DI-API; its integration registry is simply empty.
 aa-devtool                  = { path = "../aa-devtool" }
+# AAASM-5281: Claude Code is the first natively migrated adapter, and its
+# registration needs three surfaces the registry's `Box<dyn DevToolAdapter>`
+# cannot carry — the lifecycle implementation, the renderer for its plan's
+# content, and the executor for the launch-environment steps `FilesystemExecutor`
+# refuses. Named directly for those; `aa_devtool::registry` remains the one place
+# that decides *which* tools exist.
+aa-devtool-claude-code      = { path = "../aa-devtool-claude-code" }
 # strip-for-publish:end devtool
 aa-security                 = { path = "../aa-security", version = "0.0.1-rc.6", features = ["serde"] }
 aa-proto                    = { path = "../aa-proto", version = "0.0.1-rc.6" }

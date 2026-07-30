@@ -200,6 +200,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
 ]
 
@@ -483,6 +484,7 @@ version = "0.0.1-rc.6"
 dependencies = [
  "aa-core",
  "aa-devtool",
+ "aa-devtool-claude-code",
  "aa-ebpf",
  "aa-ebpf-common",
  "aa-proto",

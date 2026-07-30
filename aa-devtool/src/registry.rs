@@ -65,6 +65,28 @@ pub fn kind_for(tool: &str) -> Option<DevToolKind> {
     }
 }
 
+/// Bypass conditions a launch's own arguments would create, in words a user can
+/// act on.
+///
+/// Agent Assembly never strips these flags — its interception sits below the
+/// tool's own permission enforcement, so removing them would change the user's
+/// session without changing what is protected. What it can do is refuse to be
+/// silent: a session started with `--dangerously-skip-permissions` is not
+/// getting the tool-action governance its receipt describes, and the honest
+/// place to say so is the moment it starts.
+///
+/// Resolved here rather than in `aasm run` for the same reason adapters are: the
+/// CLI should not learn which flags matter to which tool.
+pub fn launch_warnings(tool: &str, tool_args: &[String]) -> Vec<String> {
+    match tool {
+        "claude" => aa_devtool_claude_code::bypass::launch_flag_bypasses(tool_args)
+            .into_iter()
+            .map(|finding| format!("{} — {}", finding.summary, finding.remediation))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Construct one adapter per [`SUPPORTED_TOOLS`] entry, in that order.
 ///
 /// This is what `DiscoveryService::new()` runs, and it returns the same adapter
@@ -98,6 +120,18 @@ mod tests {
     #[test]
     fn built_in_adapters_covers_every_supported_tool() {
         assert_eq!(built_in_adapters().len(), SUPPORTED_TOOLS.len());
+    }
+
+    #[test]
+    fn a_permission_bypass_flag_is_reported_but_never_stripped() {
+        let args = vec!["--dangerously-skip-permissions".to_string(), "-p".to_string()];
+        let warnings = launch_warnings("claude", &args);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("--dangerously-skip-permissions"), "{warnings:?}");
+        assert!(launch_warnings("claude", &["-p".to_string()]).is_empty());
+        // A tool with no bypass vocabulary of its own says nothing rather than
+        // borrowing Claude Code's.
+        assert!(launch_warnings("codex", &args).is_empty());
     }
 
     #[test]

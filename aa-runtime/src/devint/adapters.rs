@@ -9,26 +9,30 @@
 //! there is still exactly one place that decides which implementation backs a
 //! tool (AAASM-5274).
 //!
-//! None of those adapters implements
-//! [`DevToolIntegration`](aa_core::integration::DevToolIntegration) yet — the
-//! first native implementor is AAASM-5281. Until then
-//! [`LegacyAdapterShim`] makes each of
-//! them satisfy the lifecycle contract, declaring honestly that it cannot
-//! substantiate the mechanisms it was never designed to expose (§7).
+//! **Claude Code is native from AAASM-5281**; every other built-in adapter is
+//! still wrapped in [`LegacyAdapterShim`], which makes it satisfy the lifecycle
+//! contract while declaring honestly that it cannot substantiate the mechanisms
+//! it was never designed to expose (§7).
 //!
 //! # What a shimmed adapter can and cannot do
 //!
 //! It can be **discovered**, **planned** and **reported on**: `list`, `plan`
-//! and `status` are real for every built-in tool from this commit. It cannot be
-//! **applied**, because the shim's plan carries
-//! `StepAction::ApplyLegacyManagedSettings` — the legacy trait renders and
-//! writes in two calls and never discloses the destination path, so there is no
-//! file for
+//! and `status` are real for every built-in tool. It cannot be **applied**,
+//! because the shim's plan carries `StepAction::ApplyLegacyManagedSettings` —
+//! the legacy trait renders and writes in two calls and never discloses the
+//! destination path, so there is no file for
 //! [`FilesystemExecutor`](aa_core::integration::FilesystemExecutor) to write and
 //! no prior state for a receipt to record. The executor refuses that step with
-//! a reason rather than reporting a success nothing performed, which is the
-//! behaviour AAASM-5281 replaces by shipping a native adapter whose plan names
-//! its file.
+//! a reason rather than reporting a success nothing performed.
+//!
+//! # Why Claude Code brings its own executor as well as its own content
+//!
+//! Its plan does more than write files: it injects `NODE_EXTRA_CA_CERTS` and the
+//! proxy variables into the launch environment, which `FilesystemExecutor`
+//! deliberately refuses. The registration therefore carries a
+//! [`StepExecutorFactory`] alongside its [`StepContentSource`], and both come
+//! from the adapter crate that knows the tool. The service keeps
+//! transactionality, the journal, the receipt and rollback.
 //!
 //! # This module is stripped before publishing
 //!
@@ -39,15 +43,16 @@
 //! therefore starts with an empty integration registry — the DI-API still
 //! binds, and `list_tools` honestly returns nothing.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use aa_core::dev_tool::{AdapterError, DevToolAdapter, DevToolInfo, GovernanceLevel, McpServerInfo};
-use aa_core::integration::LegacyAdapterShim;
+use aa_core::dev_tool::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
+use aa_core::integration::{IntegrationPlan, LegacyAdapterShim, StepExecutor};
 use aa_core::policy::PolicyDocument;
 
-use super::service::RegisteredIntegration;
+use super::service::{RegisteredIntegration, StepContentSource, StepExecutorFactory};
 
 /// Every built-in tool, wrapped so the lifecycle service can drive it.
 ///
@@ -60,11 +65,64 @@ pub fn built_in_integrations(policy: PolicyDocument) -> Vec<RegisteredIntegratio
         .iter()
         .filter_map(|token| {
             let kind = aa_devtool::registry::kind_for(token)?;
+            if kind == DevToolKind::ClaudeCode {
+                return Some(claude_code_integration());
+            }
             let adapter = aa_devtool::registry::adapter_for(token)?;
             let shim = LegacyAdapterShim::new(kind.clone(), BoxedAdapter(adapter), policy.clone());
             Some(RegisteredIntegration::new(kind, Arc::new(shim)))
         })
         .collect()
+}
+
+/// The native Claude Code registration (AAASM-5281).
+///
+/// One `Arc` answers for all three roles — adapter, content source and executor
+/// factory — because all three are views of the same host configuration. Two
+/// instances could disagree about where the settings file is, and the digest
+/// check would then reject a plan nobody changed.
+pub fn claude_code_integration() -> RegisteredIntegration {
+    claude_code_registration(Arc::new(aa_devtool_claude_code::ClaudeCodeIntegration::new()))
+}
+
+/// Register a Claude Code integration that was built elsewhere.
+///
+/// Public so an end-to-end test can register one pinned to temp roots and a live
+/// proxy, and still exercise **this** wiring rather than a second copy of it —
+/// the bridge below is where a mistake would hide.
+pub fn claude_code_registration(
+    integration: Arc<aa_devtool_claude_code::ClaudeCodeIntegration>,
+) -> RegisteredIntegration {
+    RegisteredIntegration::new(DevToolKind::ClaudeCode, integration.clone())
+        .with_content(Arc::new(ClaudeCodeSteps(integration.clone())))
+        .with_executor(Arc::new(ClaudeCodeSteps(integration)))
+}
+
+/// Adapts the Claude Code integration's rendering and execution surfaces onto
+/// the service's seams.
+///
+/// The adapter crate cannot implement [`StepContentSource`] or
+/// [`StepExecutorFactory`] itself: both are defined in `aa-runtime`, which
+/// depends on it. This is the one-way bridge.
+struct ClaudeCodeSteps(Arc<aa_devtool_claude_code::ClaudeCodeIntegration>);
+
+#[async_trait]
+impl StepContentSource for ClaudeCodeSteps {
+    async fn render(&self, plan: &IntegrationPlan) -> Result<BTreeMap<String, String>, String> {
+        self.0.step_content(plan).map_err(|e| e.to_string())
+    }
+}
+
+impl StepExecutorFactory for ClaudeCodeSteps {
+    fn executor(&self, rendered: BTreeMap<String, String>) -> Box<dyn StepExecutor + Send> {
+        // The scope a plan writes to is fixed at plan time and recorded in the
+        // receipt, but this factory is called for observation and reversal too,
+        // where there is no plan in hand. The executor is therefore built for
+        // every scope the integration can own and dispatches per step, so a
+        // project-scoped install is observed and reversed as correctly as a
+        // user-scoped one.
+        Box::new(self.0.scoped_executor(rendered))
+    }
 }
 
 /// A `Box<dyn DevToolAdapter>` that is itself a `DevToolAdapter`.
@@ -116,7 +174,6 @@ impl DevToolAdapter for BoxedAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_core::dev_tool::DevToolKind;
 
     use crate::devint::lifecycle::IntegrationLifecycle;
     use crate::devint::service::EngineLifecycle;

@@ -342,7 +342,16 @@ impl DriftInputs<'_> {
             }
         }
 
-        for step in receipt.steps.iter().filter(|s| s.applied) {
+        // A protection test is applied in the sense that it ran, and it changed
+        // nothing: no artifact, no fingerprint, nothing to diverge from.
+        // Comparing it would report `Unobservable` forever, which is
+        // AASM-affecting and unrepairable — so a plan that honestly includes a
+        // probe would be permanently drifted the moment it was installed.
+        for step in receipt
+            .steps
+            .iter()
+            .filter(|s| s.applied && !s.action.is_protection_test())
+        {
             let observed = self.observed.iter().find(|o| o.step_id == step.step_id);
             match observed {
                 None => report.push(
@@ -750,5 +759,35 @@ mod tests {
         let report = inputs(&r, &compat, &obs).classify();
         let json = serde_json::to_string(&report).unwrap();
         assert_eq!(serde_json::from_str::<DriftReport>(&json).unwrap(), report);
+    }
+
+    /// A plan that honestly includes a protection test must not read as drifted
+    /// the moment it is installed. The probe mutates nothing, records no
+    /// fingerprint and has no artifact — comparing it would produce
+    /// `Unobservable`, which is AASM-affecting and unrepairable.
+    #[test]
+    fn a_protection_test_step_is_not_a_drift_finding() {
+        use crate::integration::capability::IntegrationCapability;
+        use crate::integration::step::ProbeDescriptor;
+
+        let probe = IntegrationStep::new(
+            "protection-test",
+            StepAction::RunProtectionTest {
+                probe: ProbeDescriptor {
+                    id: "model-path".to_string(),
+                    mechanism: IntegrationCapability::ModelPathInterception,
+                    description: "exercise the model path".to_string(),
+                },
+            },
+            "verify the model path is intercepted",
+        );
+        let mut receipt = receipt();
+        receipt.steps.push(StepReceipt::applied(&probe, None));
+
+        let compatible = compatible();
+        let observed = observed("sha256:managed", "sha256:doc");
+        let report = inputs(&receipt, &compatible, &observed).classify();
+        assert!(report.is_clean(), "{report:?}");
+        assert!(receipt.unrestorable_steps().is_empty(), "a probe leaves nothing behind");
     }
 }
