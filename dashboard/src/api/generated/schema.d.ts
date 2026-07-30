@@ -2378,9 +2378,16 @@ export interface components {
             depth: number;
             effective_permissions?: null | components["schemas"]["NodeEffectivePermissions"];
             /**
-             * @description Whether the agent is policy-flagged — `policy_violations_count` is at or
-             *     above [`FLAGGED_VIOLATION_THRESHOLD`]. Drives the danger-tinted node card
-             *     and ⚑ marker in the topology graph.
+             * @description Whether the agent is policy-flagged — it has recorded at least one
+             *     `PolicyViolation` audit event (`count > 0`, AAASM-5103). Drives the
+             *     danger-tinted node card and ⚑ marker in the topology graph.
+             *
+             *     Derived from the per-agent audit aggregate
+             *     ([`crate::routes::agent_violations::AgentViolationCounts`]), which the
+             *     topology handlers build once per request and set here — the
+             *     `From<&AgentRecord>` conversion leaves it `false` because the record no
+             *     longer carries a violation counter (the dead field it used to read was
+             *     removed in AAASM-5103).
              */
             flagged: boolean;
             /** @description Governance level — included only when `show_budget=true`. */
@@ -2451,6 +2458,13 @@ export interface components {
             framework: string;
             /** @description Hex-encoded agent UUID. */
             id: string;
+            /**
+             * @description Whether the agent is policy-flagged — it has recorded at least one policy
+             *     violation (`policy_violations_count > 0`, AAASM-5103). Clients should read
+             *     this rather than re-deriving a threshold, so the Fleet and Topology
+             *     surfaces cannot diverge on whether a given agent is flagged.
+             */
+            is_flagged: boolean;
             /** @description ISO 8601 timestamp of the most recent event. */
             last_event?: string | null;
             /** @description Governance layer this agent is assigned to (e.g. "advisory", "enforced"). */
@@ -2468,7 +2482,10 @@ export interface components {
             pid?: number | null;
             /**
              * Format: int32
-             * @description Number of policy violations recorded.
+             * @description Number of policy violations recorded for this agent, derived from the
+             *     `PolicyViolation` audit events (AAASM-5103) — the same canonical source
+             *     the analytics `agent-enforcement` aggregation counts. `0` when the agent
+             *     has recorded none.
              */
             policy_violations_count: number;
             /** @description Most recent events emitted by this agent. */
@@ -2532,8 +2549,8 @@ export interface components {
              */
             depth: number;
             /**
-             * @description Whether the agent is policy-flagged. Same derivation as
-             *     [`AgentNode::flagged`].
+             * @description Whether the agent is policy-flagged (`count > 0`). Same derivation and
+             *     audit source as [`AgentNode::flagged`] (AAASM-5103).
              */
             flagged: boolean;
             /** @description Governance level — included only when `show_budget=true`. */

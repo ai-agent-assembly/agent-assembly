@@ -3922,9 +3922,16 @@ components:
         flagged:
           type: boolean
           description: |-
-            Whether the agent is policy-flagged — `policy_violations_count` is at or
-            above [`FLAGGED_VIOLATION_THRESHOLD`]. Drives the danger-tinted node card
-            and ⚑ marker in the topology graph.
+            Whether the agent is policy-flagged — it has recorded at least one
+            `PolicyViolation` audit event (`count > 0`, AAASM-5103). Drives the
+            danger-tinted node card and ⚑ marker in the topology graph.
+
+            Derived from the per-agent audit aggregate
+            ([`crate::routes::agent_violations::AgentViolationCounts`]), which the
+            topology handlers build once per request and set here — the
+            `From<&AgentRecord>` conversion leaves it `false` because the record no
+            longer carries a violation counter (the dead field it used to read was
+            removed in AAASM-5103).
         governance_level:
           type:
           - string
@@ -4032,6 +4039,7 @@ components:
       - metadata
       - session_count
       - policy_violations_count
+      - is_flagged
       - active_sessions
       - recent_events
       - recent_traces
@@ -4047,6 +4055,13 @@ components:
         id:
           type: string
           description: Hex-encoded agent UUID.
+        is_flagged:
+          type: boolean
+          description: |-
+            Whether the agent is policy-flagged — it has recorded at least one policy
+            violation (`policy_violations_count > 0`, AAASM-5103). Clients should read
+            this rather than re-deriving a threshold, so the Fleet and Topology
+            surfaces cannot diverge on whether a given agent is flagged.
         last_event:
           type:
           - string
@@ -4077,7 +4092,11 @@ components:
         policy_violations_count:
           type: integer
           format: int32
-          description: Number of policy violations recorded.
+          description: |-
+            Number of policy violations recorded for this agent, derived from the
+            `PolicyViolation` audit events (AAASM-5103) — the same canonical source
+            the analytics `agent-enforcement` aggregation counts. `0` when the agent
+            has recorded none.
           minimum: 0
         recent_events:
           type: array
@@ -4157,8 +4176,8 @@ components:
         flagged:
           type: boolean
           description: |-
-            Whether the agent is policy-flagged. Same derivation as
-            [`AgentNode::flagged`].
+            Whether the agent is policy-flagged (`count > 0`). Same derivation and
+            audit source as [`AgentNode::flagged`] (AAASM-5103).
         governance_level:
           type:
           - string
