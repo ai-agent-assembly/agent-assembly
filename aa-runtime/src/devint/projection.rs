@@ -263,6 +263,9 @@ const fn action_kind(action: &StepAction) -> &'static str {
         StepAction::InjectLaunchEnvironment { .. } => "inject_launch_environment",
         StepAction::ConfigureMcpServers { .. } => "configure_mcp_servers",
         StepAction::RegisterIdeClient { .. } => "register_ide_client",
+        StepAction::ConnectLocalRuntime { .. } => "connect_local_runtime",
+        StepAction::RunProtectionTest { .. } => "run_protection_test",
+        StepAction::ManageArtifact { .. } => "manage_artifact",
         // `StepAction` is `#[non_exhaustive]`: an action this build cannot name
         // is reported as unknown rather than mislabelled as a neighbour.
         _ => "unknown",
@@ -341,6 +344,16 @@ fn step_facts(action: &StepAction) -> StepFacts {
         }
         StepAction::RegisterIdeClient { host, .. } => {
             facts.managed_keys.push(host.clone());
+        }
+        StepAction::ManageArtifact { path, .. } => {
+            // A path Agent Assembly owns outright. Naming it is the point: a
+            // user approving a step that creates a file should see which file.
+            facts.artifact_paths.push(path.display().to_string());
+        }
+        StepAction::RunProtectionTest { probe } => {
+            // The probe's identifier, so a reviewer can tell which probe is
+            // being offered. The descriptor carries no value fields.
+            facts.managed_keys.push(probe.id.clone());
         }
         // Unknown future actions expose nothing. Failing closed on a variant
         // this build cannot reason about is the only safe default: an unknown
