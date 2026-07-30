@@ -1721,6 +1721,20 @@ mod tests {
     }
 
     #[test]
+    fn narrowed_action_records_narrow_verdict_distinct_from_deny() {
+        // AAASM-5100 item A — a scoped-but-permitted action (proto Allow,
+        // decision=1, but the gateway flagged it narrowed) records the `narrow`
+        // verdict, distinct from `deny` — the UI shows partial success, not a
+        // block.
+        let entry = decision_entry(
+            r#"{"action_type":"FILE_OPERATION","decision":1,"verdict":"narrow","latency_ms":1,"detail":{"kind":"file_op","path":"/tmp/x"}}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("allow carries a decision");
+        assert_eq!(row.verdict, Some(RuntimeVerdict::Narrow));
+        assert_ne!(row.verdict, Some(RuntimeVerdict::Deny));
+    }
+
+    #[test]
     fn entry_to_decision_row_skips_entry_without_decision() {
         let entry = decision_entry(r#"{"action_type":"AGENT_SPAWN","detail":{"kind":"spawn"}}"#);
         assert!(entry_to_decision_row(&entry).is_none());
