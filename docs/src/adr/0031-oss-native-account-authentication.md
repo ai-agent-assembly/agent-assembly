@@ -1,6 +1,6 @@
 # ADR 0031: OSS Native Account Authentication (email/password, no OAuth)
 
-**Status**: Proposed — **requires product + security sign-off before any implementation**
+**Status**: Accepted (2026-07-30, product + security). Native email/password login is ratified for OSS, coexisting with the retained API-key path, Postgres-gated, first-user-admin-then-invite, no OAuth. The five open questions are resolved in [§ Decision](#decision-2026-07-30) below: **Q1** roles map fully onto the existing scopes; **Q2** argon2id at the OWASP floor; **Q3** open registration off by default behind an opt-in flag; **Q4** password reset **is** in v1, which brings a new pluggable SMTP mailer into OSS; **Q5** a `GET /api/v1/auth/methods` capability endpoint drives the frontend. Implementation is authorised under Epic AAASM-5301.
 **Date**: 2026-07-30
 **Ticket**: [AAASM-5302](https://lightning-dust-mite.atlassian.net/browse/AAASM-5302) (Epic [AAASM-5301](https://lightning-dust-mite.atlassian.net/browse/AAASM-5301))
 
