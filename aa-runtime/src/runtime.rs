@@ -8,6 +8,188 @@ use tokio_util::task::TaskTracker;
 use crate::config::RuntimeConfig;
 use crate::lifecycle::wait_for_shutdown_signal;
 
+// strip-for-publish:begin devtool
+/// Bring up the Developer Integration API alongside the enforcement pipeline
+/// (ADR 0030 Decision 5; AAASM-5279 shipped the server, AAASM-5280 starts it).
+///
+/// Three properties this function is written to have:
+///
+/// 1. **Opt-in.** It is called only when `AA_DEVINT_ENABLED` asked for it. A
+///    runtime enforcing policy for one containerised agent has no lifecycle
+///    surface to serve and must not open a socket for it.
+/// 2. **Never fatal.** A DI-API that cannot bind — a stale socket owned by
+///    another user, a home directory that is not writable — is logged and
+///    skipped. The enforcement path does not depend on it, and taking the
+///    runtime down for a developer-convenience surface would trade the thing
+///    that matters for the thing that does not.
+/// 3. **Enrolled before it listens.** The token file is written first, so a
+///    `aasm integrations` invocation that races the socket's appearance finds a
+///    live token rather than an enrolment prompt it cannot satisfy.
+///
+/// This whole region is removed by `.ci/strip-for-publish.sh`: it constructs
+/// the built-in adapters from `aa-devtool` (`publish = false`), and a runtime
+/// with no adapters would serve a DI-API that can answer nothing.
+fn spawn_devint(tracker: &TaskTracker, token: &CancellationToken, config: &RuntimeConfig) {
+    use std::sync::Arc;
+
+    let server_config = match crate::devint::DevIntServerConfig::from_convention() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "DI-API socket path unresolved — continuing without the Developer Integration API");
+            return;
+        }
+    };
+
+    let tokens = crate::devint::TokenStore::new();
+    match crate::devint::enrol_local_client(&tokens, "aasm", aa_core::integration::now_unix_secs()) {
+        Ok((path, record)) => tracing::info!(
+            path = %path.display(),
+            token_id = %record.token_id,
+            "enrolled the local Agent Assembly CLI with the DI-API"
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "DI-API enrolment failed — continuing without the Developer Integration API");
+            return;
+        }
+    }
+
+    let store = match aa_core::integration::ReceiptStore::default_location() {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::warn!(error = %e, "no integration receipt store — continuing without the Developer Integration API");
+            return;
+        }
+    };
+
+    // Resolving a *policy profile* into a document happens inside the trusted
+    // layers and never crosses the DI-API (ADR 0030 matrix row 6). That
+    // resolution does not exist yet, so the shim renders from an empty document
+    // named after this runtime — enough to author and review a plan, and
+    // honest about carrying no rules.
+    let policy = aa_core::policy::PolicyDocument {
+        version: 1,
+        name: format!("aa-runtime:{}", config.agent_id),
+        rules: Vec::new(),
+        enforcement_mode: aa_core::policy::EnforcementMode::Enforce,
+    };
+
+    let services = crate::devint::DevIntServices {
+        lifecycle: Arc::new(crate::devint::EngineLifecycle::new(
+            crate::devint::adapters::built_in_integrations(policy),
+            store,
+        )),
+        tokens,
+        audit: Arc::new(crate::devint::audit::TracingAuditSink),
+    };
+
+    match crate::devint::DevIntServer::bind(server_config) {
+        Ok(server) => {
+            tracing::info!(path = %server.socket_path().display(), "DI-API bound");
+            let devint_tracker = tracker.clone();
+            let devint_token = token.clone();
+            tracker.spawn(async move {
+                server.run(devint_tracker, devint_token, services).await;
+            });
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to bind the DI-API socket — continuing without the Developer Integration API");
+        }
+    }
+}
+
+#[cfg(test)]
+mod devint_wiring_tests {
+    use super::*;
+
+    /// Build the config the way the binary does, so the test also pins that
+    /// `AA_DEVINT_ENABLED` is what turns the surface on.
+    fn config_with_devint(enabled: bool) -> RuntimeConfig {
+        std::env::set_var("AA_AGENT_ID", "devint-wiring-test");
+        std::env::set_var("AA_DEVINT_ENABLED", if enabled { "1" } else { "0" });
+        let config = RuntimeConfig::from_env().expect("config");
+        assert_eq!(config.devint_enabled, enabled);
+        config
+    }
+
+    /// Redirect every path the DI-API touches into `dir`, so no test ever reads
+    /// or writes the developer's real `~/.aa` or `~/.aasm`.
+    fn redirect_into(dir: &std::path::Path) {
+        std::env::set_var("AA_DEVINT_SOCKET", dir.join("run/devint.sock"));
+        std::env::set_var("AA_DEVINT_TOKEN_FILE", dir.join("run/devint.token"));
+        std::env::set_var("AASM_STATE_DIR", dir.join("state"));
+    }
+
+    /// The wiring, end to end: a runtime asked for the DI-API enrols the CLI,
+    /// binds the socket, and answers a real client over it.
+    #[tokio::test]
+    async fn an_enabled_runtime_serves_the_di_api_to_a_real_client() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        redirect_into(dir.path());
+
+        let tracker = TaskTracker::new();
+        let token = CancellationToken::new();
+        spawn_devint(&tracker, &token, &config_with_devint(true));
+
+        let socket = crate::devint::devint_socket_path().expect("socket path");
+        let token_file = crate::devint::enrolment_path().expect("token path");
+        let secret = crate::devint::read_local_token(&token_file).expect("the runtime must enrol the CLI");
+
+        let mut client =
+            crate::devint::DevIntClient::connect(&socket, "aasm", "test", Some(secret.expose().to_string()))
+                .await
+                .expect("connect");
+        assert!(!client.negotiated().degraded);
+        let tools = client.list_tools().await.expect("list_tools");
+        assert!(
+            tools.tools.iter().any(|t| t.tool_id == "claude-code"),
+            "the runtime served no built-in adapters: {tools:?}"
+        );
+
+        token.cancel();
+        tracker.close();
+        tracker.wait().await;
+    }
+
+    /// The other half of "additive": a runtime that did not ask for the DI-API
+    /// opens no socket and writes no token, so nothing about it changed.
+    #[tokio::test]
+    async fn a_runtime_that_does_not_want_the_di_api_binds_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        redirect_into(dir.path());
+
+        let tracker = TaskTracker::new();
+        let token = CancellationToken::new();
+        let config = config_with_devint(false);
+        if config.devint_enabled {
+            spawn_devint(&tracker, &token, &config);
+        }
+
+        assert!(!crate::devint::devint_socket_path().expect("path").exists());
+        assert!(!crate::devint::enrolment_path().expect("path").exists());
+        tracker.close();
+        tracker.wait().await;
+    }
+
+    /// A DI-API that cannot bind must not take the runtime down with it: the
+    /// enforcement path does not depend on the lifecycle surface.
+    #[tokio::test]
+    async fn an_unbindable_di_api_is_skipped_rather_than_fatal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        redirect_into(dir.path());
+        // A socket path whose parent cannot be created.
+        std::env::set_var("AA_DEVINT_SOCKET", dir.path().join("not-a-dir/run/devint.sock"));
+        std::fs::write(dir.path().join("not-a-dir"), b"file").expect("seed");
+
+        let tracker = TaskTracker::new();
+        let token = CancellationToken::new();
+        spawn_devint(&tracker, &token, &config_with_devint(true));
+
+        tracker.close();
+        tracker.wait().await;
+    }
+}
+// strip-for-publish:end devtool
+
 /// Load policy rules from `config.policy_path`, or return empty rules if disabled.
 ///
 /// Exits the process with code 1 if the file exists but cannot be parsed —
@@ -838,6 +1020,16 @@ pub async fn run(config: RuntimeConfig) {
         }
     }
 
+    // strip-for-publish:begin devtool
+    // The Developer Integration API, when this runtime was asked to serve one.
+    // Deliberately after the IPC server: the enforcement path is what the
+    // runtime exists for, and the lifecycle surface must never delay or block
+    // it coming up.
+    if config.devint_enabled {
+        spawn_devint(&tracker, &token, &config);
+    }
+    // strip-for-publish:end devtool
+
     // Shared monotonic sequence counter — used by the pipeline and the
     // eBPF bridge so all events share a single ordering.
     let seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1402,6 +1594,7 @@ mod tests {
             enforcement_max_field_bytes: crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES,
             gateway_fail_closed: true,
             gateway_timeout_ms: crate::config::DEFAULT_GATEWAY_TIMEOUT_MS,
+            devint_enabled: false,
         }
     }
 

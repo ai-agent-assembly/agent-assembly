@@ -479,6 +479,7 @@ name = "aa-runtime"
 version = "0.0.1-rc.6"
 dependencies = [
  "aa-core",
+ "aa-devtool",
  "aa-ebpf",
  "aa-ebpf-common",
  "aa-proto",

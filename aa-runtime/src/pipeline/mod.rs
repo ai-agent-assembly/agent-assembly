@@ -1152,6 +1152,7 @@ mod tests {
             enforcement_max_field_bytes: enforcement::DEFAULT_MAX_FIELD_BYTES,
             gateway_fail_closed: true,
             gateway_timeout_ms: crate::config::DEFAULT_GATEWAY_TIMEOUT_MS,
+            devint_enabled: false,
         };
 
         let pipeline_config = PipelineConfig::from_runtime_config(&runtime_config);

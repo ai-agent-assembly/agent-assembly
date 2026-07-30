@@ -51,6 +51,7 @@ fn lifecycle_config(agent_id: &str) -> RuntimeConfig {
         enforcement_max_field_bytes: DEFAULT_MAX_FIELD_BYTES,
         gateway_fail_closed: true,
         gateway_timeout_ms: aa_runtime::config::DEFAULT_GATEWAY_TIMEOUT_MS,
+        devint_enabled: false,
     }
 }
 
