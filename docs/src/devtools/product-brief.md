@@ -401,7 +401,56 @@ reachable from a profile:
 
 ## 7. Protection levels
 
-<!-- populated in a later commit -->
+A **profile** is what the user chose. A **level** is what the system can prove it is currently
+doing. They are separate because a user can choose `Strict` on a machine where the tool is not
+routed through the gateway — and the honest answer there is `Integrated`, not `Strict protection
+active`.
+
+> **The governing rule: the existence of a configuration file is never sufficient evidence for a
+> protection level.** Configuration expresses intent. A level is a claim about behaviour, and a
+> claim about behaviour requires an observation of behaviour. Every entry criterion below is
+> written to be executable by a test, which is why §11 can assert against them directly.
+
+### 7.1 Integrated
+
+| | |
+|---|---|
+| **What it protects** | The tool's *startup posture*. Managed settings constrain what the tool will agree to do — permission lists, which MCP servers it may load — and the tool is registered with the gateway so its actions are attributable and auditable. |
+| **Testable entry criteria** | **All** must hold: (1) a valid installation receipt exists; (2) every managed key read back from the live config equals the planned value by content hash; (3) the detected tool version is at or above the adapter's minimum; (4) the tool has been launched at least once through the managed path *and* the gateway observed the resulting registration event. Criterion 4 is what makes this a behavioural claim — (1)–(3) alone are configuration and are explicitly **not** sufficient. |
+| **Bypasses that remain** | Launching the tool outside the managed path. Editing the managed config by hand (detectable as drift, but only at the next status check). Any model-bound traffic that does not traverse the gateway — at this level, *all* of it. Anything the tool's own config surface cannot express. |
+| **Maps to `GovernanceLevel`** | `L1Observe` as a floor. It may reach `L3Native` **for individual capability dimensions** that the tool's native configuration genuinely governs — for Claude Code the MCP enable/disable lists are the candidate — but only per-dimension and only once the [capability matrix](../governance/capability-matrix.md) declares it from `AAASM-5276` evidence. |
+| **Honest limit** | **Integrated cannot claim host-level bypass prevention.** It also cannot claim sensitive-data protection, because nothing is inspecting model-bound content at this level. |
+
+### 7.2 Gateway Protected
+
+| | |
+|---|---|
+| **What it protects** | Model-bound and tool-bound traffic in flight. Requests traverse the AASM gateway/proxy, so the runtime scanner inspects them, secrets are redacted before egress, egress allowlists are enforced, approvals can halt an action, and every decision is audited. |
+| **Testable entry criteria** | Everything required for `Integrated`, **plus** a completed protection exercise within the current configuration: a synthetic secret placed in a model-bound path resulted in (a) the controlled endpoint receiving no raw secret, (b) a redaction finding recorded, and (c) the agent receiving a semantics-preserving placeholder. A reachable gateway is not sufficient; a configured proxy address is not sufficient; **traffic must have been observed and acted on**. |
+| **Bypasses that remain** | Direct provider connections that do not honour the injected proxy/base URL (an unmanaged launch, a hardcoded endpoint, a separate credential). Traffic from tools other than the governed one. Certificate-pinned clients that reject the proxy CA. Content the deterministic scanner does not match — detection is pattern-based, so *unknown* secret shapes pass through. Anything at all if the user stops the core. |
+| **Maps to `GovernanceLevel`** | `L2Enforce` — "allow / deny, approval, redaction, and budget enforcement", which is precisely what traversal of the gateway provides. |
+| **Honest limit** | **Gateway Protected cannot claim host-level bypass prevention either.** It protects the paths it sees. A user or an agent that can start a process outside the managed path is outside its scope, by construction. |
+
+### 7.3 Host Enforced
+
+| | |
+|---|---|
+| **What it would protect** | The machine, not the integration. Enforcement applied at the operating-system boundary so a process cannot escape by unsetting an environment variable, launching the tool directly, or opening its own socket. |
+| **Testable entry criteria** | An OS-level enforcement facility is installed, active, and demonstrated to block a *deliberately unmanaged* launch — i.e. the bypass that defeats §7.1 and §7.2 must be shown to fail. |
+| **Availability** | **Not available in this MVP.** macOS Endpoint Security and Network Extension are explicit non-goals (§10), and Windows/Linux host enforcement is out of scope. The `aa-ebpf` layer is Linux-only and is a **detection** layer — it observes SSL and exec/file syscalls but cannot modify traffic in flight, so it cannot supply this level either. |
+| **Product requirement** | The level must be **named and reported as unavailable**, not hidden. A user reading status must be able to see that a stronger tier exists and that this machine does not have it. Silence here reads as "there is nothing above what I have", which is the over-claim this whole section exists to prevent. |
+| **Maps to `GovernanceLevel`** | Nothing today. It is not `L3Native`: `L3Native` means AASM writes the tool's *own* native configuration so governance survives AASM going offline — that is a property of `Integrated`, not a host-level control. Host enforcement is orthogonal to the L0–L3 scale, which describes what a tool adapter achieves, not what the OS enforces. |
+
+### 7.4 Level reporting rules
+
+- **Report the highest level whose criteria are *currently* met**, and re-evaluate rather than
+  cache. A level earned at install time is not still true after the core stops.
+- **Report the mechanisms behind the level**, split into "exercised" and "read back". A user
+  who can see which is which can reason about their own risk; a user shown a single word cannot.
+- **Always report the next level up and why it is not active.** For every MVP install that is
+  `Host Enforcement: unavailable on this platform`.
+- **Degrade loudly.** Losing a criterion mid-session drops the level and surfaces it. There is no
+  state in which the level shown is higher than the evidence supports.
 
 ## 8. Product guarantees and their limits
 
