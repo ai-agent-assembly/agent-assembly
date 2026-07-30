@@ -495,6 +495,10 @@ pub async fn execute_with_adapters(
         emit_observe_banner();
     }
 
+    for warning in aa_devtool::registry::launch_warnings(&args.tool, &args.tool_args) {
+        eprintln!("warning: {warning}");
+    }
+
     if args.dry_run {
         let handle = dry_run_handle(args);
         let child_env = build_child_env(&handle, args.no_proxy, mode);
