@@ -2,17 +2,17 @@ import {
   DEFAULT_ALERT_FILTERS,
   type AlertFilters,
   type AlertStatus,
-  type Severity,
+  type AlertSeverity,
   type TimeRangePreset,
 } from './types'
 
-const SEVERITY_VALUES: ReadonlySet<Severity> = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'])
+const SEVERITY_VALUES: ReadonlySet<AlertSeverity> = new Set(['CRITICAL', 'WARNING', 'INFO'])
 const STATUS_VALUES: ReadonlySet<AlertStatus> = new Set(['FIRING', 'RESOLVED', 'SUPPRESSED'])
 const RANGE_VALUES: ReadonlySet<TimeRangePreset> = new Set(['24h', '7d', '30d', 'custom'])
 
 export function filtersFromSearchParams(sp: URLSearchParams): AlertFilters {
-  const severities = sp.getAll('severity').filter((v): v is Severity =>
-    SEVERITY_VALUES.has(v as Severity),
+  const severities = sp.getAll('severity').filter((v): v is AlertSeverity =>
+    SEVERITY_VALUES.has(v as AlertSeverity),
   )
   const statuses = sp.getAll('status').filter((v): v is AlertStatus =>
     STATUS_VALUES.has(v as AlertStatus),

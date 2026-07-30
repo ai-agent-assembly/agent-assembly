@@ -16,7 +16,7 @@ import { absent, isKnown, known, propagateAbsence, type Certain } from '../lib/t
  */
 
 /** Severity ordering used to pick the single most-urgent firing alert. */
-const SEVERITY_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 } as const
+const SEVERITY_RANK = { CRITICAL: 0, WARNING: 1, INFO: 2 } as const
 
 /** Sort comparator: most-severe alert first. */
 export function compareBySeverity(a: Alert, b: Alert): number {

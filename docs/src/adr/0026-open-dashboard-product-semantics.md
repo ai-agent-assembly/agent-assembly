@@ -284,6 +284,46 @@ FE client exposes only `getMatrix` and `applyOverride`. The confirmation step is
 compensating control. An undo affordance is tracked as follow-up work rather than
 half-built here; see the PR discussion on AAASM-5124.
 
+### Update — AAASM-5193 (alert severity vocabulary, 2026-07)
+
+**Same defect family as Decision 2, recorded here rather than in a new ADR.** The
+Alerts dashboard advertised a four-level severity ladder — `CRITICAL` / `HIGH` /
+`MEDIUM` / `LOW` — in its type, legend/stats tiles, filter chips, and sort/tone maps.
+But the backend emits only three: `AlertResponse.severity`
+(`aa-api/src/routes/alerts.rs`) is the `Display` of `AlertSeverity`
+(`aa-api/src/alerts/mod.rs`), which serialises exactly `critical` / `warning` /
+`info`. The stopgap normalisation added under AAASM-5149
+(`dashboard/src/features/alerts/parseAlert.ts`) mapped `warning → HIGH` and
+`info → LOW`, leaving **`MEDIUM` unreachable from any real alert payload** — a
+frontend-only state, the exact shape Decision 2 removed for `narrow`/`approval`.
+
+**Resolved by following Decision 2's precedent (option A):** narrow the alert surface
+to what the projection can emit, do not preserve an aspirational level to match a mock.
+
+- **Root cause was a *conflated type*, not a spurious level.** The single `Severity`
+  union served two vocabularies at once: an alert's emitted severity *and* a rule's
+  authored severity. The rule ladder is genuinely four-level — backend `RuleSeverity`
+  (`aa-api/src/alerts/rules/types.rs`) has `Critical`/`High`/`Medium`/`Low`, all
+  authorable — so `MEDIUM` is real *there*. Deleting `MEDIUM` outright would have been
+  the same defect inverted: removing a state the rule builder can actually produce.
+- **Fix: split the type.** `AlertSeverity` = `CRITICAL | WARNING | INFO` (the three
+  wire-emittable levels, spelled upper-case, mapped 1:1 with no lossy remap);
+  `RuleSeverity` = `CRITICAL | HIGH | MEDIUM | LOW` (unchanged, matches the backend
+  enum). Every alert-emission surface now references `AlertSeverity`; the rule builder
+  references `RuleSeverity`; `SeverityBadge` renders the union of the two.
+- **No wire contract changes.** This is a dashboard-only narrowing, exactly as Decision
+  2 was — `AlertSeverity` (Rust) and `RuleSeverity` (Rust) are untouched.
+- **Guarded against recurrence.** A contract test
+  (`dashboard/src/features/alerts/parseAlert.test.ts`) asserts the dashboard's alert
+  severity set is *exactly* the image of the backend's emittable wire severities under
+  `canonicalSeverity` — a bijection. A frontend-only level like `MEDIUM` reappearing on
+  the alert path fails the test. `MEDIUM` staying reachable on the `RuleSeverity` ladder
+  is deliberate and out of the guard's scope, because a rule severity is not an emitted
+  alert severity.
+
+Implemented under
+[AAASM-5193](https://lightning-dust-mite.atlassian.net/browse/AAASM-5193).
+
 ---
 
 ## Decision 3 — Scrub detector toggles: real capability or read-only list?
@@ -678,6 +718,10 @@ state.
   Real enforcement wiring (option (c) of
   [AAASM-5178](https://lightning-dust-mite.atlassian.net/browse/AAASM-5178)) is
   deferred to its own ADR alongside ADR 0021.
+- Decision 2's precedent (narrow an advertised enum to the projection's emittable set)
+  was applied to alert severity under
+  [AAASM-5193](https://lightning-dust-mite.atlassian.net/browse/AAASM-5193); see the
+  Update at the end of that section.
 - Decision 3 sits inside ADR 0015's DLP trust boundary.
 - Decision 4 continues ADR 0021, which named the absent-vs-defaulted problem without
   settling it.

@@ -65,28 +65,27 @@ function valueOf<T>(value: Certain<T>): T {
 }
 
 describe('compareBySeverity', () => {
-  it('orders CRITICAL before HIGH before MEDIUM before LOW', () => {
+  it('orders CRITICAL before WARNING before INFO', () => {
     const alerts = [
-      makeAlert({ id: 'lo', severity: 'LOW' }),
-      makeAlert({ id: 'med', severity: 'MEDIUM' }),
+      makeAlert({ id: 'lo', severity: 'INFO' }),
+      makeAlert({ id: 'warn', severity: 'WARNING' }),
       makeAlert({ id: 'crit', severity: 'CRITICAL' }),
-      makeAlert({ id: 'hi', severity: 'HIGH' }),
     ]
     const sorted = [...alerts].sort(compareBySeverity).map((a) => a.id)
-    expect(sorted).toEqual(['crit', 'hi', 'med', 'lo'])
+    expect(sorted).toEqual(['crit', 'warn', 'lo'])
   })
 
   it('treats equal severities as equal (returns 0)', () => {
-    expect(compareBySeverity(makeAlert({ severity: 'HIGH' }), makeAlert({ severity: 'HIGH' }))).toBe(
-      0,
-    )
+    expect(
+      compareBySeverity(makeAlert({ severity: 'WARNING' }), makeAlert({ severity: 'WARNING' })),
+    ).toBe(0)
   })
 })
 
 describe('pickTopAlert', () => {
   it('returns the most-severe alert', () => {
     const top = pickTopAlert([
-      makeAlert({ id: 'med', severity: 'MEDIUM' }),
+      makeAlert({ id: 'warn', severity: 'WARNING' }),
       makeAlert({ id: 'crit', severity: 'CRITICAL' }),
     ])
     expect(top?.id).toBe('crit')
@@ -258,9 +257,9 @@ describe('deriveOverviewKpis', () => {
       [makeFleetAgent()],
       known([
         makeAlert({ id: 'resolved-crit', severity: 'CRITICAL', status: 'RESOLVED' }),
-        makeAlert({ id: 'firing-med', severity: 'MEDIUM', status: 'FIRING' }),
+        makeAlert({ id: 'firing-med', severity: 'WARNING', status: 'FIRING' }),
         makeAlert({ id: 'firing-crit', severity: 'CRITICAL', status: 'FIRING' }),
-        makeAlert({ id: 'suppressed-hi', severity: 'HIGH', status: 'SUPPRESSED' }),
+        makeAlert({ id: 'suppressed-hi', severity: 'WARNING', status: 'SUPPRESSED' }),
       ]),
       ENFORCEMENT_OK,
     )

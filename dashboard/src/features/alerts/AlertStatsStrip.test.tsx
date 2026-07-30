@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { AlertStatsStrip } from './AlertStatsStrip'
 import { coversWholeFleet, statsScopeNote } from './alertsCoverage'
 import { absent, known, type Certain } from '../../lib/truthfulness'
-import type { Alert, Severity, AlertStatus } from './types'
+import type { Alert, AlertSeverity, AlertStatus } from './types'
 
-function alert(id: string, severity: Severity, status: AlertStatus): Alert {
+function alert(id: string, severity: AlertSeverity, status: AlertStatus): Alert {
   return {
     id,
     ruleId: 'r',
@@ -22,17 +22,17 @@ function alert(id: string, severity: Severity, status: AlertStatus): Alert {
 const ALERTS: readonly Alert[] = [
   alert('a1', 'CRITICAL', 'FIRING'),
   alert('a2', 'CRITICAL', 'FIRING'),
-  alert('a3', 'HIGH', 'FIRING'),
-  alert('a4', 'MEDIUM', 'RESOLVED'),
-  alert('a5', 'LOW', 'SUPPRESSED'),
+  alert('a3', 'WARNING', 'FIRING'),
+  alert('a4', 'INFO', 'RESOLVED'),
+  alert('a5', 'INFO', 'SUPPRESSED'),
 ]
 
 interface StripProps {
   alerts: Certain<readonly Alert[]>
   total: Certain<number>
-  activeSeverities: Severity[]
+  activeSeverities: AlertSeverity[]
   activeStatuses: AlertStatus[]
-  onToggleSeverity: (s: Severity) => void
+  onToggleSeverity: (s: AlertSeverity) => void
   onToggleStatus: (s: AlertStatus) => void
 }
 
@@ -51,12 +51,11 @@ function renderStrip(overrides: Partial<StripProps> = {}) {
 }
 
 describe('AlertStatsStrip', () => {
-  it('derives the five tile counts from the loaded alerts', () => {
+  it('derives the four tile counts from the loaded alerts', () => {
     renderStrip()
     expect(screen.getByTestId('alerts-stat-count-CRITICAL')).toHaveTextContent('2')
-    expect(screen.getByTestId('alerts-stat-count-HIGH')).toHaveTextContent('1')
-    expect(screen.getByTestId('alerts-stat-count-MEDIUM')).toHaveTextContent('1')
-    expect(screen.getByTestId('alerts-stat-count-LOW')).toHaveTextContent('1')
+    expect(screen.getByTestId('alerts-stat-count-WARNING')).toHaveTextContent('1')
+    expect(screen.getByTestId('alerts-stat-count-INFO')).toHaveTextContent('2')
     // Three of the five alerts are FIRING.
     expect(screen.getByTestId('alerts-stat-count-FIRING')).toHaveTextContent('3')
   })
@@ -109,7 +108,7 @@ describe('AlertStatsStrip', () => {
   it('marks a tile pressed when its filter is active', () => {
     renderStrip({ activeSeverities: ['CRITICAL'] })
     expect(screen.getByTestId('alerts-stat-tile-CRITICAL')).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId('alerts-stat-tile-HIGH')).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByTestId('alerts-stat-tile-WARNING')).toHaveAttribute('aria-pressed', 'false')
   })
 })
 

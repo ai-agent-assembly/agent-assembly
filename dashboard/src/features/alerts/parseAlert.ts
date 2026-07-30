@@ -5,11 +5,12 @@
 // wire does not speak the dashboard's vocabulary:
 //
 //   wire (aa-api/src/alerts/mod.rs)     dashboard (./types.ts)
-//   status:   "unresolved"              AlertStatus: 'FIRING'
-//             "resolved"                             'RESOLVED'
-//             "suppressed"                           'SUPPRESSED'
-//   severity: "info" | "warning"        Severity: 'CRITICAL' | 'HIGH'
-//             | "critical"                        | 'MEDIUM'   | 'LOW'
+//   status:   "unresolved"              AlertStatus:   'FIRING'
+//             "resolved"                               'RESOLVED'
+//             "suppressed"                             'SUPPRESSED'
+//   severity: "critical"                AlertSeverity: 'CRITICAL'
+//             "warning"                                'WARNING'
+//             "info"                                   'INFO'
 //
 // So `a.severity === 'CRITICAL' && a.status === 'FIRING'` could never match a
 // real payload. The nav badge therefore counted zero for every live response,
@@ -23,7 +24,7 @@
 // and `certainFromQuery` renders `unavailable` — the same treatment a failed
 // request gets. A payload we cannot read is not an empty fleet.
 
-import type { Alert, AlertStatus, Severity } from './types'
+import type { Alert, AlertSeverity, AlertStatus } from './types'
 
 /**
  * Raised when a payload cannot be understood.
@@ -58,20 +59,20 @@ const WIRE_STATUS: ReadonlyMap<string, AlertStatus> = new Map([
  * Severity vocabulary as `aa-api` actually serialises it.
  *
  * Source: `AlertSeverity` + its `Display` impl (aa-api/src/alerts/mod.rs:96-115),
- * which emits `"info" | "warning" | "critical"`.
+ * which emits exactly `"critical" | "warning" | "info"`.
  *
- * Only `critical → CRITICAL` is load-bearing for this ticket, and it is exact.
- * The other two are an *ordinal alignment* between a three-level backend ladder
- * and a four-level dashboard ladder, not a mapping the product has ratified:
- * `MEDIUM` is unreachable from the current wire, so `warning` lands on `HIGH`
- * and `info` on `LOW`. Flagged in the PR for ratification; if the rule-engine
- * Stories (AAASM-1385…1389) settle on a different ladder, this table is the one
- * place that changes.
+ * AAASM-5193 ratified the mapping: the dashboard's alert vocabulary is now the
+ * same three levels, spelled upper-case, so this table is a lossless 1:1
+ * rename rather than an ordinal alignment onto a wider dashboard ladder. There
+ * is no unreachable member — the earlier `warning → HIGH` / `info → LOW` remap
+ * left `MEDIUM` unreachable from any real payload, the frontend-only state this
+ * ticket removed (ADR 0026 D2). `MEDIUM` survives only where it is genuinely
+ * authorable — the `RuleSeverity` ladder — never on an emitted alert.
  */
-const WIRE_SEVERITY: ReadonlyMap<string, Severity> = new Map([
+const WIRE_SEVERITY: ReadonlyMap<string, AlertSeverity> = new Map([
   ['critical', 'CRITICAL'],
-  ['warning', 'HIGH'],
-  ['info', 'LOW'],
+  ['warning', 'WARNING'],
+  ['info', 'INFO'],
 ])
 
 /** The dashboard's own vocabulary, accepted unchanged. */
@@ -80,11 +81,10 @@ const CANONICAL_STATUS: ReadonlySet<string> = new Set<AlertStatus>([
   'RESOLVED',
   'SUPPRESSED',
 ])
-const CANONICAL_SEVERITY: ReadonlySet<string> = new Set<Severity>([
+const CANONICAL_SEVERITY: ReadonlySet<string> = new Set<AlertSeverity>([
   'CRITICAL',
-  'HIGH',
-  'MEDIUM',
-  'LOW',
+  'WARNING',
+  'INFO',
 ])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -114,10 +114,10 @@ export function canonicalStatus(raw: unknown): AlertStatus {
 }
 
 /** Canonicalise one severity. Same contract as {@link canonicalStatus}. */
-export function canonicalSeverity(raw: unknown): Severity {
+export function canonicalSeverity(raw: unknown): AlertSeverity {
   const value = str(raw)
   if (value === null) throw new AlertShapeError('alert.severity is not a string')
-  if (CANONICAL_SEVERITY.has(value)) return value as Severity
+  if (CANONICAL_SEVERITY.has(value)) return value as AlertSeverity
   const mapped = WIRE_SEVERITY.get(value.toLowerCase())
   if (mapped) return mapped
   throw new AlertShapeError(`unrecognised alert severity: ${JSON.stringify(value)}`)

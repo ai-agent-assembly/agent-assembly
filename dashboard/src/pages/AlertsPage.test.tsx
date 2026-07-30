@@ -22,7 +22,7 @@ const FIRING: Alert = {
   id: 'a-1',
   ruleId: 'r-1',
   ruleName: 'Budget burn',
-  severity: 'HIGH',
+  severity: 'WARNING',
   status: 'FIRING',
   agentId: 'agent-7',
   firstFiredAt: '2026-05-14T09:00:00Z',
@@ -194,7 +194,7 @@ describe('AlertsPage', () => {
 
   it('updates the URL filters when a severity chip is toggled', () => {
     setup()
-    fireEvent.click(screen.getByTestId('alerts-filter-severity-HIGH'))
+    fireEvent.click(screen.getByTestId('alerts-filter-severity-WARNING'))
     expect(screen.getByRole('heading', { level: 1, name: 'Alerts' })).toBeInTheDocument()
   })
 
@@ -208,14 +208,14 @@ describe('AlertsPage', () => {
     })
     expect(screen.getByTestId('alerts-stats-strip')).toBeInTheDocument()
     expect(screen.getByTestId('alerts-stat-count-CRITICAL')).toHaveTextContent('2')
-    expect(screen.getByTestId('alerts-stat-count-HIGH')).toHaveTextContent('1')
+    expect(screen.getByTestId('alerts-stat-count-WARNING')).toHaveTextContent('1')
     // Two of the three loaded alerts are FIRING.
     expect(screen.getByTestId('alerts-stat-count-FIRING')).toHaveTextContent('2')
   })
 
   it('toggling a stats tile writes the matching severity filter to the URL', () => {
     setup()
-    fireEvent.click(screen.getByTestId('alerts-stat-tile-HIGH'))
+    fireEvent.click(screen.getByTestId('alerts-stat-tile-WARNING'))
     expect(screen.getByRole('heading', { level: 1, name: 'Alerts' })).toBeInTheDocument()
   })
 

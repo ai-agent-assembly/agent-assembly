@@ -95,7 +95,7 @@ const ALERTS = {
       id: 'al-2',
       ruleId: 'r-2',
       ruleName: 'budget breach',
-      severity: 'MEDIUM',
+      severity: 'WARNING',
       status: 'FIRING',
       agentId: null,
       firstFiredAt: '2026-07-26T14:01:41Z',
@@ -230,7 +230,7 @@ test.describe('AAASM-5113 — Overview asserts only what it measured', () => {
       const recent = page.getByTestId('overview-recent')
       await expect(recent).toContainText('recent alerts')
       await expect(recent).toContainText('critical')
-      await expect(recent).toContainText('medium')
+      await expect(recent).toContainText('warning')
       for (const verdict of ['deny', 'narrow', 'scrub']) {
         await expect(recent).not.toContainText(verdict)
       }

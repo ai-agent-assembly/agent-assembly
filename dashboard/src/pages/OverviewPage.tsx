@@ -222,15 +222,14 @@ function LayerCard({
  * verdict. Severity is a real field the alerts API emits, so tinting it asserts
  * nothing the data does not already say (AAASM-5116).
  */
-// Alert['severity'] is the closed 4-member Severity union, validated onto an
-// Alert by `canonicalSeverity` in parseAlert.ts — narrow-union Record gap
-// (AAASM-5245 gap 2).
+// Alert['severity'] is the closed 3-member AlertSeverity union (AAASM-5193),
+// validated onto an Alert by `canonicalSeverity` in parseAlert.ts — narrow-union
+// Record gap (AAASM-5245 gap 2).
 // eslint-disable-next-line no-restricted-syntax
 const SEVERITY_TONE: Record<Alert['severity'], string> = {
   CRITICAL: 'var(--danger)',
-  HIGH: 'var(--warn)',
-  MEDIUM: 'var(--info)',
-  LOW: 'var(--ink-4)',
+  WARNING: 'var(--warn)',
+  INFO: 'var(--info)',
 }
 
 function shortTime(iso: string): string {

@@ -8,7 +8,7 @@ const ROWS: readonly Alert[] = [
     id: 'a-low',
     ruleId: 'r1',
     ruleName: 'low rule',
-    severity: 'LOW',
+    severity: 'INFO',
     status: 'RESOLVED',
     agentId: 'aa-z',
     firstFiredAt: '2026-05-13T10:00:00Z',
@@ -29,8 +29,8 @@ const ROWS: readonly Alert[] = [
   {
     id: 'a-med',
     ruleId: 'r3',
-    ruleName: 'med rule',
-    severity: 'MEDIUM',
+    ruleName: 'mid rule',
+    severity: 'WARNING',
     status: 'SUPPRESSED',
     agentId: 'aa-m',
     firstFiredAt: '2026-05-13T08:30:00Z',
@@ -49,8 +49,8 @@ describe('AlertList', () => {
     render(<AlertList rows={ROWS} />)
     const rows = screen.getAllByTestId('alert-row')
     expect(within(rows[0]).getByText('CRITICAL')).toBeInTheDocument()
-    expect(within(rows[1]).getByText('MEDIUM')).toBeInTheDocument()
-    expect(within(rows[2]).getByText('LOW')).toBeInTheDocument()
+    expect(within(rows[1]).getByText('WARNING')).toBeInTheDocument()
+    expect(within(rows[2]).getByText('INFO')).toBeInTheDocument()
   })
 
   it('flips severity order when the column header is clicked', async () => {
@@ -58,7 +58,7 @@ describe('AlertList', () => {
     render(<AlertList rows={ROWS} />)
     await user.click(screen.getByTestId('alerts-th-severity'))
     const rows = screen.getAllByTestId('alert-row')
-    expect(within(rows[0]).getByText('LOW')).toBeInTheDocument()
+    expect(within(rows[0]).getByText('INFO')).toBeInTheDocument()
     expect(within(rows[2]).getByText('CRITICAL')).toBeInTheDocument()
   })
 
