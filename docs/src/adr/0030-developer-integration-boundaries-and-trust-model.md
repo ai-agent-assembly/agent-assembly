@@ -823,3 +823,117 @@ gated its steps 6–9 on the runtime becoming authoritative.
 11. **A second, "convenient" ad-hoc local surface** (an extra socket, an HTTP shim, a
     file-drop command queue) for lifecycle operations. One boundary, one verb space —
     the same rule ADR 0004 applied to transports.
+
+## Consequences
+
+### Positive
+
+- **One core, many tools.** Policy, detection, redaction, approval and audit stay in a
+  single runtime/gateway shared by every integration; adding a tool adds an adapter, never
+  a second engine.
+- **Unsupported stops being a lie.** A tool that has no launch command says so at plan
+  time with a reason a user can read, instead of implementing a method that fails later or
+  returns `Ok(())` and does nothing.
+- **Protection claims become auditable.** Every state carries the evidence that produced
+  it, so "are we protected?" has an answer with a provenance rather than a boolean.
+- **The security work is already half done.** The chosen transport reuses
+  `aa-runtime`'s existing, tested `0600` + peercred model rather than introducing a second
+  local trust model to review.
+- **Nothing breaks on day one.** The shim keeps every existing adapter — including the
+  public sample — compiling and working while migration proceeds.
+
+### Negative / accepted costs
+
+- **A new local API surface exists**, and it must be defended: it is a real trust boundary
+  with real negative tests, threat-model tests and an audit obligation
+  ([AAASM-5279](https://lightning-dust-mite.atlassian.net/browse/AAASM-5279)).
+- **`aa-cli` lifecycle commands require a running runtime.** Deliberate: the alternative
+  (an in-process fallback) is a second code path with a different trust model.
+- **`aa-devtool-contract`'s re-export list grows substantially.** The surface is still
+  flat and audited, but it is bigger, and each addition costs a security review. That cost
+  is the mechanism, not a side effect.
+- **Two capability vocabularies now coexist** (`aa_core::Capability` for agent actions,
+  `IntegrationCapability` for tool mechanisms). Distinct names are mandatory, and reviewers
+  must keep them apart.
+- **Windows support is designed but unproven** until a named-pipe implementation lands.
+
+## Operational guidance
+
+- **Operators / deployers:** the runtime owns its own update cadence (§6.4). Do not let a
+  thin client update the runtime, and do not distribute a runtime bundled inside a
+  marketplace extension.
+- **Anything that touches the system trust store or attaches kernel probes must be a
+  visible, individually approved step** with a working removal path. If a support process
+  cannot describe how to undo it, it should not have been installed.
+- **`~/.aa/run/` must be `0700` and the DI socket `0600`.** A deployment that relocates the
+  socket (e.g. via `AA_DEVINT_SOCKET`) must preserve both, or the OS layer of the two-layer
+  authentication is gone and only the token remains.
+- **Treat a `Degraded` or `Drifted` report as an incident signal, not noise** — it is the
+  only way an operator learns that protection that was installed has stopped holding.
+- **Never read a protection state without its timestamp.** The claim is "verified at T".
+
+## Validation requirements
+
+A reviewer should be able to confirm this ADR is enforced, not merely written down. The
+implementing tickets must carry:
+
+| # | Check | Enforces |
+| --- | --- | --- |
+| V1 | A `trybuild` compile-fail test: a crate depending only on `aa-devtool-contract` cannot name `aa_core::storage::…`, `aa_core::identity::…` or a gateway credential type | §1, forbidden design 2 |
+| V2 | A DI-API request with an **absent**, **expired**, **unknown** or **unresolvable** token is denied **and** produces an audit event; no verb has an anonymous or implicitly granted path | §5.3, ADR 0015 transfer |
+| V3 | A token scoped to tool A is rejected for every lifecycle verb on tool B (one negative test per verb) | §5.3, forbidden design 2 |
+| V4 | Protection state cannot reach `Integrated` from file existence: fixture (a) settings file present, no receipt ⇒ `DetectedNotIntegrated`; (b) receipt present, verification stale ⇒ at most `PartiallyIntegrated`; (c) `GatewayProtected` requires a recorded core-side probe observation | §4.2, forbidden design 4 |
+| V5 | Every missing-evidence path resolves **downward** — unreadable settings, unreachable runtime, unresolvable version each lower the state; none raises it | §4.2 rule 2 |
+| V6 | Version negotiation: a client offering only versions below `min_supported` receives `Incompatible` with remediation, never a silent downgrade; a mid-connection downgrade attempt is rejected | §5.4 |
+| V7 | A schema/type assertion that no DI-API response type transitively contains `PolicyDocument`, a raw payload field, or a credential-bearing field | §5.5 |
+| V8 | An enumeration test over the DI-API verb set asserting no verb returns or influences a policy decision, and that the set matches the closed list in §1.2 | Forbidden design 6, ADR 0004 |
+| V9 | Peercred + permission tests for the DI socket, mirroring `aa-runtime/src/ipc/peercred.rs` and the `mode == 0o600` assertion in `aa-runtime/src/ipc/server.rs`: a mismatched UID is rejected; the socket is `0600`; the parent directory is `0700` | §5.2, §5.3 |
+| V10 | A conformance test that an adapter declaring `Supported` for a capability whose optional accessor returns `None` fails | §3.3, §3.4 |
+| V11 | A capability absent from `declared`, and a `RequiresVersion` with `detected: None`, both resolve to **absent** — never `Supported`, never `Unsupported` | §3.4, ADR 0029 fail-absent |
+| V12 | `examples/aa-devtool-sample-myeditor` compiles unchanged against `LegacyAdapterShim` and produces a valid one-step plan; its existing `tests/contract.rs` stays green | §7 |
+| V13 | Replaying a captured, still-valid request produces no state the legitimate client could not have produced (idempotence), and a revoked token's replay is denied | §5.6 |
+
+Until [AAASM-5279](https://lightning-dust-mite.atlassian.net/browse/AAASM-5279) lands
+there is no DI-API to test, so V2/V3/V6–V9/V13 are stated here as the acceptance bar for
+that ticket rather than as checks present in this documentation-only change.
+
+## Reconsideration triggers
+
+- **A Windows named-pipe client is actually built** — the peer-attribution and DACL
+  equivalence assumed in §5.2/§5.3 must be re-verified, not inherited.
+- **A remote or SaaS-hosted Developer Integration client is required** — OS peer identity
+  does not exist over a network; that needs a real transport-level authentication decision,
+  which this ADR does not make.
+- **A partner genuinely requires a loadable adapter** the release process cannot absorb —
+  would force a re-examination of §6.5, and would need an out-of-process adapter model,
+  not `dlopen`.
+- **A tool whose native integration requires the client to hold a gateway credential** —
+  would collide head-on with forbidden design 2 and must be escalated, not worked around.
+- **ADR 0004's REST carve-out changes**, or a REST lifecycle mutation is proposed —
+  §1.2 is derived from that carve-out.
+- **Host enforcement becomes default-on** — `HostEnforced` moves from an opt-in ceiling to
+  an expectation, which changes the meaning of `Degraded`.
+- **The protection-test probe becomes unable to reach the core** for some tool family —
+  `GatewayProtected` would then be unreachable for it, and the ladder needs a stated answer
+  rather than an implicit cap.
+
+## Traceability
+
+| Reference | Relation |
+| --- | --- |
+| [AAASM-5272](https://lightning-dust-mite.atlassian.net/browse/AAASM-5272) | Epic — Developer Integrations |
+| [AAASM-5273](https://lightning-dust-mite.atlassian.net/browse/AAASM-5273) | Product — user journey, guarantees and MVP scope this ADR must support |
+| [AAASM-5274](https://lightning-dust-mite.atlassian.net/browse/AAASM-5274) | Reconciles the three duplicate Claude Code adapters — prerequisite, in flight on a parallel branch; not fixed here |
+| [AAASM-5275](https://lightning-dust-mite.atlassian.net/browse/AAASM-5275) | **This ADR** |
+| [AAASM-5276](https://lightning-dust-mite.atlassian.net/browse/AAASM-5276) | Spike — macOS Claude Code install/protect/repair/remove lifecycle; supplies the evidence the protection-state model is calibrated against |
+| [AAASM-5277](https://lightning-dust-mite.atlassian.net/browse/AAASM-5277) | Implements Decisions 3 and 4 (lifecycle contract, capability + status types). **This ADR is ratified when 5277 lands.** |
+| [AAASM-5278](https://lightning-dust-mite.atlassian.net/browse/AAASM-5278) | Implements the plan / receipt / drift / rollback machinery Decisions 2 and 4 depend on |
+| [AAASM-5279](https://lightning-dust-mite.atlassian.net/browse/AAASM-5279) | Implements Decision 5 (transport, tokens, version negotiation, data minimisation) |
+| [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281) | First productized integration (Claude Code) exercising the whole model end to end |
+| [ADR 0002](0002-sdk-security-boundary.md) | Complements — "position, not code, confers authority"; the untrusted client / trusted runtime split this ADR extends to Developer Integrations |
+| [ADR 0004](0004-governance-enforcement-flow.md) | Complements — the DI-API sits in the same non-SDK carve-out as REST and carries no policy decisions (§1.2). **Not superseded.** |
+| [ADR 0015](0015-dlp-trust-boundary-and-redaction-semantics.md) | Complements — fail-closed and audit-visible resolution failures, transferred to capability-token resolution (§5.3) and protection-state reporting (§4.2) |
+| [ADR 0029](0029-capability-over-permission-derivation.md) | Complements — fail-absent, declared-vs-effective, never fabricate a grant (§3.4) |
+| AAASM-3565 | `aa-devtool-contract` — the compile-time restricted boundary this ADR preserves |
+| AAASM-3579 / AAASM-3581 / AAASM-3585 / AAASM-3666 / AAASM-3922 | The existing `aa-runtime` IPC trust model reused by Decision 5, including the "derived from a public identifier is not a secret" finding |
+| Implementation PRs | TBD |
