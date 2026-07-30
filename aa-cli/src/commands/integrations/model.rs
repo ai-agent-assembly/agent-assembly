@@ -221,8 +221,10 @@ pub struct PlanReport {
     /// permissions a user is being asked for are one list rather than something
     /// they must reconstruct by scanning the steps.
     pub required_permissions: Vec<String>,
-    /// Whether this report describes a dry run that changed nothing.
-    pub mutated: bool,
+    /// Whether this plan has been applied. `false` on a dry run, which is what
+    /// lets the human rendering say "nothing has been changed" exactly when
+    /// nothing has been.
+    pub applied: bool,
 }
 
 /// A policy profile named by reference.
@@ -258,7 +260,7 @@ impl PlanReport {
             steps,
             unsupported: view.unsupported.iter().map(UnsupportedRow::from).collect(),
             warnings: view.warnings.clone(),
-            mutated: false,
+            applied: false,
         }
     }
 }
@@ -289,10 +291,6 @@ pub struct InstallReport {
     pub planned_level: String,
     /// The level actually reached.
     pub achieved_level: String,
-    /// Whether anything on the host changed. `false` on a repeat install whose
-    /// target already holds exactly what the plan describes — the observable
-    /// half of idempotence.
-    pub mutated: bool,
 }
 
 /// One observation behind a protection claim.

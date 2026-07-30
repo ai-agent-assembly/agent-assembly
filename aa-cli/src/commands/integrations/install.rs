@@ -11,10 +11,13 @@
 //!
 //! # Idempotence
 //!
-//! Applying twice is safe, and the report says which it was: `mutated` is
-//! `false` when the target already held exactly what the plan describes. The
-//! engine decides that (it compares canonical forms), so this command reports
-//! it rather than guessing from whether a file's mtime moved.
+//! Applying twice is safe: the engine compares canonical forms and leaves a
+//! target that already matches the plan exactly as it is. This command does not
+//! claim to know *whether* the host changed — the DI-API's `ApplyView` carries
+//! per-step outcomes and no such flag, and inventing one from "a step is
+//! recorded as applied" would report a mutation on every re-run. What it does
+//! report is what the service told it: which steps were applied, skipped or
+//! failed, and the fingerprint of each.
 
 use std::process::ExitCode;
 
@@ -104,7 +107,6 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
             .await
             .map_err(verb_failure)?;
 
-        let mutated = applied.steps.iter().any(|s| s.outcome == "applied");
         let report = InstallReport {
             receipt_id: applied.receipt_id.clone(),
             applied_at_unix_secs: applied.applied_at_unix_secs,
@@ -119,8 +121,7 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
                 .collect(),
             planned_level: applied.planned_level.clone(),
             achieved_level: applied.achieved_level.clone(),
-            mutated,
-            plan: super::model::PlanReport { mutated, ..plan },
+            plan: super::model::PlanReport { applied: true, ..plan },
         };
 
         // A step that failed is a partial install, and the user has to be told

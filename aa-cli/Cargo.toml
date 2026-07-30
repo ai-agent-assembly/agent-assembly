@@ -78,6 +78,7 @@ uuid           = { workspace = true, features = ["serde", "v4"] }
 # aa-runtime's own tests use — a second copy would drift from it.
 aa-runtime     = { path = "../aa-runtime", features = ["test-fixtures"] }
 assert_cmd     = { workspace = true }
+tokio-util     = { workspace = true, features = ["rt"] }
 tempfile       = { workspace = true }
 wiremock       = "0.6"
 

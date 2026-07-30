@@ -181,7 +181,7 @@ impl Report for PlanReport {
             }
         }
         bullets(&mut out, "Warnings", &self.warnings);
-        if !self.mutated {
+        if !self.applied {
             out.push_str("\nNothing has been changed. Run `aasm integrations install <tool>` to apply.\n");
         }
         out
@@ -195,7 +195,6 @@ impl Report for InstallReport {
         out.push_str(&format!("  at:              {}\n", self.applied_at_unix_secs));
         out.push_str(&format!("  planned level:   {}\n", self.planned_level));
         out.push_str(&format!("  achieved level:  {}\n", self.achieved_level));
-        out.push_str(&format!("  host changed:    {}\n", tick(self.mutated)));
         out.push_str("\nStep outcomes:\n");
         for step in &self.steps {
             out.push_str(&format!(
@@ -206,8 +205,9 @@ impl Report for InstallReport {
             ));
         }
         out.push_str(
-            "\nInstalling configures the tool. It does not by itself prove anything is protected — \
-             run `aasm integrations verify <tool>`.\n",
+            "\nInstalling is idempotent: re-running it leaves a target that already matches the plan \
+             exactly as it is.\n\nInstalling configures the tool. It does not by itself prove anything is \
+             protected — run `aasm integrations verify <tool>`.\n",
         );
         out
     }
