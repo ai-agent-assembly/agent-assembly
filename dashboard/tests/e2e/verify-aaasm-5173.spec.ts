@@ -87,11 +87,14 @@ const MATRIX_NO_CASCADE = {
   agents: AGENTS,
   policies: [],
   sampleCalls: [],
+  // AAASM-5106: no cascade loaded — the summary must read Unknown, not a real 0.
+  cascadeLoaded: false,
 }
 
 /** The same fleet, with one policy document actually in force. */
 const MATRIX_WITH_CASCADE = {
   ...MATRIX_NO_CASCADE,
+  cascadeLoaded: true,
   policies: [
     {
       id: 'global/baseline',
