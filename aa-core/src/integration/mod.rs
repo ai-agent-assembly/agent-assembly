@@ -38,11 +38,16 @@
 //! that it cannot substantiate the mechanisms it was never designed to expose.
 
 pub mod capability;
+pub mod plan;
 pub mod state;
 pub mod step;
 pub mod version;
 
 pub use capability::{CapabilityResolution, CapabilitySupport, DevToolCapabilities, IntegrationCapability};
+pub use plan::{
+    IntegrationPlan, IntegrationRequest, PlanError, PolicyProfileRef, ProtectionProfile, RemovalPlan,
+    UnsupportedMechanism,
+};
 pub use state::{
     EvidenceKind, ExerciseOutcome, ProtectionEvidence, ProtectionLevel, ProtectionState, StateDerivation,
     DEFAULT_FRESHNESS_WINDOW_SECS,
