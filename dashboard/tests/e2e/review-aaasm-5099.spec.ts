@@ -48,6 +48,9 @@ const NODES = [
       allow: ['file_read'],
       deny: ['terminal_exec'],
       allow_restricted: true,
+      // AAASM-5106 / ADR 0024: the cascade is loaded for this node, so the panel
+      // renders the real inheritance chain rather than the "unloaded" marker.
+      cascade_loaded: true,
     },
   },
   {

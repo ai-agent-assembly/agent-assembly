@@ -77,6 +77,9 @@ const MATRIX = {
   ],
   // Call samples need a proposed-vs-current policy diff nothing computes yet.
   sampleCalls: [],
+  // AAASM-5106 / ADR 0024: a cascade is loaded (the baseline policy above), so
+  // the matrix projects real cells rather than folding to "not evaluated".
+  cascadeLoaded: true,
 }
 
 async function bootstrap(page: Page, theme: Theme) {
