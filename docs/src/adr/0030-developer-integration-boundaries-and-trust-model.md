@@ -482,3 +482,179 @@ An adapter capped at `L1Observe` can be `Integrated`; an `L3Native` adapter can 
 independent axis: it says what the core does with a decision, not what is installed.
 `docs/src/governance/capability-matrix.md` remains the L0–L3 source of truth and is
 unchanged by this ADR.
+
+### 5. Trust and IPC — a dedicated Unix domain socket, reusing the trust model that already exists
+
+#### 5.1 The recommendation
+
+**The DI-API is served over a Unix domain socket (a named pipe on Windows), on a socket
+dedicated to Developer Integrations and distinct from the SDK fast-path socket, using the
+same framing stack `aa-runtime` already uses (`aa-runtime/src/ipc/codec.rs`,
+`message.rs`, wire types in `aa-proto`'s `assembly::ipc::v1`).**
+
+- **Path**: under the existing `~/.aa/` root that `aa-proxy` already uses for its CA
+  (`~/.aa/ca/`) — `~/.aa/run/devint.sock`, in a directory created `0700`, with the socket
+  itself `0600` created under a tightened `umask` exactly as
+  `aa-runtime/src/ipc/server.rs` does today (AAASM-3581). It deliberately does **not**
+  live in world-writable `/tmp`, unlike the legacy `/tmp/aa-runtime-{agent_id}.sock`.
+- **Discovery**: the client resolves the path from a documented convention plus an
+  `AA_DEVINT_SOCKET` override, and treats "socket absent" as *runtime not running*
+  (a `NotInstalled`/bootstrap prompt), not as an error to retry silently.
+- **A separate socket is a security property, not tidiness.** A DI client never holds a
+  file descriptor onto the agent fast-path socket, so agent-action and policy-decision
+  traffic is unreachable to it *by construction* rather than by an authorization rule
+  someone has to remember to write.
+
+#### 5.2 Why not loopback HTTP or loopback gRPC
+
+| Option | Verdict | Reasoning |
+| --- | --- | --- |
+| **Loopback HTTP (`127.0.0.1:port`)** | **Rejected** | A TCP loopback port is reachable by *every* local user and *every* process on the host, including a browser. The OS supplies no peer identity, so the entire boundary would rest on a bearer secret in a file — and if the secret is in a file readable only by the owner, the file permission was doing the work all along, minus the kernel-enforced peer check. It additionally opens port-scanning, CSRF and DNS-rebinding surface from a browser context, which ADR 0012 already had to reason about for the WebSocket path. |
+| **Loopback gRPC** | **Rejected as a transport** | Identical exposure to loopback HTTP (it *is* HTTP/2 over TCP), plus a heavier stack and a TLS/credential story to design for a purely local hop. Note that this rejects the *loopback socket*, not the RPC framing: gRPC-style framing over UDS would have been acceptable, but reusing the existing `aa-proto` IPC codec means one framing implementation to review instead of two. |
+| **Unix domain socket / named pipe** | **Chosen** | The kernel enforces the boundary: directory `0700` + socket `0600` means an unrelated local user cannot even `connect()`, and `peer_uid_is_allowed(peer_uid, runtime_uid)` (`aa-runtime/src/ipc/peercred.rs`) makes the check explicit and unit-testable. Both controls are already implemented, tested and reviewed in this repo. On Windows the equivalent is a named pipe with an owner-only DACL plus `GetNamedPipeClientProcessId` for peer attribution. |
+
+#### 5.3 Authentication — two layers, and the token must be a real secret
+
+**Layer 1 (OS).** Directory `0700`, socket `0600`, peercred UID equality. This is the
+same boundary AAASM-3922 identified as the *real* one for the SDK socket.
+
+**Layer 2 (capability token).** OS-level identity says "the developer's UID"; it does not
+distinguish the VS Code extension from a trojaned npm postinstall script running as the
+same user. The token supplies that distinction:
+
+- **Issued per installation, per client**, at an explicit user-visible enrolment step
+  (the installer or `aasm integration enrol`), not implicitly on first connect.
+- **256 bits from a CSPRNG.** It is an opaque random identifier, **not** derived from any
+  public value. This is the direct lesson of AAASM-3922: the SDK handshake key derives
+  from the agent id, which is the public socket filename, so *"any local process that can
+  reach the socket can recompute the same keypair"* — the signature proves integrity and
+  version-binding, not possession of a secret. **A DI capability token derived from a
+  public identifier would be a regression, not a control.** Its value is knowable only
+  from the `0600` file it was written to.
+- **Server-side record, not a self-contained grant.** The runtime stores
+  `{token_id, client_name, issued_at, expires_at, scope}`; the wire carries only the
+  opaque token. No JWT, no signed-claims blob — a self-contained credential that verifies
+  offline cannot be revoked, and revocation is a hard requirement of
+  [AAASM-5279](https://lightning-dust-mite.atlassian.net/browse/AAASM-5279).
+- **Scope is per operation set and per tool.** A token enrolled for the Claude Code
+  integration cannot `plan`/`apply`/`repair`/`remove` the Codex integration. Cross-tool
+  attempts are rejected server-side and are a required negative test.
+- **Lifetime and rotation.** Tokens carry an absolute expiry and are rotatable in place
+  (issue-new-then-revoke-old) so rotation never requires a window with no valid token.
+- **Revocation is deleting the record.** Immediate, total, and observable — because the
+  token was never self-verifying.
+
+**Absent, expired, unknown or unresolvable token ⇒ DENY, and emit an audit event.** There
+is no fall-through to an implicit grant, no "local connections are trusted", no anonymous
+read-only tier. This is ADR 0015's rule transferred: a resolution failure must be
+audit-visible and must fail closed, never quietly permit. The audit event records the
+token *id* and the outcome — never the token value, and never why-it-almost-matched.
+
+#### 5.4 Version negotiation — explicit, and never a silent downgrade
+
+The first exchange on every connection, before any lifecycle verb is accepted:
+
+```text
+→ Hello    { client_name, client_version,
+             di_api_versions: [u32],            // versions the client can speak
+             lifecycle_schema_versions: [u32] } // 5277/5278 schema versions
+← HelloAck { di_api_version, core_version, lifecycle_schema_version,
+             min_supported, max_supported }
+  or
+← Incompatible { reason, remediation }          // actionable, e.g. "update the extension to ≥ 1.4"
+```
+
+- The server selects the **highest** version both sides offer. If the intersection is
+  empty, or the client's best offer is below `min_supported`, the answer is
+  `Incompatible` with remediation text — **never** a silent degrade to an older
+  behaviour.
+- `Degraded` (a subset of capabilities available at the negotiated version) is an
+  **explicit outcome the client must surface**, not an implicit fallback.
+- The negotiated version is fixed for the connection's lifetime; there is no
+  mid-connection renegotiation to downgrade into. Downgrade attempts are a required
+  threat-model test.
+
+#### 5.5 Data minimisation — the response types cannot carry what must not leave
+
+Minimisation is enforced by the *shape of the response types*, not by a redaction pass
+someone might forget:
+
+| Instead of | The DI-API returns |
+| --- | --- |
+| `PolicyDocument` | `PolicyProfileRef { id, display_name, digest }` — enough to name and compare, not to read |
+| Raw prompts / tool outputs / audit rows | An integration-scoped, already-redacted event projection (counts, verdict kinds, timestamps, redaction labels) |
+| A settings file's contents | Fingerprints and AASM-owned key names |
+| Any storage credential or gateway token | Nothing — no DI-API type has a field that can hold one |
+
+No DI-API response type may transitively contain `PolicyDocument`, a raw payload, or a
+credential-bearing field. That is checkable mechanically (Validation requirements), which
+is the point of stating it as a type-level property.
+
+#### 5.6 Why a compromised thin client cannot reach unrestricted core operations — by construction
+
+Five independent structural reasons, none of which is "the client is well behaved":
+
+1. **The verb space is a closed enum.** `plan · apply · status · verify · repair ·
+   remove · list-tools · scoped-events · approval-relay`. There is no generic
+   "call core", no path or method passthrough, no filter/predicate/SQL passthrough, no
+   opaque forwarded envelope. **An operation that does not exist cannot be requested**,
+   however the request is crafted.
+2. **The server module's dependency graph excludes what must be unreachable.** The DI-API
+   server depends on the lifecycle service, not on `aa_core::storage`, identity, or the
+   gateway credential types — the same compile-time containment `aa-devtool-contract`
+   gives adapters. A handler that wanted to read storage would not compile without a
+   dependency edit, which is a reviewable diff behind CODEOWNERS.
+3. **Tokens are capability-scoped per tool and per operation set**, so even a valid,
+   unexpired, stolen token is bounded to the integration it was enrolled for.
+4. **There is no policy-decision or audit-emit verb, on a socket that is not the agent
+   fast-path socket.** A compromised plugin therefore cannot obtain a decision, shortcut
+   one, or forge agent events — not because it is denied, but because neither the verb nor
+   the channel exists for it.
+5. **No DI token is usable upstream.** DI tokens are local records that the runtime
+   resolves and discards; they are never relayed to `aa-gateway`. The runtime authenticates
+   to the gateway with its own credential, which never traverses the DI-API in either
+   direction. Compromising a client yields no reusable organization or gateway credential.
+
+Replay is bounded by the same construction: a replayed request can only re-invoke a verb
+the token was already scoped for, and lifecycle verbs are idempotent by
+[AAASM-5278](https://lightning-dust-mite.atlassian.net/browse/AAASM-5278)'s contract, so
+replay cannot produce a state the legitimate client could not have produced itself.
+
+#### 5.7 Install lifecycle, end to end
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Developer
+    participant C as Thin client (L-A, untrusted)
+    participant S as DIS (L-B, in aa-runtime)
+    participant A as Adapter (L-C)
+    participant K as Core / gateway (L-D)
+
+    U->>C: "Protect Claude Code"
+    C->>S: connect ~/.aa/run/devint.sock
+    Note over S: OS layer — dir 0700, socket 0600,<br/>peercred UID == runtime UID, else drop
+    C->>S: Hello { client_version, di_api_versions, schema_versions }
+    S-->>C: HelloAck { di_api_version, core_version } | Incompatible { remediation }
+    C->>S: Plan(tool=claude-code, profile="team-default") + capability token
+    Note over S: token absent / expired / unknown<br/>⇒ DENY + audit event (never implicit grant)
+    S->>A: detect() + capabilities()
+    A-->>S: DevToolInfo{version} + DevToolCapabilities
+    S->>K: resolve profile → PolicyProfileRef (derived view only)
+    K-->>S: PolicyProfileRef { id, digest }
+    S->>A: plan_integration(request)
+    A-->>S: IntegrationPlan { steps, affected artifacts, expected level, warnings }
+    S-->>C: Plan (serializable dry-run — no mutation yet)
+    C->>U: Show plan, incl. any privileged host step
+    U->>C: Approve
+    C->>S: Apply(plan_id) + capability token
+    Note over S: DIS executes the steps and writes the receipt.<br/>The adapter never writes a receipt.
+    S->>S: apply steps · record IntegrationReceipt (fingerprints, 0600)
+    S->>A: probe descriptor for the protection test
+    A-->>S: probe descriptor
+    S->>K: run protection test (probe traffic)
+    K-->>S: observed + adjudicated verdict  ← evidence for GatewayProtected
+    S->>S: derive ProtectionState from evidence
+    S-->>C: Status { state: GatewayProtected, evidence, achieved vs planned level }
+    C->>U: Render status (never derive or upgrade it locally)
+```
