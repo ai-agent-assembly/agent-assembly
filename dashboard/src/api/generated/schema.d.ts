@@ -3114,6 +3114,25 @@ export interface components {
          */
         CapabilityMatrix: {
             agents: components["schemas"]["CapabilityAgent"][];
+            /**
+             * @description Whether the projecting engine actually carries a policy cascade
+             *     (`PolicyEngine::cascade_loaded`). AAASM-5106 / ADR 0024: when the cascade
+             *     is unloaded — the state of every shipped aa-api deployment today, which
+             *     loads its policy through `load_from_file` and leaves `scope_index` empty —
+             *     `decide()` falls through to `Allow` for every cell, so the grid asserts an
+             *     unbroken wall of `ALLOW` for capabilities the primary policy actually
+             *     denies. `false` here is the matrix-level "not evaluated — policy cascade
+             *     not loaded" signal the dashboard renders as an unavailable state, so an
+             *     operator never reads a fabricated `Allow` as a real grant. It is a fact
+             *     about the projection's *data*, never an operator choice; the enforcement
+             *     path (`evaluate_primary`) is unaffected.
+             *
+             *     Required-but-always-present, not optional: the key is always on the wire,
+             *     so a client reads an explicit `false` it must handle rather than a missing
+             *     field it can shrug off — the same absent-vs-unknown discipline as
+             *     [`CapabilityAgent::trust`] and `TeamPoliciesResponse::policies`.
+             */
+            cascadeLoaded: boolean;
             policies: components["schemas"]["Policy"][];
             resources: components["schemas"]["Resource"][];
             sampleCalls: components["schemas"]["SampleCall"][];
@@ -3824,6 +3843,7 @@ export interface components {
          *         "file_read"
          *       ],
          *       "allow_restricted": true,
+         *       "cascade_loaded": true,
          *       "chain": [
          *         {
          *           "policies": [
@@ -3849,6 +3869,25 @@ export interface components {
              *     `allow` is denied, even when `allow` is empty.
              */
             allow_restricted: boolean;
+            /**
+             * @description Whether the projecting engine actually carries a policy cascade
+             *     (`PolicyEngine::cascade_loaded`). AAASM-5106 / ADR 0024: with no cascade
+             *     loaded — every shipped aa-api deployment — the walk resolves nothing, so
+             *     every tier's `policies` is empty and `allow` / `deny` are empty. That is
+             *     **not** the real permission set: enforcement falls back to the primary
+             *     policy slot this projection cannot enumerate. `false` here is the
+             *     loaded/unavailable signal the dashboard renders as "policy inheritance
+             *     unknown — cascade not loaded", so an empty chain never reads as a real
+             *     "no policies apply". Distinct from a *loaded* cascade whose walk carries no
+             *     document at a tier, which is real state ("no team policy"). This changes
+             *     no enforcement; it only annotates the projection's confidence in its own
+             *     output.
+             *
+             *     Required-but-always-present, matching `AgentNode`'s null discipline for
+             *     unmeasured fields: the key is always on the wire so a client cannot read
+             *     an empty chain as authoritative by omission.
+             */
+            cascade_loaded: boolean;
             /** @description Cascade tiers that apply to this agent, broadest → narrowest. */
             chain: components["schemas"]["PolicyChainTier"][];
             /**
@@ -5144,6 +5183,12 @@ export interface components {
              *     `scope_index` empty, and nothing else in aa-api ever calls
              *     `load_cascade_from_dir` (AAASM-5106). Emitting `[]` there would render as
              *     "No policy is in force for this team" while a policy *is* being enforced.
+             *
+             *     The handler reads that state from the engine's authoritative
+             *     [`cascade_loaded`](aa_gateway::engine::PolicyEngine::cascade_loaded) signal
+             *     (`false` ⇒ `null`), rather than inferring it from an empty result — an
+             *     empty result over a team with no visible agents is otherwise
+             *     indistinguishable from the genuinely-empty case and used to leak `[]`.
              */
             policies: components["schemas"]["TeamPolicyResponse"][] | null;
             /** @description The team the mapping was resolved for, echoed from the request. */
