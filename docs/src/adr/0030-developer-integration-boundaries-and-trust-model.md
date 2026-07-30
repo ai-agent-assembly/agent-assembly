@@ -781,6 +781,20 @@ gated its steps 6–9 on the runtime becoming authoritative.
   uses `GetNamedPipeClientProcessId` rather than `SO_PEERCRED`, and DACLs rather than mode
   bits. The decision assumes equivalence; it must be re-verified when a Windows client is
   actually built (see Reconsideration triggers).
+- **Restore is semantics-exact, not byte-exact** (AAASM-5276 condition C3, accepted by
+  [AAASM-5278](https://lightning-dust-mite.atlassian.net/browse/AAASM-5278)).
+  `aa-devtool-claude-code/src/apply.rs:85` reserialises the whole settings document on every
+  write, so a user file in non-canonical formatting — hand-chosen key order, indentation,
+  trailing layout — cannot survive an install→remove cycle byte-for-byte regardless of how
+  good the receipt is. What removal does restore is the document's **meaning**: every value
+  AASM displaced is put back, every key AASM added is deleted, and every key the user
+  changed after installation is carried through untouched. Two consequences are deliberate
+  and follow from accepting it rather than working around it: fingerprints are taken over
+  canonical JSON, so a reformat is correctly reported as *no drift*; and a removal report
+  states the limitation rather than implying a guarantee the write path cannot keep. The
+  alternative — preserving the original document verbatim — was rejected as disproportionate
+  for the MVP: it needs a format-preserving JSON editor in the write path that no in-tree
+  adapter has, and it buys byte-identity in a file the tool itself rewrites.
 
 ## Explicitly forbidden designs
 
@@ -916,6 +930,11 @@ that ticket rather than as checks present in this documentation-only change.
 - **The protection-test probe becomes unable to reach the core** for some tool family —
   `GatewayProtected` would then be unreachable for it, and the ladder needs a stated answer
   rather than an implicit cap.
+- **An adapter's settings write path stops reserialising** — a format-preserving JSON editor,
+  or a managed block written into a region of a file whose remainder is copied verbatim. At
+  that point byte-exact restore becomes achievable, and the semantics-exact constraint above
+  would be a *choice* rather than a constraint; it should then be revisited rather than
+  inherited.
 
 ## Traceability
 
