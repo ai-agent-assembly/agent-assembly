@@ -35,7 +35,7 @@ function makeDetail(patch: Partial<AlertDetail> = {}): AlertDetail {
     id: 'a-1',
     ruleId: 'rule-1',
     ruleName: 'Budget burn',
-    severity: 'HIGH',
+    severity: 'WARNING',
     status: 'FIRING',
     agentId: 'agent-7',
     firstFiredAt: '2026-05-14T09:00:00Z',

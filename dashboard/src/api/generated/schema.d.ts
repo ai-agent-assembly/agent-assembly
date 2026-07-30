@@ -140,6 +140,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{id}/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/agents/:id/config` — per-agent config projection (AAASM-5098).
+         * @description Read-only projection backing the Agent-Detail Config-YAML tab (ADR-0022,
+         *     narrow Option C). Returns **only fields with a real per-agent source**: the
+         *     registered `enforcement_mode` (the field the enforcement path consults, not
+         *     `metadata["mode"]`), the agent's effective policy cascade, and a *qualitative*
+         *     recommendation naming the resources that dominate its recent denials. The
+         *     mock's `fail_open`, `rate_limit`, `observability`, and `issuer` are omitted
+         *     from the contract entirely — ADR-0022 verified none has a per-agent source,
+         *     and emitting them as `null` would imply a concept that does not exist. The
+         *     recommendation carries no quantified improvement estimate: the `−N%`
+         *     counterfactual is blocked on AAASM-5094's traffic replay.
+         *
+         *     Deny-by-default and tenant-scoped: [`authorize_agent_access`] confines the
+         *     caller to an agent in its own team (admin sees any; a caller with no team
+         *     scope is denied before any read), so neither the cascade nor the denial
+         *     rollup crosses a tenant boundary. No enforcement or audit-write path is touched.
+         */
+        get: operations["get_agent_config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{id}/decisions": {
         parameters: {
             query?: never;
@@ -2116,6 +2150,81 @@ export interface components {
             /** @description Current status of the session. */
             status: string;
         };
+        /**
+         * @description One policy document in the agent's effective cascade.
+         *
+         *     AAASM-5098 — the honest identity of a document already loaded in the engine:
+         *     its scope-qualified id, human name, optional version, and scope label. Mirrors
+         *     the `Policy` identity the capability matrix emits (`{scope}/{name}` id) so the
+         *     Config-YAML tab and the Capability page name the same document the same way.
+         */
+        AgentConfigPolicyRef: {
+            /**
+             * @description Scope-qualified id (`{scope}/{name}`, or the bare scope when the document
+             *     is unnamed) — matches the capability matrix's per-policy id.
+             */
+            id: string;
+            /** @description Human-readable document name, falling back to the scope label when unnamed. */
+            name: string;
+            /** @description Wire-format scope label (e.g. `"global"`, `"team:platform"`). */
+            scope: string;
+            /** @description Document `policy_version`, if the source declared one. */
+            version?: string | null;
+        };
+        /**
+         * @description A qualitative posture recommendation for the agent (AAASM-5098, ADR-0022).
+         *
+         *     Names the resources that dominate the agent's recent denials so an operator
+         *     can see *what* to narrow, without asserting a quantified improvement. The
+         *     `−N%` counterfactual is deliberately withheld — producing it requires the
+         *     traffic replay AAASM-5094 builds, and fabricating a percentage would ship a
+         *     number the product cannot stand behind (ADR-0022 §Option C). Every count here
+         *     is a historical denial tally over the window, not a prediction.
+         */
+        AgentConfigRecommendation: {
+            /**
+             * @description Human-readable qualitative finding, e.g. "3 resources account for 78% of
+             *     this agent's denials in the last 7 days". Names resources, never a policy
+             *     (naming a specific policy needs a matcher that does not exist) and never a
+             *     projected improvement percentage.
+             */
+            summary: string;
+            /** @description The resources responsible for the most denials, most-denied first. */
+            top_resources: components["schemas"]["DeniedResourceShare"][];
+            /**
+             * Format: double
+             * @description Share of the window's denials the `top_resources` together account for,
+             *     as a 0–100 percentage of `total_denials` (a historical count ratio, not a
+             *     projected improvement).
+             */
+            top_resources_share_pct: number;
+            /**
+             * Format: int64
+             * @description Total denials (`PolicyViolation` audit events) counted in the window.
+             */
+            total_denials: number;
+            /** @description Recent window the finding covers (e.g. `"7d"`). */
+            window: string;
+        };
+        /**
+         * @description Per-agent config projection returned by `GET /api/v1/agents/{id}/config`.
+         *
+         *     AAASM-5098 (ADR-0022, narrow Option C). Backs the Agent-Detail Config-YAML
+         *     tab. **Every field carries a real per-agent server-side source** — the
+         *     contract deliberately omits the mock's `fail_open`, `rate_limit`,
+         *     `observability`, and `issuer` because ADR-0022 verified none of them has a
+         *     per-agent source. They are absent from this schema entirely rather than
+         *     emitted as `null`: a null `observability` would imply the concept exists and
+         *     is unset, a stronger claim than the truth.
+         */
+        AgentConfigResponse: {
+            /** @description Hex-encoded agent UUID. */
+            agent_id: string;
+            enforcement_mode?: null | components["schemas"]["EnforcementModeLabel"];
+            /** @description The policy documents in the agent's effective cascade, broadest → narrowest. */
+            policies: components["schemas"]["AgentConfigPolicyRef"][];
+            recommendation?: null | components["schemas"]["AgentConfigRecommendation"];
+        };
         /** @description Per-agent cost entry within the budget summary. */
         AgentCostEntry: {
             /** @description Agent identifier (hex-encoded). */
@@ -3014,6 +3123,14 @@ export interface components {
             /** @description Human-readable label: org/team id, or the agent's registered name. */
             label: string;
             /**
+             * @description Configured calendar-month budget limit in USD for this node, if any
+             *     (decimal string). Populated for team nodes from the tracker-wide team
+             *     monthly envelope (AAASM-5087) so the Teams monthly-budget card can read
+             *     the limit off the tree; `None` for tiers without a configured monthly
+             *     cap. This is a calendar-month window, not a rolling window.
+             */
+            monthly_budget_limit_usd?: string | null;
+            /**
              * @description Spend attributable to this node itself, excluding descendants (USD
              *     string). Org and team nodes never spend directly, so this is `"0"`.
              */
@@ -3131,6 +3248,25 @@ export interface components {
          */
         CapabilityMatrix: {
             agents: components["schemas"]["CapabilityAgent"][];
+            /**
+             * @description Whether the projecting engine actually carries a policy cascade
+             *     (`PolicyEngine::cascade_loaded`). AAASM-5106 / ADR 0024: when the cascade
+             *     is unloaded — the state of every shipped aa-api deployment today, which
+             *     loads its policy through `load_from_file` and leaves `scope_index` empty —
+             *     `decide()` falls through to `Allow` for every cell, so the grid asserts an
+             *     unbroken wall of `ALLOW` for capabilities the primary policy actually
+             *     denies. `false` here is the matrix-level "not evaluated — policy cascade
+             *     not loaded" signal the dashboard renders as an unavailable state, so an
+             *     operator never reads a fabricated `Allow` as a real grant. It is a fact
+             *     about the projection's *data*, never an operator choice; the enforcement
+             *     path (`evaluate_primary`) is unaffected.
+             *
+             *     Required-but-always-present, not optional: the key is always on the wire,
+             *     so a client reads an explicit `false` it must handle rather than a missing
+             *     field it can shrug off — the same absent-vs-unknown discipline as
+             *     [`CapabilityAgent::trust`] and `TeamPoliciesResponse::policies`.
+             */
+            cascadeLoaded: boolean;
             policies: components["schemas"]["Policy"][];
             resources: components["schemas"]["Resource"][];
             sampleCalls: components["schemas"]["SampleCall"][];
@@ -3325,6 +3461,21 @@ export interface components {
          * @enum {string}
          */
         DecisionLabel: "allow" | "deny" | "pending" | "redact" | "unspecified";
+        /** @description One resource's contribution to an agent's recent denials. */
+        DeniedResourceShare: {
+            /**
+             * Format: int64
+             * @description Denials attributed to this resource in the window.
+             */
+            denials: number;
+            /** @description The denied resource (the audit `blocked_action`, e.g. `"gmail/write"`). */
+            resource: string;
+            /**
+             * Format: double
+             * @description This resource's share of `total_denials`, as a 0–100 percentage.
+             */
+            share_pct: number;
+        };
         /**
          * @description Per-kind configuration payload for a `Destination`.
          *
@@ -3496,6 +3647,17 @@ export interface components {
              */
             ts: number;
         };
+        /**
+         * @description Wire vocabulary for [`AgentConfigResponse::enforcement_mode`].
+         *
+         *     AAASM-5098 / ADR-0022 — the agent's registered enforcement-mode override,
+         *     serialized as the same `snake_case` labels the core [`aa_core::EnforcementMode`]
+         *     uses. A dedicated schema (rather than surfacing the core enum) so the
+         *     generated OpenAPI advertises a closed enum. Emitted only when the agent
+         *     declares an override; see [`AgentConfigResponse::enforcement_mode`].
+         * @enum {string}
+         */
+        EnforcementModeLabel: "enforce" | "observe" | "disabled";
         /** @description Response for `GET /api/v1/overview/enforcement-timeline`. */
         EnforcementTimelineResponse: {
             /**
@@ -3841,6 +4003,7 @@ export interface components {
          *         "file_read"
          *       ],
          *       "allow_restricted": true,
+         *       "cascade_loaded": true,
          *       "chain": [
          *         {
          *           "policies": [
@@ -3866,6 +4029,25 @@ export interface components {
              *     `allow` is denied, even when `allow` is empty.
              */
             allow_restricted: boolean;
+            /**
+             * @description Whether the projecting engine actually carries a policy cascade
+             *     (`PolicyEngine::cascade_loaded`). AAASM-5106 / ADR 0024: with no cascade
+             *     loaded — every shipped aa-api deployment — the walk resolves nothing, so
+             *     every tier's `policies` is empty and `allow` / `deny` are empty. That is
+             *     **not** the real permission set: enforcement falls back to the primary
+             *     policy slot this projection cannot enumerate. `false` here is the
+             *     loaded/unavailable signal the dashboard renders as "policy inheritance
+             *     unknown — cascade not loaded", so an empty chain never reads as a real
+             *     "no policies apply". Distinct from a *loaded* cascade whose walk carries no
+             *     document at a tier, which is real state ("no team policy"). This changes
+             *     no enforcement; it only annotates the projection's confidence in its own
+             *     output.
+             *
+             *     Required-but-always-present, matching `AgentNode`'s null discipline for
+             *     unmeasured fields: the key is always on the wire so a client cannot read
+             *     an empty chain as authoritative by omission.
+             */
+            cascade_loaded: boolean;
             /** @description Cascade tiers that apply to this agent, broadest → narrowest. */
             chain: components["schemas"]["PolicyChainTier"][];
             /**
@@ -5133,6 +5315,14 @@ export interface components {
             daily_spend_usd: string;
             /** @description Calendar date (YYYY-MM-DD) the daily spend applies to. */
             date: string;
+            /**
+             * @description Configured per-team calendar-month budget limit in USD, if set
+             *     (AAASM-5087). This is the tracker-wide team envelope — the same limit
+             *     applies to every team — surfaced so the Teams monthly-budget card can
+             *     render spend against limit. `None` when no team monthly limit is
+             *     configured. This is a calendar-month window, not a rolling window.
+             */
+            monthly_limit_usd?: string | null;
             /** @description Total spend this month in USD for this team (if monthly tracking is enabled). */
             monthly_spend_usd?: string | null;
             /** @description Team identifier. */
@@ -5161,6 +5351,12 @@ export interface components {
              *     `scope_index` empty, and nothing else in aa-api ever calls
              *     `load_cascade_from_dir` (AAASM-5106). Emitting `[]` there would render as
              *     "No policy is in force for this team" while a policy *is* being enforced.
+             *
+             *     The handler reads that state from the engine's authoritative
+             *     [`cascade_loaded`](aa_gateway::engine::PolicyEngine::cascade_loaded) signal
+             *     (`false` ⇒ `null`), rather than inferring it from an empty result — an
+             *     empty result over a team with no visible agents is otherwise
+             *     indistinguishable from the genuinely-empty case and used to leak `[]`.
              */
             policies: components["schemas"]["TeamPolicyResponse"][] | null;
             /** @description The team the mapping was resolved for, echoed from the request. */
@@ -6033,6 +6229,57 @@ export interface operations {
             };
             /** @description Invalid agent ID format */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-agent config projection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentConfigResponse"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks access to the agent's team */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -5,7 +5,7 @@ import { DEFAULT_ALERT_FILTERS, type AlertFilters } from './types'
 describe('urlFilters', () => {
   it('round-trips a complex filter through search params', () => {
     const filters: AlertFilters = {
-      severities: ['CRITICAL', 'HIGH'],
+      severities: ['CRITICAL', 'WARNING'],
       statuses: ['FIRING'],
       agentQuery: 'aa-001',
       q: 'budget burn',

@@ -1261,6 +1261,338 @@ pub async fn get_agent_decisions(
     Ok((StatusCode::OK, Json(AgentDecisionsResponse { decisions })))
 }
 
+// ---------------------------------------------------------------------------
+// Per-agent config projection (AAASM-5098, ADR-0022 narrow Option C)
+// ---------------------------------------------------------------------------
+
+/// Recent window (7 days) the config recommendation aggregates denials over.
+const CONFIG_RECO_WINDOW_LABEL: &str = "7d";
+/// `CONFIG_RECO_WINDOW_LABEL` expressed in seconds.
+const CONFIG_RECO_WINDOW_SECS: u64 = 7 * 86_400;
+/// Minimum denials in the window before a dominant-resource finding is ranked.
+///
+/// Below this floor the ranking is noise (a single denial is "100% of denials"),
+/// so the recommendation is withheld entirely rather than shipped as a
+/// low-confidence finding — ADR-0022's validation requirement that the block
+/// return empty when the agent has too few denials to rank.
+const CONFIG_RECO_MIN_DENIALS: u64 = 5;
+/// Most dominant resources the recommendation names.
+const CONFIG_RECO_TOP_N: usize = 3;
+/// Upper bound on audit entries scanned when building the recommendation.
+/// Bounds per-request work the way the analytics reads do (AAASM-4145).
+const CONFIG_RECO_SCAN: usize = 10_000;
+
+/// Map the agent's registered enforcement-mode override onto the config wire
+/// label. `None` (no per-agent override declared) stays `None` — the effective
+/// mode is then decided per policy document, so this response omits it rather
+/// than fabricating a per-agent posture (ADR-0022).
+fn project_config_mode(mode: Option<aa_core::EnforcementMode>) -> Option<EnforcementModeLabel> {
+    match mode? {
+        aa_core::EnforcementMode::Enforce => Some(EnforcementModeLabel::Enforce),
+        aa_core::EnforcementMode::Observe => Some(EnforcementModeLabel::Observe),
+        aa_core::EnforcementMode::Disabled => Some(EnforcementModeLabel::Disabled),
+    }
+}
+
+/// Project the agent's effective policy cascade into config policy refs,
+/// broadest → narrowest, deduplicated on `(scope, name)`.
+///
+/// Uses the same scope-qualified id (`{scope}/{name}`) the capability matrix
+/// emits so the Config tab and Capability page name the same document alike.
+/// A document contributes at most one ref regardless of how many times it
+/// appears in the cascade.
+fn cascade_to_policy_refs(cascade: &[std::sync::Arc<aa_gateway::policy::PolicyDocument>]) -> Vec<AgentConfigPolicyRef> {
+    let mut seen: std::collections::BTreeSet<(String, Option<String>)> = std::collections::BTreeSet::new();
+    let mut refs = Vec::new();
+    for doc in cascade {
+        let scope = doc.scope.to_string();
+        let key = (scope.clone(), doc.name.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        let id = match &doc.name {
+            Some(n) => format!("{scope}/{n}"),
+            None => scope.clone(),
+        };
+        refs.push(AgentConfigPolicyRef {
+            id,
+            name: doc.name.clone().unwrap_or_else(|| scope.clone()),
+            scope,
+            version: doc.policy_version.clone(),
+        });
+    }
+    refs
+}
+
+/// The resource a denial applies to, read from the audit payload.
+///
+/// Mirrors `analytics::extract_tool_name` (the proven denial/tool grouping key):
+/// tries the explicit `tool` / `tool_name` keys first, falling back to the
+/// policy `action_type` label the gateway records for every evaluated action
+/// (`aa-gateway/src/service/policy_service.rs` writes `action_type` on the
+/// `PolicyViolation` payload). Returns `None` when no non-empty identifier is
+/// present, so a denial with no resolvable resource is counted in the total but
+/// not attributed to a resource — never fabricated.
+fn denied_resource(payload: &serde_json::Value) -> Option<String> {
+    for key in ["tool", "tool_name", "action_type"] {
+        if let Some(s) = payload.get(key).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Build the qualitative denial-dominance recommendation from a set of the
+/// agent's `PolicyViolation` audit entries, or `None` when there are too few
+/// denials in the window to rank a dominant resource (ADR-0022).
+///
+/// Groups denials by resource (via [`denied_resource`], the same grouping key
+/// the tool-usage analytics uses), ranks the top [`CONFIG_RECO_TOP_N`], and
+/// reports each resource's historical share of the window's denials. No
+/// projected-improvement percentage is produced — that is the AAASM-5094
+/// counterfactual, deliberately withheld.
+fn build_denial_recommendation(entries: &[AuditEntry]) -> Option<AgentConfigRecommendation> {
+    let mut by_resource: BTreeMap<String, u64> = BTreeMap::new();
+    let mut total_denials: u64 = 0;
+    for entry in entries {
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(entry.payload()) else {
+            continue;
+        };
+        total_denials += 1;
+        if let Some(resource) = denied_resource(&payload) {
+            *by_resource.entry(resource).or_insert(0) += 1;
+        }
+    }
+
+    // Below the confidence floor the ranking is noise — withhold the block
+    // rather than ship a low-confidence finding (ADR-0022 validation req).
+    if total_denials < CONFIG_RECO_MIN_DENIALS || by_resource.is_empty() {
+        return None;
+    }
+
+    // Rank most-denied first; ties broken by resource name for determinism.
+    let mut ranked: Vec<(String, u64)> = by_resource.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(CONFIG_RECO_TOP_N);
+
+    let share = |n: u64| (n as f64 / total_denials as f64) * 100.0;
+    let top_resources: Vec<DeniedResourceShare> = ranked
+        .iter()
+        .map(|(resource, denials)| DeniedResourceShare {
+            resource: resource.clone(),
+            denials: *denials,
+            share_pct: share(*denials),
+        })
+        .collect();
+    let top_sum: u64 = ranked.iter().map(|(_, n)| *n).sum();
+    let top_resources_share_pct = share(top_sum);
+
+    let names: Vec<&str> = top_resources.iter().map(|r| r.resource.as_str()).collect();
+    let summary =
+        format!(
+        "{} {} account for {:.0}% of this agent's denials in the last {} ({}). Review whether these can be narrowed.",
+        top_resources.len(),
+        if top_resources.len() == 1 { "resource" } else { "resources" },
+        top_resources_share_pct,
+        CONFIG_RECO_WINDOW_LABEL,
+        names.join(", "),
+    );
+
+    Some(AgentConfigRecommendation {
+        window: CONFIG_RECO_WINDOW_LABEL.to_string(),
+        total_denials,
+        top_resources,
+        top_resources_share_pct,
+        summary,
+    })
+}
+
+/// `GET /api/v1/agents/:id/config` — per-agent config projection (AAASM-5098).
+///
+/// Read-only projection backing the Agent-Detail Config-YAML tab (ADR-0022,
+/// narrow Option C). Returns **only fields with a real per-agent source**: the
+/// registered `enforcement_mode` (the field the enforcement path consults, not
+/// `metadata["mode"]`), the agent's effective policy cascade, and a *qualitative*
+/// recommendation naming the resources that dominate its recent denials. The
+/// mock's `fail_open`, `rate_limit`, `observability`, and `issuer` are omitted
+/// from the contract entirely — ADR-0022 verified none has a per-agent source,
+/// and emitting them as `null` would imply a concept that does not exist. The
+/// recommendation carries no quantified improvement estimate: the `−N%`
+/// counterfactual is blocked on AAASM-5094's traffic replay.
+///
+/// Deny-by-default and tenant-scoped: [`authorize_agent_access`] confines the
+/// caller to an agent in its own team (admin sees any; a caller with no team
+/// scope is denied before any read), so neither the cascade nor the denial
+/// rollup crosses a tenant boundary. No enforcement or audit-write path is touched.
+#[utoipa::path(
+    get,
+    path = "/api/v1/agents/{id}/config",
+    params(("id" = String, Path, description = "Hex-encoded agent UUID")),
+    responses(
+        (status = 200, description = "Per-agent config projection", body = AgentConfigResponse),
+        (status = 400, description = "Invalid agent ID format"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "Caller lacks access to the agent's team"),
+        (status = 404, description = "Agent not found"),
+    ),
+    tag = "agents"
+)]
+pub async fn get_agent_config(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<(StatusCode, Json<AgentConfigResponse>), ProblemDetail> {
+    let agent_id_bytes = parse_agent_id(&id)?;
+
+    // Read-scope + tenant ownership before exposing the agent's config — mirrors
+    // get_agent_capabilities / get_agent_decisions.
+    authorize_agent_access(&caller, &state, &agent_id_bytes, &id)?;
+
+    let record = state.agent_registry.get(&agent_id_bytes).ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}"))
+    })?;
+
+    // Effective policy cascade, resolved with the agent's real lineage so
+    // Org/Team-scoped documents are not dropped (AAASM-5102).
+    let agent_id = aa_core::identity::AgentId::from_bytes(agent_id_bytes);
+    let lineage = state.agent_registry.lineage(&agent_id_bytes).unwrap_or_default();
+    let cascade = state.policy_engine.collect_cascade_with_lineage(&agent_id, &lineage);
+    let policies = cascade_to_policy_refs(&cascade);
+
+    // Qualitative recommendation from the agent's recent denials. The agent-id
+    // filter keeps the read to this agent (already tenant-authorized above);
+    // `PolicyViolation` is the audit event the gateway records for a proto
+    // `Decision::DENY` (see analytics::get_agent_enforcement).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let since = now.saturating_sub(CONFIG_RECO_WINDOW_SECS.saturating_mul(1_000_000_000));
+    let (denials, _total) = state
+        .audit_reader
+        .list_windowed(since, CONFIG_RECO_SCAN, 0, Some(&id), Some("PolicyViolation"), None)
+        .await
+        .unwrap_or_default();
+    let recommendation = build_denial_recommendation(&denials);
+
+    Ok((
+        StatusCode::OK,
+        Json(AgentConfigResponse {
+            agent_id: hex::encode(agent_id_bytes),
+            enforcement_mode: project_config_mode(record.enforcement_mode),
+            policies,
+            recommendation,
+        }),
+    ))
+}
+
+/// Wire vocabulary for [`AgentConfigResponse::enforcement_mode`].
+///
+/// AAASM-5098 / ADR-0022 — the agent's registered enforcement-mode override,
+/// serialized as the same `snake_case` labels the core [`aa_core::EnforcementMode`]
+/// uses. A dedicated schema (rather than surfacing the core enum) so the
+/// generated OpenAPI advertises a closed enum. Emitted only when the agent
+/// declares an override; see [`AgentConfigResponse::enforcement_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementModeLabel {
+    Enforce,
+    Observe,
+    Disabled,
+}
+
+/// One policy document in the agent's effective cascade.
+///
+/// AAASM-5098 — the honest identity of a document already loaded in the engine:
+/// its scope-qualified id, human name, optional version, and scope label. Mirrors
+/// the `Policy` identity the capability matrix emits (`{scope}/{name}` id) so the
+/// Config-YAML tab and the Capability page name the same document the same way.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AgentConfigPolicyRef {
+    /// Scope-qualified id (`{scope}/{name}`, or the bare scope when the document
+    /// is unnamed) — matches the capability matrix's per-policy id.
+    pub id: String,
+    /// Human-readable document name, falling back to the scope label when unnamed.
+    pub name: String,
+    /// Wire-format scope label (e.g. `"global"`, `"team:platform"`).
+    pub scope: String,
+    /// Document `policy_version`, if the source declared one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// A qualitative posture recommendation for the agent (AAASM-5098, ADR-0022).
+///
+/// Names the resources that dominate the agent's recent denials so an operator
+/// can see *what* to narrow, without asserting a quantified improvement. The
+/// `−N%` counterfactual is deliberately withheld — producing it requires the
+/// traffic replay AAASM-5094 builds, and fabricating a percentage would ship a
+/// number the product cannot stand behind (ADR-0022 §Option C). Every count here
+/// is a historical denial tally over the window, not a prediction.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AgentConfigRecommendation {
+    /// Recent window the finding covers (e.g. `"7d"`).
+    pub window: String,
+    /// Total denials (`PolicyViolation` audit events) counted in the window.
+    pub total_denials: u64,
+    /// The resources responsible for the most denials, most-denied first.
+    pub top_resources: Vec<DeniedResourceShare>,
+    /// Share of the window's denials the `top_resources` together account for,
+    /// as a 0–100 percentage of `total_denials` (a historical count ratio, not a
+    /// projected improvement).
+    pub top_resources_share_pct: f64,
+    /// Human-readable qualitative finding, e.g. "3 resources account for 78% of
+    /// this agent's denials in the last 7 days". Names resources, never a policy
+    /// (naming a specific policy needs a matcher that does not exist) and never a
+    /// projected improvement percentage.
+    pub summary: String,
+}
+
+/// One resource's contribution to an agent's recent denials.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DeniedResourceShare {
+    /// The denied resource (the audit `blocked_action`, e.g. `"gmail/write"`).
+    pub resource: String,
+    /// Denials attributed to this resource in the window.
+    pub denials: u64,
+    /// This resource's share of `total_denials`, as a 0–100 percentage.
+    pub share_pct: f64,
+}
+
+/// Per-agent config projection returned by `GET /api/v1/agents/{id}/config`.
+///
+/// AAASM-5098 (ADR-0022, narrow Option C). Backs the Agent-Detail Config-YAML
+/// tab. **Every field carries a real per-agent server-side source** — the
+/// contract deliberately omits the mock's `fail_open`, `rate_limit`,
+/// `observability`, and `issuer` because ADR-0022 verified none of them has a
+/// per-agent source. They are absent from this schema entirely rather than
+/// emitted as `null`: a null `observability` would imply the concept exists and
+/// is unset, a stronger claim than the truth.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AgentConfigResponse {
+    /// Hex-encoded agent UUID.
+    pub agent_id: String,
+    /// The agent's registered enforcement-mode override, sourced from
+    /// `AgentRecord.enforcement_mode` — the field the enforcement path consults,
+    /// **not** the free-form `metadata["mode"]` the Topology/Fleet views render
+    /// (ADR-0021 / ADR-0022). `None` (omitted) when the agent declares no
+    /// per-agent override, in which case the effective mode is decided per policy
+    /// document, not per agent — omitted rather than defaulted so the response
+    /// never fabricates a posture the agent did not set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enforcement_mode: Option<EnforcementModeLabel>,
+    /// The policy documents in the agent's effective cascade, broadest → narrowest.
+    pub policies: Vec<AgentConfigPolicyRef>,
+    /// Qualitative posture recommendation, or `None` (omitted) when the agent has
+    /// too few denials in the window to rank a dominant resource. Qualitative
+    /// only — no quantified improvement estimate (ADR-0022; the `−N%` is blocked
+    /// on AAASM-5094's replay).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<AgentConfigRecommendation>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1554,5 +1886,210 @@ mod tests {
             "the Team tier must appear in the cascade provenance: {:?}",
             body.sources.iter().map(|s| &s.scope).collect::<Vec<_>>()
         );
+    }
+
+    // ── AAASM-5098 / ADR-0022: per-agent config projection ──────────────────
+
+    /// A team-scoped (non-admin) caller belonging to `team_id`.
+    fn team_caller(team_id: &str) -> RequireRead {
+        RequireRead(AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes: vec![Scope::Read],
+            tenant: crate::auth::Tenant {
+                org_id: None,
+                team_id: Some(team_id.to_string()),
+            },
+        })
+    }
+
+    #[test]
+    fn project_config_mode_maps_each_override_and_omits_absent() {
+        use aa_core::EnforcementMode as M;
+        assert_eq!(
+            project_config_mode(Some(M::Enforce)),
+            Some(EnforcementModeLabel::Enforce)
+        );
+        assert_eq!(
+            project_config_mode(Some(M::Observe)),
+            Some(EnforcementModeLabel::Observe)
+        );
+        assert_eq!(
+            project_config_mode(Some(M::Disabled)),
+            Some(EnforcementModeLabel::Disabled)
+        );
+        // No per-agent override → omitted, never defaulted to a fabricated mode.
+        assert_eq!(project_config_mode(None), None);
+    }
+
+    /// ADR-0022 validation requirement: undefined config keys are absent from the
+    /// serialized response, not `null`. `fail_open` / `rate_limit` /
+    /// `observability` / `issuer` have no per-agent source, so they must never
+    /// appear as keys; `enforcement_mode` and `recommendation` are absent (not
+    /// null) when they have no value.
+    #[test]
+    fn unsupported_and_empty_fields_are_absent_not_null() {
+        let resp = AgentConfigResponse {
+            agent_id: "ab".repeat(16),
+            enforcement_mode: None,
+            policies: Vec::new(),
+            recommendation: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let obj = json.as_object().unwrap();
+
+        // The ADR-0022 fields with no per-agent source are not in the contract.
+        for absent in ["fail_open", "rate_limit", "observability", "issuer", "identity"] {
+            assert!(
+                !obj.contains_key(absent),
+                "`{absent}` must not be in the config contract"
+            );
+        }
+        // A `None` value is omitted, never emitted as an explicit null.
+        assert!(
+            !obj.contains_key("enforcement_mode"),
+            "an absent enforcement_mode must be omitted, not null"
+        );
+        assert!(
+            !obj.contains_key("recommendation"),
+            "an absent recommendation must be omitted, not null"
+        );
+        // The always-present fields are still there.
+        assert!(obj.contains_key("agent_id"));
+        assert!(obj.contains_key("policies"));
+    }
+
+    #[test]
+    fn enforcement_mode_serializes_snake_case() {
+        let json = serde_json::to_value(EnforcementModeLabel::Observe).unwrap();
+        assert_eq!(json, serde_json::json!("observe"));
+    }
+
+    /// Build a `PolicyViolation`-shaped audit entry whose payload names a denied
+    /// resource via `action_type` (the real gateway denial write shape — no
+    /// `detail` object).
+    fn denial_entry(action_type: &str) -> AuditEntry {
+        decision_entry(&format!(r#"{{"action_type":"{action_type}","decision":2}}"#))
+    }
+
+    #[test]
+    fn recommendation_ranks_dominant_resources_and_reports_shares() {
+        // 10 denials: 5×gmail/write, 3×gdrive/write, 2×http/write.
+        let mut entries = Vec::new();
+        for _ in 0..5 {
+            entries.push(denial_entry("gmail/write"));
+        }
+        for _ in 0..3 {
+            entries.push(denial_entry("gdrive/write"));
+        }
+        for _ in 0..2 {
+            entries.push(denial_entry("http/write"));
+        }
+
+        let reco = build_denial_recommendation(&entries).expect("10 denials clears the floor");
+        assert_eq!(reco.total_denials, 10);
+        assert_eq!(reco.window, "7d");
+        // Ranked most-denied first.
+        let names: Vec<&str> = reco.top_resources.iter().map(|r| r.resource.as_str()).collect();
+        assert_eq!(names, vec!["gmail/write", "gdrive/write", "http/write"]);
+        assert_eq!(reco.top_resources[0].denials, 5);
+        assert!((reco.top_resources[0].share_pct - 50.0).abs() < 1e-9);
+        // All three fit within CONFIG_RECO_TOP_N, so they account for 100%.
+        assert!((reco.top_resources_share_pct - 100.0).abs() < 1e-9);
+        // Qualitative only: no percentage-improvement claim, no policy named.
+        assert!(reco.summary.contains("gmail/write"));
+        assert!(!reco.summary.contains('%') || reco.summary.contains("of this agent's denials"));
+        assert!(
+            !reco.summary.to_lowercase().contains("p-0"),
+            "must not name a specific policy"
+        );
+    }
+
+    #[test]
+    fn recommendation_caps_at_top_n_and_reports_partial_share() {
+        // 4 distinct resources, 10 denials: 4,3,2,1. Only top 3 are named; their
+        // share is (4+3+2)/10 = 90%.
+        let mut entries = Vec::new();
+        for (res, n) in [("a", 4), ("b", 3), ("c", 2), ("d", 1)] {
+            for _ in 0..n {
+                entries.push(denial_entry(res));
+            }
+        }
+        let reco = build_denial_recommendation(&entries).unwrap();
+        assert_eq!(reco.top_resources.len(), CONFIG_RECO_TOP_N);
+        assert_eq!(reco.total_denials, 10);
+        assert!((reco.top_resources_share_pct - 90.0).abs() < 1e-9);
+    }
+
+    /// ADR-0022 validation requirement: the recommendation returns empty rather
+    /// than a low-confidence finding when the agent has too few denials to rank.
+    #[test]
+    fn recommendation_withheld_below_confidence_floor() {
+        let entries: Vec<AuditEntry> = (0..(CONFIG_RECO_MIN_DENIALS - 1))
+            .map(|_| denial_entry("gmail/write"))
+            .collect();
+        assert!(
+            build_denial_recommendation(&entries).is_none(),
+            "below the floor the finding must be withheld, not shipped low-confidence"
+        );
+        // No denials at all → also withheld.
+        assert!(build_denial_recommendation(&[]).is_none());
+    }
+
+    /// The config endpoint sources `enforcement_mode` from `AgentRecord`, not
+    /// from `metadata["mode"]` (ADR-0022), and projects the effective cascade.
+    #[tokio::test]
+    async fn config_sources_mode_from_record_not_metadata() {
+        let mut rec = record(0x01, Some("team-alpha"));
+        rec.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
+        // A conflicting free-form metadata mode must NOT be what the endpoint reports.
+        rec.metadata.insert("mode".to_string(), "enforce".to_string());
+
+        let state = state_with_policies(
+            vec![rec],
+            vec![policy_doc(
+                "team-rules",
+                aa_gateway::policy::PolicyScope::Team("team-alpha".to_string()),
+                aa_core::CapabilitySet::default(),
+            )],
+        );
+
+        let (status, Json(body)) = get_agent_config(
+            admin(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+        )
+        .await
+        .expect("admin may read config");
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body.enforcement_mode,
+            Some(EnforcementModeLabel::Observe),
+            "mode must come from enforcement_mode (Observe), not metadata[\"mode\"] (enforce)"
+        );
+        assert!(
+            body.policies.iter().any(|p| p.scope == "team:team-alpha"),
+            "the team policy must appear in the cascade: {:?}",
+            body.policies.iter().map(|p| &p.id).collect::<Vec<_>>()
+        );
+        // No denials seeded → recommendation withheld, not fabricated.
+        assert!(body.recommendation.is_none());
+    }
+
+    /// Tenant scoping: a caller from another team may not read the agent's config
+    /// — a per-agent config leak across tenants would be an IDOR (ADR-0022).
+    #[tokio::test]
+    async fn config_denies_cross_tenant_caller() {
+        let state = state_with_policies(vec![record(0x02, Some("team-alpha"))], vec![]);
+
+        let err = get_agent_config(
+            team_caller("team-beta"),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x02u8; 16])),
+        )
+        .await
+        .expect_err("a team-beta caller must not read a team-alpha agent's config");
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
     }
 }

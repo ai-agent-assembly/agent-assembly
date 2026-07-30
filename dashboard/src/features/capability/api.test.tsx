@@ -44,6 +44,7 @@ const SPARSE_MATRIX: CapabilityMatrix = {
   ],
   policies: [{ id: 'global', name: 'global', scope: 'global', status: 'active', affects: [], rules: [] }],
   sampleCalls: [],
+  cascadeLoaded: true,
 }
 
 afterEach(() => vi.restoreAllMocks())

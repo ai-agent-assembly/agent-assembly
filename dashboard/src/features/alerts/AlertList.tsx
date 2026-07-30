@@ -10,7 +10,7 @@ import {
 } from '@tanstack/react-table'
 import { SeverityBadge } from './SeverityBadge'
 import { StatusBadge } from './StatusBadge'
-import { SEVERITY_ORDER, type Alert, type AlertStatus, type Severity } from './types'
+import { ALERT_SEVERITY_ORDER, type Alert, type AlertSeverity, type AlertStatus } from './types'
 
 interface AlertListProps {
   rows: readonly Alert[]
@@ -19,10 +19,10 @@ interface AlertListProps {
   loading?: boolean
 }
 
-// CRITICAL > HIGH > MEDIUM > LOW (descending = most severe first).
-const SEVERITY_RANK: Record<Severity, number> = Object.fromEntries(
-  SEVERITY_ORDER.map((s, i) => [s, SEVERITY_ORDER.length - i]),
-) as Record<Severity, number>
+// CRITICAL > WARNING > INFO (descending = most severe first).
+const SEVERITY_RANK: Record<AlertSeverity, number> = Object.fromEntries(
+  ALERT_SEVERITY_ORDER.map((s, i) => [s, ALERT_SEVERITY_ORDER.length - i]),
+) as Record<AlertSeverity, number>
 
 // AlertStatus is a closed 3-member app union; `canonicalStatus` in
 // parseAlert.ts validates the wire value into it before an Alert ever exists —

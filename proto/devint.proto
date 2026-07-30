@@ -1,0 +1,472 @@
+syntax = "proto3";
+
+package assembly.devint.v1;
+
+// Developer Integration API (DI-API) wire schema — ADR 0030 Decision 5,
+// AAASM-5279.
+//
+// The DI-API is the *only* channel by which an untrusted local thin client (a
+// VS Code extension, an installer, `aasm integration …`) reaches the trusted
+// runtime. It is served over a dedicated Unix domain socket at
+// `~/.aa/run/devint.sock` — deliberately NOT the SDK fast-path socket, so a DI
+// client never holds a file descriptor onto agent-action or policy-decision
+// traffic (ADR 0030 §5.1). Loopback TCP is a forbidden design (§5.2): it is
+// reachable by every local user and by a browser, and the kernel supplies no
+// peer identity there.
+//
+// Framing reuses the runtime's existing length-delimited IPC codec
+// (`aa-runtime/src/ipc/codec.rs`): `[1-byte tag][prost varint length][payload]`.
+// These are prost payloads behind wire tags, not a gRPC service — there is no
+// `service` block here on purpose, because a gRPC service on this socket would
+// invite a second transport story for a purely local hop.
+//
+// # Two properties this schema exists to make structural
+//
+// 1. **The verb space is closed.** `Verb` is an exhaustive enum with no
+//    "call core", no method/path string, no filter passthrough and no opaque
+//    forwarded envelope. There is deliberately no policy-decision verb: agent
+//    decisions go SDK → `aa-sdk-client` → runtime/gateway (ADR 0004), and
+//    adding a `check`-like verb here would reopen ADR 0004 *and* ADR 0030
+//    (forbidden design 6). An operation that does not exist cannot be
+//    requested, however the request is crafted.
+// 2. **No response type can carry what must not leave.** Minimisation is
+//    enforced by the shape of these messages rather than by a redaction pass
+//    someone might forget (§5.5). There is no field anywhere below that can
+//    hold a policy document, a rendered settings body, an environment-variable
+//    value, a raw prompt or tool output, or a storage/gateway credential —
+//    only identifiers, AASM-owned key names, fingerprints and derived views.
+//    `StepView` in particular projects `aa_core::integration::IntegrationStep`
+//    *without* its value-bearing leaves, which is why an adapter that put a
+//    secret in an env literal still cannot leak it over this API.
+
+// ── Version negotiation ──────────────────────────────────────────────────────
+
+// Hello — client → server, the first frame on every connection. No lifecycle
+// verb is accepted before it (§5.4).
+message Hello {
+  // Human-readable client identity, e.g. "aasm" or "vscode-aasm". Recorded in
+  // audit events; never used for authentication.
+  string client_name = 1;
+  // The client build version, for remediation text and audit.
+  string client_version = 2;
+  // Every DI-API version this client can speak. The server selects the highest
+  // version both sides offer.
+  repeated uint32 di_api_versions = 3;
+  // Every AAASM-5277 lifecycle schema version this client can read.
+  repeated uint32 lifecycle_schema_versions = 4;
+}
+
+// Whether the negotiated version gives the client the whole verb space.
+//
+// `DEGRADED` is an explicit outcome the client must surface, never an implicit
+// fallback — a silent downgrade is exactly what §5.4 forbids.
+enum NegotiationOutcome {
+  NEGOTIATION_OUTCOME_UNSPECIFIED = 0;
+  // Every verb is available at the negotiated version.
+  NEGOTIATION_OUTCOME_SUPPORTED = 1;
+  // The negotiated version is supported but exposes a subset of the verbs;
+  // `HelloAck.unavailable_verbs` names exactly which.
+  NEGOTIATION_OUTCOME_DEGRADED = 2;
+}
+
+// HelloAck — server → client, sent when a usable version was agreed. The
+// negotiated version is fixed for the connection's lifetime; there is no
+// mid-connection renegotiation to downgrade into.
+message HelloAck {
+  NegotiationOutcome outcome = 1;
+  // The DI-API version this connection speaks.
+  uint32 di_api_version = 2;
+  // The running core version, so a client can report what it is talking to
+  // without inferring it (ADR 0030 matrix row 5).
+  string core_version = 3;
+  // The AAASM-5277 lifecycle schema version this connection speaks.
+  uint32 lifecycle_schema_version = 4;
+  // The server's supported DI-API version window, so a client that got
+  // `DEGRADED` knows what to upgrade to.
+  uint32 min_supported = 5;
+  uint32 max_supported = 6;
+  // Verbs that do not exist at the negotiated version. Empty when `outcome` is
+  // `SUPPORTED`.
+  repeated string unavailable_verbs = 7;
+  // Why the connection is degraded, in words a user can act on.
+  string degraded_reason = 8;
+  // What to do about it.
+  string remediation = 9;
+}
+
+// Incompatible — server → client, sent instead of `HelloAck` when no version
+// is shared. The connection is closed immediately afterwards: there is no
+// degraded-into-nothing state and no silent downgrade.
+message Incompatible {
+  // What is incompatible.
+  string reason = 1;
+  // Which side to upgrade, and to what.
+  string remediation = 2;
+  uint32 min_supported = 3;
+  uint32 max_supported = 4;
+}
+
+// ── The closed verb space ────────────────────────────────────────────────────
+
+// Every operation the DI-API will ever serve at this major version.
+//
+// This list is the closed set from ADR 0030 §1.2 / §5.6.1. It is asserted
+// against that list by a unit test, so adding a verb — in particular a
+// `check`-like or approval-*decision* verb — fails the build rather than
+// quietly widening the boundary.
+enum Verb {
+  VERB_UNSPECIFIED = 0;
+  // Enumerate the tools the linked adapters can see, and what each can do.
+  VERB_LIST_TOOLS = 1;
+  // Author a reviewable dry run. Mutates nothing.
+  VERB_PLAN = 2;
+  // Execute a previously authored plan.
+  VERB_APPLY = 3;
+  // Read the derived protection state and its evidence.
+  VERB_STATUS = 4;
+  // Run the protection test and adjudicate it (server-side; a client never
+  // self-certifies).
+  VERB_VERIFY = 5;
+  // Restore AASM-owned keys that drifted.
+  VERB_REPAIR = 6;
+  // Author and execute the reversal.
+  VERB_REMOVE = 7;
+  // Read an integration-scoped, already-redacted event projection.
+  VERB_SCOPED_EVENTS = 8;
+  // Relay a human's approval input to the core, which remains the decision
+  // authority (ADR 0030 matrix rows 11 and 12). This is a presentation relay,
+  // not a decision verb.
+  VERB_APPROVAL_RELAY = 9;
+}
+
+// ── Requests ─────────────────────────────────────────────────────────────────
+
+// Request — client → server. Every verb travels in this one message; the
+// per-verb arguments are typed sub-messages, never an opaque blob.
+message Request {
+  // Correlates the response. Echoed back verbatim.
+  uint64 request_id = 1;
+  Verb verb = 2;
+  // The opaque 256-bit capability token, hex-encoded. Never a JWT and never
+  // derived from a public value (§5.3, and the AAASM-3922 lesson). Absent,
+  // expired, unknown or unresolvable ⇒ DENY plus an audit event.
+  string capability_token = 3;
+  // Which tool the verb acts on. Empty only for `VERB_LIST_TOOLS`.
+  string tool_id = 4;
+
+  PlanArgs plan = 5;
+  ApplyArgs apply = 6;
+  RemoveArgs remove = 7;
+  ScopedEventsArgs events = 8;
+  ApprovalRelayArgs approval = 9;
+}
+
+// What the caller wants planned. Every field is something a caller may
+// legitimately choose; there is no field through which a client could supply a
+// policy document, a credential, or a destination path the service did not
+// derive.
+message PlanArgs {
+  // "recommended" | "strict" | "observe_only".
+  string profile = 1;
+  // The ladder rung the caller is aiming for.
+  string requested_level = 2;
+  // "user" | "project" | "managed". Explicit and mandatory — never inferred
+  // from the client's working directory.
+  string settings_scope = 3;
+  // Whether the user consented to steps that change host state (§6.6).
+  bool allow_privileged_host_steps = 4;
+  // The policy profile *by name*. The document is resolved inside the trusted
+  // layers and never crosses this boundary (matrix row 6).
+  string policy_profile_id = 5;
+}
+
+message ApplyArgs {
+  string plan_id = 1;
+}
+
+message RemoveArgs {
+  string plan_id = 1;
+}
+
+message ScopedEventsArgs {
+  uint32 limit = 1;
+  uint64 since_unix_secs = 2;
+}
+
+// The human's input on a pending approval, relayed by the client that showed
+// it. The runtime/gateway adjudicates it; a client that fabricates one still
+// cannot make a decision, because this message is an input to the authority,
+// not an answer from it.
+message ApprovalRelayArgs {
+  string approval_id = 1;
+  // "approve" | "deny" | "defer" — the button the human pressed.
+  string user_input = 2;
+}
+
+// ── Responses ────────────────────────────────────────────────────────────────
+
+// Response — server → client, one per accepted `Request`. Exactly one of the
+// per-verb views is populated, chosen by `verb`.
+message Response {
+  uint64 request_id = 1;
+  Verb verb = 2;
+
+  ToolList tool_list = 3;
+  PlanView plan = 4;
+  ApplyView apply = 5;
+  StatusView status = 6;
+  VerificationView verification = 7;
+  RepairView repair = 8;
+  RemovalView removal = 9;
+  ScopedEventList events = 10;
+  ApprovalRelayAck approval = 11;
+}
+
+// Why a request was refused.
+//
+// The codes are deliberately coarse. `UNAUTHENTICATED` covers absent, unknown
+// and malformed tokens alike so a probing client cannot use the response to
+// tell them apart — the audit event records the finer outcome locally, and
+// never records *why it almost matched* (§5.3).
+enum DenyCode {
+  DENY_CODE_UNSPECIFIED = 0;
+  // Absent, malformed or unknown token.
+  DENY_CODE_UNAUTHENTICATED = 1;
+  // A resolvable record that is past its absolute expiry. Distinguished from
+  // `UNAUTHENTICATED` because the holder already has the token, so nothing
+  // leaks, and re-enrolment is the actionable remediation.
+  DENY_CODE_TOKEN_EXPIRED = 2;
+  // The token resolved, but its scope does not cover this verb or this tool.
+  DENY_CODE_OUT_OF_SCOPE = 3;
+  // The wire carried a verb outside the closed set.
+  DENY_CODE_UNKNOWN_VERB = 4;
+  // A frame arrived out of order — e.g. a second `Hello` attempting to
+  // renegotiate mid-connection.
+  DENY_CODE_PROTOCOL_VIOLATION = 5;
+  // The verb exists but not at the negotiated DI-API version.
+  DENY_CODE_UNAVAILABLE_AT_VERSION = 6;
+  // The lifecycle service refused or failed. Carries no adapter internals.
+  DENY_CODE_LIFECYCLE_ERROR = 7;
+  // No adapter knows this tool id.
+  DENY_CODE_UNKNOWN_TOOL = 8;
+}
+
+message Denied {
+  uint64 request_id = 1;
+  DenyCode code = 2;
+  // A short, coarse sentence. Never echoes the presented token and never
+  // explains how close it came to matching.
+  string message = 3;
+  // What the user or client should do.
+  string remediation = 4;
+}
+
+// ── Data-minimised projections ───────────────────────────────────────────────
+
+message CapabilityView {
+  // An `aa_core::integration::IntegrationCapability` variant, snake_case.
+  string capability = 1;
+  // "supported" | "unsupported" | "requires_version" | "absent".
+  string support = 2;
+  // The adapter's reason, when it declared one.
+  string reason = 3;
+}
+
+message ToolSummary {
+  string tool_id = 1;
+  string display_name = 2;
+  bool detected = 3;
+  // Empty when the tool is not installed.
+  string detected_version = 4;
+  // "supported" | "below_minimum" | "above_maximum" | "undetected".
+  string compatibility = 5;
+  repeated CapabilityView capabilities = 6;
+  // The adapter's static build-time ceiling. A ceiling is not a measurement.
+  string adapter_ceiling = 7;
+}
+
+message ToolList {
+  repeated ToolSummary tools = 1;
+}
+
+// A plan step, projected for review.
+//
+// This message is where §5.5 is enforced. It carries the step's identity, its
+// kind, the surface it writes, the AASM-owned key names it claims and the
+// content fingerprint — and deliberately has **no field able to hold a step
+// value**: no rendered settings body, no environment-variable value, no proxy
+// variable value, no base URL. A reviewer can see what will change and compare
+// fingerprints; they cannot read a secret out of it, and neither can a
+// compromised client.
+message StepView {
+  string id = 1;
+  // One line describing the step to a human reviewing the dry run.
+  string summary = 2;
+  // Stable snake_case token for the `StepAction` variant, e.g.
+  // "write_managed_settings".
+  string action_kind = 3;
+  // "required" | "optional".
+  string requirement = 4;
+  // "user" | "privileged_host".
+  string privilege = 5;
+  // The exact sentence the user must agree to. Populated only for
+  // privileged-host steps (§6.6).
+  string consent_prompt = 6;
+  // "user" | "project" | "managed", when the step names a settings surface.
+  string settings_scope = 7;
+  // The keys AASM claims ownership of — the only keys drift is defined over.
+  repeated string managed_keys = 8;
+  // Files and artifacts the step names. Paths, never contents.
+  repeated string artifact_paths = 9;
+  // SHA-256 of the rendered content, hex-encoded.
+  string content_sha256 = 10;
+  // Whether the step carries an automated reversal.
+  bool reversible = 11;
+}
+
+// A policy profile named by reference rather than by content: enough to
+// display, select and compare, never enough to read.
+message PolicyProfileRefView {
+  string id = 1;
+  string display_name = 2;
+  string digest = 3;
+}
+
+message UnsupportedMechanismView {
+  string capability = 1;
+  string reason = 2;
+}
+
+message PlanView {
+  uint32 schema_version = 1;
+  string plan_id = 2;
+  string tool_id = 3;
+  string profile = 4;
+  string settings_scope = 5;
+  PolicyProfileRefView policy_profile = 6;
+  string planned_level = 7;
+  string adapter_ceiling = 8;
+  repeated StepView steps = 9;
+  repeated UnsupportedMechanismView unsupported = 10;
+  repeated string warnings = 11;
+}
+
+message StepOutcomeView {
+  string step_id = 1;
+  // "applied" | "skipped" | "failed".
+  string outcome = 2;
+  // Fingerprint of what was written, when one could be taken.
+  string fingerprint = 3;
+}
+
+message ApplyView {
+  string plan_id = 1;
+  string receipt_id = 2;
+  uint64 applied_at_unix_secs = 3;
+  repeated StepOutcomeView steps = 4;
+  string planned_level = 5;
+  string achieved_level = 6;
+}
+
+// One observation, with the timestamp that makes it "verified at T" rather
+// than "true now".
+message EvidenceView {
+  string mechanism = 1;
+  // "read_back" | "exercised" | "host_attested" | "absent".
+  string kind = 2;
+  // The kind's discriminating value as a token: the exercise outcome, whether
+  // read-back matched, whether the host layer reported healthy, or why a check
+  // was absent.
+  string outcome = 3;
+  uint64 observed_at_unix_secs = 4;
+  string detail = 5;
+}
+
+message NextLevelView {
+  string level = 1;
+  string blocked_because = 2;
+}
+
+message StatusView {
+  string tool_id = 1;
+  // `LifecyclePhase`, snake_case.
+  string phase = 2;
+  // "ladder" | "drifted" | "degraded" | "incompatible".
+  string state = 3;
+  string achieved_level = 4;
+  string planned_level = 5;
+  string adapter_ceiling = 6;
+  string compatibility = 7;
+  repeated EvidenceView evidence = 8;
+  NextLevelView next_level = 9;
+  // A status read without its timestamp over-reads the claim.
+  uint64 observed_at_unix_secs = 10;
+  // Identifiers of AASM-owned artifacts that no longer match, when the state
+  // is `drifted`.
+  repeated string drift_mismatched = 11;
+  // Why the state is overriding, and which side to fix.
+  string state_reason = 12;
+  string state_remediation = 13;
+}
+
+message VerificationView {
+  uint64 verified_at_unix_secs = 1;
+  // "passed" | "partially_passed" | "failed" | "unverifiable".
+  string outcome = 2;
+  // What could not be established, for `partially_passed`.
+  repeated string missing = 3;
+  // Why, for `failed` and `unverifiable`.
+  string reason = 4;
+  repeated EvidenceView evidence = 5;
+}
+
+message RepairView {
+  string tool_id = 1;
+  // AASM-owned artifact identifiers that were restored.
+  repeated string repaired = 2;
+  // Identifiers that drifted and could not be restored, with the reason.
+  repeated UnsupportedMechanismView unrepairable = 3;
+  StatusView status = 4;
+}
+
+message RemovalView {
+  uint32 schema_version = 1;
+  string plan_id = 2;
+  string tool_id = 3;
+  repeated StepView steps = 4;
+  // What this plan knowingly leaves behind.
+  repeated string residual = 5;
+  repeated string warnings = 6;
+}
+
+// An integration-scoped, already-redacted security-event projection.
+//
+// Counts, verdict kinds, timestamps and redaction labels — never the prompt,
+// the tool output, or the matched content that produced the verdict.
+message ScopedEvent {
+  uint64 occurred_at_unix_secs = 1;
+  // "allow" | "deny" | "redacted" | "approval_required".
+  string verdict_kind = 2;
+  // The mechanism the event was observed on.
+  string mechanism = 3;
+  // How many equivalent events this row folds.
+  uint32 count = 4;
+  // Labels of what was redacted (e.g. "aws_access_key"), never the value.
+  repeated string redaction_labels = 5;
+}
+
+message ScopedEventList {
+  repeated ScopedEvent events = 1;
+}
+
+// Acknowledgement that a human's input was relayed to the decision authority.
+//
+// Deliberately not a decision: it says the input was accepted for
+// adjudication, never that it was granted.
+message ApprovalRelayAck {
+  string approval_id = 1;
+  // The input that was relayed, echoed for the client's own bookkeeping.
+  string relayed_input = 2;
+  // When the runtime accepted it for adjudication.
+  uint64 accepted_at_unix_secs = 3;
+}

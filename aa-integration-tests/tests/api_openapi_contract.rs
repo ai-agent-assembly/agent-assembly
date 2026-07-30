@@ -84,10 +84,12 @@ fn openapi_spec_loads_without_errors() {
     // for aggregate impact — distinct from the single-request /policies/simulate),
     // bringing it to 78. AAASM-5095 added /api/v1/approvals/{id}/forward
     // (reassign a pending approval to a different approver — distinct from the
-    // approve/reject decide endpoints), bringing it to 79.
+    // approve/reject decide endpoints), bringing it to 79. AAASM-5098 added
+    // /api/v1/agents/{id}/config (per-agent config projection — enforcement mode,
+    // policy cascade, and a qualitative denial recommendation), bringing it to 80.
     assert_eq!(
-        path_count, 79,
-        "openapi/v1.yaml must declare exactly 79 paths, found {path_count}"
+        path_count, 80,
+        "openapi/v1.yaml must declare exactly 80 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -135,6 +137,8 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/agents/{id}",
         "/api/v1/agents/{id}/budget",
         "/api/v1/agents/{id}/capabilities",
+        // AAASM-5098 — per-agent config projection (Config-YAML tab).
+        "/api/v1/agents/{id}/config",
         "/api/v1/agents/{id}/decisions",
         "/api/v1/agents/{id}/edges",
         "/api/v1/agents/{id}/graph",

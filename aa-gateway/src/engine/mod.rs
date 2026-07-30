@@ -305,6 +305,8 @@ struct ParsedCascade {
     budget_tz: chrono_tz::Tz,
     daily_limit: Option<rust_decimal::Decimal>,
     monthly_limit: Option<rust_decimal::Decimal>,
+    team_daily_limit: Option<rust_decimal::Decimal>,
+    team_monthly_limit: Option<rust_decimal::Decimal>,
     org_daily_limit: Option<rust_decimal::Decimal>,
     org_monthly_limit: Option<rust_decimal::Decimal>,
 }
@@ -361,6 +363,19 @@ impl PolicyEngine {
             .as_ref()
             .and_then(|bp| bp.monthly_limit_usd)
             .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+        // AAASM-5087 — Lift team-tier limits from BudgetPolicy into the tracker.
+        let team_daily_limit = output
+            .document
+            .budget
+            .as_ref()
+            .and_then(|bp| bp.team_daily_limit_usd)
+            .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+        let team_monthly_limit = output
+            .document
+            .budget
+            .as_ref()
+            .and_then(|bp| bp.team_monthly_limit_usd)
+            .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
         // AAASM-2022 — Lift org-tier limits from BudgetPolicy into the tracker.
         let org_daily_limit = output
             .document
@@ -381,6 +396,12 @@ impl PolicyEngine {
             budget_tz,
             budget_alert_tx,
         );
+        if let Some(limit) = team_daily_limit {
+            budget_tracker = budget_tracker.with_team_daily_limit(limit);
+        }
+        if let Some(limit) = team_monthly_limit {
+            budget_tracker = budget_tracker.with_team_monthly_limit(limit);
+        }
         if let Some(limit) = org_daily_limit {
             budget_tracker = budget_tracker.with_org_daily_limit(limit);
         }
@@ -468,6 +489,12 @@ impl PolicyEngine {
             parsed.budget_tz,
             budget_alert_tx,
         );
+        if let Some(limit) = parsed.team_daily_limit {
+            budget_tracker = budget_tracker.with_team_daily_limit(limit);
+        }
+        if let Some(limit) = parsed.team_monthly_limit {
+            budget_tracker = budget_tracker.with_team_monthly_limit(limit);
+        }
         if let Some(limit) = parsed.org_daily_limit {
             budget_tracker = budget_tracker.with_org_daily_limit(limit);
         }
@@ -539,6 +566,9 @@ impl PolicyEngine {
         let mut budget_tz = chrono_tz::UTC;
         let mut daily_limit: Option<rust_decimal::Decimal> = None;
         let mut monthly_limit: Option<rust_decimal::Decimal> = None;
+        // AAASM-5087 — Team-tier limits from the Global-scoped doc.
+        let mut team_daily_limit: Option<rust_decimal::Decimal> = None;
+        let mut team_monthly_limit: Option<rust_decimal::Decimal> = None;
         // AAASM-2022 — Org-tier limits from the Global-scoped doc.
         let mut org_daily_limit: Option<rust_decimal::Decimal> = None;
         let mut org_monthly_limit: Option<rust_decimal::Decimal> = None;
@@ -586,6 +616,16 @@ impl PolicyEngine {
                     .as_ref()
                     .and_then(|bp| bp.monthly_limit_usd)
                     .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+                team_daily_limit = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.team_daily_limit_usd)
+                    .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+                team_monthly_limit = doc
+                    .budget
+                    .as_ref()
+                    .and_then(|bp| bp.team_monthly_limit_usd)
+                    .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
                 org_daily_limit = doc
                     .budget
                     .as_ref()
@@ -609,6 +649,8 @@ impl PolicyEngine {
             budget_tz,
             daily_limit,
             monthly_limit,
+            team_daily_limit,
+            team_monthly_limit,
             org_daily_limit,
             org_monthly_limit,
         })
@@ -1986,6 +2028,27 @@ impl PolicyEngine {
         self.cascade.load().scope_index.policies_for_scope(scope).to_vec()
     }
 
+    /// Whether this engine actually carries a policy cascade — i.e. its
+    /// `scope_index` holds at least one scoped document.
+    ///
+    /// This is the *loaded / unavailable* signal for cascade-derived **reporting
+    /// projections** (AAASM-5106): the capability matrix, the topology permission
+    /// chain, and the Teams active-policies list all read the cascade, and when it
+    /// is empty they would otherwise render a confident but false answer (an
+    /// all-`allow` grid, a zero-policy chain, "no policy is in force") that the
+    /// enforcement path — which falls back to the primary policy slot — does not
+    /// agree with. `false` here means those projections must render
+    /// *Unknown / Unconfigured / Not evaluated* rather than inferring permission
+    /// from the absence of cascade data. This never changes enforcement: it only
+    /// tells a read-only projection whether the cascade slot it is about to
+    /// summarise carries anything. See ADR 0024.
+    ///
+    /// Returns an owned `bool` computed under the [`ArcSwap`] guard; the guard
+    /// cannot outlive the call.
+    pub fn cascade_loaded(&self) -> bool {
+        !self.cascade.load().scope_index.is_empty()
+    }
+
     /// Look up a policy previously registered via [`Self::load_policy`]
     /// by its [`scope_index::PolicyId`].
     ///
@@ -3055,6 +3118,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3081,6 +3146,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(10.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3116,6 +3183,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3155,6 +3224,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(10.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3208,6 +3279,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: None,
             monthly_limit_usd: Some(5.0),
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3234,6 +3307,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: None,
             monthly_limit_usd: Some(10.0),
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3255,6 +3330,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(2.0),
             monthly_limit_usd: Some(5.0),
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3282,6 +3359,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3308,6 +3387,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3334,6 +3415,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: None,
             monthly_limit_usd: Some(5.0),
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3360,6 +3443,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(10.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3773,6 +3858,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(10.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -3797,6 +3884,8 @@ mod tests {
         doc.budget = Some(BudgetPolicy {
             daily_limit_usd: Some(1.0),
             monthly_limit_usd: None,
+            team_daily_limit_usd: None,
+            team_monthly_limit_usd: None,
             org_daily_limit_usd: None,
             org_monthly_limit_usd: None,
             timezone: None,
@@ -4170,6 +4259,43 @@ mod tests {
         assert!(
             !engine.cascade.load().scope_index.is_empty(),
             "directory loader must populate the scope_index (cascade active)"
+        );
+    }
+
+    /// AAASM-5106 — `cascade_loaded()` is the loaded/unavailable signal the
+    /// reporting projections read to tell "the engine carries no cascade" apart
+    /// from "this agent/team genuinely has no policy". A primary-only engine
+    /// (`load_from_file` semantics, which every shipped aa-api deployment uses)
+    /// reports `false`; a directory-loaded cascade reports `true`.
+    #[test]
+    fn cascade_loaded_reflects_scope_index_population() {
+        // Primary-only engine: empty scope_index, so the cascade is not loaded.
+        let primary_only = make_engine(empty_doc());
+        assert!(
+            !primary_only.cascade_loaded(),
+            "a primary-only engine carries no cascade — cascade_loaded() must be false"
+        );
+
+        // Directory-loaded engine: a populated scope_index means a live cascade.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: reg-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        let budget = Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ));
+        let cascade_engine = PolicyEngine::load_cascade_from_dir_with_budget(tmp.path(), budget).expect("loads");
+        assert!(
+            cascade_engine.cascade_loaded(),
+            "a directory-loaded engine carries a cascade — cascade_loaded() must be true"
         );
     }
 

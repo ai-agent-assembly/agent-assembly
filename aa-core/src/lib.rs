@@ -34,6 +34,8 @@ pub mod config;
 pub mod dev_tool;
 pub mod evaluators;
 pub mod identity;
+#[cfg(feature = "std")]
+pub mod integration;
 #[cfg(feature = "alloc")]
 pub mod llm;
 pub mod net;

@@ -26,7 +26,7 @@ import {
   filtersFromSearchParams,
   filtersToSearchParams,
 } from '../features/alerts/urlFilters'
-import type { Alert, AlertFilters, AlertRule, AlertStatus, Severity } from '../features/alerts/types'
+import type { Alert, AlertFilters, AlertRule, AlertSeverity, AlertStatus } from '../features/alerts/types'
 import { alertsCountLabel, coversWholeFleet } from '../features/alerts/alertsCoverage'
 import { TruthfulValue } from '../components/truthfulness'
 import {
@@ -123,7 +123,7 @@ export function AlertsPage() {
   // Stats-strip tiles reuse the single filter model the filter bar drives:
   // toggling a tile adds/removes the matching severity/status filter.
   const toggleSeverity = useCallback(
-    (s: Severity) =>
+    (s: AlertSeverity) =>
       setFilters({ ...filters, severities: toggleFilterValue(filters.severities, s) }),
     [filters, setFilters],
   )

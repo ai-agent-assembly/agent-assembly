@@ -3,6 +3,7 @@ import { capabilityClient } from '../../api/capability'
 import {
   certainFromQuery,
   isKnown,
+  known,
   propagateAbsence,
   type CascadeEvidence,
   type Certain,
@@ -37,9 +38,14 @@ export function useCapabilityMatrixQuery() {
  *  - the request failed or is still in flight — `certainFromQuery` maps that to
  *    `unavailable` / `unknown`, so a rejected fetch can never reach the summary
  *    row as a count;
- *  - the request succeeded but the cascade resolved no documents — the
- *    AAASM-5106 condition, mapped by `cascadeEvidenceOf` to a zero
- *    `documentCount`, which the verdict rules then fold to `unconfigured`.
+ *  - the request succeeded but the engine carries no cascade — the AAASM-5106
+ *    condition. The authoritative source for that is the matrix-level
+ *    `cascadeLoaded` flag (ADR 0024), not the length of the `policies` array: a
+ *    loaded cascade can legitimately carry no capability-declaring document, so
+ *    an empty `policies` list is not by itself proof the cascade is unloaded.
+ *    When `cascadeLoaded` is `false` the evidence is a zero `documentCount`,
+ *    which the verdict rules fold to `unconfigured`; otherwise the real document
+ *    count flows through.
  *
  * Takes the query outcome rather than calling the hook itself so the optimistic
  * matrix the page holds during a bulk override still flows through the same
@@ -49,5 +55,9 @@ export function cascadeEvidenceFromQuery(
   outcome: QueryOutcome<CapabilityMatrix>,
 ): Certain<CascadeEvidence> {
   const matrix = certainFromQuery(outcome)
-  return isKnown(matrix) ? cascadeEvidenceOf(matrix.value.policies) : propagateAbsence(matrix)
+  if (!isKnown(matrix)) return propagateAbsence(matrix)
+  // The engine's own loaded/unavailable signal wins: an unloaded cascade is
+  // `unconfigured` even if the projection happened to list a policy row.
+  if (!matrix.value.cascadeLoaded) return known({ documentCount: 0 })
+  return cascadeEvidenceOf(matrix.value.policies)
 }

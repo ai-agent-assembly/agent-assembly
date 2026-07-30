@@ -70,6 +70,10 @@ function toPermissions(raw: ApiPermissions | null | undefined): NodeEffectivePer
     allow: raw.allow ?? [],
     deny: raw.deny ?? [],
     allowRestricted: raw.allow_restricted,
+    // AAASM-5106 / ADR 0024 — the loaded/unavailable signal. Defaults to `false`
+    // (unknown) if an older payload omits it, so a missing signal never reads as
+    // a confident "cascade loaded".
+    cascadeLoaded: raw.cascade_loaded ?? false,
   }
 }
 
@@ -85,12 +89,13 @@ function mapNode(n: ApiNode): TopologyNode {
     // Live values enriched by the graph endpoint (AAASM-5045); null-safe — an
     // absent field keeps the prior neutral placeholder (see module doc).
     owner: n.owner ?? '',
-    // `policy_count` and `budget` are nullable on the wire for the projections
-    // that skip their lookups, but `project_graph_nodes` sets both
-    // unconditionally (`aa-api/src/routes/topology.rs:427,434`), and this mapper
-    // only ever sees that endpoint's payload. The `?? 0` fallbacks are therefore
-    // unreachable rather than a defaulted absence.
-    policyCount: n.policy_count ?? 0,
+    // `policy_count` is `null` when the engine carries no cascade (AAASM-5106 /
+    // ADR 0024) — every shipped deployment — and a real count when it does. It
+    // is carried through as `null` (never coerced to `0`) so the panel renders
+    // "unknown" rather than a fabricated "0 policies". `budget` is set
+    // unconditionally by `project_graph_nodes`, so its `?? 0` fallback is only a
+    // defensive default for an older/partial payload.
+    policyCount: n.policy_count ?? null,
     budgetSpend: n.budget?.spend_usd ?? 0,
     // `limit_usd` is the one genuinely-absent number here: the server emits
     // `null` when neither a per-agent nor a server-wide daily limit is

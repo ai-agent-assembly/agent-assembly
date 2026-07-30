@@ -93,6 +93,12 @@
 - [L0-L3 Capability Matrix](governance/capability-matrix.md)
 - [Policy RBAC Role Matrix](policy-rbac.md)
 
+# Developer Integrations
+
+- [Product Capability Brief](devtools/product-brief.md)
+- [Developer Integration API](devtools/developer-integration-api.md)
+- [Thin-Client Reference Implementation](devtools/reference-client.md)
+
 # Protocol
 
 - [Changelog](protocol/CHANGELOG.md)
@@ -163,3 +169,4 @@
   - [0027 - The Accessibility Floor Overrides the Visual Specification](adr/0027-accessibility-floor-overrides-visual-spec.md)
   - [0028 - CI Trigger-Scoping — Path Filters Must Allow-List by File Type](adr/0028-ci-trigger-scoping-allowlist-by-filetype.md)
   - [0029 - Capability Over-Permission Derivation](adr/0029-capability-over-permission-derivation.md)
+  - [0030 - Developer Integration Boundaries & Local Trust Model](adr/0030-developer-integration-boundaries-and-trust-model.md)

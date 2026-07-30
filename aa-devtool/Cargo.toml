@@ -5,19 +5,33 @@ publish = false  # AAASM-2340: dev-tool subsystem held back from this alpha — 
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Dev tool auto-discovery for Agent Assembly"
+description = "Dev tool registry and auto-discovery for Agent Assembly"
 
 [dependencies]
 aa-devtool-contract = { path = "../aa-devtool-contract" }
-async-trait = { workspace = true }
+# AAASM-5274: the per-tool crates are the authoritative adapter implementations.
+# `aa-devtool` links them so `registry::adapter_for` can be the one place any
+# consumer (DiscoveryService, `aasm run`, the API) resolves a tool's adapter —
+# previously discovery and launch each picked their own and disagreed. All of
+# these are `publish = false`, as is `aa-devtool` itself, so this adds no
+# crates.io surface (aa-cli strips its `aa-devtool` dep before publishing).
+aa-devtool-claude-code = { path = "../aa-devtool-claude-code" }
+aa-devtool-codex = { path = "../aa-devtool-codex" }
+aa-devtool-copilot = { path = "../aa-devtool-copilot" }
+aa-devtool-windsurf = { path = "../aa-devtool-windsurf" }
 futures = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-dirs = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+# AAASM-5277: `tests/legacy_shim_sample.rs` drives the *unmodified* public
+# sample adapter through the new lifecycle contract via `LegacyAdapterShim`,
+# which is what makes ADR 0030 §7's "nothing breaks on day one" checkable. The
+# test cannot live in the sample crate — the sample staying untouched is the
+# property under test. Dev-only and `publish = false` on both sides, so this
+# adds no crates.io surface.
+aa-devtool-sample-myeditor = { path = "../examples/aa-devtool-sample-myeditor" }
 
 [lints]
 workspace = true

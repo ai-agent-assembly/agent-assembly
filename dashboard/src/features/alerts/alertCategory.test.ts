@@ -31,7 +31,7 @@ function alert(id: string, ruleId: string): Alert {
     id,
     ruleId,
     ruleName: ruleId,
-    severity: 'HIGH',
+    severity: 'WARNING',
     status: 'FIRING',
     agentId: null,
     firstFiredAt: '2026-05-14T09:00:00Z',

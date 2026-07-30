@@ -67,10 +67,10 @@ export type RuleFormValues = z.infer<typeof ruleFormSchema>
 
 // Compile-time sanity: the literal arrays the schema relies on must match
 // the unions exported from `types.ts`.
-import type { AlertMetric, AlertOperator, Severity, EvaluationWindowSeconds } from './types'
+import type { AlertMetric, AlertOperator, RuleSeverity, EvaluationWindowSeconds } from './types'
 // `satisfies` performs the union/literal-array conformance check at compile
 // time without binding a runtime value, so no `void`-discard is needed.
 METRICS satisfies readonly AlertMetric[]
 OPERATORS satisfies readonly AlertOperator[]
-SEVERITIES satisfies readonly Severity[]
+SEVERITIES satisfies readonly RuleSeverity[]
 EVAL_WINDOWS satisfies readonly EvaluationWindowSeconds[]

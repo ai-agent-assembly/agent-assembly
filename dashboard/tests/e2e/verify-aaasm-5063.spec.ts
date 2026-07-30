@@ -158,7 +158,7 @@ const ALERTS = {
     {
       id: 'al-2',
       ruleName: 'pg.users narrowed',
-      severity: 'HIGH',
+      severity: 'WARNING',
       status: 'FIRING',
       agentId: 'support-triage',
       firstFiredAt: '2026-06-01T14:01:54Z',
@@ -166,7 +166,7 @@ const ALERTS = {
     {
       id: 'al-3',
       ruleName: 'gmail/send scrubbed',
-      severity: 'MEDIUM',
+      severity: 'INFO',
       status: 'FIRING',
       agentId: 'sales-outreach',
       firstFiredAt: '2026-06-01T14:01:41Z',

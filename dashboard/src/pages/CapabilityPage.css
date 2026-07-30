@@ -132,6 +132,12 @@
   flex: 1;
 }
 
+/* AAASM-5106 / ADR 0024 — matrix-level "cascade not loaded" banner, sat above
+   the grid so the operator sees it before reading any cell. */
+.capability-cascade-banner {
+  margin: 12px 0;
+}
+
 .capability-verbs {
   margin-left: auto;
   display: flex;

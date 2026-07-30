@@ -1,7 +1,7 @@
 # ADR 0021: Topology Enforcement-Mode Mutation — Authorization, Blast Radius & Reversibility
 
-**Status**: Proposed — **requires architecture + security sign-off before any implementation**
-**Date**: 2026-07
+**Status**: Accepted — *direction only* (2026-07-30, Option B). The security model is ratified: tightening enforcement may use tenant-scoped Write; loosening/disabling requires Admin; preview must precede apply; shadow mode carries a mandatory expiry; every change records actor + tenant + reason + before/after + time; and shadow mode must NEVER disable authentication, tenant isolation, sandbox boundaries, or any non-policy safety control. **Implementation remains gated** on three prerequisites, tracked separately (AAASM-5287 actor-aware mutation+audit, AAASM-5288 durable enforcement_mode persistence, AAASM-5289 Topology reads the canonical enforcement field not `metadata.mode`). The shadow-mode / cascade-apply feature itself is NOT to be implemented until those three land.
+**Date**: 2026-07 (direction ratified 2026-07-30)
 **Ticket**: [AAASM-5097](https://lightning-dust-mite.atlassian.net/browse/AAASM-5097) (Epic [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082))
 
 This ADR proposes options for the Topology node-panel write endpoints — cascade-apply

@@ -55,7 +55,7 @@ describe('applyFire', () => {
   })
 
   it('replaces an existing alert with the same id rather than duplicating', () => {
-    const client = seed(page([{ ...FIRING, severity: 'LOW' }], 7))
+    const client = seed(page([{ ...FIRING, severity: 'INFO' }], 7))
     applyFire(client, FIRING)
     expect(cached(client)?.items).toHaveLength(1)
     expect(cached(client)?.items[0].severity).toBe('CRITICAL')

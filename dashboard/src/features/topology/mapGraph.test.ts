@@ -54,9 +54,14 @@ describe('mapTopologyGraph', () => {
     expect(mapTopologyGraph(graph).nodes[0].team).toBe(UNCLAIMED_TEAM)
   })
 
-  it('defaults owner / policyCount / budget to neutral placeholders when absent', () => {
+  it('maps an absent owner / policyCount / budget to their honest placeholders', () => {
+    // AAASM-5106 / ADR 0024 — an absent `policy_count` maps to `null` ("unknown"),
+    // not `0`: the backend now emits `null` when no cascade is loaded, and a `0`
+    // would read as "no policies apply" while the primary slot is enforcing.
+    // owner falls back to '' and budget spend to 0 (both real neutral defaults);
+    // budgetLimit stays null (unconfigured).
     const { nodes } = mapTopologyGraph({ nodes: [node()], edges: [] })
-    expect(nodes[0]).toMatchObject({ owner: '', policyCount: 0, budgetSpend: 0, budgetLimit: null })
+    expect(nodes[0]).toMatchObject({ owner: '', policyCount: null, budgetSpend: 0, budgetLimit: null })
   })
 
   it('carries live owner / policy_count / budget through to the view model (AAASM-5045)', () => {
@@ -143,6 +148,7 @@ describe('mapTopologyGraph', () => {
             allow: ['file_read'],
             deny: ['terminal_exec'],
             allow_restricted: true,
+            cascade_loaded: true,
           },
         }),
       ],
@@ -156,6 +162,7 @@ describe('mapTopologyGraph', () => {
       allow: ['file_read'],
       deny: ['terminal_exec'],
       allowRestricted: true,
+      cascadeLoaded: true,
     })
   })
 

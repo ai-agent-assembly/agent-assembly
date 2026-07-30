@@ -171,24 +171,43 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
     } else {
         std::fs::read_to_string(policy_path).unwrap_or_default()
     };
-    let (daily_limit, monthly_limit, window) = if let Ok(output) = crate::policy::PolicyValidator::from_yaml(&yaml) {
-        let daily = output
-            .document
-            .budget
-            .as_ref()
-            .and_then(|bp| bp.daily_limit_usd)
-            .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
-        let monthly = output
-            .document
-            .budget
-            .as_ref()
-            .and_then(|bp| bp.monthly_limit_usd)
-            .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
-        let window = output.document.budget.as_ref().and_then(|bp| bp.window);
-        (daily, monthly, window)
-    } else {
-        (None, None, None)
-    };
+    #[allow(clippy::type_complexity)]
+    let (daily_limit, monthly_limit, team_daily_limit, team_monthly_limit, window) =
+        if let Ok(output) = crate::policy::PolicyValidator::from_yaml(&yaml) {
+            let daily = output
+                .document
+                .budget
+                .as_ref()
+                .and_then(|bp| bp.daily_limit_usd)
+                .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+            let monthly = output
+                .document
+                .budget
+                .as_ref()
+                .and_then(|bp| bp.monthly_limit_usd)
+                .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+            // AAASM-5087 — Lift the team-tier limits so the shipped `serve`
+            // path enforces the same team caps the cascade loaders derive.
+            // Without this the team limit stays test-only dead code, since
+            // `with_state_and_alert_sender` hardcodes it to `None` and
+            // `load_*_with_budget` adopts this tracker as-is.
+            let team_daily = output
+                .document
+                .budget
+                .as_ref()
+                .and_then(|bp| bp.team_daily_limit_usd)
+                .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+            let team_monthly = output
+                .document
+                .budget
+                .as_ref()
+                .and_then(|bp| bp.team_monthly_limit_usd)
+                .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+            let window = output.document.budget.as_ref().and_then(|bp| bp.window);
+            (daily, monthly, team_daily, team_monthly, window)
+        } else {
+            (None, None, None, None, None)
+        };
 
     let mut tracker = BudgetTracker::with_state_and_alert_sender(
         // AAASM-4793: honours AA_PRICING_FILE when the operator has set it,
@@ -199,6 +218,12 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
         persisted,
         budget_alert_tx,
     );
+    if let Some(limit) = team_daily_limit {
+        tracker = tracker.with_team_daily_limit(limit);
+    }
+    if let Some(limit) = team_monthly_limit {
+        tracker = tracker.with_team_monthly_limit(limit);
+    }
     if let Some(d) = window {
         tracker = tracker.with_window(crate::budget::BudgetWindow::Duration(d));
         tracing::info!(

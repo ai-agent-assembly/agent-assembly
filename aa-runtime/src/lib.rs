@@ -9,6 +9,7 @@ pub mod approval_sink;
 pub mod audit_publisher;
 pub mod config;
 pub mod correlation;
+pub mod devint;
 #[cfg(target_os = "linux")]
 pub mod ebpf_bridge;
 pub mod ebpf_control;

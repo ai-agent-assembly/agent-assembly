@@ -646,6 +646,12 @@ pub struct TeamPoliciesResponse {
     /// `scope_index` empty, and nothing else in aa-api ever calls
     /// `load_cascade_from_dir` (AAASM-5106). Emitting `[]` there would render as
     /// "No policy is in force for this team" while a policy *is* being enforced.
+    ///
+    /// The handler reads that state from the engine's authoritative
+    /// [`cascade_loaded`](aa_gateway::engine::PolicyEngine::cascade_loaded) signal
+    /// (`false` ⇒ `null`), rather than inferring it from an empty result — an
+    /// empty result over a team with no visible agents is otherwise
+    /// indistinguishable from the genuinely-empty case and used to leak `[]`.
     //
     // Required-but-nullable, not optional: the key is always on the wire, so a
     // client reads an explicit `null` it has to handle rather than a missing
@@ -700,11 +706,27 @@ pub async fn list_team_policies(
     // AAASM-5107 — per-document 24h decision counts, read once per request.
     let hits = crate::routes::policy_hits::PolicyHitCounts::from_window(&state.audit_reader).await;
 
-    // Absent, not empty, when the team has agents whose cascade resolved nothing:
-    // those agents fall back to the primary policy slot, which this projection
-    // cannot enumerate (AAASM-5106). `[]` is reserved for the one case where
-    // "nothing is in force" is actually true — no visible agent to govern.
-    let policies = if by_key.is_empty() && visible_members > 0 {
+    // Absent, not empty, whenever the engine carries no cascade at all: every
+    // shipped aa-api deployment loads the policy through `load_from_file`, which
+    // populates the primary slot and leaves `scope_index` empty (AAASM-5106), so
+    // every agent's cascade resolves nothing and each falls back to the primary
+    // policy slot this projection cannot enumerate. The authoritative signal for
+    // that is the engine's own `cascade_loaded()`, not the `by_key`/member
+    // heuristic below: the heuristic mistakes an unloaded cascade for "nothing is
+    // in force" whenever the team has zero visible members, emitting `[]` — which
+    // the card renders as "No policy is in force for this team" while a policy is
+    // in fact being enforced from the primary slot. See ADR 0024.
+    //
+    // Only once a cascade *is* loaded does `[]` become a claim the data can
+    // support: it is then reserved for the one case where "nothing is in force"
+    // is genuinely true — a loaded cascade plus no visible agent to govern.
+    // Absent (never `Some([])`) in two distinct cases that share one honest
+    // answer — "this view cannot assert nothing is in force":
+    //   1. the engine carries no cascade at all (AAASM-5106) — a `[]` here would
+    //      falsely read as "No policy in force" while the primary slot enforces;
+    //   2. a loaded cascade resolved nothing for agents that fell back to the
+    //      primary slot this projection cannot enumerate.
+    let policies = if !state.policy_engine.cascade_loaded() || (by_key.is_empty() && visible_members > 0) {
         None
     } else {
         Some(
@@ -1553,6 +1575,31 @@ mod tests {
             serde_json::Value::Null,
             "an unresolvable mapping must be null — `[]` would assert that nothing governs \
              this team while the primary slot is enforcing: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_policies_are_unknown_not_empty_when_no_cascade_and_no_members() {
+        // AAASM-5106 gap: an unloaded cascade AND zero visible members. The old
+        // `by_key.is_empty() && visible_members > 0` heuristic mistook this for
+        // "nothing governs this team" and emitted `[]`, which the card renders as
+        // "No policy is in force for this team" — false while the primary slot is
+        // enforcing. With no cascade loaded the honest answer is `null`, whatever
+        // the member count: the engine's `cascade_loaded()` is `false`, so nothing
+        // this projection could enumerate is in force *through the cascade*, and
+        // it must not claim to know that nothing is in force at all.
+        let state = state_with(vec![]);
+        assert!(
+            !state.policy_engine.cascade_loaded(),
+            "fixture precondition: no cascade is loaded"
+        );
+
+        let body = team_policies_json(&state, admin(), "team-alpha").await;
+        assert_eq!(
+            body["policies"],
+            serde_json::Value::Null,
+            "an unloaded cascade must be null even with zero members — `[]` here is the \
+             leak the authoritative signal closes: {body}"
         );
     }
 

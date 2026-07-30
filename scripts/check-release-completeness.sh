@@ -44,7 +44,13 @@ pkg_of() {
 #   generate_golden           conformance dev tool: regenerates golden vectors
 #   aa-ebpf-loaderd           eBPF loader daemon: not part of the release
 #                             artifact set (tracked separately if it ever ships)
-UNRELEASED_BINARIES="generate_openapi generate_policy_rbac_doc generate_golden aa-ebpf-loaderd"
+#   aa-devint-harness         DI-API contract-test fixture for the TypeScript
+#                             reference client: stands up a real DevIntServer
+#                             behind a stand-in lifecycle so the client's
+#                             security tests run against the real boundary
+#                             rather than a mock. Test-only, never shipped
+#                             (AAASM-5282).
+UNRELEASED_BINARIES="generate_openapi generate_policy_rbac_doc generate_golden aa-ebpf-loaderd aa-devint-harness"
 
 fail=0
 err() { echo "::error::$*" >&2; fail=1; }

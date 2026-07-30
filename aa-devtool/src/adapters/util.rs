@@ -1,4 +1,10 @@
 //! Shared utilities for dev tool detection adapters.
+//!
+//! No in-tree adapter uses these any more: each `aa-devtool-*` crate owns its
+//! own detection (AAASM-5274 removed the duplicate adapters that lived here).
+//! They are kept as the generic PATH/version helpers for out-of-tree adapters
+//! and for future registry-level probing, and are deliberately dependency-free
+//! (`std` only) so linking them costs nothing.
 
 use std::path::PathBuf;
 

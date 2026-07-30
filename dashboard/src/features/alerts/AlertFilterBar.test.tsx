@@ -24,12 +24,12 @@ describe('AlertFilterBar', () => {
   it('removes an already-selected severity when its chip is clicked again', async () => {
     const user = userEvent.setup()
     const onChange = vi.fn()
-    const value: AlertFilters = { ...DEFAULT_ALERT_FILTERS, severities: ['CRITICAL', 'HIGH'] }
+    const value: AlertFilters = { ...DEFAULT_ALERT_FILTERS, severities: ['CRITICAL', 'WARNING'] }
     render(<AlertFilterBar value={value} onChange={onChange} />)
     const chip = screen.getByTestId('alerts-filter-severity-CRITICAL')
     expect(chip).toHaveAttribute('aria-pressed', 'true')
     await user.click(chip)
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ severities: ['HIGH'] }))
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ severities: ['WARNING'] }))
   })
 
   it('toggles a status chip', async () => {

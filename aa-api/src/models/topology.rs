@@ -222,7 +222,8 @@ pub struct PolicyChainTier {
     "chain": [{ "tier": "global", "scope": "global", "policies": ["baseline"] }],
     "allow": ["file_read"],
     "deny": ["terminal_exec"],
-    "allow_restricted": true
+    "allow_restricted": true,
+    "cascade_loaded": true
 }))]
 pub struct NodeEffectivePermissions {
     /// Cascade tiers that apply to this agent, broadest → narrowest.
@@ -236,6 +237,24 @@ pub struct NodeEffectivePermissions {
     /// Whether an allow-list restriction is in force — anything absent from
     /// `allow` is denied, even when `allow` is empty.
     pub allow_restricted: bool,
+    /// Whether the projecting engine actually carries a policy cascade
+    /// (`PolicyEngine::cascade_loaded`). AAASM-5106 / ADR 0024: with no cascade
+    /// loaded — every shipped aa-api deployment — the walk resolves nothing, so
+    /// every tier's `policies` is empty and `allow` / `deny` are empty. That is
+    /// **not** the real permission set: enforcement falls back to the primary
+    /// policy slot this projection cannot enumerate. `false` here is the
+    /// loaded/unavailable signal the dashboard renders as "policy inheritance
+    /// unknown — cascade not loaded", so an empty chain never reads as a real
+    /// "no policies apply". Distinct from a *loaded* cascade whose walk carries no
+    /// document at a tier, which is real state ("no team policy"). This changes
+    /// no enforcement; it only annotates the projection's confidence in its own
+    /// output.
+    ///
+    /// Required-but-always-present, matching `AgentNode`'s null discipline for
+    /// unmeasured fields: the key is always on the wire so a client cannot read
+    /// an empty chain as authoritative by omission.
+    #[schema(required = true)]
+    pub cascade_loaded: bool,
 }
 
 /// Minimal agent representation used in list and tree responses.

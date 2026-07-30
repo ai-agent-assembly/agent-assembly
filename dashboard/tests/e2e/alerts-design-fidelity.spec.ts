@@ -46,11 +46,13 @@ const EVIDENCE_DIR = resolve(process.cwd(), 'docs/verification/aaasm-1395')
 //    getComputedStyle returns colors in that form. ──────────────────────────
 
 const TOKEN_RGB = {
-  // Severity scale (alert-specific, see styles.css "alerts only" section).
+  // Alert severity scale (AAASM-5193): alerts emit exactly CRITICAL/WARNING/INFO.
+  // The HIGH/MEDIUM/LOW tokens still exist for the 4-level *rule* ladder, but an
+  // alert can never carry them, so this alert-surface test covers the three an
+  // alert can actually render.
   severityCritical: 'rgb(220, 38, 38)', // #dc2626 — --severity-critical
-  severityHigh: 'rgb(249, 115, 22)',    // #f97316 — --severity-high
-  severityMedium: 'rgb(234, 179, 8)',   // #eab308 — --severity-medium
-  severityLow: 'rgb(96, 165, 250)',     // #60a5fa — --severity-low
+  severityWarning: 'rgb(249, 115, 22)', // #f97316 — --severity-warning
+  severityInfo: 'rgb(96, 165, 250)',    // #60a5fa — --severity-info
   // Status pair tokens.
   statusDangerBg: 'rgb(254, 226, 226)',         // #fee2e2 — FIRING bg
   statusDangerTextStrong: 'rgb(153, 27, 27)',   // #991b1b — FIRING fg
@@ -103,10 +105,10 @@ const ALERTS = [
     destinationIds: ['dst-slack-ops'],
   },
   {
-    id: 'alert-high',
+    id: 'alert-warning',
     ruleId: 'rule-aaasm1395',
     ruleName: 'Budget guardrail',
-    severity: 'HIGH',
+    severity: 'WARNING',
     status: 'FIRING',
     agentId: 'aa-002',
     firstFiredAt: '2026-05-14T08:55:00Z',
@@ -114,10 +116,10 @@ const ALERTS = [
     destinationIds: ['dst-slack-ops'],
   },
   {
-    id: 'alert-medium',
+    id: 'alert-info',
     ruleId: 'rule-aaasm1395',
     ruleName: 'Budget guardrail',
-    severity: 'MEDIUM',
+    severity: 'INFO',
     status: 'SUPPRESSED',
     agentId: 'aa-003',
     firstFiredAt: '2026-05-14T08:50:00Z',
@@ -125,14 +127,15 @@ const ALERTS = [
     destinationIds: ['dst-slack-ops'],
   },
   {
-    id: 'alert-low',
+    // A RESOLVED row for StatusBadge coverage; its severity is immaterial here.
+    id: 'alert-resolved',
     ruleId: 'rule-aaasm1395',
     ruleName: 'Budget guardrail',
-    severity: 'LOW',
-    status: 'FIRING',
+    severity: 'WARNING',
+    status: 'RESOLVED',
     agentId: 'aa-004',
     firstFiredAt: '2026-05-14T08:45:00Z',
-    resolvedAt: null,
+    resolvedAt: '2026-05-14T08:50:00Z',
     destinationIds: ['dst-slack-ops'],
   },
 ]
@@ -204,7 +207,7 @@ test.describe('AAASM-1395 — Alerts UI design fidelity', () => {
     await page.screenshot({ path: `${EVIDENCE_DIR}/01-alerts-shell.png`, fullPage: true })
   })
 
-  test('SeverityBadge backgrounds resolve to --severity-* tokens for all 4 buckets', async ({ page }) => {
+  test('SeverityBadge backgrounds resolve to --severity-* tokens for the alert buckets', async ({ page }) => {
     await gotoAlerts(page)
 
     const critical = await page
@@ -213,23 +216,17 @@ test.describe('AAASM-1395 — Alerts UI design fidelity', () => {
       .evaluate(el => getComputedStyle(el).backgroundColor)
     expect(critical).toBe(TOKEN_RGB.severityCritical)
 
-    const high = await page
-      .locator('[data-testid="severity-badge-HIGH"]')
+    const warning = await page
+      .locator('[data-testid="severity-badge-WARNING"]')
       .first()
       .evaluate(el => getComputedStyle(el).backgroundColor)
-    expect(high).toBe(TOKEN_RGB.severityHigh)
+    expect(warning).toBe(TOKEN_RGB.severityWarning)
 
-    const medium = await page
-      .locator('[data-testid="severity-badge-MEDIUM"]')
+    const info = await page
+      .locator('[data-testid="severity-badge-INFO"]')
       .first()
       .evaluate(el => getComputedStyle(el).backgroundColor)
-    expect(medium).toBe(TOKEN_RGB.severityMedium)
-
-    const low = await page
-      .locator('[data-testid="severity-badge-LOW"]')
-      .first()
-      .evaluate(el => getComputedStyle(el).backgroundColor)
-    expect(low).toBe(TOKEN_RGB.severityLow)
+    expect(info).toBe(TOKEN_RGB.severityInfo)
 
     await page.screenshot({ path: `${EVIDENCE_DIR}/02-severity-badge-tokens.png`, fullPage: true })
   })

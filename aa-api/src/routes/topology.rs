@@ -445,6 +445,7 @@ fn project_effective_permissions(
     cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
     agent_id: &AgentId,
     lineage: &Lineage,
+    cascade_loaded: bool,
 ) -> NodeEffectivePermissions {
     use aa_core::Capability as C;
 
@@ -477,6 +478,12 @@ fn project_effective_permissions(
         allow,
         deny: deny.into_iter().collect(),
         allow_restricted: merged.allow_is_restricted(),
+        // AAASM-5106 / ADR 0024 — annotate whether this projection saw a real
+        // cascade. When `false`, the empty chain / allow / deny above are the
+        // fall-through of an unloaded cascade, not a real "no policies apply":
+        // the dashboard renders "policy inheritance unknown" rather than a
+        // confident empty chain.
+        cascade_loaded,
     }
 }
 
@@ -506,6 +513,15 @@ fn project_graph_nodes(records: &[AgentRecord], state: &AppState, violations: &A
     // "no limit" placeholder rather than a misleading 0).
     let global_daily_limit = state.budget_tracker.daily_limit_usd();
 
+    // AAASM-5106 / ADR 0024 — whether the engine carries a cascade at all. When it
+    // does not (every shipped aa-api deployment), the per-agent cascade walk below
+    // resolves nothing, so `policy_count` would be a misleading `0` and the
+    // permission chain an empty-but-confident answer. `policy_count` is left
+    // `None` in that case — the same "null, not a misleading zero" discipline the
+    // list/tree/team endpoints already apply to it — and the chain carries
+    // `cascade_loaded=false` so the dashboard renders "unknown", not "no policies".
+    let cascade_loaded = state.policy_engine.cascade_loaded();
+
     let mut nodes: Vec<AgentNode> = records
         .iter()
         .map(|record| {
@@ -517,8 +533,14 @@ fn project_graph_nodes(records: &[AgentRecord], state: &AppState, violations: &A
             let agent_id = AgentId::from_bytes(record.agent_id);
             let lineage = state.agent_registry.lineage(&record.agent_id).unwrap_or_default();
             let cascade = state.policy_engine.collect_cascade_with_lineage(&agent_id, &lineage);
-            node.policy_count = Some(cascade.len() as u32);
-            node.effective_permissions = Some(project_effective_permissions(record, &cascade, &agent_id, &lineage));
+            node.policy_count = cascade_loaded.then_some(cascade.len() as u32);
+            node.effective_permissions = Some(project_effective_permissions(
+                record,
+                &cascade,
+                &agent_id,
+                &lineage,
+                cascade_loaded,
+            ));
             let limit_usd = state
                 .budget_tracker
                 .agent_daily_limit_usd(&agent_id)
@@ -1575,6 +1597,10 @@ mod graph_tests {
             Some(1),
             "policy_count reads off the same lineage-resolved cascade"
         );
+        assert!(
+            perms.cascade_loaded,
+            "a loaded cascade must report cascade_loaded=true so the chain reads as real"
+        );
     }
 
     /// The chain lists only the tiers the agent actually has. An agent with no
@@ -1592,6 +1618,32 @@ mod graph_tests {
         assert!(perms.allow.is_empty());
         assert!(perms.deny.is_empty());
         assert!(!perms.allow_restricted);
+    }
+
+    /// AAASM-5106 / ADR 0024 — with no cascade loaded (every shipped deployment),
+    /// the empty chain and zero policy count are the fall-through of an unloaded
+    /// cascade, not a real "no policies apply". `policy_count` must be `null`
+    /// (never a misleading `0`) and `cascade_loaded` must be `false`, so the panel
+    /// renders "policy inheritance unknown" rather than a confident empty chain.
+    #[tokio::test]
+    async fn an_unloaded_cascade_reports_unknown_not_zero_policies() {
+        let state = state_with(vec![record(0x01, "a", Some("team-alpha"))]);
+        assert!(
+            !state.policy_engine.cascade_loaded(),
+            "fixture precondition: no cascade is loaded"
+        );
+
+        let graph = graph_for(admin(), &state).await;
+        let node = &graph.nodes[0];
+        assert_eq!(
+            node.policy_count, None,
+            "an unloaded cascade must leave policy_count null, not a fabricated Some(0)"
+        );
+        let perms = node.effective_permissions.as_ref().expect("chain present");
+        assert!(
+            !perms.cascade_loaded,
+            "an unloaded cascade must report cascade_loaded=false so the empty chain reads as unknown"
+        );
     }
 
     /// An empty merged allow-list carrying a restriction is deny-all, not

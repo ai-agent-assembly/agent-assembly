@@ -383,8 +383,8 @@ describe('OverviewPage', () => {
       agents: [makeAgent()],
       alerts: [
         makeAlert({ id: 'c', severity: 'CRITICAL', ruleName: 'shell.exec', agentId: 'bot-x' }),
-        makeAlert({ id: 'h', severity: 'HIGH', ruleName: 'net.egress', agentId: null }),
-        makeAlert({ id: 'm', severity: 'MEDIUM', ruleName: 'budget breach', agentId: 'bot-y' }),
+        makeAlert({ id: 'h', severity: 'WARNING', ruleName: 'net.egress', agentId: null }),
+        makeAlert({ id: 'm', severity: 'INFO', ruleName: 'budget breach', agentId: 'bot-y' }),
       ],
     })
     renderPage()
@@ -393,8 +393,8 @@ describe('OverviewPage', () => {
     // The panel says what it is, and reports the alerts' real severities.
     expect(recent).toHaveTextContent('recent alerts')
     expect(recent).toHaveTextContent('critical')
-    expect(recent).toHaveTextContent('high')
-    expect(recent).toHaveTextContent('medium')
+    expect(recent).toHaveTextContent('warning')
+    expect(recent).toHaveTextContent('info')
 
     // No severity is dressed up as an enforcement decision that never occurred.
     expect(recent).not.toHaveTextContent('deny')
