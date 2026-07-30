@@ -202,27 +202,46 @@ does **not** take a `tenant_name`:
   external IdP; the API-key path is untouched for machines; RBAC is unchanged because
   the JWT shape is shared.
 - **Negative / accepted:** native login requires Postgres; in-memory deployments stay
-  API-key-only (surfaced honestly, not hidden). Password reset needs an email-dispatch
-  mechanism OSS does not have yet (§Q4) — it may be deferred out of v1.
+  API-key-only (surfaced honestly, not hidden). Password reset **is in v1** (§Q4), which
+  brings a new pluggable SMTP mailer into OSS — an accepted piece of net-new
+  infrastructure, tracked as its own implementation ticket.
 - **Neutral:** this is the OSS counterpart of cloud's account system; the two share a
   wire contract shape but not code (cloud is a separate repo). A future shared package
   (Epic AAASM-1750) could unify them, but that is explicitly out of scope here.
 
-## Open questions for sign-off
+<a id="decision-2026-07-30"></a>
+## Decision (2026-07-30, product + security)
 
-- **Q1 — role↔scope mapping.** How do `owner/admin/developer/viewer` map onto the
-  existing `Scope` set the JWT carries? Full four-role ladder or a reduced OSS set?
-- **Q2 — argon2id params.** Confirm `m/t/p` against the deployment's latency budget.
-- **Q3 — open-registration flag.** Is an opt-in open-registration mode offered in v1, or
-  strictly first-user-then-invite? Confirm the env flag name if offered.
-- **Q4 — password reset in v1?** It needs email dispatch (SMTP config) OSS lacks. Include
-  (with a pluggable mailer) or defer to a follow-up?
-- **Q5 — auth-methods capability signal.** Confirm a public `GET /api/v1/auth/methods`
-  (advertising `["api_key"]` or `["api_key","password"]`) as the way the frontend decides
-  what to render, so the login page never offers a password form the backend can't serve.
+The five open questions are resolved. Implementation of Epic AAASM-5301 is authorised
+against the answers below.
 
-Until Q1–Q2 (at minimum) are answered, **no implementation ticket should be opened.**
-Merging this ADR authorises nothing.
+- **Q1 — role↔scope mapping: full mapping.** All four roles `owner / admin / developer /
+  viewer` map onto the existing `Scope` set the JWT carries — not a reduced OSS subset.
+  The role→scope table is fixed as part of the user-model implementation ticket so the
+  account-minted JWT is scope-compatible with the API-key-minted one and every existing
+  RBAC gate keeps working unchanged.
+- **Q2 — argon2id params: OWASP floor.** `argon2id`, `m = 19456 (19 MiB)`, `t = 2`,
+  `p = 1`. The full encoded hash (algorithm/version/params/salt) is stored so the
+  parameters can be raised later without a schema change; the implementation ticket
+  confirms the choice against the deployment latency budget and may raise (never lower)
+  from this floor.
+- **Q3 — open registration: off by default, opt-in flag.** Default is strictly
+  first-user-then-invite (D3). A deployment may opt into open self-registration via an
+  environment flag (proposed `AA_AUTH_OPEN_REGISTRATION`, default `false`); the flag name
+  is finalised in the endpoint implementation ticket.
+- **Q4 — password reset: in v1.** Included. This requires OSS to gain a **pluggable SMTP
+  mailer** (configurable SMTP settings + a send abstraction) — net-new infrastructure OSS
+  does not have today — plus the `/auth/password/reset` + `/confirm` endpoints and a
+  single-use, expiring, hashed reset token. The mailer is its own implementation ticket
+  under the Epic and blocks the reset endpoints. Reset responses stay enumeration-safe
+  (`202` regardless of whether the email exists).
+- **Q5 — auth-methods capability signal: yes.** A public `GET /api/v1/auth/methods`
+  advertises `["api_key"]` or `["api_key","password"]` depending on whether the deployment
+  is Postgres-backed. The login page renders from this signal, so it never offers a
+  password form the backend cannot serve (D2 honest degradation).
+
+**Authorised for implementation** under Epic AAASM-5301. Merging this ADR ratifies the
+design; the code lands in the follow-up BE/FE/mailer/test tickets.
 
 ## What this unblocks
 
