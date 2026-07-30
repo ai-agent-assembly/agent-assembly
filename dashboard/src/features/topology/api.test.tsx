@@ -28,6 +28,7 @@ const API_GRAPH: components['schemas']['TopologyGraphResponse'] = {
         allow: [],
         deny: ['terminal_exec'],
         allow_restricted: false,
+        cascade_loaded: true,
       },
     },
     { id: 'agent-2', name: 'data-analyst', depth: 1, status: 'suspended', team_id: 'analytics', mode: 'enforce', flagged: false, trust: null },

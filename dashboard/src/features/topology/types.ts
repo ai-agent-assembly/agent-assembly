@@ -56,6 +56,15 @@ export interface NodeEffectivePermissions {
   readonly allow: readonly string[]
   readonly deny: readonly string[]
   readonly allowRestricted: boolean
+  /**
+   * Whether the projecting engine actually carried a policy cascade
+   * (AAASM-5106 / ADR 0024). `false` — every shipped deployment — means the
+   * empty `chain` / `allow` / `deny` above are the fall-through of an unloaded
+   * cascade, not a real "no policies apply": enforcement falls back to a primary
+   * policy slot this projection cannot name. The panel renders "policy
+   * inheritance unknown" in that case rather than a confident empty chain.
+   */
+  readonly cascadeLoaded: boolean
 }
 
 /**
@@ -84,17 +93,17 @@ export interface TopologyNode {
   /** Operator / engineer who owns the agent. Surfaced in the node detail panel (AAASM-1337). */
   readonly owner: string
   /**
-   * Number of policies whose scope cascade applies to this agent.
+   * Number of policies whose scope cascade applies to this agent, or `null`
+   * when the count is not a measurement.
    *
-   * Deliberately **not** nullable, even though `AgentNode.policy_count` is
-   * nullable on the wire. That nullability exists for the list / tree / team
-   * projections, which skip the policy-engine lookup; this view model is only
-   * ever built from `GET /api/v1/topology`, and that endpoint's
-   * `project_graph_nodes` assigns it unconditionally
-   * (`aa-api/src/routes/topology.rs:427`). A count that is always resolved is a
-   * measurement, so it stays a plain number.
+   * Nullable because `project_graph_nodes` now leaves `policy_count` null when
+   * the engine carries no cascade at all (AAASM-5106 / ADR 0024): every shipped
+   * deployment loads a single primary policy and no cascade, so the walk
+   * resolves nothing and a `0` here would read as a real "no policies apply"
+   * while the primary slot is enforcing. `null` renders as "unknown", never a
+   * misleading `0`. When a cascade *is* loaded the count is a real measurement.
    */
-  readonly policyCount: number
+  readonly policyCount: number | null
   /**
    * Spend recorded against this agent for the current day, in USD.
    *
