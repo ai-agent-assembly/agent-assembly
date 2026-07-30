@@ -637,7 +637,138 @@ because "no" without a reason gets re-litigated.
 
 ## 11. Acceptance-test scenarios for the `AAASM-5276` Spike
 
-<!-- populated in a later commit -->
+These are the scenarios the Spike must be able to execute and report on. They are written in
+Given/When/Then so they can be lifted directly into the Spike harness and, later, into the
+conformance suite (`AAASM-5283`).
+
+Every scenario shares one design rule, and it is the reason the list exists at all:
+
+> **A scenario passes on observed behaviour, never on the presence of configuration.** Any
+> assertion satisfiable by reading a config file is not an acceptance test — it is a read-back
+> check, and §7 forbids raising a protection level on one.
+
+**Environment for all scenarios:** macOS; a supported Claude Code release; a temporary repository;
+a local AASM core; a mock model provider endpoint that records every request body it receives; and
+a synthetic secret whose value matches the deterministic scanner's pattern set and appears nowhere
+else on the machine.
+
+### 11.1 Idempotent install
+
+> **Given** a machine with Claude Code installed and no AASM integration,
+> **When** `install` is run and then run a second time with no intervening change,
+> **Then** the first run produces an integration plan, applies it and writes a receipt; the second
+> run reports no changes required, exits successfully, applies no additional mutation, and leaves
+> the managed configuration and receipt byte-identical to the first run's result.
+
+### 11.2 Unrelated user settings preserved
+
+> **Given** a Claude Code settings file containing user-authored keys outside the AASM-managed set,
+> and a byte-exact snapshot taken beforehand,
+> **When** install, verify, repair and remove are each executed in sequence,
+> **Then** every unmanaged key retains its original value and ordering-independent content at every
+> step, and after removal the file (or its absence) matches the pre-install snapshot exactly.
+
+### 11.3 Synthetic secret never reaches the model provider
+
+> **Given** a temporary repository containing the synthetic secret, an integration installed under
+> the `Recommended` profile, and model traffic routed to the mock provider,
+> **When** Claude Code is launched through the managed path and the secret-bearing content is
+> caused to enter a model-bound context,
+> **Then** the mock provider records at least one request (proving the path was actually exercised)
+> and **no** recorded request body contains the raw synthetic value in any encoding the harness
+> checks for.
+
+> **Note:** the "at least one request" clause is load-bearing. A test where no traffic reached the
+> provider would also satisfy "no raw secret received" while proving nothing.
+
+### 11.4 Agent still receives a usable placeholder
+
+> **Given** the conditions of 11.3,
+> **When** the redacted request is delivered,
+> **Then** the payload contains a semantics-preserving placeholder in place of the secret (the
+> `[REDACTED:<kind>]` form), the surrounding content is otherwise intact, and the Claude Code
+> session continues without error — demonstrating that protection does not break the tool.
+
+### 11.5 Raw secret absent from audit, logs, traces and diagnostics
+
+> **Given** a completed run of 11.3,
+> **When** the AASM audit events, application logs, traces, the installation receipt, the status
+> and verify output, and any generated diagnostic bundle are collected,
+> **Then** none of them contains the raw synthetic value, while the redaction *finding metadata*
+> (kind and count) is present — proving the secret was detected rather than merely never seen.
+
+### 11.6 Drift detected and repaired in at least two mechanisms
+
+> **Given** a verified installation,
+> **When** two distinct managed mechanisms are perturbed independently — for example an
+> AASM-managed settings key is edited by hand, and the proxy/gateway endpoint the integration
+> injects is changed,
+> **Then** `status` reports drift for **both**, naming expected versus actual per mechanism; the
+> reported protection level drops before repair is attempted; `repair` restores only AASM-owned
+> values; a subsequent `verify` re-exercises protection (not just read-back) and restores the
+> level; and any user-authored key touched during the perturbation is left unmodified by repair.
+
+### 11.7 Removal restores pre-install state
+
+> **Given** a byte-exact snapshot of all affected configuration taken before install,
+> **When** the full install → verify → use → remove cycle completes,
+> **Then** every managed key is restored to its pre-install value — or deleted where none existed —
+> no AASM-owned artifact remains, the post-removal state matches the snapshot, and Claude Code
+> launches and operates normally afterwards.
+
+### 11.8 Protection-level reporting distinguishes the three levels
+
+> **Given** three configurations — (a) managed settings applied but the tool never launched through
+> the managed path, (b) a fully verified installation with protection exercised per 11.3, and
+> (c) any installation on macOS,
+> **When** `status` is invoked in each,
+> **Then** (a) reports at most `Integrated` and explicitly does **not** claim sensitive-data
+> protection; (b) reports `Gateway Protected` and names the mechanisms confirmed by exercise as
+> distinct from those confirmed by read-back; and (c) in every case reports `Host Enforced` as
+> **unavailable on this platform** rather than omitting it.
+
+### 11.9 Core stopped mid-session fails closed
+
+> **Given** a verified installation with an active Claude Code session,
+> **When** the AASM core is stopped,
+> **Then** the reported protection level drops to none within the product's stated detection
+> window, status says *not protected* (not "unknown"), and no output continues to display a
+> protection level whose §7 criteria are no longer met.
+
+### 11.10 Observe-only profile never reads as protection
+
+> **Given** an installation under the `Observe only` profile,
+> **When** the conditions of 11.3 are repeated,
+> **Then** the decision is computed and audited as a shadow event, the payload is forwarded
+> unchanged (the mock provider **does** receive the synthetic value), and status describes the
+> state as monitoring with a standing not-enforcing warning — never as protected.
+
+> **Note:** this scenario deliberately asserts that the secret *does* reach the provider. That is
+> the correct behaviour for `EnforcementMode::Observe`, and asserting it is how the product proves
+> its own honesty: the profile that does not protect must not be able to look like the one that
+> does.
+
+### 11.11 Unmanaged launch is reported as a bypass
+
+> **Given** a verified installation,
+> **When** Claude Code is launched directly, outside the managed path,
+> **Then** the session is not protected, and status reports an unprotected launch as a **bypass**
+> rather than as an AASM failure — establishing that the product can distinguish "we are broken"
+> from "you went around us".
+
+### 11.12 Scenario-to-criteria map
+
+| Scenario | Primary product claim under test |
+|---|---|
+| 11.1 | §4.2 idempotence |
+| 11.2, 11.7 | G6 removal and restoration |
+| 11.3, 11.4 | G1 sensitive-data handling; §7.2 entry criteria |
+| 11.5 | G4 audit data minimisation |
+| 11.6 | G5 drift detection and repair; §9.7 |
+| 11.8 | §7 level reporting rules; C3, C4 |
+| 11.9 | §9.1 fail-closed; G7 |
+| 11.10 | §6.2 "`Observe only` is never protection" |
+| 11.11 | §7.1/§7.2 remaining bypasses; §9.8 |
 
 ## 12. Assumptions register
 
