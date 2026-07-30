@@ -23,16 +23,14 @@ impl Default for DiscoveryService {
 }
 
 impl DiscoveryService {
-    /// Create a [`DiscoveryService`] pre-loaded with the four built-in adapters:
-    /// Claude Code, Codex, GitHub Copilot, and Windsurf.
+    /// Create a [`DiscoveryService`] pre-loaded with every built-in adapter.
+    ///
+    /// The adapter set comes from [`crate::registry::built_in_adapters`], which
+    /// is the same source `aasm run` resolves from — discovery and launch
+    /// therefore cannot report different metadata for the same tool
+    /// (AAASM-5274).
     pub fn new() -> Self {
-        use crate::adapters::{ClaudeCodeAdapter, CodexAdapter, CopilotAdapter, WindsurfAdapter};
-        Self::with_adapters(vec![
-            Box::new(ClaudeCodeAdapter),
-            Box::new(CodexAdapter),
-            Box::new(CopilotAdapter),
-            Box::new(WindsurfAdapter),
-        ])
+        Self::with_adapters(crate::registry::built_in_adapters())
     }
 
     /// Create a [`DiscoveryService`] with a custom adapter list.
@@ -43,6 +41,16 @@ impl DiscoveryService {
         Self {
             adapters: adapters.into_iter().map(Arc::from).collect(),
         }
+    }
+
+    /// The adapters this service will run, in registration order.
+    ///
+    /// Exposed so callers can compare the adapters discovery uses against the
+    /// ones another code path resolved — the parity regression test for
+    /// AAASM-5274 relies on it. Detection results come from
+    /// [`Self::discover_all`]; this is metadata only.
+    pub fn adapters(&self) -> &[Arc<dyn DevToolAdapter>] {
+        &self.adapters
     }
 
     /// Run all adapters concurrently and return the list of detected tools.
