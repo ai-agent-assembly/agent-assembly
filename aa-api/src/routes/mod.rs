@@ -3,6 +3,7 @@
 //! All endpoints are nested under `/api/v1/`.
 
 pub mod admin;
+pub mod agent_violations;
 pub mod agents;
 pub mod alert_rules;
 pub mod alerts;
