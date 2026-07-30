@@ -287,3 +287,137 @@ Two derived rules make the matrix enforceable rather than aspirational:
   "for offline UX". A cached *display* of a state the service produced is fine; a locally
   *derived* state is not.
 - **A responsibility moves by amending this ADR**, not by a convenient call site.
+
+### 3. Capability model — MCP is one optional capability, never the architecture
+
+#### 3.1 The naming constraint that comes first
+
+`aa_core::Capability` / `CapabilitySet` already exist and are already re-exported by
+`aa-devtool-contract`. They model **agent action capabilities** (`FileWrite`,
+`TerminalExec`, `NetworkOutbound`, …) and are the subject of ADR 0029. The concept this
+decision introduces — *what integration mechanisms a tool exposes* — is a different axis
+entirely and **must not reuse those names**. Conflating them would make ADR 0029's
+over-permission rule read as if it applied to integration mechanisms.
+
+The new types are therefore named `IntegrationCapability` / `CapabilitySupport` /
+`DevToolCapabilities`, and `aa-devtool/src/capability_bridge.rs` (which bridges the
+*agent-capability* axis) keeps its current meaning untouched.
+
+#### 3.2 The capability vocabulary
+
+```rust
+/// What integration mechanisms a dev tool exposes. NOT `aa_core::Capability`
+/// (that is the agent-action axis governed by ADR 0029).
+#[non_exhaustive]
+pub enum IntegrationCapability {
+    Discovery,            // adapter can detect presence + version
+    ManagedSettings,      // adapter can render + merge a managed settings block
+    ManagedLaunch,        // adapter can build a governed launch command
+    ModelGatewayBaseUrl,  // tool honours a configurable model base URL
+    HttpProxy,            // tool honours HTTP(S)_PROXY / equivalent
+    Hooks,                // tool exposes pre/post hooks AASM can install
+    McpDiscovery,         // tool exposes its configured MCP servers
+    McpGovernance,        // tool honours an MCP allow/deny list
+    ToolActionApproval,   // tool can gate individual tool/actions on approval
+    NativeIdeUi,          // a first-class in-IDE surface exists for status/approval
+    HostEnforcement,      // integration can be backed by eBPF / proxy-CA host controls
+}
+
+/// How a capability is supported. Absence of a key means *not declared*, which is
+/// NOT the same as `Unsupported` — see 3.4.
+pub enum CapabilitySupport {
+    Supported,
+    Unsupported { reason: Cow<'static, str> },
+    RequiresVersion { min: Version, detected: Option<Version> },
+}
+
+pub struct DevToolCapabilities {
+    declared: BTreeMap<IntegrationCapability, CapabilitySupport>,
+}
+```
+
+`Unsupported` carries a **reason string that is user-facing**. This is what replaces
+`aa-devtool-copilot`'s run-time `LaunchFailed("GitHub Copilot is a VS Code extension…")`:
+the same sentence, surfaced at plan time as
+`ManagedLaunch: Unsupported { reason: "Copilot is a VS Code extension and has no launch command" }`,
+where the user can still choose a different mechanism.
+
+#### 3.3 How "unsupported" avoids a mandatory no-op
+
+Composition, not one oversized trait. The lifecycle trait every adapter implements is
+small and mechanism-free:
+
+```rust
+#[async_trait]
+pub trait DevToolIntegration: Send + Sync {
+    fn capabilities(&self) -> DevToolCapabilities;
+    fn detect(&self) -> Option<DevToolInfo>;
+
+    async fn plan_integration(&self, req: &IntegrationRequest) -> Result<IntegrationPlan, AdapterError>;
+    async fn integration_status(&self, receipt: Option<&IntegrationReceipt>) -> Result<IntegrationStatus, AdapterError>;
+    async fn verify_integration(&self, receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError>;
+    async fn plan_removal(&self, receipt: &IntegrationReceipt) -> Result<RemovalPlan, AdapterError>;
+
+    // Optional mechanism surfaces — `None` is the honest answer, not a no-op impl.
+    fn as_mcp_governed(&self) -> Option<&dyn McpGovernedTool> { None }
+    fn as_launchable(&self) -> Option<&dyn LaunchableTool> { None }
+    fn as_hookable(&self) -> Option<&dyn HookableTool> { None }
+}
+```
+
+`aa-devtool-codex` deletes its `apply_mcp_governance` → `Ok(())` stub and simply does not
+declare `McpGovernance`; `as_mcp_governed()` returns `None` by the default method body.
+Nothing lies.
+
+**Apply is not on the adapter trait.** The adapter authors a plan (matrix row 2); the
+service executes it (row 3). This is why there is no `apply_integration` above: making it
+an adapter method would immediately re-create the shared-ownership problem the matrix
+exists to prevent.
+
+#### 3.4 Declared vs. effective — the ADR 0029 transfer
+
+A capability has two readings, and they are not interchangeable:
+
+- **Declared** — what `capabilities()` returns. A static, build-time property of the
+  adapter.
+- **Effective** — declared **and** the evidence for it observed on this host at this
+  version (the binary is present, the settings path is writable, the detected version
+  satisfies `RequiresVersion`).
+
+Only the *effective* set may raise a protection state or appear as a guarantee to the
+user. Three rules, transferred directly from ADR 0029's fail-absent discipline:
+
+1. **A capability absent from `declared` is absent**, not `Unsupported` and never
+   `Supported`. An adapter that has not been updated for a new capability must not be
+   read as having answered the question.
+2. **`RequiresVersion` with `detected: None` resolves to absent**, never to supported.
+   Missing version data is a missing comparison, not a pass (this is ADR 0029's rule 1,
+   verbatim in shape: *"A missing baseline is a missing comparison, not a clean bill of
+   health"*).
+3. **Never fabricate a capability from missing data.** No inference from "the tool is
+   popular", "the settings file exists", or "the sibling adapter supports it".
+
+Declaring `Supported` for a capability whose accessor returns `None` is a contract
+violation and is caught by a conformance test (Validation requirements).
+
+#### 3.5 The schema covers CLI, IDE and SaaS tool categories
+
+The three tool categories differ precisely in which capabilities they can declare, which
+is the evidence that the axis is the right one:
+
+| Capability | Claude Code / Codex (CLI) | Copilot / Windsurf (IDE-hosted) | SaaS coding agent |
+| --- | --- | --- | --- |
+| `Discovery` | Supported | Supported (extension marker) | `Unsupported { "no local install to detect" }` or account-scoped |
+| `ManagedSettings` | Supported | Supported (host settings JSON) | Usually unsupported |
+| `ManagedLaunch` | Supported | **`Unsupported { reason }`** — no launch command | Unsupported |
+| `ModelGatewayBaseUrl` | Supported | Tool-dependent | Sometimes (tenant config) |
+| `HttpProxy` | Supported | IDE-host dependent | Only via egress interception |
+| `Hooks` | Supported | Rarely | No |
+| `McpDiscovery` / `McpGovernance` | Claude Code yes, Codex **no** | Tool-dependent | Usually no |
+| `ToolActionApproval` | Supported | `NativeIdeUi`-dependent | No |
+| `NativeIdeUi` | No | **Supported** | No |
+| `HostEnforcement` | Supported (proxy/eBPF) | Supported | Supported (egress only) |
+
+Read down the `McpDiscovery` row: two of the five tool families support it. **MCP is one
+optional capability among ten, never the integration architecture.** A design in which
+"plugin" means "MCP server" is forbidden (see the forbidden-designs section).
