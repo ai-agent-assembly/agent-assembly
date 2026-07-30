@@ -39,12 +39,17 @@
 
 pub mod capability;
 pub mod state;
+pub mod step;
 pub mod version;
 
 pub use capability::{CapabilityResolution, CapabilitySupport, DevToolCapabilities, IntegrationCapability};
 pub use state::{
     EvidenceKind, ExerciseOutcome, ProtectionEvidence, ProtectionLevel, ProtectionState, StateDerivation,
     DEFAULT_FRESHNESS_WINDOW_SECS,
+};
+pub use step::{
+    ArtifactOperation, EnvValue, IntegrationStep, ProbeDescriptor, SettingsMerge, SettingsScope, StepAction,
+    StepPrivilege, StepRequirement, TrustMaterialKind,
 };
 pub use version::{
     core_version, ComponentVersions, SupportedToolVersions, ToolVersion, VersionCompatibility, VersionParseError,
