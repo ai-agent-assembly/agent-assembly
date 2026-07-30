@@ -263,44 +263,70 @@ impl AppState {
         let uniq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let pid = std::process::id();
 
-        let policy_dir = std::env::temp_dir().join(format!("aa-api-local-policy-{pid}-{uniq}"));
-        std::fs::create_dir_all(&policy_dir).map_err(|source| LocalStateError::PolicyWrite {
-            path: policy_dir.clone(),
-            source,
-        })?;
-        let policy_path = policy_dir.join("local-policy.yaml");
-        std::fs::write(
-            &policy_path,
-            // Minimal valid section-based envelope. AAASM-3351 made the
-            // validator fail closed on the legacy rule-list schema, so this
-            // must use the `spec:` section form.
-            "apiVersion: agent-assembly/v1\n\
-             kind: Policy\n\
-             metadata:\n  \
-             name: local-policy\n  \
-             version: \"0.1.0\"\n\
-             spec:\n  \
-             budget:\n    \
-             daily_limit_usd: 100.0\n",
-        )
-        .map_err(|source| LocalStateError::PolicyWrite {
-            path: policy_path.clone(),
-            source,
-        })?;
-
         let events = Arc::new(EventBroadcast::default());
         let budget_alert_tx = events.budget_sender();
-        // AAASM-5102: the engine adopts the *same* registry the AppState
-        // exposes. Without `with_registry`, `PolicyEngine::registry` stays
-        // `None`, and every lineage-less cascade read (`collect_cascade` →
-        // `effective_permissions`, behind `GET /agents/{id}/capabilities`)
-        // resolves `Lineage::default()` and walks only Global and Agent —
-        // silently dropping every Org- and Team-scoped allow *and* deny.
-        // Enforcement was never affected: it resolves tenancy itself via
-        // `authoritative_lineage` (AAASM-3729).
+
+        // AAASM-5299 (ADR-0023 Option a): route on the operator-configured
+        // `$AA_POLICY` source, mirroring what `aa-gateway` does with its
+        // `--policy` / `$AA_POLICY` input. A directory populates the scope-index
+        // cascade so the dashboard projections reflect the enforced policy
+        // source; a file keeps today's primary-slot behaviour; unset synthesises
+        // the budget-only bootstrap policy as before, leaving the cascade empty
+        // (`cascade_loaded() == false`) so a generated bootstrap is never
+        // presented as an operator-authored cascade (ADR-0024).
+        //
+        // AAASM-5102: whichever loader runs, the engine adopts the *same*
+        // registry the AppState exposes. Without `with_registry`,
+        // `PolicyEngine::registry` stays `None`, and every lineage-less cascade
+        // read (`collect_cascade` → `effective_permissions`, behind
+        // `GET /agents/{id}/capabilities`) resolves `Lineage::default()` and
+        // walks only Global and Agent — silently dropping every Org- and
+        // Team-scoped allow *and* deny. Enforcement was never affected: it
+        // resolves tenancy itself via `authoritative_lineage` (AAASM-3729).
+        let engine = match resolve_policy_source(|k| std::env::var(k).ok()) {
+            PolicySource::Directory(dir) => {
+                aa_gateway::engine::PolicyEngine::load_cascade_from_dir(&dir, budget_alert_tx)
+                    .map_err(|e| LocalStateError::PolicyLoad(format!("{e:?}")))?
+            }
+            PolicySource::File(file) => {
+                aa_gateway::engine::PolicyEngine::load_from_file(&file, budget_alert_tx)
+                    .map_err(|e| LocalStateError::PolicyLoad(format!("{e:?}")))?
+            }
+            PolicySource::Unset => {
+                // No operator policy configured: synthesise the budget-only
+                // bootstrap envelope into a per-process temp file and load it
+                // via the single-file loader. This leaves the scope-index
+                // cascade empty (`cascade_loaded() == false`).
+                let policy_dir = std::env::temp_dir().join(format!("aa-api-local-policy-{pid}-{uniq}"));
+                std::fs::create_dir_all(&policy_dir).map_err(|source| LocalStateError::PolicyWrite {
+                    path: policy_dir.clone(),
+                    source,
+                })?;
+                let policy_path = policy_dir.join("local-policy.yaml");
+                std::fs::write(
+                    &policy_path,
+                    // Minimal valid section-based envelope. AAASM-3351 made the
+                    // validator fail closed on the legacy rule-list schema, so
+                    // this must use the `spec:` section form.
+                    "apiVersion: agent-assembly/v1\n\
+                     kind: Policy\n\
+                     metadata:\n  \
+                     name: local-policy\n  \
+                     version: \"0.1.0\"\n\
+                     spec:\n  \
+                     budget:\n    \
+                     daily_limit_usd: 100.0\n",
+                )
+                .map_err(|source| LocalStateError::PolicyWrite {
+                    path: policy_path.clone(),
+                    source,
+                })?;
+                aa_gateway::engine::PolicyEngine::load_from_file(&policy_path, budget_alert_tx)
+                    .map_err(|e| LocalStateError::PolicyLoad(format!("{e:?}")))?
+            }
+        };
         let policy_engine = Arc::new(
-            aa_gateway::engine::PolicyEngine::load_from_file(&policy_path, budget_alert_tx)
-                .map_err(|e| LocalStateError::PolicyLoad(format!("{e:?}")))?
+            engine
                 .with_registry(Arc::clone(&agent_registry))
                 .with_invalidation_hub(aa_gateway::invalidation::InvalidationHub::new()),
         );
@@ -610,6 +636,57 @@ impl AppState {
         }
 
         Ok(state)
+    }
+}
+
+/// The operator-configured policy source for `aa-api`, resolved from
+/// `$AA_POLICY` (AAASM-5299 / ADR-0023 Option a).
+///
+/// This mirrors the resolution semantics `aa-gateway` already uses for its
+/// `--policy` / `$AA_POLICY` input (`aa-cli::commands::gateway::start::resolve_policy`
+/// → `aa-gateway::server::load_policy_engine`): the value is routed on the
+/// *shape* of the path it points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PolicySource {
+    /// `$AA_POLICY` is unset (or empty, or points at a non-existent path).
+    /// `aa-api` synthesises its budget-only bootstrap policy and loads it via
+    /// the single-file loader, exactly as it did before AAASM-5299. The
+    /// scope-index cascade stays empty, so `PolicyEngine::cascade_loaded()`
+    /// reports `false` — the "unconfigured / Unknown" signal the dashboard
+    /// projections rely on (ADR-0024). A generated bootstrap policy must never
+    /// be presented as an operator-authored cascade.
+    Unset,
+    /// `$AA_POLICY` points at a single YAML file. Loaded via
+    /// `PolicyEngine::load_from_file` — the primary slot only, matching today's
+    /// behaviour. The cascade stays empty (`cascade_loaded() == false`).
+    File(std::path::PathBuf),
+    /// `$AA_POLICY` points at a directory of scoped `*.yaml` documents. Loaded
+    /// via `PolicyEngine::load_cascade_from_dir`, which populates the scope
+    /// index so the cascade-derived projections reflect the enforced source
+    /// (`cascade_loaded() == true`).
+    Directory(std::path::PathBuf),
+}
+
+/// Resolve the operator policy source from `$AA_POLICY` (AAASM-5299).
+///
+/// Matches `aa-gateway`'s `$AA_POLICY` semantics: an existing file resolves to
+/// [`PolicySource::File`], an existing directory to [`PolicySource::Directory`],
+/// and an unset / empty / non-existent value to [`PolicySource::Unset`]. The
+/// caller supplies the env lookup so tests can inject a value without poisoning
+/// the real process environment.
+pub(crate) fn resolve_policy_source(env_lookup: impl Fn(&str) -> Option<String>) -> PolicySource {
+    match env_lookup("AA_POLICY") {
+        Some(raw) if !raw.is_empty() => {
+            let path = std::path::PathBuf::from(raw);
+            if path.is_dir() {
+                PolicySource::Directory(path)
+            } else if path.is_file() {
+                PolicySource::File(path)
+            } else {
+                PolicySource::Unset
+            }
+        }
+        _ => PolicySource::Unset,
     }
 }
 
