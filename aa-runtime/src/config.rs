@@ -162,6 +162,18 @@ pub struct RuntimeConfig {
     /// back to the default so the deadline can never be disabled (that would
     /// reintroduce the hang).
     pub gateway_timeout_ms: u64,
+
+    /// Whether to serve the Developer Integration API (ADR 0030 Decision 5).
+    ///
+    /// Read from `AA_DEVINT_ENABLED`; **off by default**. The DI-API is a
+    /// developer-workstation lifecycle surface, not part of the enforcement
+    /// path, so a container runtime enforcing policy for one agent has no use
+    /// for it and must not open a socket it will never serve. `aasm` sets this
+    /// when it auto-starts a runtime for `aasm integrations …` (AAASM-5280).
+    ///
+    /// Accepts `1`/`true`/`yes` (case-insensitive); anything else is off, so a
+    /// typo fails closed rather than opening the surface.
+    pub devint_enabled: bool,
 }
 
 impl RuntimeConfig {
@@ -305,6 +317,10 @@ impl RuntimeConfig {
             .filter(|&n| n > 0)
             .unwrap_or(DEFAULT_GATEWAY_TIMEOUT_MS);
 
+        let devint_enabled = std::env::var("AA_DEVINT_ENABLED")
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
         Ok(Self {
             agent_id,
             agent_team_id,
@@ -326,6 +342,7 @@ impl RuntimeConfig {
             enforcement_max_field_bytes,
             gateway_fail_closed,
             gateway_timeout_ms,
+            devint_enabled,
         })
     }
 }
@@ -363,6 +380,36 @@ mod tests {
         assert_eq!(config.shutdown_timeout_secs, 30);
         assert_eq!(config.ipc_max_connections, 64);
 
+        std::env::remove_var("AA_AGENT_ID");
+    }
+
+    /// The DI-API is off unless it was asked for, and a value that is not a
+    /// recognisable yes leaves it off — a typo must not open a local surface.
+    #[test]
+    fn the_developer_integration_api_is_opt_in_and_fails_closed() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_AGENT_ID", "devint-config-test");
+
+        std::env::remove_var("AA_DEVINT_ENABLED");
+        assert!(!RuntimeConfig::from_env().expect("config").devint_enabled);
+
+        for on in ["1", "true", "TRUE", "yes", " Yes "] {
+            std::env::set_var("AA_DEVINT_ENABLED", on);
+            assert!(
+                RuntimeConfig::from_env().expect("config").devint_enabled,
+                "{on:?} should enable the DI-API"
+            );
+        }
+
+        for off in ["0", "false", "no", "", "ture", "on"] {
+            std::env::set_var("AA_DEVINT_ENABLED", off);
+            assert!(
+                !RuntimeConfig::from_env().expect("config").devint_enabled,
+                "{off:?} must not enable the DI-API"
+            );
+        }
+
+        std::env::remove_var("AA_DEVINT_ENABLED");
         std::env::remove_var("AA_AGENT_ID");
     }
 

@@ -54,6 +54,13 @@ MARKED_FILES=(
     # audit-consumer feature. Without this strip, cargo-workspaces resolution
     # fails at publish time on the dangling feature reference (alpha-6 release).
     "${REPO_ROOT}/aa-integration-tests/Cargo.toml"
+    # AAASM-5280: the DI-API lifecycle service registers the built-in dev-tool
+    # adapters through `aa-devtool` (publish = false). Removed so the published
+    # runtime has no held-back deps; it still binds the DI-API and simply has
+    # an empty integration registry.
+    "${REPO_ROOT}/aa-runtime/Cargo.toml"
+    "${REPO_ROOT}/aa-runtime/src/devint/mod.rs"
+    "${REPO_ROOT}/aa-runtime/src/runtime.rs"
 )
 
 # ---- Files to delete outright (they consume held-back deps) ----
@@ -65,6 +72,8 @@ DELETED_FILES=(
     # AAASM-2388: the audit consumer module + its integration test.
     "${REPO_ROOT}/aa-gateway/src/audit_consumer.rs"
     "${REPO_ROOT}/aa-gateway/tests/audit_consumer_e2e.rs"
+    # AAASM-5280: the built-in adapter bridge consumes the stripped aa-devtool dep.
+    "${REPO_ROOT}/aa-runtime/src/devint/adapters.rs"
 )
 
 # Strip region. Uses awk to drop lines from any

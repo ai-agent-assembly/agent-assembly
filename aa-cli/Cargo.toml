@@ -28,6 +28,13 @@ aa-security          = { path = "../aa-security", version = "0.0.1-rc.6", featur
 aa-devtool           = { path = "../aa-devtool", version = "0.0.1-rc.6" }
 # strip-for-publish:end devtool
 aa-gateway           = { path = "../aa-gateway", version = "0.0.1-rc.6" }
+# AAASM-5280: `aasm integrations` is a Developer Integration API client. The
+# reference client, the socket convention and the local enrolment file all live
+# in aa-runtime, and reimplementing any of them here would be the second
+# implementation ADR 0030 §7.1 exists to prevent. aa-proto supplies the wire
+# view types the CLI projects into its own report models.
+aa-proto             = { path = "../aa-proto", version = "0.0.1-rc.6" }
+aa-runtime           = { path = "../aa-runtime", version = "0.0.1-rc.6" }
 aa-proxy             = { path = "../aa-proxy", version = "0.0.1-rc.6" }
 aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-rc.6" }
 aa-storage           = { path = "../aa-storage", version = "0.0.1-rc.6" }
@@ -66,7 +73,12 @@ url            = { workspace = true }
 uuid           = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
+# AAASM-5280: the integration tests drive `aasm integrations` against a real
+# DI-API server over a real socket, using the same DevToolIntegration fixture
+# aa-runtime's own tests use — a second copy would drift from it.
+aa-runtime     = { path = "../aa-runtime", features = ["test-fixtures"] }
 assert_cmd     = { workspace = true }
+tokio-util     = { workspace = true, features = ["rt"] }
 tempfile       = { workspace = true }
 wiremock       = "0.6"
 
