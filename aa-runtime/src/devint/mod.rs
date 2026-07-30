@@ -88,7 +88,9 @@ pub use lifecycle::{IntegrationLifecycle, LifecycleError};
 pub use negotiate::{Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
 pub use scope::{TokenScope, ToolScope};
 pub use server::{DevIntServer, DevIntServerConfig, DevIntServices};
-pub use service::{EngineLifecycle, NoContent, RegisteredIntegration, StepContentSource};
+pub use service::{
+    EngineLifecycle, FilesystemSteps, NoContent, RegisteredIntegration, StepContentSource, StepExecutorFactory,
+};
 pub use socket::{devint_socket_path, SocketDiscovery, SocketError};
 pub use token::{CapabilityToken, TokenDenial, TokenId, TokenRecord, TokenStore};
 pub use verb::DiVerb;

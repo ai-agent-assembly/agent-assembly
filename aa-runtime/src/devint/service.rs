@@ -55,8 +55,8 @@ use aa_core::dev_tool::{DevToolKind, GovernanceLevel};
 use aa_core::integration::{
     now_unix_secs, ApplyContext, DevToolIntegration, DriftKind, DriftReport, EngineError, FilesystemExecutor,
     IntegrationCapability, IntegrationEngine, IntegrationPlan, IntegrationReceipt, IntegrationRequest,
-    IntegrationStatus, ProtectionLevel, ProtectionState, ReceiptStore, RemovalPlan, SettingsScope, VerificationOutcome,
-    VerificationResult, VersionCompatibility, DEFAULT_FRESHNESS_WINDOW_SECS,
+    IntegrationStatus, ProtectionLevel, ProtectionState, ReceiptStore, RemovalPlan, SettingsScope, StepExecutor,
+    VerificationOutcome, VerificationResult, VersionCompatibility, DEFAULT_FRESHNESS_WINDOW_SECS,
 };
 
 use super::lifecycle::{
@@ -96,7 +96,37 @@ impl StepContentSource for NoContent {
     }
 }
 
-/// One tool's adapter plus the source of the bytes its plans describe.
+/// Builds the executor that performs one tool's mutations.
+///
+/// [`FilesystemExecutor`] handles every step whose mutation is "put these bytes
+/// at this path" and refuses the rest, because launch-environment injection,
+/// proxy variables and MCP lists need mechanism the filesystem cannot supply.
+/// A tool whose plan contains one of those has to bring the executor for it —
+/// so *which* executor runs is a property of the registration, not a constant
+/// of the service (AAASM-5281).
+///
+/// The service still owns transactionality, the journal, the receipt and
+/// rollback; only the per-mechanism mechanics move.
+pub trait StepExecutorFactory: Send + Sync {
+    /// An executor holding `rendered`, keyed by step id.
+    fn executor(&self, rendered: BTreeMap<String, String>) -> Box<dyn StepExecutor + Send>;
+}
+
+/// The default factory: a plain [`FilesystemExecutor`].
+pub struct FilesystemSteps;
+
+impl StepExecutorFactory for FilesystemSteps {
+    fn executor(&self, rendered: BTreeMap<String, String>) -> Box<dyn StepExecutor + Send> {
+        let mut executor = FilesystemExecutor::new();
+        for (step_id, content) in rendered {
+            executor = executor.with_content(step_id, content);
+        }
+        Box::new(executor)
+    }
+}
+
+/// One tool's adapter, the source of the bytes its plans describe, and the
+/// executor that performs them.
 pub struct RegisteredIntegration {
     /// The tool this registration answers for.
     pub tool: DevToolKind,
@@ -104,15 +134,19 @@ pub struct RegisteredIntegration {
     pub integration: Arc<dyn DevToolIntegration>,
     /// Where the rendered content for its plan steps comes from.
     pub content: Arc<dyn StepContentSource>,
+    /// What performs its plan steps.
+    pub executor: Arc<dyn StepExecutorFactory>,
 }
 
 impl RegisteredIntegration {
-    /// Register `integration` for `tool` with no content source.
+    /// Register `integration` for `tool` with no content source and the
+    /// filesystem executor.
     pub fn new(tool: DevToolKind, integration: Arc<dyn DevToolIntegration>) -> Self {
         Self {
             tool,
             integration,
             content: Arc::new(NoContent),
+            executor: Arc::new(FilesystemSteps),
         }
     }
 
@@ -120,6 +154,13 @@ impl RegisteredIntegration {
     #[must_use]
     pub fn with_content(mut self, content: Arc<dyn StepContentSource>) -> Self {
         self.content = content;
+        self
+    }
+
+    /// Supply the executor its plan steps need to be performable.
+    #[must_use]
+    pub fn with_executor(mut self, executor: Arc<dyn StepExecutorFactory>) -> Self {
+        self.executor = executor;
         self
     }
 }
@@ -208,22 +249,26 @@ impl EngineLifecycle {
         &self,
         registered: &RegisteredIntegration,
         plan: &IntegrationPlan,
-    ) -> Result<IntegrationEngine<FilesystemExecutor>, LifecycleError> {
+    ) -> Result<IntegrationEngine<Box<dyn StepExecutor + Send>>, LifecycleError> {
         let rendered = registered
             .content
             .render(plan)
             .await
             .map_err(|detail| LifecycleError::Failed { detail })?;
-        let mut executor = FilesystemExecutor::new();
-        for (step_id, content) in rendered {
-            executor = executor.with_content(step_id, content);
-        }
-        Ok(IntegrationEngine::new(executor, self.store.clone()))
+        Ok(IntegrationEngine::new(
+            registered.executor.executor(rendered),
+            self.store.clone(),
+        ))
     }
 
     /// An engine with no content, for the operations that only read or reverse.
-    fn observing_engine(&self) -> IntegrationEngine<FilesystemExecutor> {
-        IntegrationEngine::new(FilesystemExecutor::new(), self.store.clone())
+    ///
+    /// Still the tool's own executor: observing a launch-environment variable
+    /// and reversing one are both mechanisms the filesystem executor does not
+    /// have, so a shared observing engine would report every such artifact as
+    /// unreadable and refuse to remove it.
+    fn observing_engine(&self, registered: &RegisteredIntegration) -> IntegrationEngine<Box<dyn StepExecutor + Send>> {
+        IntegrationEngine::new(registered.executor.executor(BTreeMap::new()), self.store.clone())
     }
 
     /// Re-author the plan a stored receipt was applied from.
@@ -249,8 +294,14 @@ impl EngineLifecycle {
             })
     }
 
-    fn drift(&self, tool: &DevToolKind, scope: SettingsScope, compatibility: &VersionCompatibility) -> DriftReport {
-        self.observing_engine().detect_drift(tool, scope, compatibility, None)
+    fn drift(
+        &self,
+        registered: &RegisteredIntegration,
+        scope: SettingsScope,
+        compatibility: &VersionCompatibility,
+    ) -> DriftReport {
+        self.observing_engine(registered)
+            .detect_drift(&registered.tool, scope, compatibility, None)
     }
 
     /// Fold a drift report into a derived status.
@@ -453,7 +504,7 @@ impl IntegrationLifecycle for EngineLifecycle {
             })?;
 
         if receipt.is_some() {
-            let report = self.drift(tool, scope, &status.compatibility);
+            let report = self.drift(registered, scope, &status.compatibility);
             Self::apply_drift(&mut status, &report);
         }
         Ok(status)
@@ -476,7 +527,7 @@ impl IntegrationLifecycle for EngineLifecycle {
         // that lowers the reported level, and dropping it would leave status
         // reporting the level the last *successful* pass justified — the exact
         // "verified once, long ago" over-claim §4.2 rules out.
-        self.observing_engine()
+        self.observing_engine(registered)
             .record_verification(tool, scope, &result, self.freshness_window_secs)
             .map_err(engine_error)?;
         Ok(result)
@@ -495,7 +546,7 @@ impl IntegrationLifecycle for EngineLifecycle {
             .map_err(|e| LifecycleError::Failed {
                 detail: format!("the integration status could not be derived: {e}"),
             })?;
-        let report = self.drift(tool, scope, &status_before.compatibility);
+        let report = self.drift(registered, scope, &status_before.compatibility);
 
         let mut engine = self.engine_for(registered, &plan).await?;
         let outcome = engine.repair(&plan, &report, now_unix_secs()).map_err(engine_error)?;
@@ -541,7 +592,7 @@ impl IntegrationLifecycle for EngineLifecycle {
             });
         }
 
-        let mut engine = self.observing_engine();
+        let mut engine = self.observing_engine(registered);
         engine.recover(tool, scope).map_err(engine_error)?;
         let outcome = engine.remove(tool, scope).map_err(engine_error)?;
         plan.residual.extend(outcome.residual);
