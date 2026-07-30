@@ -97,7 +97,10 @@ fn parse_agent_id(id: &str) -> Result<[u8; 16], ProblemDetail> {
 }
 
 /// Convert an [`AgentRecord`] into an [`AgentResponse`].
-fn record_to_response(r: aa_gateway::registry::AgentRecord) -> AgentResponse {
+fn record_to_response(
+    r: aa_gateway::registry::AgentRecord,
+    violations: &crate::routes::agent_violations::AgentViolationCounts,
+) -> AgentResponse {
     let active_sessions = r
         .active_sessions
         .into_iter()
@@ -128,6 +131,12 @@ fn record_to_response(r: aa_gateway::registry::AgentRecord) -> AgentResponse {
         })
         .collect();
 
+    // AAASM-5103 — the violation count is derived from the PolicyViolation audit
+    // events (the canonical source), not read off the record: the record's old
+    // `policy_violations_count` field was dead state (never incremented) and has
+    // been removed. `is_flagged` is `count > 0`, superseding the dead >= 50
+    // threshold the dashboard used to apply client-side.
+    let policy_violations_count = violations.count(&r.agent_id);
     AgentResponse {
         id: r.agent_id.iter().map(|b| format!("{b:02x}")).collect::<String>(),
         name: r.name,
@@ -139,7 +148,8 @@ fn record_to_response(r: aa_gateway::registry::AgentRecord) -> AgentResponse {
         pid: r.pid,
         session_count: r.session_count,
         last_event: r.last_event.map(|t| t.to_rfc3339()),
-        policy_violations_count: r.policy_violations_count,
+        policy_violations_count,
+        is_flagged: policy_violations_count > 0,
         active_sessions,
         recent_events,
         recent_traces,
@@ -170,8 +180,16 @@ pub struct AgentResponse {
     pub session_count: u32,
     /// ISO 8601 timestamp of the most recent event.
     pub last_event: Option<String>,
-    /// Number of policy violations recorded.
+    /// Number of policy violations recorded for this agent, derived from the
+    /// `PolicyViolation` audit events (AAASM-5103) — the same canonical source
+    /// the analytics `agent-enforcement` aggregation counts. `0` when the agent
+    /// has recorded none.
     pub policy_violations_count: u32,
+    /// Whether the agent is policy-flagged — it has recorded at least one policy
+    /// violation (`policy_violations_count > 0`, AAASM-5103). Clients should read
+    /// this rather than re-deriving a threshold, so the Fleet and Topology
+    /// surfaces cannot diverge on whether a given agent is flagged.
+    pub is_flagged: bool,
     /// Currently active sessions for this agent.
     pub active_sessions: Vec<ActiveSessionResponse>,
     /// Most recent events emitted by this agent.
@@ -328,11 +346,13 @@ pub async fn list_agents(
     let offset = params.offset();
     let per_page = params.per_page();
 
+    // AAASM-5103 — one grouped audit pass, looked up per agent below (no N+1).
+    let violations = crate::routes::agent_violations::AgentViolationCounts::from_audit(&state.audit_reader).await;
     let items: Vec<AgentResponse> = visible
         .into_iter()
         .skip(offset)
         .take(per_page as usize)
-        .map(record_to_response)
+        .map(|r| record_to_response(r, &violations))
         .collect();
 
     (
@@ -437,7 +457,9 @@ pub async fn get_agent(
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}"))
     })?;
 
-    Ok((StatusCode::OK, Json(record_to_response(record))))
+    // AAASM-5103 — derive the violation count / flag from the audit log.
+    let violations = crate::routes::agent_violations::AgentViolationCounts::from_audit(&state.audit_reader).await;
+    Ok((StatusCode::OK, Json(record_to_response(record, &violations))))
 }
 
 /// `DELETE /api/v1/agents/:id` — deregister (kill) an agent.
@@ -1435,7 +1457,6 @@ mod tests {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: Vec::new(),
             recent_events: std::collections::VecDeque::new(),
             recent_traces: Vec::new(),

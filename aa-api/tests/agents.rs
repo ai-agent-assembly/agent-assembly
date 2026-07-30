@@ -27,7 +27,6 @@ fn test_agent(id_byte: u8) -> AgentRecord {
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: Vec::new(),
         recent_events: std::collections::VecDeque::new(),
         recent_traces: Vec::new(),
@@ -258,7 +257,6 @@ async fn get_agent_response_includes_new_fields() {
     agent.pid = Some(9876);
     agent.session_count = 7;
     agent.last_event = Some(chrono::Utc::now());
-    agent.policy_violations_count = 2;
     state.agent_registry.register(agent).unwrap();
 
     let app = aa_api::server::build_app(state);
@@ -281,7 +279,10 @@ async fn get_agent_response_includes_new_fields() {
     assert_eq!(json["pid"], 9876);
     assert_eq!(json["session_count"], 7);
     assert!(json["last_event"].as_str().is_some());
-    assert_eq!(json["policy_violations_count"], 2);
+    // AAASM-5103 — the count is audit-derived, not a record field; with no
+    // PolicyViolation events recorded it is 0 and the agent is not flagged.
+    assert_eq!(json["policy_violations_count"], 0);
+    assert_eq!(json["is_flagged"], false);
 }
 
 #[tokio::test]
@@ -310,6 +311,7 @@ async fn get_agent_response_null_optional_fields() {
     assert_eq!(json["session_count"], 0);
     assert!(json["last_event"].is_null());
     assert_eq!(json["policy_violations_count"], 0);
+    assert_eq!(json["is_flagged"], false);
     assert!(json["active_sessions"].as_array().unwrap().is_empty());
     assert!(json["recent_events"].as_array().unwrap().is_empty());
 }
