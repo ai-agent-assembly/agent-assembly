@@ -5575,11 +5575,12 @@ export interface components {
          *
          *     # Example JSON
          *     ```json
-         *     { "nodes": [], "edges": [] }
+         *     { "nodes": [], "edges": [], "unclaimed_observable": true }
          *     ```
          * @example {
          *       "edges": [],
-         *       "nodes": []
+         *       "nodes": [],
+         *       "unclaimed_observable": true
          *     }
          */
         TopologyGraphResponse: {
@@ -5590,6 +5591,26 @@ export interface components {
             edges: components["schemas"]["TopologyGraphEdge"][];
             /** @description All agents visible to the caller, one graph node each (sorted by id). */
             nodes: components["schemas"]["AgentNode"][];
+            /**
+             * @description Whether the caller's scope can observe unclaimed (team-less) agents at
+             *     all (AAASM-5183).
+             *
+             *     Scope-derived, not data-derived: it mirrors what
+             *     [`crate::routes::topology::record_visible_to`] does with a `team_id: None`
+             *     record. An admin, and any caller not confined to a specific team, CAN
+             *     observe unclaimed agents; a team-scoped (non-admin) caller structurally
+             *     CANNOT — `record_visible_to` drops every `team_id: None` record for it —
+             *     so a team-scoped caller's `nodes` never contains an unclaimed agent even
+             *     when the registry holds some.
+             *
+             *     The Teams page reads this to decide whether an empty unclaimed set is the
+             *     honest "no unclaimed agents" (the caller could have seen them and there
+             *     are none) or "unclaimed agents are not available in your scope" (the
+             *     caller could not have seen them either way). It deliberately carries no
+             *     count: disclosing how many unclaimed agents exist to a caller whose scope
+             *     cannot see them is not authorised (no product/security sign-off).
+             */
+            unclaimed_observable: boolean;
         };
         /**
          * @description Overview of the entire agent topology across all teams.

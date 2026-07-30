@@ -38,6 +38,7 @@ const API_GRAPH: components['schemas']['TopologyGraphResponse'] = {
     { source: 'agent-2', target: 'agent-1', kind: 'reads', cross_team: true },
     { source: 'agent-1', target: 'agent-1', kind: 'approves', cross_team: false },
   ],
+  unclaimed_observable: true,
 }
 
 // What the hook returns after mapping the wire shape onto the view model.
@@ -149,7 +150,7 @@ describe('useTopologyQuery', () => {
   })
 
   it('returns an empty graph shape without crashing', async () => {
-    const empty: components['schemas']['TopologyGraphResponse'] = { nodes: [], edges: [] }
+    const empty: components['schemas']['TopologyGraphResponse'] = { nodes: [], edges: [], unclaimed_observable: true }
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify(empty), { status: 200 }),
     )

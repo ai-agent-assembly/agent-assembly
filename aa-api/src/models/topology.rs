@@ -429,16 +429,48 @@ pub struct TopologyGraphEdge {
 ///
 /// # Example JSON
 /// ```json
-/// { "nodes": [], "edges": [] }
+/// { "nodes": [], "edges": [], "unclaimed_observable": true }
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
-#[schema(example = json!({ "nodes": [], "edges": [] }))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({ "nodes": [], "edges": [], "unclaimed_observable": true }))]
 pub struct TopologyGraphResponse {
     /// All agents visible to the caller, one graph node each (sorted by id).
     pub nodes: Vec<AgentNode>,
     /// Edges of every stored relation kind whose endpoints are both visible
     /// nodes.
     pub edges: Vec<TopologyGraphEdge>,
+    /// Whether the caller's scope can observe unclaimed (team-less) agents at
+    /// all (AAASM-5183).
+    ///
+    /// Scope-derived, not data-derived: it mirrors what
+    /// [`crate::routes::topology::record_visible_to`] does with a `team_id: None`
+    /// record. An admin, and any caller not confined to a specific team, CAN
+    /// observe unclaimed agents; a team-scoped (non-admin) caller structurally
+    /// CANNOT — `record_visible_to` drops every `team_id: None` record for it —
+    /// so a team-scoped caller's `nodes` never contains an unclaimed agent even
+    /// when the registry holds some.
+    ///
+    /// The Teams page reads this to decide whether an empty unclaimed set is the
+    /// honest "no unclaimed agents" (the caller could have seen them and there
+    /// are none) or "unclaimed agents are not available in your scope" (the
+    /// caller could not have seen them either way). It deliberately carries no
+    /// count: disclosing how many unclaimed agents exist to a caller whose scope
+    /// cannot see them is not authorised (no product/security sign-off).
+    pub unclaimed_observable: bool,
+}
+
+impl Default for TopologyGraphResponse {
+    /// The deny-by-default / empty shape a non-admin caller with no tenant scope
+    /// receives. Such a caller is confined to no tenant at all, so it cannot
+    /// observe unclaimed agents either — `unclaimed_observable` is `false`, the
+    /// fail-closed default that never over-promises visibility.
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            unclaimed_observable: false,
+        }
+    }
 }
 
 /// Recursive tree node representing an agent and all its descendants.
@@ -991,11 +1023,17 @@ mod tests {
     #[test]
     fn topology_graph_response_roundtrip_and_default_is_empty() {
         // Default is the deny-by-default / empty-registry shape the handler
-        // returns; it must serialize as two empty arrays.
+        // returns; it must serialize as two empty arrays. AAASM-5183 — a caller
+        // with no tenant scope can observe no unclaimed agents either, so the
+        // default fails closed with `unclaimed_observable: false`.
         let empty = TopologyGraphResponse::default();
         let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&empty).unwrap()).unwrap();
         assert!(json["nodes"].as_array().unwrap().is_empty());
         assert!(json["edges"].as_array().unwrap().is_empty());
+        assert_eq!(
+            json["unclaimed_observable"], false,
+            "the deny-by-default shape must never promise it could see unclaimed agents"
+        );
 
         roundtrip(&TopologyGraphResponse {
             nodes: vec![make_agent_node()],
@@ -1005,6 +1043,7 @@ mod tests {
                 kind: "call".to_string(),
                 cross_team: true,
             }],
+            unclaimed_observable: true,
         });
     }
 

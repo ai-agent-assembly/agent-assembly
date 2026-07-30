@@ -26,10 +26,11 @@ const RECONCILED: Certain<AgentCensus> = known({ grouped: 4, total: 4, unaccount
 function renderOrphan(
   orphans: Certain<readonly AgentNode[]>,
   census: Certain<AgentCensus> = RECONCILED,
+  unclaimedObservable = true,
 ) {
   return render(
     <MemoryRouter>
-      <TeamOrphanDetail orphans={orphans} census={census} />
+      <TeamOrphanDetail orphans={orphans} census={census} unclaimedObservable={unclaimedObservable} />
     </MemoryRouter>,
   )
 }
@@ -44,6 +45,17 @@ describe('TeamOrphanDetail', () => {
     renderOrphan(known([]))
     expect(screen.getByTestId('orphan-detail-agent-count')).toHaveTextContent('0 agents')
     expect(screen.getByTestId('orphan-agents-empty')).toBeInTheDocument()
+  })
+
+  it('says "not available in your scope" instead of a false zero when the caller cannot observe unclaimed agents', () => {
+    // AAASM-5183: a team-scoped caller structurally cannot see team_id:None
+    // agents, so an empty list is the scope boundary, not a clean fleet.
+    renderOrphan(known([]), RECONCILED, false)
+    expect(screen.getByTestId('orphan-agents-out-of-scope')).toHaveAttribute('data-truth-state', 'not-supported')
+    // Never the reassuring empty message or a "0 agents" count.
+    expect(screen.queryByTestId('orphan-agents-empty')).not.toBeInTheDocument()
+    expect(screen.getByTestId('orphan-detail-agent-count')).toHaveTextContent('not in scope')
+    expect(screen.getByTestId('orphan-detail-agent-count')).not.toHaveTextContent('0')
   })
 
   it('lists each orphan agent and links to its detail page', () => {

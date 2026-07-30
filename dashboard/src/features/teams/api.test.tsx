@@ -88,12 +88,15 @@ describe('useTopologyAgentsQuery', () => {
           { id: 'b', name: 'spawned', status: 'active', depth: 2, flagged: false, mode: 'off', trust: null, team_id: null },
         ],
         edges: [],
+        unclaimed_observable: true,
       },
     } satisfies FetchResult)
     const { wrapper } = makeWrapper()
     const { result } = renderHook(() => useTopologyAgentsQuery(), { wrapper })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data?.map(n => n.id)).toEqual(['a', 'b'])
+    expect(result.current.data?.nodes.map(n => n.id)).toEqual(['a', 'b'])
+    // AAASM-5183: the scope-observability flag is carried alongside the nodes.
+    expect(result.current.data?.unclaimedObservable).toBe(true)
     expect(get).toHaveBeenCalledWith('/api/v1/topology')
   })
 

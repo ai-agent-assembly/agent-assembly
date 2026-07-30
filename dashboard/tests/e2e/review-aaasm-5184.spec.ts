@@ -111,7 +111,7 @@ async function bootstrap(page: Page, theme: Theme, nodes: unknown[]): Promise<Ha
   // Permissive fallback first; the specific routes registered after it win,
   // since Playwright matches most-recently-added first.
   await page.route('**/api/**', (r) => r.fulfill({ json: {} }))
-  await page.route('**/api/v1/topology', (r) => r.fulfill({ json: { nodes, edges: [] } }))
+  await page.route('**/api/v1/topology', (r) => r.fulfill({ json: { nodes, edges: [], unclaimed_observable: true } }))
   await page.route('**/api/v1/topology/nodes/*/events', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/v1/approvals**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/v1/ws/events**', (r) => r.abort())

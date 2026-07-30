@@ -45,7 +45,13 @@ export function TeamsPage() {
   // `standalone_root_agents` (AAASM-5157) — see `orphans.ts` for why. Kept as a
   // `Certain` all the way to the chip and the pane so a failed topology request
   // renders as "unavailable" rather than as a reassuring `0 unclaimed`.
-  const orphans = mapCertain(certainFromQuery(agentsQuery), selectOrphanAgents)
+  const orphans = mapCertain(certainFromQuery(agentsQuery), a => selectOrphanAgents(a.nodes))
+  // AAASM-5183: whether the caller's scope can observe unclaimed agents at all.
+  // A team-scoped caller cannot (its topology response structurally excludes
+  // `team_id: None` agents), so an empty orphan set must read as "not available
+  // in your scope" rather than a confident "no unclaimed agents". Defaults to
+  // `false` (fail-closed) until the fleet loads.
+  const unclaimedObservable = agentsQuery.data?.unclaimedObservable ?? false
 
   // The census compares two independently-fetched snapshots, and TanStack keeps
   // serving the *previous* payload throughout a background refetch. So while
@@ -99,7 +105,7 @@ export function TeamsPage() {
           onSelectOrphan={() => setPicked(ORPHAN_ID)}
         />
         {orphanPicked
-          ? <TeamOrphanDetail orphans={orphans} census={census} />
+          ? <TeamOrphanDetail orphans={orphans} census={census} unclaimedObservable={unclaimedObservable} />
           : <TeamDetailPane teamId={selected} />}
       </div>
     </main>

@@ -125,6 +125,31 @@ fn caller_has_no_tenant_scope(caller: &AuthenticatedCaller) -> bool {
     !caller.scopes.contains(&Scope::Admin) && caller.tenant.org_id.is_none() && caller.tenant.team_id.is_none()
 }
 
+/// Whether `caller`'s scope can observe unclaimed (team-less) agents at all
+/// (AAASM-5183).
+///
+/// Scope-derived, mirroring what [`record_visible_to`] does with a `team_id:
+/// None` record so the signal can never disagree with what the caller's `nodes`
+/// actually contain — and computed from the caller's scope alone, so it leaks no
+/// unclaimed data (not even whether any exists) to a caller who cannot see it:
+///
+/// * An admin sees every record, unclaimed included → `true`.
+/// * A caller confined to a specific team can never match a `team_id: None`
+///   record (`record.team_id != Some(team)`), so `record_visible_to` drops
+///   every unclaimed agent for it → `false`. Its `nodes` are structurally
+///   unclaimed-free regardless of the registry, so an empty unclaimed set on the
+///   Teams page is a scope limit, not the honest "there are none".
+/// * A caller scoped to an org but not a team is *not* confined by the team gate
+///   (that gate is skipped when the caller has no `team_id` scope), so a
+///   `team_id: None` record in its org passes → `true`.
+///
+/// The no-tenant-scope non-admin caller never reaches a body that carries this
+/// flag (it gets the deny-by-default empty response, whose `Default` fails
+/// closed to `false`), so it is not a case here.
+fn caller_can_observe_unclaimed(caller: &AuthenticatedCaller) -> bool {
+    caller.scopes.contains(&Scope::Admin) || caller.tenant.team_id.is_none()
+}
+
 /// Join cache-key components into a string that only an equal component list
 /// can produce.
 ///
@@ -1183,7 +1208,18 @@ pub async fn get_topology_graph(
     let nodes = project_graph_nodes(&records, &state, &violations);
     let edges = collect_graph_edges(&state, &teams_by_id).await?;
 
-    Ok((StatusCode::OK, Json(TopologyGraphResponse { nodes, edges })))
+    // AAASM-5183 — tell the Teams page whether an empty unclaimed set means "the
+    // caller could see unclaimed agents and there are none" or "the caller's
+    // scope cannot see unclaimed agents at all". Scope-derived (not from
+    // `nodes`), so it discloses no unclaimed data to a caller who cannot see it.
+    Ok((
+        StatusCode::OK,
+        Json(TopologyGraphResponse {
+            nodes,
+            edges,
+            unclaimed_observable: caller_can_observe_unclaimed(&caller),
+        }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1440,6 +1476,33 @@ mod graph_tests {
 
     /// The two structural kinds keep the wire vocabulary AAASM-5040 shipped —
     /// renaming them would silently break the frontend's edge styling.
+    // ── unclaimed observability (AAASM-5183) ────────────────────────────────
+    // The flag is derived from the caller's SCOPE, never from data: a team-scoped
+    // caller structurally cannot see a `team_id: None` agent (record_visible_to),
+    // so the Teams page must say "not available in your scope" rather than a
+    // confident "no unclaimed agents". No count is exposed either way.
+    #[test]
+    fn admin_can_observe_unclaimed() {
+        assert!(caller_can_observe_unclaimed(&admin().0));
+    }
+
+    #[test]
+    fn org_only_caller_can_observe_unclaimed() {
+        // No team confinement → `team_id: None` records are visible → observable.
+        assert!(caller_can_observe_unclaimed(
+            &reader(vec![Scope::Read], Some("acme"), None).0
+        ));
+    }
+
+    #[test]
+    fn team_scoped_caller_cannot_observe_unclaimed() {
+        // A team-scoped caller can never see a `team_id: None` agent, so it must
+        // not be told there are none.
+        assert!(!caller_can_observe_unclaimed(
+            &reader(vec![Scope::Read], Some("acme"), Some("growth")).0
+        ));
+    }
+
     #[test]
     fn the_structural_kinds_keep_their_graph_vocabulary() {
         assert_eq!(graph_edge_kind(EdgeType::DelegatesTo), "delegation");
