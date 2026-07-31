@@ -73,8 +73,12 @@ jobs:
     # shipped: aa-cli with no dashboard, aa-gateway that could not compile for
     # any consumer. This job reconstructs what verify would have proved.
     #
-    # It lives on `pull_request`, not on the tag: a packaging defect found at
-    # tag-cut time is already a broken release with a burned version number.
+    # It lives on `pull_request` so a packaging defect surfaces before the tag
+    # — one found at tag-cut time is already a broken release with a burned
+    # version number. `release.yml` runs the same script again as a
+    # `packaged-artifact-gate` job that `publish-crates` needs, because this
+    # run is path-filtered and sees a PR head rather than the tree that ships,
+    # so it cannot itself be the precondition of an irreversible publish.
     name: Packaged-artifact gate
     runs-on: ubuntu-latest
     steps:
