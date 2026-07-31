@@ -256,7 +256,10 @@ pub fn verify_identity(state: &ProxyState) -> Result<(), ProxyTrustError> {
         return Err(ProxyTrustError::ProxyNotRunning { pid: state.pid });
     }
 
-    let (Some(exe), Some(token)) = (identity::exe_path(state.pid), identity::start_token(state.pid)) else {
+    let (Some(exe), Some(token)) = (
+        identity::image(state.pid).path().map(std::path::Path::to_path_buf),
+        identity::start_token(state.pid),
+    ) else {
         // Either the process vanished between the liveness check and here, or
         // the platform has no implementation. Both mean "cannot verify", and
         // cannot-verify is a refusal, never a pass.
@@ -360,7 +363,7 @@ mod tests {
             pid,
             listen_addr: "127.0.0.1:8899".into(),
             start_token: identity::start_token(pid).expect("own start token"),
-            exe_path: identity::exe_path(pid).expect("own exe path"),
+            exe_path: identity::image(pid).path().expect("own exe path").to_path_buf(),
         }
     }
 
