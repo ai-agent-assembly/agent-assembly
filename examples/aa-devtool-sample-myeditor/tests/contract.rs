@@ -6,7 +6,7 @@
 //! contract from the [`DevToolAdapter`] rustdoc (re-exported via the
 //! `aa-devtool-contract` capability facade). When the
 //! workspace later grows a shared `aa-devtool-contract-tests` crate
-//! (currently out of scope; see `docs/devtools/plugins.md` "What's not
+//! (currently out of scope; see `docs/src/devtools/plugins.md` "What's not
 //! yet in scope"), this file moves there and gets imported by every
 //! adapter crate.
 //!
