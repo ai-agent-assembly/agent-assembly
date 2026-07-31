@@ -68,11 +68,12 @@ export interface NodeEffectivePermissions {
 }
 
 /**
- * Enforcement mode of an agent, matching the Fleet page's `FleetMode`
- * (`features/agents/fleetTypes.ts`), which derives it from the agent record's
- * `metadata.mode`. The topology API now carries this per node (AAASM-5036 —
- * `AgentNode.mode` / `AgentTree.mode`, same derivation as Fleet), so the mode
- * badge renders from real data.
+ * Enforcement mode of an agent, carried per node by the topology API
+ * (`AgentNode.mode` / `AgentTree.mode`). The server derives it from the
+ * canonical `enforcement_mode` field the gateway actually consults, NOT the
+ * free-form `metadata.mode` (AAASM-5289, ADR 0021 prerequisite) — so the badge
+ * cannot show a mode enforcement is not in. `enforce` is the value for an agent
+ * with no per-agent override (the server-wide default).
  */
 export type TopologyMode = 'enforce' | 'shadow' | 'off'
 
@@ -131,8 +132,9 @@ export interface TopologyNode {
   readonly framework?: string
   /**
    * Enforcement mode, surfaced as a badge on the node card. Carried by the
-   * topology API (`AgentNode.mode` / `AgentTree.mode`), mapped from the agent
-   * record's `metadata.mode` exactly as the Fleet page does. Optional so nodes
+   * topology API (`AgentNode.mode` / `AgentTree.mode`), derived server-side from
+   * the canonical `enforcement_mode` the gateway consults (AAASM-5289), not
+   * `metadata.mode`. Optional so nodes
    * from any older/partial payload stay null-safe — the badge renders only when
    * present.
    */
