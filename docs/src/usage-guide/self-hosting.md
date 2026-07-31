@@ -193,6 +193,28 @@ image, keep `AA_AGENT_ID` identical to `aa-runtime`, and keep the
 [README](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/examples/docker-compose/README.md)
 for details.
 
+## Configuring the `aa-api` service
+
+Once you grow the stack past the runtime-only quickstart and run the **`aa-api`**
+control-plane service (the one the dashboard reads), a few `AA_*` environment
+variables on that service shape what operators see and how they sign in. The full
+reference lives in [Configuration → aa-api server environment
+variables](../quick-start/configuration.md#aa-api-server-environment-variables);
+the self-host essentials:
+
+| Variable | Set it to | Effect |
+|---|---|---|
+| `AA_POLICY` | a **directory** of scoped policy documents | The dashboard's capability-matrix, topology-chain, and team-policy projections show the real [policy cascade](../operations/policy-cascade-loader.md). A single **file** shows one policy; leaving it **unset** makes the projections render `Unknown` / `Unconfigured` — never a fabricated allow. |
+| `AA_AUTH_OPEN_REGISTRATION` | `true` (optional) | Opens self-registration for native accounts. Default is closed: the first account bootstraps as `owner`, then it is invite-only. |
+| `AA_SMTP_HOST` (+ `AA_SMTP_PORT` / `USER` / `PASS` / `FROM`) | your SMTP relay | Enables password-reset email delivery. When unset, resets still return `202` but no email is sent (a logging-mailer fallback). |
+
+> **Native email/password login requires a Postgres-backed deployment.** The
+> in-memory / runtime-only quickstart above stays API-key-only. Once `aa-api`
+> is backed by Postgres, human operators can sign in with accounts —
+> `GET /api/v1/auth/methods` advertises whether the password path is available,
+> and the login page degrades honestly when it is not. See
+> [Authentication](authentication.md) for the account, invite, and reset flows.
+
 ## When you want it fully managed
 
 If you would rather not run and maintain the infrastructure yourself — and want the
