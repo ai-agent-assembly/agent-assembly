@@ -31,14 +31,19 @@ not-measured scenario with its reason, and gives a per-AC verdict.
 
 ### Source build vs published crate
 
-`aasm run` and `aasm tools` are **stripped from the published crate** (AAASM-5309).
-Every command below was executed against a **source build** of this worktree
-(`cargo build --workspace --tests`, binary at `target/debug/aasm`, 0 errors).
-AC4 is a behavioural criterion about the launcher, so a source build is the correct
-context in which to verify it — but the distinction is load-bearing for anyone
-reading this report against a released artifact: **a user who installs the published
-crate has no `aasm run` at all**, so AC4 is unreachable there by construction,
-independently of the defect recorded below.
+`aasm run` and `aasm tools` are stripped from the **crates.io-published** crate
+(AAASM-5309). Every command below was executed against a **source build** of this
+worktree (`cargo build --workspace --tests`, binary at `target/debug/aasm`, 0
+errors). AC4 is a behavioural criterion about the launcher, so a source build is
+the correct context in which to verify it.
+
+Be precise about which artifact, because the strip is narrower than it reads.
+`.ci/strip-for-publish.sh` runs in exactly one job — `publish-crates` in
+`release.yml`. The `build` job compiles the **unstripped** tree, and its artifacts
+are what the GitHub Release and the Homebrew tap ship. So `cargo install aasm` has
+no `aasm run`; a Homebrew or GitHub-Release `aasm` **does**. The defect recorded
+below therefore reaches real users on the primary install path — it is not
+confined to source builds.
 
 ### Real-home safety
 
@@ -48,8 +53,18 @@ file from `$HOME`, so verification could have rewritten the developer's real
 injection (`ClaudeCodePaths` / `ClaudeCodeAdapter::with_overrides`) or, for the new
 CLI-level test, by setting `HOME` / `PATH` / `CLAUDE_CONFIG_DIR` / `AASM_STATE_DIR` /
 `AA_CA_DIR` / `AASM_CLAUDE_MANAGED_ROOT` and the working directory **on the child
-`aasm` process only**. The conformance suite's `RealHomeGuard` and the new test's
-before/after byte comparison of the real settings file both passed.
+`aasm` process only**. Both the conformance suite and the new CLI-level test use
+`RealHomeGuard`, which fingerprints the live settings file on **length and mtime
+and never reads its contents** — deliberately, because that file is in daily use
+and may hold credentials, and a byte comparison would print them into any failure
+message and therefore into the CI log. Both passed.
+
+Two honest limits on that guard, since it is cited as a safety claim: it covers
+`~/.claude/settings.json` only, so a write to `settings.local.json`, `.mcp.json`,
+`~/.claude/projects/` or `~/.aasm/` would not be caught; and where the real file
+does not exist — every CI runner — a `None` fingerprint compares equal to `None`,
+so the guard is inert there. It is load-bearing on a developer machine, which is
+where the risk actually lives.
 
 ---
 
@@ -362,12 +377,23 @@ endpoint and a response field that the product does not have.
 * **Expected:** the child receives `HTTPS_PROXY=http://<host>:<port>`.
   `ClaudeCodeAdapter::build_launch_command` (`aa-devtool-claude-code/src/lib.rs:373-381`)
   normalises `host:port` → `http://host:port` deliberately, with a WHY comment.
-* **Actual:** the child receives the bare `host:port`.
-  `execute_with_adapters` applies `build_child_env`'s **unnormalised** value on top
-  of the command the adapter built (`run.rs:545` `cmd.envs(&child_env)`), and
-  `spawn_and_wait` (`run.rs:434`) applies it again — so the adapter's normalisation
-  never reaches the process. Measured directly:
+* **Actual:** the child receives the bare `host:port`. Measured directly:
   `HTTPS_PROXY=127.0.0.1:19999`, `HTTP_PROXY=127.0.0.1:19999`.
+* **Corrected root cause (this report originally got it wrong).** The first
+  version of this finding described an *overlay* — `build_child_env`'s value
+  applied on top of the adapter's. It is not an overlay, it is a **total
+  discard**, and the proxy URL is only its most visible casualty.
+  `spawn_and_wait` (`run.rs:431`) does not launch the `Command` the adapter
+  built. It constructs a fresh `tokio::process::Command` from
+  `cmd.get_program()` and `cmd.get_args()` and applies **only** `child_env`;
+  `cmd.get_envs()` is never read. Everything `build_launch_command` set is
+  therefore thrown away — including `NODE_EXTRA_CA_CERTS`, the sole mechanism
+  by which Claude Code's Node runtime trusts the AASM certificate authority.
+  `cmd.envs(&child_env)` at `run.rs:547` is dead code. Tracked as
+  **AAASM-5327**, which supersedes this finding's analysis.
+  The distinction matters: re-ordering `cmd.envs()` — the fix the original
+  wording pointed at — would have changed nothing, because the `Command`
+  carrying those variables is discarded wholesale.
 * **Why it was missed:** `build_child_env_sets_proxy` (`run.rs:883`) supplies
   `"http://proxy:8080"` — a value that already has a scheme — so the branch that
   matters is never exercised.
@@ -375,7 +401,9 @@ endpoint and a response field that the product does not have.
   a parseable URL and reject or ignore a scheme-less value. A tool that ignores
   `HTTPS_PROXY` goes direct, and a proxy that never sees the traffic cannot inspect
   it — the silent-bypass failure mode AAASM-5276 already documented for
-  `NODE_EXTRA_CA_CERTS`.
+  `NODE_EXTRA_CA_CERTS`. That comparison turned out to be literal rather than
+  analogous: `NODE_EXTRA_CA_CERTS` is discarded on the same code path, so even a
+  tool that honoured the proxy could not have its TLS terminated.
 * **Recommended Bug Subtask** (under AAASM-201, component `agent-assembly`):
   *`🐛 aasm run: build_child_env overwrites the adapter's normalised proxy URL with a scheme-less host:port`*.
 * **Status:** pinned by an assertion in the new test so a fix cannot land silently
