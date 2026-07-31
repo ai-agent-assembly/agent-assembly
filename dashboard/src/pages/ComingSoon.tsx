@@ -1,4 +1,4 @@
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation } from 'react-router'
 
 /**
  * Placeholder page rendered for canonical AAASM-94 routes that

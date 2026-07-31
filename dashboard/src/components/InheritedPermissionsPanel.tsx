@@ -10,7 +10,7 @@
  */
 import { useMemo } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { useAgentCapabilitiesQuery } from '../features/agents/api'
 import type { EffectivePermissions, PermissionSource } from '../features/agents/api'
 import { LoadingState } from './LoadingState'

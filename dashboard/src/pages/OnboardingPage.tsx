@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { Navigate, useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router'
 import { useToast } from '../components/Toast'
 import { OnboardingWizard } from '../features/onboarding/OnboardingWizard'
 import {

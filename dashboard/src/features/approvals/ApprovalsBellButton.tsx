@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { AbsenceMarker } from '../../components/truthfulness'
 import {
   certainFromQuery,

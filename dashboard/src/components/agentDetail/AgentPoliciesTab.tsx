@@ -6,7 +6,7 @@
  * `affects` list. Distinct from the Capability tab, which renders the merged
  * effective-permission cascade rather than the named policies themselves.
  */
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { ignorePromise } from '../../lib/ignorePromise'
 import { useAgentPoliciesQuery } from '../../features/capability/useAgentPolicies'
 import type { Policy } from '../../features/capability/types'

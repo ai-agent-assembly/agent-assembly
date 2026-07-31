@@ -276,7 +276,7 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Build dashboard assets
@@ -430,7 +430,7 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: |
             dashboard/pnpm-lock.yaml
@@ -537,7 +537,7 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: |
             dashboard/pnpm-lock.yaml
@@ -792,7 +792,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Install ajv-cli
         run: npm install -g ajv-cli
       - name: Validate schema is self-consistent (ajv --strict)
@@ -834,7 +834,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Install Spectral CLI
         run: npm install -g @stoplight/spectral-cli
       - name: Lint OpenAPI spec
@@ -1169,7 +1169,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Node.js SDK conformance (not yet implemented)
         run: |
           echo "Node.js SDK conformance runner not yet implemented."
@@ -1209,7 +1209,7 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -1236,7 +1236,7 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -1267,7 +1267,7 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -1322,7 +1322,7 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -1382,7 +1382,7 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -1447,7 +1447,7 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: examples/aa-devint-reference-client/pnpm-lock.yaml
       - name: Install dependencies
@@ -1547,7 +1547,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: needs.dashboard-test.result != 'success'
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dashboard dependencies (fallback)

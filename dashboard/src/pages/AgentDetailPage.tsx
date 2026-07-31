@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
-import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router'
 import { useAgentQuery, useAgentEventsQuery, useAgentEnforcementQuery, useTrustQuery, type Agent } from '../features/agents/api'
 import { extractSandboxInfo } from '../features/audit/api'
 import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
