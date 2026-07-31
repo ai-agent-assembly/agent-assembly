@@ -102,6 +102,7 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm policy simulate`](policy.md) | The simulation detected policy violations. |
 | [`aasm policy validate`](policy.md), [`aasm config validate`](config.md) | The file is invalid (error printed to stderr). |
 | [`aasm audit verify-chain`](audit.md) | The audit hash chain failed verification. |
+| [`aasm integrations`](integrations.md) | One of **nine** distinct outcomes — `1`, `3`–`9` each name a different next action. See [its exit-code table](integrations.md#exit-codes). |
 
 ## Command groups
 
@@ -120,6 +121,7 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm dashboard`](dashboard.md) | Gateway HTTP/WS + local | TUI dashboard and embedded SPA server. |
 | [`aasm gateway`](gateway.md) | Local process | Manage the `aa-gateway` daemon. |
 | [`aasm proxy`](proxy.md) | Local process | Manage the `aa-proxy` sidecar and its CA. |
+| [`aasm integrations`](integrations.md) | `aa-runtime` DI-API (UDS) | Install, verify, repair, remove Developer Integrations for AI dev tools. **Source build only — see below.** |
 | [`aasm start`](start-stop.md) / [`aasm stop`](start-stop.md) | Local process | Start/stop the locally-managed gateway. |
 | [`aasm sandbox`](sandbox.md) | Local | Run a WASM tool under the sandbox. |
 | [`aasm config`](config.md) | Local | Validate / boot an `agent-assembly.toml`. |
@@ -129,10 +131,19 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm version`](version.md) | Gateway HTTP | CLI + gateway/api versions. |
 | [`aasm completion`](completion.md) | Local | Generate shell completion scripts. |
 
-> **Developer-only commands.** The source tree also defines `aasm run`
-> (launch a governed AI dev tool) and `aasm tools` (discover installed AI dev
-> tools). Both are gated behind the `devtool` region in
-> `aa-cli/src/commands/mod.rs` and `aa-cli/Cargo.toml` and are **stripped from
-> the published crate** by `.ci/strip-for-publish.sh` before release. They are
-> intentionally **not documented** here because they are not part of the
-> published `aasm` surface.
+> **Developer-only commands.** Three command groups exist in the source tree but
+> not in the published `aasm`: `aasm run` (launch a governed AI dev tool),
+> `aasm tools` (discover installed AI dev tools), and
+> [`aasm integrations`](integrations.md) (the Developer Integration lifecycle —
+> added to this set by AAASM-5309). All three are gated behind the `devtool`
+> region in `aa-cli/src/commands/mod.rs` and `aa-cli/Cargo.toml` and are
+> **stripped from the published crate** by `.ci/strip-for-publish.sh` before
+> release. They are present in a source build (`cargo build -p aa-cli`) and
+> absent from `cargo install aasm`.
+>
+> `aasm integrations` is documented here anyway, because it is a shipped,
+> user-facing surface for anyone running a source build and the omission was
+> itself a documentation gap. `aasm run` and `aasm tools` remain undocumented in
+> this reference. The strip is not cosmetic in the `integrations` case: the
+> published `aa-runtime` never binds the Developer Integration API socket, so
+> the command would have nothing to connect to.

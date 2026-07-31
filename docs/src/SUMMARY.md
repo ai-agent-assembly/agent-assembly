@@ -32,6 +32,7 @@
 - [aasm dashboard](cli/dashboard.md)
 - [aasm gateway](cli/gateway.md)
 - [aasm proxy](cli/proxy.md)
+- [aasm integrations](cli/integrations.md)
 - [aasm start / stop](cli/start-stop.md)
 - [aasm sandbox](cli/sandbox.md)
 - [aasm config](cli/config.md)
