@@ -1211,6 +1211,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/password/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a password-reset email (ADR 0031 §Q4).
+         * @description Enumeration-safe: always returns `202 Accepted` whether or not the email maps
+         *     to an account, so a caller can never probe which addresses are registered.
+         *     When the email does resolve to an active account, a single-use, expiring reset
+         *     token is minted (stored only as its hash) and the raw token is dispatched via
+         *     the configured mailer; the token is never logged and never returned on the
+         *     wire. A mail outage or an SMTP-less deployment does not change the response.
+         */
+        post: operations["password_reset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password/reset/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm a password reset: consume the token and set the new password (ADR
+         *     0031 §Q4).
+         * @description Validates the new password against the minimum-length floor (`422` if weak),
+         *     then atomically consumes the single-use reset token — a missing, expired, or
+         *     already-used token is rejected with `422`. On success the password is
+         *     re-hashed with argon2id and installed, and every outstanding refresh session
+         *     for the account is revoked so any pre-existing session is forced to re-auth.
+         *     The token is never logged.
+         */
+        post: operations["password_reset_confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/refresh": {
         parameters: {
             query?: never;
@@ -4613,6 +4664,24 @@ export interface components {
              * @description Total policy versions across all pages.
              */
             total: number;
+        };
+        /** @description Request body for `POST /auth/password/reset/confirm` (ADR 0031 §Q4). */
+        PasswordResetConfirmRequest: {
+            /** @description The new password to set (must clear the minimum-length floor). */
+            new_password: string;
+            /**
+             * @description The raw reset token delivered by email. Only its hash is stored server-
+             *     side; this is checked against that hash and consumed single-use.
+             */
+            token: string;
+        };
+        /** @description Request body for `POST /auth/password/reset` (ADR 0031 §Q4). */
+        PasswordResetRequest: {
+            /**
+             * @description The account email to send a reset link to (case-insensitive). Whether it
+             *     exists is never revealed — the response is always `202`.
+             */
+            email: string;
         };
         /** @description A per-kind hit count within the queried window. */
         PatternCount: {
@@ -8391,6 +8460,77 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuthMethodsResponse"];
+                };
+            };
+        };
+    };
+    password_reset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Reset request accepted (always, enumeration-safe) */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    password_reset_confirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Password reset; outstanding sessions revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Token expired/used/unknown or weak password */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
                 };
             };
         };

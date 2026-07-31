@@ -71,6 +71,18 @@ uuid = { workspace = true, features = ["v4"] }
 # handed to PgUserStore (which stores only the hash). Promoted from a
 # dev-dependency to a runtime dependency for the auth endpoints.
 sha2 = { workspace = true }
+# AAASM-5306 (FLAGGED new dependency): pluggable SMTP mailer for the ADR 0031 §Q4
+# password-reset flow. `default-features = false` drops lettre's native-tls stack
+# and its sync/file transports; we opt into only the async tokio SMTP transport
+# over rustls (reusing the rustls stack reqwest already pulls in) plus the message
+# builder. Apache-2.0 / MIT — within the deny.toml allow list.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "tokio1-rustls-tls",
+    "builder",
+    "hostname",
+    "pool",
+] }
 
 [dev-dependencies]
 # AAASM-3980: WS tenant-isolation tests construct AuditEvent to set team_id.

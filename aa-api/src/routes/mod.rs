@@ -85,6 +85,14 @@ fn public_router() -> Router {
         .route("/auth/invite/accept", post(native_auth::invite_accept))
         .route("/auth/refresh", post(native_auth::refresh))
         .route("/auth/methods", get(native_auth::auth_methods))
+        // Password reset (AAASM-5306, ADR 0031 §Q4). Public for the same reason
+        // as login/refresh: a user who has lost their password has no credential.
+        // reset always 202 (enumeration-safe); confirm consumes the emailed token.
+        .route("/auth/password/reset", post(native_auth::password_reset))
+        .route(
+            "/auth/password/reset/confirm",
+            post(native_auth::password_reset_confirm),
+        )
         // AAASM-1389: real-time alert event stream.
         .route("/alerts/ws", get(crate::ws::alerts_handler::ws_alerts_handler))
         // Dev tool webhooks — HMAC-authenticated in-handler.

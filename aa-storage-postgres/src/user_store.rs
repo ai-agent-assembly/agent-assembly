@@ -196,6 +196,22 @@ impl RefreshTokenRecord {
     }
 }
 
+/// A consumed password-reset token (AAASM-5306, ADR 0031 §Q4). Only the hash is
+/// persisted; this is the record the confirm path reads back after atomically
+/// spending a single-use token, so it can set the new password for the right
+/// account. The raw token is never stored or returned.
+#[derive(Debug, Clone)]
+pub struct ResetTokenRecord {
+    /// Reset-token id.
+    pub id: Uuid,
+    /// The account this reset targets.
+    pub user_id: Uuid,
+    /// The tenant (org) the reset belongs to.
+    pub org_id: Uuid,
+    /// When the token expires.
+    pub expires_at: DateTime<Utc>,
+}
+
 /// The lockout state of an account (AAASM-5305, ADR 0031 brute-force control).
 ///
 /// Returned by the failed-attempt counter methods so the login handler can map a
@@ -613,6 +629,124 @@ impl PgUserStore {
         tx.commit().await.map_err(backend_err)?;
         Ok(())
     }
+
+    /// Store a single-use, expiring password-reset token under the verified
+    /// tenant `org_id` (AAASM-5306, ADR 0031 §Q4).
+    ///
+    /// Only `token_hash` (a SHA-256 of the opaque reset token) is persisted — the
+    /// raw token is emailed to the account owner and never stored. `user_id` must
+    /// belong to the same tenant; the RLS `WITH CHECK` rejects a mismatched-tenant
+    /// write.
+    pub async fn create_reset_token(
+        &self,
+        org_id: Uuid,
+        id: Uuid,
+        token_hash: &str,
+        user_id: Uuid,
+        expires_at: DateTime<Utc>,
+    ) -> Result<()> {
+        self.execute_in_tenant(
+            org_id,
+            sqlx::query(
+                "INSERT INTO password_reset_tokens (id, token_hash, user_id, org_id, expires_at) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(id)
+            .bind(token_hash)
+            .bind(user_id)
+            .bind(org_id)
+            .bind(expires_at),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Atomically consume a single-use password-reset token by its `token_hash`
+    /// under the verified tenant `org_id`, returning the token it spent
+    /// (AAASM-5306, ADR 0031 §Q4).
+    ///
+    /// Single-use is enforced in the UPDATE: only a token that is not yet consumed
+    /// and not yet expired is stamped and returned. A missing, already consumed,
+    /// expired, or RLS-invisible token yields `Ok(None)` — so a replay of a spent
+    /// token gets nothing, exactly like [`consume_invite`](Self::consume_invite).
+    /// The record is returned so the caller can set the new password for the
+    /// right account.
+    pub async fn consume_reset_token(&self, org_id: Uuid, token_hash: &str) -> Result<Option<ResetTokenRecord>> {
+        let mut tx = self.pool.begin_for_tenant(org_id).await.map_err(backend_err)?;
+        let row: Option<ResetTokenRow> = sqlx::query_as(
+            "UPDATE password_reset_tokens \
+                SET consumed_at = now() \
+              WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now() \
+          RETURNING id, user_id, org_id, expires_at",
+        )
+        .bind(token_hash)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend_err)?;
+        tx.commit().await.map_err(backend_err)?;
+        Ok(row.map(ResetTokenRow::into_record))
+    }
+
+    /// Set an account's password hash under the verified tenant `org_id`
+    /// (AAASM-5306).
+    ///
+    /// Used by the reset-confirm path to install the freshly argon2id-hashed
+    /// password. Only an `active` account is updated — a reset must never
+    /// resurrect a disabled account or clobber an invited (never-accepted) one.
+    /// Returns `true` when this call updated the account; a missing, non-active,
+    /// or RLS-invisible user affects zero rows and returns `false`.
+    pub async fn set_password(&self, org_id: Uuid, user_id: Uuid, password_hash: &str) -> Result<bool> {
+        let affected = self
+            .execute_in_tenant(
+                org_id,
+                sqlx::query(
+                    "UPDATE users SET password_hash = $1, updated_at = now() \
+                      WHERE id = $2 AND status = 'active'::user_status",
+                )
+                .bind(password_hash)
+                .bind(user_id),
+            )
+            .await?;
+        Ok(affected > 0)
+    }
+
+    /// Revoke every outstanding (unrevoked) refresh session for an account under
+    /// the verified tenant `org_id` (AAASM-5306).
+    ///
+    /// Called after a password reset so an attacker who already held a live
+    /// session is forced back to the login screen (ADR 0031 §Q4: a reset
+    /// invalidates outstanding sessions). Idempotent: stamps `revoked_at` on
+    /// every live token for the user and returns how many it revoked; an account
+    /// with no live sessions affects zero rows.
+    pub async fn revoke_all_refresh_tokens(&self, org_id: Uuid, user_id: Uuid) -> Result<u64> {
+        self.execute_in_tenant(
+            org_id,
+            sqlx::query(
+                "UPDATE refresh_tokens SET revoked_at = now() \
+                  WHERE user_id = $1 AND revoked_at IS NULL",
+            )
+            .bind(user_id),
+        )
+        .await
+    }
+
+    /// Run a single write `query` inside a tenant-scoped transaction and return
+    /// the number of rows affected.
+    ///
+    /// Factors out the `begin_for_tenant` → `execute` → `commit` scaffolding that
+    /// every single-statement write in this store repeats, so the RLS seam is
+    /// applied identically in one place. Read/`RETURNING` queries keep their own
+    /// bodies because they map a row back.
+    async fn execute_in_tenant<'q>(
+        &self,
+        org_id: Uuid,
+        query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    ) -> Result<u64> {
+        let mut tx = self.pool.begin_for_tenant(org_id).await.map_err(backend_err)?;
+        let result = query.execute(&mut *tx).await.map_err(backend_err)?;
+        tx.commit().await.map_err(backend_err)?;
+        Ok(result.rows_affected())
+    }
 }
 
 /// Advisory-lock key serialising first-user bootstrap attempts. An arbitrary
@@ -702,6 +836,26 @@ impl RefreshTokenRow {
             org_id: self.org_id,
             expires_at: self.expires_at,
             revoked_at: self.revoked_at,
+        }
+    }
+}
+
+/// Raw `password_reset_tokens` row as read from Postgres (AAASM-5306).
+#[derive(sqlx::FromRow)]
+struct ResetTokenRow {
+    id: Uuid,
+    user_id: Uuid,
+    org_id: Uuid,
+    expires_at: DateTime<Utc>,
+}
+
+impl ResetTokenRow {
+    fn into_record(self) -> ResetTokenRecord {
+        ResetTokenRecord {
+            id: self.id,
+            user_id: self.user_id,
+            org_id: self.org_id,
+            expires_at: self.expires_at,
         }
     }
 }
