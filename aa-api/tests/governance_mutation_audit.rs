@@ -129,10 +129,19 @@ async fn actor_and_tenant_are_taken_from_identity_not_the_request_body() {
         "key_id": "attacker-key"
     }"#;
     let uri = format!("/api/v1/agents/{}/suspend", hex_id(0xC1));
-    let response = app.oneshot(json_bearer("POST", &uri, &token, spoof_body)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK, "the suspend itself must still succeed");
+    let response = app
+        .oneshot(json_bearer("POST", &uri, &token, spoof_body))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the suspend itself must still succeed"
+    );
 
-    let entry = rx.try_recv().expect("a governance-mutation audit entry must have been emitted");
+    let entry = rx
+        .try_recv()
+        .expect("a governance-mutation audit entry must have been emitted");
     assert_eq!(entry.event_type(), AuditEventType::GovernanceMutation);
 
     let payload = payload_of(&entry);
@@ -188,12 +197,19 @@ async fn suspend_records_reason_and_before_after_status() {
 
     let uri = format!("/api/v1/agents/{}/suspend", hex_id(0xC3));
     let response = app
-        .oneshot(json_bearer("POST", &uri, &token, r#"{"reason":"scheduled maintenance"}"#))
+        .oneshot(json_bearer(
+            "POST",
+            &uri,
+            &token,
+            r#"{"reason":"scheduled maintenance"}"#,
+        ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let entry = rx.try_recv().expect("a governance-mutation audit entry must have been emitted");
+    let entry = rx
+        .try_recv()
+        .expect("a governance-mutation audit entry must have been emitted");
     let payload = payload_of(&entry);
     assert_eq!(payload["action"], "suspend");
     assert_eq!(payload["reason"], "scheduled maintenance");

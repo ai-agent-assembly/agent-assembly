@@ -976,7 +976,13 @@ impl GovernanceMutationAudit {
     /// `seq` / `previous_hash` are supplied by the caller (or `0` / `[0u8; 32]`
     /// when the entry is emitted onto a channel that re-sequences downstream,
     /// matching the existing aa-api dispatch pattern).
-    pub fn to_audit_entry(&self, seq: u64, timestamp_ns: u64, session_id: SessionId, previous_hash: [u8; 32]) -> AuditEntry {
+    pub fn to_audit_entry(
+        &self,
+        seq: u64,
+        timestamp_ns: u64,
+        session_id: SessionId,
+        previous_hash: [u8; 32],
+    ) -> AuditEntry {
         let lineage = Lineage {
             team_id: self.team.clone(),
             org_id: self.org.clone(),
@@ -2139,7 +2145,10 @@ mod governance_mutation_tests {
         // only the fields we put there and no bearer-token-shaped bytes.
         let payload = record().to_payload();
         assert!(!payload.contains("aa_"), "payload must not embed an API-key token");
-        assert!(!payload.contains("Bearer"), "payload must not embed an auth header value");
+        assert!(
+            !payload.contains("Bearer"),
+            "payload must not embed an auth header value"
+        );
     }
 }
 
