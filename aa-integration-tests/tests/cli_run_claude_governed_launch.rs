@@ -295,28 +295,25 @@ exit 0
 
         // ── proxy, as the launched tool saw it ─────────────────────────────
         //
-        // AAASM-1112 finding (2), pinned here rather than asserted away: the
-        // value the child receives is the gateway's bare `host:port`, **not** a
-        // proxy URL. `ClaudeCodeAdapter::build_launch_command` deliberately
-        // normalises `host:port` to `http://host:port`, but `execute_with_adapters`
-        // applies `build_child_env`'s unnormalised value on top of the command the
-        // adapter built (`cmd.envs(&child_env)`), and `spawn_and_wait` applies it
-        // once more — so the adapter's normalisation never reaches the process.
-        // `aa-cli`'s own `build_child_env_sets_proxy` unit test does not catch
-        // this because it feeds in a value that already carries a scheme.
+        // AAASM-1112 finding (2) is now FIXED (AAASM-5324, via AAASM-5327 / PR
+        // #1855): `ClaudeCodeAdapter::build_launch_command` normalises the
+        // gateway-assigned `host:port` to `http://host:port`, and the launch
+        // path (`execute_with_adapters` / `spawn_and_wait`) now propagates the
+        // adapter's normalised value to the child — so the child's proxy env
+        // carries the scheme-qualified `http://{PROXY_ADDR}`.
         //
-        // This assertion is written against the observed value on purpose: when
-        // the defect is fixed the test fails, which is the forcing function that
-        // makes the verification record get revisited.
+        // This previously pinned the pre-fix defective bare `host:port` as a
+        // forcing function (AAASM-5331: the pin was left stale when #1855
+        // landed). It now asserts the DESIGNED value, confirming AAASM-201 AC4
+        // (the launched tool is routed at the proxy the gateway assigned).
+        let expected_proxy_url = format!("http://{PROXY_ADDR}");
         for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
             assert_eq!(
                 seen.get(key).map(String::as_str),
-                Some(PROXY_ADDR),
-                "the launched tool must be routed at the proxy address the gateway assigned via \
-                 `{key}`. NOTE: this pins the CURRENT, DEFECTIVE value on purpose — the designed \
-                 value is `http://{PROXY_ADDR}` (AAASM-5324, root-caused by AAASM-5327). If this \
-                 now reads `http://{PROXY_ADDR}`, that bug is fixed: change this assertion to the \
-                 designed value and re-derive the AAASM-201 AC4 verdict. Saw:\n{raw}",
+                Some(expected_proxy_url.as_str()),
+                "the launched tool must be routed at the scheme-qualified proxy URL the gateway \
+                 assigned via `{key}` — `{expected_proxy_url}` (AAASM-5324 fixed by AAASM-5327 / \
+                 #1855; AAASM-201 AC4). Saw:\n{raw}",
             );
         }
 
