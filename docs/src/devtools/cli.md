@@ -255,7 +255,7 @@ build has none — a client on the near side of the proxy cannot see the forward
 body — so `verify` reports the model path as configured but never exercised, the
 level stays at `Integrated`, and the command **exits `6`**. That is the honest
 reading: configuration alone is not evidence that anything inspected the traffic.
-See [Limitations](limitations.md#verify-cannot-adjudicate-so-it-exits-6).
+See [Limitations](limitations.md#what-verify-adjudicates-and-when-it-still-exits-6).
 
 ## See also
 

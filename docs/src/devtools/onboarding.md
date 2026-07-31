@@ -193,52 +193,45 @@ and **passes the flag through unchanged**. Agent Assembly's interception sits
 below Claude Code's own permission enforcement, so stripping the flag would
 change your session without changing what is protected.
 
-## Step 6 — Verify, and the exit `6` you will see
+## Step 6 — Verify, and the exit `6` that means "not measured"
 
 ```console
 $ aasm integrations verify claude-code
 claude-code — verification passed
   ran at:               1785391172 (unix)
-  protected path exercised: no
+  protected path exercised: yes
 
 Assertions:
-  [--] protected_path_exercised               nothing protective was observed on the model-bound path
+  [ok] protected_path_exercised               the core redacted 1 credential finding(s) from the
+                                              probe request to api.anthropic.com, and re-inspection
+                                              of the bytes it resolved to forward found none
   ...
-
-This is NOT a protection measurement. Configuration that exists is not evidence
-that anything was protected; the protected path must be exercised and adjudicated.
 $ echo $?
-6
+0
 ```
 
-> ### ⚠ On a default build, `verify` exits `6` — and that is correct
+> ### ⚠ Exit `6` means "not measured", not "measured and failed"
 >
 > `verify` succeeds only when the outcome is `passed` **and** the protected path
-> was actually exercised. Exercising it means knowing what the provider
-> *received*, and **a client on the near side of the proxy cannot see the
-> forwarded body**. The shipped default probe, `UnadjudicatedProbe`, therefore
-> reports `Inconclusive` and produces no traffic at all — sending a synthetic
-> secret to a real provider for no evidential gain would be worse than saying
-> nothing (`aa-devtool-claude-code/src/probe.rs`).
+> was actually exercised. Exercising it means knowing what the payload leaving
+> the machine carries, and **a client on the near side of the proxy cannot see
+> that for itself**. So the shipped probe does not guess: it marks its own
+> request with an opaque correlation identifier and reads back the proxy's
+> verdict for that exact request, including a re-inspection of the payload the
+> proxy resolved to forward (`aa-devtool-claude-code/src/adjudicating_probe.rs`).
+> The probe's own traffic is terminated at the proxy and never reaches the
+> provider.
+>
+> **You will see exit `6` when the probe cannot measure** — the certificate
+> authority is not trusted, nothing on the path adjudicates, the core is
+> stopped, the exchange times out, or the deployment is configured `alert_only`
+> (observing is not protecting). In every one of those cases the level correctly
+> stays at `Integrated`.
 >
 > A probe that returned `Redacted` because nothing obviously failed would be a
-> vacuous pass, and the evidence model exists to prevent exactly that.
->
-> **What this means for you:** a correct, fully-applied installation reaches
-> `Integrated` and will correctly **not** show `Gateway Protected` — even though
-> the underlying protection genuinely works. AAASM-5276 proved it end to end
-> against the real `claude 2.1.220` binary and a TLS-terminating mock provider:
-> every upstream request traversed the proxy, the scanner matched the synthetic
-> secret, and the forwarded body carried `[REDACTED:AnthropicKey]` while
-> remaining valid Messages JSON.
->
-> **What is planned:** a deployment that *can* observe the forwarded payload
-> supplies a probe that adjudicates, and only then does `GatewayProtected` become
-> reachable. The probe is an injected capability precisely so that this can land
-> without changing the evidence model. Until it does, treat exit `6` on an
-> otherwise-clean install as *"not measured"*, not as *"measured and failed"* —
-> and read `status` for which is which.
-
+> vacuous pass, and the evidence model exists to prevent exactly that. Read exit
+> `6` on an otherwise-clean install as *"not measured"* — and read `status` for
+> which condition it is.
 The probe uses a **synthetic** secret chosen by the adapter and run by the
 service. No real credential is ever read, sent or printed.
 
