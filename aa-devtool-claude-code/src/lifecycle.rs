@@ -395,7 +395,7 @@ impl ClaudeCodeIntegration {
     /// project-scoped install as unobservable and refuse to remove it.
     pub fn scoped_executor(&self, rendered: BTreeMap<String, String>) -> ClaudeCodeStepExecutor {
         let mut executor = ClaudeCodeStepExecutor::new();
-        for scope in [SettingsScope::User, SettingsScope::Project] {
+        for scope in [SettingsScope::User, SettingsScope::Project, SettingsScope::Managed] {
             if let Ok(dir) = self.paths.launch_env_dir(scope) {
                 executor = executor.with_scope(scope, dir);
             }

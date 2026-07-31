@@ -156,9 +156,14 @@ impl LaunchEnvStore {
 /// installed produces an empty map and the launch is unchanged.
 pub fn installed_environment(paths: &crate::scope::ClaudeCodePaths) -> BTreeMap<String, String> {
     let mut merged = BTreeMap::new();
+    // Every scope an install can own, `Managed` included: the endpoint-managed
+    // install still needs `NODE_EXTRA_CA_CERTS` and the proxy variables at
+    // launch, and the artifacts that carry them are Agent Assembly's own files
+    // under the state root — not the root-owned settings file.
     for scope in [
         aa_devtool_contract::SettingsScope::User,
         aa_devtool_contract::SettingsScope::Project,
+        aa_devtool_contract::SettingsScope::Managed,
     ] {
         let Ok(dir) = paths.launch_env_dir(scope) else {
             continue;

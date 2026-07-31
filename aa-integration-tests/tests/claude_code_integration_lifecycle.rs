@@ -38,6 +38,8 @@ use aa_core::integration::{
 };
 use aa_core::DevToolKind;
 use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
+use aa_devtool_claude_code::managed_settings::testing::FakeAuthority;
+use aa_devtool_claude_code::managed_settings::PrivilegedFileAuthority;
 use aa_devtool_claude_code::probe::{ProbeReport, ProbeRequest, ProtectionProbe, SYNTHETIC_SECRET};
 use aa_devtool_claude_code::{ClaudeCodeAdapter, ClaudeCodeIntegration, ClaudeCodePaths};
 use aa_devtool_contract::ExerciseOutcome;
@@ -170,6 +172,13 @@ struct Harness {
 
 impl Harness {
     async fn start(trust_injected_ca: bool) -> anyhow::Result<Self> {
+        Self::start_with_authority(trust_injected_ca, FakeAuthority::granting()).await
+    }
+
+    async fn start_with_authority(
+        trust_injected_ca: bool,
+        authority: Arc<dyn PrivilegedFileAuthority>,
+    ) -> anyhow::Result<Self> {
         install_crypto_provider();
         let guard = RealHomeGuard::capture();
 
@@ -194,7 +203,13 @@ impl Harness {
             .with_home(&home)
             .with_project(&repo)
             .with_state(&state)
-            .with_ca_source(ca_dir.join("ca-cert.pem"));
+            .with_ca_source(ca_dir.join("ca-cert.pem"))
+            // AAASM-5298: the endpoint-managed surface is redirected into the
+            // fixture, and the real macOS authority refuses to elevate for
+            // anything but the canonical path — so nothing here can reach an
+            // administrator prompt or the real
+            // `/Library/Application Support/ClaudeCode`.
+            .with_managed_root(dir.path().join("ClaudeCode"));
 
         let stub_binary = dir.path().join("claude");
         std::fs::write(&stub_binary, "")?;
@@ -210,7 +225,8 @@ impl Harness {
                     proxy_addr: proxy.addr,
                     upstream: Arc::clone(&upstream),
                     trust_injected_ca,
-                })),
+                }))
+                .with_managed_authority(authority),
         );
 
         let service = EngineLifecycle::new(
@@ -254,6 +270,43 @@ impl Harness {
             .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// The opt-in, administrator-authorized install. Everything about it is
+    /// explicit: the scope, the level it asks for, and the consent to the one
+    /// privileged step.
+    async fn install_managed(&self) -> anyhow::Result<aa_core::integration::IntegrationReceipt> {
+        let request = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Managed,
+        )
+        .requesting_level(ProtectionLevel::HostEnforced)
+        .allowing_privileged_host_steps();
+        let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+        self.service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// The same plan, without the consent the privileged step needs.
+    async fn install_managed_without_consent(&self) -> anyhow::Result<String> {
+        let request = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Managed,
+        )
+        .requesting_level(ProtectionLevel::HostEnforced);
+        let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+        match self.service.apply(&DevToolKind::ClaudeCode, &plan.plan_id).await {
+            Ok(_) => anyhow::bail!("an unconsented privileged step must not be applied"),
+            Err(e) => Ok(e.to_string()),
+        }
+    }
+
+    fn managed_settings_path(&self) -> PathBuf {
+        self.paths.managed_settings_path()
     }
 
     fn ca_pem_path(&self) -> PathBuf {
@@ -635,6 +688,194 @@ async fn the_removal_preview_names_the_trust_material_and_the_variable() -> anyh
     assert!(
         preview.steps.iter().any(|s| s.id.contains(STEP_NODE_EXTRA_CA_CERTS)),
         "{rendered}"
+    );
+    h.finish();
+    Ok(())
+}
+
+// ── AAASM-5298: the one privileged step, end to end ─────────────────────────
+
+/// The governing rule, measured through the engine rather than asserted in a
+/// unit test: a successful **normal** installation, fully verified, with real
+/// adjudicated traffic behind it, still cannot report `Host Enforced`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_successful_normal_install_cannot_reach_host_enforced() -> anyhow::Result<()> {
+    let h = Harness::start(true).await?;
+    let tool = DevToolKind::ClaudeCode;
+
+    h.install().await?;
+    let verification = h.service.verify(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    assert_eq!(verification.outcome, VerificationOutcome::Passed);
+
+    let status = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    assert_eq!(
+        status.achieved_level(),
+        ProtectionLevel::GatewayProtected,
+        "the best an unprivileged install can prove is that traffic was governed"
+    );
+    assert!(
+        !h.managed_settings_path().exists(),
+        "an unprivileged install must not write the endpoint-managed file"
+    );
+    assert!(
+        !status
+            .evidence
+            .iter()
+            .any(aa_core::integration::ProtectionEvidence::is_host_enforcement_grade),
+        "a normal install must produce no host-attested evidence: {:?}",
+        status.evidence
+    );
+    let next = status.next_level.as_ref().expect("the next rung is always reported");
+    assert_eq!(next.level, ProtectionLevel::HostEnforced);
+    assert!(
+        next.blocked_because.contains("--install-managed-settings"),
+        "the reason must name the opt-in: {}",
+        next.blocked_because
+    );
+
+    h.finish();
+    Ok(())
+}
+
+/// The authorized path: one privileged step, read back and verified, and only
+/// then `Host Enforced` — reversed symmetrically on removal.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_authorized_managed_install_reaches_host_enforced_and_is_reversible() -> anyhow::Result<()> {
+    let h = Harness::start(true).await?;
+    let tool = DevToolKind::ClaudeCode;
+
+    let receipt = h.install_managed().await?;
+    assert_eq!(receipt.settings_scope, SettingsScope::Managed);
+    let installed = std::fs::read_to_string(h.managed_settings_path())?;
+    assert!(installed.contains("disableBypassPermissionsMode"), "{installed}");
+
+    // Configuration alone still does not raise the ladder past Integrated.
+    let after_install = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    assert!(after_install.achieved_level() <= ProtectionLevel::Integrated);
+
+    let verification = h.service.verify(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    assert_eq!(verification.outcome, VerificationOutcome::Passed);
+
+    let status = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    assert_eq!(
+        status.achieved_level(),
+        ProtectionLevel::HostEnforced,
+        "an authorized, read-back-verified managed install is the only route to this rung: {:?}",
+        status.state
+    );
+    let attested = status
+        .evidence
+        .iter()
+        .find(|e| e.is_host_enforcement_grade())
+        .expect("host-attested evidence");
+    assert!(
+        attested.detail.contains("has not measured Claude Code"),
+        "the attestation must state what it does not claim: {}",
+        attested.detail
+    );
+
+    // ── removal is symmetric, including the no-prior-file case ─────────────
+    let removal = h
+        .service
+        .remove(&tool, Some(&format!("remove-{}", receipt.receipt_id)))
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    assert!(removal.residual.is_empty(), "{:?}", removal.residual);
+    assert!(
+        !h.managed_settings_path().exists(),
+        "there was no managed file before the install, so there must be none after the removal"
+    );
+
+    h.finish();
+    Ok(())
+}
+
+/// A privileged step the request did not consent to is refused by the service,
+/// before the authority is ever asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_privileged_step_is_refused_without_consent() -> anyhow::Result<()> {
+    let h = Harness::start(true).await?;
+    let message = h.install_managed_without_consent().await?;
+    assert!(message.contains("changes host state"), "{message}");
+    assert!(
+        !h.managed_settings_path().exists(),
+        "an unconsented plan must write nothing"
+    );
+    h.finish();
+    Ok(())
+}
+
+/// Denied authorization is a failure, never a quieter install.
+#[tokio::test(flavor = "multi_thread")]
+async fn denied_authorization_fails_the_install_rather_than_downgrading_it() -> anyhow::Result<()> {
+    let h = Harness::start_with_authority(true, FakeAuthority::denying()).await?;
+    let err = h
+        .install_managed()
+        .await
+        .expect_err("a denied authorization must fail the install");
+    let message = err.to_string();
+    assert!(message.contains("Permission Required"), "{message}");
+    assert!(
+        !h.managed_settings_path().exists(),
+        "a denied install must leave nothing behind"
+    );
+
+    // And nothing claims host enforcement afterwards.
+    let status = h
+        .service
+        .status(&DevToolKind::ClaudeCode)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    assert!(
+        status.achieved_level() < ProtectionLevel::HostEnforced,
+        "{:?}",
+        status.state
+    );
+    h.finish();
+    Ok(())
+}
+
+/// A read-back that does not match what was authorized prevents the success
+/// receipt — the install fails and the host is put back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_back_mismatch_prevents_the_success_receipt() -> anyhow::Result<()> {
+    let h = Harness::start_with_authority(
+        true,
+        FakeAuthority::corrupting(r#"{"disableBypassPermissionsMode":false}"#),
+    )
+    .await?;
+    let err = h
+        .install_managed()
+        .await
+        .expect_err("a read-back mismatch must fail the install");
+    let message = err.to_string();
+    assert!(message.contains("Read-back verification failed"), "{message}");
+    assert!(
+        !h.managed_settings_path().exists(),
+        "the failed write must have been rolled back"
+    );
+    h.finish();
+    Ok(())
+}
+
+/// A managed-settings file Agent Assembly did not write is never merged over.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_third_party_managed_file_is_refused_and_left_alone() -> anyhow::Result<()> {
+    const MDM_POLICY: &str = r#"{"disableBypassPermissionsMode":true,"permissions":{"deny":["Bash"]}}"#;
+    let h = Harness::start(true).await?;
+    let managed = h.managed_settings_path();
+    std::fs::create_dir_all(managed.parent().expect("parent"))?;
+    std::fs::write(&managed, MDM_POLICY)?;
+
+    let err = h
+        .install_managed()
+        .await
+        .expect_err("a file Agent Assembly did not write must not be replaced");
+    assert!(err.to_string().contains("Conflicting managed settings"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&managed)?,
+        MDM_POLICY,
+        "the third party's policy must be exactly as it was"
     );
     h.finish();
     Ok(())
