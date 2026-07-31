@@ -1018,6 +1018,47 @@ mod tests {
         }
     }
 
+    /// Constraint: the identity that registered must be the identity the launch
+    /// runs under. `AA_AGENT_ID` is the seed the DID is derived from, so anything
+    /// downstream that derives from it — an SDK inside the launched tool, a later
+    /// `aasm run` for the same agent — must land on the DID the gateway
+    /// registered. If these two ever disagree, the launched process is operating
+    /// under an identity the gateway never accepted.
+    #[test]
+    fn the_launched_tool_carries_the_registered_identity_and_can_rederive_it() {
+        let handle = stub_handle(Some("team-a"));
+        let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
+
+        let seed = env.get("AA_AGENT_ID").expect("the launch must carry an agent id");
+        let did = env
+            .get("AA_AGENT_DID")
+            .expect("the launch must carry the registered DID");
+        assert_eq!(
+            did,
+            &run_registration::registration_did(seed),
+            "`AA_AGENT_DID` must be what `AA_AGENT_ID` derives to; a child that re-derives the \
+             identity would otherwise reach a different agent than the one that registered"
+        );
+        assert!(did.starts_with("did:key:z"), "got {did}");
+    }
+
+    /// The gateway's credential token authenticates *as the registered agent*.
+    /// The launched tool is the software that registration exists to govern, so
+    /// it must never receive one — and `--dry-run` prints this whole map, so a
+    /// leak here reaches stdout and from there a CI log.
+    #[test]
+    fn no_gateway_credential_reaches_the_launched_tool() {
+        let handle = stub_handle(Some("team-a"));
+        let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
+
+        for key in env.keys().filter(|k| k.starts_with("AA_")) {
+            assert!(
+                !key.contains("CREDENTIAL") && !key.contains("TOKEN"),
+                "`{key}` hands the governed process a credential for its own governance record"
+            );
+        }
+    }
+
     #[test]
     fn build_child_env_sets_proxy() {
         let handle = stub_handle(None);
