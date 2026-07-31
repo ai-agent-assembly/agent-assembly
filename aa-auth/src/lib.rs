@@ -17,6 +17,7 @@ pub mod gate;
 pub mod jwt;
 pub mod password;
 pub mod rate_limit;
+pub mod role;
 pub mod scope;
 
 mod error;
