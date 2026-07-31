@@ -98,6 +98,7 @@ value, the precedence is noted.
 
 | Variable | Used by | Precedence |
 |---|---|---|
+| `AASM_API_KEY` | every `aasm` command (global `--api-key`) | The flag wins when both are set — but **prefer the env var**. See the warning below |
 | `AASM_DASHBOARD_PORT` | `aasm dashboard` | Highest — beats `--port` and `dashboard.port` in config |
 | `AASM_VERSION` / `AASM_INSTALL_DIR` | the [install script](installation.md) | Installer only |
 | `AA_POLICY` | `aasm gateway start` | Default policy path; overridden by `--policy` |
@@ -109,6 +110,13 @@ value, the precedence is noted.
 | `AA_DEVINT_ENABLED` | `aa-runtime` | Turns the Developer Integration API on. **Off by default**; nothing binds the socket unless this is set |
 | `AA_DEVINT_SOCKET` | `aa-runtime` + DI-API clients | Overrides the DI-API socket path (default `~/.aa/run/devint.sock`) |
 | `AA_DEVINT_TOKEN_FILE` | `aa-runtime` + DI-API clients | Overrides the DI-API capability-token (enrolment) file path (default: beside the socket) |
+
+> **Pass the API key through the environment, not the command line.** `--api-key`
+> puts the operator bearer token into `argv`, where it is readable by any local
+> user via `ps` and `/proc/<pid>/cmdline`, and where your shell will persist it
+> to history. `AASM_API_KEY` avoids all three. The flag still takes precedence
+> when both are set, so existing scripts keep working — but a script that sets
+> the variable is the one to write.
 
 > The prefixes are a **rough** guide, not a rule: **`AASM_*`** is mostly the CLI
 > surface and **`AA_*`** mostly the daemons the CLI launches. `AASM_STATE_DIR`
