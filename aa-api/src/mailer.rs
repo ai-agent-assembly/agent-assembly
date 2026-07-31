@@ -272,10 +272,12 @@ mod tests {
         assert_eq!(sent[0].1, "Reset");
     }
 
-    #[test]
-    fn config_is_none_without_a_host() {
-        // Resolution keys off AA_SMTP_HOST; with it unset there is no config and
-        // the caller falls back to the logging mailer.
+    // `from_config` builds a lettre `AsyncSmtpTransport<Tokio1Executor>`, whose
+    // pool construction requires an ambient Tokio runtime — so these two build a
+    // transport under `#[tokio::test]`, not a bare `#[test]` (which panics inside
+    // lettre's executor with no runtime present).
+    #[tokio::test]
+    async fn well_formed_config_builds_a_transport() {
         let cfg = MailerConfig {
             host: "smtp.example.com".to_string(),
             port: 587,
@@ -287,8 +289,8 @@ mod tests {
         assert!(SmtpMailer::from_config(cfg).is_ok());
     }
 
-    #[test]
-    fn smtp_mailer_rejects_a_malformed_from_address() {
+    #[tokio::test]
+    async fn smtp_mailer_rejects_a_malformed_from_address() {
         let cfg = MailerConfig {
             host: "smtp.example.com".to_string(),
             port: 587,
