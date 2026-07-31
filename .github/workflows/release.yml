@@ -480,6 +480,56 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
 
+  packaged-artifact-gate:
+    # AAASM-5315/5316: the LAST thing standing between a tag and crates.io.
+    #
+    # The same gate also runs on every PR (release-completeness.yml), which is
+    # where a packaging defect *should* be caught. This run exists because that
+    # one cannot be a precondition of publishing: it is path-filtered, it runs
+    # against a PR head rather than the merge result, and a tag can be cut from
+    # a commit whose PR never triggered it at all. Something that decides what
+    # ships has to have looked at the tree that ships.
+    #
+    # Publishing is irreversible — crates.io does not allow re-uploading a
+    # version — so the ~8 minutes this costs is bounded and the failure it
+    # prevents is not.
+    name: Packaged-artifact gate (pre-publish)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # aa-proto's build.rs (which stages _embedded/proto/) compiles protobuf.
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.9.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      # The gate asserts the real bundle ships, so it needs the same dashboard
+      # build publish-crates stages into aa-cli/_embedded.
+      - name: Build dashboard
+        working-directory: dashboard
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Run packaged-artifact gate
+        run: bash scripts/check-packaged-artifacts.sh
+
   publish-crates:
     # Publishes the workspace to crates.io in topological order via
     # cargo-workspaces. AAASM-2340 (resolves AAASM-2094).
@@ -514,7 +564,10 @@ jobs:
     # binary with only a stub "dashboard not built" page.
     name: Publish workspace to crates.io
     runs-on: ubuntu-latest
-    needs: publish
+    # AAASM-5315/5316: packaged-artifact-gate is a hard precondition, not
+    # advisory — nothing reaches crates.io that has not been packaged, had its
+    # tarball contents asserted, and been built back out of those tarballs.
+    needs: [publish, packaged-artifact-gate]
     if: github.event_name == 'push'
     # AAASM-4016: gate this publish behind a protected GitHub Environment so a
     # required-reviewer approval is needed before CRATES_IO_TOKEN is exposed and
@@ -599,6 +652,22 @@ jobs:
              aa-ebpf/_embedded/aa-ebpf-probes/Cargo.toml.embedded
           echo "✓ aa-ebpf/_embedded/aa-ebpf-probes/ staged ($(find aa-ebpf/_embedded -type f | wc -l) files)"
 
+      - name: Stage .sqlx offline query cache into aa-gateway for crates.io publish
+        # AAASM-5315: aa-gateway expands `sqlx::query!` at compile time in
+        # `approval/sqlite_repo.rs` + `approval/db_escalation_scheduler.rs`.
+        # Without a DATABASE_URL those macros read the offline cache, which
+        # lives at the WORKSPACE root — outside the package, and cargo's
+        # `include` cannot escape the package directory. Mirror it in so the
+        # published crate compiles for a consumer who has no database at all.
+        # Kept as a staged copy (not a committed second copy) so the root
+        # `.sqlx/` stays the only thing `cargo sqlx prepare` has to regenerate.
+        run: |
+          set -euo pipefail
+          rm -rf aa-gateway/.sqlx
+          cp -r .sqlx aa-gateway/.sqlx
+          test -n "$(ls -A aa-gateway/.sqlx)"
+          echo "✓ aa-gateway/.sqlx/ staged ($(find aa-gateway/.sqlx -type f | wc -l) files)"
+
       - name: Strip held-back surface from aa-cli for crates.io publish
         # AAASM-2340: removes the `aa-devtool*` deps and the source files
         # that consume them (`aasm run` + `aasm tools` subcommands) before
@@ -618,6 +687,24 @@ jobs:
           # --no-git-push avoids creating/pushing tags (we already
           # have one from the upstream tag push), --yes skips
           # confirmation prompts.
+          #
+          # --no-verify (AAASM-2463, re-justified by AAASM-5315/5316):
+          # cargo's per-crate verify step unpacks each tarball and compiles it
+          # in isolation. It CANNOT be turned on here: aa-ebpf/build.rs's
+          # `restore_manifest_from_stage` renames `Cargo.toml.embedded` back
+          # during that compile, which trips cargo's "Source directory was
+          # modified by build.rs during cargo publish" guard and aborts the
+          # release. The flag's original rationale — "pre-tag CI already
+          # proves the workspace builds" — was false: a workspace build never
+          # separates a crate from its siblings, which is exactly the defect
+          # class verify exists to catch, and two such defects (5315, 5316)
+          # shipped through it. `scripts/check-packaged-artifacts.sh` now
+          # reconstructs what verify would have proved — package, assert
+          # tarball contents, then build the real binaries out of the unpacked
+          # tarballs — without re-entering the aa-ebpf failure. It runs on
+          # every PR for early feedback AND as the `packaged-artifact-gate`
+          # job this one `needs`, so it is a precondition of this publish and
+          # not merely something that ran earlier on some other tree.
           cargo workspaces publish \
             --from-git \
             --no-git-push \

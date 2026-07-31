@@ -6,6 +6,31 @@ license.workspace = true
 repository.workspace = true
 description = "Control plane — policy enforcement engine and agent registry for Agent Assembly"
 
+# AAASM-5315: `src/approval/sqlite_repo.rs` and
+# `src/approval/db_escalation_scheduler.rs` expand `sqlx::query!` at COMPILE
+# time. Both are un-feature-gated `pub mod`s reached from `src/server.rs` and
+# both gRPC services, so every consumer of a default `cargo add aa-gateway`
+# compiles them. With no live DATABASE_URL the macros fall back to the offline
+# cache, which lives at the WORKSPACE root `.sqlx/` — outside this package, so
+# no tarball up to v0.0.1-rc.6 carried it and the published crate could not
+# build for anyone.
+#
+# `include` paths cannot escape the package directory, hence the staged
+# `aa-gateway/.sqlx/` mirror (gitignored; see .gitignore) that release.yml
+# copies in before publishing. Adding `include` at all means every other shipped
+# path must be listed explicitly — cargo ignores the git-aware default once this
+# key is present.
+include = [
+    "src/**",
+    "tests/**",
+    "benches/**",
+    "migrations/**",
+    "Cargo.toml",
+    "Dockerfile",
+    "README.md",
+    ".sqlx/**",
+]
+
 [dependencies]
 aa-core      = { path = "../aa-core", version = "0.0.1-rc.6", features = ["serde"] }
 # AAASM-3907: the shared HTTP auth framework (AuthConfig / ApiKeyStore /
