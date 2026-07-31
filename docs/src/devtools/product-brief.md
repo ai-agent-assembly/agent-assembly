@@ -99,7 +99,7 @@ The mechanisms an integration may use, and what each is good for:
 | **Environment injection** | Carry identity and endpoint configuration into the tool process. | No |
 | **MCP configuration** | Govern *which* MCP servers the tool may load, and optionally expose AASM capabilities as MCP tools. | Loading control: no. Tool exposure: yes |
 | **IDE extension API** | Surface status/UX inside an editor, and where the host allows it, veto actions. | Depends on host |
-| **Host enforcement** (OS-level) | Constrain the process regardless of its configuration. **Not available in this MVP** — see §7. | No |
+| **Host enforcement** (OS-level) | Constrain the process regardless of its configuration. **Opt-in only** (`AAASM-5298`) — reachable through the explicitly authorized, read-back-verified managed-settings install, never by default. See §7.3. | No |
 
 Read the table by the last column. The mechanisms that produce a real guarantee are the ones the
 governed agent cannot decline. MCP appears twice, and only its *loading control* half is
@@ -262,7 +262,7 @@ follows from that split.
 |---|---|
 | **User does** | Runs remove. |
 | **AASM does** | Uses the receipt to restore the pre-install value of every managed key — restoring the original value where one existed, deleting the key where none did — and removes only AASM-owned artifacts. |
-| **Evidence produced** | A removal report, and a post-removal state that a test can compare byte-for-byte against the pre-install snapshot. |
+| **Evidence produced** | A removal report, and a post-removal state that a test can compare **semantically** against the pre-install snapshot. Byte-exactness is *not* claimed — accepted constraint C3: the settings document is reserialised on write, so non-canonical formatting is not reproduced verbatim. |
 | **Can fail** | Receipt missing or corrupt → refuse to guess. Report what AASM believes it owns and require explicit confirmation before touching anything. |
 | **Invariant** | Unrelated user configuration is preserved through the whole install→remove cycle. Removal must leave no AASM residue and no collateral deletion. |
 
@@ -448,8 +448,9 @@ active`.
   cache. A level earned at install time is not still true after the core stops.
 - **Report the mechanisms behind the level**, split into "exercised" and "read back". A user
   who can see which is which can reason about their own risk; a user shown a single word cannot.
-- **Always report the next level up and why it is not active.** For every MVP install that is
-  `Host Enforcement: unavailable on this platform`.
+- **Always report the next level up and why it is not active.** For a **default** install that is
+  `Host Enforcement: not installed — requires --install-managed-settings` (or, off macOS,
+  `unavailable on this platform`).
 - **Degrade loudly.** Losing a criterion mid-session drops the level and surfaces it. There is no
   state in which the level shown is higher than the evidence supports.
 
@@ -664,10 +665,11 @@ else on the machine.
 ### 11.2 Unrelated user settings preserved
 
 > **Given** a Claude Code settings file containing user-authored keys outside the AASM-managed set,
-> and a byte-exact snapshot taken beforehand,
+> and a snapshot taken beforehand,
 > **When** install, verify, repair and remove are each executed in sequence,
 > **Then** every unmanaged key retains its original value and ordering-independent content at every
-> step, and after removal the file (or its absence) matches the pre-install snapshot exactly.
+> step, and after removal the file (or its absence) matches the pre-install snapshot **semantically**
+> (accepted constraint C3 — restore is semantics-exact, not byte-exact).
 
 ### 11.3 Synthetic secret never reaches the model provider
 
@@ -711,10 +713,11 @@ else on the machine.
 
 ### 11.7 Removal restores pre-install state
 
-> **Given** a byte-exact snapshot of all affected configuration taken before install,
+> **Given** a snapshot of all affected configuration taken before install,
 > **When** the full install → verify → use → remove cycle completes,
 > **Then** every managed key is restored to its pre-install value — or deleted where none existed —
-> no AASM-owned artifact remains, the post-removal state matches the snapshot, and Claude Code
+> no AASM-owned artifact remains, the post-removal state matches the snapshot **semantically**
+> (accepted constraint C3 — restore is semantics-exact, not byte-exact), and Claude Code
 > launches and operates normally afterwards.
 
 ### 11.8 Protection-level reporting distinguishes the three levels

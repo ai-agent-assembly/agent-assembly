@@ -239,8 +239,14 @@ implying otherwise.
 * **`NODE_TLS_REJECT_UNAUTHORIZED`.** Never set. A TLS failure is a finding, not
   something to suppress — and if you have it set, `status` reports it as a
   bypass.
-* **The system keychain and the endpoint managed-settings file.** Both are
-  privileged host changes whose behaviour is unmeasured.
+* **The system keychain.** A privileged host change whose behaviour is
+  unmeasured.
+
+  The endpoint managed-settings file **is** offered, but only through the
+  explicit `--install-managed-settings` opt-in described above — never as part
+  of a default install, and never implied by a profile. What remains unmeasured
+  there is the *enforcement* half: whether Claude Code honours each managed-only
+  key against a real override attempt on a managed device.
 
 ### Bypasses that are detected
 
