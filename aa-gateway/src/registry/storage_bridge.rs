@@ -232,4 +232,69 @@ mod tests {
         assert_eq!(restored.parent_key, None);
         assert_eq!(restored.root_agent_id, Some(id));
     }
+
+    #[test]
+    fn enforcement_mode_survives_a_restart() {
+        // AAASM-5288 — a non-default per-agent override must be durably written
+        // and read back on rehydrate, not reset to the in-memory default.
+        let id = [3u8; 16];
+        let mut rec = sample_runtime(id);
+        rec.enforcement_mode = Some(EnforcementMode::Observe);
+
+        // Simulate the restart: runtime → storage (write-through) → runtime
+        // (rehydrate on boot).
+        let stored = runtime_to_storage(&rec);
+        assert_eq!(
+            stored.enforcement_mode, "observe",
+            "override must reach the durable column"
+        );
+        let restored = storage_to_runtime(stored);
+        assert_eq!(
+            restored.enforcement_mode,
+            Some(EnforcementMode::Observe),
+            "override must survive the restart round-trip"
+        );
+    }
+
+    #[test]
+    fn expired_shadow_window_is_not_silently_resurrected() {
+        // AAASM-5288 — a shadow (Observe) window whose deadline has already
+        // passed must read back as reverted to the base mode on rehydrate,
+        // never as an active Observe. Mandatory-expiry semantics survive the
+        // restart.
+        let id = [4u8; 16];
+        let mut rec = sample_runtime(id);
+        rec.enforcement_mode = Some(EnforcementMode::Observe);
+        rec.enforcement_mode_expires_at = Some(Utc::now() - chrono::Duration::hours(1));
+
+        let stored = runtime_to_storage(&rec);
+        // The window is still stored as-was; the revert happens on load.
+        assert_eq!(stored.enforcement_mode, "observe");
+        assert!(stored.enforcement_mode_expires_at.is_some());
+
+        let restored = storage_to_runtime(stored);
+        assert_eq!(
+            restored.enforcement_mode, None,
+            "expired shadow window must resolve to the base mode, not stay Observe"
+        );
+        assert_eq!(
+            restored.enforcement_mode_expires_at, None,
+            "the stale deadline must be dropped on revert"
+        );
+    }
+
+    #[test]
+    fn unexpired_shadow_window_is_preserved() {
+        // A shadow window whose deadline is still in the future must survive
+        // the restart intact — the revert only fires once the deadline passes.
+        let id = [5u8; 16];
+        let deadline = Utc::now() + chrono::Duration::hours(1);
+        let mut rec = sample_runtime(id);
+        rec.enforcement_mode = Some(EnforcementMode::Observe);
+        rec.enforcement_mode_expires_at = Some(deadline);
+
+        let restored = storage_to_runtime(runtime_to_storage(&rec));
+        assert_eq!(restored.enforcement_mode, Some(EnforcementMode::Observe));
+        assert_eq!(restored.enforcement_mode_expires_at, Some(deadline));
+    }
 }
