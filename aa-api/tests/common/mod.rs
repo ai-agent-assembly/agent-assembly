@@ -194,6 +194,10 @@ spec:
         secrets_store: Arc::new(InMemorySecretsStore::new()),
         tool_registry: ToolRegistry::new(),
         trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+        // AAASM-5305: in-memory test AppState — native auth is Postgres-gated and
+        // therefore absent here (ADR 0031 D2).
+        auth_store: None,
+        native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
     }
 }
 
