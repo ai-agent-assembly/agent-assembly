@@ -51,6 +51,10 @@ allow = [
     # BSL-1.0 — Boost Software License 1.0, OSI-approved permissive license;
     # used by xxhash-rust (transitive dep of redis 1.x under redis-cache feature)
     "BSL-1.0",
+    # 0BSD — BSD Zero Clause License, OSI-approved public-domain-equivalent
+    # permissive license (no attribution required); the license of `lettre`, the
+    # SMTP mailer added for native-account password reset (AAASM-5306).
+    "0BSD",
 ]
 
 [[licenses.exceptions]]
