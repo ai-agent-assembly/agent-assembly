@@ -231,6 +231,22 @@ impl Interceptor {
         }
     }
 
+    /// Re-inspect the bytes the data path resolved to forward, reporting
+    /// whether they are free of credentials.
+    ///
+    /// Returns `None` when scanning is disabled — the honest answer is then
+    /// "this proxy cannot say", and a caller must not read that as clean.
+    ///
+    /// Exists for the protection-probe reply (AAASM-5300), which has to state a
+    /// fact about the *payload* rather than about the decision: a proxy that
+    /// decided to redact but produced bytes still carrying a credential must not
+    /// read as protection. The ordinary data path has no need to re-scan what it
+    /// just produced.
+    pub fn forwarded_payload_is_clean(&self, bytes: &[u8]) -> Option<bool> {
+        let scanner = self.scanner.as_ref()?;
+        Some(scanner.scan(&String::from_utf8_lossy(bytes)).is_clean())
+    }
+
     /// Redact any credentials embedded in a request target (path + query
     /// string) so it can be persisted in an audit record without leaking a
     /// secret.
@@ -957,6 +973,31 @@ mod tests {
         assert_eq!(verdict.decision, VerdictDecision::Block);
         assert!(!verdict.findings.is_empty());
         assert!(verdict.redacted_body.is_none());
+    }
+
+    // ── forwarded_payload_is_clean (AAASM-5300 probe reply) ─────────────────
+
+    #[test]
+    fn forwarded_payload_is_clean_reports_a_credential_bearing_payload() {
+        let interceptor = make_interceptor();
+        assert_eq!(interceptor.forwarded_payload_is_clean(CRED_BODY), Some(false));
+    }
+
+    #[test]
+    fn forwarded_payload_is_clean_reports_a_scrubbed_payload() {
+        let interceptor = make_interceptor();
+        let verdict = interceptor.intercept_request(CRED_BODY, None, CredentialAction::RedactOnly);
+        let redacted = verdict.redacted_body.expect("redact_only populates the body");
+        assert_eq!(interceptor.forwarded_payload_is_clean(&redacted), Some(true));
+    }
+
+    /// A disabled scanner must say "I cannot tell", never "clean" — a caller
+    /// that read `None` as clean would turn an uninspected payload into a pass.
+    #[test]
+    fn forwarded_payload_is_clean_says_nothing_without_a_scanner() {
+        let (tx, _rx) = broadcast::channel(16);
+        let interceptor = Interceptor::with_scanner(tx, None);
+        assert_eq!(interceptor.forwarded_payload_is_clean(CRED_BODY), None);
     }
 
     // ── redact_response_body ────────────────────────────────────────────────
