@@ -25,6 +25,16 @@ on:
       - "scripts/check-publish-surface.sh"
       - "aa-cli/src/commands/mod.rs"
       - "aa-runtime/src/runtime.rs"
+      # AAASM-5315/5316: the packaged-artifact gate below is decided by what
+      # cargo's file enumeration sees, so it must run when anything that moves
+      # that boundary moves — a crate's `include`/manifest, a .gitignore that
+      # can silently drop a staged directory, the offline query cache that has
+      # to be staged into a crate, or either staging script.
+      - "**/Cargo.toml"
+      - "**/.gitignore"
+      - ".sqlx/**"
+      - ".ci/**"
+      - "scripts/**"
   workflow_dispatch:
 
 jobs:
@@ -54,3 +64,49 @@ jobs:
 
       - name: Run published-surface coherence gate
         run: bash scripts/check-publish-surface.sh
+
+  packaged-artifacts:
+    # AAASM-5315/5316: the two gates above reason about the SOURCE tree. This one
+    # reasons about the tarball. `release.yml` publishes with `--no-verify`
+    # (it has to — see the comment on that call), so nothing ever unpacked a
+    # crate and compiled it in isolation, and two defects of exactly that class
+    # shipped: aa-cli with no dashboard, aa-gateway that could not compile for
+    # any consumer. This job reconstructs what verify would have proved.
+    #
+    # It lives on `pull_request`, not on the tag: a packaging defect found at
+    # tag-cut time is already a broken release with a burned version number.
+    name: Packaged-artifact gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # aa-proto's build.rs (which stages _embedded/proto/) compiles protobuf.
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # Same dashboard build release.yml runs before staging into
+      # aa-cli/_embedded — the gate asserts the real bundle ships, not a stub.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.9.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      - name: Build dashboard
+        working-directory: dashboard
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Run packaged-artifact gate
+        run: bash scripts/check-packaged-artifacts.sh
