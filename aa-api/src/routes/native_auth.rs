@@ -215,16 +215,27 @@ pub async fn login(
         Err(_) => return internal_error().into_response(),
     }
 
-    // A disabled or still-invited account cannot log in — treated as invalid
-    // credentials (uniform 401), never a distinct signal.
-    let credentials_ok = user.status == UserStatus::Active && verify_password(&user.password_hash, &body.password);
+    // Always run the argon2 verify — even for a disabled/invited account and even
+    // when we already know the status is non-Active — so the response time does
+    // not distinguish "active wrong password" from "non-active account" (a
+    // short-circuit here would leak a status oracle by timing). The password_ok
+    // and status_ok checks are then combined without a boolean short-circuit.
+    let password_ok = verify_password(&user.password_hash, &body.password);
+    let credentials_ok = password_ok & (user.status == UserStatus::Active);
     if !credentials_ok {
-        // Record the failure (unless the account is non-active, in which case
-        // there is nothing to lock out — but we still return a uniform 401).
+        // Record the failure and, if this attempt crossed the lockout threshold,
+        // return 423 + retry-after immediately (rather than a plain 401 that
+        // silently hides the just-applied lock until the next attempt). A
+        // non-active account has nothing to lock — it still returns a uniform 401.
         if user.status == UserStatus::Active {
-            let _ = store
+            if let Ok(state_) = store
                 .record_login_failure(org, user.id, cfg.lockout_threshold, cfg.lockout_window_secs)
-                .await;
+                .await
+            {
+                if let Some(retry_after) = state_.retry_after_secs(now()) {
+                    return locked(retry_after).into_response();
+                }
+            }
         }
         return unauthorized().into_response();
     }
@@ -384,7 +395,29 @@ pub async fn invite(
         );
     }
 
-    // The raw token is opaque and single-use; only its hash is persisted.
+    let org = cfg.default_org_id;
+
+    // Create the invited (password-less) account row FIRST, so a token is only
+    // ever handed out for a fresh, activatable account. It is created `invited`
+    // with a placeholder hash that never verifies, so it cannot authenticate
+    // until accept sets a real password. If the email already exists (any
+    // status), the create fails on the unique index → 409, and no dead invite
+    // token is issued. This is the admin surface (not the login surface), so
+    // revealing existence via 409 is acceptable and matches register.
+    let invited_user = NewUser {
+        id: Uuid::new_v4(),
+        email: body.email.clone(),
+        password_hash: unset_password_hash().to_string(),
+        role: role_to_user_role(body.role),
+        status: UserStatus::Invited,
+    };
+    if store.create_user(org, &invited_user).await.is_err() {
+        return Err(email_conflict());
+    }
+
+    // The raw token is opaque and single-use; only its hash is persisted. Bind
+    // the invite to the account just created (invited_by = the account row) so
+    // one token maps to exactly one account.
     let raw_token = generate_opaque_token();
     let token_hash = sha256_hex(&raw_token);
     let invite_id = Uuid::new_v4();
@@ -398,23 +431,9 @@ pub async fn invite(
         invited_by: Uuid::parse_str(&caller.key_id).ok(),
     };
     store
-        .create_invite(cfg.default_org_id, &new_invite)
+        .create_invite(org, &new_invite)
         .await
         .map_err(|_| internal_error())?;
-
-    // Also create the invited (password-less) account row so accept can activate
-    // it. It is created `invited`, so it cannot authenticate until accepted.
-    let invited_user = NewUser {
-        id: Uuid::new_v4(),
-        email: body.email.clone(),
-        // A placeholder that never verifies: the real hash is set on accept.
-        password_hash: unset_password_hash().to_string(),
-        role: role_to_user_role(body.role),
-        status: UserStatus::Invited,
-    };
-    // A duplicate email means the account already exists; the invite row still
-    // stands (an admin re-inviting an existing user is not an error surface here).
-    let _ = store.create_user(cfg.default_org_id, &invited_user).await;
 
     Ok(Json(InviteResponse {
         invite_id: invite_id.to_string(),
@@ -452,15 +471,18 @@ pub async fn invite_accept(
         return weak_password(cfg.min_password_len).into_response();
     }
 
+    // Hash the new password BEFORE consuming the single-use token, so a hashing
+    // failure cannot burn the invite and leave the invitee permanently unable to
+    // accept it (the token is spent but the account was never activated).
+    let password_hash = match hash_password(&body.password) {
+        Ok(h) => h,
+        Err(_) => return internal_error().into_response(),
+    };
+
     let token_hash = sha256_hex(&body.token);
     let invite = match store.consume_invite(org, &token_hash).await {
         Ok(Some(inv)) => inv,
         Ok(None) => return invalid_invite().into_response(),
-        Err(_) => return internal_error().into_response(),
-    };
-
-    let password_hash = match hash_password(&body.password) {
-        Ok(h) => h,
         Err(_) => return internal_error().into_response(),
     };
 
@@ -518,16 +540,25 @@ pub async fn refresh(
     };
     let token_hash = sha256_hex(&raw);
 
+    // Read the session to recover its owner and check expiry. Liveness here is
+    // advisory only — the authoritative single-use gate is the atomic revoke
+    // below, which is what makes rotation race-safe.
     let record = match store.find_refresh_token(org, &token_hash).await {
         Ok(Some(r)) if r.is_live(now()) => r,
         Ok(_) => return unauthorized().into_response(),
         Err(_) => return internal_error().into_response(),
     };
 
-    // Rotate: revoke the presented token before issuing the replacement so a
-    // replay of the old cookie cannot mint a second session.
-    if store.revoke_refresh_token(org, &token_hash).await.is_err() {
-        return internal_error().into_response();
+    // Rotate: atomically revoke the presented token BEFORE issuing the
+    // replacement. `revoke_refresh_token` flips `revoked_at` only `WHERE
+    // revoked_at IS NULL`, so it is a compare-and-set: exactly one caller gets
+    // `true`. A concurrent replay of the same cookie (or a re-submitted request)
+    // loses the race, gets `false`, and is rejected — so one cookie can never
+    // mint two live sessions.
+    match store.revoke_refresh_token(org, &token_hash).await {
+        Ok(true) => {}
+        Ok(false) => return unauthorized().into_response(),
+        Err(_) => return internal_error().into_response(),
     }
 
     let user = match store.find_by_id(org, record.user_id).await {
