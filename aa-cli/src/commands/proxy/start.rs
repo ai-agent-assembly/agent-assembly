@@ -1,13 +1,14 @@
 //! `aasm proxy start` — spawn the aa-proxy sidecar as a background process.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use clap::Args;
 
-use super::pid;
+use super::pid::{self, ProxyState};
+use super::{identity, trust};
 
 /// Arguments for `aasm proxy start`.
 #[derive(Debug, Args)]
@@ -104,14 +105,32 @@ fn wait_for_port(addr: &str, timeout: Duration) -> bool {
     false
 }
 
-/// Write the child process's PID and listen address to the shared PID file.
-fn write_child_pid(child_pid: u32, listen_addr: &str) -> std::io::Result<()> {
-    let path = pid::pid_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+/// Build the state record for a proxy just spawned as `child_pid` from `binary`.
+///
+/// The record carries process-identity evidence because `aasm run` decides
+/// whether to launch a governed tool from it, and a PID plus an address cannot
+/// support that decision (see [`super::trust`]). The two evidence fields are
+/// captured differently on purpose:
+///
+/// * the **start time** is read back from the kernel for `child_pid`. It is set
+///   at fork and is not changed by the subsequent `exec`, so reading it now is
+///   race-free even though the child may not have exec'd yet.
+/// * the **executable** is the canonicalised path that was spawned, not a
+///   read-back of the live image, because the read-back *does* race the exec.
+///   Canonicalising matches what the kernel will later report (`/proc/<pid>/exe`
+///   and `proc_pidpath` both name the resolved image), so the comparison holds
+///   even when the proxy was invoked through a symlink.
+///
+/// A field the platform cannot supply is left empty, which makes the record
+/// unusable to the trust check — deliberately: an unverifiable proxy must fail
+/// the launch, not silently pass it.
+fn state_for_child(child_pid: u32, binary: &Path, listen_addr: &str) -> ProxyState {
+    ProxyState {
+        pid: child_pid,
+        listen_addr: listen_addr.to_string(),
+        start_token: identity::start_token(child_pid).unwrap_or_default(),
+        exe_path: std::fs::canonicalize(binary).unwrap_or_else(|_| binary.to_path_buf()),
     }
-    let content = format!("{}\n{}\n", child_pid, listen_addr);
-    std::fs::write(&path, content)
 }
 
 pub fn dispatch(args: StartArgs) -> ExitCode {
@@ -188,7 +207,21 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
 
     let child_pid = child.id();
 
-    if let Err(e) = write_child_pid(child_pid, &args.listen) {
+    let state = state_for_child(child_pid, &binary, &args.listen);
+    // A record `aasm run` cannot verify is worth saying out loud here rather
+    // than only at the next launch: the operator is standing in front of this
+    // command, not the one that will refuse.
+    if state.start_token.is_empty() {
+        eprintln!(
+            "warning: this platform ({}) does not report process start times, so `aasm run` \
+             will not be able to verify this proxy and will refuse to launch.",
+            std::env::consts::OS
+        );
+    }
+    if let Err(e) = trust::verify_proxy_binary(&state.exe_path) {
+        eprintln!("warning: {e}; `aasm run` will refuse to launch against this proxy.");
+    }
+    if let Err(e) = pid::write_state(&state) {
         eprintln!("warning: could not write PID file: {e}");
     }
 
