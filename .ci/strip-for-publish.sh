@@ -37,6 +37,12 @@
 # ------
 #   bash .ci/strip-for-publish.sh
 #
+# Set `STRIP_FOR_PUBLISH_VERIFY=0` to skip the trailing `cargo check`s.
+# Only `scripts/check-publish-surface.sh` does that: it runs this script on a
+# throwaway copy of the tree to *inspect* the stripped result, and the checks
+# would cost it several minutes of compilation. The release workflow never sets
+# it — the publish path always verifies.
+#
 # Exits 0 on success, non-zero on any failure. Idempotent: re-running on
 # an already-stripped tree is a no-op.
 
@@ -134,6 +140,12 @@ for f in "${DELETED_FILES[@]}"; do
         echo "  - deleted ${f#$REPO_ROOT/}"
     fi
 done
+
+if [[ "${STRIP_FOR_PUBLISH_VERIFY:-1}" != "1" ]]; then
+    echo ""
+    echo "strip-for-publish: STRIP_FOR_PUBLISH_VERIFY=0 — skipping the cargo checks"
+    exit 0
+fi
 
 # Sanity check: aa-cli must still compile without dev-tool surface.
 echo ""
