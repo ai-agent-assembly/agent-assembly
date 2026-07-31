@@ -138,6 +138,24 @@ Each layer reports to the same gateway, so you get one unified view no matter
 which layers a deployment runs. See the [Architecture overview](docs/src/architecture/README.md)
 for the full picture, or jump straight to the [Quickstart](#quickstart).
 
+### Governing an AI dev tool
+
+Agents you write are one audience; the AI dev tool *you* run — Claude Code,
+Codex, Copilot, Windsurf — is the other. Those are governed through the
+**Developer Integration** lifecycle: `aasm integrations plan / install / verify /
+status / repair / remove` wires the tool's own configuration and launch path
+through Agent Assembly, then reports an **evidence-backed protection level**
+rather than asserting one.
+
+Start at the [`aasm integrations` CLI reference](docs/src/cli/integrations.md)
+or the [onboarding walkthrough](docs/src/devtools/onboarding.md), and read
+[Limitations and known bypasses](docs/src/devtools/limitations.md) for what is
+measured and what is not.
+
+> This command group is **source-build only** — it is stripped from the
+> published `aasm` crate, and its runtime surface is off by default. See the
+> [CLI overview](docs/src/cli/overview.md).
+
 ## Ecosystem
 
 `agent-assembly` is the open-source core of a larger governance platform. The
