@@ -117,8 +117,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   word. This is the only route to `Host Enforced` — which means *"the managed
   policy is installed at the OS-managed path, owned as expected and not writable
   by you"*, and **not** *"this bypass has been demonstrated to fail"*: the
-  enforcement half of AAASM-5276 condition C6 remains unmeasured without a
-  managed device.
+  enforcement half of AAASM-5276 condition C6 remains unmeasured on every host,
+  and is tracked by AAASM-5308.
 - **Adjudication is the only thing that can claim protection** —
   `GatewayProtected` requires adjudicated **exercised** evidence. Read-back of a
   configuration file justifies at most `Integrated`; `ModelPathInterception` is
