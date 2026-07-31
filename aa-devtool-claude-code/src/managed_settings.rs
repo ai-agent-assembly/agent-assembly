@@ -178,6 +178,15 @@ pub enum ManagedSettingsError {
         /// What changed.
         detail: String,
     },
+    /// Agent Assembly never installed managed settings on this host.
+    ///
+    /// Distinct from a failed verification: there is nothing to verify, which is
+    /// what a host that simply did not opt in looks like.
+    #[error("Agent Assembly has not installed managed settings at {path} on this host")]
+    NothingInstalled {
+        /// The surface that holds no Agent Assembly install.
+        path: String,
+    },
     /// An unprivileged filesystem operation failed.
     #[error("{path}: {detail}")]
     Io {
@@ -199,6 +208,7 @@ impl ManagedSettingsError {
             Self::PermissionRequired { .. } => "Permission Required",
             Self::AuthorizationUnavailable { .. } | Self::NonInteractive { .. } => "Unavailable",
             Self::ConflictingExistingFile { .. } => "Conflicting managed settings",
+            Self::NothingInstalled { .. } => "Not installed",
             Self::ReadBackMismatch { .. } => "Read-back verification failed",
             Self::SchemaInvalid { .. } => "Refused: invalid managed-settings document",
             Self::ConsentStale { .. } => "Refused: the host changed after the disclosure",
@@ -941,15 +951,14 @@ impl ManagedSettingsInstaller {
     /// # Errors
     ///
     /// As [`verify_read_back`](Self::verify_read_back); additionally
-    /// [`ManagedSettingsError::ReadBackMismatch`] when nothing was ever
+    /// [`ManagedSettingsError::NothingInstalled`] when nothing was ever
     /// installed, because an attestation about a file this integration did not
     /// install would attribute someone else's policy to Agent Assembly.
     pub fn verify_recorded(&self) -> Result<ManagedSettingsAttestation, ManagedSettingsError> {
         let record = self
             .read_record()
-            .ok_or_else(|| ManagedSettingsError::ReadBackMismatch {
+            .ok_or_else(|| ManagedSettingsError::NothingInstalled {
                 path: self.target.display().to_string(),
-                detail: "Agent Assembly has no record of installing managed settings on this host".to_string(),
             })?;
         self.verify_read_back(&record.installed_sha256)
     }
@@ -1670,7 +1679,8 @@ mod tests {
         let host = Host::new();
         let installer = host.installer(FakeAuthority::granting());
         let err = installer.verify_recorded().expect_err("nothing installed");
-        assert!(matches!(err, ManagedSettingsError::ReadBackMismatch { .. }), "{err}");
+        assert!(matches!(err, ManagedSettingsError::NothingInstalled { .. }), "{err}");
+        assert_eq!(err.summary(), "Not installed");
     }
 
     #[test]

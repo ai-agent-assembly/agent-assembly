@@ -556,6 +556,17 @@ impl ClaudeCodeIntegration {
                 now,
                 format!("{}. {HOST_ATTESTATION_CAVEAT}", attestation.detail()),
             ),
+            // A host that simply did not opt in reads as the plain reason. A
+            // host that *did* opt in and no longer verifies is a different
+            // situation, and the summary that says which one it is belongs in
+            // front of the user.
+            Err(managed_settings::ManagedSettingsError::NothingInstalled { .. }) => absent(
+                HOST_ENFORCEMENT_REASON.to_string(),
+                format!(
+                    "known bypasses this integration cannot observe: {}",
+                    bypass::UNOBSERVABLE_BYPASSES
+                ),
+            ),
             Err(e) => absent(
                 format!("{HOST_ENFORCEMENT_REASON} ({})", e.summary()),
                 format!(

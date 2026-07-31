@@ -499,8 +499,12 @@ async fn the_ladder_rises_only_on_adjudicated_exercised_evidence() -> anyhow::Re
             "the unreachable rung must be reported, not omitted: {json}"
         );
         assert!(
-            json.contains("host enforcement is unavailable"),
-            "the reason host enforcement is unreachable must be stated, not implied: {json}"
+            json.contains("host enforcement is not active"),
+            "the reason host enforcement is not active must be stated, not implied: {json}"
+        );
+        assert!(
+            json.contains("--install-managed-settings"),
+            "the reason must name the opt-in that would change it: {json}"
         );
     }
 
