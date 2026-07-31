@@ -235,7 +235,7 @@ would make "you typed the command wrong" indistinguishable from a real outcome.
 
 ```bash
 aasm integrations verify claude-code || case $? in
-  6) echo 'not protected' ;;
+  6) echo 'protection not measured — treat as unprotected, do not report a failed block' ;;
   5) aasm integrations repair claude-code --yes ;;
 esac
 ```
