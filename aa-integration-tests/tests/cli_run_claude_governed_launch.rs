@@ -36,9 +36,11 @@
 //! the **child** `aasm` process only (`HOME`, `PATH`, `CLAUDE_CONFIG_DIR`,
 //! `AASM_STATE_DIR`, `AA_CA_DIR`, `AASM_CLAUDE_MANAGED_ROOT`, and the working
 //! directory); no process-global environment state in this test binary is
-//! mutated. The final assertion is a real-home guard in the style of the
-//! AAASM-5283 conformance suite: the developer's own settings file is read
-//! before and after and must be byte-identical.
+//! mutated. The final assertion reuses the AAASM-5283 conformance suite's
+//! `RealHomeGuard`, which fingerprints the developer's settings file on length
+//! and mtime and never reads its contents — that file is in daily use and may
+//! hold credentials, so a byte comparison would print them into the failure
+//! message and from there into the CI log.
 
 // `common/mod.rs` carries its own inner `#![allow(dead_code)]`; only the unused
 // imports need allowing here (this file uses just `common::cli::CliFixture`).
@@ -168,11 +170,33 @@ exit 0
                     .expect("aa-integration-tests always has a workspace-root parent")
                     .join("target")
             });
+        for profile in ["debug", "release"] {
+            let bin = target.join(profile).join("aasm");
+            if bin.is_file() {
+                return bin;
+            }
+        }
+
+        // `aa-integration-tests` does not depend on `aa-cli`, so nothing builds
+        // the binary for us: `cargo nextest run -p aa-integration-tests` on a
+        // clean target dir would otherwise fail here rather than run. Build it
+        // once. The working directory matters — the test bodies run `aasm` from
+        // inside a temp dir (the settings resolver prefers `<cwd>/.claude`, so
+        // running from the checkout would let it write into the repo), and cargo
+        // cannot find a manifest from there. Building from the manifest dir up
+        // front is what lets the run itself stay hermetic.
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "--quiet", "-p", "aa-cli", "--bin", "aasm"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .expect("failed to invoke cargo to build the aasm binary");
+        assert!(status.success(), "`cargo build -p aa-cli --bin aasm` failed");
+
         let bin = target.join("debug").join("aasm");
         assert!(
             bin.is_file(),
-            "no `aasm` binary at {} — build it (`cargo build -p aa-cli --bin aasm`) or set \
-             AASM_BIN_PATH. Skipping instead would leave AAASM-201 AC4 unevidenced.",
+            "no `aasm` binary at {} even after building it — set AASM_BIN_PATH. Skipping \
+             instead would leave AAASM-201 AC4 unevidenced.",
             bin.display(),
         );
         bin
@@ -289,8 +313,10 @@ exit 0
                 seen.get(key).map(String::as_str),
                 Some(PROXY_ADDR),
                 "the launched tool must be routed at the proxy address the gateway assigned via \
-                 `{key}`. If this now reads `http://{PROXY_ADDR}`, AAASM-1112 finding (2) has been \
-                 fixed — update this assertion and the AAASM-201 AC4 verdict; saw:\n{raw}",
+                 `{key}`. NOTE: this pins the CURRENT, DEFECTIVE value on purpose — the designed \
+                 value is `http://{PROXY_ADDR}` (AAASM-5324, root-caused by AAASM-5327). If this \
+                 now reads `http://{PROXY_ADDR}`, that bug is fixed: change this assertion to the \
+                 designed value and re-derive the AAASM-201 AC4 verdict. Saw:\n{raw}",
             );
         }
 
@@ -388,8 +414,10 @@ exit 0
 
         assert!(
             !out.status.success(),
-            "unexpected success: the gateway answered POST /api/v1/agents. AAASM-1112 finding (1) \
-             may be fixed — re-derive the AAASM-201 AC4 verdict.\nstderr:\n{stderr}",
+            "unexpected success: the gateway answered POST /api/v1/agents. NOTE: this pins the \
+             CURRENT, DEFECTIVE behaviour on purpose — the designed behaviour is a successful \
+             registration (AAASM-5323). A success here means that bug is fixed: invert this \
+             assertion and re-derive the AAASM-201 AC4 verdict.\nstderr:\n{stderr}",
         );
         assert!(
             stderr.contains("gateway registration failed"),
