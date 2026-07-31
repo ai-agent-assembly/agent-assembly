@@ -426,6 +426,148 @@ async fn activate_invited_user_sets_password_and_status() {
 }
 
 #[tokio::test]
+async fn consume_reset_token_is_single_use() {
+    let (_pg, pool) = setup().await;
+    let store = PgUserStore::new(pool);
+
+    let user = new_user("nina@example.com");
+    let user_id = user.id;
+    store.create_user(TENANT_A, &user).await.expect("create user");
+
+    store
+        .create_reset_token(
+            TENANT_A,
+            Uuid::new_v4(),
+            "reset-token-hash",
+            user_id,
+            Utc::now() + Duration::hours(1),
+        )
+        .await
+        .expect("create reset token");
+
+    // First consume spends the token and returns the target account.
+    let first = store
+        .consume_reset_token(TENANT_A, "reset-token-hash")
+        .await
+        .expect("consume")
+        .expect("token present");
+    assert_eq!(first.user_id, user_id);
+
+    // Replay must find nothing — a spent single-use token is dead.
+    let replay = store
+        .consume_reset_token(TENANT_A, "reset-token-hash")
+        .await
+        .expect("consume replay");
+    assert!(replay.is_none(), "a consumed reset token must not be consumable again");
+}
+
+#[tokio::test]
+async fn expired_reset_token_cannot_be_consumed() {
+    let (_pg, pool) = setup().await;
+    let store = PgUserStore::new(pool);
+
+    let user = new_user("omar@example.com");
+    let user_id = user.id;
+    store.create_user(TENANT_A, &user).await.expect("create user");
+
+    store
+        .create_reset_token(
+            TENANT_A,
+            Uuid::new_v4(),
+            "expired-reset-hash",
+            user_id,
+            Utc::now() - Duration::hours(1),
+        )
+        .await
+        .expect("create reset token");
+
+    let consumed = store
+        .consume_reset_token(TENANT_A, "expired-reset-hash")
+        .await
+        .expect("consume");
+    assert!(consumed.is_none(), "an expired reset token must not be consumable");
+}
+
+#[tokio::test]
+async fn set_password_only_touches_active_accounts() {
+    let (_pg, pool) = setup().await;
+    let store = PgUserStore::new(pool);
+
+    let active = new_user("pat@example.com");
+    let active_id = active.id;
+    store.create_user(TENANT_A, &active).await.expect("create active");
+
+    // A fixed non-secret placeholder replacement hash; the store treats it as opaque.
+    let new_hash = "$argon2id$v=19$m=19456,t=2,p=1$bmV3c2FsdA$bmV3aGFzaA";
+    let updated = store
+        .set_password(TENANT_A, active_id, new_hash)
+        .await
+        .expect("set password");
+    assert!(updated, "setting the password of an active account reports true");
+
+    let record = store
+        .find_by_id(TENANT_A, active_id)
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(record.password_hash, new_hash);
+
+    // An invited (never-accepted) account must not be resettable.
+    let mut invited = new_user("quinn@example.com");
+    invited.status = UserStatus::Invited;
+    let invited_id = invited.id;
+    store.create_user(TENANT_A, &invited).await.expect("create invited");
+
+    let touched = store
+        .set_password(TENANT_A, invited_id, new_hash)
+        .await
+        .expect("set password on invited");
+    assert!(!touched, "an invited (non-active) account must not be password-resettable");
+}
+
+#[tokio::test]
+async fn revoke_all_refresh_tokens_revokes_every_live_session() {
+    let (_pg, pool) = setup().await;
+    let store = PgUserStore::new(pool);
+
+    let user = new_user("ruth@example.com");
+    let user_id = user.id;
+    store.create_user(TENANT_A, &user).await.expect("create user");
+
+    // Two live sessions for the user.
+    for hash in ["revoke-all-hash-1", "revoke-all-hash-2"] {
+        store
+            .store_refresh_token(TENANT_A, Uuid::new_v4(), hash, user_id, Utc::now() + Duration::days(7))
+            .await
+            .expect("store refresh token");
+    }
+
+    // A reset revokes every outstanding session at once.
+    let revoked = store
+        .revoke_all_refresh_tokens(TENANT_A, user_id)
+        .await
+        .expect("revoke all");
+    assert_eq!(revoked, 2, "both live sessions must be revoked");
+
+    // Each is now dead, so a subsequent refresh with either is rejected.
+    for hash in ["revoke-all-hash-1", "revoke-all-hash-2"] {
+        let record = store
+            .find_refresh_token(TENANT_A, hash)
+            .await
+            .expect("find")
+            .expect("token present");
+        assert!(!record.is_live(Utc::now()), "revoke_all must kill the session");
+    }
+
+    // Idempotent: a second revoke-all finds nothing live → zero rows.
+    let again = store
+        .revoke_all_refresh_tokens(TENANT_A, user_id)
+        .await
+        .expect("revoke all again");
+    assert_eq!(again, 0, "re-revoking with no live sessions affects zero rows");
+}
+
+#[tokio::test]
 async fn create_is_rejected_for_mismatched_tenant() {
     let (_pg, pool) = setup().await;
 
