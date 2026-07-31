@@ -155,6 +155,11 @@ pub struct AppState {
     /// open-registration flag, lockout policy, token lifetimes). Read at request
     /// time so behaviour is deterministic regardless of `auth_store` presence.
     pub native_auth: crate::native_auth::NativeAuthConfig,
+    /// Outbound email transport for the password-reset flow (AAASM-5306, ADR 0031
+    /// §Q4). A real `SmtpMailer` when `AA_SMTP_HOST` is configured, otherwise the
+    /// no-op `LoggingMailer` so an SMTP-less deployment degrades gracefully. The
+    /// reset endpoint dispatches through this and never panics on a mail outage.
+    pub mailer: Arc<dyn crate::mailer::Mailer>,
 }
 
 /// Error returned by [`AppState::local_in_memory`] when the in-memory wiring
@@ -451,6 +456,11 @@ impl AppState {
             // default behave identically once a Postgres store is wired in.
             auth_store: None,
             native_auth: crate::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: resolve the mailer from AA_SMTP_* (SmtpMailer when
+            // configured, else the LoggingMailer fallback). Present in every
+            // wiring so the reset endpoint always has a transport; delivery only
+            // actually happens on a Postgres-backed deployment with SMTP set.
+            mailer: crate::mailer::build_mailer(),
         })
     }
 

@@ -949,6 +949,8 @@ spec:
             // and the endpoints degrade honestly (ADR 0031 D2).
             auth_store: None,
             native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: the no-op logging mailer — tests never send real email.
+            mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
         },
         audit_dir,
         alert_store_handle,
@@ -1095,6 +1097,8 @@ spec:
             // and the endpoints degrade honestly (ADR 0031 D2).
             auth_store: None,
             native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: the no-op logging mailer — tests never send real email.
+            mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
         },
         audit_dir,
         alert_store_handle,
@@ -1242,6 +1246,8 @@ spec:
             // and the endpoints degrade honestly (ADR 0031 D2).
             auth_store: None,
             native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: the no-op logging mailer — tests never send real email.
+            mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
         },
         audit_dir,
         alert_store_handle,
@@ -1381,6 +1387,8 @@ spec:
             // and the endpoints degrade honestly (ADR 0031 D2).
             auth_store: None,
             native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: the no-op logging mailer — tests never send real email.
+            mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
         },
         audit_dir,
         alert_store_handle,
@@ -1513,6 +1521,8 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             // and the endpoints degrade honestly (ADR 0031 D2).
             auth_store: None,
             native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: the no-op logging mailer — tests never send real email.
+            mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
         },
         audit_dir,
         alert_store_handle,
