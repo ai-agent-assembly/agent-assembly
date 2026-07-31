@@ -152,11 +152,13 @@ unmeasured (see below).
   bypass counters — remain **unmeasured** (`AAASM-5276` condition C6). `--scope managed` is
   refused, and the path is resolved only so a refusal can name it. Measuring it on a managed macOS
   device is tracked by `AAASM-5298`.
-- **`Gateway Protected` is not reportable on a default build.** The shipped `UnadjudicatedProbe`
-  reports `Inconclusive` because a client on the near side of the proxy cannot see the forwarded
-  body, so `aasm integrations verify claude-code` exits `6` and the level stays at `Integrated` —
-  even though the interception itself was proven end-to-end. An adjudicating probe is *planned*.
-  See [Limitations](../devtools/limitations.md#verify-cannot-adjudicate-so-it-exits-6).
+- **`Gateway Protected` is reportable only on adjudicated evidence.** The shipped probe drives one
+  request down the protected path and reads back the proxy's verdict for that exact request —
+  including a re-inspection of the payload the proxy resolved to forward — so
+  `aasm integrations verify claude-code` exits `0` on an installation whose path was exercised and
+  adjudicated. Every condition it cannot measure (an untrusted certificate authority, a stopped
+  core, a path nothing adjudicates, a timeout) still exits `6` and leaves the level at `Integrated`.
+  See [Limitations](../devtools/limitations.md#what-verify-adjudicates-and-when-it-still-exits-6).
 - **All L2 dimensions require the managed launch.** A `claude` started directly inherits neither
   the proxy nor `NODE_EXTRA_CA_CERTS` and is unprotected — measured, not theoretical. Worse, it
   fails *silently*: a proxy that cannot terminate TLS still lets the connection through, which is

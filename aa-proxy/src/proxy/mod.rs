@@ -28,6 +28,7 @@ use crate::intercept::event::ProxyEvent;
 use crate::intercept::mcp::{is_unenforceable_tool_call, parse_mcp_request};
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
+use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
 use crate::proxy::http::{
     read_http_request, read_http_response, read_line_capped, serialize_http_request, serialize_http_request_with_auth,
     serialize_http_response, HttpRequest, MAX_BODY_LEN, MAX_HEADER_BYTES, MAX_HEADER_COUNT, MAX_HEADER_LINE_LEN,
@@ -849,6 +850,47 @@ impl ProxyServer {
             timestamp: SystemTime::now(),
         };
         self.interceptor.intercept(&event).await?;
+
+        // AAASM-5300: a protection probe's own request is adjudicated exactly
+        // like any other — the verdict above is the same call the real data path
+        // makes, under the same configured `credential_action` — and is then
+        // *answered* here instead of relayed. See `crate::probe_adjudication`
+        // for why terminating it is the only safe direction: the body carries a
+        // synthetic credential, and under a non-enforcing policy the ordinary
+        // path would forward it to the real provider.
+        //
+        // Only this (LLM-pattern) handler speaks the protocol. A probe request
+        // that lands anywhere else is forwarded like any other request, so a
+        // probe must establish that it is talking to an adjudicating proxy
+        // *before* it sends anything sensitive.
+        if let Some(correlation) = req.header(PROBE_CORRELATION_HEADER).and_then(ProbeCorrelation::parse) {
+            let (audit_decision, forwarded_is_clean) = match verdict.decision {
+                VerdictDecision::Block => (ProxyAuditDecision::Blocked, None),
+                VerdictDecision::ForwardRedacted => {
+                    let bytes = verdict.redacted_body.as_deref().unwrap_or(&req.body);
+                    (
+                        ProxyAuditDecision::ForwardedRedacted,
+                        self.interceptor.forwarded_payload_is_clean(bytes),
+                    )
+                }
+                _ => (
+                    ProxyAuditDecision::Forwarded,
+                    self.interceptor.forwarded_payload_is_clean(&req.body),
+                ),
+            };
+            let adjudication = ProbeAdjudication::new(&correlation, &verdict, forwarded_is_clean);
+            tracing::info!(
+                %host,
+                correlation = %correlation.as_str(),
+                decision = ?adjudication.decision,
+                "adjudicated a protection probe request; answering it instead of forwarding upstream",
+            );
+            self.emit_audit_entry(host, &req, &verdict, audit_decision).await;
+            let mut client_tls = client_reader.into_inner();
+            client_tls.write_all(&adjudication.http_response()).await?;
+            let _ = client_tls.shutdown().await;
+            return Ok(());
+        }
 
         if verdict.decision == VerdictDecision::Block {
             tracing::info!(

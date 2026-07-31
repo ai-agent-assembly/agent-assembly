@@ -13,13 +13,19 @@
 //! obviously failed would be exactly the vacuous pass the evidence model exists
 //! to prevent.
 //!
-//! So the probe is an injected capability. The default,
-//! [`UnadjudicatedProbe`], reports
+//! So the probe is an injected capability, and the trait below is the seam.
+//! The shipped default is
+//! [`ProxyAdjudicatedProbe`](crate::adjudicating_probe::ProxyAdjudicatedProbe)
+//! (AAASM-5300): it produces the traffic and then reads back the verdict the
+//! proxy — the component that constructs the forwarded bytes — returns for that
+//! exact request. That is what makes `GatewayProtected` reachable.
+//!
+//! [`UnadjudicatedProbe`] remains as the honest floor for any deployment with no
+//! adjudicating component in the path: it reports
 //! [`Inconclusive`](aa_devtool_contract::ExerciseOutcome::Inconclusive) with the
-//! reason — which is not protective, so `verify` does not pass and the level
-//! does not rise. A deployment that *can* observe the forwarded payload supplies
-//! a probe that adjudicates, and only then does `GatewayProtected` become
-//! reachable.
+//! reason, which is not protective, so `verify` does not pass and the level does
+//! not rise. It is also the guard the evidence model is pinned by — a build in
+//! which an unadjudicated probe starts passing has broken the rule, not fixed it.
 
 use std::path::PathBuf;
 
@@ -68,10 +74,12 @@ pub trait ProtectionProbe: Send + Sync {
     async fn run(&self, request: &ProbeRequest) -> ProbeReport;
 }
 
-/// The default probe: honest about what it cannot establish.
+/// The floor probe: honest about what it cannot establish.
 ///
 /// It produces no traffic, because producing traffic it cannot adjudicate would
-/// send a synthetic secret to a real provider for no evidential gain.
+/// send a synthetic secret to a real provider for no evidential gain. Supplied
+/// deliberately (via [`with_probe`](crate::ClaudeCodeIntegration::with_probe))
+/// where no component in the path can report on the forwarded payload.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnadjudicatedProbe;
 
@@ -106,8 +114,10 @@ mod tests {
         }
     }
 
+    /// The rule the whole evidence model rests on: a probe that adjudicated
+    /// nothing must never read as protection, whatever else changes around it.
     #[tokio::test]
-    async fn the_default_probe_is_never_protective() {
+    async fn an_unadjudicated_probe_must_not_pass() {
         let report = UnadjudicatedProbe.run(&request()).await;
         assert_eq!(report.outcome, ExerciseOutcome::Inconclusive);
         assert!(

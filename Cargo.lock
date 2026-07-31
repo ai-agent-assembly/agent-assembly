@@ -197,11 +197,14 @@ dependencies = [
  "async-trait",
  "axum",
  "insta",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-rustls",
+ "uuid",
 ]
 
 [[package]]

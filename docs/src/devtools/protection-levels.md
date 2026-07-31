@@ -58,33 +58,33 @@ Two reporting rules apply at every rung:
 | **Maps to L0–L3** | `L2Enforce` — allow/deny, approval, redaction and budget enforcement, which is precisely what traversal of the gateway provides. |
 | **Honest limit** | Also cannot claim host-level bypass prevention. It protects the paths it sees. A user or agent able to start a process outside the managed path is outside its scope by construction. |
 
-### Why `Gateway Protected` is not reportable today
+### How `Gateway Protected` becomes reportable
 
-> **`aasm integrations verify claude-code` exits `6` on a default build, so the
-> level stays at `Integrated`.**
+> **`aasm integrations verify claude-code` exits `0` once the protected path has
+> been exercised and adjudicated (AAASM-5300); until then the level stays at
+> `Integrated`.**
 >
 > Raising the level requires *exercised* evidence, and exercised means traffic
-> was produced **and adjudicated**. Adjudicating means knowing what the provider
-> actually received — which **a client on the near side of the proxy cannot
-> see**. The shipped default probe, `UnadjudicatedProbe`, therefore reports
-> `Inconclusive` with its reason and produces no traffic at all
-> (`aa-devtool-claude-code/src/probe.rs`).
+> was produced **and adjudicated**. Adjudicating means knowing what the payload
+> leaving the machine actually carries — which **a client on the near side of the
+> proxy cannot see for itself**. So the shipped probe does not infer it: it marks
+> its own request with an opaque correlation identifier, and the proxy — the
+> component that runs the scanner and builds the forwarded bytes — answers on
+> that request's own connection with what it decided and with a re-inspection of
+> the payload it resolved to forward. `Redacted` is reported only when both agree
+> (`aa-devtool-claude-code/src/adjudicating_probe.rs`).
 >
-> This is not a broken installation, and it is not the protection failing. It is
-> the evidence model refusing a vacuous pass: a probe that reported `Redacted`
-> because nothing obviously failed would be exactly the claim this system exists
-> to prevent.
+> **Everything it cannot measure still exits `6`**: an untrusted certificate
+> authority, a path nothing adjudicates, a stopped core, a timeout, or a verdict
+> belonging to a different request. A probe that reported `Redacted` because
+> nothing obviously failed would be exactly the vacuous pass this system exists
+> to prevent, and the guard that pins that rule is still in the suite.
 >
 > **The mechanism itself was measured working.** AAASM-5276 ran the real
 > `claude 2.1.220` binary against a TLS-terminating mock provider: all four
 > upstream requests traversed the proxy, the deterministic scanner matched the
 > synthetic secret, and the forwarded body carried `[REDACTED:AnthropicKey]`
 > while remaining valid Messages JSON — at sub-millisecond added cost.
->
-> **Planned:** a deployment that can observe the forwarded payload supplies a
-> probe that adjudicates. The probe is an injected capability precisely so this
-> can land without changing the evidence model. Until it does, read exit `6` on
-> an otherwise-clean install as *not measured*, not as *measured and failed*.
 
 ## Host Enforced
 

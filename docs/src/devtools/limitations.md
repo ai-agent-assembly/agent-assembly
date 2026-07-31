@@ -24,7 +24,7 @@ claim that traces to neither is not on this page.
 |---|---|---|
 | Managed settings write / merge / restore | **Supported** | Four owned keys; every other key preserved. |
 | Proxy CA materialisation + `NODE_EXTRA_CA_CERTS` injection | **Supported** | AAASM-5276 condition C1. |
-| HTTPS interception and redaction on the model path | **Supported** | Measured against the real binary; see [`verify`](#verify-cannot-adjudicate-so-it-exits-6) for why the *level* still does not rise. |
+| HTTPS interception and redaction on the model path | **Supported** | Measured against the real binary; see [`verify`](#what-verify-adjudicates-and-when-it-still-exits-6) for what raises the *level*. |
 | Side-channel scoping (`*.anthropic.com`) | **Supported** | Condition C5. |
 | MCP loading control (`enabledMcpjsonServers` / `disabledMcpjsonServers`) | **Supported** | Optional, defence-in-depth. Never required for protection. |
 | Drift detection and repair | **Supported** | Detected at `status`/`verify` time, not in real time. |
@@ -119,34 +119,50 @@ This is why the lifecycle contract keeps `ModelPathInterception` and
 opposites: the first is a protection capability, the second is routing that
 *removes* protection.
 
-## `verify` cannot adjudicate, so it exits `6`
+## What `verify` adjudicates, and when it still exits `6`
 
-**On a default build, `aasm integrations verify claude-code` exits `6`
-(`verification_failed`) even on a completely correct installation.**
+`aasm integrations verify claude-code` **passes on a correctly installed
+integration** whose protected path was exercised and adjudicated (AAASM-5300).
 
 Raising the level to `Gateway Protected` requires *exercised* evidence, and
 exercised means the traffic was produced **and adjudicated**. Adjudicating means
-knowing what the provider actually received — and a client on the **near side of
-the proxy cannot see the forwarded body**. The shipped default probe,
-`UnadjudicatedProbe`, therefore reports `Inconclusive` with its reason, and
-produces no traffic at all: sending a synthetic secret to a real provider for no
-evidential gain would be worse than saying nothing
-(`aa-devtool-claude-code/src/probe.rs`).
+knowing what the payload leaving the machine actually carries — which a client on
+the **near side of the proxy cannot see for itself**. So the shipped probe does
+not try to. It marks its own request with an opaque correlation identifier, and
+the proxy — the component that runs the credential scanner and constructs the
+bytes that would be forwarded — answers on that request's own connection with
+what it decided, plus a re-inspection of the payload it resolved to forward.
+`Redacted` is reported only when the proxy says it scrubbed the body **and** that
+the scrubbed bytes carry no credential
+(`aa-devtool-claude-code/src/adjudicating_probe.rs`,
+`aa-proxy/src/probe_adjudication.rs`).
+
+Two properties of that exchange are worth knowing:
+
+- **The probe learns nothing but its own verdict.** There is no verdict store and
+  no query surface — a verdict exists only as the response to the request that
+  produced it, and is accepted only when it echoes the identifier that run
+  minted. The correlation identifier is 32 hex characters of OS entropy and is
+  derived from nothing about the payload.
+- **The probe's traffic never reaches the provider.** The proxy terminates a
+  correlated request instead of relaying it, and the probe sends a credential-free
+  preflight first — so a path with nothing adjudicating on it never receives the
+  synthetic secret at all.
 
 A probe that returned `Redacted` because nothing obviously failed would be a
 **vacuous pass**, which is precisely what the evidence model exists to prevent.
+That rule is unchanged, and `verify` still exits `6` (`verification_failed`)
+whenever it cannot measure:
 
-The consequence to be clear about: **you can reach `Integrated` and will
-correctly not be shown `Gateway Protected`, even though the protection genuinely
-works.** AAASM-5276 proved it end to end against the real `claude 2.1.220` binary
-and a TLS-terminating mock provider — every upstream request traversed the proxy,
-the scanner matched, and the forwarded body carried `[REDACTED:AnthropicKey]`
-while remaining valid Messages JSON.
-
-**Planned:** a deployment that can observe the forwarded payload supplies a probe
-that adjudicates, and only then does `GatewayProtected` become reachable. The
-probe is an injected capability specifically so that this can land without
-changing the evidence model.
+| Condition | Why it cannot pass |
+|---|---|
+| The path was never exercised | No trust material in the receipt, so there is no intercepted model path to drive. |
+| The certificate authority is not trusted | The MitM handshake fails, so nothing inspected the traffic. AAASM-5276 condition **C1**. |
+| Nothing adjudicates the path | The peer answered, but not with an adjudication — no component reported what it did. |
+| The core is stopped | Nothing is accepting connections; there is no verdict to read. |
+| The exchange times out | Bounded and reported, never assumed. |
+| A verdict for a different request | A verdict the probe did not produce is not evidence about the probe. |
+| `alert_only` is configured | The finding is recorded and the payload forwarded unchanged — observing is not protecting. |
 
 Read exit `6` on an otherwise-clean install as **"not measured"**, not as
 **"measured and failed"** — and read `status` for which it is.
