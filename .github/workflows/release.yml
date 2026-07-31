@@ -599,6 +599,22 @@ jobs:
              aa-ebpf/_embedded/aa-ebpf-probes/Cargo.toml.embedded
           echo "✓ aa-ebpf/_embedded/aa-ebpf-probes/ staged ($(find aa-ebpf/_embedded -type f | wc -l) files)"
 
+      - name: Stage .sqlx offline query cache into aa-gateway for crates.io publish
+        # AAASM-5315: aa-gateway expands `sqlx::query!` at compile time in
+        # `approval/sqlite_repo.rs` + `approval/db_escalation_scheduler.rs`.
+        # Without a DATABASE_URL those macros read the offline cache, which
+        # lives at the WORKSPACE root — outside the package, and cargo's
+        # `include` cannot escape the package directory. Mirror it in so the
+        # published crate compiles for a consumer who has no database at all.
+        # Kept as a staged copy (not a committed second copy) so the root
+        # `.sqlx/` stays the only thing `cargo sqlx prepare` has to regenerate.
+        run: |
+          set -euo pipefail
+          rm -rf aa-gateway/.sqlx
+          cp -r .sqlx aa-gateway/.sqlx
+          test -n "$(ls -A aa-gateway/.sqlx)"
+          echo "✓ aa-gateway/.sqlx/ staged ($(find aa-gateway/.sqlx -type f | wc -l) files)"
+
       - name: Strip held-back surface from aa-cli for crates.io publish
         # AAASM-2340: removes the `aa-devtool*` deps and the source files
         # that consume them (`aasm run` + `aasm tools` subcommands) before
@@ -618,6 +634,21 @@ jobs:
           # --no-git-push avoids creating/pushing tags (we already
           # have one from the upstream tag push), --yes skips
           # confirmation prompts.
+          #
+          # --no-verify (AAASM-2463, re-justified by AAASM-5315/5316):
+          # cargo's per-crate verify step unpacks each tarball and compiles it
+          # in isolation. It CANNOT be turned on here: aa-ebpf/build.rs's
+          # `restore_manifest_from_stage` renames `Cargo.toml.embedded` back
+          # during that compile, which trips cargo's "Source directory was
+          # modified by build.rs during cargo publish" guard and aborts the
+          # release. The flag's original rationale — "pre-tag CI already
+          # proves the workspace builds" — was false: a workspace build never
+          # separates a crate from its siblings, which is exactly the defect
+          # class verify exists to catch, and two such defects (5315, 5316)
+          # shipped through it. `scripts/check-packaged-artifacts.sh` now runs
+          # on every PR and reconstructs what verify would have proved —
+          # package, assert tarball contents, then build the real binaries out
+          # of the unpacked tarballs — without re-entering the aa-ebpf failure.
           cargo workspaces publish \
             --from-git \
             --no-git-push \
