@@ -54,6 +54,20 @@ aa-gateway           = { path = "../aa-gateway", version = "0.0.1-rc.6" }
 aa-proto             = { path = "../aa-proto", version = "0.0.1-rc.6" }
 aa-runtime           = { path = "../aa-runtime", version = "0.0.1-rc.6" }
 aa-proxy             = { path = "../aa-proxy", version = "0.0.1-rc.6" }
+# strip-for-publish:begin sdkclient
+# AAASM-5323: `aasm run` registers through the gateway's gRPC
+# `AgentLifecycleService`, building the request with the same `aa-sdk-client`
+# code the language SDKs use. Reimplementing the did:key derivation, the
+# challenge handshake or the possession proof here would create a second
+# implementation of the one identity contract the gateway gates on — the exact
+# divergence this dependency exists to prevent.
+#
+# `aa-sdk-client` is `publish = false` (ADR 0002 / AAASM-2559: it ships to the
+# SDK shims as a git-SHA pin, not via crates.io), so this region is stripped by
+# `.ci/strip-for-publish.sh` along with `run.rs` and `run_registration.rs`, its
+# only consumers.
+aa-sdk-client        = { path = "../aa-sdk-client", version = "0.0.1-rc.6" }
+# strip-for-publish:end sdkclient
 aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-rc.6" }
 aa-storage           = { path = "../aa-storage", version = "0.0.1-rc.6" }
 aa-storage-memory    = { path = "../aa-storage-memory", version = "0.0.1-rc.6" }
@@ -99,6 +113,15 @@ assert_cmd     = { workspace = true }
 tokio-util     = { workspace = true, features = ["rt"] }
 tempfile       = { workspace = true }
 wiremock       = "0.6"
+# strip-for-publish:begin sdkclient
+# AAASM-5323: `aasm run`'s registration tests stand up the *real*
+# `AgentLifecycleServiceImpl` over tonic and verify the possession proof the CLI
+# submits against the registered public key. A mock gateway would only ever
+# prove the CLI agrees with the mock.
+ed25519-dalek  = "3"
+tonic          = { workspace = true }
+tokio-stream   = { workspace = true }
+# strip-for-publish:end sdkclient
 
 [lints]
 workspace = true
