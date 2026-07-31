@@ -382,12 +382,36 @@ const MAX_ANALYTICS_AUDIT_EVENTS: usize = 100_000;
 /// in-process reader holds the same entries the other audit aggregations read,
 /// so no new data source is introduced.
 async fn fetch_window_entries(caller: &AuthenticatedCaller, state: &AppState, since_ns: u64) -> Vec<AuditEntry> {
-    let (entries, _total) = state
+    fetch_window_entries_with_total(caller, state, since_ns).await.0
+}
+
+/// Like [`fetch_window_entries`], but also returns whether the audit window was
+/// **truncated** at [`MAX_ANALYTICS_AUDIT_EVENTS`] (AAASM-5083).
+///
+/// [`AuditReader::list_windowed`] returns `(page, total)` where `total` is the
+/// number of entries matching the window *before* the `limit` slice. When
+/// `total` exceeds the cap the returned page is the most-recent cap events only,
+/// so any aggregation over it is computed on a silently-incomplete window. The
+/// trust score must return `null` rather than a partial score in that case
+/// (ADR 0019 Guardrail 2), so it needs this flag; the existing analytics routes
+/// that tolerate a partial window keep using [`fetch_window_entries`].
+///
+/// The truncation test is on the whole (pre-scope) window total, not the
+/// per-tenant slice: the cap is applied by the reader before tenant scoping, so
+/// if the raw window overflowed, a given tenant's entries may themselves be
+/// incomplete — the honest, fail-safe reading is "truncated".
+async fn fetch_window_entries_with_total(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    since_ns: u64,
+) -> (Vec<AuditEntry>, bool) {
+    let (entries, total) = state
         .audit_reader
         .list_windowed(since_ns, MAX_ANALYTICS_AUDIT_EVENTS, 0, None, None, None)
         .await
         .unwrap_or_default();
-    scope_entries(caller, entries)
+    let truncated = total > MAX_ANALYTICS_AUDIT_EVENTS as u64;
+    (scope_entries(caller, entries), truncated)
 }
 
 /// Agents the caller may see: admin sees all; a tenant-scoped caller sees only
