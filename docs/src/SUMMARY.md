@@ -104,6 +104,7 @@
 - [`aasm integrations` CLI](devtools/cli.md)
 - [Thin-Client Reference Implementation](devtools/reference-client.md)
 - [Authoring a Dev-Tool Adapter](devtools/plugins.md)
+- [Measuring Managed-Settings Enforcement](devtools/managed-device-measurement.md)
 
 # Protocol
 
