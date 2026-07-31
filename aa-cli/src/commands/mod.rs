@@ -20,7 +20,9 @@ pub mod cost;
 pub mod dashboard;
 pub mod gateway;
 pub mod gw_probe;
+// strip-for-publish:begin devtool
 pub mod integrations;
+// strip-for-publish:end devtool
 pub mod logs;
 pub mod permissions;
 pub mod pidfile;
@@ -76,9 +78,9 @@ pub enum Commands {
     Dashboard(dashboard::DashboardArgs),
     /// Manage the aa-gateway governance daemon — agent registry, policy engine, audit log.
     Gateway(gateway::GatewayArgs),
+    // strip-for-publish:begin devtool
     /// Install, verify, repair and remove Developer Integrations for AI dev tools.
     Integrations(integrations::IntegrationsArgs),
-    // strip-for-publish:begin devtool
     /// Launch an AI dev tool (claude, codex, copilot, windsurf) with governance wiring.
     Run(run::RunArgs),
     // strip-for-publish:end devtool
@@ -120,8 +122,8 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Cost(args) => cost::dispatch(args, ctx, output),
         Commands::Dashboard(args) => dashboard::dispatch(args, ctx),
         Commands::Gateway(args) => gateway::dispatch(args),
-        Commands::Integrations(args) => integrations::dispatch(args, output),
         // strip-for-publish:begin devtool
+        Commands::Integrations(args) => integrations::dispatch(args, output),
         Commands::Run(args) => run::dispatch(args, ctx, output),
         // strip-for-publish:end devtool
         Commands::Sandbox(args) => sandbox::dispatch(args),
