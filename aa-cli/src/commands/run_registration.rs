@@ -301,3 +301,256 @@ fn reason_of(e: SdkClientError) -> String {
         other => other.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_sdk_client::AgentKeypair;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    fn descriptor<'a>(agent_id: &'a str, team: Option<&'a str>) -> SessionDescriptor<'a> {
+        SessionDescriptor {
+            agent_id,
+            name: "claude_code",
+            version: "2.1.999",
+            team_id: team,
+            parent_agent_id: None,
+            enforcement_mode: aa_core::EnforcementMode::Enforce,
+            governance_level: "L0Discover",
+        }
+    }
+
+    /// The request the CLI submits, built exactly as [`register`] builds it but
+    /// without a gateway to submit it to, so its *contents* can be asserted.
+    fn cli_request(desc: &SessionDescriptor<'_>, nonce: &[u8]) -> aa_proto::assembly::agent::v1::RegisterRequest {
+        let config = sdk_config(desc.agent_id, desc.team_id, desc.parent_agent_id);
+        let mut request = build_register_request(&config, desc.name.to_string(), LAUNCH_FRAMEWORK.to_string(), nonce);
+        request.version = desc.version.to_string();
+        request.enforcement_mode = proto_enforcement_mode(desc.enforcement_mode);
+        request
+            .metadata
+            .insert("governance_level".to_string(), desc.governance_level.to_string());
+        request
+    }
+
+    /// The whole point of routing the CLI through `aa-sdk-client`: the identity
+    /// the CLI registers under is the identity the SDK derives from the same
+    /// identifier. If these ever diverge the two surfaces are separate agents to
+    /// the gateway, and nothing about "one contract" survives.
+    #[test]
+    fn the_cli_registers_under_the_same_did_as_the_sdk_for_the_same_identifier() {
+        for id in ["ops-laptop", "team-a/bot", "did:key:z6MkfoobarNotDerived"] {
+            assert_eq!(
+                registration_did(id),
+                aa_sdk_client::agent_id_to_did_key(id),
+                "the CLI must not derive its own identity for `{id}`"
+            );
+        }
+    }
+
+    /// The pair the CLI submits must satisfy the gateway's own checks: a
+    /// well-formed `did:key`, and a DID that embeds the very key `public_key`
+    /// names (`enforce_did_key_binding`, AAASM-4787). Asserted by calling the
+    /// gateway's functions rather than by re-deriving the rules here — a
+    /// re-derivation could agree with itself while disagreeing with the gate.
+    #[test]
+    fn the_submitted_pair_passes_the_gateways_own_identity_checks() {
+        use aa_gateway::registry::convert::{assert_did_key_binds_public_key, validate_proto_agent_id};
+
+        let desc = descriptor("binding-check", Some("team-a"));
+        let request = cli_request(&desc, b"nonce-bytes-for-the-binding-check");
+        let proto_id = request.agent_id.as_ref().expect("agent_id is set");
+
+        validate_proto_agent_id(proto_id).expect("the gateway must accept the submitted agent_id");
+        assert_did_key_binds_public_key(&proto_id.agent_id, &request.public_key)
+            .expect("the DID and the public_key must encode the same key, or the pair is refused");
+
+        // The binding is what makes the DID unsquattable, so a mismatched key
+        // must be refused by the same check — proving the check is live rather
+        // than vacuously satisfied by whatever was passed in.
+        let foreign = AgentKeypair::derive("somebody-else").public_key_hex();
+        assert!(
+            assert_did_key_binds_public_key(&proto_id.agent_id, &foreign).is_err(),
+            "a DID paired with a foreign key must be refused; if this passes, the binding check \
+             is not actually comparing anything"
+        );
+    }
+
+    /// The possession proof must be a real signature over the *server's* nonce.
+    /// A proof over anything else — most of all over the public, deterministic
+    /// `agent_id` — is precomputable by anyone who knows the id.
+    #[test]
+    fn the_possession_proof_signs_the_server_nonce_and_verifies_under_the_public_key() {
+        let desc = descriptor("proof-check", None);
+        let nonce = b"a-server-issued-nonce-32-bytes!!".to_vec();
+        let request = cli_request(&desc, &nonce);
+
+        assert_eq!(
+            request.registration_nonce, nonce,
+            "the server's nonce must be returned verbatim"
+        );
+        assert_eq!(request.possession_proof.len(), 64, "an Ed25519 signature is 64 bytes");
+
+        let key_bytes: [u8; 32] = hex::decode(&request.public_key)
+            .expect("public_key is hex")
+            .try_into()
+            .expect("public_key is 32 bytes");
+        let verifying = VerifyingKey::from_bytes(&key_bytes).expect("a valid Ed25519 key");
+        let signature = Signature::from_bytes(&request.possession_proof.clone().try_into().expect("64-byte signature"));
+
+        verifying
+            .verify(&nonce, &signature)
+            .expect("the proof must verify over the nonce the gateway issued");
+        assert!(
+            verifying.verify(desc.agent_id.as_bytes(), &signature).is_err(),
+            "the proof must not be a signature over the public agent id — that value is \
+             deterministic and knowable in advance, so a proof over it is replayable"
+        );
+    }
+
+    /// A fresh challenge per registration is what makes the proof unrepeatable.
+    /// The same identity registering twice must sign two different nonces, or
+    /// the second request is byte-identical to the first and replayable.
+    #[test]
+    fn two_registrations_of_one_identity_produce_different_proofs() {
+        let desc = descriptor("replay-check", None);
+        let first = cli_request(&desc, b"first-server-issued-nonce-value!");
+        let second = cli_request(&desc, b"second-server-issued-nonce-valu");
+
+        assert_eq!(
+            first.public_key, second.public_key,
+            "the identity is stable across runs — that is what keeps the audit trail joined up"
+        );
+        assert_ne!(
+            first.possession_proof, second.possession_proof,
+            "a proof that does not change with the nonce is a proof that can be replayed"
+        );
+    }
+
+    /// The keypair the proof is made with is the one the DID names, so the
+    /// signature the CLI produces is the signature the SDK would produce.
+    #[test]
+    fn the_cli_signs_with_the_same_key_the_sdk_would() {
+        let nonce = b"shared-nonce";
+        let desc = descriptor("parity-check", None);
+        let cli = cli_request(&desc, nonce);
+        let sdk = build_register_request(
+            &sdk_config("parity-check", None, None),
+            "any-name".to_string(),
+            "langgraph".to_string(),
+            nonce,
+        );
+
+        assert_eq!(cli.public_key, sdk.public_key);
+        assert_eq!(
+            cli.possession_proof, sdk.possession_proof,
+            "the two surfaces must present the same proof for the same identity and nonce"
+        );
+        assert_eq!(AgentKeypair::derive("parity-check").public_key_hex(), cli.public_key);
+    }
+
+    /// The registry id must be the gateway's own key for the registered
+    /// identity: 32 hex characters, which is the only shape
+    /// `GET`/`DELETE /api/v1/agents/{id}` will parse.
+    #[test]
+    fn the_registry_id_is_the_gateways_own_key_in_the_shape_the_api_accepts() {
+        let did = registration_did("registry-id-check");
+        let id = registry_id(Some("team-a"), &did);
+
+        assert_eq!(id.len(), 32, "the API rejects anything that is not 32 hex characters");
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(
+            id,
+            hex::encode(aa_gateway::registry::convert::proto_agent_id_to_key(&ProtoAgentId {
+                org_id: String::new(),
+                team_id: "team-a".to_string(),
+                agent_id: did,
+            })),
+            "the id must be computed by the gateway's own function, not re-derived here"
+        );
+    }
+
+    /// The team scopes the key, so two teams' registrations of the same
+    /// identifier are distinct records rather than one shared one.
+    #[test]
+    fn the_registry_id_is_scoped_by_team() {
+        let did = registration_did("scoping-check");
+        assert_ne!(registry_id(Some("team-a"), &did), registry_id(Some("team-b"), &did));
+        assert_ne!(registry_id(None, &did), registry_id(Some("team-a"), &did));
+    }
+
+    /// `--observe` must reach the gateway as a *claim*, not as a local decision.
+    /// The gateway drops weakening claims from self-registering agents
+    /// (AAASM-4121); that verdict is its to make, and sending nothing would hide
+    /// the operator's request from it entirely.
+    #[test]
+    fn the_operators_enforcement_posture_is_sent_for_the_gateway_to_adjudicate() {
+        use aa_proto::assembly::common::v1::EnforcementMode as Proto;
+        assert_eq!(
+            proto_enforcement_mode(aa_core::EnforcementMode::Enforce),
+            Proto::Enforce as i32
+        );
+        assert_eq!(
+            proto_enforcement_mode(aa_core::EnforcementMode::Observe),
+            Proto::Observe as i32
+        );
+        assert_eq!(
+            proto_enforcement_mode(aa_core::EnforcementMode::Disabled),
+            Proto::Disabled as i32
+        );
+        assert_ne!(
+            proto_enforcement_mode(aa_core::EnforcementMode::Observe),
+            Proto::Unspecified as i32,
+            "sending UNSPECIFIED would silently discard the operator's request rather than \
+             letting the gateway rule on it"
+        );
+    }
+
+    /// The endpoint is the gRPC one, resolved the way the SDK resolves it.
+    #[test]
+    fn the_gateway_endpoint_defaults_to_the_grpc_port_and_honours_the_sdk_env_var() {
+        let _guard = crate::test_support::env_guard();
+        let prior = std::env::var("AA_GATEWAY_ENDPOINT").ok();
+
+        std::env::remove_var("AA_GATEWAY_ENDPOINT");
+        let default = gateway_endpoint();
+
+        std::env::set_var("AA_GATEWAY_ENDPOINT", "http://10.0.0.9:60000");
+        let overridden = gateway_endpoint();
+
+        match prior {
+            Some(v) => std::env::set_var("AA_GATEWAY_ENDPOINT", v),
+            None => std::env::remove_var("AA_GATEWAY_ENDPOINT"),
+        }
+
+        assert_eq!(default, aa_sdk_client::config::DEFAULT_GATEWAY_ENDPOINT);
+        assert!(
+            default.ends_with(":50051"),
+            "registration is a gRPC call; the :8080 HTTP surface cannot serve it. Got {default}"
+        );
+        assert_eq!(overridden, "http://10.0.0.9:60000");
+    }
+
+    /// A refusal must say which gateway refused and what it said, so an operator
+    /// is not left inferring it from an exit code.
+    #[test]
+    fn refusals_name_the_endpoint_and_the_gateways_reason() {
+        let unreachable = RegistrationError::GatewayUnreachable {
+            endpoint: "http://127.0.0.1:50051".into(),
+        };
+        assert!(unreachable.to_string().contains("http://127.0.0.1:50051"));
+        assert!(unreachable.to_string().contains("unreachable"));
+
+        let refused = RegistrationError::RegistrationRefused {
+            endpoint: "http://127.0.0.1:50051".into(),
+            reason: "possession_proof did not verify against public_key".into(),
+        };
+        assert!(refused.to_string().contains("possession_proof did not verify"));
+
+        let challenge = RegistrationError::ChallengeRefused {
+            endpoint: "http://127.0.0.1:50051".into(),
+            reason: "agent_id is not a did:key DID".into(),
+        };
+        assert!(challenge.to_string().contains("agent_id is not a did:key DID"));
+    }
+}
