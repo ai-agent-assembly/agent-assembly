@@ -10,6 +10,7 @@ import {
   useAgentQuery,
   useAgentSubtreeBurnQuery,
   useAgentsQuery,
+  useTrustQuery,
 } from './api'
 
 interface FetchResult {
@@ -120,6 +121,101 @@ describe('useAgentEnforcementQuery', () => {
     const { result } = renderHook(() => useAgentEnforcementQuery(), { wrapper: makeWrapper() })
     await waitFor(() => expect(result.current.isError).toBe(true))
     expect(result.current.error?.message).toBe('Failed to fetch agent enforcement metrics')
+  })
+})
+
+describe('useTrustQuery', () => {
+  it('folds the agents array into a lookup keyed by agent id', async () => {
+    get.mockResolvedValue({
+      data: {
+        agents: [
+          { agent_id: 'a1', trust: 78 },
+          { agent_id: 'a2', trust: 42 },
+        ],
+        minActions: 20,
+        truncated: false,
+        weights: {},
+        window: '7d',
+      },
+    } satisfies FetchResult)
+    const { result } = renderHook(() => useTrustQuery(), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual(
+      new Map([
+        ['a1', 78],
+        ['a2', 42],
+      ]),
+    )
+    expect(get).toHaveBeenCalledWith('/api/v1/analytics/trust')
+  })
+
+  it('preserves a cold-start null score rather than coercing it to 0', async () => {
+    // ADR 0019 Guardrail 2: an agent below MIN_ACTIONS is reported with an
+    // explicit `trust: null`. It must survive as a `null` map value so the UI
+    // renders `—`, never `0`.
+    get.mockResolvedValue({
+      data: {
+        agents: [{ agent_id: 'cold', trust: null }],
+        minActions: 20,
+        truncated: false,
+        weights: {},
+        window: '7d',
+      },
+    } satisfies FetchResult)
+    const { result } = renderHook(() => useTrustQuery(), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    const lookup = result.current.data
+    expect(lookup?.has('cold')).toBe(true)
+    expect(lookup?.get('cold')).toBeNull()
+  })
+
+  it('returns an empty lookup for a truncated window (no scores emitted)', async () => {
+    // Guardrail 2: a truncated window yields `agents: []` — every agent falls
+    // through as an absent key, rendered `—`.
+    get.mockResolvedValue({
+      data: { agents: [], minActions: 20, truncated: true, weights: {}, window: '7d' },
+    } satisfies FetchResult)
+    const { result } = renderHook(() => useTrustQuery(), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual(new Map())
+  })
+
+  it('returns an empty lookup when the response body is nullish', async () => {
+    get.mockResolvedValue({ data: undefined } satisfies FetchResult)
+    const { result } = renderHook(() => useTrustQuery(), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual(new Map())
+  })
+
+  it('retrieves an inherited-prototype agent_id via .get() instead of colliding with it', async () => {
+    // AAASM-5237: agent_id is raw wire input, so a plain-object accumulator would
+    // let `constructor` / `__proto__` hit the prototype. A Map keeps them ordinary.
+    get.mockResolvedValue({
+      data: {
+        agents: [
+          { agent_id: 'constructor', trust: 55 },
+          { agent_id: '__proto__', trust: null },
+        ],
+        minActions: 20,
+        truncated: false,
+        weights: {},
+        window: '7d',
+      },
+    } satisfies FetchResult)
+    const { result } = renderHook(() => useTrustQuery(), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    const lookup = result.current.data
+    expect(lookup?.get('constructor')).toBe(55)
+    expect(lookup?.has('__proto__')).toBe(true)
+    expect(lookup?.get('__proto__')).toBeNull()
+    expect(lookup?.size).toBe(2)
+  })
+
+  it('throws on failure', async () => {
+    get.mockResolvedValue({ error: { message: 'boom' } } satisfies FetchResult)
+    const { result } = renderHook(() => useTrustQuery(), { wrapper: makeWrapper() })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.error?.message).toBe('Failed to fetch trust scores')
   })
 })
 
