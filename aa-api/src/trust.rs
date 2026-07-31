@@ -254,9 +254,18 @@ mod tests {
         // A tenant that disabled every signal still gets null below the floor —
         // configurability cannot manufacture certainty.
         let all_off = TrustWeights {
-            policy_violation: SignalConfig { enabled: false, weight: 1.0 },
-            credential_redaction: SignalConfig { enabled: false, weight: 1.5 },
-            approval_rejection: SignalConfig { enabled: false, weight: 0.5 },
+            policy_violation: SignalConfig {
+                enabled: false,
+                weight: 1.0,
+            },
+            credential_redaction: SignalConfig {
+                enabled: false,
+                weight: 1.5,
+            },
+            approval_rejection: SignalConfig {
+                enabled: false,
+                weight: 0.5,
+            },
         };
         assert_eq!(compute_trust(&counts, &all_off, MIN_ACTIONS), None);
     }
@@ -278,7 +287,10 @@ mod tests {
         assert_eq!(compute_trust(&counts, &enabled, MIN_ACTIONS), Some(70));
 
         let redaction_off = TrustWeights {
-            credential_redaction: SignalConfig { enabled: false, weight: 1.5 },
+            credential_redaction: SignalConfig {
+                enabled: false,
+                weight: 1.5,
+            },
             ..TrustWeights::default()
         };
         assert_eq!(compute_trust(&counts, &redaction_off, MIN_ACTIONS), Some(100));
@@ -289,9 +301,18 @@ mod tests {
     #[test]
     fn all_signals_disabled_yields_100_only_at_or_above_min_actions() {
         let all_off = TrustWeights {
-            policy_violation: SignalConfig { enabled: false, weight: 1.0 },
-            credential_redaction: SignalConfig { enabled: false, weight: 1.5 },
-            approval_rejection: SignalConfig { enabled: false, weight: 0.5 },
+            policy_violation: SignalConfig {
+                enabled: false,
+                weight: 1.0,
+            },
+            credential_redaction: SignalConfig {
+                enabled: false,
+                weight: 1.5,
+            },
+            approval_rejection: SignalConfig {
+                enabled: false,
+                weight: 0.5,
+            },
         };
         // Above the floor with heavy violations, disabling everything → 100.
         let counts = SignalCounts {
@@ -326,7 +347,10 @@ mod tests {
         assert_eq!(store.get(None), TrustWeights::default());
 
         let custom = TrustWeights {
-            credential_redaction: SignalConfig { enabled: false, weight: 1.5 },
+            credential_redaction: SignalConfig {
+                enabled: false,
+                weight: 1.5,
+            },
             ..TrustWeights::default()
         };
         store.set("acme", custom);
