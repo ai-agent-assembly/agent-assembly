@@ -94,6 +94,32 @@ impl EnforcementMode {
             _ => None,
         }
     }
+
+    /// Canonical lower-case wire string for this mode.
+    ///
+    /// Matches the `serde(rename_all = "snake_case")` representation and the
+    /// values persisted in the `agent_registry.enforcement_mode` column so the
+    /// storage layer can round-trip the mode without a serde-json hop.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Enforce => "enforce",
+            Self::Observe => "observe",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// Parse the canonical wire string back into a mode.
+    ///
+    /// Returns `None` for any unrecognized value so callers can fall back to a
+    /// server-side default rather than silently coercing.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "enforce" => Some(Self::Enforce),
+            "observe" => Some(Self::Observe),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
 }
 
 /// A single rule inside a `PolicyDocument`.
