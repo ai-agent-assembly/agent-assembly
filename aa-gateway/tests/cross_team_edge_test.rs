@@ -49,6 +49,7 @@ fn make_record(n: u8, team_id: Option<&str>) -> AgentRecord {
         children: vec![],
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }

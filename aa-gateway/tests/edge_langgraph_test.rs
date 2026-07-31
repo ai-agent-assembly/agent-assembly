@@ -56,6 +56,7 @@ fn make_record(id: [u8; 16]) -> AgentRecord {
         children: vec![],
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }

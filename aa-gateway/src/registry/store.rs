@@ -156,6 +156,17 @@ pub struct AgentRecord {
     /// `None` means inherit — the resolver falls through to the policy
     /// document and finally to `Enforce` as the server-wide default.
     pub enforcement_mode: Option<aa_core::EnforcementMode>,
+    /// Expiry of a time-limited (shadow) enforcement window, if any (AAASM-5288).
+    ///
+    /// `Some(_)` marks `enforcement_mode` as a bounded window; once the
+    /// deadline passes the override is treated as reverted to the base mode.
+    /// Persisted through the storage bridge so the deadline survives a
+    /// gateway restart — on rehydrate an already-expired window resolves to
+    /// the base mode (`enforcement_mode = None`) rather than being silently
+    /// kept active (ADR 0021 prerequisite). There is no HTTP path to set this
+    /// today; it exists so the future shadow toggle (AAASM-5097) can persist a
+    /// deadline safely.
+    pub enforcement_mode_expires_at: Option<DateTime<Utc>>,
 }
 
 /// Channel sender type for pushing [`ControlCommand`]s to an agent's control stream.
@@ -1254,6 +1265,7 @@ mod tree_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -1521,6 +1533,7 @@ mod lineage_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -1661,6 +1674,7 @@ mod cascade_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -1827,6 +1841,7 @@ mod orphan_mode_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -2037,6 +2052,7 @@ mod cross_mode_integration {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -2181,6 +2197,7 @@ mod sweep_aged_agents_tests {
             children: vec![],
             parent_key: None,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -2274,6 +2291,7 @@ mod tenant_id_validation_tests {
             children: vec![],
             parent_key: None,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
         }
     }
 

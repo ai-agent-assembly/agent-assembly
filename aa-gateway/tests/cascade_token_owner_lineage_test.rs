@@ -103,6 +103,7 @@ fn register_agent(registry: &AgentRegistry, proto_id: &ProtoAgentId, token: &str
         children: vec![],
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
     };
     registry.register(record).unwrap();
 }

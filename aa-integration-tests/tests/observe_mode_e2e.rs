@@ -150,6 +150,7 @@ fn register_agent_with_mode(
         children: vec![],
         parent_key: None,
         enforcement_mode: mode,
+        enforcement_mode_expires_at: None,
         org_id: None,
     };
     registry.register(record).expect("register agent");

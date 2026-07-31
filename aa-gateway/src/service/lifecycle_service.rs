@@ -526,6 +526,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             children: Vec::new(),
             parent_key: resolved_parent_key,
             enforcement_mode: authoritative_enforcement_mode(req.enforcement_mode),
+            enforcement_mode_expires_at: None,
             org_id: echo_org_id,
         };
 
