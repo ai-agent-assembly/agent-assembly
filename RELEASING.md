@@ -58,9 +58,17 @@ bash scripts/check-packaged-artifacts.sh
 > the published `aa-cli` carried no dashboard at all (AAASM-5316) and the
 > published `aa-gateway` could not compile for any consumer (AAASM-5315).
 > `check-packaged-artifacts.sh` packages every crate, asserts the tarball
-> contents, builds the binaries out of the tarballs, and runs the result. It also
-> runs on every PR (`.github/workflows/release-completeness.yml`); step 7 is here
-> so a release cut is never the first time anyone looks.
+> contents, builds the binaries out of the tarballs, and runs the result.
+>
+> It runs in three places, and all three are wanted. On every PR
+> (`.github/workflows/release-completeness.yml`) for early feedback; here, so a
+> release cut is never the first time anyone looks; and as the
+> `packaged-artifact-gate` job that `publish-crates` **needs**, which is the only
+> one of the three that is a precondition of anything. The PR run is
+> path-filtered and sees a PR head rather than the merge result, so it cannot
+> speak for the tree a tag is cut from — and crates.io will not accept a second
+> upload of a version, so the artifact itself has to be looked at before the
+> upload, not before the merge.
 
 ## Tagging and triggering the release workflow
 
