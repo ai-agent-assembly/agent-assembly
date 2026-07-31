@@ -16,7 +16,9 @@
 //! split the production deployment uses. Otherwise the RLS assertions would
 //! silently pass under a bypassing superuser.
 
-use aa_storage_postgres::{NewInvite, NewUser, PgUserStore, PostgresPool, PostgresPoolConfig, UserRole, UserStatus};
+use aa_storage_postgres::{
+    BootstrapOutcome, NewInvite, NewUser, PgUserStore, PostgresPool, PostgresPoolConfig, UserRole, UserStatus,
+};
 use chrono::{Duration, Utc};
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -257,6 +259,170 @@ async fn find_by_email_is_tenant_scoped() {
         .await
         .expect("find via B");
     assert!(via_b.is_none(), "tenant B must not see tenant A's user (RLS)");
+}
+
+const DEFAULT_ORG: Uuid = Uuid::from_u128(0x0d);
+
+#[tokio::test]
+async fn bootstrap_first_user_creates_owner_then_reports_already_bootstrapped() {
+    let (_pg, pool) = setup().await;
+    let store = PgUserStore::new(pool);
+
+    // A fresh workspace: the first bootstrap creates the owner and the default org
+    // (created on demand — no seeding step needed).
+    let first = store
+        .bootstrap_first_user(DEFAULT_ORG, "Default", Uuid::new_v4(), "ivan@example.com", "hash")
+        .await
+        .expect("first bootstrap");
+    assert_eq!(first, BootstrapOutcome::CreatedOwner { org_id: DEFAULT_ORG });
+
+    let created = store
+        .find_by_email(DEFAULT_ORG, "ivan@example.com")
+        .await
+        .expect("find")
+        .expect("owner present");
+    assert_eq!(created.role, UserRole::Owner, "the first account becomes owner");
+    assert_eq!(created.status, UserStatus::Active);
+
+    // A second bootstrap must NOT create a second owner — it reports the workspace
+    // is already bootstrapped, leaving the count-then-insert race-free.
+    let second = store
+        .bootstrap_first_user(DEFAULT_ORG, "Default", Uuid::new_v4(), "judy@example.com", "hash")
+        .await
+        .expect("second bootstrap");
+    assert_eq!(second, BootstrapOutcome::AlreadyBootstrapped { org_id: DEFAULT_ORG });
+    assert!(
+        store
+            .find_by_email(DEFAULT_ORG, "judy@example.com")
+            .await
+            .expect("find")
+            .is_none(),
+        "a second bootstrap must not create a user"
+    );
+}
+
+#[tokio::test]
+async fn lockout_counter_increments_locks_and_clears() {
+    let (_pg, pool) = setup().await;
+    let store = PgUserStore::new(pool);
+
+    let user = new_user("kate@example.com");
+    let user_id = user.id;
+    store.create_user(TENANT_A, &user).await.expect("create user");
+
+    // No failures yet: zero state, no lock.
+    let initial = store.lockout_state(TENANT_A, user_id).await.expect("state");
+    assert_eq!(initial.failed_count, 0);
+    assert!(initial.locked_until.is_none());
+
+    // Below threshold: increments but does not lock.
+    let one = store
+        .record_login_failure(TENANT_A, user_id, 3, 900)
+        .await
+        .expect("fail 1");
+    assert_eq!(one.failed_count, 1);
+    assert!(one.locked_until.is_none(), "below threshold must not lock");
+
+    store
+        .record_login_failure(TENANT_A, user_id, 3, 900)
+        .await
+        .expect("fail 2");
+    // Reaching the threshold locks the account.
+    let three = store
+        .record_login_failure(TENANT_A, user_id, 3, 900)
+        .await
+        .expect("fail 3");
+    assert_eq!(three.failed_count, 3);
+    assert!(three.locked_until.is_some(), "reaching threshold must lock");
+    assert!(
+        three.retry_after_secs(Utc::now()).is_some(),
+        "a locked account reports a retry-after"
+    );
+
+    // A successful login clears the counter.
+    store.clear_login_failures(TENANT_A, user_id).await.expect("clear");
+    let cleared = store.lockout_state(TENANT_A, user_id).await.expect("state");
+    assert_eq!(cleared.failed_count, 0);
+    assert!(cleared.locked_until.is_none(), "clear must lift the lock");
+}
+
+#[tokio::test]
+async fn find_refresh_token_reads_liveness() {
+    let (_pg, pool) = setup().await;
+    let store = PgUserStore::new(pool);
+
+    let user = new_user("leo@example.com");
+    let user_id = user.id;
+    store.create_user(TENANT_A, &user).await.expect("create user");
+    store
+        .store_refresh_token(
+            TENANT_A,
+            Uuid::new_v4(),
+            "live-refresh-hash",
+            user_id,
+            Utc::now() + Duration::days(7),
+        )
+        .await
+        .expect("store");
+
+    let found = store
+        .find_refresh_token(TENANT_A, "live-refresh-hash")
+        .await
+        .expect("find")
+        .expect("token present");
+    assert_eq!(found.user_id, user_id);
+    assert!(found.is_live(Utc::now()), "a stored unrevoked token is live");
+
+    // After revocation the same lookup shows it dead (so refresh can reject it).
+    store
+        .revoke_refresh_token(TENANT_A, "live-refresh-hash")
+        .await
+        .expect("revoke");
+    let after = store
+        .find_refresh_token(TENANT_A, "live-refresh-hash")
+        .await
+        .expect("find")
+        .expect("token still present");
+    assert!(!after.is_live(Utc::now()), "a revoked token reads as not live");
+
+    // A missing token is None (not an error).
+    assert!(store
+        .find_refresh_token(TENANT_A, "no-such-hash")
+        .await
+        .expect("find")
+        .is_none());
+}
+
+#[tokio::test]
+async fn activate_invited_user_sets_password_and_status() {
+    let (_pg, pool) = setup().await;
+    let store = PgUserStore::new(pool);
+
+    let mut invited = new_user("mia@example.com");
+    invited.status = UserStatus::Invited;
+    let user_id = invited.id;
+    store.create_user(TENANT_A, &invited).await.expect("create invited");
+
+    let activated = store
+        .activate_invited_user(TENANT_A, user_id, "new-hash")
+        .await
+        .expect("activate");
+    assert!(activated, "activating an invited account reports true");
+
+    let record = store
+        .find_by_id(TENANT_A, user_id)
+        .await
+        .expect("find")
+        .expect("present");
+    assert_eq!(record.status, UserStatus::Active);
+    assert_eq!(record.password_hash, "new-hash");
+
+    // Re-activating an already-active account is a no-op (zero rows → false).
+    let again = store
+        .activate_invited_user(TENANT_A, user_id, "another-hash")
+        .await
+        .expect("activate again");
+    assert!(!again, "an already-active account cannot be re-activated");
 }
 
 #[tokio::test]
