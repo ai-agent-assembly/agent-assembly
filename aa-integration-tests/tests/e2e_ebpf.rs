@@ -129,6 +129,11 @@ use aya::Ebpf;
 use tokio::net::UnixListener;
 use tokio::time::timeout;
 
+// AAASM-5311: pure path-resolution helpers, shared with the cross-platform
+// regression test in `tests/loaderd_bin_path.rs` — see that module's doc
+// comment for why this lives outside this (Linux-only) file.
+mod loaderd_path_support;
+
 // =============================================================================
 // Helpers — shared across the six tests
 // =============================================================================
@@ -538,44 +543,72 @@ async fn ebpf_load_and_unload_clean() {
 // AAASM-4033 — runtime → loaderd orchestration helpers (tests 7 & 8)
 // =============================================================================
 
-/// Resolve the `aa-ebpf-loaderd` binary: an explicit override, the sibling build
-/// artifact next to the test executable, or a one-shot `cargo build`.
+/// Name of the daemon binary this function locates.
+const LOADERD_BIN_NAME: &str = "aa-ebpf-loaderd";
+
+/// Resolve the `aa-ebpf-loaderd` binary: an explicit override, a fast
+/// sibling-search near the test executable, or the authoritative artifact
+/// path Cargo itself reports for a one-shot build.
 ///
 /// `cargo +nightly test -p aa-integration-tests` (the CI invocation) does not
 /// build sibling-crate binaries, so the daemon may not exist yet. The build
 /// fallback reuses the already-compiled `aa-ebpf` lib artifacts, so it is
 /// incremental.
+///
+/// AAASM-5311: this used to derive the daemon's directory from
+/// `current_exe().parent().parent()`, assuming `current_exe()` was always
+/// `<target>/<profile>/deps/e2e_ebpf-<hash>`. A Cargo nightly build-directory
+/// layout change moved the test binary itself elsewhere
+/// (`<target>/<profile>/build/aa-integration-tests/<hash>/out/...`), so that
+/// fixed two-`.parent()` chain silently pointed at the wrong directory and
+/// the subsequent `candidate.exists()` check failed even though the earlier
+/// `cargo build` fallback had *already* placed the binary at the real
+/// `<target>/<profile>/aa-ebpf-loaderd`. `current_exe()`-relative `target/`
+/// layout is a Cargo implementation detail, not a stable contract — it has
+/// moved before and will move again, so do not reintroduce a fixed-depth
+/// `.parent()` chain here. [`loaderd_path_support::find_sibling_binary`]
+/// tolerates any depth, and the `cargo build` fallback below now asks Cargo
+/// directly (via `--message-format=json-render-diagnostics`) where it put
+/// the artifact instead of re-deriving the path, so it stays correct under
+/// any future layout too.
 fn loaderd_bin_path() -> PathBuf {
     if let Some(p) = std::env::var_os("AA_EBPF_LOADERD_BIN") {
         return PathBuf::from(p);
     }
-    // current_exe() is `<target>/<profile>/deps/e2e_ebpf-<hash>`; the daemon
-    // binary lands at `<target>/<profile>/aa-ebpf-loaderd`.
     let exe = std::env::current_exe().expect("current_exe");
-    let profile_dir = exe
-        .parent()
-        .and_then(|deps| deps.parent())
-        .expect("target profile dir")
-        .to_path_buf();
-    let candidate = profile_dir.join("aa-ebpf-loaderd");
-    if candidate.exists() {
+    if let Some(candidate) = loaderd_path_support::find_sibling_binary(&exe, LOADERD_BIN_NAME) {
         return candidate;
     }
+
     let cargo = option_env!("CARGO").unwrap_or("cargo");
-    let status = Command::new(cargo)
-        .args(["build", "-p", "aa-ebpf", "--bin", "aa-ebpf-loaderd"])
-        .status()
+    let output = Command::new(cargo)
+        .args([
+            "build",
+            "-p",
+            "aa-ebpf",
+            "--bin",
+            LOADERD_BIN_NAME,
+            "--message-format=json-render-diagnostics",
+        ])
+        .output()
         .expect("failed to invoke cargo to build aa-ebpf-loaderd");
+    // Distinct failure mode #1: the build itself failed — surface stderr so
+    // this reads differently from "build succeeded but we couldn't find it".
     assert!(
-        status.success(),
-        "`cargo build -p aa-ebpf --bin aa-ebpf-loaderd` failed"
+        output.status.success(),
+        "`cargo build -p aa-ebpf --bin {LOADERD_BIN_NAME}` failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        candidate.exists(),
-        "aa-ebpf-loaderd missing at {} after build",
-        candidate.display()
-    );
-    candidate
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Distinct failure mode #2: the build succeeded but Cargo's own JSON
+    // output doesn't mention the artifact — a lookup/parsing bug, not a
+    // build failure.
+    loaderd_path_support::parse_executable_from_cargo_json(&stdout, LOADERD_BIN_NAME).unwrap_or_else(|| {
+        panic!(
+            "cargo build -p aa-ebpf --bin {LOADERD_BIN_NAME} succeeded but no matching \
+             compiler-artifact executable was found in its JSON output"
+        )
+    })
 }
 
 /// A spawned `aa-ebpf-loaderd` daemon bound to a private control socket, killed

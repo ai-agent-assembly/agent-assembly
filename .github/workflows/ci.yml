@@ -871,6 +871,20 @@ jobs:
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly branch @ 2026-06-27
         with:
+          # AAASM-5311: pin the actual nightly *release* date, not just the
+          # wrapper action commit above — the action SHA only pins which
+          # version of the GitHub Action runs; without an explicit `toolchain`
+          # input it still installs whatever nightly is current on the day the
+          # job runs. That floating nightly is what silently broke this job
+          # (a Cargo build-directory-layout change landed between 2026-07-26
+          # and 2026-07-30) with no repository change, and the AAASM-3446
+          # weekly schedule means the next `schedule` run would have hit it
+          # again with nothing to bisect. Bump this date **in its own PR**
+          # when a newer nightly feature is needed, and confirm CI is green
+          # on that PR before merging it — a stale pin fails safe (an older
+          # but working toolchain keeps building); a silent/untested bump
+          # does not.
+          toolchain: nightly-2026-07-30
           # Do NOT add bpfel-unknown-none to targets: there is no precompiled rust-std
           # for this target. BPF programs are built from source via -Zbuild-std=core
           # (configured in aa-ebpf-probes/.cargo/config.toml). Only rust-src is needed.
@@ -981,6 +995,11 @@ jobs:
           sudo apt-get install -y curl
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly branch @ 2026-06-27
         with:
+          # AAASM-5311: pin the nightly release date — same rationale as the
+          # `ebpf-build` job above (this job runs the very `e2e_ebpf` test
+          # that a floating nightly's layout change broke). Bump in its own
+          # PR, verified green, when a newer nightly feature is needed.
+          toolchain: nightly-2026-07-30
           # Same justification as the `ebpf-build` job: bpfel-unknown-none has
           # no precompiled rust-std, so the BPF probes build via
           # `-Zbuild-std=core` which needs rust-src on nightly.
