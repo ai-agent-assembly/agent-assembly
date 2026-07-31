@@ -627,7 +627,7 @@ because "no" without a reason gets re-litigated.
 
 | Non-goal | Why |
 |---|---|
-| **macOS Endpoint Security / Network Extension** | The only route to `Host Enforced` on macOS, and it carries entitlement, signing and distribution burdens far beyond MVP validation. Its absence is what makes §7.3 unavailable — a stated limitation, not a hidden gap. |
+| **macOS Endpoint Security / Network Extension** | A kernel-level route to host enforcement, and it carries entitlement, signing and distribution burdens far beyond MVP validation. `Host Enforced` (§7.3) is reached instead through an opt-in, authorized, read-back-verified managed-settings install (`AAASM-5298`); ES/NE's absence means that route specifically stays out of scope, not that §7.3 is unreachable. |
 | **Windows / Linux host enforcement** | Same reasoning; different mechanisms. `aa-ebpf` is Linux-only and is a detection layer that cannot modify traffic, so it is not a substitute. |
 | **Marketplace extensions** | Publishing to a tool's extension marketplace is a distribution and review-process problem. A reference shell (`AAASM-5282`) is enough to prove the plugin path. |
 | **Dynamic Rust plugin loading** | Adapters are build-time linked today; there is no `inventory`-style registration and no shared-library loading (`docs/devtools/plugins.md`). Adding dynamic loading would introduce a code-loading trust boundary for no MVP benefit. |
