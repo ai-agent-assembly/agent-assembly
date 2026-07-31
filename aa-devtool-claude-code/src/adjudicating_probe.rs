@@ -315,12 +315,9 @@ async fn exchange(
             .await
             .map_err(|e| format!("the probe request to {host} could not be flushed ({e})"))?;
 
-        let mut buf = Vec::new();
-        tls.take(MAX_RESPONSE_BYTES as u64)
-            .read_to_end(&mut buf)
+        read_http_message(&mut tls)
             .await
-            .map_err(|e| format!("the response to the probe request to {host} could not be read ({e})"))?;
-        Ok(String::from_utf8_lossy(&buf).into_owned())
+            .map_err(|e| format!("the response to the probe request to {host} could not be read ({e})"))
     };
 
     match tokio::time::timeout(EXCHANGE_TIMEOUT, attempt).await {
@@ -330,6 +327,55 @@ async fn exchange(
             EXCHANGE_TIMEOUT.as_secs()
         )),
     }
+}
+
+/// Read one HTTP response: the head, then exactly the `Content-Length` bytes it
+/// declares, then stop.
+///
+/// Reading to end-of-stream instead would block on any peer that keeps the
+/// connection open — which every ordinary provider response does — and turn a
+/// perfectly legible "that was not an adjudication" into a timeout. The whole
+/// read stays bounded by [`MAX_RESPONSE_BYTES`]; a response with no
+/// `Content-Length` is read until the peer closes or the budget runs out.
+async fn read_http_message<S>(stream: &mut S) -> std::io::Result<String>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let mut want: Option<usize> = None;
+    loop {
+        if let Some(total) = want {
+            if buf.len() >= total {
+                break;
+            }
+        }
+        if buf.len() >= MAX_RESPONSE_BYTES {
+            break;
+        }
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if want.is_none() {
+            if let Some(head_len) = find_head_end(&buf) {
+                let head = String::from_utf8_lossy(&buf[..head_len]).to_ascii_lowercase();
+                let body_len = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                want = Some(head_len.saturating_add(body_len));
+            }
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Index just past the blank line ending an HTTP head.
+fn find_head_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
 }
 
 /// The Anthropic Messages request the probe sends, shaped like the traffic the
