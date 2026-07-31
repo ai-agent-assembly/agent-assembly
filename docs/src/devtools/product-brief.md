@@ -406,6 +406,13 @@ doing. They are separate because a user can choose `Strict` on a machine where t
 routed through the gateway — and the honest answer there is `Integrated`, not `Strict protection
 active`.
 
+The reported ladder has **six** rungs — `Not Installed`, `Detected — Not Integrated`,
+`Partially Integrated`, `Integrated`, `Gateway Protected`, `Host Enforced`
+(`aa-core/src/integration/state.rs`; the vocabulary clients must use verbatim is in
+[protection levels](protection-levels.md)). The three below `Integrated` say how far an install
+got and make no protection claim, so they need no entry criteria. §7.1–§7.3 below specify the
+three rungs that do claim something, which is why the rest of this section counts three.
+
 > **The governing rule: the existence of a configuration file is never sufficient evidence for a
 > protection level.** Configuration expresses intent. A level is a claim about behaviour, and a
 > claim about behaviour requires an observation of behaviour. Every entry criterion below is
@@ -621,8 +628,9 @@ honest failure would then be indistinguishable from an integration bug.
 
 Restricting the *MVP* to one tool must not restrict the *model* to one tool. The following stay
 tool-neutral and are validated against the existing Codex / Copilot / Windsurf adapters as well:
-the nine-stage journey (§4), the three profiles (§6), the three protection levels and their entry
-criteria (§7), the guarantee set (§8), the failure taxonomy (§9), and the lifecycle contract those
+the nine-stage journey (§4), the three profiles (§6), the three claim-bearing protection levels
+and their entry criteria (§7), the guarantee set (§8), the failure taxonomy (§9), and the
+lifecycle contract those
 imply. Any design that can only be expressed for Claude Code is a design defect, and `AAASM-5277`
 is where that is caught.
 
@@ -725,7 +733,7 @@ else on the machine.
 > (accepted constraint C3 — restore is semantics-exact, not byte-exact), and Claude Code
 > launches and operates normally afterwards.
 
-### 11.8 Protection-level reporting distinguishes the three levels
+### 11.8 Protection-level reporting distinguishes the three claim-bearing levels
 
 > **Given** three configurations — (a) managed settings applied but the tool never launched through
 > the managed path, (b) a fully verified installation with protection exercised per 11.3, and
