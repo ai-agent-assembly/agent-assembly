@@ -17,6 +17,7 @@ pub mod lifecycle_store;
 pub mod policy_store;
 pub mod pool;
 pub mod support;
+pub mod user_store;
 
 pub use audit_sink::{AuditLogRecord, PgAuditSink};
 pub use config::PostgresPoolConfig;
@@ -24,6 +25,7 @@ pub use credential_store::PgCredentialStore;
 pub use lifecycle_store::PgLifecycleStore;
 pub use policy_store::PgPolicyStore;
 pub use pool::{PostgresPool, MIGRATOR};
+pub use user_store::{InviteRecord, NewInvite, NewUser, PgUserStore, UserRecord, UserRole, UserStatus};
 
 /// The name this driver registers under in the storage registry. An operator
 /// selects it with `backend = "postgres"` (or `[storage.postgres]`).
