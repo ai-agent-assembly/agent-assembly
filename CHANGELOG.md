@@ -70,9 +70,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `NODE_TLS_REJECT_UNAUTHORIZED`) lower the reported level; undetectable ones are
   stated in every plan rather than left to be inferred from silence.
 - **Thin reference client** (AAASM-5282) — `examples/aa-devint-reference-client`,
-  a TypeScript DI-API client with socket discovery, enrolment and the full verb
-  set, demonstrating that the surface is implementable by a plugin author with no
-  access to core internals.
+  a TypeScript DI-API client with socket discovery, capability-token handling and
+  the full verb set, demonstrating that the surface is implementable by a plugin
+  author with no access to core internals. It deliberately does **not** enrol:
+  issuing a token stays an explicit, user-visible step owned by the operator CLI,
+  because a client that could mint its own credential would make enrolment a
+  formality (`src/credential.ts`).
 - **Claude Code lifecycle conformance suite** (AAASM-5283) — an end-to-end suite
   in `aa-integration-tests` with its own harness, probe and proxy fixtures,
   exercising the lifecycle against the real adapter.
