@@ -103,6 +103,7 @@
 - [Developer Integration API](devtools/developer-integration-api.md)
 - [`aasm integrations` CLI](devtools/cli.md)
 - [Thin-Client Reference Implementation](devtools/reference-client.md)
+- [Authoring a Dev-Tool Adapter](devtools/plugins.md)
 
 # Protocol
 

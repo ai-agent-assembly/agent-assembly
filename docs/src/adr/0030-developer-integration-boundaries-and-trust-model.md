@@ -102,7 +102,7 @@ problems follow directly from that shape:
 
 ### The registration model is build-time linking, and that is not an accident
 
-`docs/devtools/plugins.md` is explicit:
+`docs/src/devtools/plugins.md` is explicit:
 
 > Right now Agent Assembly uses **build-time linking**… There is **no**
 > `inventory::submit!`-style runtime registration in `aa-core` today, and there is no
@@ -665,7 +665,7 @@ sequenceDiagram
 | --- | --- | --- | --- |
 | **6.1 In-tree adapter crates** (`aa-devtool-*`) | Per-tool knowledge (L-C) | **Statically linked at build time** into the AASM binaries. Registration is an explicit construction into an in-memory registry at startup — no `inventory::submit!`, no `dlopen`. | Inside the trusted process, restricted at compile time to `aa-devtool-contract` |
 | **6.2 User-facing plugin / extension packages** | The thin client (L-A): VS Code extension, JetBrains plugin, installer, `aasm` itself | Distributed through each tool's own marketplace / package manager, on an **independent release cadence** from the core | None. A DI-API client and nothing more — no policy, no DLP, no audit authority |
-| **6.3 Out-of-tree / community adapters** | A third-party `DevToolIntegration` impl | Supported **as a source crate** consumed by a build of AASM — the pattern `docs/devtools/plugins.md` already documents. Getting into an official binary requires a PR and a CODEOWNERS review | Exactly `aa-devtool-contract`, same as in-tree. No additional capability is available to them, and none is granted by being third-party |
+| **6.3 Out-of-tree / community adapters** | A third-party `DevToolIntegration` impl | Supported **as a source crate** consumed by a build of AASM — the pattern `docs/src/devtools/plugins.md` already documents. Getting into an official binary requires a PR and a CODEOWNERS review | Exactly `aa-devtool-contract`, same as in-tree. No additional capability is available to them, and none is granted by being third-party |
 | **6.4 Core runtime distribution and update** | `aa-runtime` + `aa-gateway` + the linked adapters | **One versioned unit**, owned by the AASM release process (Homebrew tap, container image, installer). Version is reported over the DI-API `HelloAck` | Trusted. Its updates are never triggered silently by a thin client |
 
 #### 6.5 Why build-time linking is sufficient — and why dynamic loading is forbidden, not merely absent
@@ -736,9 +736,9 @@ lifecycle. No third-party adapter breaks.
 
 `DevToolAdapter` is removed only in a **major `aa-core` bump**, with `LegacyAdapterShim`
 retained for at least one minor release after the last in-tree consumer migrates, and a
-migration section added to `docs/devtools/plugins.md` — a file this ADR deliberately does
+migration section added to `docs/src/devtools/plugins.md` — a file this ADR deliberately does
 not edit (it is owned by a parallel branch); updating it is a follow-up on the
-implementing ticket. `docs/devtools/plugins.md` already states the pinning rule that makes
+implementing ticket. `docs/src/devtools/plugins.md` already states the pinning rule that makes
 this safe for third parties: *"Adapters are tightly coupled to the `aa-core` major version
 they were built against. Pin `aa-core` exactly."*
 
