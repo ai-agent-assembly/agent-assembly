@@ -153,8 +153,13 @@ word.
 Honest boundary: this is the only route to a `Host Enforced` protection level,
 and `Host Enforced` means *"the managed policy is installed at the OS-managed
 path, owned as expected and not writable by you."* It does **not** mean the
-bypass has been demonstrated to fail — that half remains unmeasured without a
-managed device. See
+bypass has been demonstrated to fail. **That half is unmeasured on every host**,
+including managed ones: no run has yet put a managed-only key against a real
+user-side override attempt. Nor is a device-management enrolment what is missing
+— the write is a plain `install -o root -g wheel` to a filesystem path, with no
+configuration profile or managed preference domain involved, so an
+administrator-consented write on any Mac produces the same artifact. AAASM-5308
+carries the measurement. See
 [Limitations and known bypasses](docs/src/devtools/limitations.md).
 
 ## Disclosure Policy
