@@ -367,7 +367,12 @@ impl AppState {
             audit_reader,
             startup_time: Instant::now(),
             active_connections: Arc::new(AtomicI64::new(0)),
-            discovery: Arc::new(DiscoveryService::with_adapters(vec![])),
+            // AAASM-5296: `DiscoveryService::new()` resolves the built-in
+            // adapters from `aa_devtool::registry::built_in_adapters()` — the
+            // same authoritative table `aasm tools list` / `aasm run` use
+            // (AAASM-5274) — so every deployment mode reports the tools that
+            // are actually installed instead of an empty stub set.
+            discovery: Arc::new(DiscoveryService::new()),
             edge_repo: Arc::new(aa_gateway::edges::InMemoryEdgeRepo::new()),
             topology_overview_cache: moka::future::Cache::builder()
                 .time_to_live(std::time::Duration::from_secs(1))
