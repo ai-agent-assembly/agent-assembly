@@ -132,3 +132,71 @@ pub fn start_token(pid: u32) -> Option<String> {
 pub fn start_token(_pid: u32) -> Option<String> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn this_process_is_alive() {
+        assert!(is_alive(std::process::id()));
+    }
+
+    /// PID 0 is never a signallable user process; `kill(0, 0)` addresses the
+    /// caller's whole process group, so a naive implementation would report it
+    /// alive. Kept as a guard against exactly that mistake.
+    #[test]
+    fn a_reaped_child_is_not_alive() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn `true`");
+        let pid = child.id();
+        child.wait().expect("wait for `true`");
+        assert!(!is_alive(pid), "a reaped child must not report as alive; pid {pid} did");
+    }
+
+    #[test]
+    fn exe_path_of_this_process_is_the_test_binary() {
+        let seen = exe_path(std::process::id()).expect("this platform must report its own executable");
+        let expected = std::env::current_exe().expect("current_exe");
+        assert_eq!(
+            std::fs::canonicalize(&seen).unwrap_or(seen.clone()),
+            std::fs::canonicalize(&expected).unwrap_or(expected.clone()),
+            "exe_path must name the running image; saw {seen:?} vs {expected:?}"
+        );
+    }
+
+    #[test]
+    fn start_token_is_stable_across_reads_for_the_same_process() {
+        let pid = std::process::id();
+        let first = start_token(pid).expect("this platform must report its own start time");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = start_token(pid).expect("start token must remain readable");
+        assert_eq!(first, second, "a process's start time must not change under it");
+    }
+
+    /// The evidence is worthless if two processes share a token, so pin that a
+    /// separately-started process reports a different one.
+    #[test]
+    fn start_token_differs_between_two_processes() {
+        let mine = start_token(std::process::id()).expect("own start token");
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .expect("spawn sleep");
+        let theirs = start_token(child.id()).expect("child start token");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_ne!(
+            mine, theirs,
+            "two processes started at different times must not share a start token"
+        );
+    }
+
+    #[test]
+    fn identity_of_a_dead_pid_is_unavailable() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn `true`");
+        let pid = child.id();
+        child.wait().expect("wait for `true`");
+        assert!(start_token(pid).is_none(), "a dead pid must yield no start token");
+        assert!(exe_path(pid).is_none(), "a dead pid must yield no executable path");
+    }
+}
