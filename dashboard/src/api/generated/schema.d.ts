@@ -1099,6 +1099,157 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/invite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a single-use, expiring invite for a new account (admin scope only)
+         *     (ADR 0031 §3). The raw token is returned once here; only its hash is stored.
+         */
+        post: operations["invite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/invite/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept an invite: consume the single-use token and set the initial password,
+         *     activating the account (ADR 0031 §3). Public: the invitee is not yet
+         *     authenticated.
+         */
+        post: operations["invite_accept"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Authenticate with email + password, returning an access token and setting the
+         *     refresh cookie (ADR 0031 §3).
+         * @description Enumeration-safe: an unknown email and a wrong password both return a uniform
+         *     `401`, and an unknown email still runs an argon2 verify against a dummy hash
+         *     so the timing does not distinguish the two. A locked account returns `423`
+         *     with `retry-after` regardless of whether the password is correct.
+         */
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke the refresh session and clear the cookie (ADR 0031 §5). Requires an
+         *     authenticated caller; always returns `204`.
+         */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Advertise the credential methods this deployment supports (ADR 0031 §Q5).
+         * @description Public: the login page reads this before rendering, so it never offers a
+         *     password form on an in-memory (API-key-only) backend. Always lists `api_key`;
+         *     adds `password` only when a Postgres-backed account store is configured.
+         */
+        get: operations["auth_methods"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange a valid refresh cookie for a new access token, rotating the refresh
+         *     token (ADR 0031 §5). Public (the cookie is the credential).
+         */
+        post: operations["refresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register the first account (bootstrap owner) or a self-registered account when
+         *     open registration is enabled (ADR 0031 §4 / §Q3).
+         * @description The first account on a fresh instance becomes `owner` under an advisory lock
+         *     so two concurrent registrations cannot both claim owner. Once a user exists,
+         *     registration is closed (`403`) unless `AA_AUTH_OPEN_REGISTRATION` is set, in
+         *     which case a subsequent registration creates a `developer` account.
+         */
+        post: operations["register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/token": {
         parameters: {
             query?: never;
@@ -2197,6 +2348,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description Response body carrying a freshly minted access token (login / refresh /
+         *     invite-accept). The refresh token is NOT in the body — it rides in the
+         *     HttpOnly cookie.
+         */
+        AccessTokenResponse: {
+            /** @description The short-lived access JWT to present as `Authorization: Bearer`. */
+            access_token: string;
+            /**
+             * Format: int64
+             * @description Access-token lifetime in seconds.
+             */
+            expires_in: number;
+        };
         /** @description Response for `GET /api/v1/analytics/action-volume`. */
         ActionVolumeResponse: {
             /** @description One series per action category (empty when no audit events matched). */
@@ -3143,6 +3308,17 @@ export interface components {
             team_id?: string | null;
         };
         /**
+         * @description Response body for `GET /auth/methods` (ADR 0031 §Q5). Advertises which
+         *     credential paths this deployment can serve so the frontend degrades honestly.
+         */
+        AuthMethodsResponse: {
+            /**
+             * @description `["api_key"]` on an in-memory deployment; `["api_key","password"]` when a
+             *     Postgres store backs native accounts.
+             */
+            methods: string[];
+        };
+        /**
          * @description Payload for `event_type: "budget"` events.
          *
          *     Emitted when an agent's spend crosses a configured daily threshold
@@ -3931,6 +4107,33 @@ export interface components {
             /** @description Gateway version (semver from Cargo.toml). */
             version: string;
         };
+        /** @description Request body for `POST /auth/invite/accept`. */
+        InviteAcceptRequest: {
+            /** @description The initial password to set on the account (must clear the floor). */
+            password: string;
+            /** @description The raw invite token delivered to the invitee. */
+            token: string;
+        };
+        /** @description Request body for `POST /auth/invite` (admin only). */
+        InviteRequest: {
+            /** @description The email to invite. */
+            email: string;
+            /** @description The role the invited account will receive on accept. */
+            role: components["schemas"]["Role"];
+        };
+        /**
+         * @description Response body for `POST /auth/invite`. The raw invite token is returned once
+         *     to the inviting admin to deliver out of band; only its hash is stored.
+         */
+        InviteResponse: {
+            /** @description The created invite id (UUID string). */
+            invite_id: string;
+            /**
+             * @description The single-use, expiring raw invite token. Returned exactly once, here;
+             *     the server stores only its SHA-256 hash and can never surface it again.
+             */
+            token: string;
+        };
         /**
          * @description Response for `GET /api/v1/analytics/kpis` — a single scalar KPI plus the
          *     fractional change versus the previous equivalent window.
@@ -4014,6 +4217,15 @@ export interface components {
          * @enum {string}
          */
         LogEventType: "ToolCallIntercepted" | "PolicyViolation" | "CredentialLeakBlocked" | "ApprovalRequested" | "ApprovalGranted" | "ApprovalDenied" | "BudgetLimitApproached" | "BudgetLimitExceeded" | "ApprovalTimedOut" | "ApprovalRouted" | "ApprovalEscalated" | "AgentForceDeregistered" | "MessageBlocked" | "ToolDispatched" | "A2ACallIntercepted" | "A2AImpersonationAttempted" | "SandboxStarted" | "SandboxFilesystemBlocked" | "SandboxCpuTimeout" | "SandboxOomKilled" | "SandboxTerminated" | "SandboxHostFnRateLimited";
+        /** @description Request body for `POST /auth/login`. */
+        LoginRequest: {
+            /** @description The account email (case-insensitive). */
+            email: string;
+            /** @description The account password. */
+            password: string;
+            /** @description When true, the refresh session is issued with an extended lifetime. */
+            remember_me?: boolean;
+        };
         /**
          * @description Per-agent daily budget projection for a topology node (AAASM-5045).
          *
@@ -4744,6 +4956,31 @@ export interface components {
             /** @description Stable identifier for the operation, typically a `GovernanceEvent.id`. */
             op_id: string;
         };
+        /** @description Request body for `POST /auth/register`. */
+        RegisterRequest: {
+            /**
+             * @description The new account email (case-insensitive). OSS is single-workspace, so no
+             *     `tenant_name` is accepted (ADR 0031 §4).
+             */
+            email: string;
+            /** @description The new account password (must clear the minimum-length floor). */
+            password: string;
+        };
+        /** @description Response body for a successful `POST /auth/register`. */
+        RegisterResponse: {
+            /**
+             * @description The short-lived access JWT for the bootstrap owner (the refresh token is
+             *     delivered as the HttpOnly cookie alongside).
+             */
+            access_token: string;
+            /**
+             * Format: int64
+             * @description Access-token lifetime in seconds.
+             */
+            expires_in: number;
+            /** @description The id of the newly created account (UUID string). */
+            user_id: string;
+        };
         /**
          * @description Request body for `POST /api/v1/policies/replay` (AAASM-5094).
          *
@@ -4995,6 +5232,15 @@ export interface components {
             /** @description Timestamp (UTC) at which the run completed (ISO 8601). */
             ran_at: string;
         };
+        /**
+         * @description A native-account user role (ADR 0031 data model).
+         *
+         *     Roles are a coarse, human-facing label stored on the user row; authorization
+         *     is still driven by the [`Scope`] set [`Role::scopes`] expands each role to.
+         *     Serialized lowercase to match the `users.role` enum values in the migration.
+         * @enum {string}
+         */
+        Role: "owner" | "admin" | "developer" | "viewer";
         /** @description One built-in RBAC role and the governance capabilities it grants. */
         RoleCapabilitiesResponse: {
             /**
@@ -7957,6 +8203,286 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    invite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteRequest"];
+            };
+        };
+        responses: {
+            /** @description Invite created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InviteResponse"];
+                };
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    invite_accept: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteAcceptRequest"];
+            };
+        };
+        responses: {
+            /** @description Invite accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessTokenResponse"];
+                };
+            };
+            /** @description Token expired/used or weak password */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Authenticated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessTokenResponse"];
+                };
+            };
+            /** @description Invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Account locked */
+            423: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Logged out (refresh revoked) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    auth_methods: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Available auth methods */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthMethodsResponse"];
+                };
+            };
+        };
+    };
+    refresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Refreshed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessTokenResponse"];
+                };
+            };
+            /** @description Missing / revoked / expired refresh token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Registered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisterResponse"];
+                };
+            };
+            /** @description Registration closed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Email already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Weak password */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
             };
         };
     };
