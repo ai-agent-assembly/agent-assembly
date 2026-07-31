@@ -8,10 +8,11 @@ It is deliberately not a marketing walkthrough. Two of the steps below end in a
 state that is **weaker than you might expect**, and both are called out where you
 will hit them rather than in a footnote:
 
-* `aasm integrations verify claude-code` **exits `6` on a default build** — see
-  [Step 6](#step-6--verify-and-the-exit-6-you-will-see).
-* `Gateway Protected` is therefore **not reachable** from a default build, even
-  though the interception it describes was measured working end to end.
+* `aasm integrations verify claude-code` **exits `6` whenever the protected path
+  was never exercised and adjudicated** — see
+  [Step 6](#step-6--verify-and-the-exit-6-that-means-not-measured).
+* `Gateway Protected` **is** reachable on a default build once that exercise has
+  happened (AAASM-5300) — but a file existing is still never enough on its own.
 
 > **Scope.** Claude Code on macOS is the only natively migrated integration
 > ([AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281)).
@@ -349,7 +350,7 @@ esac
 | `<reason> — upgrade …` on connect | `4` | This `aasm` and the running core do not share a DI-API version. | Upgrade both; they ship as one versioned unit. |
 | A `DEGRADED` negotiation | — | The negotiated DI-API version lacks some verbs; `unavailable_verbs` names them. Never a silent downgrade. | Upgrade the older side. Do not use the missing verbs. |
 | `status` reports drift | `5` | Live state no longer matches the receipt. The reported level drops **before** repair is attempted. | `aasm integrations repair <tool>`. If unrepairable, reinstall. |
-| `this is NOT a protection measurement` | `6` | The protected path was not exercised. On a default build this is the expected outcome — see [Step 6](#step-6--verify-and-the-exit-6-you-will-see). | Launch through `aasm run claude` and verify again; on a default build the level stays `Integrated`. |
+| `this is NOT a protection measurement` | `6` | The protected path was never exercised and adjudicated — see [Step 6](#step-6--verify-and-the-exit-6-that-means-not-measured). | Launch through `aasm run claude` so traffic is produced, then verify again. |
 | `the install is partial — N step(s) failed` | — | Some steps applied, some did not. Never a reduced protection level. | `status`, then `repair` or `remove`. |
 | `no integration receipt records <tool>` | — | Nothing has been installed to act on. | `aasm integrations install <tool>` first. |
 | `the capability token at … is mode 644` | `8` | The token is readable by more than its owner, so it is **refused rather than used** — a filesystem mistake must not become a silent authentication downgrade. | `chmod 600` it and restart the runtime to re-issue. |
