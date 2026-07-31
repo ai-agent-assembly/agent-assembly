@@ -21,6 +21,7 @@
 mod apply;
 mod settings;
 
+pub mod adjudicating_probe;
 pub mod bypass;
 pub mod executor;
 pub mod launch_env;
@@ -28,6 +29,7 @@ pub mod lifecycle;
 pub mod probe;
 pub mod scope;
 
+pub use adjudicating_probe::ProxyAdjudicatedProbe;
 pub use executor::ClaudeCodeStepExecutor;
 pub use lifecycle::ClaudeCodeIntegration;
 pub use probe::{ProbeReport, ProbeRequest, ProtectionProbe};

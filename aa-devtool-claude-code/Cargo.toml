@@ -13,6 +13,20 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# AAASM-5300: the shipped protection probe drives one real request down the
+# protected path — CONNECT through the proxy, then TLS against the MitM-issued
+# leaf, trusting only the certificate authority the install materialised. That
+# handshake *is* the AAASM-5276 condition-C1 measurement, so it cannot be
+# emulated with a plain HTTP client. `ring` mirrors the provider `aa-proxy`
+# selects, so the two ends of the handshake agree and no new crypto backend
+# enters the tree.
+rustls = { workspace = true, features = ["ring"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "time"] }
+tokio-rustls = { workspace = true }
+# Correlation identifiers only: a v4 UUID's `simple` form is 32 lowercase hex
+# characters of OS entropy, which is exactly the opaque, payload-independent
+# identifier the probe protocol requires.
+uuid = { workspace = true, features = ["v4"] }
 
 [features]
 docker-integration = []
