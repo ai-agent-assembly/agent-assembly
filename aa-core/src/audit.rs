@@ -2064,6 +2064,86 @@ mod lineage_tests {
 }
 
 #[cfg(all(test, feature = "std", feature = "serde"))]
+mod governance_mutation_tests {
+    use super::*;
+
+    const AGENT: AgentId = AgentId::from_bytes([5u8; 16]);
+    const SESSION: SessionId = SessionId::from_bytes([6u8; 16]);
+
+    fn record() -> GovernanceMutationAudit {
+        GovernanceMutationAudit::new(
+            AGENT,
+            "operator-key-1",
+            Some("org-A".to_string()),
+            Some("team-platform".to_string()),
+            "suspend",
+            "investigating incident",
+            "Active",
+            "Suspended(Manual)",
+        )
+        .expect("non-empty reason is valid")
+    }
+
+    #[test]
+    fn new_rejects_empty_reason() {
+        let err = GovernanceMutationAudit::new(
+            AGENT,
+            "operator-key-1",
+            None,
+            None,
+            "suspend",
+            "",
+            "Active",
+            "Suspended(Manual)",
+        )
+        .unwrap_err();
+        assert_eq!(err, GovernanceMutationError::EmptyReason);
+    }
+
+    #[test]
+    fn new_rejects_whitespace_only_reason() {
+        let err = GovernanceMutationAudit::new(AGENT, "op", None, None, "resume", "   \t\n", "S", "A").unwrap_err();
+        assert_eq!(err, GovernanceMutationError::EmptyReason);
+    }
+
+    #[test]
+    fn payload_carries_actor_tenant_reason_and_before_after() {
+        let payload = record().to_payload();
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["actor"], "operator-key-1");
+        assert_eq!(value["org"], "org-A");
+        assert_eq!(value["team"], "team-platform");
+        assert_eq!(value["action"], "suspend");
+        assert_eq!(value["reason"], "investigating incident");
+        assert_eq!(value["before"], "Active");
+        assert_eq!(value["after"], "Suspended(Manual)");
+    }
+
+    #[test]
+    fn to_audit_entry_tags_governance_mutation_and_carries_verified_tenant_in_lineage() {
+        let entry = record().to_audit_entry(0, 1_700_000_000_000_000_000, SESSION, [0u8; 32]);
+        assert_eq!(entry.event_type(), AuditEventType::GovernanceMutation);
+        assert_eq!(entry.agent_id(), AGENT);
+        // The verified tenant flows into the entry's lineage, so the existing
+        // audit-log tenant scoping applies to operator actions too.
+        assert_eq!(entry.org_id(), Some("org-A"));
+        assert_eq!(entry.team_id(), Some("team-platform"));
+        assert!(entry.verify_integrity());
+    }
+
+    #[test]
+    fn payload_never_contains_a_credential_secret() {
+        // The record is built only from a non-secret key id and tenant labels;
+        // a raw credential passed to the endpoint (e.g. as the API-key bearer
+        // token) must never reach the payload. We assert the payload contains
+        // only the fields we put there and no bearer-token-shaped bytes.
+        let payload = record().to_payload();
+        assert!(!payload.contains("aa_"), "payload must not embed an API-key token");
+        assert!(!payload.contains("Bearer"), "payload must not embed an auth header value");
+    }
+}
+
+#[cfg(all(test, feature = "std", feature = "serde"))]
 mod redaction_tests {
     use super::*;
     use aa_security::CredentialScanner;
