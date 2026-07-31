@@ -60,9 +60,10 @@ use aa_devtool_contract::{
 };
 use async_trait::async_trait;
 
+use crate::adjudicating_probe::ProxyAdjudicatedProbe;
 use crate::bypass::{self, BypassFinding, LaunchEnvironment};
 use crate::executor::ClaudeCodeStepExecutor;
-use crate::probe::{ProbeRequest, ProtectionProbe, UnadjudicatedProbe, SYNTHETIC_SECRET};
+use crate::probe::{ProbeRequest, ProtectionProbe, SYNTHETIC_SECRET};
 use crate::scope::{ClaudeCodePaths, ScopeError};
 use crate::{ClaudeCodeAdapter, MIN_VERSION};
 
@@ -142,7 +143,7 @@ impl Default for ClaudeCodeIntegration {
 
 impl ClaudeCodeIntegration {
     /// The production integration: roots from the environment, the real
-    /// detection path, and no adjudicating probe.
+    /// detection path, and the shipped adjudicating probe.
     pub fn new() -> Self {
         Self::with_paths(ClaudeCodePaths::from_env())
     }
@@ -155,7 +156,12 @@ impl ClaudeCodeIntegration {
             paths,
             adapter,
             proxy_url: default_proxy_url(),
-            probe: Arc::new(UnadjudicatedProbe),
+            // AAASM-5300: the shipped default adjudicates. It produces traffic on
+            // the protected path and reports only the verdict the proxy returns
+            // for that request, which is what makes `GatewayProtected`
+            // reachable at all — and it still reports `Inconclusive` on every
+            // path it cannot measure, so nothing passes on configuration alone.
+            probe: Arc::new(ProxyAdjudicatedProbe),
             freshness_window_secs: DEFAULT_FRESHNESS_WINDOW_SECS,
         }
     }
@@ -176,10 +182,13 @@ impl ClaudeCodeIntegration {
         self
     }
 
-    /// Supply a probe that can adjudicate what the provider received.
+    /// Replace the probe that adjudicates what became of the model-bound
+    /// traffic.
     ///
-    /// Without one, `verify` reports the model path as configured but never
-    /// exercised, and the protection level does not rise past `Integrated`.
+    /// The default is [`ProxyAdjudicatedProbe`]. A probe that cannot adjudicate
+    /// — [`UnadjudicatedProbe`](crate::probe::UnadjudicatedProbe) — makes
+    /// `verify` report the model path as configured but never exercised, and the
+    /// protection level does not rise past `Integrated`.
     #[must_use]
     pub fn with_probe(mut self, probe: Arc<dyn ProtectionProbe>) -> Self {
         self.probe = probe;
