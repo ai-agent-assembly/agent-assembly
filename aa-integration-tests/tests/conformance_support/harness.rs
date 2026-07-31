@@ -34,6 +34,7 @@ use aa_core::integration::{
     RemovalPlan, SettingsScope, VerificationResult,
 };
 use aa_core::DevToolKind;
+use aa_devtool_claude_code::probe::{ProbeRequest, SYNTHETIC_SECRET};
 use aa_devtool_claude_code::{ClaudeCodeAdapter, ClaudeCodeIntegration, ClaudeCodePaths};
 use aa_proxy::audit_jsonl::ProxyAuditEntry;
 use aa_proxy::config::CredentialAction;
@@ -96,6 +97,7 @@ pub struct ConformanceHarness {
     /// Receipts on disk, for the tamper scenario.
     pub store: ReceiptStore,
     ca_trust: Arc<AtomicBool>,
+    tool_version: String,
     guard: RealHomeGuard,
 }
 
@@ -168,6 +170,7 @@ impl ConformanceHarness {
             proxy,
             store,
             ca_trust,
+            tool_version: options.tool_version,
             guard,
         })
     }
@@ -194,6 +197,47 @@ impl ConformanceHarness {
             Arc::new(probe),
             &self.store,
         )
+    }
+
+    /// A second lifecycle service over the *same* installation, driven by the
+    /// **shipped** probe instead of the harness's.
+    ///
+    /// [`AdjudicatingProbe`] adjudicates by reading the mock provider the
+    /// harness owns — an instrument no developer has. This service runs exactly
+    /// what `aasm integrations verify claude-code` runs on a real host, so an
+    /// outcome measured through it is a statement about the product rather than
+    /// about the harness.
+    pub fn service_with_shipped_probe(&self) -> EngineLifecycle {
+        let integration = Arc::new(
+            ClaudeCodeIntegration::with_paths(self.paths.clone())
+                .with_adapter(
+                    ClaudeCodeAdapter::with_overrides(Some(self.stub_binary.clone()), Some(self.home.clone()))
+                        .with_version_override(Some(self.tool_version.clone())),
+                )
+                .through_proxy(self.proxy.url()),
+        );
+        EngineLifecycle::new(vec![claude_code_registration(integration)], self.store.clone())
+    }
+
+    /// Verify through the shipped probe.
+    pub async fn verify_as_shipped(&self) -> anyhow::Result<VerificationResult> {
+        self.service_with_shipped_probe()
+            .verify(&self.tool())
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// The probe request a shipped probe is handed for this installation.
+    ///
+    /// Scenarios that turn one condition (an untrusted authority, a stopped
+    /// core) build from this so nothing else about the run differs.
+    pub fn shipped_probe_request(&self) -> ProbeRequest {
+        ProbeRequest {
+            proxy_url: self.proxy.url(),
+            ca_pem: self.ca_pem_path(),
+            target_host: ANTHROPIC_HOST.to_string(),
+            synthetic_secret: SYNTHETIC_SECRET.to_string(),
+        }
     }
 
     /// The tool every operation names.

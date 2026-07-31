@@ -27,10 +27,10 @@ use aa_devtool_claude_code::probe::{ProbeReport, ProbeRequest, ProtectionProbe};
 use aa_devtool_contract::ExerciseOutcome;
 use async_trait::async_trait;
 use base64::Engine as _;
-use rustls::pki_types::CertificateDer;
+use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, RootCertStore};
 
-use crate::spike_support::proxy_harness::drive_emulated_client;
+use crate::spike_support::proxy_harness::{drive_emulated_client, ANTHROPIC_HOST};
 use crate::spike_support::{find_secret, TlsCapturingUpstream};
 
 /// A probe that reports what the provider actually received.
@@ -145,4 +145,67 @@ async fn client_trusting_pem(pem_path: &std::path::Path) -> anyhow::Result<Clien
     Ok(ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth())
+}
+
+// ── Raw probe-protocol exchange (AAASM-5300) ────────────────────────────────
+
+/// Drive one raw probe-protocol exchange through the proxy, with a
+/// caller-chosen correlation identifier, and return the response text.
+///
+/// The shipped probe mints its own identifier and never discloses it, so this
+/// is how a scenario observes the *binding* the probe depends on: that the
+/// verdict the proxy answers with is the verdict for the request that carried
+/// that identifier, and for no other.
+pub async fn raw_probe_exchange(
+    proxy: SocketAddr,
+    ca_pem: &std::path::Path,
+    correlation_id: &str,
+    text: &str,
+) -> anyhow::Result<String> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpStream;
+
+    let config = client_trusting_pem(ca_pem).await?;
+    let target = format!("{ANTHROPIC_HOST}:443");
+    let mut tcp = TcpStream::connect(proxy).await?;
+    tcp.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+        .await?;
+    let mut reader = BufReader::new(tcp);
+    let mut status = String::new();
+    reader.read_line(&mut status).await?;
+    loop {
+        let mut header = String::new();
+        let n = reader.read_line(&mut header).await?;
+        if n == 0 || header.trim().is_empty() {
+            break;
+        }
+    }
+    anyhow::ensure!(
+        status.contains("200"),
+        "the proxy refused the tunnel: {}",
+        status.trim()
+    );
+
+    let server_name = ServerName::try_from(ANTHROPIC_HOST.to_owned())?;
+    let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect(server_name, reader.into_inner())
+        .await?;
+    let body = serde_json::json!({
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": text}]}],
+    })
+    .to_string();
+    let request = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: {ANTHROPIC_HOST}\r\nContent-Type: application/json\r\n\
+         anthropic-version: 2023-06-01\r\n{}: {correlation_id}\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        aa_proxy::probe_adjudication::PROBE_CORRELATION_HEADER,
+        body.len(),
+    );
+    tls.write_all(request.as_bytes()).await?;
+    tls.flush().await?;
+    let mut buf = Vec::new();
+    tls.read_to_end(&mut buf).await?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
