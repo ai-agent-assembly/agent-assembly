@@ -1101,6 +1101,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_enforcement_mode_and_expiry_round_trip_through_storage() {
+        // AAASM-5288 — the enforcement_mode string and its optional shadow
+        // expiry must persist to and read back from the durable column.
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        let deadline = chrono::DateTime::parse_from_rfc3339("2026-05-21T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let mut rec = sample_agent(11, "team-x", "org-1", "Shadowed");
+        rec.enforcement_mode = "observe".to_string();
+        rec.enforcement_mode_expires_at = Some(deadline);
+        backend.upsert_agent(rec.clone()).await.expect("upsert");
+
+        let fetched = backend.get_agent(&rec.agent_id).await.expect("get").expect("present");
+        assert_eq!(fetched.enforcement_mode, "observe");
+        assert_eq!(fetched.enforcement_mode_expires_at, Some(deadline));
+    }
+
+    #[tokio::test]
     async fn agent_get_returns_none_for_unknown_id() {
         let (_tmp, backend) = open_temp_backend().await;
         backend.migrate().await.expect("migrate");
