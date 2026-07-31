@@ -116,6 +116,52 @@ value, the precedence is noted.
 > `AA_GATEWAY_URL` (used by the Windsurf devtool). Only
 > `AA_PROXY_GATEWAY_ENDPOINT` affects `aasm proxy start`.
 
+### `aa-api` server environment variables
+
+The REST API server (`aa-api`) — the process the dashboard reads through — reads
+its own set of `AA_*` variables at boot. These configure the server itself, not
+the CLI.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AA_POLICY` | _(unset)_ | Policy source for the API's dashboard projections. See [Policy source](#policy-source-for-aa-api) below. |
+| `AA_AUTH_OPEN_REGISTRATION` | `false` | Opt into open self-registration for [native accounts](../usage-guide/authentication.md#opening-self-registration-optional). Only `1` / `true` / `yes` (case-insensitive) enable it; the default is closed (first-user-then-invite). |
+| `AA_SMTP_HOST` | _(unset)_ | SMTP relay host. Its presence switches on real password-reset email delivery; when unset, `aa-api` falls back to a logging mailer that sends nothing. See [Password-reset email](../usage-guide/authentication.md#password-reset-email-smtp). |
+| `AA_SMTP_PORT` | `587` | SMTP port (submission with STARTTLS). |
+| `AA_SMTP_USER` | _(unset)_ | Username for authenticated SMTP submission. Optional. |
+| `AA_SMTP_PASS` | _(unset)_ | Password for authenticated SMTP submission. Optional. |
+| `AA_SMTP_FROM` | `no-reply@localhost` | The `From:` address stamped on outbound mail. |
+
+> Native email/password accounts also require a **Postgres-backed** deployment.
+> The `AA_SMTP_*` and `AA_AUTH_OPEN_REGISTRATION` variables only take effect once
+> native accounts are available. See [Authentication](../usage-guide/authentication.md).
+
+#### Policy source for `aa-api`
+
+`aa-api` reads `AA_POLICY` the same way `aa-gateway` does — routing on the
+**shape** of the path it points at — to decide what the dashboard's
+capability-matrix, topology-chain, and team-policy projections display:
+
+| `AA_POLICY` | What `aa-api` loads | What the projections show |
+|---|---|---|
+| **A directory** | The multi-document [policy cascade](../operations/policy-cascade-loader.md) (Global / Org / Team / Agent scopes) | Real cascade data — the enforced org/team/agent rules |
+| **A single file** | That one policy document | The single policy's rules only (no cascade) |
+| _(unset / empty / non-existent path)_ | A generated budget-only bootstrap policy | `Unknown` / `Unconfigured` — never a fabricated allow |
+
+When `AA_POLICY` is unset, the projections render an honest "Unconfigured"
+signal rather than presenting the generated bootstrap as though it were an
+operator-authored policy. Point `AA_POLICY` at a directory to see the full
+cascade in the dashboard.
+
+#### Trust score tuning
+
+The dashboard's per-agent **trust score** (a policy-friction score served at
+`GET /api/v1/analytics/trust`) needs no configuration to work — every tenant
+starts on sensible defaults. Its penalty-signal weights are optionally tunable
+per tenant at runtime via `GET` / `PUT /api/v1/analytics/trust/config`; there is
+no environment variable for it. An agent with fewer than the minimum number of
+governed actions shows `—` (not enough data) rather than a misleading number.
+
 ## Output format
 
 Most list/get commands accept `--output table|json|yaml` (default `table`). Use
