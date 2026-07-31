@@ -59,8 +59,9 @@
 # `dashboard/`), exactly as release.yml builds it before staging.
 #
 # Usage: scripts/check-packaged-artifacts.sh
-#   PACKAGED_GATE_WORKDIR=<dir>     reuse a scratch dir across runs (dev only)
-#   PACKAGED_GATE_TARGET_DIR=<dir>  persist/cache the packaged build's target dir
+#   PACKAGED_GATE_WORKDIR=<dir>        reuse a scratch dir across runs (dev only)
+#   PACKAGED_GATE_STAGE_TARGET_DIR=<d> persist/cache the staging+packaging target dir
+#   PACKAGED_GATE_TARGET_DIR=<dir>     persist/cache the packaged build's target dir
 #   PACKAGED_GATE_SKIP_BUILD=1      stop after step 4 (fast contents-only check)
 set -euo pipefail
 
@@ -89,6 +90,11 @@ fi
 # refuses to build a package that sits under a workspace it is not a member of.
 TREE="$WORK/tree"
 mkdir -p "$TREE"
+
+# The tree copy is throwaway, so its `target/` is rebuilt from scratch every
+# run unless it is pointed somewhere that survives — which CI's cache action and
+# a developer iterating both want.
+export CARGO_TARGET_DIR="${PACKAGED_GATE_STAGE_TARGET_DIR:-$TREE/target}"
 
 echo "packaged-artifact gate: staging a throwaway copy of the tree in $TREE"
 ( cd "$REPO_ROOT" && git ls-files -z | tar --null -T - -cf - ) | tar -xf - -C "$TREE"
@@ -255,7 +261,7 @@ step "5/6 build aasm + aa-gateway + aa-proxy from the unpacked tarballs"
 
 UNPACK="$WORK/unpacked"
 mkdir -p "$UNPACK"
-for crate in "$TREE"/target/package/*.crate; do
+for crate in "$CARGO_TARGET_DIR"/package/*.crate; do
     tar -xzf "$crate" -C "$UNPACK"
 done
 echo "  unpacked $(find "$UNPACK" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') crates into $UNPACK"
