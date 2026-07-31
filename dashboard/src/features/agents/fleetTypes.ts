@@ -18,6 +18,20 @@ export interface AgentEnforcementCount {
  */
 export type AgentEnforcementLookup = ReadonlyMap<string, AgentEnforcementCount>
 
+/**
+ * Per-agent trust scores keyed by agent id, as returned (folded into a lookup)
+ * by `GET /api/v1/analytics/trust` (AAASM-5083, ADR 0019). The mapped value is
+ * the agent's score on a 0–100 scale, or `null` for a cold-start agent
+ * (`< MIN_ACTIONS` governed actions in the window). A key absent from the lookup
+ * — an agent that recorded no governed action, or a truncated window that emits
+ * no scores at all — is likewise treated as `null` by `toFleetAgent`, so both
+ * the "no score" and "cold-start" cases render `—` rather than a fabricated `0`.
+ *
+ * A Map, not a plain object, for the same prototype-pollution reason as
+ * `AgentEnforcementLookup` (AAASM-5237): `agent_id` is raw wire input.
+ */
+export type AgentTrustLookup = ReadonlyMap<string, number | null>
+
 /** Enforcement modes rendered by `ModeChip`. */
 export type FleetMode = 'enforce' | 'shadow' | 'off'
 
@@ -27,10 +41,11 @@ const MODE_VALUES: readonly FleetMode[] = ['enforce', 'shadow', 'off']
  * Projection of an `AgentResponse` onto the columns the Fleet page renders.
  *
  * `blocked24h` / `scrubbed24h` are sourced from the per-agent enforcement
- * endpoint (AAASM-5084) when a lookup is supplied to `toFleetAgent`; an agent
- * absent from that lookup — and any metric with no backing endpoint yet
- * (`trust`) — is represented as `null` so table cells render an unambiguous `—`
- * placeholder rather than a misleading zero.
+ * endpoint (AAASM-5084), and `trust` from the trust rollup (AAASM-5083), when
+ * the corresponding lookup is supplied to `toFleetAgent`; an agent absent from a
+ * lookup — or a cold-start agent whose `trust` the endpoint reports as `null` —
+ * is represented as `null` so table cells render an unambiguous `—` placeholder
+ * rather than a misleading zero.
  */
 export interface FleetAgent {
   readonly source: Agent
@@ -85,8 +100,19 @@ function parseMode(raw: string | undefined): FleetMode {
  * `scrubbed24h` are filled from it; an agent missing from the lookup — or no
  * lookup at all (the metrics query still loading, or a caller that doesn't need
  * the counts) — leaves both `null`, so the view renders `—`.
+ *
+ * Likewise, when a `trust` lookup is supplied (from `GET /api/v1/analytics/trust`,
+ * AAASM-5083), this agent's `trust` is filled from it. The endpoint reports a
+ * cold-start agent (`< MIN_ACTIONS`) as an explicit `null`, and omits an agent
+ * with no governed actions (and every agent when the window is truncated). All
+ * three of those — explicit `null`, absent key, and no lookup at all — collapse
+ * to `null` here, so the view renders `—`. The score is never coerced to `0`.
  */
-export function toFleetAgent(agent: Agent, enforcement?: AgentEnforcementLookup): FleetAgent {
+export function toFleetAgent(
+  agent: Agent,
+  enforcement?: AgentEnforcementLookup,
+  trust?: AgentTrustLookup,
+): FleetAgent {
   const metadata = agent.metadata ?? {}
   const counts = enforcement?.get(agent.id)
   return {
@@ -102,7 +128,9 @@ export function toFleetAgent(agent: Agent, enforcement?: AgentEnforcementLookup)
     // Topology surfaces cannot disagree about whether an agent is flagged.
     flagged: agent.is_flagged,
     lastSeen: agent.last_event ?? null,
-    trust: null,
+    // `?? null` folds a cold-start `null` and an absent key alike to `null`; the
+    // score is never coerced to `0` (ADR 0019 truthfulness contract).
+    trust: trust?.get(agent.id) ?? null,
     blocked24h: counts ? counts.blocked : null,
     scrubbed24h: counts ? counts.scrubbed : null,
     note: metadata.note ?? null,
