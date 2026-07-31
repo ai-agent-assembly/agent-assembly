@@ -12,6 +12,7 @@ pub mod destinations;
 pub mod embedded_dashboard;
 pub mod error;
 pub mod events;
+pub mod mailer;
 pub mod middleware;
 pub mod models;
 pub mod native_auth;
