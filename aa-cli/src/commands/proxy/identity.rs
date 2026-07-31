@@ -273,6 +273,26 @@ mod tests {
         );
     }
 
+    /// A process asking about *itself* is exempt from the ptrace gate
+    /// (`same_thread_group`), so a self-read can never exercise the hidden-process
+    /// path. Pin that the ordinary case is still answered by the authoritative
+    /// source, so a regression that made every read fall through to `argv[0]`
+    /// would be visible here rather than silently downgrading every check.
+    #[test]
+    fn a_process_that_hides_nothing_is_named_by_the_kernel() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let evidence = image(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            matches!(evidence, ImageEvidence::Reported(_)),
+            "an ordinary process must be named by the kernel, not by its own argv; got {evidence:?}"
+        );
+    }
+
     #[test]
     fn start_token_is_stable_across_reads_for_the_same_process() {
         let pid = std::process::id();
@@ -307,5 +327,142 @@ mod tests {
         child.wait().expect("wait for `true`");
         assert!(start_token(pid).is_none(), "a dead pid must yield no start token");
         assert!(image(pid).path().is_none(), "a dead pid must yield no executable path");
+    }
+
+    /// AAASM-5323 regression. `aa-proxy` marks itself non-dumpable at startup
+    /// (`prctl(PR_SET_DUMPABLE, 0)`, AAASM-3584), and the Linux kernel then
+    /// refuses `readlink("/proc/<pid>/exe")` to *every* caller without
+    /// `CAP_SYS_PTRACE` — including the user who started it. The first cut of
+    /// this module read only that symlink, so on Linux it reported "no identity"
+    /// for every genuine proxy and `aasm run` refused to launch, always.
+    ///
+    /// macOS has no equivalent, which is exactly why the defect was invisible
+    /// there; the case is therefore pinned on Linux specifically.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_process_that_hides_itself_from_ptrace_is_still_identifiable() {
+        let expected = std::fs::canonicalize(std::env::current_exe().expect("current_exe")).expect("canonicalize");
+        let child = NonDumpableChild::spawn();
+
+        // Precondition, not decoration: if the authoritative source still
+        // answered, the fallback below would never run and this test would pass
+        // while measuring nothing.
+        let denied = std::fs::read_link(format!("/proc/{}/exe", child.pid))
+            .expect_err("the child was supposed to have hidden its image from us");
+        assert_eq!(
+            denied.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "expected the ptrace gate to refuse the read, got {denied}"
+        );
+
+        let evidence = image(child.pid);
+        assert_eq!(
+            evidence,
+            ImageEvidence::InvokedAs(expected),
+            "a live process that hid itself must still be identifiable, and must be reported as \
+             identified by its argv rather than by the kernel"
+        );
+        assert!(is_alive(child.pid), "the child must still be running");
+        assert!(
+            start_token(child.pid).is_some(),
+            "/proc/<pid>/stat is not behind the ptrace gate, so the start time must still read"
+        );
+    }
+
+    /// The fallback must not be a way in for a process that is *gone*. A zombie
+    /// still answers `kill(pid, 0)` and still has a readable `stat` (so the start
+    /// time alone would wave it through), but its address space is released, so
+    /// it has neither an executable link nor a command line.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_has_no_image_evidence() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn `true`");
+        let pid = child.id();
+        wait_for_state(pid, b'Z');
+
+        let evidence = image(pid);
+        child.wait().expect("reap `true`");
+
+        assert!(
+            matches!(evidence, ImageEvidence::Unreadable(_)),
+            "an exited-but-unreaped process must yield no image; got {evidence:?}"
+        );
+    }
+
+    /// Block until `/proc/<pid>/stat` reports `state`, so a test that depends on
+    /// a process having reached it is not racing the scheduler.
+    #[cfg(target_os = "linux")]
+    fn wait_for_state(pid: u32, state: u8) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            if let Some(rest) = stat.rfind(')').and_then(|i| stat.get(i + 2..)) {
+                if rest.as_bytes().first() == Some(&state) {
+                    return;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("pid {pid} never reached state {}", state as char);
+    }
+
+    /// A child of this process that has applied the same hardening `aa-proxy`
+    /// applies to itself, so the ptrace gate the fix has to survive is the real
+    /// kernel one and not a simulation of it.
+    ///
+    /// It is produced with a bare `fork` rather than `Command`, because
+    /// `execve` resets the dumpable flag: only a process that sets it *after*
+    /// its last exec is non-dumpable, which is precisely the shape `aa-proxy`
+    /// has. The child touches nothing but async-signal-safe calls, so forking
+    /// from libtest's threaded harness is sound; it is killed and reaped on
+    /// drop rather than exiting on its own.
+    #[cfg(target_os = "linux")]
+    struct NonDumpableChild {
+        pid: u32,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl NonDumpableChild {
+        fn spawn() -> Self {
+            // Safety: the child path calls only `prctl`, `pause` and `_exit`,
+            // all async-signal-safe; it never returns into test code.
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+            if pid == 0 {
+                unsafe {
+                    libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+                    loop {
+                        libc::pause();
+                    }
+                }
+            }
+            let child = Self { pid: pid as u32 };
+            child.wait_until_hidden();
+            child
+        }
+
+        /// `fork` returns in the parent before the child has run `prctl`, so the
+        /// parent must not read until the flag is actually set.
+        fn wait_until_hidden(&self) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                match std::fs::read_link(format!("/proc/{}/exe", self.pid)) {
+                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return,
+                    _ => std::thread::sleep(std::time::Duration::from_millis(10)),
+                }
+            }
+            panic!("pid {} never became non-dumpable", self.pid);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for NonDumpableChild {
+        fn drop(&mut self) {
+            // Safety: both calls take the PID by value; the child is ours to reap.
+            unsafe {
+                libc::kill(self.pid as libc::pid_t, libc::SIGKILL);
+                libc::waitpid(self.pid as libc::pid_t, std::ptr::null_mut(), 0);
+            }
+        }
     }
 }

@@ -571,6 +571,110 @@ mod tests {
         );
     }
 
+    /// AAASM-5323 regression. `aa-proxy` hides its image from same-uid
+    /// inspection (`prctl(PR_SET_DUMPABLE, 0)`, AAASM-3584), which makes the
+    /// kernel refuse `/proc/<pid>/exe` even to the user who started it. The
+    /// first cut of this check read only that link and refused every genuine
+    /// proxy on Linux — `aasm run` could not launch at all. A truthful record
+    /// about such a process must be accepted.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_truthful_record_about_a_process_that_hides_itself_is_accepted() {
+        let child = hidden_child();
+        let state = ProxyState {
+            pid: child.pid,
+            listen_addr: "127.0.0.1:8899".into(),
+            start_token: identity::start_token(child.pid).expect("the child's start time must read"),
+            exe_path: identity::image(child.pid)
+                .path()
+                .expect("a live process that hid itself must still be identifiable")
+                .to_path_buf(),
+        };
+        verify_identity(&state).expect("a truthful record about a live hardened proxy must be accepted");
+    }
+
+    /// The evidence that survives hardening must not also let a *gone* process
+    /// through. A zombie still answers `kill(pid, 0)` and still has a readable
+    /// start time, so it is refused only if the image evidence refuses it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_is_refused() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn `true`");
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            if stat.rfind(')').and_then(|i| stat.as_bytes().get(i + 2)) == Some(&b'Z') {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let mut state = truthful_state_for_self();
+        state.pid = pid;
+        // Both reads happen before the child is reaped: the case is only
+        // meaningful while the PID is still signallable, which is exactly what
+        // makes a zombie able to fool a liveness-only check.
+        let signallable = identity::is_alive(pid);
+        let outcome = verify_identity(&state);
+        child.wait().expect("reap `true`");
+
+        assert!(
+            signallable,
+            "a zombie must still answer kill(pid, 0), or this proves nothing"
+        );
+        let err = outcome.expect_err("an exited-but-unreaped process must be refused");
+        assert!(
+            matches!(err, ProxyTrustError::IdentityUnreadable { .. }),
+            "expected IdentityUnreadable for a zombie, got {err:?}"
+        );
+    }
+
+    /// A child of this process carrying the same hardening `aa-proxy` applies to
+    /// itself. `fork` rather than `Command`, because `execve` clears the
+    /// dumpable flag — only a process that sets it after its last exec is
+    /// hidden, which is the shape the proxy has.
+    #[cfg(target_os = "linux")]
+    fn hidden_child() -> HiddenChild {
+        // Safety: the child path calls only `prctl`, `pause` and `_exit`, all
+        // async-signal-safe; it never returns into test code.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+        if pid == 0 {
+            unsafe {
+                libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        let child = HiddenChild { pid: pid as u32 };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            match std::fs::read_link(format!("/proc/{}/exe", child.pid)) {
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return child,
+                _ => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        panic!("pid {} never became non-dumpable", child.pid);
+    }
+
+    #[cfg(target_os = "linux")]
+    struct HiddenChild {
+        pid: u32,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for HiddenChild {
+        fn drop(&mut self) {
+            // Safety: both calls take the PID by value; the child is ours to reap.
+            unsafe {
+                libc::kill(self.pid as libc::pid_t, libc::SIGKILL);
+                libc::waitpid(self.pid as libc::pid_t, std::ptr::null_mut(), 0);
+            }
+        }
+    }
+
     /// PID reuse, executable-visible case: the number is live but is running
     /// some other image. This is the shape of the attack a liveness-only check
     /// waves through.
