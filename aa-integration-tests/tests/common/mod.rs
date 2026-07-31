@@ -944,6 +944,11 @@ spec:
             secrets_store: Arc::new(InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
             trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+            // AAASM-5305: the harness is the in-memory (no-Postgres) deployment,
+            // so native email/password auth is unavailable — auth_store is None
+            // and the endpoints degrade honestly (ADR 0031 D2).
+            auth_store: None,
+            native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
         },
         audit_dir,
         alert_store_handle,
@@ -1085,6 +1090,11 @@ spec:
             secrets_store: Arc::new(InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
             trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+            // AAASM-5305: the harness is the in-memory (no-Postgres) deployment,
+            // so native email/password auth is unavailable — auth_store is None
+            // and the endpoints degrade honestly (ADR 0031 D2).
+            auth_store: None,
+            native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
         },
         audit_dir,
         alert_store_handle,
@@ -1227,6 +1237,11 @@ spec:
             secrets_store: Arc::new(InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
             trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+            // AAASM-5305: the harness is the in-memory (no-Postgres) deployment,
+            // so native email/password auth is unavailable — auth_store is None
+            // and the endpoints degrade honestly (ADR 0031 D2).
+            auth_store: None,
+            native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
         },
         audit_dir,
         alert_store_handle,
@@ -1361,6 +1376,11 @@ spec:
             secrets_store: Arc::new(InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
             trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+            // AAASM-5305: the harness is the in-memory (no-Postgres) deployment,
+            // so native email/password auth is unavailable — auth_store is None
+            // and the endpoints degrade honestly (ADR 0031 D2).
+            auth_store: None,
+            native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
         },
         audit_dir,
         alert_store_handle,
@@ -1488,6 +1508,11 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             secrets_store: Arc::new(InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
             trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+            // AAASM-5305: the harness is the in-memory (no-Postgres) deployment,
+            // so native email/password auth is unavailable — auth_store is None
+            // and the endpoints degrade honestly (ADR 0031 D2).
+            auth_store: None,
+            native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
         },
         audit_dir,
         alert_store_handle,
