@@ -104,9 +104,12 @@ export type AuthMethod = 'api_key' | 'password'
  * deployment. The login page renders from this, never guesses.
  */
 export async function authMethods(): Promise<AuthMethod[]> {
-  const { data, error, response } = await api.GET('/api/v1/auth/methods')
-  if (error || !data) {
-    throw new AuthApiError(`Could not read auth methods (HTTP ${response.status}).`, response.status)
+  const { data, response } = await api.GET('/api/v1/auth/methods')
+  if (!data) {
+    throw new AuthApiError(
+      `Could not read auth methods (HTTP ${response.status}).`,
+      response.status,
+    )
   }
   // `methods` is `string[]` on the wire; narrow to the known method literals so
   // the caller branches on a closed set and ignores anything unrecognised.
