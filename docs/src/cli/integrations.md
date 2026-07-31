@@ -47,8 +47,15 @@ aasm integrations [OPTIONS] <COMMAND> [ARGS]
 | `repair <TOOL>` | tool id | yes | Restore AASM-owned state that drifted |
 | `remove <TOOL>` | tool id | yes | Undo the integration, restoring what it replaced |
 
-`<TOOL>` is the tool id as `aasm integrations list` reports it — e.g.
+`<TOOL>` is the tool id as `aasm integrations list` reports it —
 `claude-code`, `codex`, `github-copilot`, `windsurf-cascade`.
+
+> **Only `claude-code` has a lifecycle today.** The other three are carried by
+> `LegacyAdapterShim`: they detect and report, but `install` and `repair` are
+> **refused with exit `3`** because their plan steps name no destination file.
+> That refusal is deliberate — a success that performed nothing would be worse.
+> Being listed means the tool is recognised, not that it can be integrated; see
+> [Limitations](../devtools/limitations.md).
 
 ## Options common to every subcommand
 
