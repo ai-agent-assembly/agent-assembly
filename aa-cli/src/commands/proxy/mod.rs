@@ -7,6 +7,7 @@ pub mod pid;
 pub mod start;
 pub mod status;
 pub mod stop;
+pub mod trust;
 
 use std::process::ExitCode;
 
