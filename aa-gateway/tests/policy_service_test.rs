@@ -292,6 +292,7 @@ budget:
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     };
     registry.register(record).unwrap();
@@ -384,6 +385,7 @@ budget:
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     };
     registry.register(record).unwrap();
@@ -494,6 +496,7 @@ fn level_test_record(
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }

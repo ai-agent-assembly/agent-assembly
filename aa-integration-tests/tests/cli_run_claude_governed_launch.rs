@@ -255,12 +255,22 @@ exit 0
 
         // ── proxy, as the launched tool saw it ─────────────────────────────
         //
-        // AAASM-1112 finding (2) is resolved, and by a route the original note
-        // did not anticipate: the child is routed at the endpoint *this host*
-        // resolved and verified, in normalised URL form. The gateway's
-        // `PROXY_ADDR` is deliberately a different, dead address — a
-        // registration response is remote and unauthenticated, so it is not
-        // entitled to choose where this session's traffic goes (AAASM-5323).
+        // AAASM-1112 finding (2) is resolved — twice over, and the second time
+        // by a route the original note did not anticipate.
+        //
+        // AAASM-5324 (via AAASM-5327, #1855) fixed the discard: the adapter's
+        // normalised `http://host:port` now actually reaches the child, where
+        // before `spawn_and_wait` threw the adapter's whole environment away.
+        // AAASM-5331 then realigned this assertion, which had been left pinning
+        // the pre-fix bare `host:port`.
+        //
+        // AAASM-5323 changes what the right answer *is*. The child is now routed
+        // at the endpoint **this host** resolved and verified, not at anything
+        // the gateway named: a registration response is remote and
+        // unauthenticated, so it is not entitled to choose where this session's
+        // traffic goes. `PROXY_ADDR` is deliberately a different, dead address,
+        // so a regression that reinstated the gateway as the source would show
+        // up here as a wrong value rather than as a silent pass.
         let expected_proxy = proxy.expected_proxy_url();
         for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
             assert_eq!(

@@ -22,18 +22,18 @@
 use std::collections::VecDeque;
 
 use aa_core::identity::AgentId;
-use aa_core::GovernanceLevel;
+use aa_core::{EnforcementMode, GovernanceLevel};
+use chrono::Utc;
 
 use crate::registry::AgentStatus;
 use crate::storage::AgentRecord as StorageAgentRecord;
 
 use super::store::AgentRecord as RuntimeAgentRecord;
 
-/// Metadata key used to round-trip the runtime `enforcement_mode`-equivalent
-/// flag through `storage::AgentRecord::enforcement_mode`. The runtime record
-/// has no first-class field for this today, so the storage column defaults to
-/// `"enforce"` on conversion; later Sub-tasks of Epic 18 may surface it
-/// directly on the runtime record.
+/// Wire string persisted in `storage::AgentRecord::enforcement_mode` when the
+/// runtime record carries no explicit per-agent override (`None`). Matches the
+/// server-wide default the resolver falls back to, so a rehydrated agent with
+/// no override behaves identically to a freshly-registered one.
 const DEFAULT_ENFORCEMENT_MODE: &str = "enforce";
 
 /// Metadata key used to carry the agent's friendly name through storage so
@@ -46,9 +46,19 @@ const METADATA_KEY_NAME: &str = "name";
 ///
 /// Lossy — runtime-only fields are dropped. `name` is round-tripped through
 /// `metadata["name"]` so rehydrate can restore it.
+///
+/// AAASM-5288: the per-agent `enforcement_mode` override and its optional
+/// shadow-window expiry are written through to durable storage so a mode
+/// change survives a gateway restart. A `None` override persists the default
+/// `"enforce"` string, matching the resolver's server-wide default.
 pub fn runtime_to_storage(record: &RuntimeAgentRecord) -> StorageAgentRecord {
     let mut metadata = record.metadata.clone();
     metadata.insert(METADATA_KEY_NAME.to_string(), record.name.clone());
+    let enforcement_mode = record
+        .enforcement_mode
+        .map(EnforcementMode::as_wire)
+        .unwrap_or(DEFAULT_ENFORCEMENT_MODE)
+        .to_string();
     StorageAgentRecord {
         agent_id: AgentId::from_bytes(record.agent_id),
         team_id: record.team_id.clone(),
@@ -59,7 +69,8 @@ pub fn runtime_to_storage(record: &RuntimeAgentRecord) -> StorageAgentRecord {
         metadata,
         registered_at: record.registered_at,
         last_seen_at: record.last_heartbeat,
-        enforcement_mode: DEFAULT_ENFORCEMENT_MODE.to_string(),
+        enforcement_mode,
+        enforcement_mode_expires_at: record.enforcement_mode_expires_at,
     }
 }
 
@@ -79,10 +90,28 @@ pub fn storage_to_runtime(stored: StorageAgentRecord) -> RuntimeAgentRecord {
         mut metadata,
         registered_at,
         last_seen_at,
-        enforcement_mode: _,
+        enforcement_mode,
+        enforcement_mode_expires_at,
     } = stored;
 
     let name = metadata.remove(METADATA_KEY_NAME).unwrap_or_default();
+
+    // AAASM-5288 — mandatory-expiry semantics must survive a restart. If the
+    // persisted mode carried a shadow-window deadline that has already passed,
+    // the window is reverted to the base mode on load: the override resolves
+    // to `None` (falls through to the policy default / `Enforce`) and the
+    // stale deadline is dropped. An already-expired shadow window must never
+    // be silently resurrected as active. An unparseable mode string also
+    // falls back to `None` rather than coercing to an active weaker mode.
+    let expired = enforcement_mode_expires_at.is_some_and(|deadline| deadline <= Utc::now());
+    let (enforcement_mode, enforcement_mode_expires_at) = if expired {
+        (None, None)
+    } else {
+        (
+            EnforcementMode::from_wire(&enforcement_mode),
+            enforcement_mode_expires_at,
+        )
+    };
 
     RuntimeAgentRecord {
         agent_id: *agent_id.as_bytes(),
@@ -118,7 +147,8 @@ pub fn storage_to_runtime(stored: StorageAgentRecord) -> RuntimeAgentRecord {
         root_agent_id: Some(*agent_id.as_bytes()),
         children: Vec::new(),
         parent_key: None,
-        enforcement_mode: None,
+        enforcement_mode,
+        enforcement_mode_expires_at,
         // AAASM-2008 — org_id is not persisted in the current storage
         // schema either; populated as None until the storage layer carries
         // it through (follow-up).
@@ -165,6 +195,7 @@ mod tests {
             children: Vec::new(),
             parent_key: None,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -200,5 +231,70 @@ mod tests {
         assert!(matches!(restored.status, AgentStatus::Active));
         assert_eq!(restored.parent_key, None);
         assert_eq!(restored.root_agent_id, Some(id));
+    }
+
+    #[test]
+    fn enforcement_mode_survives_a_restart() {
+        // AAASM-5288 — a non-default per-agent override must be durably written
+        // and read back on rehydrate, not reset to the in-memory default.
+        let id = [3u8; 16];
+        let mut rec = sample_runtime(id);
+        rec.enforcement_mode = Some(EnforcementMode::Observe);
+
+        // Simulate the restart: runtime → storage (write-through) → runtime
+        // (rehydrate on boot).
+        let stored = runtime_to_storage(&rec);
+        assert_eq!(
+            stored.enforcement_mode, "observe",
+            "override must reach the durable column"
+        );
+        let restored = storage_to_runtime(stored);
+        assert_eq!(
+            restored.enforcement_mode,
+            Some(EnforcementMode::Observe),
+            "override must survive the restart round-trip"
+        );
+    }
+
+    #[test]
+    fn expired_shadow_window_is_not_silently_resurrected() {
+        // AAASM-5288 — a shadow (Observe) window whose deadline has already
+        // passed must read back as reverted to the base mode on rehydrate,
+        // never as an active Observe. Mandatory-expiry semantics survive the
+        // restart.
+        let id = [4u8; 16];
+        let mut rec = sample_runtime(id);
+        rec.enforcement_mode = Some(EnforcementMode::Observe);
+        rec.enforcement_mode_expires_at = Some(Utc::now() - chrono::Duration::hours(1));
+
+        let stored = runtime_to_storage(&rec);
+        // The window is still stored as-was; the revert happens on load.
+        assert_eq!(stored.enforcement_mode, "observe");
+        assert!(stored.enforcement_mode_expires_at.is_some());
+
+        let restored = storage_to_runtime(stored);
+        assert_eq!(
+            restored.enforcement_mode, None,
+            "expired shadow window must resolve to the base mode, not stay Observe"
+        );
+        assert_eq!(
+            restored.enforcement_mode_expires_at, None,
+            "the stale deadline must be dropped on revert"
+        );
+    }
+
+    #[test]
+    fn unexpired_shadow_window_is_preserved() {
+        // A shadow window whose deadline is still in the future must survive
+        // the restart intact — the revert only fires once the deadline passes.
+        let id = [5u8; 16];
+        let deadline = Utc::now() + chrono::Duration::hours(1);
+        let mut rec = sample_runtime(id);
+        rec.enforcement_mode = Some(EnforcementMode::Observe);
+        rec.enforcement_mode_expires_at = Some(deadline);
+
+        let restored = storage_to_runtime(runtime_to_storage(&rec));
+        assert_eq!(restored.enforcement_mode, Some(EnforcementMode::Observe));
+        assert_eq!(restored.enforcement_mode_expires_at, Some(deadline));
     }
 }
