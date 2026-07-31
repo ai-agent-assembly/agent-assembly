@@ -212,7 +212,10 @@ unmeasured even though the file itself can now be installed (see below).
 † These capabilities require `aa-proxy` (Layer 2) running alongside the tool for enforcement.
 Without the proxy, the declared tier drops to L0 (discovery/inventory only). For Claude Code they
 additionally require the **managed launch** (`aasm run claude`), which is what injects the proxy
-environment and the CA trust the interception depends on.
+environment and the CA trust the interception depends on. `aasm run` is stripped from the
+**crates.io** publish, so a `cargo install aasm` cannot take this path; a source build, the GitHub
+Release tarballs, the `curl` installer and the Homebrew formula all can — see
+[CLI overview → developer-only commands](../cli/overview.md#command-groups).
 
 ‡ Declared from the native write path, not from an exercised block — see the Claude Code
 declarations above.
