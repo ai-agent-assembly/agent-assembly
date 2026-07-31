@@ -569,13 +569,17 @@ async fn topology_graph_returns_nodes_with_badges_and_every_edge_kind() {
 
     let env = TopologyTestEnv::start().await.expect("harness should start");
 
-    // B carries metadata.mode=shadow and enough violations to be flagged, so the
-    // node projection's live mode/flagged badges (AAASM-5036) can be asserted.
+    // B carries enforcement_mode=Observe (the canonical shadow mode) and enough
+    // violations to be flagged, so the node projection's live mode/flagged
+    // badges (AAASM-5036) can be asserted. AAASM-5289: the mode badge derives
+    // from the canonical enforcement_mode, NOT metadata["mode"] — a DIVERGENT
+    // metadata.mode is set to prove the canonical field wins.
     env.agent_registry
         .register(root_agent(A, Some(TEAM)))
         .expect("register A");
     let mut b = root_agent(B, Some(TEAM));
-    b.metadata.insert("mode".to_string(), "shadow".to_string());
+    b.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
+    b.metadata.insert("mode".to_string(), "enforce".to_string());
     env.agent_registry.register(b).expect("register B");
     env.agent_registry
         .register(root_agent(C, Some(TEAM)))
@@ -648,7 +652,10 @@ async fn topology_graph_returns_nodes_with_badges_and_every_edge_kind() {
     }
     // B's live badges flow through from the registry record.
     let node_b = nodes.iter().find(|n| n["id"] == hex(&B)).expect("node B present");
-    assert_eq!(node_b["mode"], "shadow", "B's mode badge reflects metadata.mode");
+    assert_eq!(
+        node_b["mode"], "shadow",
+        "B's mode badge reflects the canonical enforcement_mode (Observe), not the divergent metadata.mode"
+    );
     assert_eq!(node_b["flagged"], true, "B is flagged by its recorded PolicyViolation");
 
     // Edges: every stored kind is graphed (AAASM-5099). The two structural kinds
