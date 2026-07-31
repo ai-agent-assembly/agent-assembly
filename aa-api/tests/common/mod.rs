@@ -193,6 +193,7 @@ spec:
         retention_engine: None,
         secrets_store: Arc::new(InMemorySecretsStore::new()),
         tool_registry: ToolRegistry::new(),
+        trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
     }
 }
 
