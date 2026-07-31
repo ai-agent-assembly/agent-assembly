@@ -139,6 +139,12 @@ pub struct AppState {
     /// secret-injection / forward-upstream path. (AAASM-2033 /
     /// F116 ST-W data-path follow-up.)
     pub tool_registry: ToolRegistry,
+    /// Per-tenant trust-score weight config backing `GET /api/v1/analytics/trust`
+    /// and the `/api/v1/analytics/trust/config` read/write surface (AAASM-5083,
+    /// ADR 0019 Option D). Keyed by tenant `org_id`; a tenant with no override
+    /// reads the Option A defaults. In-memory, following the same pattern as the
+    /// other per-tenant aa-api stores (`alert_rule_store`, `destination_store`).
+    pub trust_config: Arc<crate::trust::TrustConfigStore>,
 }
 
 /// Error returned by [`AppState::local_in_memory`] when the in-memory wiring
@@ -427,6 +433,7 @@ impl AppState {
             retention_engine: None,
             secrets_store: Arc::new(aa_gateway::secrets::InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
+            trust_config: Arc::new(crate::trust::TrustConfigStore::new()),
         })
     }
 

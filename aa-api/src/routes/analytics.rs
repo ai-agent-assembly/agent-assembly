@@ -37,7 +37,7 @@ use aa_gateway::{AgentRecord, AgentStatus};
 
 use crate::models::topology::format_id;
 
-use crate::auth::scope::{RequireRead, Scope};
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::state::AppState;
 
@@ -382,12 +382,36 @@ const MAX_ANALYTICS_AUDIT_EVENTS: usize = 100_000;
 /// in-process reader holds the same entries the other audit aggregations read,
 /// so no new data source is introduced.
 async fn fetch_window_entries(caller: &AuthenticatedCaller, state: &AppState, since_ns: u64) -> Vec<AuditEntry> {
-    let (entries, _total) = state
+    fetch_window_entries_with_total(caller, state, since_ns).await.0
+}
+
+/// Like [`fetch_window_entries`], but also returns whether the audit window was
+/// **truncated** at [`MAX_ANALYTICS_AUDIT_EVENTS`] (AAASM-5083).
+///
+/// [`AuditReader::list_windowed`] returns `(page, total)` where `total` is the
+/// number of entries matching the window *before* the `limit` slice. When
+/// `total` exceeds the cap the returned page is the most-recent cap events only,
+/// so any aggregation over it is computed on a silently-incomplete window. The
+/// trust score must return `null` rather than a partial score in that case
+/// (ADR 0019 Guardrail 2), so it needs this flag; the existing analytics routes
+/// that tolerate a partial window keep using [`fetch_window_entries`].
+///
+/// The truncation test is on the whole (pre-scope) window total, not the
+/// per-tenant slice: the cap is applied by the reader before tenant scoping, so
+/// if the raw window overflowed, a given tenant's entries may themselves be
+/// incomplete — the honest, fail-safe reading is "truncated".
+async fn fetch_window_entries_with_total(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    since_ns: u64,
+) -> (Vec<AuditEntry>, bool) {
+    let (entries, total) = state
         .audit_reader
         .list_windowed(since_ns, MAX_ANALYTICS_AUDIT_EVENTS, 0, None, None, None)
         .await
         .unwrap_or_default();
-    scope_entries(caller, entries)
+    let truncated = total > MAX_ANALYTICS_AUDIT_EVENTS as u64;
+    (scope_entries(caller, entries), truncated)
 }
 
 /// Agents the caller may see: admin sees all; a tenant-scoped caller sees only
@@ -1266,6 +1290,286 @@ pub async fn get_agent_decision_mix(
         .collect();
 
     (StatusCode::OK, Json(agents))
+}
+
+// ---------------------------------------------------------------------------
+// trust — per-agent behavioural trust score (AAASM-5083, ADR 0019 Option D)
+// ---------------------------------------------------------------------------
+
+/// The effective per-signal weight in the response's echoed weight-set.
+///
+/// ADR 0019 Guardrail 1 — the score is labelled with the weight-set that
+/// produced it, so a client never compares a `78` under one tenant's weights to
+/// a `78` under another's. Mirrors [`crate::trust::SignalConfig`] on the wire.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+pub struct TrustSignalWeight {
+    /// Whether this signal contributed to the penalty for this score.
+    pub enabled: bool,
+    /// The weight applied to this signal's count when enabled.
+    pub weight: f64,
+}
+
+impl From<crate::trust::SignalConfig> for TrustSignalWeight {
+    fn from(c: crate::trust::SignalConfig) -> Self {
+        TrustSignalWeight {
+            enabled: c.enabled,
+            weight: c.weight,
+        }
+    }
+}
+
+/// The tenant's effective trust weight-set, echoed on every trust response
+/// (ADR 0019 Guardrail 1). Deserializable so it also serves as the config
+/// read/write body.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+pub struct TrustWeightSet {
+    /// Penalty weight for a `PolicyViolation` (denied action). Default 1.0.
+    pub policy_violation: TrustSignalWeight,
+    /// Penalty weight for a `CredentialLeakBlocked` (DLP redaction). Default 1.5.
+    pub credential_redaction: TrustSignalWeight,
+    /// Penalty weight for an approval rejection (`ApprovalDenied` +
+    /// `ApprovalTimedOut`). Default 0.5.
+    pub approval_rejection: TrustSignalWeight,
+}
+
+// `TrustSignalWeight` doesn't derive `Deserialize`, so give `TrustWeightSet` a
+// manual `Deserialize` by routing through the domain `SignalConfig`.
+impl<'de> Deserialize<'de> for TrustSignalWeight {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let c = crate::trust::SignalConfig::deserialize(deserializer)?;
+        Ok(TrustSignalWeight::from(c))
+    }
+}
+
+impl From<crate::trust::TrustWeights> for TrustWeightSet {
+    fn from(w: crate::trust::TrustWeights) -> Self {
+        TrustWeightSet {
+            policy_violation: w.policy_violation.into(),
+            credential_redaction: w.credential_redaction.into(),
+            approval_rejection: w.approval_rejection.into(),
+        }
+    }
+}
+
+impl From<TrustWeightSet> for crate::trust::TrustWeights {
+    fn from(s: TrustWeightSet) -> Self {
+        let to_cfg = |w: TrustSignalWeight| crate::trust::SignalConfig {
+            enabled: w.enabled,
+            weight: w.weight,
+        };
+        crate::trust::TrustWeights {
+            policy_violation: to_cfg(s.policy_violation),
+            credential_redaction: to_cfg(s.credential_redaction),
+            approval_rejection: to_cfg(s.approval_rejection),
+        }
+    }
+}
+
+/// One agent's trust score over the fixed 7-day window (AAASM-5083).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AgentTrustScore {
+    /// Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+    /// uses, so the dashboard can join scores directly onto its fleet rows.
+    pub agent_id: String,
+    /// Trust score on a 0–100 scale, or `null` when the agent has fewer than
+    /// `MIN_ACTIONS` governed actions in the window (cold start) — the same
+    /// `Option<u8>` contract the topology / capability projections carry. A
+    /// score is only ever a whole number; `null` is never `0` or `50`.
+    #[schema(required = true, minimum = 0, maximum = 100)]
+    pub trust: Option<u8>,
+}
+
+/// Response for `GET /api/v1/analytics/trust` (AAASM-5083, ADR 0019 Option D).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustResponse {
+    /// Per-agent trust scores. Every agent that recorded at least one governed
+    /// action in the window appears; its `trust` is `null` below `MIN_ACTIONS`
+    /// (cold start). Empty when the window is truncated (see `truncated`).
+    pub agents: Vec<AgentTrustScore>,
+    /// The tenant's effective weight-set that produced these scores (ADR 0019
+    /// Guardrail 1). A score is only comparable to another computed under the
+    /// same weights — the client must not rank raw scores across tenants.
+    pub weights: TrustWeightSet,
+    /// The fixed scoring window (`7d` in v1 — not tenant-tunable).
+    pub window: String,
+    /// The minimum governed-action count below which `trust` is `null` (cold
+    /// start). Fixed at `MIN_ACTIONS` in v1.
+    pub min_actions: u64,
+    /// Whether the audit window was truncated at the analytics cap. When `true`,
+    /// `agents` is empty and no score is emitted — a truncated window yields
+    /// `null`, never a partial score (ADR 0019 Guardrail 2).
+    pub truncated: bool,
+}
+
+/// The fixed trust-score window in v1: `7d` (ADR 0019 Decision §5 — not
+/// tenant-tunable yet). Seconds alongside the label so the reader and the echoed
+/// response agree.
+const TRUST_WINDOW_LABEL: &str = "7d";
+const TRUST_WINDOW_SECS: u64 = 7 * 86_400;
+
+/// `GET /api/v1/analytics/trust` — per-agent behavioural trust score (ADR 0019).
+///
+/// Serves Option A's clean-rate score over the fixed 7-day window, under the
+/// caller's tenant-configured weight-set (ADR 0019 Option D). Reuses the exact
+/// audit read + tenant confinement the sibling per-agent rollups use
+/// ([`fetch_window_entries_with_total`] → [`scope_entries`]): a trust score
+/// leaking another tenant's behaviour would be an IDOR, so the read is confined
+/// to the caller's org and the weight-set is read for that same org.
+///
+/// Per agent it counts the five Option A signals from the audit log
+/// (`ToolCallIntercepted`, `PolicyViolation`, `CredentialLeakBlocked`,
+/// `ApprovalRequested`, and `ApprovalDenied` + `ApprovalTimedOut`) and applies
+/// [`crate::trust::compute_trust`]. The two binding guardrails hold:
+///
+/// * **Guardrail 1** — the response echoes the effective `weights`, so a `78`
+///   here is never presented as commensurable with another tenant's `78`.
+/// * **Guardrail 2** — cold start (`D < MIN_ACTIONS`) yields `null` regardless
+///   of the weights, and a window truncated at the analytics cap yields no
+///   score at all (`truncated: true`, empty `agents`) — never a partial score.
+///
+/// Read-only observability over data the API already holds — no enforcement or
+/// audit-write path is touched.
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/trust",
+    responses(
+        (status = 200, description = "Per-agent trust scores and the weight-set that produced them", body = TrustResponse),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_trust(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+) -> (StatusCode, Json<TrustResponse>) {
+    let weights = state.trust_config.get(caller.tenant.org_id.as_deref());
+    let now = now_ns();
+    let since = now.saturating_sub(TRUST_WINDOW_SECS.saturating_mul(1_000_000_000));
+
+    let (entries, truncated) = fetch_window_entries_with_total(&caller, &state, since).await;
+
+    (StatusCode::OK, Json(build_trust_response(&entries, truncated, weights)))
+}
+
+/// Assemble the per-agent trust response from scoped audit `entries` under
+/// `weights` (AAASM-5083). Pulled out of [`get_trust`] as a pure function so the
+/// truncation and cold-start guardrails are testable without seeding the audit
+/// reader at the 100k cap.
+///
+/// When `truncated` is `true` the window is computed on silently-incomplete data
+/// (ADR 0019 Guardrail 2), so no score is emitted at all: `agents` is empty and
+/// `truncated: true`, never a partial score. Otherwise it groups the five Option
+/// A signals per agent and applies [`crate::trust::compute_trust`], which returns
+/// `null` below `MIN_ACTIONS` regardless of `weights`.
+fn build_trust_response(entries: &[AuditEntry], truncated: bool, weights: crate::trust::TrustWeights) -> TrustResponse {
+    if truncated {
+        return TrustResponse {
+            agents: Vec::new(),
+            weights: weights.into(),
+            window: TRUST_WINDOW_LABEL.to_string(),
+            min_actions: crate::trust::MIN_ACTIONS,
+            truncated: true,
+        };
+    }
+
+    // agent id bytes -> raw signal counts. BTreeMap keeps the output ordered by
+    // agent id so the response is deterministic across requests.
+    let mut by_agent: BTreeMap<[u8; 16], crate::trust::SignalCounts> = BTreeMap::new();
+    for e in entries {
+        let slot = by_agent.entry(*e.agent_id().as_bytes()).or_default();
+        match e.event_type() {
+            AuditEventType::ToolCallIntercepted => slot.intercepted += 1,
+            AuditEventType::PolicyViolation => slot.violations += 1,
+            AuditEventType::CredentialLeakBlocked => slot.redactions += 1,
+            AuditEventType::ApprovalRequested => slot.approvals_requested += 1,
+            AuditEventType::ApprovalDenied | AuditEventType::ApprovalTimedOut => slot.approval_rejections += 1,
+            _ => continue,
+        }
+    }
+
+    let agents: Vec<AgentTrustScore> = by_agent
+        .into_iter()
+        .map(|(bytes, counts)| AgentTrustScore {
+            agent_id: format_id(&bytes),
+            trust: crate::trust::compute_trust(&counts, &weights, crate::trust::MIN_ACTIONS),
+        })
+        .collect();
+
+    TrustResponse {
+        agents,
+        weights: weights.into(),
+        window: TRUST_WINDOW_LABEL.to_string(),
+        min_actions: crate::trust::MIN_ACTIONS,
+        truncated: false,
+    }
+}
+
+/// `GET /api/v1/analytics/trust/config` — read the caller tenant's trust weights.
+///
+/// Returns the effective weight-set for the caller's org (its stored override,
+/// or the Option A defaults). Confined to the caller's own tenant: the org is
+/// resolved from the authenticated caller ([`AuthenticatedCaller::tenant`]),
+/// never from client input, so a caller can only read its own tenant's config.
+#[utoipa::path(
+    get,
+    path = "/api/v1/analytics/trust/config",
+    responses(
+        (status = 200, description = "The caller tenant's effective trust weight-set", body = TrustWeightSet),
+        (status = 401, description = "Missing or invalid credentials")
+    ),
+    tag = "analytics"
+)]
+pub async fn get_trust_config(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+) -> (StatusCode, Json<TrustWeightSet>) {
+    let weights = state.trust_config.get(caller.tenant.org_id.as_deref());
+    (StatusCode::OK, Json(weights.into()))
+}
+
+/// `PUT /api/v1/analytics/trust/config` — set the caller tenant's trust weights.
+///
+/// Changing a tenant's trust weights is a tenant-scoped mutation, so it requires
+/// `Scope::Write` ([`RequireWrite`]) — matching how the other tenant-scoped
+/// write surfaces (alert rules, destinations) are gated. The target tenant is
+/// the caller's own org, resolved from [`AuthenticatedCaller::tenant`] and never
+/// from client input, so a caller cannot rewrite another tenant's weights (an
+/// IDOR). A caller with no org tenant has no per-tenant config to write and is
+/// rejected with 400.
+///
+/// Only the per-signal enabled/weight are configurable (ADR 0019 Option D, v1);
+/// the bucket thresholds and window are fixed and not part of this body.
+#[utoipa::path(
+    put,
+    path = "/api/v1/analytics/trust/config",
+    request_body = TrustWeightSet,
+    responses(
+        (status = 200, description = "The updated weight-set", body = TrustWeightSet),
+        (status = 400, description = "Caller has no tenant org to configure"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "Caller lacks the write scope")
+    ),
+    tag = "analytics"
+)]
+pub async fn put_trust_config(
+    RequireWrite(caller): RequireWrite,
+    Extension(state): Extension<AppState>,
+    Json(body): Json<TrustWeightSet>,
+) -> Result<(StatusCode, Json<TrustWeightSet>), crate::error::ProblemDetail> {
+    // The target tenant is the caller's own verified org — never a client-chosen
+    // value — so this cannot rewrite another tenant's config (ADR 0019: a trust
+    // endpoint must never touch another tenant's config).
+    let Some(org) = caller.tenant.org_id.as_deref() else {
+        return Err(crate::error::ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail("caller has no tenant org; trust weights are configured per tenant".to_string()));
+    };
+    let weights: crate::trust::TrustWeights = body.into();
+    state.trust_config.set(org, weights);
+    Ok((StatusCode::OK, Json(weights.into())))
 }
 
 // ---------------------------------------------------------------------------
@@ -2403,5 +2707,299 @@ mod tests {
         assert_eq!(row.narrow, 0);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- trust score (AAASM-5083, ADR 0019 Option D) -----------------------
+
+    /// Build `n` `ToolCallIntercepted` events for `agent` in `org`, all stamped
+    /// "now" so they land in the fixed 7d trust window.
+    fn trust_intercepts(start_seq: u64, n: u64, agent: [u8; 16], org: Option<&str>) -> Vec<AuditEntry> {
+        let now = now_ns();
+        (0..n)
+            .map(|i| ae_entry(start_seq + i, now, AuditEventType::ToolCallIntercepted, agent, org))
+            .collect()
+    }
+
+    /// The score of a single agent in a `get_trust` response, by id.
+    fn score_for(resp: &TrustResponse, agent: &[u8; 16]) -> Option<u8> {
+        resp.agents
+            .iter()
+            .find(|a| a.agent_id == format_id(agent))
+            .unwrap_or_else(|| panic!("agent {} present in trust response", format_id(agent)))
+            .trust
+    }
+
+    /// ADR 0019 validation — an agent below `MIN_ACTIONS` governed actions
+    /// (cold start) scores `null`, never 0 and never 50.
+    #[tokio::test]
+    async fn get_trust_cold_start_below_min_actions_is_null() {
+        // 19 clean intercepts — one under the MIN_ACTIONS=20 floor.
+        let a = [0xE1; 16];
+        let entries = trust_intercepts(0, 19, a, None);
+        let (state, dir) = state_with_audit(&entries, "trust-cold").await;
+
+        let (status, Json(resp)) = get_trust(RequireRead(caller(vec![Scope::Admin], None)), Extension(state)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(!resp.truncated);
+        let score = score_for(&resp, &a);
+        assert_eq!(score, None, "below MIN_ACTIONS the score is null");
+        // The null must be a real JSON null, not 0 or 50, on the wire.
+        let json = serde_json::to_value(&resp).unwrap();
+        let wire = &json["agents"][0]["trust"];
+        assert!(wire.is_null(), "cold-start trust serializes as null");
+        assert_ne!(*wire, serde_json::json!(0));
+        assert_ne!(*wire, serde_json::json!(50));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ADR 0019 validation — default weights reproduce the Option A arithmetic
+    /// end-to-end through the handler, and the response reports the weight-set
+    /// used (Guardrail 1).
+    #[tokio::test]
+    async fn get_trust_default_weights_reproduce_option_a_and_report_weights() {
+        // I=90, V=5, S=3, ApprovalRequested=2, R=1 (one denied) -> D=100,
+        // penalty = 1.0*5 + 1.5*3 + 0.5*1 = 10 -> trust = 90.
+        let a = [0xE2; 16];
+        let mut entries = trust_intercepts(0, 90, a, None);
+        let now = now_ns();
+        let mut seq = 90;
+        for _ in 0..5 {
+            entries.push(ae_entry(seq, now, AuditEventType::PolicyViolation, a, None));
+            seq += 1;
+        }
+        for _ in 0..3 {
+            entries.push(ae_entry(seq, now, AuditEventType::CredentialLeakBlocked, a, None));
+            seq += 1;
+        }
+        for _ in 0..2 {
+            entries.push(ae_entry(seq, now, AuditEventType::ApprovalRequested, a, None));
+            seq += 1;
+        }
+        entries.push(ae_entry(seq, now, AuditEventType::ApprovalDenied, a, None));
+        let (state, dir) = state_with_audit(&entries, "trust-optiona").await;
+
+        let (status, Json(resp)) = get_trust(RequireRead(caller(vec![Scope::Admin], None)), Extension(state)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(score_for(&resp, &a), Some(90), "default weights reproduce Option A");
+        // Guardrail 1: the weight-set that produced the score is reported.
+        assert_eq!(resp.window, "7d");
+        assert_eq!(resp.min_actions, crate::trust::MIN_ACTIONS);
+        assert!(resp.weights.policy_violation.enabled);
+        assert_eq!(resp.weights.policy_violation.weight, 1.0);
+        assert_eq!(resp.weights.credential_redaction.weight, 1.5);
+        assert_eq!(resp.weights.approval_rejection.weight, 0.5);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ADR 0019 validation — disabling a signal changes the score as expected,
+    /// and the response reports which weight-set was used (Guardrail 1). The
+    /// weight-set is read for the caller's own tenant.
+    #[tokio::test]
+    async fn get_trust_disabling_a_signal_changes_the_score() {
+        // I=80, S=20 -> D=100. Redaction enabled@1.5: penalty 30 -> 70.
+        // Redaction disabled: penalty 0 -> 100.
+        let a = [0xE3; 16];
+        let mut entries = trust_intercepts(0, 80, a, Some("acme"));
+        let now = now_ns();
+        for i in 0..20 {
+            entries.push(ae_entry(
+                80 + i,
+                now,
+                AuditEventType::CredentialLeakBlocked,
+                a,
+                Some("acme"),
+            ));
+        }
+        let (state, dir) = state_with_audit(&entries, "trust-disable").await;
+
+        // Default weights -> 70.
+        let (_, Json(before)) = get_trust(
+            RequireRead(caller(vec![Scope::Read], Some("acme"))),
+            Extension(state.clone()),
+        )
+        .await;
+        assert_eq!(score_for(&before, &a), Some(70), "redaction enabled penalises");
+        assert!(before.weights.credential_redaction.enabled);
+
+        // Disable the redaction signal for this tenant.
+        let mut weights = crate::trust::TrustWeights::default();
+        weights.credential_redaction.enabled = false;
+        state.trust_config.set("acme", weights);
+
+        let (_, Json(after)) = get_trust(RequireRead(caller(vec![Scope::Read], Some("acme"))), Extension(state)).await;
+        assert_eq!(
+            score_for(&after, &a),
+            Some(100),
+            "disabling redaction drops its penalty"
+        );
+        assert!(
+            !after.weights.credential_redaction.enabled,
+            "response reports the disabled signal"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ADR 0019 validation (IDOR) — the endpoint routes through `scope_entries`,
+    /// so a tenant-scoped caller only scores its own org's agents; another org's
+    /// audit entries never contribute to its scores.
+    #[tokio::test]
+    async fn get_trust_is_tenant_scoped() {
+        let mine = [0xE4; 16];
+        let theirs = [0xE5; 16];
+        // Enough clean actions for both agents to clear MIN_ACTIONS.
+        let mut entries = trust_intercepts(0, 25, mine, Some("acme"));
+        entries.extend(trust_intercepts(100, 25, theirs, Some("other")));
+        let (state, dir) = state_with_audit(&entries, "trust-tenant").await;
+
+        let (status, Json(resp)) =
+            get_trust(RequireRead(caller(vec![Scope::Read], Some("acme"))), Extension(state)).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resp.agents.len(), 1, "only the caller's own org is scored");
+        assert_eq!(resp.agents[0].agent_id, format_id(&mine));
+        assert!(
+            !resp.agents.iter().any(|a| a.agent_id == format_id(&theirs)),
+            "another tenant's agent must never appear (IDOR guard)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The config write persists the tenant's weights (read back by the config
+    /// GET) and binds to the caller's own org; a caller with no org tenant is
+    /// rejected with 400 — it has no per-tenant config to write.
+    #[tokio::test]
+    async fn put_trust_config_persists_for_own_tenant_and_rejects_no_org_caller() {
+        let (state, dir) = state_with_audit(&[], "trust-cfg").await;
+
+        // A caller with no org tenant cannot configure per-tenant weights.
+        let body = TrustWeightSet::from(crate::trust::TrustWeights::default());
+        let err = put_trust_config(
+            RequireWrite(caller(vec![Scope::Write], None)),
+            Extension(state.clone()),
+            Json(body),
+        )
+        .await
+        .expect_err("no-org caller is rejected");
+        // ProblemDetail renders as a 400 response.
+        let resp = axum::response::IntoResponse::into_response(err);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // A tenant-scoped writer sets its own org's weights (redaction disabled).
+        let mut disabled = crate::trust::TrustWeights::default();
+        disabled.credential_redaction.enabled = false;
+        let (status, Json(written)) = put_trust_config(
+            RequireWrite(caller(vec![Scope::Write], Some("acme"))),
+            Extension(state.clone()),
+            Json(TrustWeightSet::from(disabled)),
+        )
+        .await
+        .expect("own-tenant write succeeds");
+        assert_eq!(status, StatusCode::OK);
+        assert!(!written.credential_redaction.enabled);
+
+        // The GET reads back the same tenant's persisted config.
+        let (_, Json(read)) = get_trust_config(
+            RequireRead(caller(vec![Scope::Read], Some("acme"))),
+            Extension(state.clone()),
+        )
+        .await;
+        assert!(!read.credential_redaction.enabled, "config persisted for the tenant");
+        // Another tenant is unaffected — it still reads the defaults.
+        let (_, Json(other)) =
+            get_trust_config(RequireRead(caller(vec![Scope::Read], Some("other"))), Extension(state)).await;
+        assert!(other.credential_redaction.enabled, "another tenant keeps the defaults");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ADR 0019 validation — a truncated window yields no score at all
+    /// (`truncated: true`, empty `agents`), never a partial score, even when the
+    /// entries present would otherwise clear MIN_ACTIONS. The weight-set is still
+    /// reported (Guardrail 1).
+    #[test]
+    fn build_trust_response_truncated_window_emits_no_score() {
+        let a = [0xE6; 16];
+        // 30 clean intercepts — enough to score if the window were complete.
+        let entries: Vec<AuditEntry> = trust_intercepts(0, 30, a, None);
+        let resp = build_trust_response(&entries, true, crate::trust::TrustWeights::default());
+        assert!(resp.truncated, "truncation flag is surfaced");
+        assert!(
+            resp.agents.is_empty(),
+            "a truncated window emits no per-agent score, not a partial one"
+        );
+        // Guardrail 1 — the weight-set is still reported alongside the (empty) result.
+        assert_eq!(resp.window, "7d");
+        assert_eq!(resp.min_actions, crate::trust::MIN_ACTIONS);
+        assert!(resp.weights.policy_violation.enabled);
+    }
+
+    /// ADR 0019 validation — the same computed score value projects identically
+    /// across the topology-graph (`AgentNode`), topology-tree (`AgentTree`), and
+    /// capability-matrix (`CapabilityAgent`) representations: one integer, one
+    /// null contract, no `78` vs `78.0` vs absent drift.
+    #[test]
+    fn same_score_projects_identically_across_representations() {
+        use crate::models::capability::{AgentStatus as CapAgentStatus, CapabilityAgent};
+        use crate::models::topology::{AgentNode, AgentNodeStatus, AgentTree};
+
+        // Build the three projections carrying the SAME agent's score.
+        let node = AgentNode {
+            id: "aa".to_string(),
+            name: "a".to_string(),
+            depth: 0,
+            status: AgentNodeStatus::Active,
+            team_id: None,
+            governance_level: None,
+            mode: "enforce".to_string(),
+            flagged: false,
+            trust: Some(78),
+            owner: None,
+            policy_count: None,
+            budget: None,
+            effective_permissions: None,
+        };
+        let tree = AgentTree {
+            id: "aa".to_string(),
+            name: "a".to_string(),
+            depth: 0,
+            status: "active".to_string(),
+            team_id: None,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            governance_level: None,
+            mode: "enforce".to_string(),
+            flagged: false,
+            trust: Some(78),
+            children: vec![],
+        };
+        let cap = CapabilityAgent {
+            id: "aa".to_string(),
+            name: "a".to_string(),
+            framework: "langgraph".to_string(),
+            owner: None,
+            trust: Some(78),
+            mode: None,
+            status: CapAgentStatus::Active,
+            last_seen: "1970-01-01T00:00:00Z".to_string(),
+            flagged: None,
+            note: None,
+            caps: std::collections::BTreeMap::new(),
+        };
+
+        let n = serde_json::to_value(&node).unwrap();
+        let t = serde_json::to_value(&tree).unwrap();
+        let c = serde_json::to_value(&cap).unwrap();
+
+        // The same integer on every projection — not a float, not absent.
+        assert_eq!(n["trust"], serde_json::json!(78));
+        assert_eq!(t["trust"], n["trust"], "tree matches graph");
+        assert_eq!(c["trust"], n["trust"], "capability matches graph");
+        assert!(n["trust"].is_u64() && t["trust"].is_u64() && c["trust"].is_u64());
     }
 }

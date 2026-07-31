@@ -22,6 +22,7 @@ pub mod server;
 pub mod shutdown;
 pub mod state;
 pub mod trace_store;
+pub mod trust;
 pub mod ws;
 
 /// Re-export of the ops registry, which moved to `aa_gateway::ops` in

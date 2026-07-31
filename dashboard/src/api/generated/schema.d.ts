@@ -864,6 +864,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/trust": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/trust` — per-agent behavioural trust score (ADR 0019).
+         * @description Serves Option A's clean-rate score over the fixed 7-day window, under the
+         *     caller's tenant-configured weight-set (ADR 0019 Option D). Reuses the exact
+         *     audit read + tenant confinement the sibling per-agent rollups use
+         *     ([`fetch_window_entries_with_total`] → [`scope_entries`]): a trust score
+         *     leaking another tenant's behaviour would be an IDOR, so the read is confined
+         *     to the caller's org and the weight-set is read for that same org.
+         *
+         *     Per agent it counts the five Option A signals from the audit log
+         *     (`ToolCallIntercepted`, `PolicyViolation`, `CredentialLeakBlocked`,
+         *     `ApprovalRequested`, and `ApprovalDenied` + `ApprovalTimedOut`) and applies
+         *     [`crate::trust::compute_trust`]. The two binding guardrails hold:
+         *
+         *     * **Guardrail 1** — the response echoes the effective `weights`, so a `78`
+         *       here is never presented as commensurable with another tenant's `78`.
+         *     * **Guardrail 2** — cold start (`D < MIN_ACTIONS`) yields `null` regardless
+         *       of the weights, and a window truncated at the analytics cap yields no
+         *       score at all (`truncated: true`, empty `agents`) — never a partial score.
+         *
+         *     Read-only observability over data the API already holds — no enforcement or
+         *     audit-write path is touched.
+         */
+        get: operations["get_trust"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/trust/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/trust/config` — read the caller tenant's trust weights.
+         * @description Returns the effective weight-set for the caller's org (its stored override,
+         *     or the Option A defaults). Confined to the caller's own tenant: the org is
+         *     resolved from the authenticated caller ([`AuthenticatedCaller::tenant`]),
+         *     never from client input, so a caller can only read its own tenant's config.
+         */
+        get: operations["get_trust_config"];
+        /**
+         * `PUT /api/v1/analytics/trust/config` — set the caller tenant's trust weights.
+         * @description Changing a tenant's trust weights is a tenant-scoped mutation, so it requires
+         *     `Scope::Write` ([`RequireWrite`]) — matching how the other tenant-scoped
+         *     write surfaces (alert rules, destinations) are gated. The target tenant is
+         *     the caller's own org, resolved from [`AuthenticatedCaller::tenant`] and never
+         *     from client input, so a caller cannot rewrite another tenant's weights (an
+         *     IDOR). A caller with no org tenant has no per-tenant config to write and is
+         *     rejected with 400.
+         *
+         *     Only the per-signal enabled/weight are configurable (ADR 0019 Option D, v1);
+         *     the bucket thresholds and window are fixed and not part of this body.
+         */
+        put: operations["put_trust_config"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/approvals": {
         parameters: {
             query?: never;
@@ -2685,6 +2760,22 @@ export interface components {
              *     trust-analytics source exists yet.
              *     Same representation, placeholder, and null contract as
              *     [`AgentNode::trust`] (AAASM-5104).
+             */
+            trust: number | null;
+        };
+        /** @description One agent's trust score over the fixed 7-day window (AAASM-5083). */
+        AgentTrustScore: {
+            /**
+             * @description Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+             *     uses, so the dashboard can join scores directly onto its fleet rows.
+             */
+            agent_id: string;
+            /**
+             * Format: int32
+             * @description Trust score on a 0–100 scale, or `null` when the agent has fewer than
+             *     `MIN_ACTIONS` governed actions in the window (cold start) — the same
+             *     `Option<u8>` contract the topology / capability projections carry. A
+             *     score is only ever a whole number; `null` is never `0` or `50`.
              */
             trust: number | null;
         };
@@ -5768,6 +5859,67 @@ export interface components {
             /** @description Start time of the span (ISO 8601). */
             start_time: string;
         };
+        /** @description Response for `GET /api/v1/analytics/trust` (AAASM-5083, ADR 0019 Option D). */
+        TrustResponse: {
+            /**
+             * @description Per-agent trust scores. Every agent that recorded at least one governed
+             *     action in the window appears; its `trust` is `null` below `MIN_ACTIONS`
+             *     (cold start). Empty when the window is truncated (see `truncated`).
+             */
+            agents: components["schemas"]["AgentTrustScore"][];
+            /**
+             * Format: int64
+             * @description The minimum governed-action count below which `trust` is `null` (cold
+             *     start). Fixed at `MIN_ACTIONS` in v1.
+             */
+            minActions: number;
+            /**
+             * @description Whether the audit window was truncated at the analytics cap. When `true`,
+             *     `agents` is empty and no score is emitted — a truncated window yields
+             *     `null`, never a partial score (ADR 0019 Guardrail 2).
+             */
+            truncated: boolean;
+            /**
+             * @description The tenant's effective weight-set that produced these scores (ADR 0019
+             *     Guardrail 1). A score is only comparable to another computed under the
+             *     same weights — the client must not rank raw scores across tenants.
+             */
+            weights: components["schemas"]["TrustWeightSet"];
+            /** @description The fixed scoring window (`7d` in v1 — not tenant-tunable). */
+            window: string;
+        };
+        /**
+         * @description The effective per-signal weight in the response's echoed weight-set.
+         *
+         *     ADR 0019 Guardrail 1 — the score is labelled with the weight-set that
+         *     produced it, so a client never compares a `78` under one tenant's weights to
+         *     a `78` under another's. Mirrors [`crate::trust::SignalConfig`] on the wire.
+         */
+        TrustSignalWeight: {
+            /** @description Whether this signal contributed to the penalty for this score. */
+            enabled: boolean;
+            /**
+             * Format: double
+             * @description The weight applied to this signal's count when enabled.
+             */
+            weight: number;
+        };
+        /**
+         * @description The tenant's effective trust weight-set, echoed on every trust response
+         *     (ADR 0019 Guardrail 1). Deserializable so it also serves as the config
+         *     read/write body.
+         */
+        TrustWeightSet: {
+            /**
+             * @description Penalty weight for an approval rejection (`ApprovalDenied` +
+             *     `ApprovalTimedOut`). Default 0.5.
+             */
+            approval_rejection: components["schemas"]["TrustSignalWeight"];
+            /** @description Penalty weight for a `CredentialLeakBlocked` (DLP redaction). Default 1.5. */
+            credential_redaction: components["schemas"]["TrustSignalWeight"];
+            /** @description Penalty weight for a `PolicyViolation` (denied action). Default 1.0. */
+            policy_violation: components["schemas"]["TrustSignalWeight"];
+        };
         /**
          * @description Body for `PUT /api/v1/alerts/destinations/{id}`.
          *
@@ -7452,6 +7604,105 @@ export interface operations {
             };
             /** @description Missing or invalid credentials */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_trust: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-agent trust scores and the weight-set that produced them */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrustResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_trust_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller tenant's effective trust weight-set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrustWeightSet"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    put_trust_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TrustWeightSet"];
+            };
+        };
+        responses: {
+            /** @description The updated weight-set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrustWeightSet"];
+                };
+            };
+            /** @description Caller has no tenant org to configure */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the write scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

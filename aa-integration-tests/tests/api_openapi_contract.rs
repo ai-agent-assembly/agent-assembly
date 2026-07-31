@@ -87,9 +87,13 @@ fn openapi_spec_loads_without_errors() {
     // approve/reject decide endpoints), bringing it to 79. AAASM-5098 added
     // /api/v1/agents/{id}/config (per-agent config projection — enforcement mode,
     // policy cascade, and a qualitative denial recommendation), bringing it to 80.
+    // AAASM-5083 added the trust-score surface (ADR 0019 Option D):
+    // /api/v1/analytics/trust (per-agent behavioural trust score) and
+    // /api/v1/analytics/trust/config (per-tenant weight-set read/write),
+    // bringing it to 82.
     assert_eq!(
-        path_count, 80,
-        "openapi/v1.yaml must declare exactly 80 paths, found {path_count}"
+        path_count, 82,
+        "openapi/v1.yaml must declare exactly 82 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -133,6 +137,9 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/analytics/kpis",
         "/api/v1/analytics/policy-effectiveness",
         "/api/v1/analytics/tool-usage",
+        // AAASM-5083 — per-agent behavioural trust score + per-tenant weight config.
+        "/api/v1/analytics/trust",
+        "/api/v1/analytics/trust/config",
         "/api/v1/agents",
         "/api/v1/agents/{id}",
         "/api/v1/agents/{id}/budget",
