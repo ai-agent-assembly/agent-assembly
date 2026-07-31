@@ -448,9 +448,14 @@ active`.
   cache. A level earned at install time is not still true after the core stops.
 - **Report the mechanisms behind the level**, split into "exercised" and "read back". A user
   who can see which is which can reason about their own risk; a user shown a single word cannot.
-- **Always report the next level up and why it is not active.** For a **default** install that is
-  `Host Enforcement: not installed — requires --install-managed-settings` (or, off macOS,
-  `unavailable on this platform`).
+- **Always report the next level up and why it is not active.** The status renderer does this
+  twice over: the ladder lists every rung, and a separate `Next level up:` line carries the
+  service's reason for the rung immediately above the one achieved. `host_enforced` is a special
+  case in the ladder — `aa-cli` marks that rung unavailable unconditionally
+  (`aa-cli/src/commands/integrations/model.rs`, pinned by the
+  `host_enforced_is_always_present_and_always_unavailable` test), so it renders as
+  `unavailable on this platform` on **every** host, macOS included, rather than as
+  "not installed — requires `--install-managed-settings`".
 - **Degrade loudly.** Losing a criterion mid-session drops the level and surfaces it. There is no
   state in which the level shown is higher than the evidence supports.
 
