@@ -174,7 +174,8 @@ while IFS= read -r pkg; do
 done <<EOF
 $PUBLISHABLE
 EOF
-[ "$fail" -eq 0 ] && echo "  ✓ every internal aa-* pin matches the workspace version"
+[ "$fail" -eq 0 ] || { echo "packaged-artifact gate: FAILED (version-pin drift)" >&2; exit 1; }
+echo "  ✓ every internal aa-* pin matches the workspace version"
 
 # ---------------------------------------------------------------------------
 # 3. Package every publishable crate.
