@@ -27,8 +27,15 @@ aa-core                     = { path = "../aa-core", version = "0.0.1-rc.6", fea
 # implementation backs a tool). `aa-devtool*` are `publish = false`
 # (AAASM-2340), and cargo's publish verification rejects any dep whose target
 # is not on crates.io, so `.ci/strip-for-publish.sh` removes this region and
-# `src/devint/adapters.rs` before `cargo workspaces publish`. A published
-# aa-runtime still binds the DI-API; its integration registry is simply empty.
+# `src/devint/adapters.rs` before `cargo workspaces publish`.
+#
+# AAASM-5309: a published aa-runtime does NOT bind the DI-API. The same script
+# also removes `spawn_devint` and its call site from `src/runtime.rs`, leaving
+# `devint/testkit.rs` (`#[cfg(test)]`) as the only `DevIntServer::bind` in the
+# tree — so no published binary opens the socket, and the CLI's client for it,
+# `aasm integrations`, is stripped alongside. Binding anyway with an empty
+# registry was rejected: no built-in adapter crate publishes, so it could only
+# ever report "no tools detected".
 aa-devtool                  = { path = "../aa-devtool" }
 # AAASM-5281: Claude Code is the first natively migrated adapter, and its
 # registration needs three surfaces the registry's `Box<dyn DevToolAdapter>`

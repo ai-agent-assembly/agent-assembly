@@ -3,9 +3,12 @@
 #
 # WHY this exists.
 # ----------------
-# `aa-cli` wires `aasm run` + `aasm tools` to the `aa-devtool*` adapter
-# crates. The dev-tool subsystem isn't ready to ship in v0.0.1-alpha, so
-# the `aa-devtool*` crates are `publish = false`. Cargo's publish
+# `aa-cli` wires `aasm run`, `aasm tools` and `aasm integrations` to the
+# dev-tool subsystem — the first two directly to the `aa-devtool*` adapter
+# crates, the third (AAASM-5309) to the runtime's Developer Integration
+# API, whose bring-up this script also strips. The subsystem isn't ready to
+# ship in v0.0.1-alpha, so the `aa-devtool*` crates are
+# `publish = false`. Cargo's publish
 # verification rejects every dep with a `version = "..."` literal whose
 # target isn't on crates.io — including optional, feature-gated, and
 # target-cfg-conditional deps (empirically verified — see PR #843
@@ -56,8 +59,18 @@ MARKED_FILES=(
     "${REPO_ROOT}/aa-integration-tests/Cargo.toml"
     # AAASM-5280: the DI-API lifecycle service registers the built-in dev-tool
     # adapters through `aa-devtool` (publish = false). Removed so the published
-    # runtime has no held-back deps; it still binds the DI-API and simply has
-    # an empty integration registry.
+    # runtime has no held-back deps.
+    #
+    # AAASM-5309: what is removed here is the WHOLE DI-API bring-up — the
+    # `spawn_devint` definition in `runtime.rs` and its only call site — so a
+    # published aa-runtime never binds the DI-API socket. Nothing else does:
+    # after the strip the only surviving `DevIntServer::bind` is in
+    # `devint/testkit.rs`, which is `#[cfg(test)]`. That is precisely why
+    # `aasm integrations` — the CLI client of that socket — must be stripped
+    # from aa-cli too, and it is (region `devtool` in
+    # `aa-cli/src/commands/mod.rs`). Keeping the bind and shipping an honest
+    # empty registry was considered and rejected: no built-in adapter crate
+    # publishes, so that surface could only ever answer "no tools detected".
     "${REPO_ROOT}/aa-runtime/Cargo.toml"
     "${REPO_ROOT}/aa-runtime/src/devint/mod.rs"
     "${REPO_ROOT}/aa-runtime/src/runtime.rs"
