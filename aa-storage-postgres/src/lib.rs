@@ -26,8 +26,8 @@ pub use lifecycle_store::PgLifecycleStore;
 pub use policy_store::PgPolicyStore;
 pub use pool::{PostgresPool, MIGRATOR};
 pub use user_store::{
-    BootstrapOutcome, InviteRecord, LockoutState, NewInvite, NewUser, PgUserStore, RefreshTokenRecord, UserRecord,
-    UserRole, UserStatus,
+    BootstrapOutcome, InviteRecord, LockoutState, NewInvite, NewUser, PgUserStore, RefreshTokenRecord,
+    ResetTokenRecord, UserRecord, UserRole, UserStatus,
 };
 
 /// The name this driver registers under in the storage registry. An operator
