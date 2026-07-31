@@ -6,6 +6,24 @@ license.workspace = true
 repository.workspace = true
 description = "aasm — command-line tool for Agent Assembly"
 
+# AAASM-5316: explicit include list lets `_embedded/dashboard/dist/` (the
+# publish-staged copy of `dashboard/dist/`, see release.yml and build.rs) ship in
+# the published tarball even though `aa-cli/.gitignore` lists `_embedded/`.
+# cargo's default file-enumeration is git-aware and silently drops gitignored
+# paths, so up to and including v0.0.1-rc.6 every published aa-cli tarball
+# carried ZERO `_embedded` files and `cargo install aasm` produced a binary whose
+# `aasm dashboard` served only build.rs's "Dashboard not built" stub. `aa-ebpf`
+# and `aa-proto` already carry the same override for the same reason; this is
+# the third instance of the pattern, not a new one.
+include = [
+    "src/**",
+    "tests/**",
+    "build.rs",
+    "Cargo.toml",
+    "README.md",
+    "_embedded/dashboard/dist/**",
+]
+
 [[bin]]
 name = "aasm"
 path = "src/main.rs"
