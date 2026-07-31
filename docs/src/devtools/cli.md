@@ -268,7 +268,10 @@ implying otherwise.
   explicit `--install-managed-settings` opt-in described above — never as part
   of a default install, and never implied by a profile. What remains unmeasured
   there is the *enforcement* half: whether Claude Code honours each managed-only
-  key against a real override attempt on a managed device.
+  key against a real override attempt. That has not been measured on any host —
+  see
+  [Measuring managed-settings enforcement](managed-device-measurement.md) for
+  what would close it.
 
 ### Bypasses that are detected
 
