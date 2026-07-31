@@ -367,8 +367,11 @@ pub async fn register(
     }
 }
 
-/// Create a single-use, expiring invite for a new account (admin scope only)
-/// (ADR 0031 §3). The raw token is returned once here; only its hash is stored.
+/// Create a single-use, expiring invite for a new account (admin scope only).
+///
+/// ADR 0031 §3. The raw invite token is returned exactly once in this response;
+/// only its hash is persisted, so it cannot be recovered later. The invite is
+/// bound to the target email and role and expires after a fixed window.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/invite",
@@ -441,9 +444,11 @@ pub async fn invite(
     }))
 }
 
-/// Accept an invite: consume the single-use token and set the initial password,
-/// activating the account (ADR 0031 §3). Public: the invitee is not yet
-/// authenticated.
+/// Accept an invite: set the initial password and activate the account.
+///
+/// ADR 0031 §3. Consumes the single-use invite token (rejected if already used
+/// or expired), hashes the chosen password with argon2id, and activates the
+/// account. Public: the invitee is not yet authenticated.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/invite/accept",
@@ -511,8 +516,11 @@ pub async fn invite_accept(
         .unwrap_or_else(|e| e.into_response())
 }
 
-/// Exchange a valid refresh cookie for a new access token, rotating the refresh
-/// token (ADR 0031 §5). Public (the cookie is the credential).
+/// Exchange a valid refresh cookie for a new access token.
+///
+/// ADR 0031 §5. Rotates the refresh token on use — the presented token is
+/// revoked and a fresh one is set — so a replayed cookie loses the rotation
+/// race and is rejected. Public: the HttpOnly refresh cookie is the credential.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/refresh",
@@ -576,8 +584,11 @@ pub async fn refresh(
         .unwrap_or_else(|e| e.into_response())
 }
 
-/// Revoke the refresh session and clear the cookie (ADR 0031 §5). Requires an
-/// authenticated caller; always returns `204`.
+/// Revoke the refresh session and clear the cookie.
+///
+/// ADR 0031 §5. Revokes the caller's refresh token server-side and clears the
+/// HttpOnly cookie. Requires an authenticated caller; always returns `204`,
+/// including when no active session is found (idempotent).
 #[utoipa::path(
     post,
     path = "/api/v1/auth/logout",
