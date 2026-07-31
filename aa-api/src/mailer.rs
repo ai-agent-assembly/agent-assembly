@@ -256,7 +256,10 @@ mod tests {
         let mailer = LoggingMailer::new();
         // The fallback must never error — a reset on an SMTP-less deployment
         // must not 500.
-        assert!(mailer.send("someone@example.com", "Subject", "body-with-token").await.is_ok());
+        assert!(mailer
+            .send("someone@example.com", "Subject", "body-with-token")
+            .await
+            .is_ok());
     }
 
     #[tokio::test]

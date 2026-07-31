@@ -522,7 +522,10 @@ async fn set_password_only_touches_active_accounts() {
         .set_password(TENANT_A, invited_id, new_hash)
         .await
         .expect("set password on invited");
-    assert!(!touched, "an invited (non-active) account must not be password-resettable");
+    assert!(
+        !touched,
+        "an invited (non-active) account must not be password-resettable"
+    );
 }
 
 #[tokio::test]
