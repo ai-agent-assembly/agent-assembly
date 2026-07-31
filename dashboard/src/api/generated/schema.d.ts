@@ -4274,7 +4274,7 @@ export interface components {
          *     adding an audit variant without extending this enum is a compile error.
          * @enum {string}
          */
-        LogEventType: "ToolCallIntercepted" | "PolicyViolation" | "CredentialLeakBlocked" | "ApprovalRequested" | "ApprovalGranted" | "ApprovalDenied" | "BudgetLimitApproached" | "BudgetLimitExceeded" | "ApprovalTimedOut" | "ApprovalRouted" | "ApprovalEscalated" | "AgentForceDeregistered" | "MessageBlocked" | "ToolDispatched" | "A2ACallIntercepted" | "A2AImpersonationAttempted" | "SandboxStarted" | "SandboxFilesystemBlocked" | "SandboxCpuTimeout" | "SandboxOomKilled" | "SandboxTerminated" | "SandboxHostFnRateLimited";
+        LogEventType: "ToolCallIntercepted" | "PolicyViolation" | "CredentialLeakBlocked" | "ApprovalRequested" | "ApprovalGranted" | "ApprovalDenied" | "BudgetLimitApproached" | "BudgetLimitExceeded" | "ApprovalTimedOut" | "ApprovalRouted" | "ApprovalEscalated" | "AgentForceDeregistered" | "MessageBlocked" | "ToolDispatched" | "A2ACallIntercepted" | "A2AImpersonationAttempted" | "SandboxStarted" | "SandboxFilesystemBlocked" | "SandboxCpuTimeout" | "SandboxOomKilled" | "SandboxTerminated" | "SandboxHostFnRateLimited" | "GovernanceMutation";
         /** @description Request body for `POST /auth/login`. */
         LoginRequest: {
             /** @description The account email (case-insensitive). */

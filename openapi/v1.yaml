@@ -6962,6 +6962,7 @@ components:
       - SandboxOomKilled
       - SandboxTerminated
       - SandboxHostFnRateLimited
+      - GovernanceMutation
     LoginRequest:
       type: object
       description: Request body for `POST /auth/login`.

@@ -45,6 +45,7 @@ pub enum LogEventType {
     SandboxOomKilled,
     SandboxTerminated,
     SandboxHostFnRateLimited,
+    GovernanceMutation,
 }
 
 impl From<AuditEventType> for LogEventType {
@@ -72,6 +73,7 @@ impl From<AuditEventType> for LogEventType {
             AuditEventType::SandboxOomKilled => LogEventType::SandboxOomKilled,
             AuditEventType::SandboxTerminated => LogEventType::SandboxTerminated,
             AuditEventType::SandboxHostFnRateLimited => LogEventType::SandboxHostFnRateLimited,
+            AuditEventType::GovernanceMutation => LogEventType::GovernanceMutation,
         }
     }
 }
