@@ -21,6 +21,30 @@ describe('mapTopologyGraph', () => {
     expect(nodes[0]).toMatchObject({ id: 'x', mode: 'shadow', flagged: true, trust: 87 })
   })
 
+  it('joins the trust rollup onto nodes, overriding the endpoint placeholder', () => {
+    // AAASM-5083: the endpoint sends `trust: null`; the real score arrives via
+    // the analytics rollup and wins. A cold-start `null` in the lookup still
+    // overrides (rendered `—`), and an agent absent from the lookup keeps its
+    // own value — never coerced to 0.
+    const graph: ApiGraph = {
+      nodes: [node({ id: 'scored', trust: null }), node({ id: 'cold', trust: null }), node({ id: 'absent', trust: null })],
+      edges: [],
+    }
+    const trust = new Map<string, number | null>([
+      ['scored', 78],
+      ['cold', null],
+    ])
+    const { nodes } = mapTopologyGraph(graph, trust)
+    expect(nodes.find((n) => n.id === 'scored')?.trust).toBe(78)
+    expect(nodes.find((n) => n.id === 'cold')?.trust).toBeNull()
+    expect(nodes.find((n) => n.id === 'absent')?.trust).toBeNull()
+  })
+
+  it('leaves node trust untouched when no trust lookup is supplied', () => {
+    const graph: ApiGraph = { nodes: [node({ id: 'x', trust: 91 })], edges: [] }
+    expect(mapTopologyGraph(graph).nodes[0].trust).toBe(91)
+  })
+
   it('passes the registry runtime status through and maps team_id to team', () => {
     const graph: ApiGraph = {
       nodes: [node({ status: 'suspended', team_id: 'ops' }), node({ id: 'b', status: 'deregistered', team_id: null })],

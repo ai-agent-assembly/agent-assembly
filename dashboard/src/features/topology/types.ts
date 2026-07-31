@@ -146,11 +146,12 @@ export interface TopologyNode {
    */
   readonly flagged?: boolean
   /**
-   * Trust score (0–100), or `null` when no trust-analytics source exists yet.
-   * The topology API carries this field (AAASM-5036) but currently always sends
-   * `null` — mirroring the Fleet page's `trust: null` placeholder. The trust
-   * badge renders only when this is a number, so a `null`/absent value stays
-   * hidden until a real trust source lands.
+   * Trust score (0–100), or `null` for a cold-start agent / when no score is
+   * available. The topology API carries a `trust` field (AAASM-5036) but sends
+   * `null` (the registry computes no score); the real per-agent score is joined
+   * on from `GET /api/v1/analytics/trust` (AAASM-5083) in `useTopologyQuery`. The
+   * trust badge renders only when this is a number, so a `null`/absent value —
+   * cold start or truncated window — stays hidden rather than reading as `0`.
    */
   readonly trust?: number | null
   /**

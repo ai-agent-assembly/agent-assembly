@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { useAgentQuery, useAgentEventsQuery, useAgentEnforcementQuery, type Agent } from '../features/agents/api'
+import { useAgentQuery, useAgentEventsQuery, useAgentEnforcementQuery, useTrustQuery, type Agent } from '../features/agents/api'
 import { extractSandboxInfo } from '../features/audit/api'
 import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
 import { toFleetAgent, formatLastSeen } from '../features/agents/fleetTypes'
@@ -40,6 +40,13 @@ function trustSummary(score: number): string {
   return 'good standing'
 }
 
+// ADR 0019 Guardrail 1 — a trust score is only comparable to another computed
+// under the same tenant weight-set, so every place the score is shown in detail
+// carries the "under your configured weights" framing. Rendered as a tooltip on
+// the gauge to keep it light (the score reads at a glance; the caveat is there
+// on hover).
+const TRUST_WEIGHTS_HINT = 'Scored under your tenant’s configured trust weights (ADR 0019)'
+
 function TrustGauge({ score }: Readonly<{ score: number | null }>) {
   if (score === null) {
     return (
@@ -52,7 +59,7 @@ function TrustGauge({ score }: Readonly<{ score: number | null }>) {
   const tone = trustTone(clamped)
   const dash = (clamped / 100) * 125.6
   return (
-    <div className="ad-identity__trust">
+    <div className="ad-identity__trust" title={TRUST_WEIGHTS_HINT}>
       <svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true">
         <circle cx="24" cy="24" r="20" fill="none" stroke="var(--line-2)" strokeWidth="4" />
         <circle
@@ -70,6 +77,9 @@ function TrustGauge({ score }: Readonly<{ score: number | null }>) {
         <span className="ad-identity__trust-summary">
           {trustSummary(clamped)}
         </span>
+        <span className="ad-identity__trust-weights" data-testid="agent-detail-trust-weights">
+          under your configured weights
+        </span>
       </div>
     </div>
   )
@@ -77,7 +87,8 @@ function TrustGauge({ score }: Readonly<{ score: number | null }>) {
 
 function IdentityStrip({ agent }: Readonly<{ agent: Agent }>) {
   const { data: enforcement } = useAgentEnforcementQuery('24h')
-  const fleetAgent = useMemo(() => toFleetAgent(agent, enforcement), [agent, enforcement])
+  const { data: trust } = useTrustQuery()
+  const fleetAgent = useMemo(() => toFleetAgent(agent, enforcement, trust), [agent, enforcement, trust])
   const ownerSlug = fleetAgent.owner ?? 'agent-assembly'
 
   return (

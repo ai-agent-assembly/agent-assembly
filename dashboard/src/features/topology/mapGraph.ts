@@ -1,4 +1,5 @@
 import type { components } from '../../api/generated/schema'
+import type { AgentTrustLookup } from '../agents/fleetTypes'
 import type {
   NodeEffectivePermissions,
   TopologyEdge,
@@ -77,7 +78,14 @@ function toPermissions(raw: ApiPermissions | null | undefined): NodeEffectivePer
   }
 }
 
-function mapNode(n: ApiNode): TopologyNode {
+function mapNode(n: ApiNode, trust?: AgentTrustLookup): TopologyNode {
+  // The `/topology` endpoint's own `AgentNode.trust` is documented as always
+  // `null` today (the registry computes no score). The real per-agent score
+  // lives behind `GET /api/v1/analytics/trust` (AAASM-5083), so when that lookup
+  // is supplied it wins; a cold-start `null`, an absent key, and no lookup at all
+  // all fall through to `n.trust ?? null` — never coerced to `0`. `has()` gates
+  // on presence so an explicit cold-start `null` in the lookup still overrides.
+  const joinedTrust = trust?.has(n.id) === true ? (trust.get(n.id) ?? null) : (n.trust ?? null)
   return {
     id: n.id,
     name: n.name,
@@ -102,10 +110,10 @@ function mapNode(n: ApiNode): TopologyNode {
     // configured. It stays `null` all the way to the render sites, which show
     // the `unconfigured` absence rather than a `$0` limit (AAASM-5135).
     budgetLimit: n.budget?.limit_usd ?? null,
-    // Live badges (AAASM-5036).
+    // Live badges (AAASM-5036); `trust` joined from the analytics rollup above.
     mode: toMode(n.mode),
     flagged: n.flagged,
-    trust: n.trust ?? null,
+    trust: joinedTrust,
     // Policy-inheritance chain (AAASM-5099); `null` when absent.
     effectivePermissions: toPermissions(n.effective_permissions),
   }
@@ -132,9 +140,12 @@ function mapEdge(e: ApiEdge): TopologyEdge[] {
 
 // The graph view only needs nodes + edges; `unclaimed_observable` (AAASM-5183)
 // is a Teams-page concern, so this mapper accepts just the subset it reads.
-export function mapTopologyGraph(res: Pick<ApiGraph, 'nodes' | 'edges'>): TopologyGraph {
+export function mapTopologyGraph(
+  res: Pick<ApiGraph, 'nodes' | 'edges'>,
+  trust?: AgentTrustLookup,
+): TopologyGraph {
   return {
-    nodes: (res.nodes ?? []).map(mapNode),
+    nodes: (res.nodes ?? []).map((n) => mapNode(n, trust)),
     edges: (res.edges ?? []).flatMap(mapEdge),
   }
 }

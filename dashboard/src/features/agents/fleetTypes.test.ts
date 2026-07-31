@@ -62,12 +62,37 @@ describe('toFleetAgent', () => {
     expect(toFleetAgent(makeAgent({ last_event: null })).lastSeen).toBeNull()
   })
 
-  it('leaves unwired analytics metrics as null so tables render an em-dash', () => {
+  it('leaves analytics metrics null without a lookup so tables render an em-dash', () => {
     const fa = toFleetAgent(makeAgent())
-    // trust has no backing endpoint yet; blocked/scrubbed are null without a lookup.
+    // No enforcement/trust lookup supplied — every analytics metric is null.
     expect(fa.trust).toBeNull()
     expect(fa.blocked24h).toBeNull()
     expect(fa.scrubbed24h).toBeNull()
+  })
+
+  it('fills trust from the trust lookup when the agent has a real score', () => {
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), undefined, new Map([['id-1', 78]]))
+    expect(fa.trust).toBe(78)
+  })
+
+  it('keeps trust null for a cold-start agent (explicit null in the lookup)', () => {
+    // ADR 0019 Guardrail 2: an agent below MIN_ACTIONS is present in the lookup
+    // with a `null` score. It must render `—`, never `0`.
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), undefined, new Map([['id-1', null]]))
+    expect(fa.trust).toBeNull()
+  })
+
+  it('keeps trust null for an agent absent from the trust lookup', () => {
+    // No governed actions (or a truncated window) omits the agent entirely — `—`.
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), undefined, new Map([['other', 90]]))
+    expect(fa.trust).toBeNull()
+  })
+
+  it('does not coerce a trust score of 0 away, and distinguishes it from null', () => {
+    // 0 is a real, meaningful worst-case score — it must survive as 0, distinct
+    // from the `—` that null renders.
+    const zero = toFleetAgent(makeAgent({ id: 'id-1' }), undefined, new Map([['id-1', 0]]))
+    expect(zero.trust).toBe(0)
   })
 
   it('fills blocked24h / scrubbed24h from the enforcement lookup when present', () => {

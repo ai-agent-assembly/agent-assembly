@@ -179,6 +179,13 @@
   color: var(--ink-3);
 }
 
+/* ADR 0019 Guardrail 1 — the "under your configured weights" caveat, kept
+   deliberately quiet: a comparability caveat, not a headline. */
+.ad-identity__trust-weights {
+  font-size: 10px;
+  color: var(--ink-4);
+}
+
 .ad-identity__chips {
   display: flex;
   gap: 6px;
