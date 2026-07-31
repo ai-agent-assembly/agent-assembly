@@ -82,6 +82,7 @@ fn record(triple: &ProtoAgentId, token: &str) -> AgentRecord {
         children: vec![],
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
     }
 }
 

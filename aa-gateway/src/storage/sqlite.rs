@@ -51,14 +51,18 @@ const SCHEMA: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_events(agent_id)",
     "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)",
     // agent_registry — durable identity / config slice of the registry.
+    // `enforcement_mode_expires_at` (AAASM-5288) is NULL unless the mode is a
+    // time-limited shadow window; an expired window resolves to the base mode
+    // on rehydrate (see storage_bridge::storage_to_runtime).
     "CREATE TABLE IF NOT EXISTS agent_registry (
-        agent_id          TEXT PRIMARY KEY,
-        team_id           TEXT,
-        org_id            TEXT,
-        metadata          TEXT NOT NULL DEFAULT '{}',
-        registered_at     TEXT NOT NULL,
-        last_seen_at      TEXT NOT NULL,
-        enforcement_mode  TEXT NOT NULL DEFAULT 'enforce'
+        agent_id                     TEXT PRIMARY KEY,
+        team_id                      TEXT,
+        org_id                       TEXT,
+        metadata                     TEXT NOT NULL DEFAULT '{}',
+        registered_at                TEXT NOT NULL,
+        last_seen_at                 TEXT NOT NULL,
+        enforcement_mode             TEXT NOT NULL DEFAULT 'enforce',
+        enforcement_mode_expires_at  TEXT
     )",
     // policy_versions — versioned policy documents with at most one active
     // version per name (enforced at the application layer).
@@ -289,6 +293,17 @@ fn row_to_agent_record(row: &sqlx::sqlite::SqliteRow) -> StorageResult<AgentReco
         .map_err(|e| StorageError::QueryFailed(format!("last_seen_at parse: {e}")))?
         .with_timezone(&chrono::Utc);
 
+    let enforcement_mode_expires_at: Option<String> = row
+        .try_get("enforcement_mode_expires_at")
+        .map_err(|e| StorageError::QueryFailed(format!("enforcement_mode_expires_at column: {e}")))?;
+    let enforcement_mode_expires_at = enforcement_mode_expires_at
+        .map(|ts| {
+            chrono::DateTime::parse_from_rfc3339(&ts)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|e| StorageError::QueryFailed(format!("enforcement_mode_expires_at parse: {e}")))
+        })
+        .transpose()?;
+
     Ok(AgentRecord {
         agent_id,
         team_id: row
@@ -303,6 +318,7 @@ fn row_to_agent_record(row: &sqlx::sqlite::SqliteRow) -> StorageResult<AgentReco
         enforcement_mode: row
             .try_get("enforcement_mode")
             .map_err(|e| StorageError::QueryFailed(format!("enforcement_mode column: {e}")))?,
+        enforcement_mode_expires_at,
     })
 }
 
@@ -402,8 +418,9 @@ impl StorageBackend for SqliteBackend {
             .map_err(|e| StorageError::QueryFailed(format!("metadata serialize: {e}")))?;
         sqlx::query(
             "INSERT OR REPLACE INTO agent_registry \
-             (agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode, \
+              enforcement_mode_expires_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(agent_id_to_text(&record.agent_id))
         .bind(record.team_id)
@@ -412,6 +429,7 @@ impl StorageBackend for SqliteBackend {
         .bind(record.registered_at.to_rfc3339())
         .bind(record.last_seen_at.to_rfc3339())
         .bind(record.enforcement_mode)
+        .bind(record.enforcement_mode_expires_at.map(|ts| ts.to_rfc3339()))
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
@@ -420,8 +438,8 @@ impl StorageBackend for SqliteBackend {
 
     async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
         let row = sqlx::query(
-            "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode \
-             FROM agent_registry WHERE agent_id = ?",
+            "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode, \
+             enforcement_mode_expires_at FROM agent_registry WHERE agent_id = ?",
         )
         .bind(agent_id_to_text(id))
         .fetch_optional(&self.pool)
@@ -433,7 +451,7 @@ impl StorageBackend for SqliteBackend {
     async fn list_agents(&self, filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
-             enforcement_mode FROM agent_registry",
+             enforcement_mode, enforcement_mode_expires_at FROM agent_registry",
         );
         push_agent_where(&mut qb, &filter);
         qb.push(" ORDER BY agent_id");
@@ -657,6 +675,19 @@ impl StorageBackend for SqliteBackend {
                 .execute(&self.pool)
                 .await
                 .map_err(|e| StorageError::MigrationFailed(e.to_string()))?;
+        }
+        // AAASM-5288 — add `enforcement_mode_expires_at` to databases created
+        // before the column existed. SQLite has no `ADD COLUMN IF NOT EXISTS`,
+        // so a "duplicate column name" error is the expected no-op on an
+        // already-migrated database; any other failure is fatal.
+        if let Err(e) = sqlx::query("ALTER TABLE agent_registry ADD COLUMN enforcement_mode_expires_at TEXT")
+            .execute(&self.pool)
+            .await
+        {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column name") {
+                return Err(StorageError::MigrationFailed(msg));
+            }
         }
         Ok(())
     }
@@ -1040,6 +1071,7 @@ mod tests {
             registered_at: ts,
             last_seen_at: ts,
             enforcement_mode: "enforce".into(),
+            enforcement_mode_expires_at: None,
         }
     }
 

@@ -61,6 +61,7 @@ fn registered_agent(id_byte: u8, name: &str) -> aa_gateway::registry::AgentRecor
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
     }
 }
 

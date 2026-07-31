@@ -34,6 +34,14 @@ pub struct AgentRecord {
     pub last_seen_at: DateTime<Utc>,
     /// Enforcement mode — `"enforce"`, `"shadow"`, `"observe"`, etc.
     pub enforcement_mode: String,
+    /// Expiry of a time-limited (shadow) enforcement window, if any.
+    ///
+    /// `Some(_)` marks `enforcement_mode` as a bounded window that reverts to
+    /// the base mode once the deadline passes; `None` means the mode has no
+    /// deadline. Persisted so the deadline survives a gateway restart — an
+    /// already-expired window must never be silently resurrected as active on
+    /// rehydrate (ADR 0021 prerequisite; AAASM-5288).
+    pub enforcement_mode_expires_at: Option<DateTime<Utc>>,
 }
 
 /// Filter applied to agent-registry queries.

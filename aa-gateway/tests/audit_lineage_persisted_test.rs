@@ -71,6 +71,7 @@ fn child_record(key: [u8; 16], parent_key: [u8; 16], root_key: [u8; 16]) -> Agen
         children: vec![],
         parent_key: Some(parent_key),
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: Some("org".into()),
     }
 }

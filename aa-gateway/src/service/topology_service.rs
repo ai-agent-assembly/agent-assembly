@@ -354,6 +354,7 @@ mod tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: org_id.map(str::to_owned),
         }
     }

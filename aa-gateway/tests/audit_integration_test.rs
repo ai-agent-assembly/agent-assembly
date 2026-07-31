@@ -80,6 +80,7 @@ fn audit_caller_record(proto: &ProtoAgentId, token: &str) -> AgentRecord {
         children: vec![],
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: Some(proto.org_id.clone()),
     }
 }
@@ -437,6 +438,7 @@ async fn audit_service_populates_lineage_from_registry() {
             children: vec![],
             parent_key: None,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         })
         .unwrap();
