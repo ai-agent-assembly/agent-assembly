@@ -29,6 +29,8 @@ function withScopes(scopes: Scope[], ui: React.ReactElement) {
     token: 'tok',
     scopes,
     login: async () => {},
+    loginWithCredentials: async () => {},
+    signup: async () => {},
     logout: () => {},
   }
   return <AuthContext.Provider value={auth}>{ui}</AuthContext.Provider>
