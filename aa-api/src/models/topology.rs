@@ -856,6 +856,35 @@ mod tests {
         assert_eq!(agent_mode(&record), "enforce");
     }
 
+    /// AAASM-5289 — the divergence test that is the point of the ticket: when the
+    /// free-form `metadata["mode"]` disagrees with the canonical
+    /// `enforcement_mode` the gateway consults, the badge reports the canonical
+    /// one. A stale/spoofed `metadata.mode = "enforce"` must not mask an agent
+    /// whose enforcement is actually in `Observe` (shadow), and vice-versa.
+    #[test]
+    fn agent_mode_prefers_enforcement_mode_over_diverging_metadata() {
+        use aa_core::EnforcementMode;
+        let mut record = make_record();
+
+        // metadata says "enforce" but enforcement is really Observe → shadow.
+        record.metadata.insert("mode".to_string(), "enforce".to_string());
+        record.enforcement_mode = Some(EnforcementMode::Observe);
+        assert_eq!(
+            agent_mode(&record),
+            "shadow",
+            "badge must follow the canonical enforcement_mode, not metadata.mode"
+        );
+
+        // metadata says "shadow" but enforcement is really Enforce → enforce.
+        record.metadata.insert("mode".to_string(), "shadow".to_string());
+        record.enforcement_mode = Some(EnforcementMode::Enforce);
+        assert_eq!(
+            agent_mode(&record),
+            "enforce",
+            "a stale metadata.mode must not claim shadow while enforcement is on"
+        );
+    }
+
     #[test]
     fn agent_node_from_record_leaves_flagged_false_for_handler_enrichment() {
         // AAASM-5103 — the record carries no violation counter, so the
