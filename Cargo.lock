@@ -16,6 +16,7 @@ dependencies = [
  "aa-sandbox",
  "aa-sdk-client",
  "aa-security",
+ "aa-storage-postgres",
  "argon2",
  "async-trait",
  "axum",
