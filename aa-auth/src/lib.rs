@@ -15,6 +15,7 @@ pub mod api_key;
 pub mod config;
 pub mod gate;
 pub mod jwt;
+pub mod password;
 pub mod rate_limit;
 pub mod scope;
 
