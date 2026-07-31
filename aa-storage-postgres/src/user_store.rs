@@ -645,21 +645,20 @@ impl PgUserStore {
         user_id: Uuid,
         expires_at: DateTime<Utc>,
     ) -> Result<()> {
-        let mut tx = self.pool.begin_for_tenant(org_id).await.map_err(backend_err)?;
-        sqlx::query(
-            "INSERT INTO password_reset_tokens (id, token_hash, user_id, org_id, expires_at) \
-             VALUES ($1, $2, $3, $4, $5)",
+        self.execute_in_tenant(
+            org_id,
+            sqlx::query(
+                "INSERT INTO password_reset_tokens (id, token_hash, user_id, org_id, expires_at) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(id)
+            .bind(token_hash)
+            .bind(user_id)
+            .bind(org_id)
+            .bind(expires_at),
         )
-        .bind(id)
-        .bind(token_hash)
-        .bind(user_id)
-        .bind(org_id)
-        .bind(expires_at)
-        .execute(&mut *tx)
         .await
-        .map_err(backend_err)?;
-        tx.commit().await.map_err(backend_err)?;
-        Ok(())
+        .map(|_| ())
     }
 
     /// Atomically consume a single-use password-reset token by its `token_hash`
@@ -697,18 +696,18 @@ impl PgUserStore {
     /// Returns `true` when this call updated the account; a missing, non-active,
     /// or RLS-invisible user affects zero rows and returns `false`.
     pub async fn set_password(&self, org_id: Uuid, user_id: Uuid, password_hash: &str) -> Result<bool> {
-        let mut tx = self.pool.begin_for_tenant(org_id).await.map_err(backend_err)?;
-        let result = sqlx::query(
-            "UPDATE users SET password_hash = $1, updated_at = now() \
-              WHERE id = $2 AND status = 'active'::user_status",
-        )
-        .bind(password_hash)
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend_err)?;
-        tx.commit().await.map_err(backend_err)?;
-        Ok(result.rows_affected() > 0)
+        let affected = self
+            .execute_in_tenant(
+                org_id,
+                sqlx::query(
+                    "UPDATE users SET password_hash = $1, updated_at = now() \
+                      WHERE id = $2 AND status = 'active'::user_status",
+                )
+                .bind(password_hash)
+                .bind(user_id),
+            )
+            .await?;
+        Ok(affected > 0)
     }
 
     /// Revoke every outstanding (unrevoked) refresh session for an account under
@@ -720,15 +719,31 @@ impl PgUserStore {
     /// every live token for the user and returns how many it revoked; an account
     /// with no live sessions affects zero rows.
     pub async fn revoke_all_refresh_tokens(&self, org_id: Uuid, user_id: Uuid) -> Result<u64> {
-        let mut tx = self.pool.begin_for_tenant(org_id).await.map_err(backend_err)?;
-        let result = sqlx::query(
-            "UPDATE refresh_tokens SET revoked_at = now() \
-              WHERE user_id = $1 AND revoked_at IS NULL",
+        self.execute_in_tenant(
+            org_id,
+            sqlx::query(
+                "UPDATE refresh_tokens SET revoked_at = now() \
+                  WHERE user_id = $1 AND revoked_at IS NULL",
+            )
+            .bind(user_id),
         )
-        .bind(user_id)
-        .execute(&mut *tx)
         .await
-        .map_err(backend_err)?;
+    }
+
+    /// Run a single write `query` inside a tenant-scoped transaction and return
+    /// the number of rows affected.
+    ///
+    /// Factors out the `begin_for_tenant` → `execute` → `commit` scaffolding that
+    /// every single-statement write in this store repeats, so the RLS seam is
+    /// applied identically in one place. Read/`RETURNING` queries keep their own
+    /// bodies because they map a row back.
+    async fn execute_in_tenant<'q>(
+        &self,
+        org_id: Uuid,
+        query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    ) -> Result<u64> {
+        let mut tx = self.pool.begin_for_tenant(org_id).await.map_err(backend_err)?;
+        let result = query.execute(&mut *tx).await.map_err(backend_err)?;
         tx.commit().await.map_err(backend_err)?;
         Ok(result.rows_affected())
     }
