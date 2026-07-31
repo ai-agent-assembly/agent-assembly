@@ -1556,6 +1556,97 @@ paths:
                 $ref: '#/components/schemas/ToolUsageResponse'
         '401':
           description: Missing or invalid credentials
+  /api/v1/analytics/trust:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/trust` — per-agent behavioural trust score (ADR 0019).'
+      description: |-
+        Serves Option A's clean-rate score over the fixed 7-day window, under the
+        caller's tenant-configured weight-set (ADR 0019 Option D). Reuses the exact
+        audit read + tenant confinement the sibling per-agent rollups use
+        ([`fetch_window_entries_with_total`] → [`scope_entries`]): a trust score
+        leaking another tenant's behaviour would be an IDOR, so the read is confined
+        to the caller's org and the weight-set is read for that same org.
+
+        Per agent it counts the five Option A signals from the audit log
+        (`ToolCallIntercepted`, `PolicyViolation`, `CredentialLeakBlocked`,
+        `ApprovalRequested`, and `ApprovalDenied` + `ApprovalTimedOut`) and applies
+        [`crate::trust::compute_trust`]. The two binding guardrails hold:
+
+        * **Guardrail 1** — the response echoes the effective `weights`, so a `78`
+          here is never presented as commensurable with another tenant's `78`.
+        * **Guardrail 2** — cold start (`D < MIN_ACTIONS`) yields `null` regardless
+          of the weights, and a window truncated at the analytics cap yields no
+          score at all (`truncated: true`, empty `agents`) — never a partial score.
+
+        Read-only observability over data the API already holds — no enforcement or
+        audit-write path is touched.
+      operationId: get_trust
+      responses:
+        '200':
+          description: Per-agent trust scores and the weight-set that produced them
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustResponse'
+        '401':
+          description: Missing or invalid credentials
+  /api/v1/analytics/trust/config:
+    get:
+      tags:
+      - analytics
+      summary: '`GET /api/v1/analytics/trust/config` — read the caller tenant''s trust weights.'
+      description: |-
+        Returns the effective weight-set for the caller's org (its stored override,
+        or the Option A defaults). Confined to the caller's own tenant: the org is
+        resolved from the authenticated caller ([`AuthenticatedCaller::tenant`]),
+        never from client input, so a caller can only read its own tenant's config.
+      operationId: get_trust_config
+      responses:
+        '200':
+          description: The caller tenant's effective trust weight-set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustWeightSet'
+        '401':
+          description: Missing or invalid credentials
+    put:
+      tags:
+      - analytics
+      summary: '`PUT /api/v1/analytics/trust/config` — set the caller tenant''s trust weights.'
+      description: |-
+        Changing a tenant's trust weights is a tenant-scoped mutation, so it requires
+        `Scope::Write` ([`RequireWrite`]) — matching how the other tenant-scoped
+        write surfaces (alert rules, destinations) are gated. The target tenant is
+        the caller's own org, resolved from [`AuthenticatedCaller::tenant`] and never
+        from client input, so a caller cannot rewrite another tenant's weights (an
+        IDOR). A caller with no org tenant has no per-tenant config to write and is
+        rejected with 400.
+
+        Only the per-signal enabled/weight are configurable (ADR 0019 Option D, v1);
+        the bucket thresholds and window are fixed and not part of this body.
+      operationId: put_trust_config
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrustWeightSet'
+        required: true
+      responses:
+        '200':
+          description: The updated weight-set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrustWeightSet'
+        '400':
+          description: Caller has no tenant org to configure
+        '401':
+          description: Missing or invalid credentials
+        '403':
+          description: Caller lacks the write scope
   /api/v1/approvals:
     get:
       tags:
@@ -4395,6 +4486,30 @@ components:
         status: active
         team_id: team-alpha
         trust: null
+    AgentTrustScore:
+      type: object
+      description: One agent's trust score over the fixed 7-day window (AAASM-5083).
+      required:
+      - agent_id
+      - trust
+      properties:
+        agent_id:
+          type: string
+          description: |-
+            Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+            uses, so the dashboard can join scores directly onto its fleet rows.
+        trust:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: |-
+            Trust score on a 0–100 scale, or `null` when the agent has fewer than
+            `MIN_ACTIONS` governed actions in the window (cold start) — the same
+            `Option<u8>` contract the topology / capability projections carry. A
+            score is only ever a whole number; `null` is never `0` or `50`.
+          maximum: 100
+          minimum: 0
     AlertDetailResponse:
       type: object
       description: |-
@@ -9097,6 +9212,87 @@ components:
         start_time:
           type: string
           description: Start time of the span (ISO 8601).
+    TrustResponse:
+      type: object
+      description: Response for `GET /api/v1/analytics/trust` (AAASM-5083, ADR 0019 Option D).
+      required:
+      - agents
+      - weights
+      - window
+      - minActions
+      - truncated
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentTrustScore'
+          description: |-
+            Per-agent trust scores. Every agent that recorded at least one governed
+            action in the window appears; its `trust` is `null` below `MIN_ACTIONS`
+            (cold start). Empty when the window is truncated (see `truncated`).
+        minActions:
+          type: integer
+          format: int64
+          description: |-
+            The minimum governed-action count below which `trust` is `null` (cold
+            start). Fixed at `MIN_ACTIONS` in v1.
+          minimum: 0
+        truncated:
+          type: boolean
+          description: |-
+            Whether the audit window was truncated at the analytics cap. When `true`,
+            `agents` is empty and no score is emitted — a truncated window yields
+            `null`, never a partial score (ADR 0019 Guardrail 2).
+        weights:
+          $ref: '#/components/schemas/TrustWeightSet'
+          description: |-
+            The tenant's effective weight-set that produced these scores (ADR 0019
+            Guardrail 1). A score is only comparable to another computed under the
+            same weights — the client must not rank raw scores across tenants.
+        window:
+          type: string
+          description: The fixed scoring window (`7d` in v1 — not tenant-tunable).
+    TrustSignalWeight:
+      type: object
+      description: |-
+        The effective per-signal weight in the response's echoed weight-set.
+
+        ADR 0019 Guardrail 1 — the score is labelled with the weight-set that
+        produced it, so a client never compares a `78` under one tenant's weights to
+        a `78` under another's. Mirrors [`crate::trust::SignalConfig`] on the wire.
+      required:
+      - enabled
+      - weight
+      properties:
+        enabled:
+          type: boolean
+          description: Whether this signal contributed to the penalty for this score.
+        weight:
+          type: number
+          format: double
+          description: The weight applied to this signal's count when enabled.
+    TrustWeightSet:
+      type: object
+      description: |-
+        The tenant's effective trust weight-set, echoed on every trust response
+        (ADR 0019 Guardrail 1). Deserializable so it also serves as the config
+        read/write body.
+      required:
+      - policy_violation
+      - credential_redaction
+      - approval_rejection
+      properties:
+        approval_rejection:
+          $ref: '#/components/schemas/TrustSignalWeight'
+          description: |-
+            Penalty weight for an approval rejection (`ApprovalDenied` +
+            `ApprovalTimedOut`). Default 0.5.
+        credential_redaction:
+          $ref: '#/components/schemas/TrustSignalWeight'
+          description: Penalty weight for a `CredentialLeakBlocked` (DLP redaction). Default 1.5.
+        policy_violation:
+          $ref: '#/components/schemas/TrustSignalWeight'
+          description: Penalty weight for a `PolicyViolation` (denied action). Default 1.0.
     UpdateDestinationRequest:
       allOf:
       - oneOf:

@@ -216,6 +216,12 @@ fn protected_router() -> Router {
         .route("/analytics/agent-enforcement", get(analytics::get_agent_enforcement))
         // Per-agent decision distribution for the Agent-Detail traffic-mix bar (AAASM-5085)
         .route("/analytics/agent-decision-mix", get(analytics::get_agent_decision_mix))
+        // Per-agent behavioural trust score + tenant weight config (AAASM-5083, ADR 0019 Option D)
+        .route("/analytics/trust", get(analytics::get_trust))
+        .route(
+            "/analytics/trust/config",
+            get(analytics::get_trust_config).put(analytics::put_trust_config),
+        )
         // Overview enforcement timeline: windowed decision counts (AAASM-5031)
         .route(
             "/overview/enforcement-timeline",
