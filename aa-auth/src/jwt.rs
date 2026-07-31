@@ -76,6 +76,35 @@ impl JwtSigner {
         encode(&Header::default(), &claims, &self.encoding_key).map_err(JwtError::Encode)
     }
 
+    /// Sign a JWT that lives for `ttl_secs` seconds (AAASM-5305).
+    ///
+    /// Identical in every other respect to [`sign_with_tenant`](Self::sign_with_tenant):
+    /// it produces the same [`Claims`] shape (same `sub`/`scope`/tenant fields) so a
+    /// token minted here is scope-compatible with the API-key path and every RBAC gate
+    /// reads it unchanged. The only difference is the lifetime — the native-account
+    /// login path mints a *short-lived* access token (ADR 0031 §5) rather than the
+    /// 24-hour `/auth/token` lifetime — so the two credential sources share the JWT
+    /// shape but differ only in expiry.
+    pub fn sign_with_ttl(
+        &self,
+        subject: &str,
+        scopes: &[Scope],
+        team_id: Option<String>,
+        org_id: Option<String>,
+        ttl_secs: u64,
+    ) -> Result<String, JwtError> {
+        let now = now_epoch_secs();
+        let claims = Claims {
+            sub: subject.to_string(),
+            iat: now,
+            exp: now + ttl_secs,
+            scope: scopes.to_vec(),
+            team_id,
+            org_id,
+        };
+        encode(&Header::default(), &claims, &self.encoding_key).map_err(JwtError::Encode)
+    }
+
     /// Sign a JWT with a custom expiry (for testing).
     #[cfg(test)]
     fn sign_with_expiry(&self, key_id: &str, scopes: &[Scope], exp: u64) -> Result<String, JwtError> {
@@ -199,6 +228,35 @@ mod tests {
         let plain_claims = verifier.verify(&plain).unwrap();
         assert_eq!(plain_claims.team_id, None);
         assert_eq!(plain_claims.org_id, None);
+    }
+
+    #[test]
+    fn test_jwt_sign_with_ttl_matches_the_shared_claim_shape() {
+        // AAASM-5305: the native-login access token must be the *same* JWT shape
+        // as the API-key `/auth/token` path — same subject, scope, and tenant
+        // claims — differing only in lifetime, so every RBAC gate reads it
+        // unchanged.
+        let signer = JwtSigner::new(TEST_SECRET);
+        let verifier = JwtVerifier::new(TEST_SECRET);
+
+        let ttl = 15 * 60;
+        let token = signer
+            .sign_with_ttl(
+                "user-abc",
+                &[Scope::Read, Scope::Write],
+                Some("team-1".into()),
+                Some("org-1".into()),
+                ttl,
+            )
+            .expect("signing should succeed");
+        let claims = verifier.verify(&token).expect("verification should succeed");
+
+        assert_eq!(claims.sub, "user-abc");
+        assert_eq!(claims.scope, vec![Scope::Read, Scope::Write]);
+        assert_eq!(claims.team_id.as_deref(), Some("team-1"));
+        assert_eq!(claims.org_id.as_deref(), Some("org-1"));
+        // The lifetime is exactly the requested TTL, not the 24h default.
+        assert_eq!(claims.exp - claims.iat, ttl, "ttl must be honoured verbatim");
     }
 
     #[test]

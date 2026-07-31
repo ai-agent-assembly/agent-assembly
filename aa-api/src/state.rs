@@ -145,6 +145,16 @@ pub struct AppState {
     /// reads the Option A defaults. In-memory, following the same pattern as the
     /// other per-tenant aa-api stores (`alert_rule_store`, `destination_store`).
     pub trust_config: Arc<crate::trust::TrustConfigStore>,
+    /// Postgres-backed native-account store (AAASM-5305, ADR 0031). `None` in the
+    /// in-memory wiring: native email/password auth is Postgres-gated (D2), so the
+    /// login/register/invite/refresh/logout endpoints report "unavailable" and
+    /// `GET /auth/methods` advertises only `api_key` when this is absent. Only a
+    /// Postgres-backed deployment populates it, unlocking the password auth path.
+    pub auth_store: Option<Arc<aa_storage_postgres::PgUserStore>>,
+    /// Static configuration for the native-auth endpoints (default workspace,
+    /// open-registration flag, lockout policy, token lifetimes). Read at request
+    /// time so behaviour is deterministic regardless of `auth_store` presence.
+    pub native_auth: crate::native_auth::NativeAuthConfig,
 }
 
 /// Error returned by [`AppState::local_in_memory`] when the in-memory wiring
@@ -434,6 +444,13 @@ impl AppState {
             secrets_store: Arc::new(aa_gateway::secrets::InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
             trust_config: Arc::new(crate::trust::TrustConfigStore::new()),
+            // Native email/password auth is Postgres-gated (ADR 0031 D2); the
+            // in-memory wiring stays API-key-only, so the store is absent and the
+            // native-auth endpoints degrade honestly. Config is resolved from the
+            // environment even here so `/auth/methods` and the closed-registration
+            // default behave identically once a Postgres store is wired in.
+            auth_store: None,
+            native_auth: crate::native_auth::NativeAuthConfig::from_env(),
         })
     }
 

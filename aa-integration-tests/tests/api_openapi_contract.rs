@@ -90,10 +90,13 @@ fn openapi_spec_loads_without_errors() {
     // AAASM-5083 added the trust-score surface (ADR 0019 Option D):
     // /api/v1/analytics/trust (per-agent behavioural trust score) and
     // /api/v1/analytics/trust/config (per-tenant weight-set read/write),
-    // bringing it to 82.
+    // bringing it to 82. AAASM-5305 added the ADR 0031 native email/password
+    // auth surface: /api/v1/auth/login, /register, /invite, /invite/accept,
+    // /refresh, /logout, and the public /auth/methods capability probe —
+    // seven paths that coexist with the unchanged /auth/token — bringing it to 89.
     assert_eq!(
-        path_count, 82,
-        "openapi/v1.yaml must declare exactly 82 paths, found {path_count}"
+        path_count, 89,
+        "openapi/v1.yaml must declare exactly 89 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -170,6 +173,14 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/approvals/{id}/reject",
         "/api/v1/audit/sandbox-summary",
         "/api/v1/audit/violations-by-lineage",
+        // AAASM-5305 — ADR 0031 native email/password auth (coexists with /auth/token).
+        "/api/v1/auth/invite",
+        "/api/v1/auth/invite/accept",
+        "/api/v1/auth/login",
+        "/api/v1/auth/logout",
+        "/api/v1/auth/methods",
+        "/api/v1/auth/refresh",
+        "/api/v1/auth/register",
         "/api/v1/auth/token",
         "/api/v1/auth/ws-ticket",
         "/api/v1/capability/matrix",

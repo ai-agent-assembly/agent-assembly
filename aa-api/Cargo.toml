@@ -19,6 +19,10 @@ aa-security = { path = "../aa-security", features = ["serde"] }
 aa-devtool       = { path = "../aa-devtool" }
 aa-devtool-saas  = { path = "../aa-devtool-saas" }
 aa-gateway = { path = "../aa-gateway" }
+# AAASM-5305: the native-account auth endpoints (ADR 0031) are Postgres-gated and
+# persist users / invites / refresh sessions through PgUserStore. `publish = false`
+# like aa-api itself, so this within-workspace path dep is not a crates.io concern.
+aa-storage-postgres = { path = "../aa-storage-postgres" }
 aa-proto = { path = "../aa-proto" }
 aa-runtime = { path = "../aa-runtime" }
 aa-sandbox = { path = "../aa-sandbox" }
@@ -63,6 +67,10 @@ tonic = { workspace = true }
 ulid = "1"
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+# AAASM-5305: SHA-256 for hashing opaque refresh/invite tokens before they are
+# handed to PgUserStore (which stores only the hash). Promoted from a
+# dev-dependency to a runtime dependency for the auth endpoints.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # AAASM-3980: WS tenant-isolation tests construct AuditEvent to set team_id.

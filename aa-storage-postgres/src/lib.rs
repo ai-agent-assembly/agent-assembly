@@ -25,7 +25,10 @@ pub use credential_store::PgCredentialStore;
 pub use lifecycle_store::PgLifecycleStore;
 pub use policy_store::PgPolicyStore;
 pub use pool::{PostgresPool, MIGRATOR};
-pub use user_store::{InviteRecord, NewInvite, NewUser, PgUserStore, UserRecord, UserRole, UserStatus};
+pub use user_store::{
+    BootstrapOutcome, InviteRecord, LockoutState, NewInvite, NewUser, PgUserStore, RefreshTokenRecord, UserRecord,
+    UserRole, UserStatus,
+};
 
 /// The name this driver registers under in the storage registry. An operator
 /// selects it with `backend = "postgres"` (or `[storage.postgres]`).
