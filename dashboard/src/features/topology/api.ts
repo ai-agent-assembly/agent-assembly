@@ -1,7 +1,10 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { getToken } from '../../auth/tokenStorage'
 import type { components } from '../../api/generated/schema'
+import { useTrustQuery } from '../agents/api'
+import type { AgentTrustLookup } from '../agents/fleetTypes'
 import { mapTopologyGraph } from './mapGraph'
 import type { TopologyGraph } from './types'
 
@@ -48,7 +51,13 @@ export interface RecentEvent {
  * produced the ADR's error, so both are set explicitly rather than one being
  * left to imply the other.
  */
-export function useTopologyQuery() {
+/**
+ * Fetch and map the raw topology graph on the ratified 5s poll. Kept separate
+ * from {@link useTopologyQuery} so the per-agent trust rollup (a distinct query
+ * on its own cadence) can be joined on afterwards without either query blocking
+ * the other or forcing a combined fetch.
+ */
+function useTopologyGraphQuery() {
   return useQuery<TopologyGraph>({
     queryKey: ['topology'],
     staleTime: 5_000,
@@ -72,6 +81,37 @@ export function useTopologyQuery() {
       return mapTopologyGraph(raw)
     },
   })
+}
+
+/** Overlay the per-agent trust rollup onto an already-mapped graph's nodes. */
+function joinTrust(graph: TopologyGraph, trust: AgentTrustLookup): TopologyGraph {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((n) =>
+      // `has()` gates on presence so an explicit cold-start `null` in the lookup
+      // still overrides the endpoint's placeholder; an absent key leaves the
+      // node's own `trust` untouched. Never coerced to `0` (ADR 0019).
+      trust.has(n.id) ? { ...n, trust: trust.get(n.id) ?? null } : n,
+    ),
+  }
+}
+
+/**
+ * The topology graph with each node's `trust` badge sourced from the real
+ * per-agent rollup (`GET /api/v1/analytics/trust`, AAASM-5083) rather than the
+ * endpoint's always-`null` placeholder. The two queries run independently; the
+ * graph renders as soon as it resolves and the trust scores fill in when the
+ * rollup arrives. Query status (loading / error / refetch) tracks the graph
+ * fetch — the trust overlay is best-effort and never blocks the graph.
+ */
+export function useTopologyQuery() {
+  const graph = useTopologyGraphQuery()
+  const { data: trust } = useTrustQuery()
+  const data = useMemo(
+    () => (graph.data && trust ? joinTrust(graph.data, trust) : graph.data),
+    [graph.data, trust],
+  )
+  return { ...graph, data }
 }
 
 /**

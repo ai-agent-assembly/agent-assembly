@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useTopologyNodeRecentEvents, useTopologyQuery, type RecentEvent } from './api'
 import { mapTopologyGraph } from './mapGraph'
+import { api } from '../../api/client'
 import type { components } from '../../api/generated/schema'
 
 // The wire shape the real `GET /api/v1/topology` endpoint returns (AAASM-5040,
@@ -52,6 +53,11 @@ function wrapper({ children }: { children: React.ReactNode }) {
 describe('useTopologyQuery', () => {
   beforeEach(() => {
     sessionStorage.setItem('aa_token', 'test-token')
+    // `useTopologyQuery` composes the per-agent trust rollup (AAASM-5083) via
+    // the typed `api` client. Stub it to an empty response so it never touches
+    // the `globalThis.fetch` spy — otherwise the trust GET would be counted by
+    // the poll-cadence assertions and parse the graph body as a TrustResponse.
+    vi.spyOn(api, 'GET').mockResolvedValue({ data: { agents: [] } } as never)
   })
 
   afterEach(() => {
