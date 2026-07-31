@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import type { components } from '../../api/generated/schema'
-import type { AgentEnforcementLookup } from './fleetTypes'
+import type { AgentEnforcementLookup, AgentTrustLookup } from './fleetTypes'
 
 export type Agent = components['schemas']['AgentResponse']
 export type LogEntry = components['schemas']['LogEntry']
@@ -53,6 +53,41 @@ export function useAgentEnforcementQuery(window: EnforcementWindow = '24h') {
       const lookup = new Map<string, { blocked: number; scrubbed: number }>()
       for (const row of data ?? []) {
         lookup.set(row.agent_id, { blocked: row.blocked, scrubbed: row.scrubbed })
+      }
+      return lookup
+    },
+  })
+}
+
+/** Full `GET /api/v1/analytics/trust` response — carries the echoed weight-set. */
+export type TrustResponse = components['schemas']['TrustResponse']
+
+/**
+ * Per-agent behavioural trust scores for the Fleet TrustBar, Topology badge and
+ * Agent-Detail gauge (AAASM-5083, ADR 0019). Folds the response's `agents` array
+ * into a lookup keyed by agent id so callers join it onto their rows in O(1).
+ *
+ * The endpoint reports a cold-start agent (`< minActions` governed actions in
+ * the window) as an explicit `trust: null`, which is kept as `null` here — the
+ * consumer renders `—`, never `0`. When the audit window is truncated the
+ * endpoint emits no scores at all (`agents` empty), so every agent falls through
+ * as an absent key, again rendered `—` (ADR 0019 Guardrail 2). The score is
+ * comparable only under the tenant's echoed `weights`, surfaced in the UI as the
+ * "under your configured weights" framing (Guardrail 1).
+ *
+ * A Map, not a plain object: `agent_id` is raw wire input, so a value of
+ * `constructor`/`__proto__`/etc. must be an ordinary key rather than hitting the
+ * prototype setter (AAASM-5237).
+ */
+export function useTrustQuery() {
+  return useQuery<AgentTrustLookup>({
+    queryKey: ['analytics', 'trust'],
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/v1/analytics/trust')
+      if (error) throw new Error('Failed to fetch trust scores')
+      const lookup = new Map<string, number | null>()
+      for (const row of data?.agents ?? []) {
+        lookup.set(row.agent_id, row.trust)
       }
       return lookup
     },
