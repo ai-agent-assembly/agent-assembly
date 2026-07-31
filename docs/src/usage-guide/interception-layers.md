@@ -38,10 +38,17 @@ SDK *and* the proxy: the SDK gives rich, in-process tool-call governance, while
 the proxy backstops the network path for anything the SDK does not see. On Linux,
 eBPF sits underneath both as the bypass-proof floor.
 
-`aasm run` reflects this in its **governance level** (see
-[Govern an agent end-to-end](govern-an-agent.md)): a tool reported as
-`L3Native` integrates at the SDK depth, while an `L1Observe` tool relies on the
-proxy and eBPF layers to do the actual enforcing.
+`aasm run` reports a **governance level** per tool (see
+[Govern an agent end-to-end](govern-an-agent.md)), but read it for what it is: a
+static, self-declared *ceiling* on how deeply an adapter could integrate — no
+in-tree adapter declares `L3Native` today, and every local dev-tool adapter
+declares `L2Enforce`. It is not a measurement and not a protection claim.
+
+For what is actually protecting a given tool right now, and the evidence behind
+it, use [`aasm integrations status <tool>`](../cli/integrations.md), which
+reports the derived [protection ladder](../devtools/protection-levels.md).
+(`aasm run` and `aasm integrations` are both source-build only — they are
+stripped from the published crate.)
 
 ## Layer 2 in practice — the proxy
 

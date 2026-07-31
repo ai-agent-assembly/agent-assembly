@@ -17,6 +17,12 @@ this page is the operational reference for people building against it.
 > `proto/devint.proto` (`assembly.devint.v1`). Reference client:
 > `aa-runtime/src/devint/client.rs`.
 
+> **Opt-in, and source-build only.** The runtime serves this surface only when
+> `AA_DEVINT_ENABLED` is set — it is **off by default**. It is also absent from
+> released artifacts: `.ci/strip-for-publish.sh` removes the DI-API bring-up
+> from `aa-runtime` and the `aasm integrations` client from `aa-cli` before
+> publish, so a published build has neither end of this channel.
+
 ## Transport and discovery
 
 | | |

@@ -6,6 +6,13 @@ Sandbox mode is the governance analogue of a database transaction ROLLBACK: the 
 
 The feature is part of the open-source core — not an enterprise add-on.
 
+> **`aasm run` is source-build only.** Several examples below drive dry-run mode
+> through `aasm run --observe`. That command group is stripped from the published
+> crate by `.ci/strip-for-publish.sh`, so it exists in `cargo build -p aa-cli`
+> and not in `cargo install aasm` — including on a CI runner. The SDK's
+> `enforcement_mode` and the gateway-side policy setting are available on a
+> published build and reach the same posture.
+
 ---
 
 ## How it works

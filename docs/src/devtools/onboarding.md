@@ -29,7 +29,7 @@ will hit them rather than in a footnote:
 |---|---|---|
 | macOS | The MVP platform ([product brief](product-brief.md) §10). | — |
 | Claude Code **≥ 1.0.0** | The adapter's `MIN_VERSION`. A lower version is reported as *absent*, not as partially supported, so nothing is written for it (`aa-devtool-claude-code/src/lib.rs`). | `claude --version` |
-| `aasm` | The reference client for the [Developer Integration API](developer-integration-api.md). | `aasm --version` |
+| `aasm` **from a source build** | The reference client for the [Developer Integration API](developer-integration-api.md). `aasm integrations` is stripped from the published crate (AAASM-5309), so a `brew`- or `cargo install`-provided `aasm` does not have it — and the published `aa-runtime` never binds the socket either. Build it: `cargo build -p aa-cli`. | `aasm integrations --help` (not `aasm --version`, which succeeds either way) |
 | An Agent Assembly runtime | Every lifecycle operation runs inside `aa-runtime`. There is no in-process fallback. | see below |
 
 ### The Developer Integration API is opt-in
