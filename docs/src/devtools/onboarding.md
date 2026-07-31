@@ -29,7 +29,7 @@ will hit them rather than in a footnote:
 |---|---|---|
 | macOS | The MVP platform ([product brief](product-brief.md) §10). | — |
 | Claude Code **≥ 1.0.0** | The adapter's `MIN_VERSION`. A lower version is reported as *absent*, not as partially supported, so nothing is written for it (`aa-devtool-claude-code/src/lib.rs`). | `claude --version` |
-| `aasm` **from a source build** | The reference client for the [Developer Integration API](developer-integration-api.md). `aasm integrations` is stripped from the published crate (AAASM-5309), so a `brew`- or `cargo install`-provided `aasm` does not have it — and the published `aa-runtime` never binds the socket either. Build it: `cargo build -p aa-cli`. | `aasm integrations --help` (not `aasm --version`, which succeeds either way) |
+| `aasm` **from any channel except crates.io** | The reference client for the [Developer Integration API](developer-integration-api.md). `.ci/strip-for-publish.sh` removes `aasm integrations` (AAASM-5309) in `release.yml`'s `publish-crates` job only, so `cargo install aasm` does not have it — and that `aa-runtime` never binds the socket either. A `brew` install, the GitHub Release tarballs, the `curl` installer and a source build (`cargo build -p aa-cli`) all have it. | `aasm integrations --help` (not `aasm --version`, which succeeds either way) |
 | An Agent Assembly runtime | Every lifecycle operation runs inside `aa-runtime`. There is no in-process fallback. | see below |
 
 ### The Developer Integration API is opt-in

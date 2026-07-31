@@ -141,8 +141,8 @@ $ aasm proxy status
 
 `aasm proxy start` accepts `--listen <addr>` (default `127.0.0.1:8899`),
 `--gateway <url>` to point it at the gateway that owns the policy, and
-`--ca-dir <dir>` for CA storage. Agents launched via `aasm run` (source build
-only — it is stripped from the published crate) have the proxy injected
+`--ca-dir <dir>` for CA storage. Agents launched via `aasm run` (absent from
+`cargo install aasm`, present on every other channel) have the proxy injected
 automatically (Step 3 of
 [Govern an agent end-to-end](govern-an-agent.md)); for other processes, route
 their HTTPS through the proxy address.

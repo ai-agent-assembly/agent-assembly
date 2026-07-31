@@ -87,8 +87,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it joins `aasm run` and `aasm tools` in the `devtool` region removed by
   `.ci/strip-for-publish.sh`. The strip is not cosmetic: the published
   `aa-runtime` never binds the DI-API socket, so the command would have nothing
-  to connect to. All three exist in a source build and not in
-  `cargo install aasm`. A published-surface coherence gate now runs on PRs.
+  to connect to. The strip runs in the `publish-crates` job only, so all three
+  exist in a source build, in the GitHub Release tarballs and in a Homebrew
+  install, and not in `cargo install aasm`. A published-surface coherence gate
+  now runs on PRs.
 - **Dev-tool adapters reconciled onto one contract** (AAASM-5274) — one adapter
   per tool, with mechanisms a tool cannot use declared `Unsupported` with a
   reason at plan time instead of failing at run time.

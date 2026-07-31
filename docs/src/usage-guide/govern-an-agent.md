@@ -6,10 +6,11 @@ Assembly governance: it is registered with the gateway, tagged to a team and
 trace, and routed through the proxy so its tool-calls and network requests are
 policy-checked and audited.
 
-> **This guide needs a source build.** `aasm tools` and `aasm run` are
-> developer-only commands: they are stripped from the published crate by
-> `.ci/strip-for-publish.sh`, so they exist in `cargo build -p aa-cli` and **not**
-> in `cargo install aasm`. See
+> **This guide does not work on a crates.io `aasm`.** `aasm tools` and `aasm run`
+> are developer-only commands: `.ci/strip-for-publish.sh` removes them in
+> `release.yml`'s `publish-crates` job, so they are absent from
+> `cargo install aasm` and present everywhere else — a source build, the GitHub
+> Release tarballs, the `curl` installer and the Homebrew formula. See
 > [CLI overview → developer-only commands](../cli/overview.md#command-groups).
 >
 > **There is a newer path for dev tools.** The lifecycle described here — detect,
@@ -17,7 +18,7 @@ policy-checked and audited.
 > [`aasm integrations`](../cli/integrations.md), which adds plan, receipt,
 > verify, drift/repair and remove, and reports an evidence-backed
 > [protection level](../devtools/protection-levels.md) instead of a static
-> governance tier. `aasm integrations` is also source-build only. This guide is
+> governance tier. `aasm integrations` is stripped on crates.io too. This guide is
 > retained because `aasm run` is still how a governed session is launched.
 
 ## Prerequisites

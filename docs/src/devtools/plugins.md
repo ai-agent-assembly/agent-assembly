@@ -296,7 +296,7 @@ variants is not a breaking change, so do not match exhaustively on either.
 | Extension point | Status |
 |---|---|
 | Per-tool adapters for Claude Code / Codex / Copilot / Windsurf / SaaS | **Shipped** (`aa-devtool-*`). Claude Code is the first fully migrated to the lifecycle contract. |
-| Governed launcher CLI | **Shipped** as `aasm run`, and the lifecycle as [`aasm integrations`](../cli/integrations.md) — both source-build only, stripped from the published crate. |
+| Governed launcher CLI | **Shipped** as `aasm run`, and the lifecycle as [`aasm integrations`](../cli/integrations.md) — both present on every install channel except crates.io, where `.ci/strip-for-publish.sh` removes them. |
 | L0–L3 capability matrix with per-tool boundaries | **Shipped**: [L0–L3 Governance Capability Matrix](../governance/capability-matrix.md). |
 | A shared conformance check every adapter imports | **Shipped in part**: `capability_conformance` covers declaration-vs-implementation. A full shared harness is not offered; the sample's `tests/contract.rs` remains the reference for the rest. |
 | Automated / dynamic registration (`inventory`, `dlopen`) | **Forbidden**, not pending — ADR 0030 Decision 6. Do not design around it arriving. |

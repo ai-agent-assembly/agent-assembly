@@ -47,8 +47,9 @@ declares `L2Enforce`. It is not a measurement and not a protection claim.
 For what is actually protecting a given tool right now, and the evidence behind
 it, use [`aasm integrations status <tool>`](../cli/integrations.md), which
 reports the derived [protection ladder](../devtools/protection-levels.md).
-(`aasm run` and `aasm integrations` are both source-build only — they are
-stripped from the published crate.)
+(`aasm run` and `aasm integrations` are stripped from the crates.io publish
+only — a source build, the GitHub Release tarballs, the `curl` installer and
+the Homebrew formula all carry them.)
 
 ## Layer 2 in practice — the proxy
 

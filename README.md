@@ -152,8 +152,10 @@ or the [onboarding walkthrough](docs/src/devtools/onboarding.md), and read
 [Limitations and known bypasses](docs/src/devtools/limitations.md) for what is
 measured and what is not.
 
-> This command group is **source-build only** — it is stripped from the
-> published `aasm` crate, and its runtime surface is off by default. See the
+> This command group is stripped from the **crates.io** publish only, so
+> `cargo install aasm` does not have it. A source build, the GitHub Release
+> tarballs, the `curl` installer and the Homebrew formula all carry it. Its
+> runtime surface is off by default on every channel. See the
 > [CLI overview](docs/src/cli/overview.md).
 
 ## Ecosystem

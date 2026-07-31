@@ -17,11 +17,14 @@ this page is the operational reference for people building against it.
 > `proto/devint.proto` (`assembly.devint.v1`). Reference client:
 > `aa-runtime/src/devint/client.rs`.
 
-> **Opt-in, and source-build only.** The runtime serves this surface only when
-> `AA_DEVINT_ENABLED` is set — it is **off by default**. It is also absent from
-> released artifacts: `.ci/strip-for-publish.sh` removes the DI-API bring-up
-> from `aa-runtime` and the `aasm integrations` client from `aa-cli` before
-> publish, so a published build has neither end of this channel.
+> **Opt-in everywhere; absent only from crates.io.** The runtime serves this
+> surface only when `AA_DEVINT_ENABLED` is set — it is **off by default** on
+> every channel. On crates.io it is not there at all:
+> `.ci/strip-for-publish.sh` runs in `release.yml`'s `publish-crates` job and
+> removes the DI-API bring-up from `aa-runtime` and the `aasm integrations`
+> client from `aa-cli`, so `cargo install aasm` has neither end of this channel.
+> A source build, the GitHub Release tarballs, the `curl` installer and the
+> Homebrew formula all carry both ends, gated on the environment variable alone.
 
 ## Transport and discovery
 

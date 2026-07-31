@@ -99,10 +99,16 @@ to install, inspect, verify, repair or remove a **developer-tool integration**.
 Four properties define its posture:
 
 1. **Off by default.** The runtime reads `AA_DEVINT_ENABLED` at startup and binds
-   nothing without it. It is also absent from the published crate: the strip
-   applied before release removes the DI-API bring-up from `aa-runtime` and the
-   `aasm integrations` client from `aa-cli`, so a released build has neither end
-   of this channel.
+   nothing without it. On **crates.io only**, it is absent altogether:
+   `.ci/strip-for-publish.sh` runs in `release.yml`'s `publish-crates` job and
+   removes the DI-API bring-up from `aa-runtime` and the `aasm integrations`
+   client from `aa-cli`, so `cargo install aasm` has neither end of this channel.
+   Every other channel — the GitHub Release tarballs, the `curl` installer and
+   the Homebrew formula — ships binaries built from the unstripped tree in the
+   `build` job, so **both ends are present there** and `AA_DEVINT_ENABLED` is the
+   only thing standing between them and a bound socket. Treat the environment
+   gate, not the strip, as the control that applies to the binaries most users
+   actually have.
 2. **A second socket that carries no policy and no agent traffic.** It is
    deliberately separate from the SDK fast-path socket, and that separation is a
    security property rather than tidiness: a DI client never holds a file

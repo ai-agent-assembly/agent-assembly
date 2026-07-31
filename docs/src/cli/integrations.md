@@ -4,14 +4,17 @@ Install, verify, repair and remove **Developer Integrations** for AI dev tools �
 the governance wiring that makes a tool like Claude Code run through Agent
 Assembly instead of straight out to its provider.
 
-> **Not in the published crate.** `aasm integrations` is a developer-only
-> command group. Like [`aasm run` and `aasm tools`](overview.md#command-groups),
-> it is gated behind the `devtool` region in `aa-cli/src/commands/mod.rs` and
-> `aa-cli/Cargo.toml` and is **removed by `.ci/strip-for-publish.sh` before
-> release**. It exists in a source build (`cargo build -p aa-cli`); it does
-> **not** exist in `cargo install aasm` or in a released tarball. The strip is
-> not cosmetic: the published `aa-runtime` never binds the DI-API socket this
-> command talks to, so the surface would have nothing to connect to.
+> **Absent from `cargo install aasm` — and only from there.** `aasm integrations`
+> is a developer-only command group. Like
+> [`aasm run` and `aasm tools`](overview.md#command-groups), it is gated behind
+> the `devtool` region in `aa-cli/src/commands/mod.rs` and `aa-cli/Cargo.toml`,
+> and `.ci/strip-for-publish.sh` removes that region in the **`publish-crates`**
+> job of `release.yml` — the crates.io publish and nothing else. A source build
+> (`cargo build -p aa-cli`), the GitHub Release tarballs, the `curl` installer
+> and the Homebrew formula are all built from the unstripped tree, so **they do
+> carry this command**. Where the strip does apply it is not cosmetic: a
+> crates.io `aa-runtime` never binds the DI-API socket this command talks to, so
+> the surface would have nothing to connect to.
 
 This page is the **command reference** — subcommands, flags, defaults, exit
 codes. For what the lifecycle *means* (profiles, evidence, protection levels,

@@ -13,11 +13,11 @@ mutation happens there
 ([ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) §1,
 forbidden design 10).
 
-> **Source build only.** `aasm integrations` is stripped from the published crate
-> by `.ci/strip-for-publish.sh` (AAASM-5309), so it exists in
-> `cargo build -p aa-cli` and **not** in `cargo install aasm` or a released
-> tarball. The same strip removes the DI-API bring-up from `aa-runtime`, so a
-> published runtime never binds the socket this command talks to. See the
+> **Absent from `cargo install aasm`.** `.ci/strip-for-publish.sh` (AAASM-5309)
+> removes `aasm integrations` — and the DI-API bring-up from `aa-runtime` — in
+> the `publish-crates` job of `release.yml`, which is the crates.io publish and
+> nothing else. A source build, the GitHub Release tarballs, the `curl`
+> installer and the Homebrew formula all carry both ends. See the
 > [CLI reference](../cli/integrations.md) for flags, defaults and exit codes.
 
 ## The journey
