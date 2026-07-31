@@ -328,6 +328,35 @@ mod tests {
         assert!(env.contains(&("AA_PROXY_ADDR", "127.0.0.1:8899".to_string())));
     }
 
+    /// The record's executable field and the child's `argv[0]` have to be the
+    /// same string, because on Linux `argv[0]` is the only image fact the kernel
+    /// still publishes once the proxy has hardened itself (AAASM-5323). They are
+    /// the same string only if what gets spawned is already resolved, so a
+    /// symlinked install must be followed here rather than at record time.
+    #[test]
+    fn the_spawned_path_is_resolved_not_the_symlink_it_was_found_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("aa-proxy");
+        std::fs::write(&real, "not really a binary").unwrap();
+        let link = tmp.path().join("aa-proxy-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_eq!(
+            canonical_binary(link),
+            std::fs::canonicalize(&real).unwrap(),
+            "a proxy found through a symlink must be spawned from the file the link resolves to"
+        );
+    }
+
+    /// Whatever path the caller spawned is what the record must name — the
+    /// resolution happens before the spawn, not after it, so the two cannot
+    /// disagree.
+    #[test]
+    fn the_record_names_the_path_that_was_spawned() {
+        let state = state_for_child(std::process::id(), Path::new("/opt/aa/aa-proxy"), "127.0.0.1:8899");
+        assert_eq!(state.exe_path, PathBuf::from("/opt/aa/aa-proxy"));
+    }
+
     #[test]
     fn wait_for_port_returns_false_on_unbound_addr() {
         // Port 1 is privileged and never listening in test environments.
