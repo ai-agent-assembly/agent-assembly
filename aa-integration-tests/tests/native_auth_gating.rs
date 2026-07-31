@@ -90,3 +90,37 @@ async fn refresh_without_cookie_is_gated_503_without_postgres() {
     // reports 503 rather than 401 — the surface is unavailable, not "bad cookie".
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn password_reset_is_gated_503_without_postgres() {
+    let env = TopologyTestEnv::start().await.expect("harness starts");
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/api/v1/auth/password/reset", env.base_url()))
+        .json(&json!({ "email": "someone@example.com" }))
+        .send()
+        .await
+        .expect("reset request");
+    // The Postgres gate is checked before the (always-202) enumeration-safe body,
+    // so an in-memory deployment reports 503 — mounted route, no backing store.
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "password reset must 503 (not 404) when Postgres is absent"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn password_reset_confirm_is_gated_503_without_postgres() {
+    let env = TopologyTestEnv::start().await.expect("harness starts");
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/api/v1/auth/password/reset/confirm", env.base_url()))
+        .json(&json!({ "token": "irrelevant-here", "new_password": "a-sufficiently-long-password" }))
+        .send()
+        .await
+        .expect("confirm request");
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
