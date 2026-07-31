@@ -123,6 +123,17 @@ pub enum AuditEventType {
     ///
     /// [`SandboxStarted`]: Self::SandboxStarted
     SandboxHostFnRateLimited = 21,
+    /// An operator changed an enforcement- or authorization-relevant governance
+    /// state on an agent through an aa-api mutation endpoint (e.g. suspend /
+    /// resume). Unlike the agent-produced events above, this records an
+    /// *operator* action, so its audit `payload` carries the actor identity
+    /// (`actor` = the authenticated caller's key id), the verified `tenant`
+    /// (`org` / `team`, taken from the authenticated identity — never the
+    /// request body), a required non-empty `reason`, and the `before` / `after`
+    /// governance values. The credential-bearing parts of the identity are
+    /// never included. Emitted via [`GovernanceMutationAudit`]. (AAASM-5287 —
+    /// the actor-attributed audit prerequisite from ADR 0021 / AAASM-237.)
+    GovernanceMutation = 22,
 }
 
 impl AuditEventType {
@@ -153,6 +164,7 @@ impl AuditEventType {
             Self::SandboxOomKilled => "SandboxOomKilled",
             Self::SandboxTerminated => "SandboxTerminated",
             Self::SandboxHostFnRateLimited => "SandboxHostFnRateLimited",
+            Self::GovernanceMutation => "GovernanceMutation",
         }
     }
 }
@@ -811,6 +823,179 @@ pub fn audit_entry_for_tool_dispatch(
 }
 
 // ---------------------------------------------------------------------------
+// Governance mutation audit (AAASM-5287 / ADR 0021 prerequisite 1)
+// ---------------------------------------------------------------------------
+
+/// Error returned by [`GovernanceMutationAudit::new`] when a required field is
+/// missing or blank.
+///
+/// The only currently-modelled failure is an empty `reason`: ADR 0021's
+/// security model requires every enforcement-affecting change to carry a
+/// human-supplied justification, so an operator mutation with no reason is
+/// rejected rather than recorded with an empty one.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GovernanceMutationError {
+    /// The supplied `reason` was empty or whitespace-only.
+    EmptyReason,
+}
+
+#[cfg(feature = "std")]
+impl core::fmt::Display for GovernanceMutationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::EmptyReason => write!(f, "governance mutation requires a non-empty reason"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for GovernanceMutationError {}
+
+/// A reusable, actor-attributed record of an enforcement- or authorization-
+/// relevant governance mutation performed by an operator through an aa-api
+/// mutation endpoint (AAASM-5287 / ADR 0021 prerequisite 1).
+///
+/// ADR 0021's ratified security model requires every enforcement-affecting
+/// change to record **actor + tenant + reason + before/after + timestamp**,
+/// and the actor and tenant must be taken from the *authenticated identity* —
+/// never from the request body, which the caller controls and could spoof.
+///
+/// This type does not itself read any request or identity. The calling handler
+/// is responsible for passing `actor`, `org`, and `team` **from the
+/// authenticated caller** (e.g. `AuthenticatedCaller::key_id` and
+/// `AuthenticatedCaller::tenant`), and `reason` from the validated request. By
+/// keeping actor/tenant as explicit parameters sourced by the handler from the
+/// verified identity, the spoofing surface is confined to that one call site
+/// and is directly testable.
+///
+/// ## What is *not* recorded
+///
+/// No credential, token, or API key secret is placed in the payload — only the
+/// caller's `key_id` (a non-secret identifier) and the verified tenant labels.
+/// `before` / `after` are the governance values that changed (e.g. agent
+/// status), not credentials.
+///
+/// Gated on `feature = "std"` because it serialises the payload via
+/// `serde_json`.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GovernanceMutationAudit {
+    /// The mutated resource — the agent whose governance state changed.
+    pub agent_id: AgentId,
+    /// The authenticated caller's identifier (JWT `sub` / API-key id). This is
+    /// a non-secret principal identifier taken from the verified identity, not
+    /// the request body.
+    pub actor: String,
+    /// The verified organization of the caller, taken from the authenticated
+    /// tenant — never the request body. `None` for a cross-tenant / admin
+    /// caller with no org scope.
+    pub org: Option<String>,
+    /// The verified team of the caller, taken from the authenticated tenant —
+    /// never the request body. `None` for a caller with no team scope.
+    pub team: Option<String>,
+    /// The kind of governance mutation (e.g. `"suspend"`, `"resume"`), so audit
+    /// consumers can filter operator actions by operation.
+    pub action: String,
+    /// The required, non-empty operator-supplied justification.
+    pub reason: String,
+    /// The governance value before the mutation (e.g. the prior agent status).
+    pub before: String,
+    /// The governance value after the mutation (e.g. the new agent status).
+    pub after: String,
+}
+
+#[cfg(feature = "std")]
+impl GovernanceMutationAudit {
+    /// Build a governance-mutation record, validating that `reason` is
+    /// non-empty (ADR 0021's mandatory-reason requirement).
+    ///
+    /// `actor`, `org`, and `team` must be sourced by the caller from the
+    /// authenticated identity, never the request body. Returns
+    /// [`GovernanceMutationError::EmptyReason`] if `reason` is empty or
+    /// whitespace-only.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        agent_id: AgentId,
+        actor: impl Into<String>,
+        org: Option<String>,
+        team: Option<String>,
+        action: impl Into<String>,
+        reason: impl Into<String>,
+        before: impl Into<String>,
+        after: impl Into<String>,
+    ) -> Result<Self, GovernanceMutationError> {
+        let reason = reason.into();
+        if reason.trim().is_empty() {
+            return Err(GovernanceMutationError::EmptyReason);
+        }
+        Ok(Self {
+            agent_id,
+            actor: actor.into(),
+            org,
+            team,
+            action: action.into(),
+            reason,
+            before: before.into(),
+            after: after.into(),
+        })
+    }
+
+    /// Serialise this record to the canonical JSON payload string used as the
+    /// [`AuditEntry`] `payload`.
+    ///
+    /// The payload carries only the non-secret actor identifier, verified
+    /// tenant labels, action, reason, and before/after values — never any
+    /// credential.
+    pub fn to_payload(&self) -> String {
+        let value = serde_json::json!({
+            "actor": self.actor,
+            "org": self.org,
+            "team": self.team,
+            "action": self.action,
+            "reason": self.reason,
+            "before": self.before,
+            "after": self.after,
+        });
+        serde_json::to_string(&value).unwrap_or_else(|_| {
+            // A `serde_json::Value` built from owned strings cannot fail to
+            // serialise; this branch exists only so the method is total and the
+            // audit chain stays well-formed.
+            String::from("{\"error\":\"failed to serialize governance mutation\"}")
+        })
+    }
+
+    /// Build the [`AuditEntry`] for this governance mutation, tagged
+    /// [`AuditEventType::GovernanceMutation`].
+    ///
+    /// The verified tenant `org` / `team` are carried in the entry's
+    /// [`Lineage`] (`org_id` / `team_id`) so the existing audit-log tenant
+    /// scoping applies to operator actions exactly as it does to agent events;
+    /// the actor, reason, and before/after live in the JSON payload.
+    ///
+    /// `seq` / `previous_hash` are supplied by the caller (or `0` / `[0u8; 32]`
+    /// when the entry is emitted onto a channel that re-sequences downstream,
+    /// matching the existing aa-api dispatch pattern).
+    pub fn to_audit_entry(&self, seq: u64, timestamp_ns: u64, session_id: SessionId, previous_hash: [u8; 32]) -> AuditEntry {
+        let lineage = Lineage {
+            team_id: self.team.clone(),
+            org_id: self.org.clone(),
+            ..Lineage::default()
+        };
+        AuditEntry::new_with_lineage(
+            seq,
+            timestamp_ns,
+            AuditEventType::GovernanceMutation,
+            self.agent_id,
+            session_id,
+            self.to_payload(),
+            previous_hash,
+            lineage,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
 
@@ -1106,6 +1291,7 @@ mod tests {
             AuditEventType::SandboxHostFnRateLimited.as_str(),
             "SandboxHostFnRateLimited"
         );
+        assert_eq!(AuditEventType::GovernanceMutation.as_str(), "GovernanceMutation");
     }
 
     #[test]
@@ -1128,6 +1314,7 @@ mod tests {
         assert_eq!(AuditEventType::SandboxOomKilled as u32, 19);
         assert_eq!(AuditEventType::SandboxTerminated as u32, 20);
         assert_eq!(AuditEventType::SandboxHostFnRateLimited as u32, 21);
+        assert_eq!(AuditEventType::GovernanceMutation as u32, 22);
     }
 
     #[test]
@@ -1151,6 +1338,7 @@ mod tests {
             AuditEventType::SandboxOomKilled,
             AuditEventType::SandboxTerminated,
             AuditEventType::SandboxHostFnRateLimited,
+            AuditEventType::GovernanceMutation,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
