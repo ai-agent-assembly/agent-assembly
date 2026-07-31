@@ -315,6 +315,11 @@ impl MacOsAdminAuthority {
 
     /// Escape a `/bin/sh` script for embedding in an AppleScript string
     /// literal.
+    ///
+    /// Gated to macOS because its only caller is the macOS `run`; on other
+    /// hosts `run` refuses before building a script, so an ungated helper is
+    /// dead code that `-D warnings` rejects on a Linux build.
+    #[cfg(target_os = "macos")]
     fn applescript_quote(script: &str) -> String {
         format!("\"{}\"", script.replace('\\', r"\\").replace('"', "\\\""))
     }
