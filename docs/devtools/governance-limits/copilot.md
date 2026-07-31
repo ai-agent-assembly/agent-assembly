@@ -1,6 +1,6 @@
 # GitHub Copilot — Governance Capability Matrix
 
-**Governance level:** L1Observe  
+**Governance level:** L2Enforce  
 **Detection:** `~/.vscode/extensions/github.copilot-*` directory  
 **MCP support:** No  
 **Managed settings:** No

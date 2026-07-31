@@ -367,7 +367,7 @@ always the core.
 | Layer | Owns | Never does |
 |---|---|---|
 | **`aasm integrations` / a plugin / an IDE extension** | Rendering, prompting, choosing a scope and profile, showing evidence. | Mutating tool config, evaluating policy, scanning content, or deriving a protection level. |
-| **`DevToolAdapter`** (`aa-devtool-claude-code`) | Per-tool knowledge: detection, which files and keys exist, authoring the plan, declaring bypasses. Runs *inside* the trusted runtime. | Deciding policy outcomes, or asserting protection on the core's behalf. |
+| **`DevToolIntegration`** (`aa-devtool-claude-code`) | Per-tool knowledge: detection, which files and keys exist, authoring the plan, declaring bypasses. Runs *inside* the trusted runtime. | Deciding policy outcomes, or asserting protection on the core's behalf. |
 | **Core runtime and gateway** | Policy evaluation, sensitive-data detection and redaction, egress allow/deny, approvals, audit, and the protection level itself. | Trusting a client's claim about any of the above. |
 
 **MCP is optional.** It is one of the mechanisms an integration may govern —

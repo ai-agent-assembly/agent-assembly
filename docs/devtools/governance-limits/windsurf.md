@@ -1,6 +1,6 @@
 # Windsurf Cascade — Governance Capability Matrix
 
-**Governance level:** L1Observe  
+**Governance level:** L2Enforce  
 **Detection:** `which windsurf` / `/Applications/Windsurf.app` (macOS) / `~/.local/share/windsurf` (Linux)  
 **MCP support:** No  
 **Managed settings:** No

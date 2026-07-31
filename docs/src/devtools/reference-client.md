@@ -76,7 +76,11 @@ Use these words, verbatim, in any client. A user comparing the CLI, the dashboar
 and an editor extension must see one word for one thing.
 
 - **Profiles**: `Recommended`, `Strict`, `Observe` ([§6](product-brief.md)).
-- **Levels**: `Integrated`, `Gateway Protected`, `Host Enforced` ([§7](product-brief.md)).
+- **Levels** (the full ladder, low to high): `Not Installed`,
+  `Detected — Not Integrated`, `Partially Integrated`, `Integrated`,
+  `Gateway Protected`, `Host Enforced` ([§7](product-brief.md);
+  `aa-core/src/integration/state.rs`). The lower three are what a client
+  displays most often.
 - **Overriding states**: `Drifted`, `Degraded`, `Incompatible`.
 
 Two display rules are load-bearing:
