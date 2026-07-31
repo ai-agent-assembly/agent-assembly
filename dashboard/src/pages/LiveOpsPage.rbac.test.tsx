@@ -84,6 +84,8 @@ function wrap(scopes: Scope[], ui: ReactElement, client: QueryClient): ReactElem
     token: 'tok',
     scopes,
     login: async () => {},
+    loginWithCredentials: async () => {},
+    signup: async () => {},
     logout: () => {},
   }
   return (

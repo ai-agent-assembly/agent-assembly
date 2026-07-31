@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { ProtectedRoute } from './pages/ProtectedRoute'
 import { AppShell } from './components/AppShell'
 import { LoginPage } from './pages/LoginPage'
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { FleetPage } from './pages/FleetPage'
 import { AgentDetailPage } from './pages/AgentDetailPage'
 import { ApprovalsPage } from './pages/ApprovalsPage'
@@ -34,6 +35,7 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
             {/* Landing — Overview per AAASM-5144 (mock: index.html route init + onboarding finish). */}

@@ -96,6 +96,8 @@ function renderWithScopes(scopes: Scope[]) {
     token: 'tok',
     scopes,
     login: async () => {},
+    loginWithCredentials: async () => {},
+    signup: async () => {},
     logout: () => {},
   }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })

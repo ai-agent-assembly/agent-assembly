@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
+import * as authApi from './authApi'
 import { AuthContext, type Scope } from './AuthContext'
 import { isScope, parseScopesFromJwt } from './jwtScopes'
 import { clearToken, getToken, setToken } from './tokenStorage'
@@ -43,6 +44,34 @@ export function AuthProvider({ children }: Readonly<{ children: React.ReactNode 
     )
   }, [])
 
+  // Shared token-state commit for the account paths. login/register mint the
+  // same scoped JWT as `POST /auth/token`, but their response body carries only
+  // `access_token` (no explicit `scopes` field — see `AccessTokenResponse` /
+  // `RegisterResponse`), so the scopes come from the JWT claim exactly as they
+  // do after a reload. `parseScopesFromJwt` already allow-lists each scope
+  // through `isScope`, so no untrusted value reaches a `SCOPE_RANK` lookup.
+  const commitToken = useCallback((accessToken: string) => {
+    setToken(accessToken)
+    setTokenState(accessToken)
+    setScopes(parseScopesFromJwt(accessToken))
+  }, [])
+
+  const loginWithCredentials = useCallback(
+    async (email: string, password: string, rememberMe: boolean): Promise<void> => {
+      const { accessToken } = await authApi.login(email, password, rememberMe)
+      commitToken(accessToken)
+    },
+    [commitToken],
+  )
+
+  const signup = useCallback(
+    async (email: string, password: string): Promise<void> => {
+      const { accessToken } = await authApi.register(email, password)
+      commitToken(accessToken)
+    },
+    [commitToken],
+  )
+
   const logout = useCallback(() => {
     clearToken()
     setTokenState(null)
@@ -50,8 +79,8 @@ export function AuthProvider({ children }: Readonly<{ children: React.ReactNode 
   }, [])
 
   const value = useMemo(
-    () => ({ token: tokenState, scopes, login, logout }),
-    [tokenState, scopes, login, logout],
+    () => ({ token: tokenState, scopes, login, loginWithCredentials, signup, logout }),
+    [tokenState, scopes, login, loginWithCredentials, signup, logout],
   )
 
   return (

@@ -9,6 +9,8 @@ function providerWith(scopes: Scope[]) {
     token: 'tok',
     scopes,
     login: async () => {},
+    loginWithCredentials: async () => {},
+    signup: async () => {},
     logout: () => {},
   }
   return function Wrapper({ children }: { children: React.ReactNode }) {

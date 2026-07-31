@@ -23,6 +23,8 @@ export function GrantScopes({
       token: 'test-token',
       scopes,
       login: async () => {},
+      loginWithCredentials: async () => {},
+      signup: async () => {},
       logout: () => {},
     }),
     [scopes],

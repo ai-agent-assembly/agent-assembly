@@ -364,3 +364,220 @@ body,
 }
 .theme-toggle:active { transform: scale(0.94); }
 .theme-toggle svg { width: 15px; height: 15px; display: block; }
+
+/* ── Login / account pages (AAASM-5307) ──────────────────────────
+   Ports the cloud two-tab LoginPage layout onto the OSS design tokens.
+   All OAuth/social affordances are intentionally removed (ADR 0031 D4). */
+.login-page {
+  min-height: 100vh;
+  background: var(--paper);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+  gap: 28px;
+}
+.login-page__brand {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.login-page__brand-mark {
+  width: 46px;
+  height: 46px;
+  background: var(--shell-nav-bg);
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--shell-nav-active-text);
+  font-family: 'DM Mono', 'Courier New', monospace;
+  letter-spacing: -0.03em;
+}
+.login-page__brand-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+  margin: 6px 0 0;
+}
+.login-page__brand-tagline {
+  font-size: 12px;
+  color: var(--ink-4);
+  margin: 0;
+}
+.login-page__card {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 28px;
+  width: 380px;
+  max-width: 100%;
+  box-shadow: 0 4px 28px rgba(0, 0, 0, 0.07);
+}
+.login-page__tabs {
+  display: flex;
+  background: var(--paper-3);
+  border-radius: 7px;
+  padding: 3px;
+  margin-bottom: 22px;
+}
+.login-page__tab {
+  flex: 1;
+  padding: 7px;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  background: transparent;
+  color: var(--ink-4);
+  border: none;
+  cursor: pointer;
+  transition: all 0.14s;
+}
+.login-page__tab--active {
+  background: var(--paper-2);
+  color: var(--ink);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.09);
+}
+.login-page__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.login-page__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.login-page__field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.login-page__field > span,
+.login-page__field-header > span {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+.login-page__field input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 14px;
+  background: var(--paper);
+  color: var(--ink);
+  outline: none;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.login-page__field input:focus {
+  border-color: var(--accent);
+}
+.login-page__forgot {
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  text-decoration: none;
+}
+.login-page__forgot:hover {
+  color: var(--accent-hover);
+}
+.login-page__remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.login-page__remember input {
+  width: auto;
+  margin: 0;
+}
+.login-page__submit {
+  background: var(--shell-nav-bg);
+  color: var(--shell-nav-text);
+  padding: 11px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  border: none;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: opacity 0.15s;
+}
+.login-page__submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.login-page__error {
+  font-size: 13px;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-radius: 6px;
+  padding: 9px 12px;
+  margin: 0;
+}
+.login-page__note {
+  font-size: 12px;
+  color: var(--ink-4);
+  background: var(--info-bg);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+  line-height: 1.45;
+}
+.login-page__notice {
+  font-size: 13px;
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0;
+  line-height: 1.45;
+}
+.login-page__switch {
+  text-align: center;
+  margin: 18px 0 0;
+  font-size: 12px;
+  color: var(--ink-4);
+}
+.login-page__switch-btn {
+  color: var(--accent);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 12px;
+  text-decoration: none;
+}
+.login-page__switch-btn:hover {
+  color: var(--accent-hover);
+}
+.login-page__divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 20px 0;
+}
+/* API-key affordance reused inside the account card. */
+.login-page__apikey {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.login-page__apikey-toggle {
+  margin-top: 16px;
+}

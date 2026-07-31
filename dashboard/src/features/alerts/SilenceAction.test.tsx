@@ -86,6 +86,8 @@ describe('SilenceAction', () => {
       token: 'tok',
       scopes: ['read'] as Scope[],
       login: async () => {},
+      loginWithCredentials: async () => {},
+      signup: async () => {},
       logout: () => {},
     }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
