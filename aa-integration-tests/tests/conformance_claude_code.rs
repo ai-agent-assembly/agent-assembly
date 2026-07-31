@@ -46,6 +46,7 @@
 //! | 11.10 observe-only is never protection | [`observe_only_forwards_the_secret_and_never_claims_protection`] |
 //! | 11.11 unmanaged launch is a bypass | [`an_unmanaged_launch_is_unprotected_and_reported_as_a_bypass`] |
 //! | C1 CA trust is load-bearing | [`without_the_injected_certificate_authority_protection_cannot_pass`] |
+//! | AAASM-5300 adjudicated verification | [`the_shipped_probe_passes_verification_on_an_adjudicated_model_path`] |
 //!
 //! # Portability
 //!
@@ -73,9 +74,12 @@ mod spike_support;
 use std::time::Duration;
 
 use aa_core::integration::{
-    ExerciseOutcome, ProtectionLevel, ProtectionProfile, ProtectionState, SettingsScope, VerificationOutcome,
+    EvidenceKind, ExerciseOutcome, ProtectionLevel, ProtectionProfile, ProtectionState, SettingsScope,
+    VerificationOutcome,
 };
 use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, MANAGED_KEYS, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
+use aa_devtool_claude_code::probe::ProtectionProbe as _;
+use aa_devtool_claude_code::ProxyAdjudicatedProbe;
 use aa_runtime::devint::IntegrationLifecycle;
 use conformance_support::{ConformanceHarness, SYNTHETIC_SECRET};
 use spike_support::proxy_harness::{drive_direct, drive_emulated_client};
@@ -1239,34 +1243,114 @@ async fn repair_restores_every_managed_key_and_touches_no_user_key() -> anyhow::
     Ok(())
 }
 
-// ── The known limitation, encoded deliberately ──────────────────────────────
+// ── What now observes the forwarded payload (AAASM-5300) ────────────────────
+//
+// AAASM-5283 shipped a scenario here named
+// `the_shipped_probe_cannot_pass_verification_and_the_cli_exits_six`. It
+// asserted that the shipped `UnadjudicatedProbe` reports `Inconclusive` on a
+// correctly installed integration, so `aasm integrations verify claude-code`
+// exits 6 for every real user, and it said in its own doc comment that when an
+// adjudicating probe landed this was the thing to update deliberately, "by
+// someone who has to state what now observes the forwarded payload".
+//
+// This is that update, and the answer is: **the proxy does**. It is the
+// component that runs the credential scanner and that constructs the bytes
+// which would leave the machine, so it — not a client on the near side — is the
+// authority on the forwarded payload. `ProxyAdjudicatedProbe` marks its own
+// request with an opaque correlation identifier, and the proxy answers on that
+// request's own connection with what it decided *and* with a re-inspection of
+// the payload it resolved to forward. Nothing is inferred from "the request went
+// out and nothing failed".
+//
+// The rule the old scenario protected is unchanged and is asserted below:
+// without an adjudicated verdict, verification still cannot pass and the CLI
+// still exits 6.
 
-/// `verify` cannot pass in production today, and that is correct-for-now.
-///
-/// The shipped [`UnadjudicatedProbe`] reports `Inconclusive` because a client on
-/// the near side of the proxy cannot see the forwarded body, and reporting
-/// `Redacted` without observing it is the vacuous pass the evidence model
-/// forbids. So `aasm integrations verify claude-code` exits **6**
-/// (`verification_failed`) on a correctly installed integration.
-///
-/// This test asserts that behaviour rather than asserting a green verify that
-/// does not exist. It fails if `verify` ever starts passing without adjudicated
-/// evidence — which is the point: when an adjudicating probe lands, this is the
-/// thing that gets updated deliberately, by someone who has to state what now
-/// observes the forwarded payload.
-///
-/// The CLI half is pinned by reading the shipped mapping, because
-/// `aa-integration-tests` cannot link `aa-cli`'s private exit module and a
-/// hard-coded `6` here would assert nothing about the binary.
+/// A correctly installed integration, exercised and adjudicated, now passes —
+/// and passes for the one reason the evidence model accepts.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_shipped_probe_cannot_pass_verification_and_the_cli_exits_six() -> anyhow::Result<()> {
+async fn the_shipped_probe_passes_verification_on_an_adjudicated_model_path() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+
+    let result = h.verify_as_shipped().await?;
+    assert_eq!(
+        result.outcome,
+        VerificationOutcome::Passed,
+        "the shipped probe must now pass on an adjudicated model path: {:?}",
+        result.outcome
+    );
+
+    // The pass rests on exercised evidence with a protective outcome, and on
+    // nothing else. A `Passed` built from read-back evidence would be the
+    // vacuous pass this whole suite exists to rule out.
+    let exercised: Vec<&aa_core::integration::ProtectionEvidence> =
+        result.evidence.iter().filter(|e| e.kind.is_exercised()).collect();
+    assert!(
+        !exercised.is_empty(),
+        "a pass with nothing exercised is not a measurement"
+    );
+    assert!(
+        exercised.iter().any(|e| matches!(
+            e.kind,
+            EvidenceKind::Exercised {
+                outcome: ExerciseOutcome::Redacted
+            }
+        )),
+        "the protective outcome must be the adjudicated one: {exercised:?}"
+    );
+    // Stated in words a user reads: the claim names the re-inspection, not the
+    // absence of a failure.
+    assert!(
+        exercised
+            .iter()
+            .any(|e| e.detail.contains("re-inspection of the bytes it resolved to forward")),
+        "the evidence must say what observed the forwarded payload: {exercised:?}"
+    );
+
+    // And the ladder rises, which is the headline the Epic could not report.
+    let status = h.status().await?;
+    assert_eq!(
+        status.achieved_level(),
+        ProtectionLevel::GatewayProtected,
+        "adjudicated exercised evidence must reach GatewayProtected: {:?}",
+        status.state
+    );
+
+    // The CLI half, pinned by reading the shipped mapping: `aa-integration-tests`
+    // cannot link `aa-cli`'s private exit module, and a hard-coded `0` here would
+    // assert nothing about the binary.
+    let exit_source = conformance_support::read_repo_file("aa-cli/src/commands/integrations/exit.rs");
+    assert!(
+        exit_source.contains("Outcome::Success => 0"),
+        "a passing verification must still map to exit 0"
+    );
+    assert!(
+        exit_source.contains("Outcome::VerificationFailed => 6"),
+        "the failing exit code a user scripts against must not move"
+    );
+
+    // Nothing the run produced carries the value it was measuring.
+    conformance_support::assert_no_raw_secret(&h.persisted_surfaces(), SYNTHETIC_SECRET, "adjudicated verification");
+
+    h.finish("shipped probe passes on adjudicated evidence");
+    Ok(())
+}
+
+/// The guard the replaced scenario existed for, kept and kept load-bearing.
+///
+/// A probe that adjudicated nothing must never pass, however correctly the
+/// integration is installed. If this ever goes green with a protective outcome,
+/// the evidence model has been broken rather than improved.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unadjudicated_probe_still_cannot_pass_and_the_cli_still_exits_six() -> anyhow::Result<()> {
     use aa_devtool_claude_code::probe::{ProbeRequest, ProtectionProbe, UnadjudicatedProbe};
 
     let h = ConformanceHarness::start().await?;
     h.write_settings("{}");
     h.install(ProtectionProfile::Recommended).await?;
 
-    // The shipped default, run against a correctly installed integration.
     let report = UnadjudicatedProbe
         .run(&ProbeRequest {
             proxy_url: h.proxy.url(),
@@ -1275,11 +1359,7 @@ async fn the_shipped_probe_cannot_pass_verification_and_the_cli_exits_six() -> a
             synthetic_secret: SYNTHETIC_SECRET.to_string(),
         })
         .await;
-    assert_eq!(
-        report.outcome,
-        ExerciseOutcome::Inconclusive,
-        "the shipped probe must stay honest about what it cannot establish"
-    );
+    assert_eq!(report.outcome, ExerciseOutcome::Inconclusive);
     assert!(
         !report.outcome.is_protective(),
         "an unadjudicated outcome must never raise the ladder"
@@ -1290,17 +1370,195 @@ async fn the_shipped_probe_cannot_pass_verification_and_the_cli_exits_six() -> a
         report.detail
     );
 
-    // And the CLI still maps a non-passing verification to exit 6.
     let exit_source = conformance_support::read_repo_file("aa-cli/src/commands/integrations/exit.rs");
     assert!(
         exit_source.contains("Outcome::VerificationFailed => 6"),
-        "the exit code a user scripts against changed; if verification can now pass with \
-         adjudicated evidence, update this test deliberately and say what observes the \
-         forwarded payload"
+        "a verification that establishes nothing must still exit 6"
     );
 
-    h.finish("shipped probe cannot pass verification");
+    h.finish("an unadjudicated probe cannot pass");
     Ok(())
+}
+
+/// Condition C1, measured through the shipped probe: trust material that is not
+/// the authority the proxy issues from means the model path was never inspected.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_trusted_certificate_authority_the_shipped_probe_is_inconclusive() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+
+    // A real, well-formed certificate authority that simply is not this proxy's.
+    // Only the trust material changes; the endpoint, the host and the payload are
+    // exactly the ones that pass above.
+    let foreign = tempfile::tempdir()?;
+    aa_proxy::tls::CaStore::load_or_create(foreign.path())
+        .await
+        .map_err(|e| anyhow::anyhow!("foreign certificate authority: {e}"))?;
+
+    let mut request = h.shipped_probe_request();
+    request.ca_pem = foreign.path().join("ca-cert.pem");
+    let report = ProxyAdjudicatedProbe.run(&request).await;
+
+    assert_eq!(
+        report.outcome,
+        ExerciseOutcome::Inconclusive,
+        "an untrusted MitM certificate cannot yield a protection claim: {}",
+        report.detail
+    );
+    assert!(
+        report.detail.contains("not trusted"),
+        "the reason must name the trust failure: {}",
+        report.detail
+    );
+    assert!(!report.detail.contains(SYNTHETIC_SECRET), "{}", report.detail);
+
+    h.finish("C1 through the shipped probe");
+    Ok(())
+}
+
+/// The core is not running, so there is nothing to adjudicate and nothing to
+/// claim. "Cannot tell" must not become "fine".
+#[tokio::test(flavor = "multi_thread")]
+async fn with_the_core_stopped_the_shipped_probe_is_inconclusive() -> anyhow::Result<()> {
+    let mut h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+    h.proxy.stop();
+
+    let report = ProxyAdjudicatedProbe.run(&h.shipped_probe_request()).await;
+    assert_eq!(
+        report.outcome,
+        ExerciseOutcome::Inconclusive,
+        "a stopped core must not leave a protection claim standing: {}",
+        report.detail
+    );
+
+    // And the whole verification, not just the probe, refuses to pass.
+    let result = h.verify_as_shipped().await?;
+    assert_ne!(result.outcome, VerificationOutcome::Passed, "{:?}", result.outcome);
+
+    h.finish("stopped core through the shipped probe");
+    Ok(())
+}
+
+/// A path no adjudicating component watches yields no claim — **and receives no
+/// secret**.
+///
+/// The proxy answers the probe protocol only on the model-path handler, so a
+/// request addressed elsewhere is treated as ordinary traffic and forwarded. The
+/// probe's capability preflight is what makes that safe: it carries nothing
+/// sensitive, and because it comes back un-adjudicated the run stops before the
+/// credential-bearing exchange is ever written to a socket. The provider's own
+/// capture set is the proof.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unwatched_path_is_inconclusive_and_never_receives_the_secret() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+
+    let mut request = h.shipped_probe_request();
+    request.target_host = "side-channel.example".to_string();
+    let before = h.upstream.request_count();
+    let report = ProxyAdjudicatedProbe.run(&request).await;
+
+    assert_eq!(
+        report.outcome,
+        ExerciseOutcome::Inconclusive,
+        "an unadjudicated exchange cannot establish protection: {}",
+        report.detail
+    );
+    assert!(
+        report.detail.contains("did not answer with a protection adjudication"),
+        "the reason must name the missing adjudication: {}",
+        report.detail
+    );
+
+    let bodies: Vec<Vec<u8>> = h.upstream.bodies().into_iter().skip(before).collect();
+    assert!(
+        !bodies.is_empty(),
+        "the preflight must actually have reached the provider, or this proves nothing"
+    );
+    assert!(
+        spike_support::find_secret(&bodies, SYNTHETIC_SECRET).is_none(),
+        "the preflight kept the credential off the wire; something sent it anyway"
+    );
+
+    h.finish("unwatched path through the shipped probe");
+    Ok(())
+}
+
+/// A verdict belongs to the request that produced it, and to no other.
+///
+/// Two exchanges are driven through the proxy with caller-chosen correlation
+/// identifiers and different payloads. Each reply carries its own identifier and
+/// its own decision: there is no surface through which one exchange can obtain
+/// the other's verdict, and holding an identifier you did not send buys nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_verdict_is_bound_to_the_request_that_produced_it() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    h.write_settings("{}");
+    h.install(ProtectionProfile::Recommended).await?;
+
+    let addr: std::net::SocketAddr = h.proxy.url().trim_start_matches("http://").parse()?;
+    let ca = h.ca_pem_path();
+    const MINE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const THEIRS: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    let mine = conformance_support::probe::raw_probe_exchange(
+        addr,
+        &ca,
+        MINE,
+        &format!("please audit this credential: {SYNTHETIC_SECRET}"),
+    )
+    .await?;
+    let theirs =
+        conformance_support::probe::raw_probe_exchange(addr, &ca, THEIRS, "nothing sensitive in this body").await?;
+
+    assert!(
+        mine.contains(MINE),
+        "the reply must echo the caller's identifier: {mine}"
+    );
+    assert!(
+        !mine.contains(THEIRS),
+        "one exchange must not be told about another: {mine}"
+    );
+    assert!(theirs.contains(THEIRS), "{theirs}");
+    assert!(!theirs.contains(MINE), "{theirs}");
+
+    // The two verdicts are genuinely different, so "bound to its own request" is
+    // a distinction and not a coincidence of identical answers.
+    assert!(
+        mine.contains("\"decision\":\"forwarded_redacted\""),
+        "the credential-bearing exchange must be adjudicated as redacted: {mine}"
+    );
+    assert!(
+        theirs.contains("\"decision\":\"forwarded\""),
+        "the clean exchange must be adjudicated as clean: {theirs}"
+    );
+
+    // The reply is an outcome vocabulary and an opaque identifier — never the
+    // payload it adjudicated.
+    assert!(!mine.contains(SYNTHETIC_SECRET), "SECURITY INVARIANT VIOLATED: {mine}");
+    assert!(!mine.contains("sk-ant-"), "{mine}");
+
+    h.finish("a verdict is bound to its own request");
+    Ok(())
+}
+
+/// The two ends of the correlation path are separate crates — `aa-proxy` cannot
+/// depend on the adapter, because the adapter is (transitively) its dependency —
+/// so the wire contract is pinned here, where both are linkable.
+#[test]
+fn the_probe_and_the_proxy_agree_on_the_correlation_contract() {
+    assert_eq!(
+        aa_devtool_claude_code::adjudicating_probe::PROBE_CORRELATION_HEADER,
+        aa_proxy::probe_adjudication::PROBE_CORRELATION_HEADER,
+    );
+    assert_eq!(
+        aa_devtool_claude_code::adjudicating_probe::PROBE_ADJUDICATION_SCHEMA,
+        aa_proxy::probe_adjudication::PROBE_ADJUDICATION_SCHEMA,
+    );
 }
 
 // ── The optional real-tool lane ─────────────────────────────────────────────
