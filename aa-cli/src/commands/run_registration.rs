@@ -38,7 +38,7 @@
 
 use std::fmt;
 
-use aa_proto::assembly::agent::v1::DeregisterRequest;
+use aa_proto::assembly::agent::v1::{DeregisterRequest, RegisterRequest};
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use aa_sdk_client::gateway::{build_challenge_request, build_register_request, GatewayRegistrationClient};
 use aa_sdk_client::{AssemblyConfig, SdkClientError};
@@ -210,6 +210,27 @@ fn proto_enforcement_mode(mode: aa_core::EnforcementMode) -> i32 {
     }
 }
 
+/// Build the exact `RegisterRequest` this session submits.
+///
+/// Separate from [`register`] so the tests can assert on the request the CLI
+/// actually sends. A test that rebuilt it would be asserting against its own
+/// copy, which can agree with itself while having drifted from this one — the
+/// shape of a fixture that cannot express the state it is supposed to catch.
+fn build_session_request(desc: &SessionDescriptor<'_>, nonce: &[u8]) -> RegisterRequest {
+    let config = sdk_config(desc.agent_id, desc.team_id, desc.parent_agent_id);
+    let mut request = build_register_request(&config, desc.name.to_string(), LAUNCH_FRAMEWORK.to_string(), nonce);
+    // Descriptive fields only. `build_register_request` owns every field the
+    // gate reads (agent_id, public_key, registration_nonce, possession_proof);
+    // overwriting any of those here would be the second implementation of the
+    // identity contract this module exists to avoid.
+    request.version = desc.version.to_string();
+    request.enforcement_mode = proto_enforcement_mode(desc.enforcement_mode);
+    request
+        .metadata
+        .insert("governance_level".to_string(), desc.governance_level.to_string());
+    request
+}
+
 /// Register this session with the gateway over gRPC.
 ///
 /// Performs the full handshake in one pass: request a challenge, sign the nonce
@@ -235,22 +256,7 @@ pub async fn register(desc: SessionDescriptor<'_>) -> Result<GovernedRegistratio
             reason: reason_of(e),
         })?;
 
-    let mut request = build_register_request(
-        &config,
-        desc.name.to_string(),
-        LAUNCH_FRAMEWORK.to_string(),
-        &challenge.nonce,
-    );
-    // Descriptive fields only. `build_register_request` owns every field the
-    // gate reads (agent_id, public_key, registration_nonce, possession_proof);
-    // overwriting any of those here would be the second implementation of the
-    // identity contract this module exists to avoid.
-    request.version = desc.version.to_string();
-    request.enforcement_mode = proto_enforcement_mode(desc.enforcement_mode);
-    request
-        .metadata
-        .insert("governance_level".to_string(), desc.governance_level.to_string());
-
+    let request = build_session_request(&desc, &challenge.nonce);
     let did = config.registration_did();
     let response = client
         .register(request)
@@ -320,19 +326,6 @@ mod tests {
         }
     }
 
-    /// The request the CLI submits, built exactly as [`register`] builds it but
-    /// without a gateway to submit it to, so its *contents* can be asserted.
-    fn cli_request(desc: &SessionDescriptor<'_>, nonce: &[u8]) -> aa_proto::assembly::agent::v1::RegisterRequest {
-        let config = sdk_config(desc.agent_id, desc.team_id, desc.parent_agent_id);
-        let mut request = build_register_request(&config, desc.name.to_string(), LAUNCH_FRAMEWORK.to_string(), nonce);
-        request.version = desc.version.to_string();
-        request.enforcement_mode = proto_enforcement_mode(desc.enforcement_mode);
-        request
-            .metadata
-            .insert("governance_level".to_string(), desc.governance_level.to_string());
-        request
-    }
-
     /// The whole point of routing the CLI through `aa-sdk-client`: the identity
     /// the CLI registers under is the identity the SDK derives from the same
     /// identifier. If these ever diverge the two surfaces are separate agents to
@@ -358,7 +351,7 @@ mod tests {
         use aa_gateway::registry::convert::{assert_did_key_binds_public_key, validate_proto_agent_id};
 
         let desc = descriptor("binding-check", Some("team-a"));
-        let request = cli_request(&desc, b"nonce-bytes-for-the-binding-check");
+        let request = build_session_request(&desc, b"nonce-bytes-for-the-binding-check");
         let proto_id = request.agent_id.as_ref().expect("agent_id is set");
 
         validate_proto_agent_id(proto_id).expect("the gateway must accept the submitted agent_id");
@@ -383,7 +376,7 @@ mod tests {
     fn the_possession_proof_signs_the_server_nonce_and_verifies_under_the_public_key() {
         let desc = descriptor("proof-check", None);
         let nonce = b"a-server-issued-nonce-32-bytes!!".to_vec();
-        let request = cli_request(&desc, &nonce);
+        let request = build_session_request(&desc, &nonce);
 
         assert_eq!(
             request.registration_nonce, nonce,
@@ -414,8 +407,8 @@ mod tests {
     #[test]
     fn two_registrations_of_one_identity_produce_different_proofs() {
         let desc = descriptor("replay-check", None);
-        let first = cli_request(&desc, b"first-server-issued-nonce-value!");
-        let second = cli_request(&desc, b"second-server-issued-nonce-valu");
+        let first = build_session_request(&desc, b"first-server-issued-nonce-value!");
+        let second = build_session_request(&desc, b"second-server-issued-nonce-valu");
 
         assert_eq!(
             first.public_key, second.public_key,
@@ -433,7 +426,7 @@ mod tests {
     fn the_cli_signs_with_the_same_key_the_sdk_would() {
         let nonce = b"shared-nonce";
         let desc = descriptor("parity-check", None);
-        let cli = cli_request(&desc, nonce);
+        let cli = build_session_request(&desc, nonce);
         let sdk = build_register_request(
             &sdk_config("parity-check", None, None),
             "any-name".to_string(),
