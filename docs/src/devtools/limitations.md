@@ -28,7 +28,7 @@ claim that traces to neither is not on this page.
 | Side-channel scoping (`*.anthropic.com`) | **Supported** | Condition C5. |
 | MCP loading control (`enabledMcpjsonServers` / `disabledMcpjsonServers`) | **Supported** | Optional, defence-in-depth. Never required for protection. |
 | Drift detection and repair | **Supported** | Detected at `status`/`verify` time, not in real time. |
-| Adjudicating protection probe | **Planned** | The default probe cannot see the forwarded body. |
+| Adjudicating protection probe | **Supported** | Shipped as the default probe (AAASM-5300); see [`verify`](#what-verify-adjudicates-and-when-it-still-exits-6). |
 | `strict` blocking on a high-severity scanner finding | **Planned** | [AAASM-5277](https://lightning-dust-mite.atlassian.net/browse/AAASM-5277), [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281). Today `strict` redacts, like `recommended`. |
 | Endpoint managed-settings file | **Installable, opt-in and authorized** | [AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298). `--install-managed-settings`; verified by read-back. |
 | Endpoint managed-settings *enforcement* keys | **Still unmeasured** | Documented as non-overridable; no real override attempt has been measured against a managed device. |

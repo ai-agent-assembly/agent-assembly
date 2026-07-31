@@ -20,7 +20,7 @@ reference. Where the two differ, the brief is canonical.
 | Level | One-line claim | Reachable today? |
 |---|---|---|
 | **Integrated** | The tool's *startup posture* is governed and its actions are attributable. | **Yes.** |
-| **Gateway Protected** | Model-bound and tool-bound traffic is inspected, redacted and allow/deny-enforced in flight. | **Mechanism proven; not reportable on a default build** — see [below](#why-gateway-protected-is-not-reportable-today). |
+| **Gateway Protected** | Model-bound and tool-bound traffic is inspected, redacted and allow/deny-enforced in flight. | **Yes, on a default build** — reported once the protected path has been exercised and adjudicated (AAASM-5300); see [below](#how-gateway-protected-becomes-reportable). |
 | **Host Enforced** | The tool's policy lives on a surface the developer cannot rewrite, verified by read-back after an authorized write. | **Opt-in only** — `--install-managed-settings`, macOS. A default install can never reach it. |
 
 Two reporting rules apply at every rung:

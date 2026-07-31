@@ -258,12 +258,31 @@ can be **discovered, planned and reported on**, but their plan step names no
 destination file, so the service refuses to apply it rather than reporting a
 success nothing performed.
 
-`verify` needs a probe that can adjudicate what the provider received. A default
-build has none — a client on the near side of the proxy cannot see the forwarded
-body — so `verify` reports the model path as configured but never exercised, the
-level stays at `Integrated`, and the command **exits `6`**. That is the honest
-reading: configuration alone is not evidence that anything inspected the traffic.
-See [Limitations](limitations.md#what-verify-adjudicates-and-when-it-still-exits-6).
+`verify` runs an adjudicated protection exercise and **exits `0`** once that
+exercise proves the protected path was exercised and the outcome was protective
+(AAASM-5300). The shipped probe, `AdjudicatingProbe`, marks its own request with
+a random 32-hex correlation id in the `x-agent-assembly-probe` header; the proxy
+reads that id back on the request it resolved to forward, re-inspects the bytes,
+and answers on that same connection with what it decided. A client on the near
+side of the proxy cannot see the forwarded body for itself, so `verify` never
+guesses at what happened to it — it only reports what the proxy adjudicated.
+
+`verify` still **exits `6`** — and most of the honest truth about this command
+lives in this list, not in the passing case — whenever it cannot measure that:
+
+* the protected path was never exercised;
+* the certificate authority is not trusted;
+* adjudication is unavailable;
+* the core is stopped;
+* the verdict belongs to another request than the one the probe sent;
+* the response it got back is not an adjudication at all;
+* the decision token in the response is one this build does not know;
+* the deployment is configured `alert_only` — observing is not protecting.
+
+Read exit `6` as "not measured", never as "measured and failed". Configuration
+alone is never evidence that anything inspected the traffic — only an
+adjudicated exercise is. See
+[Limitations](limitations.md#what-verify-adjudicates-and-when-it-still-exits-6).
 
 ## See also
 
