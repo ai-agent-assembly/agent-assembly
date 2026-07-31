@@ -45,8 +45,16 @@
 #[allow(unused_imports)]
 mod common;
 
+// `RealHomeGuard` is reused rather than reimplemented: it fingerprints the live
+// settings file on length+mtime and never reads its contents, because that file
+// is in daily use and may hold credentials — a byte comparison would print them
+// into the failure message and therefore into CI logs.
+#[allow(dead_code, unused_imports)]
+mod spike_support;
+
 #[cfg(unix)]
 mod governed_launch {
+    use super::spike_support::RealHomeGuard;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -178,19 +186,12 @@ exit 0
             .collect()
     }
 
-    /// Bytes of the developer's real `~/.claude/settings.json`, or `None` where
-    /// there is no such file. Compared before and after the run.
-    fn real_settings_snapshot() -> Option<Vec<u8>> {
-        let home = std::env::var_os("HOME")?;
-        std::fs::read(PathBuf::from(home).join(".claude").join("settings.json")).ok()
-    }
-
     /// The whole of AC4 in one run: identity issued by the gateway reaches the
     /// launched tool, the proxy the gateway assigned reaches it too, and the
     /// gateway observes both the start and the end of the session.
     #[tokio::test(flavor = "multi_thread")]
     async fn run_claude_launches_the_tool_with_identity_proxy_and_a_monitored_session() -> anyhow::Result<()> {
-        let real_settings_before = real_settings_snapshot();
+        let real_home = RealHomeGuard::capture();
 
         // ── the gateway ────────────────────────────────────────────────────
         let recorder: Shared = Arc::new(Mutex::new(Recorder::default()));
@@ -320,11 +321,7 @@ exit 0
         drop(rec);
 
         // ── nothing of the developer's was touched ─────────────────────────
-        assert_eq!(
-            real_settings_snapshot(),
-            real_settings_before,
-            "the developer's real ~/.claude/settings.json must be byte-identical after the run",
-        );
+        real_home.assert_unchanged("cli_run_claude_governed_launch");
         assert!(
             home.join(".claude").join("settings.json").is_file(),
             "the managed settings must have landed in the redirected home",
