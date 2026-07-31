@@ -100,7 +100,27 @@ now".
 `verify` reports success **only** when the service's outcome is `passed` *and*
 the protected path was actually exercised. A configuration that reads back
 exactly as its receipt records it proves that a file is correct; it proves
-nothing about traffic, and this command will not let it read as protection:
+nothing about traffic, and this command will not let it read as protection.
+
+When the exercise happens and the proxy adjudicates it, `verify` exits `0`:
+
+```console
+$ aasm integrations verify claude-code
+claude-code — verification passed
+  ran at:               1785391172 (unix)
+  protected path exercised: yes
+
+Assertions:
+  [ok] protected_path_exercised               the core redacted 1 credential finding(s) from the
+                                              probe request to api.anthropic.com, and re-inspection
+                                              of the bytes it resolved to forward found none
+  ...
+$ echo $?
+0
+```
+
+When it cannot measure that, it exits `6` and says so rather than reporting the
+configuration back to you as if it were protection:
 
 ```console
 $ aasm integrations verify claude-code
@@ -118,8 +138,10 @@ $ echo $?
 6
 ```
 
-The probe uses a **synthetic** secret chosen by the adapter and run by the
-service. No real credential is ever read, sent or printed.
+Read exit `6` as **"not measured"**, never as "measured and failed"; the full
+list of conditions that produce it is [below](#current-limitation). The probe
+uses a **synthetic** secret chosen by the adapter and run by the service. No
+real credential is ever read, sent or printed.
 
 ## Machine-readable output
 
@@ -183,7 +205,7 @@ runtime; enrolment happens on start.
 | `the Agent Assembly runtime is not running` | No socket, and `--no-autostart` was passed | Start `aa-runtime` with `AA_DEVINT_ENABLED=1`, or drop the flag |
 | `<reason> — upgrade …` on connect | This `aasm` and the running core do not share a DI-API version | Upgrade both; they ship as one versioned unit |
 | `the install is partial — N step(s) failed` | Some steps applied, some did not | `aasm integrations status <tool>`, then `repair` or `remove` |
-| `this is NOT a protection measurement` | The protected path was not exercised | Launch the tool through the managed path, then verify again |
+| `this is NOT a protection measurement` (exit `6`) | The protected path was not exercised; the level stays at `Integrated` | Launch the tool through the managed path, then verify again |
 | `the capability token at … is mode 644` | The token is not a secret any more | `chmod 600` it and restart the runtime to re-issue |
 | `no integration receipt records <tool>` | Nothing has been installed to act on | Run `aasm integrations install <tool>` first |
 
