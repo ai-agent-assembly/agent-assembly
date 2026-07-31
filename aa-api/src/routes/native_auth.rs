@@ -54,6 +54,11 @@ const REFRESH_COOKIE: &str = "aa_refresh";
 /// to every API call.
 const REFRESH_COOKIE_PATH: &str = "/api/v1/auth";
 
+/// Lifetime of a password-reset token, in seconds (1 hour). Short-lived by
+/// design: a reset token is a bearer credential emailed to the user, so it
+/// expires quickly to bound the window in which a leaked email is exploitable.
+const PASSWORD_RESET_TTL_SECS: i64 = 60 * 60;
+
 // ── Request / response bodies ────────────────────────────────────────────────
 
 /// Request body for `POST /auth/login`.
@@ -137,6 +142,24 @@ pub struct AuthMethodsResponse {
     /// `["api_key"]` on an in-memory deployment; `["api_key","password"]` when a
     /// Postgres store backs native accounts.
     pub methods: Vec<String>,
+}
+
+/// Request body for `POST /auth/password/reset` (ADR 0031 §Q4).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PasswordResetRequest {
+    /// The account email to send a reset link to (case-insensitive). Whether it
+    /// exists is never revealed — the response is always `202`.
+    pub email: String,
+}
+
+/// Request body for `POST /auth/password/reset/confirm` (ADR 0031 §Q4).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PasswordResetConfirmRequest {
+    /// The raw reset token delivered by email. Only its hash is stored server-
+    /// side; this is checked against that hash and consumed single-use.
+    pub token: String,
+    /// The new password to set (must clear the minimum-length floor).
+    pub new_password: String,
 }
 
 // ── Endpoints ────────────────────────────────────────────────────────────────
@@ -620,6 +643,128 @@ pub async fn logout(
     resp
 }
 
+/// Request a password-reset email (ADR 0031 §Q4).
+///
+/// Enumeration-safe: always returns `202 Accepted` whether or not the email maps
+/// to an account, so a caller can never probe which addresses are registered.
+/// When the email does resolve to an active account, a single-use, expiring reset
+/// token is minted (stored only as its hash) and the raw token is dispatched via
+/// the configured mailer; the token is never logged and never returned on the
+/// wire. A mail outage or an SMTP-less deployment does not change the response.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/password/reset",
+    request_body = PasswordResetRequest,
+    responses(
+        (status = 202, description = "Reset request accepted (always, enumeration-safe)"),
+        (status = 503, description = "Native auth not available (no Postgres)", body = ProblemDetail),
+    ),
+    tag = "auth"
+)]
+pub async fn password_reset(Extension(state): Extension<AppState>, Json(body): Json<PasswordResetRequest>) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+    let cfg = &state.native_auth;
+    let org = cfg.default_org_id;
+
+    // Look up the account, but NEVER let the outcome change the response: any
+    // branch below returns 202. A DB error is swallowed to 202 for the same
+    // enumeration-safety reason (a 500 on unknown-email vs 202 on known-email
+    // would itself be an oracle).
+    if let Ok(Some(user)) = store.find_by_email(org, &body.email).await {
+        // Only an active account gets a token — a disabled or still-invited
+        // account is not resettable, and minting one would be a dead token.
+        if user.status == UserStatus::Active {
+            let raw_token = generate_opaque_token();
+            let token_hash = sha256_hex(&raw_token);
+            let expires_at = now() + chrono::Duration::seconds(PASSWORD_RESET_TTL_SECS);
+            if store
+                .create_reset_token(org, Uuid::new_v4(), &token_hash, user.id, expires_at)
+                .await
+                .is_ok()
+            {
+                // Dispatch out of band. Best-effort: a mail failure must not
+                // change the 202 (that would leak existence) and must never
+                // panic. The body carries the raw token and is never logged.
+                let subject = "Reset your Agent Assembly password";
+                let mail_body = reset_email_body(&raw_token);
+                let _ = state.mailer.send(&user.email, subject, &mail_body).await;
+            }
+        }
+    }
+
+    // Uniform 202 for every path (unknown email, non-active account, mail error).
+    StatusCode::ACCEPTED.into_response()
+}
+
+/// Confirm a password reset: consume the token and set the new password (ADR
+/// 0031 §Q4).
+///
+/// Validates the new password against the minimum-length floor (`422` if weak),
+/// then atomically consumes the single-use reset token — a missing, expired, or
+/// already-used token is rejected with `422`. On success the password is
+/// re-hashed with argon2id and installed, and every outstanding refresh session
+/// for the account is revoked so any pre-existing session is forced to re-auth.
+/// The token is never logged.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/password/reset/confirm",
+    request_body = PasswordResetConfirmRequest,
+    responses(
+        (status = 204, description = "Password reset; outstanding sessions revoked"),
+        (status = 422, description = "Token expired/used/unknown or weak password", body = ProblemDetail),
+        (status = 503, description = "Native auth not available (no Postgres)", body = ProblemDetail),
+    ),
+    tag = "auth"
+)]
+pub async fn password_reset_confirm(
+    Extension(state): Extension<AppState>,
+    Json(body): Json<PasswordResetConfirmRequest>,
+) -> Response {
+    let store = match require_store(&state) {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+    let cfg = &state.native_auth;
+    let org = cfg.default_org_id;
+
+    if !cfg.password_is_strong_enough(&body.new_password) {
+        return weak_password(cfg.min_password_len).into_response();
+    }
+
+    // Hash BEFORE consuming the single-use token, so a hashing failure cannot burn
+    // the token and leave the user permanently unable to reset (mirrors
+    // invite_accept).
+    let password_hash = match hash_password(&body.new_password) {
+        Ok(h) => h,
+        Err(_) => return internal_error().into_response(),
+    };
+
+    let token_hash = sha256_hex(&body.token);
+    let reset = match store.consume_reset_token(org, &token_hash).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return invalid_reset_token().into_response(),
+        Err(_) => return internal_error().into_response(),
+    };
+
+    // Set the new password. `set_password` only touches an active account, so a
+    // token whose account was disabled after issuance is treated as invalid.
+    match store.set_password(org, reset.user_id, &password_hash).await {
+        Ok(true) => {}
+        Ok(false) => return invalid_reset_token().into_response(),
+        Err(_) => return internal_error().into_response(),
+    }
+
+    // Revoke every outstanding refresh session (ADR 0031 §Q4): a reset must log
+    // out any pre-existing session, including an attacker's. Best-effort — the
+    // password is already changed; a revoke error should not fail the reset.
+    let _ = store.revoke_all_refresh_tokens(org, reset.user_id).await;
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 // ── Shared helpers ───────────────────────────────────────────────────────────
 
 /// Resolve the Postgres account store, or a `503` when native auth is not
@@ -729,6 +874,20 @@ fn sha256_hex(token: &str) -> String {
     hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Build the plaintext body of the password-reset email carrying the raw token.
+///
+/// The token is the bearer credential; this body is passed to the mailer and is
+/// never logged. Kept deliberately simple (plaintext) — the transport is the
+/// pluggable seam, not the message format.
+fn reset_email_body(raw_token: &str) -> String {
+    format!(
+        "A password reset was requested for your Agent Assembly account.\n\n\
+         Use this reset token to set a new password:\n\n    {raw_token}\n\n\
+         This token is single-use and expires in one hour. If you did not request \
+         a reset, you can ignore this email — your password will not change."
+    )
+}
+
 /// A password-hash placeholder for a not-yet-accepted invited account. It is a
 /// syntactically invalid PHC string, so [`verify_password`] can never accept any
 /// candidate against it — the account is unauthenticatable until accept sets a
@@ -808,6 +967,12 @@ fn weak_password(min_len: usize) -> ProblemDetail {
 fn invalid_invite() -> ProblemDetail {
     ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
         .with_detail("Invite token is invalid, expired, or already used")
+}
+
+fn invalid_reset_token() -> ProblemDetail {
+    // Uniform for unknown / expired / already-used — never distinguishes them.
+    ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+        .with_detail("Reset token is invalid, expired, or already used")
 }
 
 fn internal_error() -> ProblemDetail {
