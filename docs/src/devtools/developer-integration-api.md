@@ -17,6 +17,15 @@ this page is the operational reference for people building against it.
 > `proto/devint.proto` (`assembly.devint.v1`). Reference client:
 > `aa-runtime/src/devint/client.rs`.
 
+> **Opt-in everywhere; absent only from crates.io.** The runtime serves this
+> surface only when `AA_DEVINT_ENABLED` is set — it is **off by default** on
+> every channel. On crates.io it is not there at all:
+> `.ci/strip-for-publish.sh` runs in `release.yml`'s `publish-crates` job and
+> removes the DI-API bring-up from `aa-runtime` and the `aasm integrations`
+> client from `aa-cli`, so `cargo install aasm` has neither end of this channel.
+> A source build, the GitHub Release tarballs, the `curl` installer and the
+> Homebrew formula all carry both ends, gated on the environment variable alone.
+
 ## Transport and discovery
 
 | | |
@@ -250,8 +259,8 @@ let status = client.status("claude-code").await?;
 println!("{} (verified at {})", status.achieved_level, status.observed_at_unix_secs);
 ```
 
-`aasm`'s own lifecycle commands become a DI-API client in
-[AAASM-5280](https://lightning-dust-mite.atlassian.net/browse/AAASM-5280); an
+`aasm`'s own lifecycle commands **are** a DI-API client
+([AAASM-5280](https://lightning-dust-mite.atlassian.net/browse/AAASM-5280)); an
 in-process `--local` fallback is deliberately not offered, because it would be a
 second code path with a different trust model.
 

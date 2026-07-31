@@ -21,7 +21,7 @@ reference. Where the two differ, the brief is canonical.
 |---|---|---|
 | **Integrated** | The tool's *startup posture* is governed and its actions are attributable. | **Yes.** |
 | **Gateway Protected** | Model-bound and tool-bound traffic is inspected, redacted and allow/deny-enforced in flight. | **Yes, on a default build** — reported once the protected path has been exercised and adjudicated (AAASM-5300); see [below](#how-gateway-protected-becomes-reportable). |
-| **Host Enforced** | The tool's policy lives on a surface the developer cannot rewrite, verified by read-back after an authorized write. | **Opt-in only** — `--install-managed-settings`, macOS. A default install can never reach it. |
+| **Host Enforced** | The tool's policy lives on a surface the developer cannot rewrite, verified by read-back after an authorized write. | **Opt-in only** — `--install-managed-settings`, macOS. A default install can never reach it. The *installation* is verified; the keys' *enforcement* is [still unmeasured](#what-this-level-does-and-does-not-claim). |
 
 Two reporting rules apply at every rung:
 
@@ -117,9 +117,12 @@ none.
 > path, owned as expected, and not writable by you.** It does **not** mean a
 > bypass has been demonstrated to fail. Anthropic documents the managed-only
 > keys as non-overridable; Agent Assembly has not measured a real override
-> attempt against a managed device, and the evidence detail behind every
-> `Host Enforced` reading says so. See
-> [Limitations](limitations.md#the-managed-settings-file-can-be-installed-its-enforcement-is-still-unmeasured).
+> attempt on any host, and the evidence detail behind every `Host Enforced`
+> reading says so. See
+> [Limitations](limitations.md#the-managed-settings-file-can-be-installed-its-enforcement-is-still-unmeasured),
+> and
+> [Measuring managed-settings enforcement](managed-device-measurement.md) for
+> the procedure that would close it.
 
 Kernel-level enforcement remains out of scope: macOS Endpoint Security and
 Network Extension are explicit non-goals, and `aa-ebpf` is Linux-only and is a
@@ -137,7 +140,7 @@ prints it rather than summarising it.
 |---|---|---|
 | **Exercised** | Traffic was produced on the protected path and the core adjudicated what happened to it. | `Gateway Protected` |
 | **Read-back** | A managed value on disk matches what the receipt says was written. Proves a file is correct; proves nothing about traffic. | `Integrated` |
-| **Host-attested** | An enforcement surface reported on itself and the report was attributed to this tool. For Claude Code this is the read-back of the endpoint managed-settings file after an authorized install — content, owner and permissions. | `Host Enforced` |
+| **Host-attested** | An enforcement surface reported on itself and the report was attributed to this tool. For Claude Code this is the read-back of the endpoint managed-settings file after an authorized install — content, owner and permissions. It attests to the file, never to the tool's runtime handling of it. | `Host Enforced` |
 | **Absent** | A check could not be made. Recorded so the gap is legible. Absent readings only ever *lower* a state. | — |
 
 A detected bypass becomes **Absent** evidence rather than a silent pass. With
@@ -189,7 +192,11 @@ Use these words verbatim in any client. A user comparing the CLI, the dashboard
 and an editor extension must see one word for one thing.
 
 * **Profiles:** `Recommended`, `Strict`, `Observe`
-* **Levels:** `Integrated`, `Gateway Protected`, `Host Enforced`
+* **Levels (the full ladder, low to high):** `Not Installed`,
+  `Detected — Not Integrated`, `Partially Integrated`, `Integrated`,
+  `Gateway Protected`, `Host Enforced`. The lower three are the states a client
+  displays most often — a vocabulary that stops at `Integrated` leaves no word
+  for a tool that is merely present.
 * **Overriding states:** `Drifted`, `Degraded`, `Incompatible`
 
 ---

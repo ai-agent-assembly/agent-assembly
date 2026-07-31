@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { AlertsFeedBody } from '../features/alerts/AlertsFeedBody'
 import { AlertFilterBar } from '../features/alerts/AlertFilterBar'

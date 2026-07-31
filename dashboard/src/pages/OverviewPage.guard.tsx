@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { LoadingState } from '../components/LoadingState'
 import { EmptyState } from '../components/EmptyState'
 import { ErrorState } from '../components/ErrorState'

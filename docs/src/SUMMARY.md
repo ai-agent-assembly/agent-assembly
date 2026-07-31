@@ -32,6 +32,7 @@
 - [aasm dashboard](cli/dashboard.md)
 - [aasm gateway](cli/gateway.md)
 - [aasm proxy](cli/proxy.md)
+- [aasm integrations](cli/integrations.md)
 - [aasm start / stop](cli/start-stop.md)
 - [aasm sandbox](cli/sandbox.md)
 - [aasm config](cli/config.md)
@@ -103,6 +104,8 @@
 - [Developer Integration API](devtools/developer-integration-api.md)
 - [`aasm integrations` CLI](devtools/cli.md)
 - [Thin-Client Reference Implementation](devtools/reference-client.md)
+- [Authoring a Dev-Tool Adapter](devtools/plugins.md)
+- [Measuring Managed-Settings Enforcement](devtools/managed-device-measurement.md)
 
 # Protocol
 

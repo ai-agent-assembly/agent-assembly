@@ -1,4 +1,4 @@
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router'
 import { ignorePromise } from '../lib/ignorePromise'
 import { useActiveSessionsQuery } from '../features/agents/api'
 import { elapsedLabel } from '../features/agents/sessionTime'

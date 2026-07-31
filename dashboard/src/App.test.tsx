@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react'
-import { MemoryRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, Navigate } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, vi } from 'vitest'
 import { AuthProvider } from './auth/AuthProvider'

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router'
 import { useAgentQuery } from '../features/agents/api'
 import { useTraceQuery } from '../features/trace/api'
 import { TraceTimeline } from '../components/trace/TraceTimeline'

@@ -44,7 +44,31 @@ cargo deny check
 # 6. Verify aasm binary builds and embeds the dashboard
 cargo build --release -p aa-cli
 ./target/release/aasm --version
+
+# 7. Verify what will actually be PUBLISHED, not just what builds here
+bash scripts/check-packaged-artifacts.sh
 ```
+
+> **Why step 7 is not covered by steps 3–6.** Everything above builds inside the
+> Cargo workspace, where each crate can see its siblings, the workspace-root
+> `.sqlx/` cache and `dashboard/dist/`. A crates.io consumer gets one crate on
+> its own, and `cargo workspaces publish` runs with `--no-verify` (it has to —
+> see the comment on that call in `release.yml`), so nothing else ever compiles a
+> crate in isolation. Two defects shipped straight through steps 3–6 that way:
+> the published `aa-cli` carried no dashboard at all (AAASM-5316) and the
+> published `aa-gateway` could not compile for any consumer (AAASM-5315).
+> `check-packaged-artifacts.sh` packages every crate, asserts the tarball
+> contents, builds the binaries out of the tarballs, and runs the result.
+>
+> It runs in three places, and all three are wanted. On every PR
+> (`.github/workflows/release-completeness.yml`) for early feedback; here, so a
+> release cut is never the first time anyone looks; and as the
+> `packaged-artifact-gate` job that `publish-crates` **needs**, which is the only
+> one of the three that is a precondition of anything. The PR run is
+> path-filtered and sees a PR head rather than the merge result, so it cannot
+> speak for the tree a tag is cut from — and crates.io will not accept a second
+> upload of a version, so the artifact itself has to be looked at before the
+> upload, not before the merge.
 
 ## Tagging and triggering the release workflow
 

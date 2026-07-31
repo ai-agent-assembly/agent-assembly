@@ -5,6 +5,151 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+> Merged since `0.0.1-rc.6` and **not yet released**. Everything below is the
+> Developer Integration programme (Epic
+> [AAASM-5272](https://lightning-dust-mite.atlassian.net/browse/AAASM-5272)):
+> governing an AI *dev tool* — Claude Code, Codex, Copilot, Windsurf — as a
+> first-class lifecycle rather than a one-shot launch wrapper. The whole surface
+> is **off by default** and **absent from the published crate**; see *Changed*.
+
+### Added
+
+- **`aasm integrations` lifecycle** (AAASM-5280) — seven subcommands (`list`,
+  `plan`, `install`, `status`, `verify`, `repair`, `remove`) covering the whole
+  journey for an AI dev tool, with a **nine-value exit-code vocabulary** so a
+  wrapper branches on the code rather than on stderr prose (`2` is left to
+  `clap`). The CLI is a *client only*: it holds no per-tool knowledge, performs
+  no mutation of its own, and never derives a protection state locally.
+  Mutating verbs preview the material changes first and refuse to proceed
+  without a terminal or `--yes`. Documented at `docs/src/cli/integrations.md`.
+- **Developer Integration API (DI-API)** (AAASM-5279) — a second Unix-domain
+  socket (`~/.aa/run/devint.sock`, `0700` dir / `0600` socket) and wire schema
+  `proto/devint.proto` (`assembly.devint.v1`) carrying the lifecycle verbs. It
+  is **opt-in and off by default**: `AA_DEVINT_ENABLED` is read at runtime
+  startup and nothing binds the socket without it. It carries no policy
+  decisions and no agent-action traffic — those stay on the SDK fast path, on a
+  different socket with a different verb space.
+- **Capability and protection-state model** (AAASM-5277, ADR 0030) —
+  `DevToolIntegration` replaces the all-or-nothing `DevToolAdapter` with a
+  declared `IntegrationCapability` set plus optional mechanism surfaces, so a
+  tool without MCP or without a launch command implements nothing instead of a
+  misleading no-op. Undeclared capabilities are **absent**, never supported, and
+  `capability_conformance` makes "declared but not implemented" a test failure.
+  Protection state is **derived from evidence on every read**, never set:
+  `NotInstalled` → `DetectedNotIntegrated` → `PartiallyIntegrated` →
+  `Integrated` → `GatewayProtected` → `HostEnforced`, with `Drifted`,
+  `Degraded` and `Incompatible` overriding. Missing evidence lowers the reported
+  state and never raises it. `LegacyAdapterShim` bridges unmigrated adapters and
+  caps them at `Integrated`.
+- **Receipts, drift detection and rollback** (AAASM-5278) — every applied plan
+  writes a receipt under `${AASM_STATE_DIR:-~/.aasm}/integrations/` (`0700`
+  directory, `0600` files, modes re-asserted on every load). Removal is derived
+  from the receipt rather than re-derived from current host state, and anything
+  that cannot be undone is declared as a residual action rather than silently
+  left behind. **Restore is semantics-exact, not byte-exact**: the settings
+  document is reserialised, so non-canonical formatting in a user's file is not
+  reproduced verbatim.
+- **Probe adjudication** (AAASM-5300) — `AdjudicatingProbe` marks its request
+  with a random 32-hex correlation id in `x-agent-assembly-probe`; the proxy
+  reads that id back on the request it resolved to forward, re-inspects the
+  bytes, and answers on the same connection with what it decided. A client on
+  the near side of the proxy cannot see the forwarded body, so `verify` reports
+  only what the proxy adjudicated and never guesses. `verify` exits `0` only
+  when the protected path was **exercised** and the outcome was protective;
+  exit `6` means *not measured*, never *measured and failed*.
+- **Claude Code integration** (AAASM-5281) — the first adapter fully migrated to
+  the lifecycle. An install applies managed settings (four AASM-owned keys, every
+  other key untouched), an AASM-owned proxy CA PEM, **`NODE_EXTRA_CA_CERTS`**
+  for every governed launch — without which the interception handshake fails and
+  nothing is inspected — proxy routing, and a side-channel scope covering
+  Claude Code's telemetry and registry calls, not just `/v1/messages`. Detected
+  bypasses (`bypassPermissions`, `ANTHROPIC_BASE_URL` /
+  `CLAUDE_CODE_API_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX`,
+  `NODE_TLS_REJECT_UNAUTHORIZED`) lower the reported level; undetectable ones are
+  stated in every plan rather than left to be inferred from silence.
+- **Thin reference client** (AAASM-5282) — `examples/aa-devint-reference-client`,
+  a TypeScript DI-API client with socket discovery, capability-token handling and
+  the full verb set, demonstrating that the surface is implementable by a plugin
+  author with no access to core internals. It deliberately does **not** enrol:
+  issuing a token stays an explicit, user-visible step owned by the operator CLI,
+  because a client that could mint its own credential would make enrolment a
+  formality (`src/credential.ts`).
+- **Claude Code lifecycle conformance suite** (AAASM-5283) — an end-to-end suite
+  in `aa-integration-tests` with its own harness, probe and proxy fixtures,
+  exercising the lifecycle against the real adapter.
+- **Developer Integration documentation** (AAASM-5273 / 5275 / 5284) — ADR 0030
+  (boundaries and local trust model), the product capability brief, onboarding
+  walkthrough, protection-levels reference, the limitations-and-known-bypasses
+  page, and the DI-API and CLI references.
+
+### Changed
+
+- **`aasm integrations` is stripped from the published crate** (AAASM-5309) —
+  it joins `aasm run` and `aasm tools` in the `devtool` region removed by
+  `.ci/strip-for-publish.sh`. The strip is not cosmetic: the published
+  `aa-runtime` never binds the DI-API socket, so the command would have nothing
+  to connect to. The strip runs in the `publish-crates` job only, so all three
+  exist in a source build, in the GitHub Release tarballs and in a Homebrew
+  install, and not in `cargo install aasm`. A published-surface coherence gate
+  now runs on PRs.
+- **Dev-tool adapters reconciled onto one contract** (AAASM-5274) — one adapter
+  per tool, with mechanisms a tool cannot use declared `Unsupported` with a
+  reason at plan time instead of failing at run time.
+- **Adapters depend on `aa-devtool-contract`, never on `aa-core`** — the
+  capability-restricted facade now re-exports the lifecycle contract as well as
+  the legacy adapter surface. Every `aa-devtool-*` crate and the facade itself
+  are `publish = false`, so out-of-tree adapters are supported **as a source
+  crate consumed by a build of AASM** (ADR 0030 §6.3), not as a crates.io
+  dependency. `docs/src/devtools/plugins.md` was rewritten accordingly and now
+  renders as part of the book.
+
+### Security
+
+- **Administrator-managed settings write** (AAASM-5298) — the **only**
+  privileged, root-owned write the product performs. macOS only, **off by
+  default**, and reachable solely through the explicit
+  `--install-managed-settings` opt-in; `--scope managed` on its own is refused
+  because it says nothing about administrator authorization. It elevates for the
+  single file placement and nothing else — `aasm` never runs as root, and no
+  other plan step asks for authorization. The plan discloses the exact path, the
+  exact content and its SHA-256, the diff, any conflict, and the backup and
+  rollback behaviour before consent is requested. It refuses to replace a
+  managed-settings file Agent Assembly did not write, fails immediately without a
+  terminal rather than waiting for credentials, and rolls the write back if the
+  read-back does not match rather than trusting the authorization mechanism's
+  word. This is the only route to `Host Enforced` — which means *"the managed
+  policy is installed at the OS-managed path, owned as expected and not writable
+  by you"*, and **not** *"this bypass has been demonstrated to fail"*: the
+  enforcement half of AAASM-5276 condition C6 remains unmeasured on every host,
+  and is tracked by AAASM-5308.
+- **Adjudication is the only thing that can claim protection** —
+  `GatewayProtected` requires adjudicated **exercised** evidence. Read-back of a
+  configuration file justifies at most `Integrated`; `ModelPathInterception` is
+  the sole mechanism whose evidence can justify `GatewayProtected`, because the
+  AAASM-5276 spike measured base-URL redirection (`ModelGatewayBaseUrl`)
+  delivering a raw synthetic secret to the provider with no AASM component
+  anywhere in the path. `observe_only` is never rendered as protection.
+- **Redaction and disclosure boundaries** — no DI-API response type has a field
+  able to hold a rendered settings body, an environment-variable value, a policy
+  document or a credential, so neither the human nor the `--output json`
+  rendering can leak one; a policy is named by reference (id, display name,
+  digest), never carried. The verification probe uses a **synthetic** secret
+  chosen by the adapter and run by the service — no real credential is read, sent
+  or printed.
+- **DI-API authentication is two-layer and fails closed** — a `0700` directory,
+  a `0600` socket and a peer-credential UID check, plus a per-client capability
+  token written `0600`. A token file readable by more than its owner is
+  **refused rather than used**, so a filesystem mistake cannot become a silent
+  authentication downgrade. There is no anonymous tier and no loopback-TCP
+  option.
+- **Known bypasses are published as measured versus believed** — three
+  demonstrated by the AAASM-5276 harness and eleven inferred but not measured,
+  kept as two separate lists so a reader can tell a measurement from a documented
+  belief. Neither list is asserted to be exhaustive: "no finding" is not "no
+  bypass".
+
 ## [0.0.1-rc.6] — 2026-07-16 (pre-release)
 
 > **Not for production use.** Sixth **release candidate** in the v0.0.1 series

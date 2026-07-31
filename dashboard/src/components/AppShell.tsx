@@ -1,5 +1,5 @@
 import { useEffect, useState, Component, type ReactNode, type ErrorInfo } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router'
 import { useAuth } from '../auth/useAuth'
 import { useCan } from '../auth/usePermissions'
 import { getSubject } from '../auth/jwtScopes'

@@ -153,9 +153,11 @@ unmeasured even though the file itself can now be installed (see below).
   default install cannot reach it. **What is still unmeasured is the other half of `AAASM-5276`
   condition C6:** the managed-only keys (`allowManagedPermissionRulesOnly`,
   `disableBypassPermissionsMode`, …) are documented as non-overridable, and no real override
-  attempt has been measured against a managed device. `HostEnforced` therefore claims *the policy
+  attempt has been measured on any host. `HostEnforced` therefore claims *the policy
   is installed where you cannot rewrite it*, not *this bypass was demonstrated to fail*, and every
-  status carries that caveat.
+  status carries that caveat. The procedure that would close it is
+  [Measuring managed-settings enforcement](../devtools/managed-device-measurement.md)
+  ([`AAASM-5308`](https://lightning-dust-mite.atlassian.net/browse/AAASM-5308)).
 - **`Gateway Protected` is reportable only on adjudicated evidence.** The shipped probe drives one
   request down the protected path and reads back the proxy's verdict for that exact request —
   including a re-inspection of the payload the proxy resolved to forward — so
@@ -212,7 +214,10 @@ unmeasured even though the file itself can now be installed (see below).
 † These capabilities require `aa-proxy` (Layer 2) running alongside the tool for enforcement.
 Without the proxy, the declared tier drops to L0 (discovery/inventory only). For Claude Code they
 additionally require the **managed launch** (`aasm run claude`), which is what injects the proxy
-environment and the CA trust the interception depends on.
+environment and the CA trust the interception depends on. `aasm run` is stripped from the
+**crates.io** publish, so a `cargo install aasm` cannot take this path; a source build, the GitHub
+Release tarballs, the `curl` installer and the Homebrew formula all can — see
+[CLI overview → developer-only commands](../cli/overview.md#command-groups).
 
 ‡ Declared from the native write path, not from an exercised block — see the Claude Code
 declarations above.

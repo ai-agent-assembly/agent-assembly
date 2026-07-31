@@ -7,7 +7,7 @@
  * the `disabled` attribute alone, which only proves the button looks right.
  */
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'

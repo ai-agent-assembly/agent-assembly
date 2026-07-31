@@ -8,7 +8,8 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use aa_core::audit::AuditEntry;
+use aa_core::audit::{AuditEntry, GovernanceMutationAudit};
+use aa_core::SessionId;
 use aa_gateway::registry::{AgentStatus, OrphanMode};
 
 use crate::auth::scope::{RequireRead, RequireWrite, Scope};
@@ -94,6 +95,69 @@ fn parse_agent_id(id: &str) -> Result<[u8; 16], ProblemDetail> {
     })?;
 
     Ok(arr)
+}
+
+/// Emit an actor-attributed [`GovernanceMutationAudit`] for an enforcement- or
+/// authorization-relevant mutation on `agent_id` (AAASM-5287 / ADR 0021
+/// prerequisite 1).
+///
+/// This is the reusable actor-aware audit path the future enforcement-mode
+/// toggle (gated behind AAASM-5097) will reuse. Its security contract: `actor`
+/// and `tenant` are taken **only** from the authenticated `caller` — never the
+/// request body — so a caller cannot forge who performed the action or under
+/// which tenant it is recorded. `reason` is the caller-supplied justification,
+/// which must already be validated non-empty (the audit record rejects an empty
+/// reason as a defence-in-depth backstop).
+///
+/// Emission is best-effort onto the existing `audit_sender` channel, matching
+/// the dispatch path (`dispatch.rs`): a full or disconnected channel drops the
+/// entry rather than failing the mutation the operator already performed. The
+/// `seq` / `previous_hash` are zero because the audit sink re-sequences and
+/// re-chains entries as it persists them.
+fn emit_governance_mutation_audit(
+    state: &AppState,
+    caller: &AuthenticatedCaller,
+    agent_id: &[u8; 16],
+    action: &str,
+    reason: &str,
+    before: &str,
+    after: &str,
+) {
+    let Some(sender) = state.audit_sender.as_ref() else {
+        return;
+    };
+    let record = match GovernanceMutationAudit::new(
+        aa_core::AgentId::from_bytes(*agent_id),
+        // Actor + tenant come from the authenticated identity, NEVER the body.
+        caller.key_id.clone(),
+        caller.tenant.org_id.clone(),
+        caller.tenant.team_id.clone(),
+        action,
+        reason,
+        before,
+        after,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            // The reason was already validated non-empty at the call site; a
+            // failure here means a programming error, not caller input. Log and
+            // skip rather than fail the mutation.
+            tracing::error!(error = %e, "governance mutation audit not emitted");
+            return;
+        }
+    };
+    let entry = record.to_audit_entry(0, unix_now_ns(), SessionId::from_bytes([0u8; 16]), [0u8; 32]);
+    // Best-effort, non-blocking: backpressure is non-fatal for the response.
+    let _ = sender.try_send(entry);
+}
+
+/// Current Unix timestamp in nanoseconds. Mirrors the dispatch-path helper so
+/// governance-mutation audit entries carry a real wall-clock time.
+fn unix_now_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
 }
 
 /// Convert an [`AgentRecord`] into an [`AgentResponse`].
@@ -522,6 +586,13 @@ pub async fn suspend_agent(
     // AAASM-3726: write-scope + tenant ownership before suspending.
     authorize_agent_access(&caller, &state, &agent_id, &id)?;
 
+    // AAASM-5287: a governance mutation must carry a non-empty reason so the
+    // actor-attributed audit record has a justification to record.
+    if body.reason.trim().is_empty() {
+        return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+            .with_detail("A non-empty 'reason' is required to suspend an agent"));
+    }
+
     let previous_status = state
         .agent_registry
         .agent_status(&agent_id)
@@ -534,12 +605,25 @@ pub async fn suspend_agent(
         .await
         .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")))?;
 
+    let new_status = "Suspended(Manual)".to_string();
+    // AAASM-5287: record who suspended the agent, under which tenant, and why —
+    // actor + tenant from the authenticated identity, never the request body.
+    emit_governance_mutation_audit(
+        &state,
+        &caller,
+        &agent_id,
+        "suspend",
+        &body.reason,
+        &previous_status,
+        &new_status,
+    );
+
     Ok((
         StatusCode::OK,
         Json(SuspendResponse {
             agent_id: id,
             previous_status,
-            new_status: "Suspended(Manual)".to_string(),
+            new_status,
         }),
     ))
 }

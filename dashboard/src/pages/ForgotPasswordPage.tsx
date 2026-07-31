@@ -16,7 +16,7 @@
  */
 
 import { useState, type FormEvent } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router'
 import { AuthApiError, confirmPasswordReset, requestPasswordReset } from '../auth/authApi'
 
 type Mode = 'request' | 'confirm'

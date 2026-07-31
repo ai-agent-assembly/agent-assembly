@@ -1,4 +1,4 @@
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { useDebouncedCallback } from 'use-debounce'
 import { decodeFilters, encodeFilters } from './urlState'
 import type { FilterParams } from './urlState'

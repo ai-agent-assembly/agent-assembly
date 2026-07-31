@@ -1,0 +1,448 @@
+//! AAASM-5327 — the launch environment the adapter builds reaches the process.
+//!
+//! # What this measures, and why nothing else did
+//!
+//! `ClaudeCodeAdapter::build_launch_command` sets `NODE_EXTRA_CA_CERTS` (and a
+//! normalised `HTTPS_PROXY`) on the `Command` it returns. `spawn_and_wait` used
+//! to rebuild that command from its program and args alone, so every one of
+//! those variables was dropped on the floor. The consequence is the product's
+//! defining failure mode rather than a cosmetic one: `NODE_EXTRA_CA_CERTS` is
+//! the only mechanism by which Claude Code's embedded Node runtime trusts the
+//! Agent Assembly CA, so without it the proxy cannot terminate TLS and the
+//! session is inspected by nothing while presenting as governed.
+//!
+//! The tests that existed could not see it:
+//!
+//! * `aa-cli`'s `build_child_env_*` unit tests assert on a `HashMap`, one
+//!   function call short of anything a process observes — and
+//!   `build_child_env_sets_proxy` feeds in a value that already carries a
+//!   scheme, so the normalisation branch that matters is never exercised.
+//! * `aa-cli/tests/integrations_claude_code.rs` reads the on-disk launch-env
+//!   *store*, which proves the value was written, not that a child received it.
+//! * `aa-integration-tests/tests/cli_run.rs` only drives `--dry-run`, which
+//!   short-circuits before any child exists.
+//!
+//! So the assertions here are made on the environment a **real spawned child**
+//! reported about itself, via a `claude` stand-in that writes what it can see to
+//! a file.
+//!
+//! # The dump distinguishes absent from empty
+//!
+//! A fixture that renders "variable missing" and "variable set to the empty
+//! string" identically cannot fail for the bug it is aimed at, so the stub uses
+//! `${VAR-__UNSET__}` (no colon — substitutes only when *unset*) and
+//! [`fixture_can_tell_an_absent_variable_from_an_empty_one`] pins that both
+//! renderings are reachable.
+//!
+//! # Safety
+//!
+//! `ClaudeCodeAdapter::new()` resolves its binary with `which claude` and its
+//! settings from `$HOME`, so a careless version of this test would launch the
+//! developer's real Claude Code and rewrite their real `~/.claude/settings.json`.
+//! Every root the adapter reads is redirected on the **child** `aasm` process
+//! only (`HOME`, `PATH`, `CLAUDE_CONFIG_DIR`, `AASM_STATE_DIR`, `AA_CA_DIR`,
+//! `AASM_CLAUDE_MANAGED_ROOT`, and the working directory); no process-global
+//! environment of this test binary is mutated. `RealHomeGuard` closes each test:
+//! it fingerprints the developer's settings file on length and mtime and never
+//! reads its contents, because that file is in daily use and may hold
+//! credentials that an `assert_eq!` would print into a CI log.
+//!
+//! # Independence from AAASM-5323
+//!
+//! `aasm run` registers with `POST /api/v1/agents`, which no shipped gateway
+//! serves yet. The gateway here is a mock that answers it, so this file measures
+//! the launch environment and nothing about that separate defect.
+
+// `RealHomeGuard` is reused rather than reimplemented: it fingerprints the live
+// settings file on length+mtime and never reads its contents.
+#[allow(dead_code, unused_imports)]
+mod spike_support;
+
+#[cfg(unix)]
+mod launch_env {
+    use super::spike_support::RealHomeGuard;
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    use aa_devtool_claude_code::launch_env::LaunchEnvStore;
+    use aa_devtool_claude_code::scope::ClaudeCodePaths;
+    use aa_devtool_contract::SettingsScope;
+    use axum::extract::{Path as AxumPath, State};
+    use axum::http::StatusCode;
+    use axum::routing::{delete, post};
+    use axum::{Json, Router};
+
+    /// The address the mock gateway assigns, in the **bare** `host:port` form a
+    /// gateway actually returns. Nothing listens on it: the claim under test is
+    /// which string the child is routed at, which is observable without a live
+    /// proxy. The adapter is expected to normalise this to a URL.
+    const PROXY_ADDR: &str = "127.0.0.1:19771";
+    const AGENT_ID: &str = "aaasm5327-agent";
+    const REGISTRATION_ID: &str = "aaasm5327-registration";
+    const TRACE_ID: &str = "aaasm5327-trace";
+    const SESSION_ID: &str = "aaasm5327-session";
+    const TEAM_ID: &str = "aaasm5327-team";
+
+    /// Written into the launch-env store the adapter reads. A path shape, since
+    /// that is what `NODE_EXTRA_CA_CERTS` carries, and unmistakably this test's.
+    const CA_PATH_VALUE: &str = "/aaasm5327/proxy-ca.pem";
+
+    /// What the stub prints for a variable that is not set at all. Distinct from
+    /// the empty string, which is the whole point (see the module docs).
+    const UNSET: &str = "__UNSET__";
+
+    /// A variable this test sets to the empty string on the `aasm` process, to
+    /// prove the dump renders empty-but-present differently from absent.
+    const EMPTY_PROBE: &str = "AASM5327_EMPTY_PROBE";
+
+    /// Names the stub reports. Everything the merge has to get right, plus the
+    /// two probes that keep the fixture honest.
+    const REPORTED: [&str; 8] = [
+        "AA_AGENT_ID",
+        "AA_TRACE_ID",
+        "AA_SESSION_ID",
+        "AA_REGISTRATION_ID",
+        "AA_TEAM_ID",
+        "NODE_EXTRA_CA_CERTS",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+    ];
+
+    type Shared = Arc<Mutex<Vec<String>>>;
+
+    async fn register(
+        State(_): State<Shared>,
+        Json(_): Json<serde_json::Value>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "agent_id": AGENT_ID,
+                "registration_id": REGISTRATION_ID,
+                "trace_id": TRACE_ID,
+                "session_id": SESSION_ID,
+                "team_id": TEAM_ID,
+                "proxy_addr": PROXY_ADDR,
+            })),
+        )
+    }
+
+    async fn deregister(State(rec): State<Shared>, AxumPath(id): AxumPath<String>) -> StatusCode {
+        rec.lock().expect("recorder poisoned").push(id);
+        StatusCode::NO_CONTENT
+    }
+
+    /// Start a gateway that answers registration, returning its base URL.
+    ///
+    /// A mock rather than the real API on purpose: `POST /api/v1/agents` is not
+    /// served yet (AAASM-5323), and this file is not measuring that.
+    async fn start_mock_gateway() -> anyhow::Result<(String, tokio::task::JoinHandle<()>)> {
+        let recorder: Shared = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/api/v1/agents", post(register))
+            .route("/api/v1/agents/{id}", delete(deregister))
+            .with_state(recorder);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok((base, handle))
+    }
+
+    /// A `claude` stand-in that answers `--version` with a supported version and,
+    /// when launched, writes the variables it can see to `$AASM5327_ENV_DUMP`.
+    ///
+    /// `${VAR-__UNSET__}` — deliberately the `-` form, not `:-` — substitutes
+    /// only when the variable is unset, so an empty value is reported as an
+    /// empty value. A dump that collapsed the two could not fail for the defect
+    /// this file exists to catch.
+    fn write_stub_binary(dir: &Path) -> std::io::Result<PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin_dir = dir.join("bin");
+        std::fs::create_dir_all(&bin_dir)?;
+        let bin = bin_dir.join("claude");
+        let mut script = String::from(
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "2.1.999 (Claude Code)"
+  exit 0
+fi
+{
+"#,
+        );
+        for name in REPORTED.iter().copied().chain(std::iter::once(EMPTY_PROBE)) {
+            script.push_str(&format!("  printf '{name}=%s\\n' \"${{{name}-{UNSET}}}\"\n"));
+        }
+        script.push_str(
+            r#"} > "$AASM5327_ENV_DUMP"
+exit 0
+"#,
+        );
+        std::fs::write(&bin, script)?;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+        Ok(bin)
+    }
+
+    /// Absolute path to a **freshly built** `aasm` binary under test.
+    ///
+    /// Deliberately not `common::cli::aasm_command()`: that helper falls back to
+    /// `cargo run`, and these tests run the CLI with its working directory inside
+    /// a temp dir (the settings-path resolver prefers `<cwd>/.claude`, so leaving
+    /// the working directory in the repo would let the run write into the
+    /// checkout). `cargo run` cannot find a manifest from there.
+    ///
+    /// `aa-integration-tests` does not depend on `aa-cli`, so `cargo nextest run
+    /// -p aa-integration-tests` builds nothing of the CLI: a stale `aasm` left in
+    /// `target/` by an earlier build would be measured instead of the tree. That
+    /// is a false *pass* for a test whose entire subject is `aa-cli` behaviour —
+    /// it makes the suite silently unable to notice the defect coming back — so
+    /// the build is unconditional rather than a fallback for a missing file. It
+    /// is a no-op when the binary is current.
+    ///
+    /// `AASM_BIN_PATH` is the escape hatch for callers (CI) that built the binary
+    /// themselves and own its freshness. It also picks the debug profile
+    /// unconditionally; a `--release` run wanting the release binary must point
+    /// `AASM_BIN_PATH` at it.
+    fn aasm_binary() -> PathBuf {
+        if let Some(explicit) = std::env::var_os("AASM_BIN_PATH") {
+            return std::fs::canonicalize(&explicit)
+                .unwrap_or_else(|e| panic!("AASM_BIN_PATH={explicit:?} could not be resolved: {e}"));
+        }
+
+        // Built from the manifest dir, which is what lets the run itself stay
+        // hermetic in a temp working directory.
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "--quiet", "-p", "aa-cli", "--bin", "aasm"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .expect("failed to invoke cargo to build the aasm binary");
+        assert!(status.success(), "`cargo build -p aa-cli --bin aasm` failed");
+
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("aa-integration-tests always has a workspace-root parent")
+                    .join("target")
+            });
+        let bin = target.join("debug").join("aasm");
+        assert!(
+            bin.is_file(),
+            "no `aasm` binary at {} even after building it — set AASM_BIN_PATH. Skipping instead \
+             would leave the launch environment unmeasured.",
+            bin.display(),
+        );
+        bin
+    }
+
+    /// A host whose every Claude Code / Agent Assembly root is inside a temp dir.
+    struct GovernedHost {
+        _tmp: tempfile::TempDir,
+        root: PathBuf,
+        home: PathBuf,
+        project: PathBuf,
+        state_dir: PathBuf,
+        dump: PathBuf,
+        path_var: std::ffi::OsString,
+    }
+
+    impl GovernedHost {
+        fn create() -> anyhow::Result<Self> {
+            let tmp = tempfile::tempdir()?;
+            let root = tmp.path().to_path_buf();
+            let home = root.join("home");
+            let project = root.join("project");
+            std::fs::create_dir_all(home.join(".claude"))?;
+            std::fs::create_dir_all(&project)?;
+            let stub = write_stub_binary(&root)?;
+
+            // `PATH` is prefixed rather than replaced: `build_launch_command`'s
+            // `which` probe must find our stub first, while the child `aasm`
+            // keeps whatever else it needs from the host.
+            let mut parts = vec![stub.parent().expect("stub has a parent").to_path_buf()];
+            parts.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+            let path_var = std::env::join_paths(parts)?;
+
+            Ok(Self {
+                _tmp: tmp,
+                state_dir: root.join("state"),
+                dump: root.join("child-env.txt"),
+                root,
+                home,
+                project,
+                path_var,
+            })
+        }
+
+        /// The launch-env store the adapter will read at user scope.
+        ///
+        /// Resolved through the production [`ClaudeCodePaths`] rather than by
+        /// hand-joining path segments, so a change to the on-disk layout moves
+        /// this test with it instead of silently pointing it at nothing.
+        fn user_launch_env_store(&self) -> anyhow::Result<LaunchEnvStore> {
+            let paths = ClaudeCodePaths::default().with_state(self.state_dir.join("integrations"));
+            Ok(LaunchEnvStore::at(paths.launch_env_dir(SettingsScope::User)?))
+        }
+
+        /// Run `aasm run claude` against `api_url` and return the child stub's
+        /// self-reported environment.
+        fn run(&self, api_url: &str) -> anyhow::Result<BTreeMap<String, String>> {
+            let out = std::process::Command::new(aasm_binary())
+                .current_dir(&self.project)
+                .env("HOME", &self.home)
+                .env("PATH", &self.path_var)
+                .env("CLAUDE_CONFIG_DIR", self.home.join(".claude"))
+                .env("AASM_STATE_DIR", &self.state_dir)
+                .env("AA_CA_DIR", self.root.join("ca"))
+                .env("AASM_CLAUDE_MANAGED_ROOT", self.root.join("managed"))
+                .env("AASM5327_ENV_DUMP", &self.dump)
+                // Present but empty on the `aasm` process, so it reaches the
+                // child through `build_child_env`'s copy of the ambient
+                // environment and exercises the empty rendering.
+                .env(EMPTY_PROBE, "")
+                // Whatever the developer running this happens to have set must
+                // not stand in for what the adapter is supposed to inject.
+                .env_remove("NODE_EXTRA_CA_CERTS")
+                .args(["--api-url", api_url, "run", "claude"])
+                .output()
+                .expect("aasm run claude should execute");
+
+            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            assert!(
+                out.status.success(),
+                "aasm run claude should exit 0\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            );
+            let raw = std::fs::read_to_string(&self.dump).unwrap_or_else(|e| {
+                panic!(
+                    "the launched tool wrote no environment dump ({e}) — nothing was launched, so \
+                     nothing about the launch environment is established\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                )
+            });
+            Ok(raw
+                .lines()
+                .filter_map(|l| l.split_once('='))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect())
+        }
+    }
+
+    fn render(seen: &BTreeMap<String, String>) -> String {
+        seen.iter().map(|(k, v)| format!("{k}={v}\n")).collect()
+    }
+
+    /// The claim: the variables the adapter put on the launch command are the
+    /// ones the launched process actually has.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_adapters_launch_environment_reaches_the_launched_process() -> anyhow::Result<()> {
+        let real_home = RealHomeGuard::capture();
+        let (api_url, server) = start_mock_gateway().await?;
+
+        let host = GovernedHost::create()?;
+        host.user_launch_env_store()?
+            .set("NODE_EXTRA_CA_CERTS", CA_PATH_VALUE)?;
+
+        let seen = host.run(&api_url)?;
+
+        // ── the variable the whole product depends on ──────────────────────
+        //
+        // Without it the tool's Node runtime does not trust the Agent Assembly
+        // CA, the proxy cannot terminate TLS, and the traffic is never
+        // inspected — a launch that looks governed and is not.
+        assert_eq!(
+            seen.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
+            Some(CA_PATH_VALUE),
+            "the launched tool must receive the CA bundle the adapter injected; `{UNSET}` here \
+             means the adapter's environment was discarded and TLS interception is dead. Saw:\n{}",
+            render(&seen),
+        );
+
+        // ── the adapter's normalisation survives the merge ─────────────────
+        //
+        // `build_child_env` also sets these, to the gateway's bare `host:port`,
+        // which is not a proxy URL any HTTP client accepts (AAASM-5324). The
+        // adapter's normalised value has to be the one that lands.
+        let expected_proxy = format!("http://{PROXY_ADDR}");
+        for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
+            assert_eq!(
+                seen.get(key).map(String::as_str),
+                Some(expected_proxy.as_str()),
+                "`{key}` must carry the adapter's normalised proxy URL, not `build_child_env`'s \
+                 bare `{PROXY_ADDR}` — a bare authority is not a URL an HTTP client routes \
+                 through. Saw:\n{}",
+                render(&seen),
+            );
+        }
+
+        // ── and the session identity is still there ────────────────────────
+        //
+        // The merge adds a source; it must not cost the one that already worked.
+        for (key, expected) in [
+            ("AA_AGENT_ID", AGENT_ID),
+            ("AA_TRACE_ID", TRACE_ID),
+            ("AA_SESSION_ID", SESSION_ID),
+            ("AA_REGISTRATION_ID", REGISTRATION_ID),
+            ("AA_TEAM_ID", TEAM_ID),
+        ] {
+            assert_eq!(
+                seen.get(key).map(String::as_str),
+                Some(expected),
+                "the launched tool must still carry the identity the gateway issued in `{key}`; \
+                 saw:\n{}",
+                render(&seen),
+            );
+        }
+
+        real_home.assert_unchanged("cli_run_claude_launch_env");
+        server.abort();
+        Ok(())
+    }
+
+    /// The fixture's own honesty check: "absent" and "empty" must be
+    /// distinguishable in the dump, or the assertion above could pass on a child
+    /// that received `NODE_EXTRA_CA_CERTS=""` and trusts nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fixture_can_tell_an_absent_variable_from_an_empty_one() -> anyhow::Result<()> {
+        let real_home = RealHomeGuard::capture();
+        let (api_url, server) = start_mock_gateway().await?;
+
+        // No launch-env store is written, so nothing injects the CA variable.
+        let host = GovernedHost::create()?;
+        let seen = host.run(&api_url)?;
+
+        assert_eq!(
+            seen.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
+            Some(UNSET),
+            "with nothing installed, the CA variable must be reported as unset; saw:\n{}",
+            render(&seen),
+        );
+        assert_eq!(
+            seen.get(EMPTY_PROBE).map(String::as_str),
+            Some(""),
+            "a variable set to the empty string must be reported as empty, not as `{UNSET}` — a \
+             dump that cannot tell the two apart cannot fail for the bug this file targets. \
+             Saw:\n{}",
+            render(&seen),
+        );
+
+        real_home.assert_unchanged("cli_run_claude_launch_env");
+        server.abort();
+        Ok(())
+    }
+}
+
+/// A skip must be legible in the output; a test binary that silently contains no
+/// tests is indistinguishable from a passing one.
+#[cfg(not(unix))]
+#[test]
+fn the_launch_environment_is_not_measured_on_this_host() {
+    println!(
+        "SKIP [AAASM-5327]: measuring the launched process's environment needs a POSIX shell \
+         stand-in for the `claude` binary; this host is {}.",
+        std::env::consts::OS
+    );
+}
