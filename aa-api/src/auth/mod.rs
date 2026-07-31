@@ -10,7 +10,7 @@
 //! [`policy_auth`] — which couples to `aa_gateway::policy` and therefore cannot
 //! live in the leaf — still lives here in `aa-api`.
 
-pub use aa_auth::{api_key, config, gate, jwt, rate_limit, scope};
+pub use aa_auth::{api_key, config, gate, jwt, rate_limit, role, scope};
 pub use aa_auth::{AuthError, AuthenticatedCaller, Tenant};
 
 pub mod policy_auth;

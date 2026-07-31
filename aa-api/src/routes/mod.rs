@@ -23,6 +23,9 @@ pub(crate) mod enforcement_mirror;
 pub mod health;
 pub mod iam;
 pub mod logs;
+/// Native email/password auth endpoints (AAASM-5305, ADR 0031). Distinct from
+/// [`auth`], which owns the unchanged API-key → JWT `/auth/token` route.
+pub mod native_auth;
 pub mod ops;
 /// Over-permission derivation for the capability matrix (ADR 0029). Crate-internal:
 /// it is a projection helper, not an HTTP surface.
@@ -70,6 +73,18 @@ fn public_router() -> Router {
         .route("/ws/events", get(crate::ws::handler::ws_events_handler))
         // Auth
         .route("/auth/token", post(auth::issue_token))
+        // Native email/password auth (AAASM-5305, ADR 0031). These are mounted on
+        // the PUBLIC router for the same reason as /auth/token: they are how a
+        // human obtains a credential, so they must be reachable without one. The
+        // login/refresh handlers authenticate themselves (password / refresh
+        // cookie); invite-accept authenticates via the single-use token; methods
+        // is a public capability probe. The credential-requiring halves —
+        // /auth/invite (admin) and /auth/logout — are on the protected router.
+        .route("/auth/login", post(native_auth::login))
+        .route("/auth/register", post(native_auth::register))
+        .route("/auth/invite/accept", post(native_auth::invite_accept))
+        .route("/auth/refresh", post(native_auth::refresh))
+        .route("/auth/methods", get(native_auth::auth_methods))
         // AAASM-1389: real-time alert event stream.
         .route("/alerts/ws", get(crate::ws::alerts_handler::ws_alerts_handler))
         // Dev tool webhooks — HMAC-authenticated in-handler.
@@ -90,6 +105,11 @@ fn protected_router() -> Router {
         // dashboard makes before each WS connect so it never puts a long-lived
         // credential in the WS URL. Gated like every other protected route.
         .route("/auth/ws-ticket", post(auth::issue_ws_ticket))
+        // Native auth — credential-requiring halves (AAASM-5305, ADR 0031).
+        // invite is admin-scope-gated in-handler; logout revokes the caller's
+        // refresh session. Both sit behind the deny-by-default gate below.
+        .route("/auth/invite", post(native_auth::invite))
+        .route("/auth/logout", post(native_auth::logout))
         // Secret Injection — tool dispatch (AAASM-1920)
         .route("/dispatch_tool", post(dispatch::dispatch_tool))
         // Agents
