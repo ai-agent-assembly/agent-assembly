@@ -1130,7 +1130,10 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
         for (verb, outcome) in [
             (
                 "plan",
-                client.plan("claude-code", "recommended", "user", "", false).await.err(),
+                client
+                    .plan("claude-code", "recommended", "user", "", false, "")
+                    .await
+                    .err(),
             ),
             ("apply", client.apply("claude-code", "any-plan").await.err()),
             ("repair", client.repair("claude-code").await.err()),

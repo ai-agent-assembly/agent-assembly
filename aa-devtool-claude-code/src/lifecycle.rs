@@ -237,6 +237,18 @@ impl ClaudeCodeIntegration {
         path: &std::path::Path,
     ) -> Result<IntegrationPlan, AdapterError> {
         let document = managed_settings::managed_settings_document(profile)?;
+        // The disclosure the owner's model requires — path, reason, content,
+        // diff, conflict, backup, rollback — travels to the client as plan
+        // warnings, because the client renders the whole plan *before* it asks
+        // for confirmation and never sees the adapter directly. Nothing here is
+        // decorative: an authorization granted without the diff and the conflict
+        // in front of the user is not informed consent.
+        let disclosure = self
+            .managed_installer()
+            .map(|installer| installer.disclose(&document))
+            .transpose()
+            .map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?;
+
         let mut plan = plan
             .with_step(
                 IntegrationStep::new(
@@ -282,6 +294,29 @@ impl ClaudeCodeIntegration {
                  rather than merging over it"
                     .to_string(),
             );
+
+        if let Some(disclosure) = &disclosure {
+            plan = plan.warn(format!(
+                "the exact content that will be written to {} (sha256:{}): {}",
+                disclosure.target.display(),
+                disclosure.proposed_sha256,
+                disclosure.proposed.split_whitespace().collect::<Vec<_>>().join(" ")
+            ));
+            plan = plan.warn(if disclosure.diff.is_empty() {
+                format!(
+                    "{} already holds exactly this content; the install verifies it and asks for no \
+                     authorization",
+                    disclosure.target.display()
+                )
+            } else {
+                format!("changes against what is on this host: {}", disclosure.diff.join("  "))
+            });
+            plan = plan.warn(disclosure.backup.clone());
+            plan = plan.warn(disclosure.rollback.clone());
+            if let Some(conflict) = &disclosure.conflict {
+                plan = plan.warn(format!("CONFLICT — this plan will refuse: {conflict}"));
+            }
+        }
 
         if !self.paths.managed_root_is_canonical() {
             plan = plan.warn(format!(

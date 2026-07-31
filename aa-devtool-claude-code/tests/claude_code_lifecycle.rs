@@ -22,7 +22,7 @@ use aa_devtool_claude_code::managed_settings::{PrivilegedFileAuthority, MANAGED_
 use aa_devtool_claude_code::{ClaudeCodeAdapter, ClaudeCodeIntegration, ClaudeCodePaths};
 use aa_devtool_contract::{
     capability_conformance, DevToolIntegration, DevToolKind, EnvValue, IntegrationCapability, IntegrationRequest,
-    LaunchSpec, ProtectionLevel, ProtectionProfile, SettingsScope, StepAction,
+    LaunchSpec, ProtectionLevel, ProtectionProfile, SettingsScope, StepAction, StepPrivilege,
 };
 
 /// A fabricated PEM. Nothing verifies it here; the tests assert it is *copied*,
@@ -372,11 +372,33 @@ async fn the_managed_scope_plan_carries_exactly_one_privileged_step() {
         other => panic!("expected a managed settings write, got {other:?}"),
     }
 
-    // Every fact the owner required before authorization is requested.
+    // Every fact the owner required, disclosed before authorization is
+    // requested: path, why, content, diff, conflict, backup, rollback.
     let warnings = plan.warnings.join("\n");
     assert!(warnings.contains("one privileged step"), "{warnings}");
     assert!(warnings.contains("does not measure Claude Code"), "{warnings}");
     assert!(warnings.contains("never replaced"), "{warnings}");
+    assert!(
+        warnings.contains("the exact content that will be written"),
+        "{warnings}"
+    );
+    assert!(warnings.contains("disableBypassPermissionsMode"), "{warnings}");
+    assert!(warnings.contains("changes against what is on this host"), "{warnings}");
+    assert!(warnings.contains("no file to back up"), "{warnings}");
+    assert!(warnings.contains("integrations remove claude-code"), "{warnings}");
+    match &step.privilege {
+        StepPrivilege::PrivilegedHost { consent_prompt } => {
+            assert!(
+                consent_prompt.contains("administrator authorization"),
+                "{consent_prompt}"
+            );
+            assert!(
+                consent_prompt.contains("Nothing else runs with elevated"),
+                "{consent_prompt}"
+            );
+        }
+        other => panic!("the managed step must be privileged, got {other:?}"),
+    }
     assert!(
         step.render_dry_run().contains("privileged-host"),
         "{}",
@@ -658,4 +680,32 @@ async fn an_injected_probe_reaches_the_verification_result() {
     // The probe seam is exercised end to end (with a receipt) in
     // `aa-integration-tests`; here it is enough that the wiring accepts one.
     assert!(integration.as_launchable().is_some());
+}
+
+#[tokio::test]
+async fn a_conflicting_managed_file_is_disclosed_in_the_plan_as_a_refusal() {
+    // A managed-settings file Agent Assembly did not write — for example one an
+    // organisation's device management deployed — is never merged over. The plan
+    // says so before the user is asked for anything.
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let managed = fixture.settings_path(SettingsScope::Managed);
+    std::fs::create_dir_all(managed.parent().expect("parent")).expect("managed dir");
+    std::fs::write(
+        &managed,
+        r#"{"disableBypassPermissionsMode":true,"permissions":{"deny":["Bash"]}}"#,
+    )
+    .expect("third-party policy");
+
+    let integration = fixture.integration(Some("2.1.220"));
+    let plan = integration
+        .plan_integration(&request(SettingsScope::Managed))
+        .await
+        .expect("plan");
+    let warnings = plan.warnings.join("\n");
+    assert!(warnings.contains("CONFLICT"), "{warnings}");
+    assert!(warnings.contains("device management"), "{warnings}");
+
+    // And the third party's file is untouched by planning.
+    assert!(std::fs::read_to_string(&managed).expect("read").contains("Bash"));
 }
