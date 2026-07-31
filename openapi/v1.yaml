@@ -2063,6 +2063,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthMethodsResponse'
+  /api/v1/auth/password/reset:
+    post:
+      tags:
+      - auth
+      summary: Request a password-reset email (ADR 0031 §Q4).
+      description: |-
+        Enumeration-safe: always returns `202 Accepted` whether or not the email maps
+        to an account, so a caller can never probe which addresses are registered.
+        When the email does resolve to an active account, a single-use, expiring reset
+        token is minted (stored only as its hash) and the raw token is dispatched via
+        the configured mailer; the token is never logged and never returned on the
+        wire. A mail outage or an SMTP-less deployment does not change the response.
+      operationId: password_reset
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequest'
+        required: true
+      responses:
+        '202':
+          description: Reset request accepted (always, enumeration-safe)
+        '503':
+          description: Native auth not available (no Postgres)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/auth/password/reset/confirm:
+    post:
+      tags:
+      - auth
+      summary: |-
+        Confirm a password reset: consume the token and set the new password (ADR
+        0031 §Q4).
+      description: |-
+        Validates the new password against the minimum-length floor (`422` if weak),
+        then atomically consumes the single-use reset token — a missing, expired, or
+        already-used token is rejected with `422`. On success the password is
+        re-hashed with argon2id and installed, and every outstanding refresh session
+        for the account is revoked so any pre-existing session is forced to re-auth.
+        The token is never logged.
+      operationId: password_reset_confirm
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirmRequest'
+        required: true
+      responses:
+        '204':
+          description: Password reset; outstanding sessions revoked
+        '422':
+          description: Token expired/used/unknown or weak password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: Native auth not available (no Postgres)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/auth/refresh:
     post:
       tags:
@@ -7397,6 +7461,32 @@ components:
           format: int64
           description: Total policy versions across all pages.
           minimum: 0
+    PasswordResetConfirmRequest:
+      type: object
+      description: Request body for `POST /auth/password/reset/confirm` (ADR 0031 §Q4).
+      required:
+      - token
+      - new_password
+      properties:
+        new_password:
+          type: string
+          description: The new password to set (must clear the minimum-length floor).
+        token:
+          type: string
+          description: |-
+            The raw reset token delivered by email. Only its hash is stored server-
+            side; this is checked against that hash and consumed single-use.
+    PasswordResetRequest:
+      type: object
+      description: Request body for `POST /auth/password/reset` (ADR 0031 §Q4).
+      required:
+      - email
+      properties:
+        email:
+          type: string
+          description: |-
+            The account email to send a reset link to (case-insensitive). Whether it
+            exists is never revealed — the response is always `202`.
     PatternCount:
       type: object
       description: A per-kind hit count within the queried window.
