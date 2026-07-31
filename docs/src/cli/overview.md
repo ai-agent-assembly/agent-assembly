@@ -102,7 +102,7 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm policy simulate`](policy.md) | The simulation detected policy violations. |
 | [`aasm policy validate`](policy.md), [`aasm config validate`](config.md) | The file is invalid (error printed to stderr). |
 | [`aasm audit verify-chain`](audit.md) | The audit hash chain failed verification. |
-| [`aasm integrations`](integrations.md) | One of **nine** distinct outcomes — `1`, `3`–`9` each name a different next action. See [its exit-code table](integrations.md#exit-codes). |
+| [`aasm integrations`](integrations.md) | One of **eight** distinct failure outcomes — `1` and `3`–`9` each name a different next action (`2` is left to `clap`). They are the non-zero half of the nine-value `Outcome` vocabulary. See [its exit-code table](integrations.md#exit-codes). |
 
 ## Command groups
 
