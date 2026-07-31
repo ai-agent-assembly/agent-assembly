@@ -496,9 +496,13 @@ jobs:
     #   * aa-devtool, aa-devtool-codex, aa-devtool-windsurf,
     #     aa-devtool-claude-code, aa-devtool-copilot, aa-devtool-saas
     #     — dev-tool subsystem held back from this alpha (user
-    #     directive: not feature-complete). aa-cli omits the related
-    #     `aasm run` / `aasm tools` subcommands accordingly; they
-    #     return once the subsystem is finished in a future PR.
+    #     directive: not feature-complete). aa-cli omits its whole
+    #     front door accordingly — `aasm run`, `aasm tools` AND
+    #     `aasm integrations` (AAASM-5309) — and aa-runtime omits the
+    #     Developer Integration API bring-up that `aasm integrations`
+    #     talks to, so nothing published advertises a surface nothing
+    #     published can serve. All of it returns together once the
+    #     subsystem is finished.
     #   * aa-api, conformance, aa-integration-tests, examples/* —
     #     cloud/enterprise consumers and workspace-internal tooling.
     #
