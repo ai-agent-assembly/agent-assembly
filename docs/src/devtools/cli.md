@@ -71,7 +71,7 @@ currently doing. See the [product brief](product-brief.md) §6 and §7.
 | Profile | Enforcement | Sensitive-data finding | Notes |
 |---|---|---|---|
 | `recommended` (default) | Enforce | Redact and proceed | The default for every persona unless org policy says otherwise |
-| `strict` | Enforce | Redact, and block on configured high-severity classes | Narrower egress allowlist, more approvals |
+| `strict` | Enforce | Redact and proceed **today**; blocking on configured high-severity classes is _planned_ (AAASM-5277 / 5281) | Narrower egress allowlist, more approvals. Until blocking lands, `strict` differs from `recommended` on egress, approvals and budget only |
 | `observe-only` | Observe | Recorded; payload forwarded unchanged | **Never displayed as protection.** Status says monitoring |
 
 `--scope` selects the configuration surface (`user`, `project`, `managed`). It

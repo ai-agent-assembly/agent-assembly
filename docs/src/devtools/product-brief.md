@@ -120,7 +120,7 @@ protection works.
 
 | | |
 |---|---|
-| **Entry point** | A single command (`aasm integrations install claude-code` — _planned_, `AAASM-5280`) or an install action inside the tool. |
+| **Entry point** | A single command (`aasm integrations install claude-code` — shipped, `AAASM-5280`) or an install action inside the tool. |
 | **Mental model** | "I want my coding agent not to leak my secrets." No org, no policy authoring. |
 | **Must not have to understand** | MCP, proxies, CA certificates, `settings.json` paths, gateway endpoints, enforcement modes, `GovernanceLevel`. |
 | **Policy source** | The chosen protection profile's built-in defaults. |
@@ -195,7 +195,7 @@ follows from that split.
 | | |
 |---|---|
 | **User does** | Issues one install action and, if the plan touches something they own, confirms it. |
-| **AASM does** | Computes an **integration plan** before mutating anything — the exact set of files, keys and env changes it intends to make — then applies it transactionally and writes an **installation receipt** (_planned_, `AAASM-5278`). Today the primitive underneath exists: managed-key merge with atomic write (temp file + rename) preserving all unmanaged keys. |
+| **AASM does** | Computes an **integration plan** before mutating anything — the exact set of files, keys and env changes it intends to make — then applies it transactionally and writes an **installation receipt** (shipped, `AAASM-5278`), on top of the managed-key merge with atomic write (temp file + rename) that preserves all unmanaged keys. |
 | **Evidence produced** | The plan (reviewable before apply) and the receipt (the sole basis for later drift detection and removal). |
 | **Can fail** | Insufficient permissions; a conflicting managed configuration already present from another tool; partial application (see §9.3). |
 | **Invariant** | **Idempotent.** A second install on an unchanged system produces no additional change and no error. |

@@ -256,8 +256,8 @@ let status = client.status("claude-code").await?;
 println!("{} (verified at {})", status.achieved_level, status.observed_at_unix_secs);
 ```
 
-`aasm`'s own lifecycle commands become a DI-API client in
-[AAASM-5280](https://lightning-dust-mite.atlassian.net/browse/AAASM-5280); an
+`aasm`'s own lifecycle commands **are** a DI-API client
+([AAASM-5280](https://lightning-dust-mite.atlassian.net/browse/AAASM-5280)); an
 in-process `--local` fallback is deliberately not offered, because it would be a
 second code path with a different trust model.
 
