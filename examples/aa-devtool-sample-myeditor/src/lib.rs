@@ -1,7 +1,7 @@
 //! Sample [`DevToolAdapter`] implementation for a fictional `MyEditor` IDE.
 //!
 //! This crate exists as a **reference for plugin authors** (see
-//! [`docs/devtools/plugins.md`]). It is intentionally hand-rolled — no
+//! [`docs/src/devtools/plugins.md`]). It is intentionally hand-rolled — no
 //! real `myeditor` binary exists. Detection succeeds when an env var
 //! pointing at a stub binary is set; MCP-server discovery reads a
 //! fixture JSON shipped under `fixtures/mcp_servers.json`. Concrete
@@ -9,7 +9,7 @@
 //! tracked separately in AAASM-201..205 and AAASM-918.
 //!
 //! [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
-//! [`docs/devtools/plugins.md`]: https://github.com/ai-agent-assembly/agent-assembly/blob/master/docs/devtools/plugins.md
+//! [`docs/src/devtools/plugins.md`]: https://github.com/ai-agent-assembly/agent-assembly/blob/main/docs/src/devtools/plugins.md
 
 #![warn(missing_docs)]
 
