@@ -18,6 +18,13 @@ on:
       - ".github/workflows/release.yml"
       - ".github/workflows/release-completeness.yml"
       - "scripts/check-release-completeness.sh"
+      # AAASM-5309: the publish-surface gate reads the post-strip shape of the
+      # CLI's dispatch table and the runtime's DI-API bring-up, so it must run
+      # when either of those — or the strip itself — changes.
+      - ".ci/strip-for-publish.sh"
+      - "scripts/check-publish-surface.sh"
+      - "aa-cli/src/commands/mod.rs"
+      - "aa-runtime/src/runtime.rs"
   workflow_dispatch:
 
 jobs:
@@ -34,3 +41,16 @@ jobs:
 
       - name: Run release-artifact completeness gate
         run: bash scripts/check-release-completeness.sh
+
+  publish-surface:
+    # AAASM-5309: the sibling gate above proves the release *ships* what it
+    # should. This one proves what ships is coherent — that the published CLI
+    # does not advertise a command family whose server the strip removes. No
+    # toolchain: the gate strips a throwaway copy of the tree and reads it.
+    name: Published-surface coherence gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run published-surface coherence gate
+        run: bash scripts/check-publish-surface.sh
