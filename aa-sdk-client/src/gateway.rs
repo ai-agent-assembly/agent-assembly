@@ -13,7 +13,9 @@
 //! subsequent `CheckActionRequest`s (see `query_policy`).
 
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_client::AgentLifecycleServiceClient;
-use aa_proto::assembly::agent::v1::{ChallengeRequest, ChallengeResponse, RegisterRequest, RegisterResponse};
+use aa_proto::assembly::agent::v1::{
+    ChallengeRequest, ChallengeResponse, DeregisterRequest, DeregisterResponse, RegisterRequest, RegisterResponse,
+};
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use tonic::transport::Channel;
 
@@ -66,6 +68,26 @@ impl GatewayRegistrationClient {
         let resp = self
             .client
             .register(request)
+            .await
+            .map_err(|status| SdkClientError::RegisterFailed(status.message().to_string()))?;
+        Ok(resp.into_inner())
+    }
+
+    /// Call `AgentLifecycleService.Deregister` to release the registration this
+    /// client obtained.
+    ///
+    /// Lives here rather than being re-implemented per caller for the same
+    /// reason `register` does: deregistration is authenticated by the
+    /// `credential_token` `register` minted, so the two halves of one
+    /// registration must not be able to drift onto different transports. The
+    /// REST `DELETE /api/v1/agents/{id}` route is *not* an equivalent — it is
+    /// authenticated by an operator bearer token rather than by the agent's own
+    /// credential, so reaching for it would authorise the teardown under a
+    /// different principal than the one that registered (AAASM-5323).
+    pub async fn deregister(&mut self, request: DeregisterRequest) -> Result<DeregisterResponse, SdkClientError> {
+        let resp = self
+            .client
+            .deregister(request)
             .await
             .map_err(|status| SdkClientError::RegisterFailed(status.message().to_string()))?;
         Ok(resp.into_inner())
