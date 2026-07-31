@@ -54,6 +54,14 @@ pub struct InstallArgs {
     #[arg(long)]
     pub allow_privileged_host_steps: bool,
 
+    /// Install the tool's administrator-managed settings file, asking for
+    /// administrator authorization for that one file write.
+    ///
+    /// Off by default; the default install is fully unprivileged and cannot
+    /// reach `Host Enforced`. See `aasm integrations plan --help`.
+    #[arg(long)]
+    pub install_managed_settings: bool,
+
     /// Apply without asking. Required for non-interactive and `--output json`
     /// runs, which have no way to answer a prompt.
     #[arg(long)]
@@ -74,6 +82,7 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
             scope: args.scope,
             policy_profile: args.policy_profile.clone(),
             allow_privileged_host_steps: args.allow_privileged_host_steps,
+            install_managed_settings: args.install_managed_settings,
         };
         let plan = super::plan::author(&mut session, &plan_args).await?;
 
@@ -90,11 +99,16 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
             _ => eprint!("{}", plan.render_human()),
         }
 
+        // The prompt names what is being authorized. A privileged step that
+        // reached the confirmation as an unremarkable "Apply this plan?" would
+        // be consent in form and not in substance — the disclosure above is what
+        // makes it informed, and this line is what makes it deliberate.
         let prompt = if plan.required_permissions.is_empty() {
             format!("Apply this plan to {}?", args.tool)
         } else {
             format!(
-                "Apply this plan to {}, including {} permission(s) that change host state?",
+                "Apply this plan to {}, including {} permission(s) that change host state \
+                 and will ask for administrator authorization?",
                 args.tool,
                 plan.required_permissions.len()
             )

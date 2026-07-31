@@ -21,7 +21,7 @@ reference. Where the two differ, the brief is canonical.
 |---|---|---|
 | **Integrated** | The tool's *startup posture* is governed and its actions are attributable. | **Yes.** |
 | **Gateway Protected** | Model-bound and tool-bound traffic is inspected, redacted and allow/deny-enforced in flight. | **Mechanism proven; not reportable on a default build** — see [below](#why-gateway-protected-is-not-reportable-today). |
-| **Host Enforced** | The *machine* is constrained, so a process cannot escape by launching outside the managed path. | **No.** Reported as *unavailable on this platform*, never omitted. |
+| **Host Enforced** | The tool's policy lives on a surface the developer cannot rewrite, verified by read-back after an authorized write. | **Opt-in only** — `--install-managed-settings`, macOS. A default install can never reach it. |
 
 Two reporting rules apply at every rung:
 
@@ -90,17 +90,41 @@ Two reporting rules apply at every rung:
 
 | | |
 |---|---|
-| **What it would protect** | The machine, not the integration. Enforcement at the operating-system boundary, so a process could not escape by unsetting an environment variable, launching the tool directly, or opening its own socket. |
-| **Testable entry criteria** | An OS-level enforcement facility is installed, active, and **demonstrated to block a deliberately unmanaged launch** — the bypass that defeats both levels above must be shown to fail. |
-| **Availability** | **Not available.** macOS Endpoint Security and Network Extension are explicit non-goals; Windows and Linux host enforcement are out of scope. `aa-ebpf` is Linux-only and is a *detection* layer — it observes SSL and exec/file syscalls but cannot modify traffic in flight, so it cannot supply this level either. |
-| **Reporting requirement** | The level is **named and reported as unavailable**, not hidden. Silence reads as "there is nothing above what I have", which is the over-claim this whole model exists to prevent. |
-| **Maps to L0–L3** | Nothing. It is *not* `L3Native`: `L3Native` means Agent Assembly writes the tool's own native configuration so governance survives Agent Assembly going offline — a property of `Integrated`. Host enforcement is orthogonal to the L0–L3 scale, which describes what a tool adapter achieves, not what the OS enforces. |
+| **What it protects** | The tool's *policy surface*, not just its configuration. The governing document lives where the developer running the tool cannot rewrite it, so unsetting a variable or editing a settings file cannot widen it. |
+| **Testable entry criteria** | `Gateway Protected`, **plus** an endpoint managed-settings file that Agent Assembly installed under explicit administrator authorization and then **read back and verified**: exact authorized bytes, valid managed-settings document carrying the managed-only keys, owned by the expected principal, not writable by anyone else. |
+| **Availability** | **Opt-in, macOS only.** Reached only through `aasm integrations install claude-code --install-managed-settings`. Never part of a default install, never implied by a profile, never reachable at `--scope user` or `--scope project`. |
+| **Reporting requirement** | Named and reported with its reason whenever it is *not* active, and reported with its caveat whenever it *is*. |
+| **Maps to L0–L3** | Nothing. It is *not* `L3Native`: `L3Native` means Agent Assembly writes the tool's own native configuration so governance survives Agent Assembly going offline — a property of `Integrated`. Host enforcement is orthogonal to the L0–L3 scale. |
 
-> **No non-overridable-enforcement claim is made anywhere in this product.** The
-> strongest available bypass counters live in Claude Code's endpoint
-> managed-settings file, that file was deliberately never written to, and its
-> managed-only keys remain **unmeasured**. See
-> [Limitations](limitations.md#the-managed-settings-path-is-unmeasured).
+### The one privileged operation
+
+The default install is fully unprivileged. `--install-managed-settings` adds
+**exactly one** step that changes host state: placing a single file at
+`/Library/Application Support/ClaudeCode/managed-settings.json`, owned by root.
+`aasm` itself never runs as root, and no other step in any plan asks for
+authorization.
+
+Before authorization is requested, the plan states the exact target path, why
+the privileged write is required, the exact bytes and their diff against what is
+already there, any existing-file conflict, and the backup and rollback
+behaviour. `aasm integrations remove claude-code` reverses it symmetrically —
+restoring the file that was there before, or leaving a host that had none with
+none.
+
+### What this level does and does not claim
+
+> `Host Enforced` means: **the managed policy is installed at the OS-managed
+> path, owned as expected, and not writable by you.** It does **not** mean a
+> bypass has been demonstrated to fail. Anthropic documents the managed-only
+> keys as non-overridable; Agent Assembly has not measured a real override
+> attempt against a managed device, and the evidence detail behind every
+> `Host Enforced` reading says so. See
+> [Limitations](limitations.md#the-managed-settings-file-can-be-installed-its-enforcement-is-still-unmeasured).
+
+Kernel-level enforcement remains out of scope: macOS Endpoint Security and
+Network Extension are explicit non-goals, and `aa-ebpf` is Linux-only and is a
+*detection* layer — it observes SSL and exec/file syscalls but cannot modify
+traffic in flight.
 
 ---
 
@@ -113,6 +137,7 @@ prints it rather than summarising it.
 |---|---|---|
 | **Exercised** | Traffic was produced on the protected path and the core adjudicated what happened to it. | `Gateway Protected` |
 | **Read-back** | A managed value on disk matches what the receipt says was written. Proves a file is correct; proves nothing about traffic. | `Integrated` |
+| **Host-attested** | An enforcement surface reported on itself and the report was attributed to this tool. For Claude Code this is the read-back of the endpoint managed-settings file after an authorized install — content, owner and permissions. | `Host Enforced` |
 | **Absent** | A check could not be made. Recorded so the gap is legible. Absent readings only ever *lower* a state. | — |
 
 A detected bypass becomes **Absent** evidence rather than a silent pass. With

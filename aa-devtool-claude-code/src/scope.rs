@@ -27,21 +27,27 @@
 //! * **Project** — `<project root>/.claude/settings.json`. Checked in, shared,
 //!   and workspace-trust gated; selectable, never a default.
 //! * **Managed** — `/Library/Application Support/ClaudeCode/managed-settings.json`.
-//!   Root-owned, absent on an unmanaged host, and **unmeasured**: the AAASM-5276
-//!   spike deliberately made no privileged writes, so its managed-only keys
-//!   (`disableBypassPermissionsMode`, `allowManagedPermissionRulesOnly`, …)
-//!   remain unproven. [`ClaudeCodePaths::settings_path`] resolves it so the
-//!   surface can be *named* in a refusal, and nothing in this crate writes to it.
+//!   Root-owned and absent on an unmanaged host. Since AAASM-5298 this scope
+//!   *resolves* and is writable, but only through the explicitly authorized,
+//!   read-back-verified path in [`managed_settings`](crate::managed_settings) —
+//!   never as part of a default install. A caller that names this scope is
+//!   asking for one administrator-authorized file write, and gets a refusal
+//!   rather than a silent downgrade when that authorization is unavailable.
+//!
+//! # The managed-root test seam
+//!
+//! `AASM_CLAUDE_MANAGED_ROOT` (and [`ClaudeCodePaths::with_managed_root`])
+//! redirect where the managed file is *addressed*. That cannot be used to
+//! escalate: [`MacOsAdminAuthority`](crate::managed_settings::MacOsAdminAuthority)
+//! refuses to elevate for any target that is not the canonical
+//! [`MANAGED_SETTINGS_PATH`], so a redirected root makes the write ordinary and
+//! unprivileged rather than pointing an authorized write somewhere else.
 
 use std::path::{Path, PathBuf};
 
 use aa_devtool_contract::SettingsScope;
 
-/// The macOS endpoint managed-settings file.
-///
-/// Named so a refusal can name it. Deliberately never written to — see the
-/// module docs.
-pub const MANAGED_SETTINGS_PATH: &str = "/Library/Application Support/ClaudeCode/managed-settings.json";
+pub use crate::managed_settings::{MANAGED_SETTINGS_DIR, MANAGED_SETTINGS_FILE, MANAGED_SETTINGS_PATH};
 
 /// Directory Claude Code keeps its user configuration in, relative to `$HOME`.
 pub const DOT_CLAUDE: &str = ".claude";
@@ -89,6 +95,9 @@ pub struct ClaudeCodePaths {
     state: Option<PathBuf>,
     /// The proxy CA certificate this integration copies its trust material from.
     ca_source: Option<PathBuf>,
+    /// The directory the endpoint managed-settings file lives in. `None` means
+    /// the canonical OS location.
+    managed_root: Option<PathBuf>,
 }
 
 impl ClaudeCodePaths {
@@ -103,6 +112,7 @@ impl ClaudeCodePaths {
             project: std::env::current_dir().ok(),
             state: Some(state_root()),
             ca_source: Some(ca_source()),
+            managed_root: non_empty_var("AASM_CLAUDE_MANAGED_ROOT"),
         }
     }
 
@@ -141,13 +151,35 @@ impl ClaudeCodePaths {
         self
     }
 
+    /// Pin the directory the endpoint managed-settings file is addressed in.
+    ///
+    /// A redirected root cannot escalate — see the module docs.
+    #[must_use]
+    pub fn with_managed_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.managed_root = Some(root.into());
+        self
+    }
+
+    /// Whether the managed surface is addressed at its canonical OS location.
+    ///
+    /// The privileged authority elevates only for the canonical path, so a
+    /// redirected root is a test seam and reported as such rather than being
+    /// presented to a user as an endpoint-managed install.
+    pub fn managed_root_is_canonical(&self) -> bool {
+        // `Option::is_none_or` would read better but is stable only from 1.82;
+        // this crate's floor is lower.
+        match self.managed_root.as_deref() {
+            Some(root) => root == Path::new(MANAGED_SETTINGS_DIR),
+            None => true,
+        }
+    }
+
     /// The settings file for `scope`.
     ///
     /// # Errors
     ///
     /// [`ScopeError::Unresolvable`] when the scope's root is unknown on this
-    /// host, and [`ScopeError::Refused`] for
-    /// [`SettingsScope::Managed`] — see the module docs.
+    /// host.
     pub fn settings_path(&self, scope: SettingsScope) -> Result<PathBuf, ScopeError> {
         match scope {
             SettingsScope::User => Ok(self.user_config_dir()?.join(SETTINGS_FILE)),
@@ -158,15 +190,20 @@ impl ClaudeCodePaths {
                 })?;
                 Ok(project.join(DOT_CLAUDE).join(SETTINGS_FILE))
             }
-            SettingsScope::Managed => Err(ScopeError::Refused {
-                scope,
-                detail: format!(
-                    "{MANAGED_SETTINGS_PATH} is administrator-owned and Agent Assembly will not write to it. \
-                     Its enforcement keys are unmeasured and installing them needs a privileged step this \
-                     integration deliberately does not take; choose --scope user or --scope project"
-                ),
-            }),
+            SettingsScope::Managed => Ok(self.managed_settings_path()),
         }
+    }
+
+    /// The endpoint managed-settings file this host addresses.
+    ///
+    /// Always resolvable — the file's *absence* is what an unmanaged host looks
+    /// like, and a path that could not be named could not be shown to a user
+    /// before they authorize a write to it.
+    pub fn managed_settings_path(&self) -> PathBuf {
+        self.managed_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(MANAGED_SETTINGS_DIR))
+            .join(MANAGED_SETTINGS_FILE)
     }
 
     /// Claude Code's user configuration directory.
@@ -189,10 +226,7 @@ impl ClaudeCodePaths {
         [SettingsScope::User, SettingsScope::Project, SettingsScope::Managed]
             .into_iter()
             .filter_map(|scope| {
-                let path = match scope {
-                    SettingsScope::Managed => PathBuf::from(MANAGED_SETTINGS_PATH),
-                    other => self.settings_path(other).ok()?,
-                };
+                let path = self.settings_path(scope).ok()?;
                 path.is_file().then_some(DetectedSurface { scope, path })
             })
             .collect()
@@ -345,15 +379,28 @@ mod tests {
     }
 
     #[test]
-    fn the_managed_surface_is_named_and_refused() {
+    fn the_managed_surface_resolves_to_the_canonical_os_path_by_default() {
         let dir = tempfile::tempdir().unwrap();
-        match paths(dir.path()).settings_path(SettingsScope::Managed) {
-            Err(ScopeError::Refused { detail, .. }) => {
-                assert!(detail.contains(MANAGED_SETTINGS_PATH), "{detail}");
-                assert!(detail.contains("--scope user"), "{detail}");
-            }
-            other => panic!("managed scope must be refused, got {other:?}"),
-        }
+        let p = paths(dir.path());
+        assert_eq!(
+            p.settings_path(SettingsScope::Managed).unwrap(),
+            PathBuf::from(MANAGED_SETTINGS_PATH)
+        );
+        assert!(p.managed_root_is_canonical());
+    }
+
+    #[test]
+    fn a_redirected_managed_root_is_reported_as_not_canonical() {
+        // The seam every test uses, and the reason a redirected install can
+        // never be presented as an endpoint-managed one: the privileged
+        // authority elevates only for the canonical path.
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path()).with_managed_root(dir.path().join("ClaudeCode"));
+        assert_eq!(
+            p.settings_path(SettingsScope::Managed).unwrap(),
+            dir.path().join("ClaudeCode").join(MANAGED_SETTINGS_FILE)
+        );
+        assert!(!p.managed_root_is_canonical());
     }
 
     #[test]

@@ -435,10 +435,11 @@ active`.
 
 | | |
 |---|---|
-| **What it would protect** | The machine, not the integration. Enforcement applied at the operating-system boundary so a process cannot escape by unsetting an environment variable, launching the tool directly, or opening its own socket. |
-| **Testable entry criteria** | An OS-level enforcement facility is installed, active, and demonstrated to block a *deliberately unmanaged* launch — i.e. the bypass that defeats §7.1 and §7.2 must be shown to fail. |
-| **Availability** | **Not available in this MVP.** macOS Endpoint Security and Network Extension are explicit non-goals (§10), and Windows/Linux host enforcement is out of scope. The `aa-ebpf` layer is Linux-only and is a **detection** layer — it observes SSL and exec/file syscalls but cannot modify traffic in flight, so it cannot supply this level either. |
-| **Product requirement** | The level must be **named and reported as unavailable**, not hidden. A user reading status must be able to see that a stronger tier exists and that this machine does not have it. Silence here reads as "there is nothing above what I have", which is the over-claim this whole section exists to prevent. |
+| **What it protects** | The tool's *policy surface*, not just its configuration: the governing document lives where the developer running the tool cannot rewrite it, so unsetting a variable or editing a settings file cannot widen it. |
+| **Testable entry criteria** | §7.2, **plus** an endpoint managed-settings file that Agent Assembly installed under explicit administrator authorization and then read back and verified — exact authorized bytes, valid managed-settings document carrying the managed-only keys, owned by the expected principal, not writable by anyone else. |
+| **Availability** | **Opt-in, macOS, one privileged file write** (`AAASM-5298`). Reached only through `aasm integrations install claude-code --install-managed-settings`; never part of a default install, never implied by a profile, and unreachable at `user` or `project` scope. `aasm` itself never runs as root. Kernel-level enforcement stays out of scope: macOS Endpoint Security and Network Extension remain explicit non-goals (§10), and `aa-ebpf` is Linux-only and is a **detection** layer that cannot modify traffic in flight. |
+| **What it does not claim** | That a bypass was demonstrated to fail. Anthropic documents the managed-only keys as non-overridable; Agent Assembly has **not** measured a real override attempt against a managed device (the open half of `AAASM-5276` condition C6). Every `Host Enforced` reading carries that caveat in its evidence detail. |
+| **Product requirement** | The level must be **named with its reason whenever it is not active**, and **with its caveat whenever it is**. Silence reads as "there is nothing above what I have", which is the over-claim this whole section exists to prevent. |
 | **Maps to `GovernanceLevel`** | Nothing today. It is not `L3Native`: `L3Native` means AASM writes the tool's *own* native configuration so governance survives AASM going offline — that is a property of `Integrated`, not a host-level control. Host enforcement is orthogonal to the L0–L3 scale, which describes what a tool adapter achieves, not what the OS enforces. |
 
 ### 7.4 Level reporting rules
@@ -724,8 +725,9 @@ else on the machine.
 > **When** `status` is invoked in each,
 > **Then** (a) reports at most `Integrated` and explicitly does **not** claim sensitive-data
 > protection; (b) reports `Gateway Protected` and names the mechanisms confirmed by exercise as
-> distinct from those confirmed by read-back; and (c) in every case reports `Host Enforced` as
-> **unavailable on this platform** rather than omitting it.
+> distinct from those confirmed by read-back; and (c) in every case names `Host Enforced` rather
+> than omitting it — with the reason it is not active on a default install, and with the caveat on
+> what the attestation covers when an authorized managed-settings install has been verified.
 
 ### 11.9 Core stopped mid-session fails closed
 
@@ -785,7 +787,7 @@ corresponding section of this document changes rather than being quietly worked 
 | C1 | The security core lives in Agent Assembly; integration surfaces are thin and non-authoritative. | §1. No enforcement logic ships inside a plugin. |
 | C2 | MCP is optional, never the plugin architecture. | §2. No lifecycle stage may require MCP. |
 | C3 | `Integrated` and `Gateway Protected` cannot claim host-level bypass prevention. | §7. Stated in product copy, not only in docs. |
-| C4 | `Host Enforced` is unavailable in this MVP, and its absence is reported rather than hidden. | §7.3, §10.3. |
+| C4 | `Host Enforced` is reachable only through an explicit, authorized, read-back-verified managed-settings install; a successful *normal* installation never implies it, and when it is not active the reason is reported rather than hidden. | §7.3, §10.3. |
 | C5 | Default posture is fail-closed. | §9. |
 | C6 | MVP is macOS + Claude Code; the model stays multi-tool. | §10. |
 | C7 | Detection is the existing deterministic scanner; it is incomplete by nature. | G1. Never claim complete detection. |

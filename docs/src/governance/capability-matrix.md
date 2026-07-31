@@ -141,17 +141,21 @@ which declares `L2Enforce` overall while achieving L3 on individual capabilities
 
 ‡ **Declared from the write path, not from an exercised block.** The mechanism is native and
 survives Agent Assembly going offline, which is what L3 denotes; the *effect* was not measured by
-`AAASM-5276`, and the endpoint managed-settings keys that would make it non-overridable are
-unmeasured (see below).
+`AAASM-5276`, and the endpoint managed-settings keys that would make it non-overridable remain
+unmeasured even though the file itself can now be installed (see below).
 
 **Honest boundaries for Claude Code:**
-- **No non-overridable-enforcement claim is made.**
-  `/Library/Application Support/ClaudeCode/managed-settings.json` is root-owned; the Spike
-  deliberately made no privileged writes, so its managed-only keys
-  (`allowManagedPermissionRulesOnly`, `disableBypassPermissionsMode`, …) — the strongest available
-  bypass counters — remain **unmeasured** (`AAASM-5276` condition C6). `--scope managed` is
-  refused, and the path is resolved only so a refusal can name it. Measuring it on a managed macOS
-  device is tracked by `AAASM-5298`.
+- **The endpoint managed-settings file is installable; its enforcement is still unmeasured.**
+  `/Library/Application Support/ClaudeCode/managed-settings.json` is root-owned. Since
+  `AAASM-5298`, `aasm integrations install claude-code --install-managed-settings` installs it
+  through one explicitly authorized file write, verified by read-back (exact authorized bytes,
+  expected owner, not writable by anyone else). That is the only route to `HostEnforced`, and a
+  default install cannot reach it. **What is still unmeasured is the other half of `AAASM-5276`
+  condition C6:** the managed-only keys (`allowManagedPermissionRulesOnly`,
+  `disableBypassPermissionsMode`, …) are documented as non-overridable, and no real override
+  attempt has been measured against a managed device. `HostEnforced` therefore claims *the policy
+  is installed where you cannot rewrite it*, not *this bypass was demonstrated to fail*, and every
+  status carries that caveat.
 - **`Gateway Protected` is reportable only on adjudicated evidence.** The shipped probe drives one
   request down the protected path and reads back the proxy's verdict for that exact request —
   including a re-inspection of the payload the proxy resolved to forward — so
@@ -243,7 +247,8 @@ requiring a new adapter.
 - `AAASM-5274` — DevTool reconciliation; resolved Claude Code's overall `governance_level()` to `L2Enforce`
 - `AAASM-5276` — Claude Code lifecycle Spike; the measured evidence behind the Claude Code row
 - `AAASM-5281` — Claude Code productization (CA trust injection, side-channel scoping, explicit scope)
-- `AAASM-5298` — measure the endpoint managed-settings path on a managed macOS device (open)
+- `AAASM-5298` — the authorized endpoint managed-settings install (delivered); measuring the
+  managed-only keys against a real override attempt on a managed macOS device (still open)
 - `docs/src/devtools/protection-levels.md` — `Integrated` / `Gateway Protected` / `Host Enforced`
 - `docs/src/devtools/limitations.md` — demonstrated-versus-inferred bypasses and other honest limits
 - `AAASM-202` — Codex adapter

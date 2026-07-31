@@ -14,13 +14,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aa_devtool_claude_code::lifecycle::{
-    CA_ENV_VAR, MITM_HOSTS, STEP_MANAGED_SETTINGS, STEP_NODE_EXTRA_CA_CERTS, STEP_PROTECTION_TEST, STEP_PROXY_CA,
-    STEP_PROXY_ENV, STEP_SIDE_CHANNEL_SCOPE,
+    CA_ENV_VAR, MITM_HOSTS, STEP_ENDPOINT_MANAGED_SETTINGS, STEP_MANAGED_SETTINGS, STEP_NODE_EXTRA_CA_CERTS,
+    STEP_PROTECTION_TEST, STEP_PROXY_CA, STEP_PROXY_ENV, STEP_SIDE_CHANNEL_SCOPE,
 };
+use aa_devtool_claude_code::managed_settings::testing::FakeAuthority;
+use aa_devtool_claude_code::managed_settings::{PrivilegedFileAuthority, MANAGED_ONLY_KEYS};
 use aa_devtool_claude_code::{ClaudeCodeAdapter, ClaudeCodeIntegration, ClaudeCodePaths};
 use aa_devtool_contract::{
     capability_conformance, DevToolIntegration, DevToolKind, EnvValue, IntegrationCapability, IntegrationRequest,
-    LaunchSpec, ProtectionLevel, ProtectionProfile, SettingsScope, StepAction,
+    LaunchSpec, ProtectionLevel, ProtectionProfile, SettingsScope, StepAction, StepPrivilege,
 };
 
 /// A fabricated PEM. Nothing verifies it here; the tests assert it is *copied*,
@@ -59,6 +61,11 @@ impl Fixture {
             .with_project(self.root().join("repo"))
             .with_state(self.root().join("state"))
             .with_ca_source(self.ca_source())
+            // The managed surface is redirected into the fixture, and the real
+            // authority refuses to elevate for anything but the canonical path —
+            // so nothing here can reach an administrator prompt or the real
+            // `/Library/Application Support/ClaudeCode`.
+            .with_managed_root(self.root().join("ClaudeCode"))
     }
 
     /// A stub `claude` binary file. Never executed — the version probe is
@@ -77,9 +84,20 @@ impl Fixture {
     }
 
     fn integration(&self, version: Option<&str>) -> ClaudeCodeIntegration {
+        self.integration_with_authority(version, FakeAuthority::granting())
+    }
+
+    /// An integration whose one privileged step elevates through `authority` —
+    /// always a test double, never the real macOS one.
+    fn integration_with_authority(
+        &self,
+        version: Option<&str>,
+        authority: Arc<dyn PrivilegedFileAuthority>,
+    ) -> ClaudeCodeIntegration {
         ClaudeCodeIntegration::with_paths(self.paths())
             .with_adapter(self.adapter(version))
             .through_proxy("http://127.0.0.1:18899")
+            .with_managed_authority(authority)
     }
 
     fn settings_path(&self, scope: SettingsScope) -> PathBuf {
@@ -122,10 +140,20 @@ fn base_url_redirection_and_hooks_are_declared_unsupported_with_reasons() {
         .expect("hooks must be declared unsupported for protection");
     assert!(hooks.contains("cannot see or modify"), "{hooks}");
 
-    let host = caps
+    // Host enforcement is offered — but only through the opt-in privileged
+    // path. `next_level` is where a status says why it is not active.
+    assert!(
+        caps.unsupported_reason(IntegrationCapability::HostEnforcement)
+            .is_none(),
+        "an authority that can be asked makes host enforcement a declared capability"
+    );
+    let unavailable = fixture
+        .integration_with_authority(Some("2.1.220"), FakeAuthority::unavailable())
+        .capabilities();
+    let host = unavailable
         .unsupported_reason(IntegrationCapability::HostEnforcement)
-        .expect("host enforcement must be reported as unavailable, never omitted");
-    assert!(host.contains("system trust store"), "{host}");
+        .expect("a host with no authorization mechanism must say so, never omit it");
+    assert!(host.contains("cannot be installed on this host"), "{host}");
 }
 
 #[test]
@@ -278,18 +306,121 @@ async fn a_project_scoped_plan_writes_only_the_project_surface() {
     }
 }
 
+// ── The one privileged step (AAASM-5298) ────────────────────────────────────
+
 #[tokio::test]
-async fn the_managed_settings_surface_is_refused_rather_than_written() {
+async fn a_normal_install_contains_no_privileged_step_and_cannot_claim_host_enforcement() {
+    // The governing rule of AAASM-5298, at the plan layer: an unprivileged plan
+    // has no step that could produce host-attested evidence, and says so.
     let fixture = Fixture::new();
     fixture.write_ca();
     let integration = fixture.integration(Some("2.1.220"));
-    let err = integration
-        .plan_integration(&request(SettingsScope::Managed))
+
+    for scope in [SettingsScope::User, SettingsScope::Project] {
+        let plan = integration
+            .plan_integration(&request(scope).requesting_level(ProtectionLevel::HostEnforced))
+            .await
+            .expect("plan");
+        plan.validate().expect("validate");
+        assert_eq!(plan.privileged_steps().count(), 0, "{scope} install must not elevate");
+        assert!(
+            !plan.steps.iter().any(|s| s.id == STEP_ENDPOINT_MANAGED_SETTINGS),
+            "{scope} install must not write the endpoint-managed file"
+        );
+        assert_eq!(
+            plan.planned_level,
+            ProtectionLevel::GatewayProtected,
+            "{scope} install must be capped below HostEnforced even when it is asked for"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_managed_scope_plan_carries_exactly_one_privileged_step() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration(Some("2.1.220"));
+    let plan = integration
+        .plan_integration(&request(SettingsScope::Managed).requesting_level(ProtectionLevel::HostEnforced))
         .await
-        .expect_err("the endpoint managed-settings file must not be planned for");
-    let message = err.to_string();
-    assert!(message.contains("/Library/Application Support/ClaudeCode"), "{message}");
-    assert!(message.contains("--scope user"), "{message}");
+        .expect("plan");
+    plan.validate().expect("validate");
+
+    let privileged: Vec<&str> = plan.privileged_steps().map(|s| s.id.as_str()).collect();
+    assert_eq!(privileged, vec![STEP_ENDPOINT_MANAGED_SETTINGS]);
+    assert_eq!(plan.planned_level, ProtectionLevel::HostEnforced);
+
+    let step = plan
+        .steps
+        .iter()
+        .find(|s| s.id == STEP_ENDPOINT_MANAGED_SETTINGS)
+        .expect("the managed step");
+    assert!(step.reversal.is_some(), "a privileged step needs a reversal");
+    match &step.action {
+        StepAction::WriteManagedSettings {
+            scope,
+            managed_keys,
+            path,
+            ..
+        } => {
+            assert_eq!(*scope, SettingsScope::Managed);
+            assert_eq!(path, &fixture.settings_path(SettingsScope::Managed));
+            for key in MANAGED_ONLY_KEYS {
+                assert!(managed_keys.contains(&key.to_string()), "{key} is unclaimed");
+            }
+        }
+        other => panic!("expected a managed settings write, got {other:?}"),
+    }
+
+    // Every fact the owner required, disclosed before authorization is
+    // requested: path, why, content, diff, conflict, backup, rollback.
+    let warnings = plan.warnings.join("\n");
+    assert!(warnings.contains("one privileged step"), "{warnings}");
+    assert!(warnings.contains("does not measure Claude Code"), "{warnings}");
+    assert!(warnings.contains("never replaced"), "{warnings}");
+    assert!(
+        warnings.contains("the exact content that will be written"),
+        "{warnings}"
+    );
+    assert!(warnings.contains("disableBypassPermissionsMode"), "{warnings}");
+    assert!(warnings.contains("changes against what is on this host"), "{warnings}");
+    assert!(warnings.contains("no file to back up"), "{warnings}");
+    assert!(warnings.contains("integrations remove claude-code"), "{warnings}");
+    match &step.privilege {
+        StepPrivilege::PrivilegedHost { consent_prompt } => {
+            assert!(
+                consent_prompt.contains("administrator authorization"),
+                "{consent_prompt}"
+            );
+            assert!(
+                consent_prompt.contains("Nothing else runs with elevated"),
+                "{consent_prompt}"
+            );
+        }
+        other => panic!("the managed step must be privileged, got {other:?}"),
+    }
+    assert!(
+        step.render_dry_run().contains("privileged-host"),
+        "{}",
+        step.render_dry_run()
+    );
+}
+
+#[tokio::test]
+async fn a_host_with_no_authorization_mechanism_plans_no_privileged_step() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration_with_authority(Some("2.1.220"), FakeAuthority::unavailable());
+    let plan = integration
+        .plan_integration(&request(SettingsScope::Managed).requesting_level(ProtectionLevel::HostEnforced))
+        .await
+        .expect("plan");
+    plan.validate().expect("validate");
+    assert_eq!(
+        plan.planned_level,
+        ProtectionLevel::GatewayProtected,
+        "an unauthorizable host must not plan for a level it cannot reach"
+    );
 }
 
 #[tokio::test]
@@ -549,4 +680,32 @@ async fn an_injected_probe_reaches_the_verification_result() {
     // The probe seam is exercised end to end (with a receipt) in
     // `aa-integration-tests`; here it is enough that the wiring accepts one.
     assert!(integration.as_launchable().is_some());
+}
+
+#[tokio::test]
+async fn a_conflicting_managed_file_is_disclosed_in_the_plan_as_a_refusal() {
+    // A managed-settings file Agent Assembly did not write — for example one an
+    // organisation's device management deployed — is never merged over. The plan
+    // says so before the user is asked for anything.
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let managed = fixture.settings_path(SettingsScope::Managed);
+    std::fs::create_dir_all(managed.parent().expect("parent")).expect("managed dir");
+    std::fs::write(
+        &managed,
+        r#"{"disableBypassPermissionsMode":true,"permissions":{"deny":["Bash"]}}"#,
+    )
+    .expect("third-party policy");
+
+    let integration = fixture.integration(Some("2.1.220"));
+    let plan = integration
+        .plan_integration(&request(SettingsScope::Managed))
+        .await
+        .expect("plan");
+    let warnings = plan.warnings.join("\n");
+    assert!(warnings.contains("CONFLICT"), "{warnings}");
+    assert!(warnings.contains("device management"), "{warnings}");
+
+    // And the third party's file is untouched by planning.
+    assert!(std::fs::read_to_string(&managed).expect("read").contains("Bash"));
 }

@@ -201,10 +201,18 @@ Claude Code is the first natively migrated integration
 `~/.claude/settings.json`); `--scope project` writes
 `<cwd>/.claude/settings.json`. A `.claude/` directory in your working directory
 never redirects a user-scoped install — which file is written is a decision you
-make and the receipt records. `--scope managed` is refused: the endpoint
-managed-settings file is administrator-owned, its enforcement keys are
-unmeasured, and installing them would need a privileged step this integration
-does not take.
+make and the receipt records.
+
+`--scope managed` on its own is refused, because it reads like a third choice
+and says nothing about administrator authorization. The endpoint managed-settings
+file is installed by `--install-managed-settings` instead — an explicit opt-in
+that adds **one** privileged step (placing a single root-owned file) and is the
+only route to `Host Enforced`. The plan shows the exact path, the exact bytes,
+the diff, any conflict, and the backup and rollback before you are asked to
+approve anything; a denied or unavailable authorization is a truthful
+*Permission Required* / *Unavailable* failure, never a quieter install; and a
+non-interactive run fails immediately rather than waiting for credentials. See
+[Protection levels → Host Enforced](protection-levels.md#host-enforced).
 
 ### Protection applies to the managed launch
 

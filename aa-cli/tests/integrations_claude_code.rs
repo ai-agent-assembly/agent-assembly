@@ -87,6 +87,12 @@ impl Harness {
         std::env::set_var("CLAUDE_CONFIG_DIR", &claude_home);
         std::env::set_var("AASM_STATE_DIR", dir.path().join("state"));
         std::env::set_var("AA_CA_DIR", &ca_dir);
+        // AAASM-5298: the endpoint-managed surface is redirected into the temp
+        // directory too. `MacOsAdminAuthority` refuses to elevate for anything
+        // but the canonical `/Library/Application Support/ClaudeCode` path, so
+        // this redirection cannot point an authorized write anywhere — it makes
+        // the write unprivileged, and keeps the smoke run off the real path.
+        std::env::set_var("AASM_CLAUDE_MANAGED_ROOT", dir.path().join("ClaudeCode"));
 
         let lifecycle = Arc::new(EngineLifecycle::new(
             vec![claude_code_integration()],
@@ -319,9 +325,9 @@ fn the_command_family_drives_the_native_claude_code_integration() {
     assert!(restored.get("permissions").is_none(), "{restored}");
 }
 
-/// The endpoint managed-settings surface is refused by name.
+/// `--scope managed` alone is not the explicit opt-in the privileged write needs.
 #[test]
-fn a_managed_scope_install_is_refused_and_says_which_scope_to_use() {
+fn a_managed_scope_install_is_refused_and_names_the_flag_that_opts_in() {
     if !require_claude() {
         return;
     }
@@ -329,6 +335,79 @@ fn a_managed_scope_install_is_refused_and_says_which_scope_to_use() {
     let out = h.aasm(&["plan", "claude-code", "--scope", "managed"]);
     assert!(!out.status.success());
     let message = stderr(&out);
-    assert!(message.contains("Library/Application Support/ClaudeCode"), "{message}");
-    assert!(message.contains("--scope user"), "{message}");
+    assert!(message.contains("explicit opt-in"), "{message}");
+    assert!(message.contains("--install-managed-settings"), "{message}");
+    assert!(
+        !h.dir.path().join("ClaudeCode").join("managed-settings.json").exists(),
+        "a refused plan must write nothing"
+    );
+}
+
+/// The plan discloses everything before anything is authorized — and a plan
+/// still changes nothing.
+#[test]
+fn the_managed_install_plan_discloses_path_content_diff_backup_and_rollback() {
+    if !require_claude() {
+        return;
+    }
+    let h = Harness::start();
+    let out = h.aasm(&["plan", "claude-code", "--install-managed-settings"]);
+    let rendered = format!("{}{}", stdout(&out), stderr(&out));
+    println!("--- aasm integrations plan --install-managed-settings ---\n{rendered}");
+    assert!(out.status.success(), "{rendered}");
+
+    assert!(rendered.contains("settings scope:  managed"), "{rendered}");
+    assert!(rendered.contains("CONSENT REQUIRED"), "{rendered}");
+    assert!(rendered.contains("administrator authorization"), "{rendered}");
+    assert!(rendered.contains("managed-settings.json"), "{rendered}");
+    assert!(rendered.contains("disableBypassPermissionsMode"), "{rendered}");
+    assert!(
+        rendered.contains("the exact content that will be written"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("integrations remove claude-code"), "{rendered}");
+    assert!(rendered.contains("Nothing has been changed"), "{rendered}");
+    assert!(
+        !h.dir.path().join("ClaudeCode").join("managed-settings.json").exists(),
+        "a plan must write nothing"
+    );
+}
+
+/// A non-interactive run fails immediately rather than blocking on a credential
+/// prompt nobody can answer — and reports it as Unavailable, not as a success.
+#[test]
+fn a_non_interactive_managed_install_fails_safely_instead_of_waiting() {
+    if !require_claude() {
+        return;
+    }
+    let h = Harness::start();
+    let out = h.aasm(&["install", "claude-code", "--install-managed-settings", "--yes"]);
+    let message = format!("{}{}", stdout(&out), stderr(&out));
+    println!("--- aasm integrations install --install-managed-settings --yes ---\n{message}");
+    assert!(!out.status.success(), "{message}");
+    assert!(
+        message.contains("Unavailable") || message.contains("Permission Required"),
+        "a refusal must stay a refusal, in those words: {message}"
+    );
+    assert!(
+        !h.dir.path().join("ClaudeCode").join("managed-settings.json").exists(),
+        "nothing may be written when authorization could not be obtained"
+    );
+}
+
+/// And without `--yes`, a non-interactive run does not even reach the service.
+#[test]
+fn a_managed_install_without_confirmation_changes_nothing() {
+    if !require_claude() {
+        return;
+    }
+    let h = Harness::start();
+    let out = h.aasm(&["install", "claude-code", "--install-managed-settings"]);
+    let message = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(!out.status.success(), "{message}");
+    assert!(message.contains("nothing was changed"), "{message}");
+    assert!(
+        !h.dir.path().join("ClaudeCode").join("managed-settings.json").exists(),
+        "{message}"
+    );
 }

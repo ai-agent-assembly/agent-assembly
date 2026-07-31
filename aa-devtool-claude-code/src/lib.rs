@@ -26,12 +26,16 @@ pub mod bypass;
 pub mod executor;
 pub mod launch_env;
 pub mod lifecycle;
+pub mod managed_settings;
 pub mod probe;
 pub mod scope;
 
 pub use adjudicating_probe::ProxyAdjudicatedProbe;
 pub use executor::ClaudeCodeStepExecutor;
 pub use lifecycle::ClaudeCodeIntegration;
+pub use managed_settings::{
+    ConsentDisclosure, ManagedSettingsError, ManagedSettingsInstaller, PrivilegedFileAuthority, MANAGED_SETTINGS_PATH,
+};
 pub use probe::{ProbeReport, ProbeRequest, ProtectionProbe};
 pub use scope::{ClaudeCodePaths, ScopeError};
 

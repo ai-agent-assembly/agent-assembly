@@ -210,11 +210,12 @@ impl DevIntClient {
         settings_scope: &str,
         policy_profile_id: &str,
         allow_privileged_host_steps: bool,
+        requested_level: &str,
     ) -> Result<wire::PlanView, ClientError> {
         let mut request = self.request(DiVerb::Plan, tool_id);
         request.plan = Some(wire::PlanArgs {
             profile: profile.to_string(),
-            requested_level: String::new(),
+            requested_level: requested_level.to_string(),
             settings_scope: settings_scope.to_string(),
             allow_privileged_host_steps,
             policy_profile_id: policy_profile_id.to_string(),
@@ -345,7 +346,7 @@ mod tests {
         let tool = claude_code_id();
         assert_eq!(client.list_tools().await.expect("list").tools.len(), 1);
         let plan = client
-            .plan(&tool, "recommended", "user", "team-default", false)
+            .plan(&tool, "recommended", "user", "team-default", false, "")
             .await
             .expect("plan");
         assert_eq!(plan.plan_id, "plan-1");
@@ -381,7 +382,7 @@ mod tests {
         let (token, _) = server.enrol("reference-client", TokenScope::full_lifecycle(ToolScope::AllTools));
         let mut client = connected(&server, Some(token.expose().to_string())).await;
         let plan = client
-            .plan(&claude_code_id(), "recommended", "user", "team-default", false)
+            .plan(&claude_code_id(), "recommended", "user", "team-default", false, "")
             .await
             .expect("plan");
         let rendered = format!("{plan:?}");
