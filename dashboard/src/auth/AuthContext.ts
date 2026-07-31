@@ -20,6 +20,20 @@ export interface AuthContextValue {
    */
   scopes: Scope[]
   login: (apiKey: string) => Promise<void>
+  /**
+   * Authenticate with email + password against `POST /auth/login` (AAASM-5307).
+   * Sets the same token state as `login(apiKey)` — the backend mints the same
+   * scoped JWT, so `parseScopesFromJwt` and every downstream RBAC gate are
+   * unchanged. `rememberMe` extends the HttpOnly refresh-cookie lifetime; the
+   * cookie itself is never read in JS (ADR 0031 §5).
+   */
+  loginWithCredentials: (email: string, password: string, rememberMe: boolean) => Promise<void>
+  /**
+   * Register the bootstrap account via `POST /auth/register` (AAASM-5307). OSS
+   * is single-workspace, so no workspace name is taken. Sets the same token
+   * state as `login`.
+   */
+  signup: (email: string, password: string) => Promise<void>
   logout: () => void
 }
 
