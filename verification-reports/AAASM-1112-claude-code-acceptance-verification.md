@@ -105,6 +105,39 @@ That is a genuine execution of `claude 2.1.220` through the installed launch
 environment, with a positive assertion that traffic was recorded and that the
 synthetic secret was redacted before reaching the provider — not a vacuous pass.
 
+### The same measurement, reproduced in CI
+
+The run above is a **local** run on the author's machine. A local run is a
+credible report; it is not something a reviewer can re-derive. The lane that
+takes this measurement in CI (`real-tool` in
+`.github/workflows/claude-code-conformance.yml`) is `workflow_dispatch`-only and
+had **never been dispatched** — `gh run list --workflow=claude-code-conformance.yml`
+showed zero `workflow_dispatch` events across its entire history, and the
+`hermetic` and `macos` lanes never install `claude`.
+
+It has now been dispatched against `main`, so this evidence is reproducible:
+
+| | |
+|---|---|
+| Run | <https://github.com/ai-agent-assembly/agent-assembly/actions/runs/30626265894> |
+| Commit | `608c6db3` on `main` |
+| Tool | `@anthropic-ai/claude-code@2.1.220` (`claude --version` → `2.1.220 (Claude Code)`) |
+| Result | 26 tests run, **26 passed, 0 skipped** |
+
+```
+MEASURED real binary: exit=None stopped_by_harness=true elapsed=1.631710875s
+MEASURED real-binary requests reaching the provider: 3
+MEASURED real-binary bodies carrying the placeholder: 2 of 3
+```
+
+Two limits on what that buys, recorded so nobody reads more into it than it
+carries. The lane is `continue-on-error: true` and does not run on `main`, so
+this is a **snapshot, not a standing gate** — it cannot fail a build and it will
+not re-run. And the `NOT MEASURED` empty-capture guard that was not triggered
+here returns `Ok(())` when it *is* triggered, so a run that measured nothing
+would have been green too. **AAASM-5326** tracks that defect; it is not fixed by
+this ticket.
+
 ---
 
 ## 4. Per-AC evidence map
