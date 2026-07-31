@@ -118,7 +118,7 @@ reason.
 | `--scope` | `user` \| `project` \| `managed` | `user` | Which configuration surface to write. Explicit, never inferred from the working directory. |
 | `--policy-profile <NAME>` | string | `""` (service default) | The policy profile to resolve, **by name**. The document itself never crosses this boundary. |
 | `--allow-privileged-host-steps` | flag | off | Include steps that change host state (trust stores, launch agents). |
-| `--install-managed-settings` | flag | off | Install the tool's administrator-managed settings file. Implies `--scope managed` and the privileged-step consent. |
+| `--install-managed-settings` | flag | off | Install the tool's administrator-managed settings file. Implies `--scope managed` and the privileged-step consent. The file's *installation* is verified by read-back; its *enforcement* is [unmeasured](../devtools/limitations.md#the-managed-settings-file-can-be-installed-its-enforcement-is-still-unmeasured). |
 
 The `--profile` tokens are what you type; the wire tokens the DI-API receives
 are `recommended`, `strict` and `observe_only`. `observe-only` computes and
@@ -139,7 +139,7 @@ error: nothing was changed: writing the administrator-managed settings surface n
 
 `--install-managed-settings` is that opt-in. It selects the managed surface,
 carries the privileged-step consent, and asks for administrator authorization
-for **one** file write — the settings surface the tool treats as
+for **one** file write — the settings surface the tool *documents* as
 non-overridable. It is the only route to `Host Enforced`, it is off by default,
 and the default install stays fully unprivileged.
 
@@ -151,7 +151,9 @@ run fails immediately rather than waiting for credentials.
 
 > `Host Enforced` means *the policy is installed where you cannot rewrite it*.
 > It does **not** mean a bypass was demonstrated to fail — see
-> [Limitations](../devtools/limitations.md).
+> [Limitations](../devtools/limitations.md). The procedure that would close that
+> gap is
+> [Measuring managed-settings enforcement](../devtools/managed-device-measurement.md).
 
 ## `aasm integrations install <TOOL>`
 

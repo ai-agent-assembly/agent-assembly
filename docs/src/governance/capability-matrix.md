@@ -153,9 +153,11 @@ unmeasured even though the file itself can now be installed (see below).
   default install cannot reach it. **What is still unmeasured is the other half of `AAASM-5276`
   condition C6:** the managed-only keys (`allowManagedPermissionRulesOnly`,
   `disableBypassPermissionsMode`, …) are documented as non-overridable, and no real override
-  attempt has been measured against a managed device. `HostEnforced` therefore claims *the policy
+  attempt has been measured on any host. `HostEnforced` therefore claims *the policy
   is installed where you cannot rewrite it*, not *this bypass was demonstrated to fail*, and every
-  status carries that caveat.
+  status carries that caveat. The procedure that would close it is
+  [Measuring managed-settings enforcement](../devtools/managed-device-measurement.md)
+  ([`AAASM-5308`](https://lightning-dust-mite.atlassian.net/browse/AAASM-5308)).
 - **`Gateway Protected` is reportable only on adjudicated evidence.** The shipped probe drives one
   request down the protected path and reads back the proxy's verdict for that exact request —
   including a re-inspection of the payload the proxy resolved to forward — so

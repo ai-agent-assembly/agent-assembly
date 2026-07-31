@@ -31,7 +31,7 @@ claim that traces to neither is not on this page.
 | Adjudicating protection probe | **Supported** | Shipped as the default probe (AAASM-5300); see [`verify`](#what-verify-adjudicates-and-when-it-still-exits-6). |
 | `strict` blocking on a high-severity scanner finding | **Planned** | [AAASM-5277](https://lightning-dust-mite.atlassian.net/browse/AAASM-5277), [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281). Today `strict` redacts, like `recommended`. |
 | Endpoint managed-settings file | **Installable, opt-in and authorized** | [AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298). `--install-managed-settings`; verified by read-back. |
-| Endpoint managed-settings *enforcement* keys | **Still unmeasured** | Documented as non-overridable; no real override attempt has been measured against a managed device. |
+| Endpoint managed-settings *enforcement* keys | **Still unmeasured** | Documented as non-overridable; no real override attempt has been measured on any host. [How it would be measured](managed-device-measurement.md). |
 | Byte-exact configuration restore | **Unsupported** | Semantics-exact by accepted constraint (C3). |
 | `ANTHROPIC_BASE_URL` redirection as a protection mechanism | **Unsupported** | Measured delivering the raw secret. |
 | Host-level bypass prevention | **Unsupported** | Explicit non-goal. |
@@ -193,8 +193,19 @@ authorized** path, never as part of a default install. See
 
 * that Claude Code honours each managed-only key at runtime. Anthropic documents
   these keys as non-overridable; Agent Assembly has **not** measured a real
-  override attempt against a managed device. AAASM-5276 condition **C6** is
-  closed for the *install* half and open for the *enforcement* half.
+  override attempt on **any** host. AAASM-5276 condition **C6** is closed for
+  the *install* half and open for the *enforcement* half.
+
+What would close it is written down rather than left as "we need a device":
+[Measuring managed-settings enforcement](managed-device-measurement.md) is the
+procedure, and `scripts/measure-claude-code-managed-enforcement.sh` refuses to
+run anywhere it could not produce real evidence. The measurement needs a real
+privileged write on a real host — which
+[AAASM-5308](https://lightning-dust-mite.atlassian.net/browse/AAASM-5308) scopes
+as *"a managed/MDM-enrolled macOS device, or one where the file can be
+provisioned with administrator consent"* — and, for the override attempts, an
+account that is not an administrator. Until that has been run, none of it is
+claimed.
 
 > Read a `Host Enforced` level as: *"the managed policy is installed at the
 > OS-managed path, owned as expected and not writable by you."* Do not read it as
