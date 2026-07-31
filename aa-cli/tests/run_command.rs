@@ -243,6 +243,49 @@ async fn run_command_refuses_to_launch_when_registration_is_impossible() {
     );
 }
 
+/// An identity the gateway *refuses* — as distinct from a gateway it cannot
+/// reach — must also stop the launch.
+///
+/// `--root-agent` declares a parent, and `RegisterRequest` has no other field
+/// for a declared lineage, so the gateway resolves it: a parent it has never
+/// registered is `InvalidArgument`. A lineage claim nobody can verify must not
+/// be quietly dropped into a successful launch, because the resulting session
+/// would be attributed to a delegation chain that does not exist.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_command_refuses_a_lineage_the_gateway_will_not_accept() {
+    let gateway = TestGateway::start().await.expect("start gateway");
+    let _env = GatewayEnv::point_at(gateway.endpoint());
+
+    let launched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
+    adapters.insert(
+        "echo",
+        Box::new(RecordingAdapter {
+            launched: launched.clone(),
+        }),
+    );
+
+    let mut args = run_args("echo");
+    args.root_agent = Some("a-parent-that-was-never-registered".into());
+
+    let err = execute_with_adapters(&args, &adapters)
+        .await
+        .expect_err("a refused registration must not produce a launch");
+
+    assert!(
+        err.to_string().contains("refusing to launch unregistered"),
+        "the refusal must name what was refused; got: {err}"
+    );
+    assert!(
+        !launched.load(std::sync::atomic::Ordering::SeqCst),
+        "the tool was launched despite the gateway refusing the session's identity"
+    );
+    assert!(
+        gateway.registry().list().is_empty(),
+        "a refused registration must leave no record behind"
+    );
+}
+
 /// Args shared by every test here.
 ///
 /// `--no-proxy`: these tests measure child-process spawn and deregistration, not
