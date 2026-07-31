@@ -155,7 +155,11 @@ fn decision_label(event_type: AuditEventType) -> &'static str {
         | AuditEventType::ApprovalRequested
         | AuditEventType::ApprovalEscalated
         | AuditEventType::BudgetLimitApproached
-        | AuditEventType::A2ACallIntercepted => "review",
+        | AuditEventType::A2ACallIntercepted
+        // AAASM-5287: an operator governance mutation (suspend/resume, and the
+        // future enforcement-mode toggle) is not an agent-action allow/deny; it
+        // is an operator action auditors review.
+        | AuditEventType::GovernanceMutation => "review",
     }
 }
 
