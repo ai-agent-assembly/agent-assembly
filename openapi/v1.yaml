@@ -1909,6 +1909,232 @@ paths:
           description: Invalid query parameter
         '401':
           description: Missing or invalid credentials
+  /api/v1/auth/invite:
+    post:
+      tags:
+      - auth
+      summary: |-
+        Create a single-use, expiring invite for a new account (admin scope only)
+        (ADR 0031 §3). The raw token is returned once here; only its hash is stored.
+      operationId: invite
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteRequest'
+        required: true
+      responses:
+        '200':
+          description: Invite created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InviteResponse'
+        '403':
+          description: Caller is not an admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: Native auth not available (no Postgres)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+      security:
+      - bearer_auth: []
+  /api/v1/auth/invite/accept:
+    post:
+      tags:
+      - auth
+      summary: |-
+        Accept an invite: consume the single-use token and set the initial password,
+        activating the account (ADR 0031 §3). Public: the invitee is not yet
+        authenticated.
+      operationId: invite_accept
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteAcceptRequest'
+        required: true
+      responses:
+        '200':
+          description: Invite accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessTokenResponse'
+        '422':
+          description: Token expired/used or weak password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: Native auth not available (no Postgres)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/auth/login:
+    post:
+      tags:
+      - auth
+      summary: |-
+        Authenticate with email + password, returning an access token and setting the
+        refresh cookie (ADR 0031 §3).
+      description: |-
+        Enumeration-safe: an unknown email and a wrong password both return a uniform
+        `401`, and an unknown email still runs an argon2 verify against a dummy hash
+        so the timing does not distinguish the two. A locked account returns `423`
+        with `retry-after` regardless of whether the password is correct.
+      operationId: login
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessTokenResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '423':
+          description: Account locked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: Native auth not available (no Postgres)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/auth/logout:
+    post:
+      tags:
+      - auth
+      summary: |-
+        Revoke the refresh session and clear the cookie (ADR 0031 §5). Requires an
+        authenticated caller; always returns `204`.
+      operationId: logout
+      responses:
+        '204':
+          description: Logged out (refresh revoked)
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+      security:
+      - bearer_auth: []
+  /api/v1/auth/methods:
+    get:
+      tags:
+      - auth
+      summary: Advertise the credential methods this deployment supports (ADR 0031 §Q5).
+      description: |-
+        Public: the login page reads this before rendering, so it never offers a
+        password form on an in-memory (API-key-only) backend. Always lists `api_key`;
+        adds `password` only when a Postgres-backed account store is configured.
+      operationId: auth_methods
+      responses:
+        '200':
+          description: Available auth methods
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthMethodsResponse'
+  /api/v1/auth/refresh:
+    post:
+      tags:
+      - auth
+      summary: |-
+        Exchange a valid refresh cookie for a new access token, rotating the refresh
+        token (ADR 0031 §5). Public (the cookie is the credential).
+      operationId: refresh
+      responses:
+        '200':
+          description: Refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessTokenResponse'
+        '401':
+          description: Missing / revoked / expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: Native auth not available (no Postgres)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+  /api/v1/auth/register:
+    post:
+      tags:
+      - auth
+      summary: |-
+        Register the first account (bootstrap owner) or a self-registered account when
+        open registration is enabled (ADR 0031 §4 / §Q3).
+      description: |-
+        The first account on a fresh instance becomes `owner` under an advisory lock
+        so two concurrent registrations cannot both claim owner. Once a user exists,
+        registration is closed (`403`) unless `AA_AUTH_OPEN_REGISTRATION` is set, in
+        which case a subsequent registration creates a `developer` account.
+      operationId: register
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      responses:
+        '200':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '403':
+          description: Registration closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '409':
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '422':
+          description: Weak password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '503':
+          description: Native auth not available (no Postgres)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
   /api/v1/auth/token:
     post:
       tags:
@@ -3648,6 +3874,24 @@ paths:
           description: Bad request (invalid query parameters)
 components:
   schemas:
+    AccessTokenResponse:
+      type: object
+      description: |-
+        Response body carrying a freshly minted access token (login / refresh /
+        invite-accept). The refresh token is NOT in the body — it rides in the
+        HttpOnly cookie.
+      required:
+      - access_token
+      - expires_in
+      properties:
+        access_token:
+          type: string
+          description: 'The short-lived access JWT to present as `Authorization: Bearer`.'
+        expires_in:
+          type: integer
+          format: int64
+          description: Access-token lifetime in seconds.
+          minimum: 0
     ActionVolumeResponse:
       type: object
       description: Response for `GET /api/v1/analytics/action-volume`.
@@ -5151,6 +5395,21 @@ components:
           - string
           - 'null'
           description: Team the approval was routed to, if known.
+    AuthMethodsResponse:
+      type: object
+      description: |-
+        Response body for `GET /auth/methods` (ADR 0031 §Q5). Advertises which
+        credential paths this deployment can serve so the frontend degrades honestly.
+      required:
+      - methods
+      properties:
+        methods:
+          type: array
+          items:
+            type: string
+          description: |-
+            `["api_key"]` on an in-memory deployment; `["api_key","password"]` when a
+            Postgres store backs native accounts.
     BudgetAlertPayload:
       type: object
       description: |-
@@ -6453,6 +6712,49 @@ components:
         version:
           type: string
           description: Gateway version (semver from Cargo.toml).
+    InviteAcceptRequest:
+      type: object
+      description: Request body for `POST /auth/invite/accept`.
+      required:
+      - token
+      - password
+      properties:
+        password:
+          type: string
+          description: The initial password to set on the account (must clear the floor).
+        token:
+          type: string
+          description: The raw invite token delivered to the invitee.
+    InviteRequest:
+      type: object
+      description: Request body for `POST /auth/invite` (admin only).
+      required:
+      - email
+      - role
+      properties:
+        email:
+          type: string
+          description: The email to invite.
+        role:
+          $ref: '#/components/schemas/Role'
+          description: The role the invited account will receive on accept.
+    InviteResponse:
+      type: object
+      description: |-
+        Response body for `POST /auth/invite`. The raw invite token is returned once
+        to the inviting admin to deliver out of band; only its hash is stored.
+      required:
+      - invite_id
+      - token
+      properties:
+        invite_id:
+          type: string
+          description: The created invite id (UUID string).
+        token:
+          type: string
+          description: |-
+            The single-use, expiring raw invite token. Returned exactly once, here;
+            the server stores only its SHA-256 hash and can never surface it again.
     KpiResponse:
       type: object
       description: |-
@@ -6589,6 +6891,22 @@ components:
       - SandboxOomKilled
       - SandboxTerminated
       - SandboxHostFnRateLimited
+    LoginRequest:
+      type: object
+      description: Request body for `POST /auth/login`.
+      required:
+      - email
+      - password
+      properties:
+        email:
+          type: string
+          description: The account email (case-insensitive).
+        password:
+          type: string
+          description: The account password.
+        remember_me:
+          type: boolean
+          description: When true, the refresh session is issued with an extended lifetime.
     NodeBudget:
       type: object
       description: |-
@@ -7588,6 +7906,42 @@ components:
         op_id:
           type: string
           description: Stable identifier for the operation, typically a `GovernanceEvent.id`.
+    RegisterRequest:
+      type: object
+      description: Request body for `POST /auth/register`.
+      required:
+      - email
+      - password
+      properties:
+        email:
+          type: string
+          description: |-
+            The new account email (case-insensitive). OSS is single-workspace, so no
+            `tenant_name` is accepted (ADR 0031 §4).
+        password:
+          type: string
+          description: The new account password (must clear the minimum-length floor).
+    RegisterResponse:
+      type: object
+      description: Response body for a successful `POST /auth/register`.
+      required:
+      - user_id
+      - access_token
+      - expires_in
+      properties:
+        access_token:
+          type: string
+          description: |-
+            The short-lived access JWT for the bootstrap owner (the refresh token is
+            delivered as the HttpOnly cookie alongside).
+        expires_in:
+          type: integer
+          format: int64
+          description: Access-token lifetime in seconds.
+          minimum: 0
+        user_id:
+          type: string
+          description: The id of the newly created account (UUID string).
     ReplayPolicyRequest:
       type: object
       description: |-
@@ -7937,6 +8291,19 @@ components:
         ran_at:
           type: string
           description: Timestamp (UTC) at which the run completed (ISO 8601).
+    Role:
+      type: string
+      description: |-
+        A native-account user role (ADR 0031 data model).
+
+        Roles are a coarse, human-facing label stored on the user row; authorization
+        is still driven by the [`Scope`] set [`Role::scopes`] expands each role to.
+        Serialized lowercase to match the `users.role` enum values in the migration.
+      enum:
+      - owner
+      - admin
+      - developer
+      - viewer
     RoleCapabilitiesResponse:
       type: object
       description: One built-in RBAC role and the governance capabilities it grants.

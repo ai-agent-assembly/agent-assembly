@@ -20,7 +20,7 @@ use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
     admin, agents, alert_rules, alerts, analytics, approvals, audit, auth, capability, costs, destinations, dispatch,
-    edges, iam, logs, ops, policies, scrub, tools, topology, traces,
+    edges, iam, logs, native_auth, ops, policies, scrub, tools, topology, traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -106,6 +106,13 @@ use crate::routes::{
         crate::ws::alerts_handler::ws_alerts_handler,
         auth::issue_token,
         auth::issue_ws_ticket,
+        native_auth::login,
+        native_auth::register,
+        native_auth::invite,
+        native_auth::invite_accept,
+        native_auth::refresh,
+        native_auth::logout,
+        native_auth::auth_methods,
         crate::ws::handler::ws_events_handler,
         topology::get_topology_graph,
         topology::get_overview,
@@ -240,6 +247,15 @@ use crate::routes::{
         auth::TokenResponse,
         auth::WsTicketRequest,
         auth::WsTicketResponse,
+        native_auth::LoginRequest,
+        native_auth::AccessTokenResponse,
+        native_auth::RegisterRequest,
+        native_auth::RegisterResponse,
+        native_auth::InviteRequest,
+        native_auth::InviteResponse,
+        native_auth::InviteAcceptRequest,
+        native_auth::AuthMethodsResponse,
+        crate::auth::role::Role,
         crate::ws::ticket::WsTicketPurpose,
         crate::auth::scope::Scope,
         topology::TopologyOverview,
