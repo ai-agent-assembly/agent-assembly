@@ -171,7 +171,6 @@
   - [0025 - `design/v2/` Is the Authoritative Visual Specification](adr/0025-design-v2-authoritative-visual-spec.md)
   - [0026 - Seven Open Dashboard Product-Semantics Decisions](adr/0026-open-dashboard-product-semantics.md)
   - [0027 - The Accessibility Floor Overrides the Visual Specification](adr/0027-accessibility-floor-overrides-visual-spec.md)
-  - [0028 - CI Trigger-Scoping — Path Filters Must Allow-List by File Type](adr/0028-ci-trigger-scoping-allowlist-by-filetype.md)
   - [0029 - Capability Over-Permission Derivation](adr/0029-capability-over-permission-derivation.md)
   - [0030 - Developer Integration Boundaries & Local Trust Model](adr/0030-developer-integration-boundaries-and-trust-model.md)
   - [0031 - OSS Native Account Authentication](adr/0031-oss-native-account-authentication.md)

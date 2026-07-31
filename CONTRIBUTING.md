@@ -133,7 +133,7 @@ To add a new crate to the workspace:
 
 ## Developer Certificate of Origin (DCO)
 
-We ask that you sign off each commit under the [Developer Certificate of Origin v1.1](https://developercertificate.org/) — this licenses your contribution to the project under the [Apache License 2.0](LICENSE). Sign-off is **currently advisory** (see the note below), consistent with the org-wide [contribution guide](https://github.com/ai-agent-assembly/.github/blob/master/CONTRIBUTING.md).
+We ask that you sign off each commit under the [Developer Certificate of Origin v1.1](https://developercertificate.org/) — this licenses your contribution to the project under the [Apache License 2.0](LICENSE). Sign-off is **currently advisory** (see the note below), consistent with the org-wide [contribution guide](https://github.com/ai-agent-assembly/.github/blob/HEAD/CONTRIBUTING.md).
 
 Sign off by adding a `Signed-off-by` trailer to each commit message:
 
@@ -176,6 +176,15 @@ A job's status is chosen by applying that rule, **never inherited from whichever
 
 Note that `ci-success` treats a **skipped** need as passing, so a job behind a `dorny/paths-filter` router is only as sound as its filter. If your job can be broken by a change outside its own filter, it needs a different guard.
 
+Because a filter's soundness is what the gate reduces to, the filter's *shape* is itself something to get right — and there are two ways to get it wrong, in this repo and org-wide:
+
+- **Too broad a filter.** A path filter must allow-list by **file extension or exact filename** — never by a bare `dir/**` or `dir/*` with no type qualifier. A directory wildcard matches every future non-code addition under that tree (screenshots, generated reports, fixtures, docs) as though it were a source change that must re-run the gated job. Enumerate instead the file types or exact filenames that constitute a real change to the gated surface — e.g. `dashboard/**/*.{ts,tsx,css}`, or `paths-ignore: ['**/*.md', 'docs/**']`. Qualify every entry before merging rather than deferring it to a follow-up; `e2e-private/preview-e2e.yml` and `python-sdk`'s core CI are the in-org examples of a compliant shape.
+- **No filter at all.** Every job whose cost is non-trivial — e2e/integration suites, native builds, Docker builds — must have *some* form of change-based gating. An unconditional full-suite run on every push/PR is equally out of policy, just reached by omission rather than by a wrong pattern, and a job is not exempt merely because it currently has no filter. Add the gating when you introduce the job, not after a wasted-minutes complaint forces it retroactively.
+
+These trade against each other, so neither is an escape from the other: leaving an expensive job unfiltered to sidestep getting the file-type qualifier right swaps one violation for the other. Writing a compliant filter requires knowing which file types genuinely affect the gated job, which is marginally more work than typing `dir/**` — that is the intended trade, since the failure mode being closed is exactly "wildcard now, discover the gap later".
+
+**One exception**, so the rule is not miscited: a repo whose entire purpose *is* non-code content — a docs site where `docs/**` / `*.md` legitimately *is* the source, such as `internal-docs` — needs no file-type qualification. There the content directory itself is the correct trigger surface, and over-qualifying its filter would exclude legitimate changes.
+
 ## Performance and Latency Tests
 
 Latency and performance tests assert absolute timing thresholds (e.g. p99 < 15 ms). They **must not run under `cargo llvm-cov`** or any other coverage/instrumentation tool, because instrumentation adds 2–10× overhead per instruction and makes timing guarantees unreliable on shared CI runners.
@@ -209,6 +218,12 @@ mdbook serve docs --open
 ```
 
 Mermaid diagrams use the `mdbook-mermaid` preprocessor, which is wired in `docs/book.toml`. The `Docs` GitHub Actions workflow runs `mdbook build docs` on every PR that touches `docs/**`, `README.md`, or `CONTRIBUTING.md` and fails the build on errors.
+
+## Linking to another repository
+
+Every active repo in the org defaults to `main` (see [ADR 0016](docs/src/adr/0016-default-branch-master-to-main-migration.md)). When you write a link, ref, or automation target pointing at **another `ai-agent-assembly` repository**, use the **default-branch-tracking `HEAD` form** — `…/blob/HEAD/…`, `raw.githubusercontent.com/<org>/<repo>/HEAD/…` — rather than hardcoding a branch name, so the reference survives any future rename. This rule is scoped to repos in this org: a link into a third-party repository is that project's business, and its branch names are not ours to track.
+
+A rename's redirect is not a safety net for all of these: `github.com` web `blob`/`commits` links do redirect, but **`raw.githubusercontent.com/…/<branch>/` does not** (it 404s), and neither does `git fetch <branch>` or an action pinned with `uses: <org>/<action>@<branch>`. Those break outright, so write them against `HEAD` from the start. The same rule applies to a workflow that opens a PR into another repo: its `base:` must name that repo's current default branch, which `scripts/check-release-completeness.sh` checks for the release fan-out.
 
 ## Version metadata: single source of truth & drift gate
 
