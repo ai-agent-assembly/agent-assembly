@@ -69,6 +69,13 @@ DELETED_FILES=(
     "${REPO_ROOT}/aa-cli/src/commands/tools.rs"
     "${REPO_ROOT}/aa-cli/tests/run_command.rs"
     "${REPO_ROOT}/aa-integration-tests/tests/cli_run.rs"
+    # AAASM-5309: the `aasm integrations` CLI suites. `integrations_command.rs`
+    # drives the subcommand that no longer exists post-strip;
+    # `integrations_claude_code.rs` additionally imports
+    # `aa_runtime::devint::adapters`, which is deleted just below — it would
+    # fail to compile, not merely fail to pass.
+    "${REPO_ROOT}/aa-cli/tests/integrations_command.rs"
+    "${REPO_ROOT}/aa-cli/tests/integrations_claude_code.rs"
     # AAASM-2388: the audit consumer module + its integration test.
     "${REPO_ROOT}/aa-gateway/src/audit_consumer.rs"
     "${REPO_ROOT}/aa-gateway/tests/audit_consumer_e2e.rs"
