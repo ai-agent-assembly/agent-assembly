@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { StatusState } from '../../components/truthfulness'
 import { isKnown, type Certain } from '../../lib/truthfulness'
 import { ApprovalActions } from '../approvals/ApprovalActions'

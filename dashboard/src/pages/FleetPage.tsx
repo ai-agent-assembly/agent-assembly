@@ -1,4 +1,4 @@
-import { Link, Outlet, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, Outlet, useNavigate, useSearchParams } from 'react-router'
 import { ignorePromise } from '../lib/ignorePromise'
 import {
   useReactTable,

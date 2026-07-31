@@ -1,7 +1,7 @@
 // Smoke tests for the refactored ApprovalsPage.
 // Comprehensive feature tests live in src/features/approvals/api.test.tsx.
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
 import { ApprovalsPage } from './ApprovalsPage'

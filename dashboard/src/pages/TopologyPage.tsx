@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { ignorePromise } from '../lib/ignorePromise'
 import { useTopologyQuery } from '../features/topology/api'
 import { detectDelegationCycles } from '../features/topology/hierarchy'

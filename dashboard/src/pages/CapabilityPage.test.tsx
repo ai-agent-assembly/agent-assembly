@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Outlet, Routes, Route, useLocation } from 'react-router-dom'
+import { MemoryRouter, Outlet, Routes, Route, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CapabilityPage } from './CapabilityPage'
 import { ToastProvider } from '../components/ToastProvider'

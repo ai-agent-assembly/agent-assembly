@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { ACCESS_LOG_AVAILABILITY, type AccessLogFilter } from './accessLog'
 import { AccessLogFilterBar } from './AccessLogFilterBar'
 import { StatusState } from '../../components/truthfulness'

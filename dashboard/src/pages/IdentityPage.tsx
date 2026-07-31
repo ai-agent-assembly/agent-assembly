@@ -1,4 +1,4 @@
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router'
 import { MembersPanel } from '../features/iam/MembersPanel'
 import { ServiceIdentitiesPanel } from '../features/iam/ServiceIdentitiesPanel'
 import { RolesPermissionsPanel } from '../features/iam/RolesPermissionsPanel'
