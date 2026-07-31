@@ -42,8 +42,25 @@
 //!   sensitive-data claim.
 //! * `NODE_TLS_REJECT_UNAUTHORIZED` is never set, and its presence is reported
 //!   as a bypass. A TLS failure is a finding.
-//! * The endpoint managed-settings file and the macOS System Keychain are never
-//!   touched. Both are privileged host changes whose behaviour is unmeasured.
+//! * The macOS System Keychain is never touched.
+//!
+//! # The one privileged step, and why a normal install cannot reach it
+//!
+//! AAASM-5298 adds an **opt-in** endpoint managed-settings install
+//! (`--scope managed`, which the CLI exposes as `--install-managed-settings`).
+//! It is the only step in this integration marked
+//! [`StepPrivilege::PrivilegedHost`](aa_devtool_contract::StepPrivilege), the
+//! only one that asks for administrator authorization, and it is absent from
+//! every user- and project-scoped plan. Its evidence is
+//! [`EvidenceKind::HostAttested`] produced by re-reading the installed file and
+//! checking content, ownership and permissions — and
+//! [`StateDerivation`] admits `HostEnforced` from nothing else. A successful
+//! normal installation therefore cannot imply `Host Enforced`; it has no step
+//! that could produce the evidence.
+//!
+//! What the attestation does **not** claim: that Claude Code honours each
+//! managed-only key at runtime. That needs a managed device and remains
+//! unmeasured — see `docs/src/devtools/limitations.md`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -63,6 +80,9 @@ use async_trait::async_trait;
 use crate::adjudicating_probe::ProxyAdjudicatedProbe;
 use crate::bypass::{self, BypassFinding, LaunchEnvironment};
 use crate::executor::ClaudeCodeStepExecutor;
+use crate::managed_settings::{
+    self, Authorization, MacOsAdminAuthority, ManagedSettingsInstaller, PrivilegedFileAuthority, MANAGED_ONLY_KEYS,
+};
 use crate::probe::{ProbeRequest, ProtectionProbe, SYNTHETIC_SECRET};
 use crate::scope::{ClaudeCodePaths, ScopeError};
 use crate::{ClaudeCodeAdapter, MIN_VERSION};
@@ -79,6 +99,9 @@ pub const STEP_PROXY_ENV: &str = "proxy-env";
 pub const STEP_SIDE_CHANNEL_SCOPE: &str = "side-channel-scope";
 /// Step id for the protection test.
 pub const STEP_PROTECTION_TEST: &str = "protection-test";
+/// Step id for the one privileged step — the endpoint managed-settings install
+/// (AAASM-5298). Present only in a `managed`-scoped plan.
+pub const STEP_ENDPOINT_MANAGED_SETTINGS: &str = "endpoint-managed-settings";
 
 /// The CA-trust variable Claude Code's embedded Node runtime honours.
 ///
@@ -124,6 +147,8 @@ pub struct ClaudeCodeIntegration {
     adapter: ClaudeCodeAdapter,
     proxy_url: String,
     probe: Arc<dyn ProtectionProbe>,
+    /// How the one privileged step obtains administrator authorization.
+    managed_authority: Arc<dyn PrivilegedFileAuthority>,
     freshness_window_secs: u64,
 }
 
@@ -162,8 +187,127 @@ impl ClaudeCodeIntegration {
             // reachable at all — and it still reports `Inconclusive` on every
             // path it cannot measure, so nothing passes on configuration alone.
             probe: Arc::new(ProxyAdjudicatedProbe),
+            // Safe as a default because it refuses to elevate for any target
+            // that is not the canonical managed-settings path, and because no
+            // unprivileged plan contains a step that would call it.
+            managed_authority: Arc::new(MacOsAdminAuthority),
             freshness_window_secs: DEFAULT_FRESHNESS_WINDOW_SECS,
         }
+    }
+
+    /// Replace the authority the one privileged step elevates through.
+    ///
+    /// The seam every test substitutes, so no test can reach a real
+    /// authorization prompt.
+    #[must_use]
+    pub fn with_managed_authority(mut self, authority: Arc<dyn PrivilegedFileAuthority>) -> Self {
+        self.managed_authority = authority;
+        self
+    }
+
+    /// The installer for the endpoint managed-settings file, when this host can
+    /// address one.
+    ///
+    /// Ownership is expected to be root at the canonical path. A redirected
+    /// managed root is a test seam where nothing is root-owned, so the check is
+    /// anchored to whatever this process writes as — live in both cases rather
+    /// than disabled in one.
+    pub fn managed_installer(&self) -> Option<Arc<ManagedSettingsInstaller>> {
+        let target = self.paths.settings_path(SettingsScope::Managed).ok()?;
+        let work_dir = self.paths.owned_root(SettingsScope::Managed).ok()?.join("managed");
+        let installer = ManagedSettingsInstaller::new(target, &work_dir, self.managed_authority.clone());
+        if self.paths.managed_root_is_canonical() {
+            return Some(Arc::new(installer));
+        }
+        std::fs::create_dir_all(&work_dir).ok()?;
+        let uid = managed_settings::owner_uid(&work_dir)?;
+        Some(Arc::new(installer.expecting_owner_uid(uid)))
+    }
+
+    /// Add the one privileged step, plus the warnings that make consenting to it
+    /// informed.
+    ///
+    /// The step is `Required`: an endpoint-managed install whose managed write
+    /// silently did not happen would report an integration that is exactly the
+    /// unprivileged one, under a plan that claimed otherwise.
+    fn with_endpoint_managed_step(
+        &self,
+        plan: IntegrationPlan,
+        profile: ProtectionProfile,
+        path: &std::path::Path,
+    ) -> Result<IntegrationPlan, AdapterError> {
+        let document = managed_settings::managed_settings_document(profile)?;
+        let mut plan = plan
+            .with_step(
+                IntegrationStep::new(
+                    STEP_ENDPOINT_MANAGED_SETTINGS,
+                    StepAction::WriteManagedSettings {
+                        scope: SettingsScope::Managed,
+                        path: path.to_path_buf(),
+                        managed_keys: MANAGED_ONLY_KEYS.iter().map(|k| (*k).to_string()).collect(),
+                        content_sha256: sha256_hex(&document),
+                        merge: SettingsMerge::Replace,
+                    },
+                    format!(
+                        "install Agent Assembly's managed policy at {} — the only settings surface Claude \
+                         Code treats as non-overridable — after backing up whatever is there, and verify it \
+                         by reading it back",
+                        path.display()
+                    ),
+                )
+                .privileged(format!(
+                    "Agent Assembly will ask for administrator authorization once, to place one file at {}. \
+                     Nothing else runs with elevated privileges. Removing the integration reverses it.",
+                    path.display()
+                ))
+                .with_reversal(StepAction::ManageArtifact {
+                    operation: ArtifactOperation::Remove,
+                    path: path.to_path_buf(),
+                }),
+            )
+            .warn(format!(
+                "this plan contains one privileged step. It writes {}, which is owned by the \
+                 administrator; every other step in this plan writes files you already own",
+                path.display()
+            ))
+            .warn(format!(
+                "the managed-only keys this installs ({}) are documented by Anthropic as non-overridable. \
+                 Agent Assembly verifies that the file is installed, owned as expected and not writable by \
+                 you — it does not measure Claude Code's runtime handling of each key",
+                MANAGED_ONLY_KEYS.join(", ")
+            ))
+            .warn(
+                "a managed-settings file Agent Assembly did not write is never replaced. If one is already \
+                 installed — for example by your organisation's device management — this plan refuses \
+                 rather than merging over it"
+                    .to_string(),
+            );
+
+        if !self.paths.managed_root_is_canonical() {
+            plan = plan.warn(format!(
+                "AASM_CLAUDE_MANAGED_ROOT redirects the managed surface to {}. That is a test seam: the \
+                 file written there is not the one Claude Code reads, and no administrator authorization \
+                 is requested for it",
+                path.display()
+            ));
+        }
+
+        match self.managed_authority.availability() {
+            Authorization::Available => {}
+            Authorization::NonInteractive { detail } => {
+                plan = plan.warn(format!(
+                    "administrator authorization cannot be requested here: {detail}. This plan will fail \
+                     rather than wait for credentials — run it from a terminal"
+                ));
+            }
+            Authorization::Unavailable { detail } => {
+                plan = plan.warn(format!(
+                    "administrator authorization is unavailable on this host: {detail}"
+                ));
+            }
+        }
+
+        Ok(plan)
     }
 
     /// Replace the detection adapter, so a test can pin the binary path and the
@@ -224,6 +368,9 @@ impl ClaudeCodeIntegration {
         for (step_id, content) in rendered {
             executor = executor.with_content(step_id, content);
         }
+        if let Some(installer) = self.managed_installer() {
+            executor = executor.with_managed_installer(installer);
+        }
         executor
     }
 
@@ -245,6 +392,12 @@ impl ClaudeCodeIntegration {
                 }
                 STEP_SIDE_CHANNEL_SCOPE => {
                     rendered.insert(step.id.clone(), mitm_hosts_document());
+                }
+                STEP_ENDPOINT_MANAGED_SETTINGS => {
+                    rendered.insert(
+                        step.id.clone(),
+                        managed_settings::managed_settings_document(plan.profile)?,
+                    );
                 }
                 _ => {}
             }
@@ -314,18 +467,68 @@ impl ClaudeCodeIntegration {
             })
             .collect();
 
-        evidence.push(ProtectionEvidence::new(
-            IntegrationCapability::HostEnforcement,
-            EvidenceKind::Absent {
-                reason: HOST_ENFORCEMENT_REASON.to_string(),
-            },
-            now,
-            format!(
-                "known bypasses this integration cannot observe: {}",
-                bypass::UNOBSERVABLE_BYPASSES
-            ),
-        ));
+        evidence.push(self.host_enforcement_evidence(now));
         evidence
+    }
+
+    /// Whether this adapter can offer an endpoint-managed install at all.
+    ///
+    /// A platform without an authorization mechanism is `Unsupported`; a
+    /// terminal-less invocation is not — that is a runtime condition the plan
+    /// warns about and the install refuses on, not a capability the adapter
+    /// lacks.
+    fn host_enforcement_support(&self) -> CapabilitySupport {
+        match self.managed_authority.availability() {
+            Authorization::Unavailable { detail } => CapabilitySupport::unsupported(format!(
+                "endpoint-managed settings cannot be installed on this host: {detail}"
+            )),
+            _ => CapabilitySupport::Supported,
+        }
+    }
+
+    /// The one observation that can raise the ladder to `HostEnforced`.
+    ///
+    /// [`EvidenceKind::HostAttested`] is produced **only** by reading the
+    /// installed managed file back and checking its content, owner and
+    /// permissions against what was authorized. Every other outcome — nothing
+    /// installed, a digest that moved, an owner that is not the expected one, a
+    /// mode that lets someone else rewrite it — is
+    /// [`EvidenceKind::Absent`], which lowers and never raises.
+    fn host_enforcement_evidence(&self, now: u64) -> ProtectionEvidence {
+        let absent = |reason: String, detail: String| {
+            ProtectionEvidence::new(
+                IntegrationCapability::HostEnforcement,
+                EvidenceKind::Absent { reason },
+                now,
+                detail,
+            )
+        };
+
+        let Some(installer) = self.managed_installer() else {
+            return absent(
+                HOST_ENFORCEMENT_REASON.to_string(),
+                format!(
+                    "known bypasses this integration cannot observe: {}",
+                    bypass::UNOBSERVABLE_BYPASSES
+                ),
+            );
+        };
+
+        match installer.verify_recorded() {
+            Ok(attestation) => ProtectionEvidence::new(
+                IntegrationCapability::HostEnforcement,
+                EvidenceKind::HostAttested { healthy: true },
+                now,
+                format!("{}. {HOST_ATTESTATION_CAVEAT}", attestation.detail()),
+            ),
+            Err(e) => absent(
+                format!("{HOST_ENFORCEMENT_REASON} ({})", e.summary()),
+                format!(
+                    "{e}; known bypasses this integration cannot observe: {}",
+                    bypass::UNOBSERVABLE_BYPASSES
+                ),
+            ),
+        }
     }
 
     /// Read every applied, fingerprinted step back off the host and compare it
@@ -400,10 +603,23 @@ impl ClaudeCodeIntegration {
 const PROBE_NOT_RUN_REASON: &str =
     "no probe traffic has been produced and adjudicated on the model path; run `aasm integrations verify claude-code`";
 
-/// Why `HostEnforced` is not reachable for this integration.
-const HOST_ENFORCEMENT_REASON: &str = "host enforcement is unavailable: Agent Assembly does not install its \
-     certificate authority into the macOS system trust store for this integration — trust is established \
-     per-launch through NODE_EXTRA_CA_CERTS — and kernel-level enforcement is Linux-only";
+/// Why `HostEnforced` is not reachable from an unprivileged install.
+///
+/// Stated as a *reason it is not active here*, not as a blanket unavailability:
+/// since AAASM-5298 there is a path to it, and it is opt-in, privileged and
+/// verified. Kernel-level enforcement remains Linux-only and the proxy CA is
+/// still never added to the macOS system trust store — trust is established
+/// per-launch through `NODE_EXTRA_CA_CERTS`.
+const HOST_ENFORCEMENT_REASON: &str = "host enforcement is not active: no endpoint-managed settings file \
+     installed by Agent Assembly was verified on this host. Install it with \
+     `aasm integrations install claude-code --install-managed-settings`, which asks for administrator \
+     authorization for one file write. Kernel-level enforcement remains Linux-only, and Agent Assembly \
+     never adds its certificate authority to the macOS system trust store";
+
+/// What an endpoint-managed attestation does, and does not, claim.
+const HOST_ATTESTATION_CAVEAT: &str = "Agent Assembly verified that the managed policy is installed, owned \
+     as expected and not writable by you; it has not measured Claude Code's runtime handling of each \
+     managed-only key";
 
 /// The mechanism a step's artifact is evidence about.
 fn step_mechanism(action: &StepAction) -> IntegrationCapability {
@@ -544,7 +760,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
                 "Claude Code is a terminal CLI and has no in-editor surface for status or approval \
                  prompts",
             )
-            .unsupported(IntegrationCapability::HostEnforcement, HOST_ENFORCEMENT_REASON)
+            .declare(IntegrationCapability::HostEnforcement, self.host_enforcement_support())
     }
 
     fn detect(&self) -> Option<DevToolInfo> {
@@ -571,10 +787,16 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         let capabilities = self.capabilities();
 
         let interception_available = capabilities.can_intercept_model_path();
-        let ceiling = if interception_available {
-            ProtectionLevel::GatewayProtected
-        } else {
-            ProtectionLevel::Integrated
+        // The endpoint-managed surface is the only one that can carry a
+        // bypass-resistance claim, so it is the only one whose ceiling is
+        // `HostEnforced`. A user- or project-scoped plan cannot reach it —
+        // which is the governing rule of AAASM-5298 expressed as a number.
+        let host_enforcement_available = scope == SettingsScope::Managed
+            && !matches!(self.managed_authority.availability(), Authorization::Unavailable { .. });
+        let ceiling = match (interception_available, host_enforcement_available) {
+            (true, true) => ProtectionLevel::HostEnforced,
+            (true, false) => ProtectionLevel::GatewayProtected,
+            (false, _) => ProtectionLevel::Integrated,
         };
         let planned_level = request.effective_target_level().min(ceiling);
 
@@ -585,22 +807,31 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             GovernanceLevel::L2Enforce,
         );
 
-        // 1. Managed settings — tool-action governance, not the data path.
-        let settings = managed_settings_json(request.profile)?;
-        plan = plan.with_step(IntegrationStep::new(
-            STEP_MANAGED_SETTINGS,
-            StepAction::WriteManagedSettings {
-                scope,
-                path: settings_path.clone(),
-                managed_keys: MANAGED_KEYS.iter().map(|k| (*k).to_string()).collect(),
-                content_sha256: sha256_hex(&settings),
-                merge: SettingsMerge::MergeManagedKeys,
-            },
-            format!(
-                "merge Agent Assembly's four managed keys into {} and leave every other key alone",
-                settings_path.display()
-            ),
-        ));
+        if scope == SettingsScope::Managed {
+            // 1a. The one privileged step. Every fact the user has to weigh is
+            //     in the plan *and* in the disclosure the CLI renders before the
+            //     confirmation — the plan is what the service checks consent
+            //     against, the disclosure is what makes that consent informed.
+            plan = self.with_endpoint_managed_step(plan, request.profile, &settings_path)?;
+        } else {
+            // 1b. The unprivileged install: tool-action governance in a file the
+            //     developer already owns, and not the data path.
+            let settings = managed_settings_json(request.profile)?;
+            plan = plan.with_step(IntegrationStep::new(
+                STEP_MANAGED_SETTINGS,
+                StepAction::WriteManagedSettings {
+                    scope,
+                    path: settings_path.clone(),
+                    managed_keys: MANAGED_KEYS.iter().map(|k| (*k).to_string()).collect(),
+                    content_sha256: sha256_hex(&settings),
+                    merge: SettingsMerge::MergeManagedKeys,
+                },
+                format!(
+                    "merge Agent Assembly's four managed keys into {} and leave every other key alone",
+                    settings_path.display()
+                ),
+            ));
+        }
 
         if interception_available {
             // 2. Trust material — condition C1, first half.
@@ -916,6 +1147,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
 
     async fn plan_removal(&self, receipt: &IntegrationReceipt) -> Result<RemovalPlan, AdapterError> {
         let mut plan = RemovalPlan::new(removal_plan_id(receipt), DevToolKind::ClaudeCode);
+        let mut managed_removal_needs_authorization = false;
 
         // A protection test mutated nothing, so there is nothing to undo and
         // nothing a reviewer needs to approve. Listing it would make the
@@ -927,6 +1159,18 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             .filter(|s| s.applied && !s.action.is_protection_test())
         {
             let summary = match &step.action {
+                StepAction::WriteManagedSettings {
+                    scope: SettingsScope::Managed,
+                    path,
+                    ..
+                } => {
+                    managed_removal_needs_authorization = true;
+                    format!(
+                        "restore the managed-settings file at {} to what was there before the install, or \
+                         delete it when there was nothing — asking for administrator authorization again",
+                        path.display()
+                    )
+                }
                 StepAction::WriteManagedSettings { path, .. } => format!(
                     "restore the four Agent Assembly-owned keys in {} to what they held before install, \
                      and leave everything you changed since alone",
@@ -969,6 +1213,15 @@ impl DevToolIntegration for ClaudeCodeIntegration {
                     .to_string(),
             )
             .warn("restart any running Claude Code session for the removal to take effect".to_string());
+
+        if managed_removal_needs_authorization {
+            plan = plan.warn(
+                "this removal reverses a privileged step and will ask for administrator authorization \
+                 once. Removal is symmetric: a file that was there before the install is restored from \
+                 the backup, and a host that had none goes back to having none"
+                    .to_string(),
+            );
+        }
 
         Ok(plan)
     }

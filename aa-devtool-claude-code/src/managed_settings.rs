@@ -1155,6 +1155,16 @@ fn line_diff(current: &str, proposed: &str) -> Vec<String> {
     out
 }
 
+/// Who owns `path`, when the platform reports owners.
+///
+/// Used to anchor the ownership check to the process's own uid when the managed
+/// root is redirected for a test — so the check stays live in both cases rather
+/// than being switched off for one of them.
+pub fn owner_uid(path: &Path) -> Option<u32> {
+    let metadata = std::fs::metadata(path).ok()?;
+    owner_and_mode(&metadata).0
+}
+
 #[cfg(unix)]
 fn owner_and_mode(metadata: &std::fs::Metadata) -> (Option<u32>, Option<u32>) {
     use std::os::unix::fs::MetadataExt;
