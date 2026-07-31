@@ -54,8 +54,12 @@ mod common;
 #[allow(dead_code, unused_imports)]
 mod spike_support;
 
+#[allow(unused_imports)]
+mod proxy_trust_support;
+
 #[cfg(unix)]
 mod governed_launch {
+    use super::proxy_trust_support::{aasm_binary, TrustedProxy};
     use super::spike_support::RealHomeGuard;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -74,9 +78,10 @@ mod governed_launch {
     const TRACE_ID: &str = "aaasm1112-trace";
     const SESSION_ID: &str = "aaasm1112-session";
     const TEAM_ID: &str = "aaasm1112-team";
-    /// The address the gateway assigns this session. Nothing listens on it — the
-    /// claim under test is that the launcher *routes the child at it*, which is
-    /// observable in the child's environment without a live proxy.
+    /// The address the gateway assigns this session. Nothing listens on it, and
+    /// since AAASM-5323 nothing is supposed to route at it either: the endpoint
+    /// is resolved and verified host-side, so this value is the decoy that makes
+    /// the proxy assertion below mean something.
     const PROXY_ADDR: &str = "127.0.0.1:19999";
 
     /// What the mock gateway saw. Registration and deregistration are the
@@ -149,59 +154,6 @@ exit 0
         Ok(bin)
     }
 
-    /// Absolute path to the `aasm` binary under test.
-    ///
-    /// Deliberately not `common::cli::aasm_command()`: that helper falls back to
-    /// `cargo run`, and this test runs the CLI with its working directory inside
-    /// a temp dir (the settings-path resolver prefers `<cwd>/.claude`, so leaving
-    /// the working directory in the repo would let the run write into the
-    /// checkout). `cargo run` cannot find a manifest from there. An absolute
-    /// path sidesteps the problem and keeps the run hermetic.
-    fn aasm_binary() -> PathBuf {
-        if let Some(explicit) = std::env::var_os("AASM_BIN_PATH") {
-            return std::fs::canonicalize(&explicit)
-                .unwrap_or_else(|e| panic!("AASM_BIN_PATH={explicit:?} could not be resolved: {e}"));
-        }
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("aa-integration-tests always has a workspace-root parent")
-                    .join("target")
-            });
-        for profile in ["debug", "release"] {
-            let bin = target.join(profile).join("aasm");
-            if bin.is_file() {
-                return bin;
-            }
-        }
-
-        // `aa-integration-tests` does not depend on `aa-cli`, so nothing builds
-        // the binary for us: `cargo nextest run -p aa-integration-tests` on a
-        // clean target dir would otherwise fail here rather than run. Build it
-        // once. The working directory matters — the test bodies run `aasm` from
-        // inside a temp dir (the settings resolver prefers `<cwd>/.claude`, so
-        // running from the checkout would let it write into the repo), and cargo
-        // cannot find a manifest from there. Building from the manifest dir up
-        // front is what lets the run itself stay hermetic.
-        let status = std::process::Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "aa-cli", "--bin", "aasm"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .status()
-            .expect("failed to invoke cargo to build the aasm binary");
-        assert!(status.success(), "`cargo build -p aa-cli --bin aasm` failed");
-
-        let bin = target.join("debug").join("aasm");
-        assert!(
-            bin.is_file(),
-            "no `aasm` binary at {} even after building it — set AASM_BIN_PATH. Skipping \
-             instead would leave AAASM-201 AC4 unevidenced.",
-            bin.display(),
-        );
-        bin
-    }
-
     /// Parse the `KEY=value` dump the stub wrote.
     fn parse_dump(raw: &str) -> BTreeMap<String, String> {
         raw.lines()
@@ -216,6 +168,13 @@ exit 0
     #[tokio::test(flavor = "multi_thread")]
     async fn run_claude_launches_the_tool_with_identity_proxy_and_a_monitored_session() -> anyhow::Result<()> {
         let real_home = RealHomeGuard::capture();
+
+        // ── a proxy this host can vouch for ────────────────────────────────
+        //
+        // Without one the launch is refused outright (AAASM-5323), so AC4's
+        // "launches Claude Code with identity, proxy and monitoring" has a live
+        // proxy as its precondition rather than a gateway-supplied string.
+        let proxy = TrustedProxy::start()?;
 
         // ── the gateway ────────────────────────────────────────────────────
         let recorder: Shared = Arc::new(Mutex::new(Recorder::default()));
@@ -260,6 +219,7 @@ exit 0
             .env("AASM_STATE_DIR", root.join("state"))
             .env("AA_CA_DIR", root.join("ca"))
             .env("AASM_CLAUDE_MANAGED_ROOT", root.join("managed"))
+            .env("AA_DATA_DIR", proxy.data_dir())
             .env("AA_TEST_ENV_DUMP", &dump)
             .args(["--api-url", &api_url, "run", "claude"]);
         let out = cmd.output().expect("aasm run claude should execute");
@@ -295,28 +255,20 @@ exit 0
 
         // ── proxy, as the launched tool saw it ─────────────────────────────
         //
-        // AAASM-1112 finding (2), pinned here rather than asserted away: the
-        // value the child receives is the gateway's bare `host:port`, **not** a
-        // proxy URL. `ClaudeCodeAdapter::build_launch_command` deliberately
-        // normalises `host:port` to `http://host:port`, but `execute_with_adapters`
-        // applies `build_child_env`'s unnormalised value on top of the command the
-        // adapter built (`cmd.envs(&child_env)`), and `spawn_and_wait` applies it
-        // once more — so the adapter's normalisation never reaches the process.
-        // `aa-cli`'s own `build_child_env_sets_proxy` unit test does not catch
-        // this because it feeds in a value that already carries a scheme.
-        //
-        // This assertion is written against the observed value on purpose: when
-        // the defect is fixed the test fails, which is the forcing function that
-        // makes the verification record get revisited.
+        // AAASM-1112 finding (2) is resolved, and by a route the original note
+        // did not anticipate: the child is routed at the endpoint *this host*
+        // resolved and verified, in normalised URL form. The gateway's
+        // `PROXY_ADDR` is deliberately a different, dead address — a
+        // registration response is remote and unauthenticated, so it is not
+        // entitled to choose where this session's traffic goes (AAASM-5323).
+        let expected_proxy = proxy.expected_proxy_url();
         for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
             assert_eq!(
                 seen.get(key).map(String::as_str),
-                Some(PROXY_ADDR),
-                "the launched tool must be routed at the proxy address the gateway assigned via \
-                 `{key}`. NOTE: this pins the CURRENT, DEFECTIVE value on purpose — the designed \
-                 value is `http://{PROXY_ADDR}` (AAASM-5324, root-caused by AAASM-5327). If this \
-                 now reads `http://{PROXY_ADDR}`, that bug is fixed: change this assertion to the \
-                 designed value and re-derive the AAASM-201 AC4 verdict. Saw:\n{raw}",
+                Some(expected_proxy.as_str()),
+                "the launched tool must be routed at the verified local proxy via `{key}`. \
+                 `{PROXY_ADDR}` or `http://{PROXY_ADDR}` here would mean the gateway's response \
+                 chose the route; an empty value would mean no interception at all. Saw:\n{raw}",
             );
         }
 
@@ -377,6 +329,10 @@ exit 0
     async fn against_the_real_gateway_the_launcher_cannot_register_and_never_starts_the_tool() -> anyhow::Result<()> {
         let fixture = super::common::cli::CliFixture::start().await?;
 
+        // A verified proxy, so the run reaches the registration call this test
+        // is about instead of being refused before it (AAASM-5323).
+        let proxy = TrustedProxy::start()?;
+
         let tmp = tempfile::tempdir()?;
         let root = tmp.path();
         let home = root.join("home");
@@ -400,6 +356,7 @@ exit 0
             .env("AASM_STATE_DIR", root.join("state"))
             .env("AA_CA_DIR", root.join("ca"))
             .env("AASM_CLAUDE_MANAGED_ROOT", root.join("managed"))
+            .env("AA_DATA_DIR", proxy.data_dir())
             .env("AA_TEST_ENV_DUMP", &dump)
             .args(["--api-url", &fixture.base_url(), "run", "claude"])
             .output()

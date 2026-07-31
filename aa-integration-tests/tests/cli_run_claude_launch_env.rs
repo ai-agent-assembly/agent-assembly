@@ -47,7 +47,13 @@
 //! reads its contents, because that file is in daily use and may hold
 //! credentials that an `assert_eq!` would print into a CI log.
 //!
-//! # Independence from AAASM-5323
+//! # The proxy endpoint is the one this host verified, not the one it was told
+//!
+//! Since AAASM-5323 a launch is refused unless `aasm run` can vouch for a local
+//! proxy, so these tests stand up a real one ([`TrustedProxy`]). The mock gateway
+//! still answers with a `proxy_addr`, and it is a **different** address than the
+//! running proxy's — so the assertion below is not merely "the child got a proxy"
+//! but "the child got the verified one and not the one the gateway named".
 //!
 //! `aasm run` registers with `POST /api/v1/agents`, which no shipped gateway
 //! serves yet. The gateway here is a mock that answers it, so this file measures
@@ -58,8 +64,12 @@
 #[allow(dead_code, unused_imports)]
 mod spike_support;
 
+#[allow(unused_imports)]
+mod proxy_trust_support;
+
 #[cfg(unix)]
 mod launch_env {
+    use super::proxy_trust_support::{aasm_binary, TrustedProxy};
     use super::spike_support::RealHomeGuard;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -73,10 +83,10 @@ mod launch_env {
     use axum::routing::{delete, post};
     use axum::{Json, Router};
 
-    /// The address the mock gateway assigns, in the **bare** `host:port` form a
-    /// gateway actually returns. Nothing listens on it: the claim under test is
-    /// which string the child is routed at, which is observable without a live
-    /// proxy. The adapter is expected to normalise this to a URL.
+    /// The address the mock gateway assigns. Nothing listens on it, and nothing
+    /// is supposed to: it is the decoy that makes the proxy assertion meaningful
+    /// — the child must be routed at the endpoint this host verified, never at
+    /// the one a registration response named (AAASM-5323).
     const PROXY_ADDR: &str = "127.0.0.1:19771";
     const AGENT_ID: &str = "aaasm5327-agent";
     const REGISTRATION_ID: &str = "aaasm5327-registration";
@@ -186,59 +196,6 @@ exit 0
         Ok(bin)
     }
 
-    /// Absolute path to a **freshly built** `aasm` binary under test.
-    ///
-    /// Deliberately not `common::cli::aasm_command()`: that helper falls back to
-    /// `cargo run`, and these tests run the CLI with its working directory inside
-    /// a temp dir (the settings-path resolver prefers `<cwd>/.claude`, so leaving
-    /// the working directory in the repo would let the run write into the
-    /// checkout). `cargo run` cannot find a manifest from there.
-    ///
-    /// `aa-integration-tests` does not depend on `aa-cli`, so `cargo nextest run
-    /// -p aa-integration-tests` builds nothing of the CLI: a stale `aasm` left in
-    /// `target/` by an earlier build would be measured instead of the tree. That
-    /// is a false *pass* for a test whose entire subject is `aa-cli` behaviour —
-    /// it makes the suite silently unable to notice the defect coming back — so
-    /// the build is unconditional rather than a fallback for a missing file. It
-    /// is a no-op when the binary is current.
-    ///
-    /// `AASM_BIN_PATH` is the escape hatch for callers (CI) that built the binary
-    /// themselves and own its freshness. It also picks the debug profile
-    /// unconditionally; a `--release` run wanting the release binary must point
-    /// `AASM_BIN_PATH` at it.
-    fn aasm_binary() -> PathBuf {
-        if let Some(explicit) = std::env::var_os("AASM_BIN_PATH") {
-            return std::fs::canonicalize(&explicit)
-                .unwrap_or_else(|e| panic!("AASM_BIN_PATH={explicit:?} could not be resolved: {e}"));
-        }
-
-        // Built from the manifest dir, which is what lets the run itself stay
-        // hermetic in a temp working directory.
-        let status = std::process::Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "aa-cli", "--bin", "aasm"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .status()
-            .expect("failed to invoke cargo to build the aasm binary");
-        assert!(status.success(), "`cargo build -p aa-cli --bin aasm` failed");
-
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("aa-integration-tests always has a workspace-root parent")
-                    .join("target")
-            });
-        let bin = target.join("debug").join("aasm");
-        assert!(
-            bin.is_file(),
-            "no `aasm` binary at {} even after building it — set AASM_BIN_PATH. Skipping instead \
-             would leave the launch environment unmeasured.",
-            bin.display(),
-        );
-        bin
-    }
-
     /// A host whose every Claude Code / Agent Assembly root is inside a temp dir.
     struct GovernedHost {
         _tmp: tempfile::TempDir,
@@ -288,11 +245,14 @@ exit 0
             Ok(LaunchEnvStore::at(paths.launch_env_dir(SettingsScope::User)?))
         }
 
-        /// Run `aasm run claude` against `api_url` and return the child stub's
-        /// self-reported environment.
-        fn run(&self, api_url: &str) -> anyhow::Result<BTreeMap<String, String>> {
+        /// Run `aasm run claude` against `api_url`, routed through `proxy`, and
+        /// return the child stub's self-reported environment.
+        fn run(&self, api_url: &str, proxy: &TrustedProxy) -> anyhow::Result<BTreeMap<String, String>> {
             let out = std::process::Command::new(aasm_binary())
                 .current_dir(&self.project)
+                // Where the verified proxy's state record lives. Without it the
+                // launch refuses and nothing is measured.
+                .env("AA_DATA_DIR", proxy.data_dir())
                 .env("HOME", &self.home)
                 .env("PATH", &self.path_var)
                 .env("CLAUDE_CONFIG_DIR", self.home.join(".claude"))
@@ -342,11 +302,12 @@ exit 0
         let real_home = RealHomeGuard::capture();
         let (api_url, server) = start_mock_gateway().await?;
 
+        let proxy = TrustedProxy::start()?;
         let host = GovernedHost::create()?;
         host.user_launch_env_store()?
             .set("NODE_EXTRA_CA_CERTS", CA_PATH_VALUE)?;
 
-        let seen = host.run(&api_url)?;
+        let seen = host.run(&api_url, &proxy)?;
 
         // ── the variable the whole product depends on ──────────────────────
         //
@@ -361,19 +322,22 @@ exit 0
             render(&seen),
         );
 
-        // ── the adapter's normalisation survives the merge ─────────────────
+        // ── the child is routed at the endpoint this host verified ────────
         //
-        // `build_child_env` also sets these, to the gateway's bare `host:port`,
-        // which is not a proxy URL any HTTP client accepts (AAASM-5324). The
-        // adapter's normalised value has to be the one that lands.
-        let expected_proxy = format!("http://{PROXY_ADDR}");
+        // Not at `PROXY_ADDR`, which the gateway named in its response: a
+        // registration response is remote and unauthenticated, so letting it
+        // choose where a governed session's traffic goes is the bypass
+        // AAASM-5323 closes. The value must also be a URL, not a bare authority
+        // — no HTTP client routes through the latter (AAASM-5324).
+        let expected_proxy = proxy.expected_proxy_url();
         for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
             assert_eq!(
                 seen.get(key).map(String::as_str),
                 Some(expected_proxy.as_str()),
-                "`{key}` must carry the adapter's normalised proxy URL, not `build_child_env`'s \
-                 bare `{PROXY_ADDR}` — a bare authority is not a URL an HTTP client routes \
-                 through. Saw:\n{}",
+                "`{key}` must carry the verified local endpoint. `http://{PROXY_ADDR}` here means \
+                 the gateway's response chose the route; `{PROXY_ADDR}` means a bare authority \
+                 reached the child; `__UNSET__` means the launch was not proxied at all. \
+                 Saw:\n{}",
                 render(&seen),
             );
         }
@@ -411,8 +375,9 @@ exit 0
         let (api_url, server) = start_mock_gateway().await?;
 
         // No launch-env store is written, so nothing injects the CA variable.
+        let proxy = TrustedProxy::start()?;
         let host = GovernedHost::create()?;
-        let seen = host.run(&api_url)?;
+        let seen = host.run(&api_url, &proxy)?;
 
         assert_eq!(
             seen.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
