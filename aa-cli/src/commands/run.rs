@@ -428,10 +428,31 @@ async fn deregister_with_gateway(registration_id: &str, ctx: &ResolvedContext) {
 
 /// Spawn `cmd` as a tokio child process, forward SIGTERM/SIGINT on Unix,
 /// and wait for the child to exit. Returns the child's exit code.
+///
+/// The child's environment is the union of `child_env` (the operator's shell
+/// environment plus this session's governance identity) and the environment the
+/// adapter set on `cmd`. The adapter is applied **last and therefore wins** on a
+/// collision: it is the layer that knows what the launched tool actually needs —
+/// `NODE_EXTRA_CA_CERTS` pointing at the proxy CA, without which the tool's
+/// runtime refuses the intercepted TLS and the session is ungoverned while
+/// looking governed — and it is the layer that normalises the gateway's bare
+/// `host:port` proxy address into the `http://host:port` URL an HTTP client
+/// accepts (AAASM-5324). Dropping the adapter's environment, as this function
+/// did before AAASM-5327, silently defeated both.
 async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, String>) -> Result<i32> {
     let mut tokio_cmd = tokio::process::Command::new(cmd.get_program());
     tokio_cmd.args(cmd.get_args());
     tokio_cmd.envs(child_env);
+    // `get_envs` yields `None` for a variable the adapter wants *removed* from
+    // the child, which is not the same request as setting it empty — an adapter
+    // that unsets a variable to disable a tool behaviour must not have that
+    // turned into an empty-but-present variable the tool then honours.
+    for (name, value) in cmd.get_envs() {
+        match value {
+            Some(value) => tokio_cmd.env(name, value),
+            None => tokio_cmd.env_remove(name),
+        };
+    }
 
     let mut child = tokio_cmd.spawn()?;
     let child_pid = child.id().unwrap_or(0) as i32;
@@ -536,7 +557,7 @@ pub async fn execute_with_adapters(
         .await
         .map_err(|e| anyhow::anyhow!("failed to apply settings: {e}"))?;
 
-    let mut cmd = adapter
+    let cmd = adapter
         .build_launch_command(
             &args.tool_args,
             &handle.agent_id,
@@ -544,7 +565,10 @@ pub async fn execute_with_adapters(
             handle.proxy_addr.as_deref(),
         )
         .map_err(|e| anyhow::anyhow!("failed to build launch command: {e}"))?;
-    cmd.envs(&child_env);
+    // No `cmd.envs(&child_env)` here: `spawn_and_wait` applies both sources with
+    // the adapter's on top, and overlaying `child_env` onto the command first
+    // would overwrite the adapter's values inside `cmd` — the merge would then
+    // faithfully carry forward the very values it is meant to override.
 
     let mut guard = RegistrationGuard {
         registration_id: handle.registration_id.clone(),
