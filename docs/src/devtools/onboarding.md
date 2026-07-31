@@ -29,7 +29,7 @@ will hit them rather than in a footnote:
 |---|---|---|
 | macOS | The MVP platform ([product brief](product-brief.md) §10). | — |
 | Claude Code **≥ 1.0.0** | The adapter's `MIN_VERSION`. A lower version is reported as *absent*, not as partially supported, so nothing is written for it (`aa-devtool-claude-code/src/lib.rs`). | `claude --version` |
-| `aasm` | The reference client for the [Developer Integration API](developer-integration-api.md). | `aasm --version` |
+| `aasm` **from any channel except crates.io** | The reference client for the [Developer Integration API](developer-integration-api.md). `.ci/strip-for-publish.sh` removes `aasm integrations` (AAASM-5309) in `release.yml`'s `publish-crates` job only, so `cargo install aasm` does not have it — and that `aa-runtime` never binds the socket either. A `brew` install, the GitHub Release tarballs, the `curl` installer and a source build (`cargo build -p aa-cli`) all have it. | `aasm integrations --help` (not `aasm --version`, which succeeds either way) |
 | An Agent Assembly runtime | Every lifecycle operation runs inside `aa-runtime`. There is no in-process fallback. | see below |
 
 ### The Developer Integration API is opt-in
@@ -367,7 +367,7 @@ always the core.
 | Layer | Owns | Never does |
 |---|---|---|
 | **`aasm integrations` / a plugin / an IDE extension** | Rendering, prompting, choosing a scope and profile, showing evidence. | Mutating tool config, evaluating policy, scanning content, or deriving a protection level. |
-| **`DevToolAdapter`** (`aa-devtool-claude-code`) | Per-tool knowledge: detection, which files and keys exist, authoring the plan, declaring bypasses. Runs *inside* the trusted runtime. | Deciding policy outcomes, or asserting protection on the core's behalf. |
+| **`DevToolIntegration`** (`aa-devtool-claude-code`) | Per-tool knowledge: detection, which files and keys exist, authoring the plan, declaring bypasses. Runs *inside* the trusted runtime. | Deciding policy outcomes, or asserting protection on the core's behalf. |
 | **Core runtime and gateway** | Policy evaluation, sensitive-data detection and redaction, egress allow/deny, approvals, audit, and the protection level itself. | Trusting a client's claim about any of the above. |
 
 **MCP is optional.** It is one of the mechanisms an integration may govern —

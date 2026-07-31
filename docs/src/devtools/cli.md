@@ -13,6 +13,13 @@ mutation happens there
 ([ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) §1,
 forbidden design 10).
 
+> **Absent from `cargo install aasm`.** `.ci/strip-for-publish.sh` (AAASM-5309)
+> removes `aasm integrations` — and the DI-API bring-up from `aa-runtime` — in
+> the `publish-crates` job of `release.yml`, which is the crates.io publish and
+> nothing else. A source build, the GitHub Release tarballs, the `curl`
+> installer and the Homebrew formula all carry both ends. See the
+> [CLI reference](../cli/integrations.md) for flags, defaults and exit codes.
+
 ## The journey
 
 | Stage | Command | What it does |
@@ -64,7 +71,7 @@ currently doing. See the [product brief](product-brief.md) §6 and §7.
 | Profile | Enforcement | Sensitive-data finding | Notes |
 |---|---|---|---|
 | `recommended` (default) | Enforce | Redact and proceed | The default for every persona unless org policy says otherwise |
-| `strict` | Enforce | Redact, and block on configured high-severity classes | Narrower egress allowlist, more approvals |
+| `strict` | Enforce | Redact and proceed **today**; blocking on configured high-severity classes is _planned_ (AAASM-5277 / 5281) | Narrower egress allowlist, more approvals. Until blocking lands, `strict` differs from `recommended` on egress, approvals and budget only |
 | `observe-only` | Observe | Recorded; payload forwarded unchanged | **Never displayed as protection.** Status says monitoring |
 
 `--scope` selects the configuration surface (`user`, `project`, `managed`). It
@@ -93,7 +100,27 @@ now".
 `verify` reports success **only** when the service's outcome is `passed` *and*
 the protected path was actually exercised. A configuration that reads back
 exactly as its receipt records it proves that a file is correct; it proves
-nothing about traffic, and this command will not let it read as protection:
+nothing about traffic, and this command will not let it read as protection.
+
+When the exercise happens and the proxy adjudicates it, `verify` exits `0`:
+
+```console
+$ aasm integrations verify claude-code
+claude-code — verification passed
+  ran at:               1785391172 (unix)
+  protected path exercised: yes
+
+Assertions:
+  [ok] protected_path_exercised               the core redacted 1 credential finding(s) from the
+                                              probe request to api.anthropic.com, and re-inspection
+                                              of the bytes it resolved to forward found none
+  ...
+$ echo $?
+0
+```
+
+When it cannot measure that, it exits `6` and says so rather than reporting the
+configuration back to you as if it were protection:
 
 ```console
 $ aasm integrations verify claude-code
@@ -111,8 +138,10 @@ $ echo $?
 6
 ```
 
-The probe uses a **synthetic** secret chosen by the adapter and run by the
-service. No real credential is ever read, sent or printed.
+Read exit `6` as **"not measured"**, never as "measured and failed"; the full
+list of conditions that produce it is [below](#current-limitation). The probe
+uses a **synthetic** secret chosen by the adapter and run by the service. No
+real credential is ever read, sent or printed.
 
 ## Machine-readable output
 
@@ -176,7 +205,7 @@ runtime; enrolment happens on start.
 | `the Agent Assembly runtime is not running` | No socket, and `--no-autostart` was passed | Start `aa-runtime` with `AA_DEVINT_ENABLED=1`, or drop the flag |
 | `<reason> — upgrade …` on connect | This `aasm` and the running core do not share a DI-API version | Upgrade both; they ship as one versioned unit |
 | `the install is partial — N step(s) failed` | Some steps applied, some did not | `aasm integrations status <tool>`, then `repair` or `remove` |
-| `this is NOT a protection measurement` | The protected path was not exercised | Launch the tool through the managed path, then verify again |
+| `this is NOT a protection measurement` (exit `6`) | The protected path was not exercised; the level stays at `Integrated` | Launch the tool through the managed path, then verify again |
 | `the capability token at … is mode 644` | The token is not a secret any more | `chmod 600` it and restart the runtime to re-issue |
 | `no integration receipt records <tool>` | Nothing has been installed to act on | Run `aasm integrations install <tool>` first |
 
@@ -232,8 +261,14 @@ implying otherwise.
 * **`NODE_TLS_REJECT_UNAUTHORIZED`.** Never set. A TLS failure is a finding, not
   something to suppress — and if you have it set, `status` reports it as a
   bypass.
-* **The system keychain and the endpoint managed-settings file.** Both are
-  privileged host changes whose behaviour is unmeasured.
+* **The system keychain.** A privileged host change whose behaviour is
+  unmeasured.
+
+  The endpoint managed-settings file **is** offered, but only through the
+  explicit `--install-managed-settings` opt-in described above — never as part
+  of a default install, and never implied by a profile. What remains unmeasured
+  there is the *enforcement* half: whether Claude Code honours each managed-only
+  key against a real override attempt on a managed device.
 
 ### Bypasses that are detected
 

@@ -99,7 +99,7 @@ The mechanisms an integration may use, and what each is good for:
 | **Environment injection** | Carry identity and endpoint configuration into the tool process. | No |
 | **MCP configuration** | Govern *which* MCP servers the tool may load, and optionally expose AASM capabilities as MCP tools. | Loading control: no. Tool exposure: yes |
 | **IDE extension API** | Surface status/UX inside an editor, and where the host allows it, veto actions. | Depends on host |
-| **Host enforcement** (OS-level) | Constrain the process regardless of its configuration. **Not available in this MVP** — see §7. | No |
+| **Host enforcement** (OS-level) | Constrain the process regardless of its configuration. **Opt-in only** (`AAASM-5298`) — reachable through the explicitly authorized, read-back-verified managed-settings install, never by default. See §7.3. | No |
 
 Read the table by the last column. The mechanisms that produce a real guarantee are the ones the
 governed agent cannot decline. MCP appears twice, and only its *loading control* half is
@@ -120,7 +120,7 @@ protection works.
 
 | | |
 |---|---|
-| **Entry point** | A single command (`aasm integrations install claude-code` — _planned_, `AAASM-5280`) or an install action inside the tool. |
+| **Entry point** | A single command (`aasm integrations install claude-code` — shipped, `AAASM-5280`) or an install action inside the tool. |
 | **Mental model** | "I want my coding agent not to leak my secrets." No org, no policy authoring. |
 | **Must not have to understand** | MCP, proxies, CA certificates, `settings.json` paths, gateway endpoints, enforcement modes, `GovernanceLevel`. |
 | **Policy source** | The chosen protection profile's built-in defaults. |
@@ -195,7 +195,7 @@ follows from that split.
 | | |
 |---|---|
 | **User does** | Issues one install action and, if the plan touches something they own, confirms it. |
-| **AASM does** | Computes an **integration plan** before mutating anything — the exact set of files, keys and env changes it intends to make — then applies it transactionally and writes an **installation receipt** (_planned_, `AAASM-5278`). Today the primitive underneath exists: managed-key merge with atomic write (temp file + rename) preserving all unmanaged keys. |
+| **AASM does** | Computes an **integration plan** before mutating anything — the exact set of files, keys and env changes it intends to make — then applies it transactionally and writes an **installation receipt** (shipped, `AAASM-5278`), on top of the managed-key merge with atomic write (temp file + rename) that preserves all unmanaged keys. |
 | **Evidence produced** | The plan (reviewable before apply) and the receipt (the sole basis for later drift detection and removal). |
 | **Can fail** | Insufficient permissions; a conflicting managed configuration already present from another tool; partial application (see §9.3). |
 | **Invariant** | **Idempotent.** A second install on an unchanged system produces no additional change and no error. |
@@ -262,7 +262,7 @@ follows from that split.
 |---|---|
 | **User does** | Runs remove. |
 | **AASM does** | Uses the receipt to restore the pre-install value of every managed key — restoring the original value where one existed, deleting the key where none did — and removes only AASM-owned artifacts. |
-| **Evidence produced** | A removal report, and a post-removal state that a test can compare byte-for-byte against the pre-install snapshot. |
+| **Evidence produced** | A removal report, and a post-removal state that a test can compare **semantically** against the pre-install snapshot. Byte-exactness is *not* claimed — accepted constraint C3: the settings document is reserialised on write, so non-canonical formatting is not reproduced verbatim. |
 | **Can fail** | Receipt missing or corrupt → refuse to guess. Report what AASM believes it owns and require explicit confirmation before touching anything. |
 | **Invariant** | Unrelated user configuration is preserved through the whole install→remove cycle. Removal must leave no AASM residue and no collateral deletion. |
 
@@ -406,6 +406,13 @@ doing. They are separate because a user can choose `Strict` on a machine where t
 routed through the gateway — and the honest answer there is `Integrated`, not `Strict protection
 active`.
 
+The reported ladder has **six** rungs — `Not Installed`, `Detected — Not Integrated`,
+`Partially Integrated`, `Integrated`, `Gateway Protected`, `Host Enforced`
+(`aa-core/src/integration/state.rs`; the vocabulary clients must use verbatim is in
+[protection levels](protection-levels.md)). The three below `Integrated` say how far an install
+got and make no protection claim, so they need no entry criteria. §7.1–§7.3 below specify the
+three rungs that do claim something, which is why the rest of this section counts three.
+
 > **The governing rule: the existence of a configuration file is never sufficient evidence for a
 > protection level.** Configuration expresses intent. A level is a claim about behaviour, and a
 > claim about behaviour requires an observation of behaviour. Every entry criterion below is
@@ -448,8 +455,14 @@ active`.
   cache. A level earned at install time is not still true after the core stops.
 - **Report the mechanisms behind the level**, split into "exercised" and "read back". A user
   who can see which is which can reason about their own risk; a user shown a single word cannot.
-- **Always report the next level up and why it is not active.** For every MVP install that is
-  `Host Enforcement: unavailable on this platform`.
+- **Always report the next level up and why it is not active.** The status renderer does this
+  twice over: the ladder lists every rung, and a separate `Next level up:` line carries the
+  service's reason for the rung immediately above the one achieved. `host_enforced` is a special
+  case in the ladder — `aa-cli` marks that rung unavailable unconditionally
+  (`aa-cli/src/commands/integrations/model.rs`, pinned by the
+  `host_enforced_is_always_present_and_always_unavailable` test), so it renders as
+  `unavailable on this platform` on **every** host, macOS included, rather than as
+  "not installed — requires `--install-managed-settings`".
 - **Degrade loudly.** Losing a criterion mid-session drops the level and surfaces it. There is no
   state in which the level shown is higher than the evidence supports.
 
@@ -615,8 +628,9 @@ honest failure would then be indistinguishable from an integration bug.
 
 Restricting the *MVP* to one tool must not restrict the *model* to one tool. The following stay
 tool-neutral and are validated against the existing Codex / Copilot / Windsurf adapters as well:
-the nine-stage journey (§4), the three profiles (§6), the three protection levels and their entry
-criteria (§7), the guarantee set (§8), the failure taxonomy (§9), and the lifecycle contract those
+the nine-stage journey (§4), the three profiles (§6), the three claim-bearing protection levels
+and their entry criteria (§7), the guarantee set (§8), the failure taxonomy (§9), and the
+lifecycle contract those
 imply. Any design that can only be expressed for Claude Code is a design defect, and `AAASM-5277`
 is where that is caught.
 
@@ -630,7 +644,7 @@ because "no" without a reason gets re-litigated.
 | **macOS Endpoint Security / Network Extension** | A kernel-level route to host enforcement, and it carries entitlement, signing and distribution burdens far beyond MVP validation. `Host Enforced` (§7.3) is reached instead through an opt-in, authorized, read-back-verified managed-settings install (`AAASM-5298`); ES/NE's absence means that route specifically stays out of scope, not that §7.3 is unreachable. |
 | **Windows / Linux host enforcement** | Same reasoning; different mechanisms. `aa-ebpf` is Linux-only and is a detection layer that cannot modify traffic, so it is not a substitute. |
 | **Marketplace extensions** | Publishing to a tool's extension marketplace is a distribution and review-process problem. A reference shell (`AAASM-5282`) is enough to prove the plugin path. |
-| **Dynamic Rust plugin loading** | Adapters are build-time linked today; there is no `inventory`-style registration and no shared-library loading (`docs/devtools/plugins.md`). Adding dynamic loading would introduce a code-loading trust boundary for no MVP benefit. |
+| **Dynamic Rust plugin loading** | Adapters are build-time linked today; there is no `inventory`-style registration and no shared-library loading (`docs/src/devtools/plugins.md`). Adding dynamic loading would introduce a code-loading trust boundary for no MVP benefit. |
 | **Claiming protection for unmanaged direct provider connections** | A connection AASM never sees cannot be protected by AASM. Claiming otherwise would invalidate every guarantee in §8. |
 | **Selecting the final IPC transport** | Owned by `AAASM-5279`; a product brief must not prejudge it. |
 | **Additional detection providers** (e.g. richer PII/secret engines) | The deterministic scanner is the MVP's detection surface. Swapping it changes what G1 means and needs its own evaluation. |
@@ -664,10 +678,11 @@ else on the machine.
 ### 11.2 Unrelated user settings preserved
 
 > **Given** a Claude Code settings file containing user-authored keys outside the AASM-managed set,
-> and a byte-exact snapshot taken beforehand,
+> and a snapshot taken beforehand,
 > **When** install, verify, repair and remove are each executed in sequence,
 > **Then** every unmanaged key retains its original value and ordering-independent content at every
-> step, and after removal the file (or its absence) matches the pre-install snapshot exactly.
+> step, and after removal the file (or its absence) matches the pre-install snapshot **semantically**
+> (accepted constraint C3 — restore is semantics-exact, not byte-exact).
 
 ### 11.3 Synthetic secret never reaches the model provider
 
@@ -711,13 +726,14 @@ else on the machine.
 
 ### 11.7 Removal restores pre-install state
 
-> **Given** a byte-exact snapshot of all affected configuration taken before install,
+> **Given** a snapshot of all affected configuration taken before install,
 > **When** the full install → verify → use → remove cycle completes,
 > **Then** every managed key is restored to its pre-install value — or deleted where none existed —
-> no AASM-owned artifact remains, the post-removal state matches the snapshot, and Claude Code
+> no AASM-owned artifact remains, the post-removal state matches the snapshot **semantically**
+> (accepted constraint C3 — restore is semantics-exact, not byte-exact), and Claude Code
 > launches and operates normally afterwards.
 
-### 11.8 Protection-level reporting distinguishes the three levels
+### 11.8 Protection-level reporting distinguishes the three claim-bearing levels
 
 > **Given** three configurations — (a) managed settings applied but the tool never launched through
 > the managed path, (b) a fully verified installation with protection exercised per 11.3, and

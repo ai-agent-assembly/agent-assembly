@@ -6,6 +6,15 @@ Sandbox mode is the governance analogue of a database transaction ROLLBACK: the 
 
 The feature is part of the open-source core — not an enterprise add-on.
 
+> **`aasm run` is missing from `cargo install aasm`.** Several examples below
+> drive dry-run mode through `aasm run --observe`. That command group is stripped
+> by `.ci/strip-for-publish.sh` in `release.yml`'s `publish-crates` job — the
+> crates.io publish and nothing else — so `cargo install aasm` does not have it,
+> including on a CI runner. A source build, the GitHub Release tarballs, the
+> `curl` installer and the Homebrew formula do. If you are on the crates.io
+> binary, the SDK's `enforcement_mode` and the gateway-side policy setting reach
+> the same posture.
+
 ---
 
 ## How it works

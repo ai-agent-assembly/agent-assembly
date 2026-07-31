@@ -189,7 +189,11 @@ Use these words verbatim in any client. A user comparing the CLI, the dashboard
 and an editor extension must see one word for one thing.
 
 * **Profiles:** `Recommended`, `Strict`, `Observe`
-* **Levels:** `Integrated`, `Gateway Protected`, `Host Enforced`
+* **Levels (the full ladder, low to high):** `Not Installed`,
+  `Detected — Not Integrated`, `Partially Integrated`, `Integrated`,
+  `Gateway Protected`, `Host Enforced`. The lower three are the states a client
+  displays most often — a vocabulary that stops at `Integrated` leaves no word
+  for a tool that is merely present.
 * **Overriding states:** `Drifted`, `Degraded`, `Incompatible`
 
 ---

@@ -18,10 +18,11 @@ stated first.
 
 **The client-to-core protocol is the DI-API, not MCP.** Nothing in the reference
 client speaks MCP; it never loads an MCP server, never registers an MCP tool and
-never requires one to exist. MCP is one of ten integration *capabilities* the
-runtime may govern ([product brief §2](product-brief.md)), and only its
-*loading-control* half is non-cooperative — deciding **which** MCP servers a tool
-may load. Exposing AASM capabilities *as* MCP tools is agent-cooperative and is
+never requires one to exist. MCP accounts for two of the twelve
+`IntegrationCapability` values the runtime may govern — `McpDiscovery` and
+`McpGovernance` (`aa-core/src/integration/capability.rs`; the mechanism-level
+view is [product brief §2](product-brief.md)) — and only the *loading-control*
+half is non-cooperative, deciding **which** MCP servers a tool may load. Exposing AASM capabilities *as* MCP tools is agent-cooperative and is
 therefore defence-in-depth, never a substrate.
 
 A plugin built on MCP instead of the DI-API would make protection depend on the
@@ -76,7 +77,11 @@ Use these words, verbatim, in any client. A user comparing the CLI, the dashboar
 and an editor extension must see one word for one thing.
 
 - **Profiles**: `Recommended`, `Strict`, `Observe` ([§6](product-brief.md)).
-- **Levels**: `Integrated`, `Gateway Protected`, `Host Enforced` ([§7](product-brief.md)).
+- **Levels** (the full ladder, low to high): `Not Installed`,
+  `Detected — Not Integrated`, `Partially Integrated`, `Integrated`,
+  `Gateway Protected`, `Host Enforced` ([§7](product-brief.md);
+  `aa-core/src/integration/state.rs`). The lower three are what a client
+  displays most often.
 - **Overriding states**: `Drifted`, `Degraded`, `Incompatible`.
 
 Two display rules are load-bearing:

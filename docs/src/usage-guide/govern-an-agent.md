@@ -6,6 +6,21 @@ Assembly governance: it is registered with the gateway, tagged to a team and
 trace, and routed through the proxy so its tool-calls and network requests are
 policy-checked and audited.
 
+> **This guide does not work on a crates.io `aasm`.** `aasm tools` and `aasm run`
+> are developer-only commands: `.ci/strip-for-publish.sh` removes them in
+> `release.yml`'s `publish-crates` job, so they are absent from
+> `cargo install aasm` and present everywhere else — a source build, the GitHub
+> Release tarballs, the `curl` installer and the Homebrew formula. See
+> [CLI overview → developer-only commands](../cli/overview.md#command-groups).
+>
+> **There is a newer path for dev tools.** The lifecycle described here — detect,
+> wire up, launch — has been superseded for AI dev tools by
+> [`aasm integrations`](../cli/integrations.md), which adds plan, receipt,
+> verify, drift/repair and remove, and reports an evidence-backed
+> [protection level](../devtools/protection-levels.md) instead of a static
+> governance tier. `aasm integrations` is stripped on crates.io too. This guide is
+> retained because `aasm run` is still how a governed session is launched.
+
 ## Prerequisites
 
 - The `aasm` binary built (`cargo build -p aa-cli`; the binary is at
@@ -22,21 +37,29 @@ not a static list:
 
 ```console
 $ aasm tools list
-+---------------+-----------------------+---------------------------------------------------------+------------------+
-| TOOL          | VERSION               | PATH                                                    | GOVERNANCE LEVEL |
-+====================================================================================================================+
-| ClaudeCode    | 2.1.172 (Claude Code) | /opt/homebrew/bin/claude                                | L3Native         |
-|---------------+-----------------------+---------------------------------------------------------+------------------|
-| Codex         | codex-cli 0.135.0     | /opt/homebrew/bin/codex                                 | L2Enforce        |
-|---------------+-----------------------+---------------------------------------------------------+------------------|
-| GitHubCopilot | 1.388.0               | /Users/you/.vscode/extensions/github.copilot-1.388.0    | L1Observe        |
-+---------------+-----------------------+---------------------------------------------------------+------------------+
++---------------+---------+---------------------------------------------------------+------------------+
+| TOOL          | VERSION | PATH                                                    | GOVERNANCE LEVEL |
++======================================================================================================+
+| ClaudeCode    | 2.1.220 | /opt/homebrew/bin/claude                                | L2Enforce        |
+|---------------+---------+---------------------------------------------------------+------------------|
+| Codex         | 0.144.6 | /opt/homebrew/bin/codex                                 | L2Enforce        |
+|---------------+---------+---------------------------------------------------------+------------------|
+| GitHubCopilot | 1.388.0 | /Users/you/.vscode/extensions/github.copilot-1.388.0    | L2Enforce        |
++---------------+---------+---------------------------------------------------------+------------------+
 ```
 
-The **governance level** reflects how deeply Agent Assembly can integrate with
-that tool — from `L3Native` (the tool exposes a hook the runtime wires into
-directly) down to `L1Observe` (the runtime can observe but not natively
-intercept, so the proxy and eBPF layers do the enforcing).
+The **governance level** is each adapter's *static, self-declared* ceiling —
+what it says it could achieve for that tool, not what is currently in force.
+`L2Enforce` is the highest level any shipped adapter declares; `L3Native` is
+defined in the [L0–L3 matrix](../governance/capability-matrix.md) but no adapter
+returns it today, and `aa-devtool-saas` is the only one capped at `L1Observe`.
+
+> **A level here is not a protection claim.** It is a declaration, not evidence:
+> nothing about this column says traffic was inspected. For an evidence-backed
+> answer to "is this tool actually protected right now, and how do you know",
+> use [`aasm integrations status <tool>`](../cli/integrations.md), which reports
+> the [protection ladder](../devtools/protection-levels.md) derived from
+> observations rather than a self-declared tier.
 
 ## Step 2 — Start the gateway
 
@@ -152,7 +175,17 @@ and watch its decisions live via the dashboard — see
 
 ## Result
 
-You now have a real AI tool running with a stable governed identity, every
-tool-call and outbound request routed through the gateway for an allow/deny
-decision, secrets scrubbed from the recorded environment, and a complete audit
-trail keyed to the agent, team, and trace you assigned in Step 3.
+You now have a real AI tool running with a stable governed identity, its
+tool-calls and outbound requests *routed* to the gateway for an allow/deny
+decision, secrets scrubbed from the recorded environment, and an audit trail
+keyed to the agent, team, and trace you assigned in Step 3.
+
+**Routing is not proof.** Everything above describes configuration that was
+applied, which is not evidence that anything inspected the traffic — and a tool
+started directly, outside `aasm run`, inherits none of this wiring. To turn
+"configured" into a measured claim, use the
+[integration lifecycle](../cli/integrations.md): `aasm integrations verify
+<tool>` runs an adjudicated exercise on the model-bound path and exits `0` only
+when the protected path was actually exercised *and* the outcome was protective.
+Its [limitations page](../devtools/limitations.md) states what remains
+unmeasured.
