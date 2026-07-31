@@ -30,7 +30,8 @@ claim that traces to neither is not on this page.
 | Drift detection and repair | **Supported** | Detected at `status`/`verify` time, not in real time. |
 | Adjudicating protection probe | **Planned** | The default probe cannot see the forwarded body. |
 | `strict` blocking on a high-severity scanner finding | **Planned** | [AAASM-5277](https://lightning-dust-mite.atlassian.net/browse/AAASM-5277), [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281). Today `strict` redacts, like `recommended`. |
-| Endpoint managed-settings enforcement keys | **Planned / unmeasured** | [AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298). |
+| Endpoint managed-settings file | **Installable, opt-in and authorized** | [AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298). `--install-managed-settings`; verified by read-back. |
+| Endpoint managed-settings *enforcement* keys | **Still unmeasured** | Documented as non-overridable; no real override attempt has been measured against a managed device. |
 | Byte-exact configuration restore | **Unsupported** | Semantics-exact by accepted constraint (C3). |
 | `ANTHROPIC_BASE_URL` redirection as a protection mechanism | **Unsupported** | Measured delivering the raw secret. |
 | Host-level bypass prevention | **Unsupported** | Explicit non-goal. |
@@ -167,28 +168,51 @@ whenever it cannot measure:
 Read exit `6` on an otherwise-clean install as **"not measured"**, not as
 **"measured and failed"** — and read `status` for which it is.
 
-## The managed-settings path is unmeasured
+## The managed-settings file can be installed; its enforcement is still unmeasured
 
 `/Library/Application Support/ClaudeCode/managed-settings.json` is the endpoint
 managed-settings file. Its managed-only keys —
-`allowManagedPermissionRulesOnly`, `disableBypassPermissionsMode`, and others —
+`allowManagedPermissionRulesOnly`, `disableBypassPermissionsMode`,
+`allowManagedMcpServersOnly`, `allowManagedHooksOnly` —
 are **the strongest available counters to the bypasses listed above**.
 
-They are **unmeasured**. The directory did not exist on the Spike host, creating
-it requires root, and the Spike deliberately made no privileged writes. Nothing
-in `aa-devtool-claude-code` writes to it; `--scope managed` is refused, and the
-path is resolved only so a refusal can name it
-(`aa-devtool-claude-code/src/scope.rs`).
+Since [AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298),
+Agent Assembly can install that file — through an **opt-in, explicitly
+authorized** path, never as part of a default install. See
+[`--install-managed-settings`](cli.md) and
+[Protection levels → Host Enforced](protection-levels.md#host-enforced).
 
-> **Therefore: no non-overridable-enforcement claim is made anywhere in this
-> product** (AAASM-5276 condition **C6**). Nothing in these docs, the CLI or any
-> client should be read as implying that a bypass is prevented rather than
-> detected.
+**What Agent Assembly verifies**, by reading the file back after the write:
 
-Measuring this path on a managed/MDM macOS device is tracked as
-[AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298). It is
-a product decision rather than an engineering default, because it introduces a
-**privileged install step**.
+* its bytes are exactly the bytes you were shown and authorized;
+* it parses as a managed-settings document and carries the managed-only keys;
+* it is owned by the expected principal (root at the canonical path);
+* no account other than its owner can rewrite it.
+
+**What Agent Assembly does not measure**, and will not claim:
+
+* that Claude Code honours each managed-only key at runtime. Anthropic documents
+  these keys as non-overridable; Agent Assembly has **not** measured a real
+  override attempt against a managed device. AAASM-5276 condition **C6** is
+  closed for the *install* half and open for the *enforcement* half.
+
+> Read a `Host Enforced` level as: *"the managed policy is installed at the
+> OS-managed path, owned as expected and not writable by you."* Do not read it as
+> *"this bypass has been demonstrated to fail."* Every status that reports it
+> carries that caveat in the evidence detail.
+
+### What the install will not do
+
+* It will not elevate anything but the single file placement. `aasm` never runs
+  as root, and no other step in any plan asks for authorization.
+* It will not replace a managed-settings file Agent Assembly did not write — for
+  example one deployed by your organisation's device management. That is a
+  refusal, and moving the file aside is your explicit decision to make, not
+  Agent Assembly's.
+* It will not run without a terminal. A non-interactive invocation fails
+  immediately rather than blocking on a credential prompt nobody can answer.
+* It will not report success on the authorization mechanism's word. A read-back
+  that does not match rolls the write back and fails.
 
 ## Restore is semantics-exact, not byte-exact
 

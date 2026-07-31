@@ -93,7 +93,7 @@ you never have to read the absence of a finding as the absence of a bypass.
 |---|---|---|
 | `user` | `$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json` | The default. |
 | `project` | `<cwd>/.claude/settings.json` | Checked in and shared. Selectable, never a default. |
-| `managed` | — | **Refused.** See below. |
+| `managed` | `/Library/Application Support/ClaudeCode/managed-settings.json` | Administrator-owned. Opt-in only, via `--install-managed-settings`. See below. |
 
 A `.claude/` directory in your working directory never redirects a `user`-scoped
 install. This is deliberate: the underlying `apply` resolver *does* prefer a
@@ -102,11 +102,24 @@ where you happened to `cd` cannot write a receipt it can later compare drift
 against or restore from (AAASM-5276 condition **C2**;
 `aa-devtool-claude-code/src/scope.rs`).
 
-`--scope managed` is refused with the path named:
-`/Library/Application Support/ClaudeCode/managed-settings.json` is
-administrator-owned, its enforcement keys are **unmeasured**, and installing them
-would require a privileged step this integration does not take. See
-[Limitations](limitations.md#the-managed-settings-path-is-unmeasured).
+`--scope managed` on its own is **refused**, and points you at the flag that
+names what it does: `--install-managed-settings`. That is deliberate — `managed`
+reads like a third choice alongside `user` and `project`, and nothing about it
+says *this will ask for your administrator password*.
+
+```console
+$ aasm integrations install claude-code --install-managed-settings
+```
+
+This adds **one** privileged step: placing a single file at
+`/Library/Application Support/ClaudeCode/managed-settings.json`, owned by root.
+`aasm` itself never runs as root. Before you are asked to approve anything, the
+plan states the exact path, the exact bytes, the diff against what is already
+there, any conflict, and the backup and rollback behaviour. It is the only route
+to [`Host Enforced`](protection-levels.md#host-enforced) — and it refuses rather
+than merging over a managed-settings file Agent Assembly did not write. Read
+[Limitations](limitations.md#the-managed-settings-file-can-be-installed-its-enforcement-is-still-unmeasured)
+for what the resulting claim does and does not cover.
 
 ## Step 3 — Choose a profile
 
