@@ -15,7 +15,7 @@
  * persisted (security rule 7).
  */
 
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { AuthApiError, confirmPasswordReset, requestPasswordReset } from '../auth/authApi'
 
@@ -32,10 +32,6 @@ export function ForgotPasswordPage() {
 
   // A token in the URL means the operator followed the emailed link → confirm.
   const [mode, setMode] = useState<Mode>(tokenFromLink ? 'confirm' : 'request')
-
-  useEffect(() => {
-    if (tokenFromLink) setMode('confirm')
-  }, [tokenFromLink])
 
   return (
     <main aria-label="Reset password" className="login-page">
@@ -73,6 +69,9 @@ function RequestForm({ onHasToken }: Readonly<{ onHasToken: () => void }>) {
     setLoading(true)
     try {
       await requestPasswordReset(email.trim())
+    } catch {
+      // Swallow: enumeration-safety means a transport error must not surface a
+      // different outcome than a success, so it collapses into the same message.
     } finally {
       // Enumeration-safe: succeed or fail, we surface the identical neutral
       // outcome and never disclose whether the email matched an account.
@@ -135,10 +134,6 @@ function ConfirmForm({ initialToken }: Readonly<{ initialToken: string }>) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
-
-  useEffect(() => {
-    if (initialToken) setToken(initialToken)
-  }, [initialToken])
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
