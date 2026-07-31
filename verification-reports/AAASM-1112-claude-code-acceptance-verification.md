@@ -172,7 +172,7 @@ this ticket.
 | `aa-devtool-claude-code/src/lib.rs:561` `detect_returns_none_when_probe_returns_none` | ✅ executed |
 | `aa-devtool-claude-code/src/lib.rs:572` `dot_claude_marker_found_when_dir_exists` | ✅ executed |
 | `aa-devtool-claude-code/src/lib.rs:582` `dot_claude_marker_absent_when_dir_missing` | ✅ executed |
-| `aa-integration-tests/tests/cli_run_claude_governed_launch.rs` (**new**) — the CLI resolves the adapter through `aa_devtool::registry` with **no** binary override, so `probe_which` runs for real; the run's own stderr records `tool=claude version=2.1.220 path=…/bin/claude governance_level=L2Enforce` | ✅ executed |
+| `aa-integration-tests/tests/cli_run_claude_governed_launch.rs` (**new**) — the CLI resolves the adapter through `aa_devtool::registry` with **no** binary override, so `probe_which` runs for real; the run's own stderr records `tool=claude version=2.1.999 path=…/bin/claude governance_level=L2Enforce`. The stub deliberately reports a version no real release uses, so this line cannot be mistaken for a detection of the developer's own `claude 2.1.220` | ✅ executed |
 
 **Gap found and closed.** Before this ticket, every `detect` test injected
 `binary_path_override`, so the `which claude` branch at `lib.rs:190`/`:225` — the
@@ -298,7 +298,7 @@ against a gateway and asserts what the launched process observed.
    its **own** environment. **PASS.** Identity (`AA_AGENT_ID`, `AA_TRACE_ID`,
    `AA_SESSION_ID`, `AA_REGISTRATION_ID`, `AA_TEAM_ID`) and the proxy variables all
    reached the launched tool; the gateway recorded exactly one registration
-   (`kind=claude_code`, `version=2.1.220`) and exactly one deregistration.
+   (`kind=claude_code`, `version=2.1.999`) and exactly one deregistration.
 
 2. `against_the_real_gateway_the_launcher_cannot_register_and_never_starts_the_tool`
    — the same run against the **real** in-process Agent Assembly gateway
@@ -307,7 +307,7 @@ against a gateway and asserts what the launched process observed.
 ```
 MEASURED `aasm run claude` against the real gateway at http://127.0.0.1:20643: exit=Some(1)
 stderr:
-tool=claude version=2.1.220 path=/…/bin/claude governance_level=L2Enforce
+tool=claude version=2.1.999 path=/…/bin/claude governance_level=L2Enforce
 error: gateway registration failed: HTTP 405 Method Not Allowed
 ```
 

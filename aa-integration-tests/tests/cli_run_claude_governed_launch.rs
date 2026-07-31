@@ -129,7 +129,7 @@ mod governed_launch {
             &bin,
             r#"#!/bin/sh
 if [ "$1" = "--version" ]; then
-  echo "2.1.220 (Claude Code)"
+  echo "2.1.999 (Claude Code)"
   exit 0
 fi
 {
@@ -336,7 +336,7 @@ exit 0
         );
         assert_eq!(
             body.get("version").and_then(serde_json::Value::as_str),
-            Some("2.1.220"),
+            Some("2.1.999"),
             "the registration must carry the detected version, not a placeholder; body: {body}",
         );
         assert_eq!(
