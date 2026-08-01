@@ -1,9 +1,14 @@
 # Codex CLI — Governance Capability Matrix
 
+> **Superseded.** The maintained, evidence-cited matrix is
+> [L0-L3 Capability Matrix](../../governance/capability-matrix.md). This page
+> predates that consolidated matrix and is retained only as legacy detail.
+> Where the two disagree, the rendered matrix wins.
+
 **Governance level:** L2Enforce  
 **Detection:** `which codex` / `~/.npm/bin/codex`  
 **MCP support:** No  
-**Managed settings:** Yes (`.codex/config.toml`)
+**Managed settings:** Yes (`~/.codex/config.json`)
 
 | Capability | Status | Reason |
 |---|---|---|
@@ -22,6 +27,10 @@
 ## Notes
 
 Codex reaches L2Enforce because the proxy can enforce allow/deny and redaction
-without requiring SDK adoption. The `.codex/config.toml` managed-settings surface
-lets the adapter push policy without modifying the tool binary. eBPF fills the
-file-system and process-spawn gaps that the proxy cannot observe.
+without requiring SDK adoption. The `~/.codex/config.json` managed-settings
+surface (`aa-devtool-codex/src/lib.rs`, `apply_settings`) lets the adapter push
+`sandbox_mode` / `allowed_domains` / `blocked_domains` / `approval_policy`
+without modifying the tool binary — an earlier revision of this page named
+the file `.codex/config.toml`, which does not match the adapter's actual write
+path. eBPF fills the file-system and process-spawn gaps that the proxy cannot
+observe.

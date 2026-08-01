@@ -183,6 +183,13 @@ unmeasured even though the file itself can now be installed (see below).
 ### SaaS Coding-Agent (Claude.ai / ChatGPT / Codex-web)
 
 > **Adapter:** `AAASM-918` — **Pending** (in backlog) · _Placeholder — tier declarations incomplete_
+>
+> See [SaaS Coding-Agent Governance Limits](../devtools/governance-limits.md) for
+> current per-provider detail (Claude.ai, ChatGPT, Cursor cloud) from the shipped
+> `aa-devtool-saas` adapter. This section predates that adapter's `AAASM-924`
+> webhook wire-up and has not been reconciled with it — notably, `aa-devtool-saas`
+> already ships an MCP allowlist overlay for Claude.ai, which the **L0** row below
+> does not reflect.
 
 | Capability | Tier | Notes |
 |---|---|---|
