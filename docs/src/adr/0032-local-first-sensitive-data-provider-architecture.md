@@ -226,13 +226,39 @@ entropy.** A Taiwan national ID has ≈5.2 × 10⁸ candidates and enumerates in
 a second on one GPU given the tenant key, so fingerprinting is unavailable for
 every PII category and admits only long random secrets.
 
-### 10. PENDING — decisions requiring product sign-off
+### 10. Resolved product decisions
 
-- **D-1 — are out-of-process providers in scope for v1?** Recommended: **no**.
-  Phases 0–3 contain no provider and deliver the locale fix, the canonical model
-  and the event layer without touching any accepted ADR. Out-of-process providers
-  would be enabled by a follow-up ADR. Until D-1 is answered, §6's transport and
-  §7's placement rules are **specifications, not commitments**.
+Both decisions this ADR opened were answered on **2026-08-01** (AAASM-5343).
+
+#### D-1 — out-of-process providers are NOT in scope for v1
+
+v1 detection is **entirely in-process**. Presidio, Gitleaks, provider
+containers, a provider manager, same-Pod provider sidecars, cluster-local
+provider deployments and any out-of-process provider transport are excluded from
+this implementation cycle.
+
+Consequences that bind implementation:
+
+- **§6 (transport, lifecycle, egress) and §7 (deployment placement) are deferred
+  post-v1 specification.** They are retained, not deleted, so a future ADR
+  inherits the analysis and the measurements rather than re-deriving them. No v1
+  ticket may cite them as a requirement.
+- The **provider port abstraction may still be introduced**, because the
+  canonical finding model needs a seam and an in-tree test double is not an
+  out-of-process provider. What may not ship is any adapter that leaves the
+  process.
+- The v1 threat model **shrinks**: provider compromise, provider egress and
+  provider supply-chain are not v1 threats, since no provider exists. The
+  corresponding entries in §5 of the Spike report remain valid for the deferred
+  work only.
+- The forbidden designs in this ADR remain in force regardless — in particular
+  #1 (no provider on a synchronous path) and #7/#8, which constrain the deferred
+  design if and when it is taken up.
+
+The evidence that made this the low-cost answer: Phases 0–3 of §8 contain no
+provider at all and deliver the locale correctness fix, the canonical model and
+the entire event/analytics layer without touching any accepted ADR.
+
 - **D-2 — how does the finer enforcement vocabulary relate to `RuntimeVerdict`?**
   Recommended: keep ADR 0018's five-way enum frozen and carry
   `mask`/`tokenize`/`approval_*`/`shadow_only` in a separate additive
