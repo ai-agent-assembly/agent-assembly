@@ -262,6 +262,9 @@ pub enum BindRefusal {
         addr: SocketAddr,
         missing: Vec<&'static str>,
     },
+    /// Port 0 — "any free port". The proxy would bind a real port, but nothing
+    /// records which one.
+    EphemeralPort(SocketAddr),
 }
 
 impl std::fmt::Display for BindRefusal {
@@ -286,6 +289,14 @@ impl std::fmt::Display for BindRefusal {
                  CA material and provider credentials. Listen on a loopback address instead.",
                 missing.join(", "),
             ),
+            Self::EphemeralPort(addr) => write!(
+                f,
+                "refusing to listen on {addr}: port 0 asks the OS for any free port, but the \
+                 recorded endpoint would still say port 0. The proxy would bind a real port that \
+                 nothing can name: `aasm run` refuses a port-0 endpoint, `aasm proxy stop` could \
+                 not reach the process, and the start itself would be reported as failed while \
+                 the proxy kept running. Name the port you want (for example 127.0.0.1:8899).",
+            ),
         }
     }
 }
@@ -302,6 +313,14 @@ impl std::fmt::Display for BindRefusal {
 /// governed tool at a recorded proxy endpoint, so the two commands cannot
 /// disagree about which endpoints are usable (AAASM-5348).
 pub fn check_bind_addr(addr: SocketAddr, allow_remote_clients: bool) -> Result<(), BindRefusal> {
+    // Checked before the loopback branch because it disqualifies every address:
+    // the recorded endpoint keeps the literal `:0` the operator typed, so the
+    // real port the OS assigns is written down nowhere. `verify_endpoint`
+    // already rejects a port-0 endpoint, and refusing here is what keeps the
+    // two from disagreeing — the same reason the loopback test is shared.
+    if addr.port() == 0 {
+        return Err(BindRefusal::EphemeralPort(addr));
+    }
     if addr.ip().is_loopback() {
         return Ok(());
     }
@@ -527,13 +546,43 @@ mod tests {
     /// exposure, not to stop the proxy.
     #[test]
     fn a_loopback_listen_address_is_accepted() {
-        for literal in ["127.0.0.1:8899", "127.0.0.1:0", "[::1]:8899", "127.9.9.9:8899"] {
+        for literal in ["127.0.0.1:8899", "[::1]:8899", "127.9.9.9:8899"] {
             assert_eq!(
                 check_bind_addr(addr(literal), false),
                 Ok(()),
                 "{literal} is loopback and must be accepted without any opt-in"
             );
         }
+    }
+
+    /// Port 0 is the same split this ticket closes, reached by a different
+    /// property of the address: `verify_endpoint` rejects a port-0 endpoint, so
+    /// a proxy started on one could never be routed at. Left unrefused it is
+    /// also the worse outcome of the two — the child binds a real port, the
+    /// five-second wait on port 0 fails, the pid file is removed, and an
+    /// interception process holding CA material and provider credentials keeps
+    /// running with nothing able to name or stop it.
+    #[test]
+    fn port_zero_is_refused_on_every_address() {
+        for literal in ["127.0.0.1:0", "[::1]:0", "0.0.0.0:0"] {
+            let refusal = check_bind_addr(addr(literal), false)
+                .expect_err("{literal}: a port the endpoint cannot record must not be bound");
+            assert_eq!(refusal, BindRefusal::EphemeralPort(addr(literal)));
+            assert!(
+                refusal.to_string().contains("port 0"),
+                "must say which part of the address disqualified it, got: {refusal}"
+            );
+        }
+    }
+
+    /// The opt-in states an intent about *reachability*; it says nothing about
+    /// the port being recordable, so it must not carry port 0 past the check.
+    #[test]
+    fn the_remote_opt_in_does_not_permit_port_zero() {
+        assert_eq!(
+            check_bind_addr(addr("0.0.0.0:0"), true),
+            Err(BindRefusal::EphemeralPort(addr("0.0.0.0:0")))
+        );
     }
 
     /// AAASM-5348. Anything reachable off-host is refused by default, and the
