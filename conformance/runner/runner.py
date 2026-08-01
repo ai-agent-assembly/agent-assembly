@@ -200,8 +200,62 @@ def _is_utf8_boundary(buf: bytes, index: int) -> bool:
     return buf[index] & 0xC0 != 0x80
 
 
+def _kind_priority(kind: str) -> int:
+    """Relative confidence of *kind*, mirroring `CredentialKind::priority()`.
+
+    Only the two generic backstops score below the specific detectors
+    (aa-security/src/scanner.rs:334-368). An unrecognised kind is treated as
+    specific: an SDK that reports a kind this runner has never heard of has
+    made a *more* precise claim than "high entropy", and downgrading it would
+    let a generic label win a merge it loses in Rust.
+    """
+    if kind == "GenericHighEntropy":
+        return 0
+    if kind == "EmailAddress":
+        return 1
+    return 2
+
+
+def _coalesce_findings(findings: list[dict]) -> list[tuple[int, int, str]] | None:
+    """Merge findings into non-overlapping `(offset, end, kind)` spans.
+
+    Mirrors `coalesce_findings` (aa-security/src/scanner.rs:670-695): sort by
+    `(offset, end)`, then fold each finding into the running span when it starts
+    **strictly before** that span's `end`. The merged span takes the union of
+    the two ends and the label of the highest-`_kind_priority` finding in the
+    run, with ties going to the one seen first — so a specific detector
+    (`PostgresUrl`) claims the span from a generic backstop (`EmailAddress`)
+    that happens to start at a lower offset.
+
+    The `<` is deliberate and load-bearing: Rust merges **overlapping** spans
+    only. A span starting exactly at the previous span's `end` — adjacent but
+    not overlapping — stays separate and produces two labels. A merge written
+    with `<=` would silently emit one label where Rust emits two.
+
+    Returns `None` when a finding carries no usable span at all (`offset` or
+    `end` missing), which the caller cannot splice.
+    """
+    spans: list[tuple[int, int, str]] = []
+    for finding in sorted(
+        findings, key=lambda f: (f.get("offset") or 0, f.get("end") or 0)
+    ):
+        offset = finding.get("offset")
+        end = finding.get("end")
+        if offset is None or end is None:
+            return None
+        kind = finding.get("kind", "UNKNOWN")
+        if spans and offset < spans[-1][1]:
+            last_offset, last_end, last_kind = spans[-1]
+            if _kind_priority(kind) > _kind_priority(last_kind):
+                last_kind = kind
+            spans[-1] = (last_offset, max(last_end, end), last_kind)
+        else:
+            spans.append((offset, end, kind))
+    return spans
+
+
 def _redact(text: str, findings: list[dict]) -> str:
-    """Apply findings to text in reverse offset order.
+    """Apply findings to text, coalescing them first, in reverse offset order.
 
     `offset` and `end` are **byte** positions in the UTF-8 encoding of *text* —
     that is the unit the reference scanner emits and the unit the vector schema
@@ -209,25 +263,27 @@ def _redact(text: str, findings: list[dict]) -> str:
     decoded back once at the end; slicing the `str` would index code points and
     land the redaction in the wrong place for any non-ASCII input.
 
+    Findings are coalesced into non-overlapping spans first (see
+    `_coalesce_findings`), then spliced in reverse offset order so the earlier
+    spans' byte positions stay valid across each replacement. Without that step
+    a region flagged by two detectors is spliced twice, which mangles the first
+    label and can leave raw bytes of the secret behind it.
+
     A span that is out of range, inverted, or not aligned to a character
     boundary is skipped rather than spliced, so this never emits invalid UTF-8.
 
-    That skip is where this **diverges from** Rust's `ScanResult::redact`, which
-    fails closed on exactly those spans and returns `"[REDACTED]"` for the whole
-    text (aa-security/src/scanner.rs:447-458). Rust also coalesces overlapping
-    findings before splicing; this does not. Both gaps are AAASM-5373 — until
-    they close, do not describe this function as mirroring the Rust one.
+    That skip is where this **still diverges from** Rust's `ScanResult::redact`,
+    which fails closed on exactly those spans and returns `"[REDACTED]"` for the
+    whole text (aa-security/src/scanner.rs:447-458). That gap is the remaining
+    half of AAASM-5373 — until it closes, do not describe this function as
+    mirroring the Rust one.
     """
-    # Each finding must have "kind", "offset", and "end" (byte end of match).
-    # If "end" is absent, the runner cannot redact — skip silently.
-    sorted_findings = sorted(findings, key=lambda f: f.get("offset", 0), reverse=True)
-    result = text.encode("utf-8")
-    for finding in sorted_findings:
-        offset = finding.get("offset")
-        end = finding.get("end")
-        kind = finding.get("kind", "UNKNOWN")
-        if offset is None or end is None:
-            continue
+    buf = text.encode("utf-8")
+    spans = _coalesce_findings(findings)
+    if spans is None:
+        return text
+    result = buf
+    for offset, end, kind in reversed(spans):
         if offset < 0 or end > len(result) or offset > end:
             continue
         if not _is_utf8_boundary(result, offset) or not _is_utf8_boundary(result, end):
