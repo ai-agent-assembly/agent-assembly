@@ -28,6 +28,49 @@ use super::category::{CanonicalCategory, CategoryBase as Base, CategoryQualifier
 use crate::scanner::CredentialKind;
 
 impl CanonicalCategory {
+    /// Every category this build can produce.
+    ///
+    /// The catalogue is the parse domain and the round-trip domain. It exists
+    /// because those are **not** the same as "every category derivable from a
+    /// `CredentialKind`": ADR 0032 §2 freezes `CredentialKind::ALL`, so the
+    /// locale packs AAASM-5353 adds have no kind by design, yet a live
+    /// recognizer will emit them and something downstream must parse them back.
+    ///
+    /// AAASM-5353 extends this list. `every_credential_kind_category_is_in_all`
+    /// keeps it honest in the direction the compiler cannot: the forward mapping
+    /// is exhaustiveness-checked, but nothing would otherwise notice a category
+    /// that exists and is unparseable.
+    pub const ALL: &'static [CanonicalCategory] = &[
+        Self::with_scheme(Base::ApiKey, "anthropic", "key"),
+        Self::with_scheme(Base::ApiKey, "openai", "key"),
+        Self::with_scheme(Base::CloudAccessKey, "aws", "access_key_id"),
+        Self::with_scheme(Base::CloudServiceAccountKey, "gcp", "service_account_json"),
+        Self::with_scheme(Base::CloudConnectionString, "azure", "storage"),
+        Self::with_scheme(Base::AccessToken, "github", "app_installation"),
+        Self::with_scheme(Base::AccessToken, "github", "oauth"),
+        Self::with_scheme(Base::AccessToken, "github", "personal_access"),
+        Self::with_scheme(Base::AccessToken, "github", "refresh"),
+        Self::with_scheme(Base::AccessToken, "github", "user_to_server"),
+        Self::with_scheme(Base::AccessToken, "slack", "app_level"),
+        Self::with_scheme(Base::AccessToken, "slack", "bot"),
+        Self::with_scheme(Base::AccessToken, "slack", "oauth"),
+        Self::with_scheme(Base::AccessToken, "slack", "refresh"),
+        Self::with_scheme(Base::AccessToken, "slack", "user"),
+        Self::with_scheme(Base::DatabaseConnectionUri, "mongodb", "uri"),
+        Self::with_scheme(Base::DatabaseConnectionUri, "mysql", "uri"),
+        Self::with_scheme(Base::DatabaseConnectionUri, "postgresql", "uri"),
+        Self::with_scheme(Base::PrivateKey, "pem", "ec"),
+        Self::with_scheme(Base::PrivateKey, "pem", "openssh"),
+        Self::with_scheme(Base::PrivateKey, "pem", "pgp"),
+        Self::with_scheme(Base::PrivateKey, "pem", "pkcs8"),
+        Self::with_scheme(Base::PrivateKey, "pem", "rsa"),
+        Self::unqualified(Base::PaymentCardNumber),
+        Self::unqualified(Base::EmailAddress),
+        Self::with_locale(Base::NationalId, "en-US", "ssn"),
+        Self::unqualified(Base::HighEntropySecret),
+        Self::unqualified(Base::PolicyDefinedMatch),
+    ];
+
     /// The canonical category for a scanner detector kind.
     ///
     /// Total and exhaustive: every [`CredentialKind`] has exactly one category,
@@ -215,11 +258,12 @@ impl std::str::FromStr for CanonicalCategory {
 
     /// Parse a rendered category back.
     ///
-    /// `Display` and this are inverse over every category this build can
-    /// produce, which is what makes the rendered form a contract rather than a
-    /// debug string — B-9's events and the dashboard have to read it back.
+    /// `Display` and this are inverse over every category in this build's
+    /// catalogue ([`CanonicalCategory::ALL`]), which is what makes the rendered
+    /// form a contract rather than a debug string — B-9's events and the
+    /// dashboard have to read it back.
     ///
-    /// Deliberately a **closed** lookup over the built-in catalogue rather than
+    /// Deliberately a **closed** lookup over that catalogue rather than
     /// a grammar-driven parse. A parser that split on the separators would have
     /// to conjure `&'static str` fields out of runtime bytes, which means
     /// `Box::leak`, which would reintroduce exactly the hole the qualifier type
@@ -230,12 +274,13 @@ impl std::str::FromStr for CanonicalCategory {
     /// injective, and `is_well_formed_field` enforces it at construction; the
     /// round-trip test over all 28 is what demonstrates it.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        CredentialKind::ALL
+        // Compared without allocating: `renders_as` writes into a stack buffer
+        // via `fmt::Write`, so parsing an event stream does not allocate 28
+        // `String`s per record (AAASM-5355/5359 ingest this at volume).
+        Self::ALL
             .iter()
-            .cloned()
-            .chain(std::iter::once(CredentialKind::Custom))
-            .map(|kind| Self::from_credential_kind(&kind))
-            .find(|category| category.to_string() == s)
+            .copied()
+            .find(|category| category.renders_as(s))
             .ok_or(ParseCategoryError::UnknownCategory)
     }
 }
@@ -501,7 +546,7 @@ mod tests {
         for (text, expected) in cases {
             let result = scanner.scan(text);
             let finding = CanonicalFinding::try_from(&result.findings[0]).expect("well-formed span");
-            assert_eq!(finding.status, expected, "status wrong for {text:?}");
+            assert_eq!(finding.status(), expected, "status wrong for {text:?}");
         }
     }
 
@@ -511,16 +556,42 @@ mod tests {
     /// will put it where something must read it back, and nothing defined what
     /// reading it back meant.
     #[test]
-    fn every_rendered_category_parses_back_to_itself() {
-        for kind in every_kind() {
-            let category = CanonicalCategory::from_credential_kind(&kind);
+    fn every_category_in_the_catalogue_parses_back_to_itself() {
+        for category in CanonicalCategory::ALL {
             let rendered = category.to_string();
             assert_eq!(
                 rendered.parse::<CanonicalCategory>(),
-                Ok(category),
+                Ok(*category),
                 "{rendered} did not parse back"
             );
+            // The allocation-free comparison must agree with `Display`.
+            assert!(category.renders_as(&rendered));
+            assert!(!category.renders_as(&format!("{rendered}x")));
         }
+    }
+
+    /// The catalogue must contain every category the kind mapping can produce.
+    ///
+    /// Nothing else enforces this. The forward mapping is exhaustiveness-checked
+    /// so a new `CredentialKind` cannot lack a category, but a category absent
+    /// from `ALL` renders fine, is emitted by a live recognizer, and then fails
+    /// to parse in the same build — silent, and exactly the shape AAASM-5353's
+    /// locale packs will have when they extend `ALL`.
+    #[test]
+    fn every_credential_kind_category_is_in_all() {
+        for kind in every_kind() {
+            let category = CanonicalCategory::from_credential_kind(&kind);
+            assert!(
+                CanonicalCategory::ALL.contains(&category),
+                "{category} (from {}) is missing from CanonicalCategory::ALL",
+                kind.as_str()
+            );
+        }
+        assert_eq!(
+            CanonicalCategory::ALL.len(),
+            28,
+            "catalogue should hold exactly this build's 28 categories"
+        );
     }
 
     /// A category this build does not know is refused, not fabricated.
@@ -529,7 +600,10 @@ mod tests {
     #[test]
     fn an_unknown_rendering_is_refused() {
         for input in [
-            "NATIONAL_ID[zh-TW/arc_new]", // a real category, but not in this build
+            // Constructible in this build via `with_locale`, but not in the
+            // catalogue because no recognizer here produces it. AAASM-5353 adds
+            // both the recognizer and the `ALL` entry, and then it parses.
+            "NATIONAL_ID[zh-TW/arc_new]",
             "NOT_A_BASE",
             "ACCESS_TOKEN[github:no_such_variant]",
             "ACCESS_TOKEN[github:personal_access]extra",

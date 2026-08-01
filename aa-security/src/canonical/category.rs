@@ -210,6 +210,49 @@ impl CanonicalCategory {
     }
 }
 
+impl CanonicalCategory {
+    /// Whether this category renders exactly as `candidate`, without allocating.
+    ///
+    /// `to_string() == candidate` allocates once per comparison, and
+    /// [`FromStr`](std::str::FromStr) does one comparison per catalogue entry
+    /// per parse — 28 allocations per record on the event ingest paths
+    /// AAASM-5355/5359 add. This consumes `candidate` fragment by fragment as
+    /// `Display` emits them and bails on the first mismatch, so it allocates
+    /// nothing and usually stops at the base.
+    pub fn renders_as(&self, candidate: &str) -> bool {
+        use fmt::Write as _;
+
+        /// Consumes the expected string as `Display` writes fragments into it.
+        struct Probe<'a> {
+            expected: &'a str,
+            matched: bool,
+        }
+        impl fmt::Write for Probe<'_> {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                match self.expected.strip_prefix(s) {
+                    Some(rest) => {
+                        self.expected = rest;
+                        Ok(())
+                    }
+                    None => {
+                        self.matched = false;
+                        Err(fmt::Error)
+                    }
+                }
+            }
+        }
+
+        let mut probe = Probe {
+            expected: candidate,
+            matched: true,
+        };
+        // A write failure means a mismatch was found early; either way the
+        // category matches only if every fragment was consumed exactly.
+        let _ = write!(probe, "{self}");
+        probe.matched && probe.expected.is_empty()
+    }
+}
+
 impl fmt::Display for CanonicalCategory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.qualifier {
