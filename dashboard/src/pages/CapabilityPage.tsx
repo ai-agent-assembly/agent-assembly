@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router'
 import { capabilityClient } from '../api/capability'
 import {
   CAPABILITY_MATRIX_KEY,
+  capabilityMatrixFromQuery,
   cascadeEvidenceFromQuery,
   useCapabilityMatrixQuery,
 } from '../features/capability/api'
@@ -107,10 +108,18 @@ export function CapabilityPage() {
   // Derived from the *fetched* matrix, not the optimistic shadow: an override
   // that records `na` would otherwise be able to shift the landing verb of an
   // operator who never chose one.
-  const landingVerb = useMemo(
-    () => defaultVerb(data?.agents ?? [], data?.resources ?? []),
-    [data],
-  )
+  // AAASM-5369: derived from the *decoded* matrix. `data?.agents ?? []` was in
+  // this fix's blast radius and is not a `?? []` of the fail-open kind — it
+  // picks a landing verb rather than asserting a fact, and an empty list simply
+  // yields the default verb. It is decoded anyway: leaving one raw read of the
+  // same body beside four guarded ones is how the next reader concludes the
+  // body is safe to read.
+  const landingVerb = useMemo(() => {
+    const decoded = capabilityMatrixFromQuery({ data })
+    return isKnown(decoded)
+      ? defaultVerb(decoded.value.agents, decoded.value.resources)
+      : defaultVerb([], [])
+  }, [data])
   const verb = chosenVerb ?? landingVerb
   // The bulk-override bar edits the grid optimistically. That edit lives in its
   // own state and shadows the fetched matrix, so the fetched value never has to
@@ -126,6 +135,16 @@ export function CapabilityPage() {
   // healthy query — rather than being coerced to `undefined`. Normalising it
   // here would hide whether the helper actually accepts the library's shape.
   const cascadeEvidence = cascadeEvidenceFromQuery({
+    isPending,
+    error: loadError,
+    data: matrix,
+  })
+  // What the page may render at all (AAASM-5369). Separate from the cascade
+  // evidence above because the two answer different questions — see
+  // `decodeMatrixShape`. Every `matrix.agents` / `matrix.resources` /
+  // `matrix.policies` / `matrix.sampleCalls` read below goes through this, so
+  // there is no path from an unverified body to a field read.
+  const matrixView = capabilityMatrixFromQuery({
     isPending,
     error: loadError,
     data: matrix,
@@ -219,10 +238,6 @@ export function CapabilityPage() {
     void refetch()
   }
 
-  const visibleAgents = matrix
-    ? sortAgents(applyFilters(matrix.agents, filters), matrix.resources, verb, sort)
-    : []
-
   // What the matrix-level banner is entitled to say (AAASM-5369). `null` means
   // the cascade is loaded and the grid is a measurement, so there is nothing to
   // warn about.
@@ -244,7 +259,43 @@ export function CapabilityPage() {
     )
   }
 
-  if (matrix.agents.length === 0) {
+  if (!isKnown(matrixView)) {
+    // AAASM-5369. Not `EmptyState`, which says "no agents are registered" — a
+    // measured claim about the fleet — and not `ErrorState`, whose retry
+    // affordance re-requests a well-formed request that will return the same
+    // unreadable body. An explicit absence, carrying the decoder's reason.
+    return (
+      <div className="capability-page" data-testid="capability-page">
+        <StatusState
+          state={matrixView.state}
+          title="Capability matrix could not be read"
+          description={
+            <>
+              The gateway answered, but not with a capability matrix this dashboard can
+              interpret, so no agent's capabilities can be shown. Enforcement is unaffected and
+              still applies the active policy.
+            </>
+          }
+          detail={matrixView.detail}
+          testId="capability-unreadable-state"
+        />
+      </div>
+    )
+  }
+
+  // Bound after the guard, not before it: every read below is then a field on a
+  // value the decoder returned, and TypeScript — not a reviewer — is what says
+  // so. A binding hoisted above the guard would need a `?? []` or a `!` at each
+  // use, which is how the raw reads got here in the first place.
+  const view = matrixView.value
+  const visibleAgents = sortAgents(
+    applyFilters(view.agents, filters),
+    view.resources,
+    verb,
+    sort,
+  )
+
+  if (view.agents.length === 0) {
     return (
       <div className="capability-page" data-testid="capability-page">
         <EmptyState
@@ -293,7 +344,7 @@ export function CapabilityPage() {
         >
           Matrix{' '}
           <span className="capability-tab-count">
-            {visibleAgents.length} × {matrix.resources.length}
+            {visibleAgents.length} × {view.resources.length}
           </span>
         </button>
         <button
@@ -364,16 +415,16 @@ export function CapabilityPage() {
         <CapabilityFilterBar
           filters={filters}
           onChange={setFilters}
-          totalAgents={matrix.agents.length}
+          totalAgents={view.agents.length}
           visibleAgents={visibleAgents.length}
-          agents={matrix.agents}
+          agents={view.agents}
         />
       )}
 
       {tab === 'matrix' && matrix && (
         <BulkActionBar
           count={selected.size}
-          resources={matrix.resources}
+          resources={view.resources}
           verb={verb}
           onApply={handleBulkApply}
           onClear={() => setSelected(new Set())}
@@ -384,7 +435,7 @@ export function CapabilityPage() {
         {tab === 'matrix' && matrix && (
           <CapabilityMatrixGrid
             agents={visibleAgents}
-            resources={matrix.resources}
+            resources={view.resources}
             verb={verb}
             sort={sort}
             onSortChange={(rid) => setSort((prev) => nextSortState(prev, rid))}
@@ -398,36 +449,36 @@ export function CapabilityPage() {
         {tab === 'matrix' && matrix && (
           <CapabilitySummary
             agents={visibleAgents}
-            resources={matrix.resources}
+            resources={view.resources}
             verb={verb}
             cascade={cascadeEvidence}
           />
         )}
         {tab === 'resource' && matrix && (
           <PerResourceTab
-            resources={matrix.resources}
+            resources={view.resources}
             agents={visibleAgents}
             verb={verb}
-            selectedResourceId={perResourceId ?? matrix.resources[0]?.id ?? ''}
+            selectedResourceId={perResourceId ?? view.resources[0]?.id ?? ''}
             onSelectResource={setPerResourceId}
             onCellClick={setInspected}
           />
         )}
-        {tab === 'agent' && matrix && (
+        {tab === 'agent' && (
           <PerAgentTab
             agents={visibleAgents}
-            resources={matrix.resources}
+            resources={view.resources}
             selectedAgentId={perAgentId ?? visibleAgents[0]?.id ?? ''}
             onSelectAgent={setPerAgentId}
             onCellClick={setInspected}
           />
         )}
       </section>
-      {matrix && (
+      {(
         <CellInspectDrawer
           cell={inspected}
-          policies={matrix.policies}
-          sampleCalls={matrix.sampleCalls}
+          policies={view.policies}
+          sampleCalls={view.sampleCalls}
           onClose={() => setInspected(null)}
           onOpenPolicy={openPolicyEditor}
         />

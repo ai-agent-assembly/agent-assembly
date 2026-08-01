@@ -243,6 +243,51 @@ describe('CapabilityPage', () => {
     expect(banner).toHaveTextContent(/capability matrix came back in a shape/i)
   })
 
+  it('renders an absence for a genuine `{}` body instead of dying into the boundary', async () => {
+    // AAASM-5369 review, S5. This is the body the ticket's own §2 names, and it
+    // never reached the cascade fold: `applyFilters(matrix.agents, …)` and the
+    // `matrix.agents.length === 0` branch both ran first, so `{}` threw
+    // `TypeError: Cannot read properties of undefined (reading 'filter')` during
+    // render and the page died into the shell's ErrorBoundary. The earlier tests
+    // in this file used a *near-complete* matrix minus one key, which exercises
+    // the fold but never this path.
+    getMatrix.mockResolvedValue({} as unknown as CapabilityMatrix)
+    renderPage()
+
+    const absence = await screen.findByTestId('capability-unreadable-state')
+    expect(absence).toHaveAttribute('data-truth-state', 'unknown')
+    // The page is a page, not a boundary fallback — this is the assertion that
+    // fails if the TypeError comes back.
+    expect(screen.getByTestId('capability-page')).toBeInTheDocument()
+    expect(absence).toHaveTextContent(/could not be read/i)
+    expect(absence).toHaveTextContent(/capability matrix came back in a shape/i)
+  })
+
+  it('does not read `{}` as an empty fleet', async () => {
+    // The two absences an operator must be able to tell apart: "no agents are
+    // registered" is a measurement of their deployment; "we could not read the
+    // answer" is a fault between dashboard and API. `EmptyState` offers an
+    // onboarding CTA, so confusing them sends someone to register agents they
+    // may already have.
+    getMatrix.mockResolvedValue({} as unknown as CapabilityMatrix)
+    renderPage()
+
+    await screen.findByTestId('capability-unreadable-state')
+    expect(screen.queryByTestId('empty-state')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('error-state-generic')).not.toBeInTheDocument()
+    expect(document.body.textContent ?? '').not.toMatch(/no agents (are )?registered/i)
+  })
+
+  it('still renders the grid for a matrix whose collections are all present', async () => {
+    // Without this the two cases above would pass against a page that reported
+    // every matrix as unreadable.
+    getMatrix.mockResolvedValue(FIXTURE)
+    renderPage()
+
+    await screen.findByRole('heading', { name: /Capability/ })
+    expect(screen.queryByTestId('capability-unreadable-state')).not.toBeInTheDocument()
+  })
+
   it('announces the unreadable-matrix banner politely, not as an alert', async () => {
     // aria-live discipline (AAASM-5173): `role="alert"` is reserved for a
     // failed request. Nothing failed here — a 200 arrived — so interrupting the
