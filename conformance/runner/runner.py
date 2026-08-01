@@ -25,7 +25,10 @@ a scan() function with this signature:
         ...
         # Returns a list of findings, each a dict with keys:
         #   "kind"   (str)  — matches CredentialKind.as_str() in aa-core
-        #   "offset" (int)  — byte offset of the finding in `text`
+        #   "offset" (int)  — start of the finding, as a byte offset into the
+        #                     UTF-8 encoding of `text` (not a str index)
+        #   "end"    (int)  — end of the match, same unit. Required: a finding
+        #                     without it cannot be redacted and is skipped.
 
 If AA_SDK_MODULE is unset the runner uses a no-op stub that always returns []
 and prints a warning — all vectors with expected_findings will fail.
