@@ -953,8 +953,31 @@ const BASE64_RUN_MIN_LEN: usize = 20;
 /// security-critical part. A secret worth hiding is ASCII by construction
 /// (base64, hex, base62 key material), so a whole-token test would let an
 /// attacker prepend one glyph from any non-Latin script and carry the secret
-/// straight through the gate. Segmenting keeps every ASCII candidate visible no
-/// matter what surrounds it.
+/// straight through the gate. Segmenting keeps a *contiguous* ASCII candidate
+/// visible no matter what surrounds it.
+///
+/// # Known residual — a non-ASCII byte splits, as whitespace already does
+///
+/// Because non-ASCII is now purely a run boundary, a glyph inserted into the
+/// *middle* of a secret splits it into two runs, and if both fall under the
+/// 20-character floor neither is scored. Detection of such a secret is lost
+/// relative to the old byte-entropy behaviour.
+///
+/// This is a deliberate, bounded trade, not an oversight:
+///
+/// * It grants an attacker nothing new. Splitting with a plain **space**, tab or
+///   newline defeats the same floor and always has — separator-splitting was
+///   already fully open, and remains equally open. This change only makes a
+///   non-ASCII separator behave like the whitespace separators beside it.
+/// * The old behaviour was not detection. It was the byte-entropy defect firing
+///   on a clause that happened to contain a secret, and it "worked" only by
+///   redacting the entire surrounding clause — which is precisely the
+///   false-positive defect this function exists to fix. The catch cannot be kept
+///   while fixing the bug.
+///
+/// The general separator-split gap is tracked as AAASM-5368, which owns closing
+/// it for every separator class at once; `separator_split_secret_is_a_known_residual`
+/// pins the current behaviour so that ticket's change is visible when it lands.
 fn ascii_runs(s: &str) -> impl Iterator<Item = (usize, &str)> {
     let bytes = s.as_bytes();
     let mut i = 0usize;
