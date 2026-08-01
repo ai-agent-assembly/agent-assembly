@@ -2442,6 +2442,16 @@ mod tests {
         assert_eq!(runs, vec![(6, "abc"), (12, "xy")]);
     }
 
+    /// The behaviour-preservation claim of the whole change: for ASCII input the
+    /// run *is* the token, so the entropy pass sees the same slice at the same
+    /// offset it always did and every pre-existing finding is reproduced.
+    #[test]
+    fn ascii_runs_yields_the_whole_slice_for_ascii_only_input() {
+        let token = "xK9mP2nQvR7sT4wY1aB6dF3hJ8lN0eC5";
+        let runs: Vec<(usize, &str)> = ascii_runs(token).collect();
+        assert_eq!(runs, vec![(0, token)]);
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
