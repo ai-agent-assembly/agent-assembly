@@ -1004,6 +1004,12 @@ fn is_base64_char(b: u8) -> bool {
 ///    into 2-char groups that clear neither the pass-2 length bar nor (with `-`
 ///    kept inside the base64 alphabet) the pass-3 entropy gate, so it evades
 ///    passes 1-3 entirely; this pass closes that gap.
+///
+/// Passes 2-4 need no ASCII narrowing of their own: every byte they accept is
+/// selected by an ASCII predicate (`is_ascii_hexdigit`, [`is_base64_char`],
+/// [`is_hex_group_separator`]), and every byte of a multi-byte UTF-8 sequence
+/// is ≥ `0x80`, so non-ASCII terminates their runs exactly as whitespace does.
+/// Their runs are therefore ASCII by construction and score correctly already.
 fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
     // Pass 1: whitespace-delimited high-entropy tokens, length 20–64.
     let mut offset = 0usize;
