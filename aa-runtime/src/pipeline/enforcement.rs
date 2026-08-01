@@ -695,6 +695,32 @@ mod tests {
         );
     }
 
+    /// AAASM-5346: the same split payload *with* a synthetic secret. Pre-fix the
+    /// surviving CJK bytes came back as U+FFFD; the flagged payload must now be
+    /// handled without any replacement character reaching the output.
+    #[test]
+    fn chunk_split_multibyte_payload_with_secret_introduces_no_replacement_char() {
+        let scanner = RuntimeScanner::new();
+        let mut payload = chunk_split_cjk();
+        payload.extend_from_slice(format!(" key={AWS_KEY} ").as_bytes());
+        payload.extend_from_slice(&chunk_split_cjk());
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: payload,
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let out = args_json_of(event);
+        assert!(!contains(&out, AWS_KEY.as_bytes()), "raw secret must not survive");
+        assert!(
+            !contains(&out, REPLACEMENT_CHAR),
+            "surviving bytes must not carry U+FFFD"
+        );
+        assert_eq!(outcome.undecodable_fields, 1);
+        assert!(!outcome.is_clean());
+    }
+
     #[test]
     fn oversized_field_is_redacted_whole_fail_closed() {
         let scanner = RuntimeScanner::with_config(EnforcementConfig {
