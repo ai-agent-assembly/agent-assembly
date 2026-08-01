@@ -16,10 +16,16 @@ units coincide, so nothing caught it. These fixtures are deliberately multi-byte
 so the units cannot coincide: they fail against a code-point-slicing `_redact`
 and pass against a byte-slicing one.
 
-The fixtures are synthetic and defined here rather than loaded from
+AAASM-5373 added the next half of the same contract: `_redact` coalesces
+overlapping findings before splicing, so a region two detectors both flag is
+replaced once rather than spliced twice.
+
+Most fixtures here are synthetic and defined inline rather than loaded from
 `conformance/vectors/` on purpose — the runner must be provable independently of
 which vectors happen to be committed, and no fixture here contains real
-credential material or real personal data.
+credential material or real personal data. `MultiFindingVectorTests` is the one
+exception: it reads four committed vectors (read-only) because the property
+under test *is* that those specific goldens are reproducible.
 
 Run
 ---
@@ -29,13 +35,14 @@ Run
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from runner import _redact  # noqa: E402
+from runner import _coalesce_findings, _redact  # noqa: E402
 
 
 def _span(kind: str, text: str, secret: str) -> dict:
@@ -109,6 +116,219 @@ class RedactByteOffsetTests(unittest.TestCase):
         findings = [{"kind": "SyntheticNumber", "offset": 3, "end": 999}]
 
         self.assertEqual(_redact(text, findings), text)
+
+
+class CoalesceSemanticsTests(unittest.TestCase):
+    """`_coalesce_findings` must merge exactly where `coalesce_findings` does.
+
+    The merge rule is `f.offset < last.end` — **strict**. Overlapping spans
+    merge; a span that begins exactly where the previous one ends does not.
+    Rust's inline comment calls that case "touching" and reads as if it merges,
+    but the code compares with `<` (aa-security/src/scanner.rs:679), so it does
+    not. The tests below pin both sides of that boundary, because a merge
+    written `<=` is the natural misreading and passes every other test here.
+    """
+
+    def test_overlapping_spans_merge_to_their_union(self) -> None:
+        findings = [
+            {"kind": "SyntheticA", "offset": 0, "end": 10},
+            {"kind": "SyntheticA", "offset": 4, "end": 20},
+        ]
+
+        self.assertEqual(_coalesce_findings(findings), [(0, 20, "SyntheticA")])
+
+    def test_adjacent_spans_do_not_merge(self) -> None:
+        # offset == previous end. Rust keeps these separate and emits two
+        # labels; `<=` would emit one. Nothing else in this file distinguishes
+        # the two, so this is the only guard on it.
+        findings = [
+            {"kind": "SyntheticA", "offset": 0, "end": 4},
+            {"kind": "SyntheticB", "offset": 4, "end": 8},
+        ]
+
+        self.assertEqual(
+            _coalesce_findings(findings),
+            [(0, 4, "SyntheticA"), (4, 8, "SyntheticB")],
+        )
+
+    def test_adjacent_spans_produce_two_labels(self) -> None:
+        # The same boundary observed through `_redact`'s output rather than its
+        # intermediate spans.
+        text = "AAAABBBB"
+        findings = [
+            {"kind": "SyntheticA", "offset": 0, "end": 4},
+            {"kind": "SyntheticB", "offset": 4, "end": 8},
+        ]
+
+        self.assertEqual(
+            _redact(text, findings), "[REDACTED:SyntheticA][REDACTED:SyntheticB]"
+        )
+
+    def test_disjoint_spans_stay_separate(self) -> None:
+        findings = [
+            {"kind": "SyntheticA", "offset": 0, "end": 3},
+            {"kind": "SyntheticB", "offset": 5, "end": 8},
+        ]
+
+        self.assertEqual(
+            _coalesce_findings(findings),
+            [(0, 3, "SyntheticA"), (5, 8, "SyntheticB")],
+        )
+
+    def test_specific_kind_claims_the_span_from_a_generic_backstop(self) -> None:
+        # The generic backstop starts first, so a "first one wins" merge would
+        # label the span GenericHighEntropy. Rust picks by priority, not by
+        # offset (aa-security/src/scanner.rs:681-684).
+        findings = [
+            {"kind": "GenericHighEntropy", "offset": 0, "end": 20},
+            {"kind": "PostgresUrl", "offset": 5, "end": 20},
+        ]
+
+        self.assertEqual(_coalesce_findings(findings), [(0, 20, "PostgresUrl")])
+
+    def test_email_backstop_outranks_high_entropy_but_loses_to_specific(self) -> None:
+        # priority(): GenericHighEntropy 0 < EmailAddress 1 < everything else 2.
+        self.assertEqual(
+            _coalesce_findings(
+                [
+                    {"kind": "GenericHighEntropy", "offset": 0, "end": 10},
+                    {"kind": "EmailAddress", "offset": 0, "end": 10},
+                ]
+            ),
+            [(0, 10, "EmailAddress")],
+        )
+        self.assertEqual(
+            _coalesce_findings(
+                [
+                    {"kind": "EmailAddress", "offset": 0, "end": 10},
+                    {"kind": "MysqlUrl", "offset": 0, "end": 10},
+                ]
+            ),
+            [(0, 10, "MysqlUrl")],
+        )
+
+    def test_equal_priority_keeps_the_first_label(self) -> None:
+        # Rust replaces the label only on `>`, never on `==`, so the earlier
+        # finding in `(offset, end)` order keeps it.
+        findings = [
+            {"kind": "SyntheticA", "offset": 0, "end": 10},
+            {"kind": "SyntheticB", "offset": 2, "end": 10},
+        ]
+
+        self.assertEqual(_coalesce_findings(findings), [(0, 10, "SyntheticA")])
+
+    def test_unordered_input_is_sorted_before_merging(self) -> None:
+        # The SDK is not required to return findings in offset order.
+        findings = [
+            {"kind": "SyntheticB", "offset": 5, "end": 20},
+            {"kind": "SyntheticA", "offset": 0, "end": 10},
+        ]
+
+        self.assertEqual(_coalesce_findings(findings), [(0, 20, "SyntheticA")])
+
+
+# Byte spans the reference scanner reports for the four vectors below.
+#
+# Provenance: obtained from `aa_security::CredentialScanner::scan` over each
+# vector's `input_text`, reading each finding's extent back through
+# `ScanResult::redact` (the `end` field is private). The pair for
+# private_keys_ec_short_trailing_line — [4,133) and [35,99) — is the same pair
+# quoted in AAASM-5373's review comment, independently.
+#
+# Only `end` is supplied here. `kind` and `offset` are asserted against the
+# vector's own `expected_findings` by the test below, so this table cannot
+# drift on any field the vectors already pin — see AC 7 in AAASM-5373 on why
+# `end` has no golden value to check against.
+_REFERENCE_ENDS: dict[str, list[int]] = {
+    "db_urls_postgres": [59, 59, 59],
+    "db_urls_mysql": [42, 42],
+    "db_urls_mongodb": [56, 56, 56],
+    "private_keys_ec_short_trailing_line": [133, 99],
+}
+
+# The merged span each vector's findings must coalesce into: (offset, end, kind).
+_EXPECTED_MERGED: dict[str, list[tuple[int, int, str]]] = {
+    "db_urls_postgres": [(0, 59, "PostgresUrl")],
+    "db_urls_mysql": [(0, 42, "MysqlUrl")],
+    "db_urls_mongodb": [(0, 56, "MongodbUrl")],
+    "private_keys_ec_short_trailing_line": [(4, 133, "EcPrivateKey")],
+}
+
+_VECTORS_DIR = Path(__file__).resolve().parent.parent / "vectors" / "credential_detection"
+
+
+class MultiFindingVectorTests(unittest.TestCase):
+    """The four vectors that declare several findings but one redaction label.
+
+    Each of these can only be reproduced by coalescing: the scanner reports
+    two or three overlapping spans and the golden `expected_redacted` carries a
+    single label. Before AAASM-5373 the runner spliced per finding and could
+    not produce them.
+
+    These are the only tests here that read `conformance/vectors/` — read-only,
+    and asserting against the committed goldens rather than restating them, so
+    the vectors stay the single source of truth (ADR 0015: never edit a golden
+    vector to make an implementation pass).
+    """
+
+    def _vector(self, name: str) -> dict:
+        with (_VECTORS_DIR / f"{name}.json").open(encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def _reference_findings(self, name: str, vector: dict) -> list[dict]:
+        """Pair the vector's own `expected_findings` with the reference ends."""
+        expected = vector["expected_findings"]
+        ends = _REFERENCE_ENDS[name]
+        self.assertEqual(
+            len(expected),
+            len(ends),
+            f"{name}: reference end table is out of step with the vector",
+        )
+        return [
+            {"kind": e["kind"], "offset": e["offset"], "end": end}
+            for e, end in zip(expected, ends)
+        ]
+
+    def test_reference_spans_coalesce_to_a_single_labelled_span(self) -> None:
+        # Asserted on the spans, not only on the output. For three of the four
+        # vectors a per-finding splice visibly produces the wrong string, but
+        # for private_keys_ec_short_trailing_line it accidentally produces the
+        # right one: splicing [35,99) first shortens the buffer to 98 bytes, so
+        # the later `result[133:]` is an out-of-range slice that silently
+        # evaluates to b"" and truncates the tail away. That is the mechanism
+        # behind the spurious solutions recorded in AAASM-5373's comment.
+        #
+        # An output-only assertion on that vector is therefore vacuous with
+        # respect to coalescing — it passes with coalescing removed. Asserting
+        # the merged spans is what makes all four discriminate.
+        for name, merged in _EXPECTED_MERGED.items():
+            with self.subTest(vector=name):
+                vector = self._vector(name)
+                findings = self._reference_findings(name, vector)
+
+                self.assertEqual(_coalesce_findings(findings), merged)
+
+    def test_reference_spans_reproduce_the_golden_redaction(self) -> None:
+        for name in _EXPECTED_MERGED:
+            with self.subTest(vector=name):
+                vector = self._vector(name)
+                findings = self._reference_findings(name, vector)
+
+                self.assertEqual(
+                    _redact(vector["input_text"], findings),
+                    vector["expected_redacted"],
+                )
+
+    def test_each_vector_really_declares_more_findings_than_labels(self) -> None:
+        # Guards the premise. If a vector were ever reduced to a single finding,
+        # the two tests above would still pass but would no longer be testing
+        # coalescing at all.
+        for name in _EXPECTED_MERGED:
+            with self.subTest(vector=name):
+                vector = self._vector(name)
+
+                self.assertGreater(len(vector["expected_findings"]), 1)
+                self.assertEqual(vector["expected_redacted"].count("[REDACTED:"), 1)
 
 
 class RedactAsciiUnchangedTests(unittest.TestCase):
