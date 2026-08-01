@@ -421,6 +421,12 @@ fn emit_metrics(outcome: &EnforcementOutcome, elapsed: Duration) {
     if outcome.oversized_fields > 0 {
         ::metrics::counter!("aa_runtime_scan_oversized_total").increment(outcome.oversized_fields as u64);
     }
+    // A payload dropped whole because it could not be decoded is a *coarser*
+    // redaction than the operator asked for, so it must be visible rather than
+    // hidden inside the generic finding counter (AAASM-5346).
+    if outcome.undecodable_fields > 0 {
+        ::metrics::counter!("aa_runtime_scan_undecodable_total").increment(outcome.undecodable_fields as u64);
+    }
     for finding in &outcome.findings {
         ::metrics::counter!("aa_runtime_scan_findings_total", "kind" => finding.kind.as_str()).increment(1);
     }
