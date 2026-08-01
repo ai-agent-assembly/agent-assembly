@@ -373,6 +373,14 @@ impl RuntimeScanner {
                 if result.is_clean() {
                     None
                 } else {
+                    // These findings are **kind-only**. Their `offset` / `end`
+                    // index the lossy decoding, so they match neither the input
+                    // bytes nor the marker that replaces them. Nothing consumes
+                    // the spans today (the metrics layer reads `kind`, and
+                    // redaction already happened above), but a future consumer
+                    // must not treat them as positions in the payload. They are
+                    // kept rather than dropped because *what kind* of secret was
+                    // found is the audit-relevant fact.
                     outcome.findings.extend(result.findings);
                     outcome.undecodable_fields += 1;
                     Some(UNDECODABLE_MARKER.as_bytes().to_vec())
