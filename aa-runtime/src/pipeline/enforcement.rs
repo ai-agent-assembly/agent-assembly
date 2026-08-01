@@ -747,6 +747,41 @@ mod tests {
         );
     }
 
+    /// AAASM-5346 guard on the *unchanged* path: a payload that is valid UTF-8
+    /// still gets a precise per-finding splice, so multi-byte text around the
+    /// secret survives byte-for-byte rather than being dropped whole.
+    #[test]
+    fn valid_utf8_multibyte_payload_keeps_surrounding_bytes_on_redaction() {
+        let scanner = RuntimeScanner::new();
+        let payload = format!("{CJK} key={AWS_KEY} {CJK}");
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: payload.into_bytes(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let out = args_json_of(event);
+        assert!(!contains(&out, AWS_KEY.as_bytes()), "raw secret must not survive");
+        assert!(
+            !contains(&out, REPLACEMENT_CHAR),
+            "no lossy substitution on a valid payload"
+        );
+        assert!(
+            contains(&out, CJK.as_bytes()),
+            "CJK bytes either side of the secret must survive verbatim"
+        );
+        assert!(
+            contains(&out, b"[REDACTED:"),
+            "a precise splice, not a whole-field drop"
+        );
+        assert_eq!(
+            outcome.undecodable_fields, 0,
+            "a decodable payload is repaired precisely, not coarsely"
+        );
+        assert!(!outcome.is_clean());
+    }
+
     #[test]
     fn oversized_field_is_redacted_whole_fail_closed() {
         let scanner = RuntimeScanner::with_config(EnforcementConfig {
