@@ -241,9 +241,15 @@ describe('every *FromQuery fold, against a body that does not match its schema',
 
   // The bodies a proxy, a partial deploy and a stubbed test route actually
   // produce — `{}` is the one that was observed unmounting the page.
+  //
+  // `[]` is labelled for what it is rather than for what it does, because it
+  // does two things: it is the wrong shape for five of the six folds, and for
+  // `scrubbed24hFromQuery` — whose route really does serve an array — it is a
+  // well-formed empty window. Both must end in an absence, which is the only
+  // thing this sweep claims.
   const UNREADABLE: readonly [string, unknown][] = [
     ['an empty object', {}],
-    ['an array where an envelope belongs', []],
+    ['a bare array', []],
     ['a scalar', 42],
     ['an envelope whose rows are empty objects', { patterns: [{}], counts: [{}], total: 1 }],
   ]
