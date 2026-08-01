@@ -71,6 +71,7 @@ describe('scrub posture constants', () => {
       'default-allow with scrub',
       'http egress',
       'gmail',
+      'slack',
     ]) {
       expect(serialised).not.toContain(literal)
     }

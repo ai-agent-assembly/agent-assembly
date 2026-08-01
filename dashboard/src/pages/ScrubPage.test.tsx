@@ -33,7 +33,15 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-/** Every literal AAASM-5112 removed, in the forms a regression would take. */
+/**
+ * Every literal AAASM-5112 removed, in the forms a regression would take.
+ *
+ * `'slack'` is lowercase and stays lowercase. It came from the fabricated
+ * coverage claim `covers: http egress · gmail · slack`, and the catalogue now
+ * legitimately renders Slack *detectors* — `Slack bot token` / `SlackBotToken`,
+ * capitalised. The fixture below deliberately includes one so this sweep proves
+ * the two cannot be confused, rather than passing because no Slack row exists.
+ */
 const FABRICATIONS = [
   '0 leaks',
   'leaks (30d)',
@@ -41,6 +49,7 @@ const FABRICATIONS = [
   'default-allow with scrub',
   'http egress',
   'gmail',
+  'slack',
   '192 stripped',
 ]
 
@@ -67,8 +76,16 @@ const CATALOGUE = {
       severity: 'critical',
       builtin: true,
     },
+    // Present so the FABRICATIONS sweep has a Slack row to *not* trip on.
+    {
+      kind: 'SlackBotToken',
+      redaction_label: '[REDACTED:SlackBotToken]',
+      category: 'auth_token',
+      severity: 'high',
+      builtin: true,
+    },
   ],
-  total: 3,
+  total: 4,
 }
 
 const EMPTY_COUNTS = { counts: [], total_hits: 0, window_seconds: 86_400 }
@@ -344,14 +361,14 @@ describe('ScrubPage — the stat strip', () => {
 
   it('counts detectors from the served catalogue rather than an "enabled" tally', async () => {
     await renderLoaded()
-    expect(screen.getByTestId('scrub-stats-detectors')).toHaveTextContent('3 detectors served')
+    expect(screen.getByTestId('scrub-stats-detectors')).toHaveTextContent('4 detectors served')
     expect(screen.getByTestId('scrub-stats-detectors')).not.toHaveTextContent('enabled')
   })
 
   it('describes the catalogue in the sub-header without claiming any are active', async () => {
     await renderLoaded()
     const sub = screen.getByTestId('scrub-page-sub')
-    expect(sub).toHaveTextContent('3 built-in detectors')
+    expect(sub).toHaveTextContent('4 built-in detectors')
     expect(sub).not.toHaveTextContent(/patterns active/)
     expect(sub).not.toHaveTextContent(/hits today/)
   })
