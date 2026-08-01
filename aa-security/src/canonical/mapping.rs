@@ -165,3 +165,80 @@ impl CanonicalCategory {
         Some(kind)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `CredentialKind`, including the `Custom` variant that
+    /// [`CredentialKind::ALL`] deliberately excludes.
+    ///
+    /// `ALL` is the catalogue of *built-in detectors*, so `Custom` is correctly
+    /// absent from it — but `Custom` is still a kind the scanner emits, and it
+    /// must round-trip like any other. Iterating `ALL.chain(Custom)` is the same
+    /// shape the exhaustiveness guard in `scanner.rs` uses.
+    fn every_kind() -> impl Iterator<Item = CredentialKind> {
+        CredentialKind::ALL
+            .iter()
+            .cloned()
+            .chain(std::iter::once(CredentialKind::Custom))
+    }
+
+    /// The round-trip property, checked over the whole domain rather than a
+    /// sample of it: the domain is 28 values, so exhaustive enumeration is both
+    /// cheaper and stronger than random generation.
+    ///
+    /// A newly added `CredentialKind` variant cannot escape this. The forward
+    /// `match` is exhaustive so it will not compile without a category, and
+    /// this test then requires that category to be reachable in reverse — which
+    /// is what catches a variant given a category that collides with, or is
+    /// unreadable by, `to_credential_kind`.
+    #[test]
+    fn every_credential_kind_round_trips_through_its_canonical_category() {
+        for kind in every_kind() {
+            let category = CanonicalCategory::from_credential_kind(&kind);
+            assert_eq!(
+                category.to_credential_kind(),
+                Some(kind.clone()),
+                "{} → {category} did not round-trip",
+                kind.as_str()
+            );
+        }
+    }
+
+    /// Losslessness has a second half: the mapping must be injective. Two kinds
+    /// sharing a category would round-trip only for whichever one the reverse
+    /// `match` happened to name first, and would silently relabel the other.
+    #[test]
+    fn no_two_credential_kinds_share_a_canonical_category() {
+        let mut seen: std::collections::BTreeMap<String, &'static str> = std::collections::BTreeMap::new();
+        for kind in every_kind() {
+            let rendered = CanonicalCategory::from_credential_kind(&kind).to_string();
+            if let Some(other) = seen.insert(rendered.clone(), kind.as_str()) {
+                panic!("{} and {} both map to {rendered}", other, kind.as_str());
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            28,
+            "expected 28 distinct categories, one per CredentialKind"
+        );
+    }
+
+    /// A category that no built-in detector produces has no `CredentialKind`,
+    /// and the reverse mapping must say so rather than guess. This is the shape
+    /// every B-7 locale category will have.
+    #[test]
+    fn a_category_with_no_detector_maps_back_to_none() {
+        let taiwan_arc = CanonicalCategory::with_locale(Base::NationalId, "zh-TW", "arc_new");
+        assert_eq!(taiwan_arc.to_credential_kind(), None);
+        assert_eq!(taiwan_arc.to_string(), "NATIONAL_ID[zh-TW/arc_new]");
+
+        // Same base as a kind we do detect, so this also pins that the reverse
+        // mapping discriminates on the qualifier and not on the base alone.
+        assert_eq!(
+            CanonicalCategory::with_locale(Base::NationalId, "en-US", "ssn").to_credential_kind(),
+            Some(CredentialKind::SsnPattern)
+        );
+    }
+}
