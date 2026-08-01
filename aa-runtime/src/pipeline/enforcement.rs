@@ -446,6 +446,36 @@ mod tests {
     /// A GitHub PAT — detected via the `ghp_` literal pattern.
     const GH_PAT: &str = "ghp_0123456789abcdefABCDEF0123456789abcd";
 
+    /// UTF-8 encoding of U+FFFD, the character `from_utf8_lossy` substitutes for
+    /// every byte it cannot decode. Its presence in an output payload is the
+    /// signature of the AAASM-5346 corruption bug.
+    const REPLACEMENT_CHAR: &[u8] = "\u{FFFD}".as_bytes();
+
+    /// Byte-level substring search — the AAASM-5346 assertions must run over raw
+    /// `Vec<u8>`, never a lossy `String` view of it, or they would compare the
+    /// very decoding that causes the bug and pass either way.
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// A genuinely binary payload wrapping a synthetic secret: a PNG signature,
+    /// a `0xFF 0xFE` pair no UTF-8 decoder accepts, and a truncated 2-byte
+    /// sequence plus a lone continuation byte at the tail.
+    fn binary_payload_with_secret() -> Vec<u8> {
+        let mut payload = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0xFF, 0xFE];
+        payload.extend_from_slice(AWS_KEY.as_bytes());
+        payload.extend_from_slice(&[0x00, 0xC3, 0x28, 0x80]);
+        payload
+    }
+
+    /// Extract the `args_json` payload from an event whose detail is a ToolCall.
+    fn args_json_of(event: EnrichedEvent) -> Vec<u8> {
+        let Some(Detail::ToolCall(tc)) = event.inner.detail else {
+            unreachable!("detail was a ToolCall");
+        };
+        tc.args_json
+    }
+
     /// Build an [`EnrichedEvent`] wrapping `detail` with throwaway metadata.
     fn event_with(detail: Detail) -> EnrichedEvent {
         EnrichedEvent {
@@ -586,6 +616,40 @@ mod tests {
         assert!(outcome.is_clean());
         assert!(outcome.findings.is_empty());
         assert_eq!(outcome.scanned_bytes, original.len());
+    }
+
+    /// AAASM-5346: the write-back used to splice a lossy decoding over the
+    /// caller's bytes, so a binary payload carrying a secret came back riddled
+    /// with U+FFFD. It must now be dropped whole instead — fail-closed, and
+    /// never a half-rewritten buffer the caller cannot detect.
+    #[test]
+    fn binary_payload_with_secret_is_dropped_whole_never_corrupted() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: binary_payload_with_secret(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let out = args_json_of(event);
+        assert!(!contains(&out, AWS_KEY.as_bytes()), "raw secret must not survive");
+        assert!(
+            !contains(&out, REPLACEMENT_CHAR),
+            "payload was corrupted: U+FFFD spliced into the output"
+        );
+        assert_eq!(
+            out,
+            UNDECODABLE_MARKER.as_bytes(),
+            "an undecodable dirty payload is replaced whole, not partially rewritten"
+        );
+        assert_eq!(outcome.undecodable_fields, 1, "the coarse redaction is recorded");
+        assert!(outcome.has_undecodable_fields());
+        assert!(!outcome.findings.is_empty(), "the decision was made, not skipped");
+        assert!(
+            !outcome.is_clean(),
+            "fail-closed: never reported as a clean pass-through"
+        );
     }
 
     #[test]
