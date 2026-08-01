@@ -188,23 +188,43 @@ def run(vectors_dir: Path, verbose: bool) -> bool:
     return failed == 0
 
 
+def _is_utf8_boundary(buf: bytes, index: int) -> bool:
+    """True if *index* is the start of a character in *buf* (Rust `is_char_boundary`)."""
+    if index in (0, len(buf)):
+        return True
+    # UTF-8 continuation bytes are 0b10xxxxxx; any other byte starts a character.
+    return buf[index] & 0xC0 != 0x80
+
+
 def _redact(text: str, findings: list[dict]) -> str:
-    """Apply findings to text in reverse offset order (mirrors Rust ScanResult::redact)."""
+    """Apply findings to text in reverse offset order (mirrors Rust ScanResult::redact).
+
+    `offset` and `end` are **byte** positions in the UTF-8 encoding of *text* —
+    that is the unit the reference scanner emits and the unit the vector schema
+    documents. Splicing therefore happens on the encoded `bytes`, which is
+    decoded back once at the end; slicing the `str` would index code points and
+    land the redaction in the wrong place for any non-ASCII input.
+
+    A span that is out of range, inverted, or not aligned to a character
+    boundary is skipped rather than spliced, so this never emits invalid UTF-8.
+    """
     # Each finding must have "kind", "offset", and "end" (byte end of match).
     # If "end" is absent, the runner cannot redact — skip silently.
     sorted_findings = sorted(findings, key=lambda f: f.get("offset", 0), reverse=True)
-    result = text
+    result = text.encode("utf-8")
     for finding in sorted_findings:
         offset = finding.get("offset")
         end = finding.get("end")
         kind = finding.get("kind", "UNKNOWN")
         if offset is None or end is None:
             continue
-        if end > len(result) or offset > end:
+        if offset < 0 or end > len(result) or offset > end:
             continue
-        placeholder = f"[REDACTED:{kind}]"
+        if not _is_utf8_boundary(result, offset) or not _is_utf8_boundary(result, end):
+            continue
+        placeholder = f"[REDACTED:{kind}]".encode("utf-8")
         result = result[:offset] + placeholder + result[end:]
-    return result
+    return result.decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
