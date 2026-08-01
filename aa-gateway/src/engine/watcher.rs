@@ -300,6 +300,43 @@ mod tests {
         f.flush().unwrap();
     }
 
+    /// A truncated policy file must not clobber the live policy (AAASM-3561).
+    ///
+    /// `handle_fs_event` skips zero-byte reads because a truncate-then-write
+    /// edit fires a Modify event for the empty file first. Without that guard an
+    /// empty document parses as a Global allow-all and would replace a deny
+    /// policy for the width of the write — a fail-*open* window. The guard had
+    /// no test of its own: deleting it left every other test in this module
+    /// green. The cascade watcher's equivalent is covered by
+    /// `cascade_hot_reload_invalid_yaml_preserves_cascade`; this is the
+    /// single-file twin.
+    #[test]
+    fn truncated_file_keeps_previous_policy() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
+
+        let initial_doc = parse_doc(DENY_YAML);
+        let slot = Arc::new(ArcSwap::new(Arc::new(initial_doc.clone())));
+
+        // Whitespace-only stands in for the mid-truncation read: it is what the
+        // watcher sees between the truncate and the new bytes landing.
+        write_file(path, "   \n");
+        handle_fs_event(modify_event(path), path, &slot);
+        assert_eq!(
+            *slot.load_full(),
+            initial_doc,
+            "a truncated file must not clobber the live policy with an allow-all"
+        );
+
+        write_file(path, ALLOW_YAML);
+        handle_fs_event(modify_event(path), path, &slot);
+        assert!(
+            slot.load_full().tools["search"].allow,
+            "control: the same event over valid YAML must reach the parse step \
+             and swap, otherwise the assertion above proves nothing"
+        );
+    }
+
     /// Drives [`handle_fs_event`] directly rather than through a real watcher
     /// (AAASM-5367).
     ///
