@@ -24,8 +24,9 @@
 //! Every credential-shaped string below is **synthetic**. AWS-documented example
 //! identifiers are used where a realistic prefix is required; no value here is or
 //! has ever been a live credential, and no personal data of any real person
-//! appears. The `zh-TW` identifiers are algorithmically generated and are not
-//! issued to anyone.
+//! appears. The `zh-TW` fixture is ordinary prose and deliberately contains no
+//! Taiwan identifier of any kind — its purpose is to measure the cost of CJK
+//! text, not to exercise a recognizer that does not exist yet.
 
 use aa_security::CredentialScanner;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
@@ -43,9 +44,13 @@ const BENIGN_BLOCK: &str = "The quick brown fox jumps over the lazy dog. \
      error[E0382]: borrow of moved value type mismatch expected found ";
 
 /// Traditional-Chinese filler with the half-/full-width punctuation mix and the
-/// English tokens that real `zh-TW` agent traffic carries. Each CJK codepoint is
-/// 3 bytes in UTF-8, so this block stresses the byte-vs-char offset arithmetic
-/// the redaction splice depends on.
+/// English tokens that real `zh-TW` agent traffic carries.
+///
+/// Each CJK codepoint is 3 bytes in UTF-8, and Chinese has no spaces, so this
+/// block exercises the entropy pass's byte-length token window against input it
+/// was never calibrated for — which is how the false-positive rate reported in
+/// the Spike (§4.1) was found. Expect a non-zero finding count here even though
+/// the block contains no secret.
 const BENIGN_BLOCK_ZH_TW: &str = "使用者請求：請協助查詢訂單狀態，並將結果整理成報表。\
      系統回應：查詢完成，共 12 筆資料，處理時間 340 毫秒。\
      備註 (note): the retrieval step returned 12 rows from the orders table. \
