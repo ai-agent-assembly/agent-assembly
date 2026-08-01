@@ -10,16 +10,32 @@ easy to assert and easy to get wrong, because every committed ASCII vector passe
 either way. This script is the evidence for it, kept runnable so the number in the
 PR is reproducible rather than something you have to take on trust.
 
-It drives both implementations over every span position in every ASCII vector and
-compares their output byte for byte.
+It drives both implementations over span positions in every ASCII vector and
+compares their output byte for byte. "Every position" for inputs up to 160 bytes;
+above that `_positions` samples ~160 evenly spaced ones, always including the
+endpoint, because an exhaustive pair sweep over a few-thousand-byte private key
+adds hours without adding span *shapes*.
 
-    well-formed spans (0 <= offset <= end)   must be identical      → else exit 1
-    malformed spans   (offset < 0)           are expected to differ → reported only
+AAASM-5373 then changed the semantics on purpose — `_redact` now coalesces
+overlapping findings and fails closed on a span it cannot splice — so a flat
+"must be identical everywhere" check would now fail for the right reasons and
+tell you nothing. Cases are therefore bucketed by span geometry, and only the
+bucket neither change touches is held to byte-identity:
 
-The second bucket is the one honest exception. The old code let a negative offset
-fall through to Python's negative indexing and spliced garbage into the middle of
-the text; the new code rejects it. That is a fix, not a regression, so it is
-counted and printed rather than asserted away.
+    unchanged   spliceable, non-overlapping, distinct offsets → identical, else exit 1
+    coalesced   spliceable, but sorting/merging changes it    → must differ, and does
+    fail-closed at least one unspliceable span                → must differ, and does
+    malformed   offset < 0                                    → reported only
+
+The last three are the honest exceptions, and the sweep asserts each of them is
+non-empty *and* actually differs. A bucket that is never entered, or one whose
+cases all still agree with the pre-5373 code, means the new behaviour is not
+firing — which is exactly how this script would report success while the
+properties it exists to check are absent.
+
+The malformed bucket predates 5373: the old code let a negative offset fall
+through to Python's negative indexing and spliced garbage into the middle of the
+text; the new code fails closed on it.
 
 Self-check
 ----------
@@ -47,7 +63,7 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from runner import _redact  # noqa: E402
+from runner import _coalesce_findings, _redact  # noqa: E402
 
 Redactor = Callable[[str, list[dict]], str]
 
@@ -74,24 +90,81 @@ def _legacy_redact(text: str, findings: list[dict]) -> str:
 
 
 def _mutated_redact(text: str, findings: list[dict]) -> str:
-    """The current `_redact` with a one-character sabotage: `offset` → `offset + 1`.
+    """`_redact` itself, sabotaged by shifting every `offset` one byte right.
 
     Used only by --self-check, to prove the sweep below can tell two nearly
     identical implementations apart.
+
+    The sabotage is injected into the *input* rather than applied to a copied
+    body on purpose. The previous version of this function was a hand-copy of
+    `_redact` that had already drifted: it omitted `_redact`'s
+    `_is_utf8_boundary` fail-closed check and decoded with `errors="replace"`
+    instead of strict. Both were inert while the sweep was ASCII-only, but they
+    meant `--self-check` was not exercising the real function's char-boundary
+    branch at all — it was exercising a stale copy that no longer had one. Any
+    such copy drifts again the moment `_redact` changes; calling the real
+    function cannot.
     """
-    sorted_findings = sorted(findings, key=lambda f: f.get("offset", 0), reverse=True)
-    result = text.encode("utf-8")
-    for finding in sorted_findings:
-        offset = finding.get("offset")
-        end = finding.get("end")
-        kind = finding.get("kind", "UNKNOWN")
+    shifted = [
+        {**f, "offset": f["offset"] + 1} if f.get("offset") is not None else dict(f)
+        for f in findings
+    ]
+    return _redact(text, shifted)
+
+
+def _spans_are_valid(text: str, findings: list[dict]) -> bool:
+    """True if every finding carries a span `_redact` can actually splice."""
+    n = len(text.encode("utf-8"))
+    for f in findings:
+        offset, end = f.get("offset"), f.get("end")
         if offset is None or end is None:
-            continue
-        if offset < 0 or end > len(result) or offset > end:
-            continue
-        placeholder = f"[REDACTED:{kind}]".encode("utf-8")
-        result = result[: offset + 1] + placeholder + result[end:]  # ← the sabotage
-    return result.decode("utf-8", errors="replace")
+            return False
+        if offset < 0 or end > n or offset > end:
+            return False
+    return True
+
+
+def _sort_or_merge_matters(findings: list[dict]) -> bool:
+    """True if AAASM-5373's sort-and-merge step changes the outcome for this set.
+
+    Two ways it can:
+
+    * **Overlap** — some span starts strictly before the previous one ends, so
+      `_coalesce_findings` merges them. Uses the same strict `<` test as the
+      implementation, so spans that merely touch (`a.end == b.offset`) do not
+      count: neither implementation merges those.
+    * **A shared offset** — the legacy code sorted on `offset` alone, which left
+      the splice order of two spans at the same offset up to the input order;
+      the new code sorts on `(offset, end)` and pins it. Splicing them in the
+      wrong order corrupts the first label and leaves the text behind it intact
+      (`[REDACTED:Custom]` + `CTED:Custom]abcdefghij`), so this is a fix, not a
+      cosmetic reordering — but it is still a deliberate difference, and it
+      does not belong in the bucket that must stay byte-identical.
+    """
+    spans = sorted((f["offset"], f["end"]) for f in findings)
+    for (prev_offset, prev_end), (offset, _) in zip(spans, spans[1:]):
+        if offset < prev_end or offset == prev_offset:
+            return True
+    return False
+
+
+def _classify(text: str, findings: list[dict]) -> str:
+    """Which of the three behaviours AAASM-5373 defines this span set exercises.
+
+    * ``"failclosed"`` — at least one unspliceable span. The old code skipped it
+      and returned the rest of the text; the new one returns ``"[REDACTED]"``.
+    * ``"coalesced"``  — all spans spliceable, but sorting and merging changes
+      the result (see `_sort_or_merge_matters`).
+    * ``"unchanged"``  — all spans spliceable, none overlap, no two share an
+      offset. Coalescing is a no-op, the splice order is the same one the old
+      code used, and there is nothing to fail closed on, so the new
+      implementation must agree with the old one byte for byte. This is the
+      bucket that still carries AAASM-5371's "ASCII behaviour is unchanged"
+      claim.
+    """
+    if not _spans_are_valid(text, findings):
+        return "failclosed"
+    return "coalesced" if _sort_or_merge_matters(findings) else "unchanged"
 
 
 def _positions(n: int) -> list[int]:
@@ -128,11 +201,30 @@ def _wellformed_cases(n: int, positions: list[int]) -> list[list[dict]]:
                 {"kind": "B", "offset": o2, "end": min(o2 + 5, n)},
             ]
         )
-    # Degenerate shapes: no findings, missing "end", past the end, inverted.
+    # Unspliceable shapes, generated rather than hardcoded. These are the only
+    # cases that reach the fail-closed branch, and three hand-written examples
+    # made the "fail-closed bucket is non-empty" gate near-trivial to satisfy —
+    # it would have stayed green against an implementation that failed closed on
+    # almost nothing.
+    for o in positions:
+        # Inverted: every end strictly below the offset.
+        for e in positions:
+            if e < o:
+                cases.append([{"kind": "K", "offset": o, "end": e}])
+        # Out of range, just past the end and far past it.
+        for e in (n + 1, n + 2, n + 50):
+            cases.append([{"kind": "K", "offset": o, "end": e}])
+        # Mixed: one spliceable span alongside one that is not, which is what
+        # proves fail-closed condemns the whole text rather than the bad span.
+        cases.append(
+            [
+                {"kind": "A", "offset": o, "end": min(o + 3, n)},
+                {"kind": "B", "offset": o, "end": n + 7},
+            ]
+        )
+    # Degenerate shapes: no findings, and a finding with no "end" at all.
     cases.append([])
     cases.append([{"kind": "K", "offset": 0}])
-    cases.append([{"kind": "K", "offset": 3, "end": n + 50}])
-    cases.append([{"kind": "K", "offset": n, "end": 0}])
     return cases
 
 
@@ -160,22 +252,48 @@ def _load_ascii_vectors(vectors_dir: Path) -> tuple[list[str], int]:
     return inputs, skipped
 
 
-def sweep(inputs: list[str], new: Redactor) -> tuple[int, int, int, list[str]]:
-    """Compare *new* against the legacy implementation. Returns counts + samples."""
-    wellformed = mismatched = malformed_differs = 0
-    samples: list[str] = []
+class SweepResult:
+    """Per-bucket counts from one pass over every span shape."""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, int] = {"unchanged": 0, "coalesced": 0, "failclosed": 0}
+        self.differs: dict[str, int] = {"unchanged": 0, "coalesced": 0, "failclosed": 0}
+        self.not_failed_closed = 0
+        self.malformed_differs = 0
+        # Cases where coalescing actually collapsed two findings into one span.
+        # Counted separately from the "coalesced" bucket because that bucket
+        # also covers the sort-order fix, and so stays non-empty even with
+        # merging disabled — it cannot, on its own, detect its own removal.
+        self.merged_cases = 0
+        self.merged_differs = 0
+        self.samples: list[str] = []
+
+
+def sweep(inputs: list[str], new: Redactor) -> SweepResult:
+    """Compare *new* against the legacy implementation, bucketed by span geometry."""
+    r = SweepResult()
     for text in inputs:
         positions = _positions(len(text))
         for findings in _wellformed_cases(len(text), positions):
-            wellformed += 1
-            if _legacy_redact(text, findings) != new(text, findings):
-                mismatched += 1
-                if len(samples) < 5:
-                    samples.append(f"well-formed span differs: {findings}")
+            bucket = _classify(text, findings)
+            r.seen[bucket] += 1
+            produced = new(text, findings)
+            if bucket == "failclosed" and produced != "[REDACTED]":
+                r.not_failed_closed += 1
+            spans = _coalesce_findings(findings)
+            merged = spans is not None and len(spans) < len(findings)
+            if merged:
+                r.merged_cases += 1
+            if _legacy_redact(text, findings) != produced:
+                r.differs[bucket] += 1
+                if merged:
+                    r.merged_differs += 1
+                if bucket == "unchanged" and len(r.samples) < 5:
+                    r.samples.append(f"unchanged-bucket span differs: {findings}")
         for findings in _malformed_cases(len(text), positions):
             if _legacy_redact(text, findings) != new(text, findings):
-                malformed_differs += 1
-    return wellformed, mismatched, malformed_differs, samples
+                r.malformed_differs += 1
+    return r
 
 
 def main() -> int:
@@ -200,26 +318,58 @@ def main() -> int:
         return 2
 
     if args.self_check:
-        _, mismatched, _, _ = sweep(inputs, _mutated_redact)
+        r = sweep(inputs, _mutated_redact)
+        mismatched = r.differs["unchanged"]
         print(f"self-check: sabotaged implementation produced {mismatched} mismatches")
+        print("            (counted in the unchanged bucket, where the two must agree)")
         if mismatched == 0:
             print("ERROR: the sweep did not notice a broken implementation.")
             return 1
         print("OK: the sweep discriminates.")
         return 0
 
-    wellformed, mismatched, malformed_differs, samples = sweep(inputs, _redact)
+    r = sweep(inputs, _redact)
+    total = sum(r.seen.values())
     print(f"ASCII vectors swept        : {len(inputs)}")
     print(f"non-ASCII vectors skipped  : {skipped}")
-    print(f"well-formed span cases     : {wellformed}")
-    print(f"  mismatches               : {mismatched}")
-    print(f"malformed (offset < 0) now rejected instead of mangled: {malformed_differs}")
-    for s in samples:
+    print(f"well-formed span cases     : {total}")
+    print(f"  unchanged bucket         : {r.seen['unchanged']} cases, "
+          f"{r.differs['unchanged']} differ from legacy (must be 0)")
+    print(f"  sort/merge bucket        : {r.seen['coalesced']} cases, "
+          f"{r.differs['coalesced']} differ from legacy (sorted and/or merged)")
+    print(f"  fail-closed bucket       : {r.seen['failclosed']} cases, "
+          f"{r.differs['failclosed']} differ from legacy (fail-closed)")
+    # Not nested under the sort/merge bucket: a fail-closed case can also have
+    # had two findings merged, so this cuts across the buckets rather than
+    # sitting inside one of them.
+    print(f"cases where findings really merged (any bucket): {r.merged_cases}, "
+          f"{r.merged_differs} differ from legacy")
+    print(f"malformed (offset < 0) now rejected instead of mangled: {r.malformed_differs}")
+    for s in r.samples:
         print(f"  {s}")
-    if mismatched:
-        print("FAIL: byte-slicing changed behaviour for a well-formed span.")
+
+    if r.differs["unchanged"]:
+        print("FAIL: behaviour changed for a span set that neither coalescing nor")
+        print("      fail-closed should touch.")
         return 1
-    print("OK: identical for every well-formed span.")
+    # A bucket that is never entered proves nothing, and one whose cases all
+    # agree with the pre-AAASM-5373 code means the new semantics are not
+    # actually firing. Both are how this sweep would report success while the
+    # properties it exists to check are absent.
+    if r.seen["coalesced"] == 0 or r.differs["coalesced"] == 0:
+        print("FAIL: no sort/merge case showed the new ordering taking effect.")
+        return 1
+    if r.merged_cases == 0 or r.merged_differs == 0:
+        print("FAIL: no case showed two findings actually merging into one span.")
+        return 1
+    if r.seen["failclosed"] == 0 or r.differs["failclosed"] == 0:
+        print("FAIL: no unspliceable-span case showed the fail-closed path taking effect.")
+        return 1
+    if r.not_failed_closed:
+        print(f"FAIL: {r.not_failed_closed} unspliceable-span cases did not return "
+              f'"[REDACTED]".')
+        return 1
+    print("OK: unchanged where it must be, and both new behaviours observed firing.")
     return 0
 
 

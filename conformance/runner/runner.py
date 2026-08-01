@@ -28,7 +28,8 @@ a scan() function with this signature:
         #   "offset" (int)  — start of the finding, as a byte offset into the
         #                     UTF-8 encoding of `text` (not a str index)
         #   "end"    (int)  — end of the match, same unit. Required: a finding
-        #                     without it cannot be redacted and is skipped.
+        #                     without it names a region of unknown extent, so
+        #                     the redaction fails closed (see _redact).
 
 If AA_SDK_MODULE is unset the runner uses a no-op stub that always returns []
 and prints a warning — all vectors with expected_findings will fail.
@@ -102,7 +103,42 @@ def _load_vectors(vectors_dir: Path) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _findings_match(actual: list[dict], expected: list[dict]) -> tuple[bool, str]:
-    """Return (ok, reason) comparing actual to expected findings."""
+    """Return (ok, reason) comparing actual to expected findings.
+
+    **`end` is deliberately not graded here** (AAASM-5373 AC 7). Grading it
+    would need an `end` on every `expected_findings` entry, and the vectors
+    carry none — adding one is a change to the vector schema, which ADR 0015
+    puts off-limits as a way to make an implementation pass. That is a design
+    decision to take on its own merits, not a side effect of this fix, so the
+    schema is left alone and the omission is recorded rather than papered over.
+
+    **The residual, stated precisely.** `end` is graded only for a finding whose
+    span is *not* subsumed by an overlapping sibling. Where findings overlap —
+    which is every multi-finding vector in the corpus — a wrong `end` is absorbed
+    by the union that `_coalesce_findings` takes and is never detected: the span
+    is merged into `max(last_end, end)` before anything validates it, so neither
+    the redaction nor the bounds check ever sees the value the SDK reported.
+
+    On the four multi-finding vectors, 554 wrong single-`end` values pass
+    end-to-end — `_findings_match` True *and* the redaction equal to the golden.
+    `db_urls_postgres` accepts any `end` in 0-58 for its `PostgresUrl@13`
+    finding, so an SDK reporting that credential as a one-byte span, or as the
+    inverted span [13,0), passes the vector completely. For three of the four,
+    the credential-identifying finding's `end` is therefore effectively
+    ungraded.
+
+    This is **not** a divergence from Rust — `ScanResult::redact` also validates
+    after coalescing, so the runner is faithful. It is a limit on what the
+    corpus can grade, and the reason it cannot be closed here is the same one
+    above: it needs a golden `end` to compare against.
+
+    An earlier version of this docstring claimed a wrong `end` "either splices to
+    the wrong string or collapses the whole text to [REDACTED] — and both
+    mismatch expected_redacted". That is false, and it is recorded here rather
+    than deleted because it is exactly the kind of plausible safety argument that
+    survives review by sounding right. `test_a_subsumed_wrong_end_is_not_detected`
+    pins the counterexample so the residual stays executable.
+    """
     if len(actual) != len(expected):
         return False, (
             f"finding count mismatch: got {len(actual)}, expected {len(expected)}"
@@ -159,9 +195,8 @@ def run(vectors_dir: Path, verbose: bool) -> bool:
                 print(f"{_RED}{msg}{_RESET}")
             continue
 
-        # Redact check: reconstruct the redacted string from findings.
-        # Approximates Rust's ScanResult::redact() — see _redact for the two
-        # ways it still diverges (no coalescing, fails open).
+        # Redact check: reconstruct the redacted string from findings, the same
+        # way Rust's ScanResult::redact() does (coalesce, splice, fail closed).
         redacted = _redact(input_text, actual_findings)
         if redacted != expected_redacted:
             failed += 1
@@ -200,8 +235,64 @@ def _is_utf8_boundary(buf: bytes, index: int) -> bool:
     return buf[index] & 0xC0 != 0x80
 
 
+def _kind_priority(kind: str) -> int:
+    """Relative confidence of *kind*, mirroring `CredentialKind::priority()`.
+
+    Only the two generic backstops score below the specific detectors
+    (aa-security/src/scanner.rs:334-368). An unrecognised kind is treated as
+    specific: an SDK that reports a kind this runner has never heard of has
+    made a *more* precise claim than "high entropy", and downgrading it would
+    let a generic label win a merge it loses in Rust.
+    """
+    if kind == "GenericHighEntropy":
+        return 0
+    if kind == "EmailAddress":
+        return 1
+    return 2
+
+
+def _coalesce_findings(findings: list[dict]) -> list[tuple[int, int, str]] | None:
+    """Merge findings into non-overlapping `(offset, end, kind)` spans.
+
+    Mirrors `coalesce_findings` (aa-security/src/scanner.rs:670-695): sort by
+    `(offset, end)`, then fold each finding into the running span when it starts
+    **strictly before** that span's `end`. The merged span takes the union of
+    the two ends and the label of the highest-`_kind_priority` finding in the
+    run, with ties going to the one seen first — so a specific detector
+    (`PostgresUrl`) claims the span from a generic backstop (`EmailAddress`)
+    that happens to start at a lower offset.
+
+    The `<` is deliberate and load-bearing: Rust merges **overlapping** spans
+    only. A span starting exactly at the previous span's `end` — adjacent but
+    not overlapping — stays separate and produces two labels. A merge written
+    with `<=` would silently emit one label where Rust emits two.
+
+    Returns `None` when a finding carries no usable span at all (`offset` or
+    `end` missing), which the caller turns into a fail-closed result: a finding
+    names a region the scanner flagged, and one whose extent is unknown cannot
+    be proven redacted.
+    """
+    spans: list[tuple[int, int, str]] = []
+    for finding in sorted(
+        findings, key=lambda f: (f.get("offset") or 0, f.get("end") or 0)
+    ):
+        offset = finding.get("offset")
+        end = finding.get("end")
+        if offset is None or end is None:
+            return None
+        kind = finding.get("kind", "UNKNOWN")
+        if spans and offset < spans[-1][1]:
+            last_offset, last_end, last_kind = spans[-1]
+            if _kind_priority(kind) > _kind_priority(last_kind):
+                last_kind = kind
+            spans[-1] = (last_offset, max(last_end, end), last_kind)
+        else:
+            spans.append((offset, end, kind))
+    return spans
+
+
 def _redact(text: str, findings: list[dict]) -> str:
-    """Apply findings to text in reverse offset order.
+    """Reconstruct the redacted text, mirroring Rust's `ScanResult::redact`.
 
     `offset` and `end` are **byte** positions in the UTF-8 encoding of *text* —
     that is the unit the reference scanner emits and the unit the vector schema
@@ -209,29 +300,44 @@ def _redact(text: str, findings: list[dict]) -> str:
     decoded back once at the end; slicing the `str` would index code points and
     land the redaction in the wrong place for any non-ASCII input.
 
-    A span that is out of range, inverted, or not aligned to a character
-    boundary is skipped rather than spliced, so this never emits invalid UTF-8.
+    Findings are coalesced into non-overlapping spans first (see
+    `_coalesce_findings`), then spliced in reverse offset order so the earlier
+    spans' byte positions stay valid across each replacement.
 
-    That skip is where this **diverges from** Rust's `ScanResult::redact`, which
-    fails closed on exactly those spans and returns `"[REDACTED]"` for the whole
-    text (aa-security/src/scanner.rs:447-458). Rust also coalesces overlapping
-    findings before splicing; this does not. Both gaps are AAASM-5373 — until
-    they close, do not describe this function as mirroring the Rust one.
+    **Fails closed.** A span that is out of range, inverted, or not aligned to a
+    character boundary cannot be spliced, but it still marks a region the
+    scanner flagged as a secret. Returning the rest of the text would hand back
+    that region in the clear, so the whole value collapses to `"[REDACTED]"`
+    instead — byte for byte what `ScanResult::redact` does
+    (aa-security/src/scanner.rs:443-461, "never return the raw text with a
+    secret intact"), and what ADR 0015 requires of a DLP trust boundary.
+
+    Rust evaluates its bounds and char-boundary checks against the buffer as it
+    is being spliced; this validates every span against the original buffer
+    up front. The two agree because coalescing leaves the spans disjoint, so no
+    splice can move a byte that a later check looks at, and because the only
+    two outcomes are "every span spliced" and "`[REDACTED]`" — which of several
+    invalid spans is noticed first cannot change the answer.
+
+    One condition here has no Rust counterpart rather than mirroring one:
+    `offset < 0`. Rust offsets are `usize` and cannot be negative, so
+    `ScanResult::redact` has no such branch; Python would read a negative index
+    as counting from the end and splice into the middle of the text. It is
+    treated as unspliceable for the same reason as the rest. So "byte for byte
+    what `ScanResult::redact` does" holds for every span Rust can express, and
+    this is strictly stronger on the one it cannot.
     """
-    # Each finding must have "kind", "offset", and "end" (byte end of match).
-    # If "end" is absent, the runner cannot redact — skip silently.
-    sorted_findings = sorted(findings, key=lambda f: f.get("offset", 0), reverse=True)
-    result = text.encode("utf-8")
-    for finding in sorted_findings:
-        offset = finding.get("offset")
-        end = finding.get("end")
-        kind = finding.get("kind", "UNKNOWN")
-        if offset is None or end is None:
-            continue
-        if offset < 0 or end > len(result) or offset > end:
-            continue
-        if not _is_utf8_boundary(result, offset) or not _is_utf8_boundary(result, end):
-            continue
+    buf = text.encode("utf-8")
+    spans = _coalesce_findings(findings)
+    if spans is None:
+        return "[REDACTED]"
+    for offset, end, _kind in spans:
+        if offset < 0 or end > len(buf) or offset > end:
+            return "[REDACTED]"
+        if not _is_utf8_boundary(buf, offset) or not _is_utf8_boundary(buf, end):
+            return "[REDACTED]"
+    result = buf
+    for offset, end, kind in reversed(spans):
         placeholder = f"[REDACTED:{kind}]".encode("utf-8")
         result = result[:offset] + placeholder + result[end:]
     return result.decode("utf-8")
