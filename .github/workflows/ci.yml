@@ -481,7 +481,22 @@ jobs:
           # in-test command builders honour AASM_BIN_PATH; absent it they
           # fall back to cargo run for local dev.
           AASM_BIN_PATH: ${{ github.workspace }}/target/debug/aasm
-        run: cargo nextest run --workspace --no-tests=pass --exclude aa-ebpf
+        # AAASM-5334: `--no-fail-fast` so a red run reports EVERY failing test,
+        # not just the ones that happened to be dispatched before nextest
+        # cancelled. Without it the reported blast radius is arbitrary and
+        # misleadingly small: run 30689213155 (main, 2026-08-01) cancelled after
+        # `1681/6267 tests run` — 73% of the suite, including every integration
+        # binary, never executed, so the job reported 1 failure out of an unknown
+        # true total. A reviewer reasonably reads that as "localised" and it may
+        # not be.
+        #
+        # The runner-minute cost is small and bounded, because fail-fast cannot
+        # skip the expensive part. nextest compiles all 328 test binaries before
+        # running any test; on that run compilation was ~8m30s of the 8m43s step.
+        # Only the test phase is truncated, and a complete test phase is 191.7s
+        # (run 30686659787) against 13.2s truncated — so the worst case is ~3
+        # extra minutes, paid only on runs that are already failing.
+        run: cargo nextest run --workspace --no-tests=pass --exclude aa-ebpf --no-fail-fast
 
   coverage:
     name: Coverage
