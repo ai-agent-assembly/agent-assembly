@@ -9,10 +9,11 @@ import { ApprovalsBellButton } from '../features/approvals/ApprovalsBellButton'
 import { CANONICAL_ROUTES, ROUTE_GROUPS, type RouteGroup } from '../routes'
 import { useAgentsQuery } from '../features/agents/api'
 import { usePoliciesQuery } from '../features/policies/api'
+import { inactivePolicyBadgeFromQuery } from '../features/policies/policyBadge'
 import { useAlertsQuery } from '../features/alerts/api'
 import { criticalFiringBadge } from '../features/alerts/alertBadge'
 import { DEFAULT_ALERT_FILTERS } from '../features/alerts/types'
-import { certainFromQuery, isKnown, mapCertain, type Certain } from '../lib/truthfulness'
+import { certainFromQuery, isKnown, type Certain } from '../lib/truthfulness'
 import { AbsenceMarker } from './truthfulness'
 import { TraceDrawerProvider } from './trace/TraceDrawerProvider'
 import { TraceDrawer } from './trace/TraceDrawer'
@@ -208,27 +209,15 @@ export function AppShell() {
   // query *outcome* is carried through instead, so an outage stays an outage
   // all the way to the DOM.
   const criticalAlerts = criticalFiringBadge(certainFromQuery(alerts))
-  // AAASM-5186. The sibling of the defect above, left in place by 5149's scope
-  // discipline and flagged in code at the time: `policies.data ?? []` turned a
-  // failed or in-flight policies request into an empty list, counted it to
-  // zero, and rendered the zero as an unadorned rail item — a calm, measured
-  // Policy entry indistinguishable from "policy is fine". Carrying the query
-  // outcome means an outage reaches the DOM as an outage.
-  //
-  // Known caveat, deliberately NOT papered over here — tracked as AAASM-5196:
-  // for the admin callers who *can* reach this endpoint, the count is
-  // structurally always 0, because `usePoliciesQuery` sends no
-  // `include_archived` and `aa-api`'s `list_policies` then returns only the
-  // most-recent version, with `active: true`. (For everyone else the request
-  // is never made at all — see `canListPolicies` above.) Making the number
-  // mean something needs a product decision about what the Policy badge should
-  // count — the hi-fi rail has a hardcoded `badge: '1'` with no semantics, and
-  // "superseded versions" would only grow forever. That is a separate defect
-  // from this ticket's fail-open, and is reported rather than silently
-  // redefined.
-  const inactivePolicies = mapCertain(certainFromQuery(policies), (list) =>
-    list.filter((p) => !p.active).length,
-  )
+  // AAASM-5186 carried the fail-open (`policies.data ?? []`) out of this file;
+  // AAASM-5369 moved the fold itself into `features/policies/policyBadge.ts`.
+  // Both the reasoning and the AAASM-5196 caveat live there now, next to the
+  // decoder — the fold is not inline here because inline is precisely how it
+  // became the one expression in this component that could throw. A `.filter`
+  // on a schema-invalid `200` escaped the `ErrorBoundary` below, which wraps
+  // `<Outlet />` and not the chrome that computes this, and took the whole
+  // application down on every route.
+  const inactivePolicies = inactivePolicyBadgeFromQuery(policies)
 
   const badgeFor = (routeId: string): Certain<number> | null => {
     if (routeId === 'alerts') return suppressKnownZero(criticalAlerts)
