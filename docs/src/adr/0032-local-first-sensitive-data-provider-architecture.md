@@ -118,7 +118,7 @@ need no per-locale rewrite and `CredentialKind::ALL` stays stable.
 | | Fast path | Deep path |
 |---|---|---|
 | When | every inspected action | large payloads, high-risk destinations, escalation |
-| Where | in-process | in-process or (PENDING D-1) out-of-process |
+| Where | in-process | **in-process only in v1** (D-1); out-of-process deferred post-v1 |
 | Timing | synchronous, pre-action | asynchronous |
 | Authority | decides | advises; may trigger follow-up action |
 | Budget | must not regress today's cost | bounded, cancellable |
@@ -154,6 +154,11 @@ by status code; both map to `provider_error`, not to a clean result.
 
 ### 6. Local-only, egress-denied, and never a silent host modification
 
+> **Deferred post-v1 (D-1).** No out-of-process provider exists in v1, so this
+> section binds nothing that v1 ships. It is retained as the specification a
+> future provider ADR starts from. The raw-content and no-SaaS rules in its
+> first paragraph are *not* deferred — they hold unconditionally.
+
 Providers run locally or on an operator-controlled private network. Raw content
 never goes to a third-party SaaS service. Provider workloads are egress
 deny-by-default.
@@ -170,6 +175,9 @@ forbidden design #7, and independently supported by the measurement that UDS is
 roughly 4–5× faster than loopback TCP for small payloads.
 
 ### 7. Deployment placement is chosen by resident memory and latency need
+
+> **Deferred post-v1 (D-1).** v1 has nothing to place. Retained as analysis for
+> the follow-up ADR.
 
 Use a **same-Pod sidecar** only when the provider's resident memory multiplied by
 the replica count is acceptable *and* per-request latency is genuinely critical.
