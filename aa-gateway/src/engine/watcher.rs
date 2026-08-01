@@ -218,6 +218,14 @@ mod tests {
     /// easily see 8/8 clean with one write; at a 6.25% miss rate that happens
     /// 60% of the time, which is why the sample size matters here.)
     ///
+    /// The limit of what this proves, stated so nobody over-reads it: because
+    /// the stimulus repeats, a *lossy* watcher still passes. A mutant dropping
+    /// 49 of every 50 notifications is not caught — it merely takes ~24 s. The
+    /// test therefore proves hot-reload works, not that it works promptly, and
+    /// it cannot distinguish a healthy watcher from a badly degraded one. That
+    /// is the deliberate cost of tolerating a platform which loses ~6% of
+    /// notifications on its own; a test that failed on loss would flake.
+    ///
     /// This does not weaken the property under test. The caller still asserts
     /// what landed in the slot; only "how promptly the OS reported the write"
     /// stops being part of the assertion.
