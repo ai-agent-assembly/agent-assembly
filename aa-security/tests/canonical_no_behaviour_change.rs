@@ -145,7 +145,7 @@ fn every_scanner_finding_is_recoverable_from_its_canonical_form() {
     for (name, text) in CORPUS {
         let result: ScanResult = scanner.scan(text);
         for finding in &result.findings {
-            let canonical = CanonicalFinding::from(finding);
+            let canonical = CanonicalFinding::try_from(finding).expect("every scanner finding has a well-formed span");
 
             assert_eq!(
                 canonical.category.to_credential_kind().as_ref(),

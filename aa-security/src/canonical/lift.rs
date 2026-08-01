@@ -83,20 +83,70 @@ impl Severity {
     }
 }
 
-impl From<&CredentialFinding> for CanonicalFinding {
+/// Why a [`CredentialFinding`] could not be lifted into a [`CanonicalFinding`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LiftError {
+    /// The finding's byte span is empty or inverted, so it does not describe a
+    /// region that could have been matched.
+    MalformedSpan {
+        /// The finding's start offset.
+        offset: usize,
+        /// The finding's end offset.
+        end: usize,
+    },
+}
+
+impl core::fmt::Display for LiftError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MalformedSpan { offset, end } => {
+                write!(f, "finding span {offset}..{end} is empty or inverted")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LiftError {}
+
+impl TryFrom<&CredentialFinding> for CanonicalFinding {
+    type Error = LiftError;
+
     /// Describe a scanner finding in canonical terms.
     ///
-    /// Total: every [`CredentialFinding`] has a canonical form, because the
-    /// category mapping is exhaustive over `CredentialKind`. Lossless in the
-    /// direction that matters — the kind is recoverable from the category, so
-    /// the original redaction label can always be reconstructed.
-    fn from(finding: &CredentialFinding) -> Self {
+    /// Every [`CredentialKind`] has a canonical category — that half is
+    /// exhaustive — but the conversion as a whole is **fallible on purpose**,
+    /// and the reason is not hypothetical.
+    ///
+    /// [`CredentialFinding`] derives `Deserialize` under the `serde` feature
+    /// with `end` marked `#[serde(skip)]`, so a finding reconstructed from JSON
+    /// arrives with `end == 0` regardless of its offset. That is a real path: it
+    /// is one `serde_json::from_str` away in any crate that enables the same
+    /// feature B-9's event layer needs for `Serialize`. An infallible `From`
+    /// would turn such a value into a canonical finding carrying an inverted
+    /// span, silently, while attributing it to the built-in scanner.
+    ///
+    /// So the span is checked rather than trusted. A finding covers at least one
+    /// byte — every detector matches a non-empty literal, digit run, PEM header
+    /// or token — and anything else is refused rather than repaired, because a
+    /// span that cannot be believed must not become a finding that looks
+    /// believable (ADR 0032 §5: never silently degrade).
+    ///
+    /// This is a **well-formedness** check, not a provenance one. It cannot tell
+    /// a scanner-produced finding from a well-formed forgery, and nothing in
+    /// this crate can — see [`Provenance`] for what identity does and does not
+    /// guarantee.
+    fn try_from(finding: &CredentialFinding) -> Result<Self, Self::Error> {
+        let (offset, end) = (finding.offset, finding.end());
+        if end <= offset {
+            return Err(LiftError::MalformedSpan { offset, end });
+        }
         let confidence = ConfidenceBand::for_credential_kind(&finding.kind);
-        Self {
+        Ok(Self {
             category: CanonicalCategory::from_credential_kind(&finding.kind),
             severity: Severity::for_credential_kind(&finding.kind),
             confidence,
-            span: ByteSpan::new(finding.offset, finding.end()),
+            span: ByteSpan::new(offset, end),
             method: DetectionMethod::for_credential_kind(&finding.kind),
             provenance: SCANNER_PROVENANCE,
             // A detection the recognizer cannot be wrong about is `Confirmed`;
@@ -107,6 +157,6 @@ impl From<&CredentialFinding> for CanonicalFinding {
                 ConfidenceBand::High => FindingStatus::Confirmed,
                 ConfidenceBand::Medium | ConfidenceBand::Low => FindingStatus::Suspected,
             },
-        }
+        })
     }
 }
