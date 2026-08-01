@@ -2,16 +2,40 @@
 
 **Subtask:** AAASM-1112 — Verify F74: Claude Code adapter acceptance criteria
 **Parent Story:** AAASM-201 — F74: Claude Code adapter — managed settings, MCP governance, wrapper integration
-**Branch:** `v0.0.1/AAASM-1112/test/verification_evidence`
-**Date:** 2026-07-31
 
 This report walks every acceptance-criterion bullet of the parent Story, records
 the exact commands run and their full result summaries, names every skipped or
 not-measured scenario with its reason, and gives a per-AC verdict.
 
+## Runs recorded in this document
+
+| # | Date | Commit | Outcome |
+|---|---|---|---|
+| 1 | 2026-07-31 | `2e543884` | **AC4 FAILED.** 4 of 5 AC satisfied. §1–§8 below. |
+| 2 | 2026-08-01 | `14de683b` | **All 5 AC satisfied.** Re-derived from scratch on merged `main`. [§9](#9-re-verification-2026-08-01--merged-main-14de683b). |
+
+> **Current verdict — run 2, 2026-08-01: AAASM-1112 can be signed off and
+> AAASM-201 can be closed.** See [§9.9 Sign-off](#99-sign-off-re-derived).
+>
+> **Run 1's AC4 failure was correct when written and is retained in full.** Every
+> section from §1 to §8 records the state of the tree at `2e543884` and has *not*
+> been edited to match the current outcome — a verification report that rewrites
+> its own history is worthless. Run 2 is an independent re-derivation, not an
+> amendment: no verdict was carried forward, and every command was re-executed.
+
+---
+
+# Run 1 — 2026-07-31, commit `2e543884` (superseded, retained verbatim)
+
+**Branch:** `v0.0.1/AAASM-1112/test/verification_evidence`
+**Date:** 2026-07-31
+
 > **Verdict up front: AAASM-1112 CANNOT be signed off, and AAASM-201 must not be
 > closed.** AC4 fails verification. See [Findings](#findings) and
 > [Sign-off](#sign-off).
+>
+> *(Retained as written on 2026-07-31. Superseded by [§9](#9-re-verification-2026-08-01--merged-main-14de683b);
+> every defect named below has since been fixed and merged.)*
 
 ---
 
