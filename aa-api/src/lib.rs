@@ -18,6 +18,7 @@ pub mod models;
 pub mod native_auth;
 pub mod openapi;
 pub mod pagination;
+pub mod reconcile;
 pub mod replay;
 pub mod routes;
 pub mod server;

@@ -1081,6 +1081,33 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Return the registry keys of every agent whose time-limited shadow
+    /// (Observe) enforcement window has expired at `now` (AAASM-5339).
+    ///
+    /// An agent qualifies when its `enforcement_mode` is `Some(Observe)` **and**
+    /// its `enforcement_mode_expires_at` is `Some(t)` with `t <= now`. The
+    /// boundary is inclusive — a window whose deadline is exactly `now` is
+    /// treated as expired, matching the silence-expiry watcher's convention.
+    ///
+    /// This is the read-only query the shadow-expiry reconciler ticks against;
+    /// it never mutates state. The reconciler reverts each returned agent to
+    /// `Enforce` via [`set_enforcement_mode_persisted`](Self::set_enforcement_mode_persisted)
+    /// so the durable row is cleaned too. Because the query keys off the
+    /// persisted `enforcement_mode` / `enforcement_mode_expires_at` fields, an
+    /// already-expired window rehydrated on restart (Observe + past deadline) is
+    /// caught on the reconciler's first tick.
+    pub fn agents_with_expired_shadow(&self, now: DateTime<Utc>) -> Vec<[u8; 16]> {
+        self.agents
+            .iter()
+            .filter(|entry| {
+                let record = entry.value();
+                record.enforcement_mode == Some(aa_core::EnforcementMode::Observe)
+                    && record.enforcement_mode_expires_at.is_some_and(|t| t <= now)
+            })
+            .map(|entry| *entry.key())
+            .collect()
+    }
+
     /// Suspend an agent and recursively suspend all its descendants.
     ///
     /// The root agent is suspended with `reason`. Each descendant receives
