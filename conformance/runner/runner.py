@@ -25,7 +25,10 @@ a scan() function with this signature:
         ...
         # Returns a list of findings, each a dict with keys:
         #   "kind"   (str)  — matches CredentialKind.as_str() in aa-core
-        #   "offset" (int)  — byte offset of the finding in `text`
+        #   "offset" (int)  — start of the finding, as a byte offset into the
+        #                     UTF-8 encoding of `text` (not a str index)
+        #   "end"    (int)  — end of the match, same unit. Required: a finding
+        #                     without it cannot be redacted and is skipped.
 
 If AA_SDK_MODULE is unset the runner uses a no-op stub that always returns []
 and prints a warning — all vectors with expected_findings will fail.
@@ -157,7 +160,8 @@ def run(vectors_dir: Path, verbose: bool) -> bool:
             continue
 
         # Redact check: reconstruct the redacted string from findings.
-        # This mirrors the Rust ScanResult::redact() logic.
+        # Approximates Rust's ScanResult::redact() — see _redact for the two
+        # ways it still diverges (no coalescing, fails open).
         redacted = _redact(input_text, actual_findings)
         if redacted != expected_redacted:
             failed += 1
@@ -188,23 +192,49 @@ def run(vectors_dir: Path, verbose: bool) -> bool:
     return failed == 0
 
 
+def _is_utf8_boundary(buf: bytes, index: int) -> bool:
+    """True if *index* is the start of a character in *buf* (Rust `is_char_boundary`)."""
+    if index in (0, len(buf)):
+        return True
+    # UTF-8 continuation bytes are 0b10xxxxxx; any other byte starts a character.
+    return buf[index] & 0xC0 != 0x80
+
+
 def _redact(text: str, findings: list[dict]) -> str:
-    """Apply findings to text in reverse offset order (mirrors Rust ScanResult::redact)."""
+    """Apply findings to text in reverse offset order.
+
+    `offset` and `end` are **byte** positions in the UTF-8 encoding of *text* —
+    that is the unit the reference scanner emits and the unit the vector schema
+    documents. Splicing therefore happens on the encoded `bytes`, which is
+    decoded back once at the end; slicing the `str` would index code points and
+    land the redaction in the wrong place for any non-ASCII input.
+
+    A span that is out of range, inverted, or not aligned to a character
+    boundary is skipped rather than spliced, so this never emits invalid UTF-8.
+
+    That skip is where this **diverges from** Rust's `ScanResult::redact`, which
+    fails closed on exactly those spans and returns `"[REDACTED]"` for the whole
+    text (aa-security/src/scanner.rs:447-458). Rust also coalesces overlapping
+    findings before splicing; this does not. Both gaps are AAASM-5373 — until
+    they close, do not describe this function as mirroring the Rust one.
+    """
     # Each finding must have "kind", "offset", and "end" (byte end of match).
     # If "end" is absent, the runner cannot redact — skip silently.
     sorted_findings = sorted(findings, key=lambda f: f.get("offset", 0), reverse=True)
-    result = text
+    result = text.encode("utf-8")
     for finding in sorted_findings:
         offset = finding.get("offset")
         end = finding.get("end")
         kind = finding.get("kind", "UNKNOWN")
         if offset is None or end is None:
             continue
-        if end > len(result) or offset > end:
+        if offset < 0 or end > len(result) or offset > end:
             continue
-        placeholder = f"[REDACTED:{kind}]"
+        if not _is_utf8_boundary(result, offset) or not _is_utf8_boundary(result, end):
+            continue
+        placeholder = f"[REDACTED:{kind}]".encode("utf-8")
         result = result[:offset] + placeholder + result[end:]
-    return result
+    return result.decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
