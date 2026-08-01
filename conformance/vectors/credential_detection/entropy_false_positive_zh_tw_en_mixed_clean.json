@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5344: clean mixed zh-TW / English agent traffic — no findings. This is the shape real payloads take: ASCII identifiers and log keywords interleaved with space-less Chinese. The Chinese request clause is 51 bytes at 4.80 bits/byte — inside the window and over the gate — while every ASCII run in the line stays short and low-entropy, so the whole line must scan clean and only does so if each token is scored per ASCII run rather than whole.",
+  "input_text": "[info] agent planner 已註冊到團隊 platform。 使用者要求：請查詢上週的部署紀錄。 gateway 回應 allow，耗時 12 毫秒。",
+  "expected_findings": [],
+  "expected_redacted": "[info] agent planner 已註冊到團隊 platform。 使用者要求：請查詢上週的部署紀錄。 gateway 回應 allow，耗時 12 毫秒。"
+}
