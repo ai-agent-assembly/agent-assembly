@@ -2649,6 +2649,27 @@ mod tests {
         }
     }
 
+    /// Detection-strength guard for PEM private keys, whose span is assembled
+    /// from a literal header plus an entropy-caught body (ADR 0015 §2/§5.1) —
+    /// the one detector that depends on the edited pass for part of its answer,
+    /// so it needs asserting on both halves rather than on the header alone.
+    #[test]
+    fn ascii_private_key_block_is_still_detected() {
+        let scanner = CredentialScanner::new();
+        let body = "MIIEpAIBAAKCAQEAx7Vq2mNfP9sKdL3wQzR8tYuI0oP1aScDeFgHjKlMnBvCxZ";
+        let text = format!("-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----");
+        let result = scanner.scan(&text);
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::RsaPrivateKey),
+            "PEM private key header must still be flagged: {:?}",
+            result.findings
+        );
+        assert!(
+            !result.redact(&text).contains(body),
+            "key material must not survive redact()"
+        );
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
