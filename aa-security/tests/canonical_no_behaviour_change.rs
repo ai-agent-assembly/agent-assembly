@@ -29,6 +29,15 @@ use aa_security::{CredentialScanner, ScanResult};
 /// A corpus spanning every detector family the built-in scanner has, plus the
 /// two payload shapes that have historically broken it: mixed `zh-TW`/English
 /// text (AAASM-5344) and text with no secret in it at all.
+///
+/// The Slack samples are short (`xoxb-AbCdEf`, the shape the conformance
+/// vectors use) because GitHub push protection classifies a realistic-length
+/// `xox*` literal as a live Slack API token and refuses the push. That is not
+/// free: a full-length Slack token also trips `GenericHighEntropy`'s 20–64
+/// character window, so this corpus no longer exercises the Slack-versus-entropy
+/// overlap and the priority rule that resolves it. That path is still covered by
+/// the full-length samples in `scanner.rs`'s own tests, and by the anthropic,
+/// openai and github entries below, which do produce overlapping findings.
 const CORPUS: &[(&str, &str)] = &[
     ("anthropic", "auth header: sk-ant-api03-Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OTA gets sent"),
     ("openai", "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz012345\nexport it"),
