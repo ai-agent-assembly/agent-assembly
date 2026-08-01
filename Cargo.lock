@@ -565,6 +565,7 @@ dependencies = [
 name = "aa-security"
 version = "0.0.1-rc.6"
 dependencies = [
+ "aa-security",
  "aho-corasick",
  "criterion",
  "serde",
