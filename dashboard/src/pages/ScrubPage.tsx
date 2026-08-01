@@ -44,6 +44,21 @@
  * coverage, the governing policy document, and whether the scanner is switched
  * on at runtime. See `features/scrub/posture.ts` for each reason.
  *
+ * ## What an unreadable answer costs (AAASM-5366)
+ *
+ * A `200` whose body does not match its schema used to be read as if it did, so
+ * the first field access threw and the page unmounted — a white screen on the
+ * DLP surface, which tells an operator strictly less than an error state does.
+ * Each response is now decoded before anything reads it (`features/scrub/
+ * schema.ts`), and an unreadable body degrades to the same explicit absence an
+ * empty one gets, carrying the field that was wrong.
+ *
+ * It also degrades *locally*. An unreadable catalogue costs the catalogue, the
+ * detail panel and the payload diff — the three things it feeds — and nothing
+ * else: the header and the stat strip keep reporting what the other three routes
+ * measured. One route answering badly must not take the measurements of the
+ * other three off the screen with it.
+ *
  * ## Two rules this page must not break
  *
  *  - **Alerts are not findings.** `pattern-counts` tallies one alert per
@@ -60,7 +75,7 @@
  * audited, is otherwise unchanged: same header, same stat strip, same
  * catalogue / detail / diff layout.
  */
-import { useContext, useMemo, useState } from 'react'
+import { useContext, useMemo, useState, type ReactNode } from 'react'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingState } from '../components/LoadingState'
 import { ToastContext } from '../components/ToastContext'
@@ -145,31 +160,76 @@ export function ScrubPage() {
     )
   }
 
-  if (!isKnown(catalogue)) {
-    // A failed request gets the retry affordance; a 200 that carried no
-    // detectors gets the absence marker and its reason, because "we could not
-    // fetch the catalogue" and "the catalogue we fetched was impossible" are
-    // different problems and only one of them is worth retrying.
-    return (
-      <main className="scrub-page" data-testid="scrub-page">
-        {catalogue.state === 'unavailable' ? (
-          <ErrorState kind="generic" onRetry={() => ignorePromise(patternsQuery.refetch())} />
-        ) : (
-          <div className="scrub-catalogue-absent" data-testid="scrub-catalogue-absent">
-            <AbsenceMarker
-              state={catalogue.state}
-              detail={catalogue.detail}
-              showLabel
-              testId="scrub-catalogue-absent-marker"
-            />
-          </div>
-        )}
-      </main>
+  // How many detectors the gateway reports, stated in two places. Derived from
+  // the catalogue rather than counted at the render site so an absent catalogue
+  // reaches both of them as an absence instead of as a `0` (AAASM-5366): a page
+  // that cannot list the detectors does not thereby know there are none.
+  const detectorCount = mapCertain(catalogue, (rows) => rows.length)
+
+  // The catalogue drives the library, the detail panel and the payload diff, so
+  // an absent one replaces all three — but only those three. Everything above
+  // comes from the other routes and still renders, because losing the whole page
+  // to one unreadable response is what AAASM-5366 was filed about: a blank page
+  // tells an operator less than a strip of measured figures beside a stated
+  // reason does.
+  let body: ReactNode
+  if (isKnown(catalogue)) {
+    const entries = toCatalogue(catalogue.value)
+    const selected = entries.find((e) => e.kind === selectedKind) ?? entries[0]
+    body = (
+      <div className="scrub-body">
+        <PatternsLibrary
+          entries={entries}
+          alerts={alerts}
+          alertWindow={alertWindow}
+          selectedKind={selected.kind}
+          onSelect={setSelectedKind}
+          matchCounts={matchCounts}
+        />
+
+        <div className="scrub-right">
+          <PatternDetail
+            entry={selected}
+            alerts={alertsForKind(alerts, selected.kind)}
+            alertWindow={alertWindow}
+            collapsed={detailCollapsed}
+            onToggleCollapsed={() => setDetailCollapsed((c) => !c)}
+            onEditPatterns={() =>
+              toast?.(
+                'Add patterns through a policy document’s data.sensitive_patterns; the built-in set is read-only',
+                'info',
+              )
+            }
+          />
+          <PayloadDiff
+            payload={payload}
+            onPayloadChange={setPayload}
+            tokens={tokens}
+            detectors={BUILT_IN_DETECTORS}
+            matchCounts={matchCounts}
+          />
+        </div>
+      </div>
+    )
+  } else if (catalogue.state === 'unavailable') {
+    // A failed request gets the retry affordance; a 200 we could not read, and a
+    // 200 that carried no detectors, get the absence marker and its reason —
+    // "we could not fetch the catalogue", "the catalogue we fetched was
+    // impossible" and "the catalogue we fetched was unreadable" are different
+    // problems, and only the first is worth retrying.
+    body = <ErrorState kind="generic" onRetry={() => ignorePromise(patternsQuery.refetch())} />
+  } else {
+    body = (
+      <div className="scrub-catalogue-absent" data-testid="scrub-catalogue-absent">
+        <AbsenceMarker
+          state={catalogue.state}
+          detail={catalogue.detail}
+          showLabel
+          testId="scrub-catalogue-absent-marker"
+        />
+      </div>
     )
   }
-
-  const entries = toCatalogue(catalogue.value)
-  const selected = entries.find((e) => e.kind === selectedKind) ?? entries[0]
 
   return (
     <main className="scrub-page" data-testid="scrub-page">
@@ -181,7 +241,8 @@ export function ScrubPage() {
           </h1>
           <p className="scrub-page-sub" data-testid="scrub-page-sub">
             Patterns redact secrets and PII from agent traffic <em>before</em> it
-            reaches external endpoints. The gateway reports {entries.length}{' '}
+            reaches external endpoints. The gateway reports{' '}
+            <TruthfulValue value={detectorCount} testId="scrub-page-sub-detectors" />{' '}
             built-in detectors; it does not report which of them are running.
           </p>
         </div>
@@ -264,7 +325,8 @@ export function ScrubPage() {
         </span>
         <span className="scrub-stats-divider" />
         <span data-testid="scrub-stats-detectors">
-          {entries.length} detectors served · running:{' '}
+          <TruthfulValue value={detectorCount} testId="scrub-stats-detectors-value" />{' '}
+          detectors served · running:{' '}
           <TruthfulValue
             value={SCRUBBING_RUNTIME_STATE}
             showLabel
@@ -282,39 +344,7 @@ export function ScrubPage() {
         </span>
       </div>
 
-      <div className="scrub-body">
-        <PatternsLibrary
-          entries={entries}
-          alerts={alerts}
-          alertWindow={alertWindow}
-          selectedKind={selected.kind}
-          onSelect={setSelectedKind}
-          matchCounts={matchCounts}
-        />
-
-        <div className="scrub-right">
-          <PatternDetail
-            entry={selected}
-            alerts={alertsForKind(alerts, selected.kind)}
-            alertWindow={alertWindow}
-            collapsed={detailCollapsed}
-            onToggleCollapsed={() => setDetailCollapsed((c) => !c)}
-            onEditPatterns={() =>
-              toast?.(
-                'Add patterns through a policy document’s data.sensitive_patterns; the built-in set is read-only',
-                'info',
-              )
-            }
-          />
-          <PayloadDiff
-            payload={payload}
-            onPayloadChange={setPayload}
-            tokens={tokens}
-            detectors={BUILT_IN_DETECTORS}
-            matchCounts={matchCounts}
-          />
-        </div>
-      </div>
+      {body}
     </main>
   )
 }

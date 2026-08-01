@@ -70,6 +70,27 @@ describe('scrubbed24hFromQuery', () => {
     if (!isKnown(value)) expect(value.state).toBe('unknown')
   })
 
+  it('refuses a 200 that is not an array of rows at all', () => {
+    // The sibling of the AAASM-5366 catalogue crash: `rows.value.length` on a
+    // body that is not an array. The page must say it does not know, not lose
+    // itself reading a field off the wrong shape.
+    const value = scrubbed24hFromQuery({ data: {}, error: null })
+    expect(isKnown(value)).toBe(false)
+    if (!isKnown(value)) {
+      expect(value.state).toBe('unknown')
+      expect(value.detail).toContain('enforcement window')
+    }
+  })
+
+  it('refuses a row with no scrubbed count rather than summing to NaN', () => {
+    // `reduce` over such a row produces `NaN`, which renders beside
+    // "redactions / 24h" as a figure nothing measured — the AAASM-5112 defect
+    // arriving through a malformed response instead of through a literal.
+    const value = scrubbed24hFromQuery({ data: [{ agent_id: 'a1', blocked: 1 }], error: null })
+    expect(isKnown(value)).toBe(false)
+    if (!isKnown(value)) expect(value.detail).toContain('scrubbed')
+  })
+
   it('does not treat a healthy result’s error: null as a failure', () => {
     const value = scrubbed24hFromQuery({ isPending: false, error: null, data: [row('a1', 5)] })
     expect(isKnown(value)).toBe(true)

@@ -167,6 +167,104 @@ describe('ScrubPage — the four states', () => {
     expect(screen.queryByTestId('error-state-generic')).toBeNull()
   })
 
+  it('renders an absence — not a white screen — for a 200 with no patterns key', async () => {
+    // AAASM-5366. This body threw `Cannot read properties of undefined
+    // (reading 'length')` inside the catalogue fold, the error reached AppShell
+    // and the page unmounted. `render` re-throws, so if the guard is removed
+    // this test fails on the throw rather than on an assertion.
+    routeGet({ '/api/v1/scrub/patterns': { data: {}, error: undefined } })
+    renderPage()
+    const marker = await screen.findByTestId('scrub-catalogue-absent-marker')
+    expect(marker).toHaveAttribute('data-truth-state', 'unknown')
+    // With a reason naming the field, not a bare dash: an operator who is told
+    // only "unknown" has no next step.
+    expect(marker).toHaveTextContent('patterns')
+    expect(screen.getByTestId('scrub-page')).toBeInTheDocument()
+  })
+
+  it('renders an absence for a 200 whose pattern row is malformed', async () => {
+    routeGet({
+      '/api/v1/scrub/patterns': {
+        data: { patterns: [{ kind: 'AwsAccessKey' }], total: 1 },
+        error: undefined,
+      },
+    })
+    renderPage()
+    const marker = await screen.findByTestId('scrub-catalogue-absent-marker')
+    expect(marker).toHaveAttribute('data-truth-state', 'unknown')
+    expect(marker).toHaveTextContent('patterns.0')
+  })
+
+  it('keeps the measured strip on screen when the catalogue is unreadable', async () => {
+    // One route answering badly must not take the other three off the screen:
+    // the redaction count still has a source, and a blank page would withhold
+    // it for no reason.
+    routeGet({
+      '/api/v1/scrub/patterns': { data: {}, error: undefined },
+      '/api/v1/analytics/agent-enforcement': {
+        data: [{ agent_id: 'a1', blocked: 0, scrubbed: 6 }],
+        error: undefined,
+      },
+    })
+    renderPage()
+    await screen.findByTestId('scrub-catalogue-absent-marker')
+    await waitFor(() =>
+      expect(screen.getByTestId('scrub-stats-stripped-value')).toHaveTextContent('6'),
+    )
+    expect(document.querySelectorAll('[aria-live]')).toHaveLength(1)
+  })
+
+  it('states the detector count as an absence, never as zero, when unreadable', async () => {
+    // The count is stated twice. Neither may become `0`: a page that cannot
+    // read the catalogue does not thereby know the gateway ships no detectors.
+    routeGet({ '/api/v1/scrub/patterns': { data: {}, error: undefined } })
+    renderPage()
+    await screen.findByTestId('scrub-catalogue-absent-marker')
+    for (const testId of ['scrub-stats-detectors-value', 'scrub-page-sub-detectors']) {
+      const el = screen.getByTestId(testId)
+      expect(el).toHaveAttribute('data-truth-state', 'unknown')
+      expect(el).toHaveTextContent('—')
+    }
+    expect(screen.getByTestId('scrub-stats-detectors')).not.toHaveTextContent('0 detectors')
+    expect(screen.getByTestId('scrub-page-sub')).not.toHaveTextContent('0 built-in')
+  })
+
+  it('keeps the catalogue when a different route answers with garbage', async () => {
+    // The mirror of the above: the two aggregations are unreadable, and the
+    // detector table — which has nothing to do with them — still renders.
+    routeGet({
+      '/api/v1/scrub/pattern-counts': { data: {}, error: undefined },
+      '/api/v1/scrub/posture': { data: 'nope', error: undefined },
+    })
+    await renderLoaded()
+    expect(screen.getByTestId('scrub-patterns-row-AwsAccessKey')).toBeInTheDocument()
+    expect(screen.getByTestId('scrub-stats-intercepted-value')).toHaveAttribute(
+      'data-truth-state',
+      'unknown',
+    )
+    expect(screen.getByTestId('scrub-patterns-hits-AwsAccessKey')).toHaveAttribute(
+      'data-truth-state',
+      'unknown',
+    )
+  })
+
+  it('announces the reason, never an unmeasured all-clear, when a route is unreadable', async () => {
+    // AAASM-5112's rule holds in the degraded state too: the live region may
+    // announce a measurement or the reason there is none, and nothing else.
+    routeGet({
+      '/api/v1/scrub/posture': { data: {}, error: undefined },
+      '/api/v1/analytics/agent-enforcement': { data: {}, error: undefined },
+    })
+    await renderLoaded()
+    const announced = liveRegion().textContent ?? ''
+    expect(announced).toContain('could not be determined')
+    expect(announced).not.toMatch(/\b(safe|healthy|verified|clean|secure|all clear)\b/i)
+    expect(announced).not.toMatch(/\b0\b/)
+    for (const fabrication of FABRICATIONS) {
+      expect(announced).not.toContain(fabrication)
+    }
+  })
+
   it('renders the catalogue, and empty windows as absences, on an idle install', async () => {
     await renderLoaded()
     // The catalogue is populated even though both windows are empty: the routes

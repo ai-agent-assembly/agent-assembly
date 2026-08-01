@@ -10,6 +10,7 @@
  * `0` as "nothing leaked" would put an unmeasured all-clear on the DLP surface.
  */
 import { describe, it, expect } from 'vitest'
+import * as scrubApi from '../api'
 import {
   alertsForKind,
   formatWindow,
@@ -22,7 +23,7 @@ import {
   type PostureResponse,
   type ScrubCatalogueResponse,
 } from '../api'
-import { isKnown } from '../../../lib/truthfulness'
+import { isKnown, type Certain, type QueryOutcome } from '../../../lib/truthfulness'
 
 const pattern = (kind: string, severity = 'critical', category = 'api_key') => ({
   kind,
@@ -203,6 +204,95 @@ describe('scrubWindowFromQuery', () => {
   it('is absent when no body arrived, so no window can be stated', () => {
     const value = scrubWindowFromQuery({ isError: true, error: new Error('boom') })
     expect(isKnown(value)).toBe(false)
+  })
+})
+
+/**
+ * A schema-invalid `200` must degrade, and it must degrade *everywhere*
+ * (AAASM-5366).
+ *
+ * The reported crash was one fold reading `patterns.length` off a body that had
+ * no `patterns`. Fixing that fold alone would leave the identical hazard in the
+ * three beside it, so this block does not name folds: it enumerates every
+ * `*FromQuery` the module exports and puts the same unreadable bodies through
+ * all of them. A fold added later without a decoder fails here without anyone
+ * remembering to add a case for it.
+ */
+describe('every *FromQuery fold, against a body that does not match its schema', () => {
+  type Fold = (outcome: QueryOutcome<unknown>) => Certain<unknown>
+  const folds = Object.entries(scrubApi)
+    .filter(([name, value]) => name.endsWith('FromQuery') && typeof value === 'function')
+    .map(([name, value]): [string, Fold] => [name, value as Fold])
+    // Code-unit order, not `localeCompare`: the expected list below is checked
+    // literally, and a locale-sensitive sort would make it a different list on
+    // a different machine.
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+
+  it('finds every fold the page uses, so the sweep cannot pass vacuously', () => {
+    expect(folds.map(([name]) => name)).toEqual([
+      'leakRateFromQuery',
+      'patternAlertsFromQuery',
+      'scrubCatalogueFromQuery',
+      'scrubPostureFromQuery',
+      'scrubWindowFromQuery',
+      'scrubbed24hFromQuery',
+    ])
+  })
+
+  // The bodies a proxy, a partial deploy and a stubbed test route actually
+  // produce — `{}` is the one that was observed unmounting the page.
+  //
+  // `[]` is labelled for what it is rather than for what it does, because it
+  // does two things: it is the wrong shape for five of the six folds, and for
+  // `scrubbed24hFromQuery` — whose route really does serve an array — it is a
+  // well-formed empty window. Both must end in an absence, which is the only
+  // thing this sweep claims.
+  const UNREADABLE: readonly [string, unknown][] = [
+    ['an empty object', {}],
+    ['a bare array', []],
+    ['a scalar', 42],
+    ['an envelope whose rows are empty objects', { patterns: [{}], counts: [{}], total: 1 }],
+  ]
+
+  for (const [name, fold] of folds) {
+    for (const [description, body] of UNREADABLE) {
+      it(`${name} reports an absence for ${description}, and does not throw`, () => {
+        const value = fold({ data: body, error: null })
+        expect(isKnown(value)).toBe(false)
+        if (!isKnown(value)) {
+          // Not `unavailable`: the request succeeded. The operator is told we
+          // could not determine the value, and why.
+          expect(value.state).toBe('unknown')
+          expect(value.detail).toBeTruthy()
+        }
+      })
+    }
+  }
+})
+
+describe('scrubCatalogueFromQuery, on a schema-invalid success', () => {
+  it('degrades to an absence naming the missing field rather than throwing', () => {
+    const value = scrubCatalogueFromQuery({ data: {}, error: null })
+    expect(isKnown(value)).toBe(false)
+    if (!isKnown(value)) {
+      expect(value.state).toBe('unknown')
+      expect(value.detail).toContain('patterns')
+    }
+  })
+
+  it('degrades on a malformed row too, since every row is read in full', () => {
+    const value = scrubCatalogueFromQuery({
+      data: { patterns: [pattern('AwsAccessKey'), { kind: 'SsnPattern' }], total: 2 },
+      error: null,
+    })
+    expect(isKnown(value)).toBe(false)
+    if (!isKnown(value)) expect(value.detail).toContain('patterns.1')
+  })
+
+  it('does not fall back to an empty catalogue, which would read as "no detectors"', () => {
+    const value = scrubCatalogueFromQuery({ data: {}, error: null })
+    expect(value).not.toHaveProperty('value')
+    if (!isKnown(value)) expect(value.detail).not.toMatch(/never empty/)
   })
 })
 
