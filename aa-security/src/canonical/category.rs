@@ -125,6 +125,33 @@ pub struct CanonicalCategory {
     qualifier: Option<CategoryQualifier>,
 }
 
+/// Whether `field` can appear in a qualifier without making the rendered form
+/// ambiguous or unparseable.
+///
+/// The disambiguation argument — `/` introduces a locale, `:` a scheme — only
+/// holds if neither separator can occur *inside* a field, and the `[…]` wrapper
+/// only delimits if brackets cannot either. `NATIONAL_ID[zh-TW/arc:new]` would
+/// otherwise be readable as both, and `API_KEY[a:b]extra]` would not round-trip
+/// at all.
+///
+/// `const fn`, so a category built in a `const` context — which every entry of
+/// the `CredentialKind` mapping is — fails to compile rather than merely
+/// tripping an assertion at run time.
+const fn is_well_formed_field(field: &str) -> bool {
+    let bytes = field.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' | b':' | b'[' | b']' => return false,
+            _ => i += 1,
+        }
+    }
+    true
+}
+
 impl CanonicalCategory {
     /// An unqualified category, e.g. `EMAIL_ADDRESS`.
     pub const fn unqualified(base: CategoryBase) -> Self {
@@ -132,7 +159,17 @@ impl CanonicalCategory {
     }
 
     /// A locale-qualified category, e.g. `NATIONAL_ID[zh-TW/arc_new]`.
+    ///
+    /// # Panics
+    ///
+    /// If `tag` or `variant` is empty or contains `/`, `:`, `[` or `]`, which
+    /// would make the rendered form ambiguous. In a `const` context — where the
+    /// whole `CredentialKind` mapping lives — this is a compile error.
     pub const fn with_locale(base: CategoryBase, tag: &'static str, variant: &'static str) -> Self {
+        assert!(
+            is_well_formed_field(tag) && is_well_formed_field(variant),
+            "locale qualifier fields must be non-empty and free of `/`, `:`, `[` and `]`"
+        );
         Self {
             base,
             qualifier: Some(CategoryQualifier::Locale { tag, variant }),
@@ -140,7 +177,16 @@ impl CanonicalCategory {
     }
 
     /// A scheme-qualified category, e.g. `ACCESS_TOKEN[github:personal_access]`.
+    ///
+    /// # Panics
+    ///
+    /// If `scheme` or `variant` is empty or contains `/`, `:`, `[` or `]`. See
+    /// [`with_locale`](Self::with_locale).
     pub const fn with_scheme(base: CategoryBase, scheme: &'static str, variant: &'static str) -> Self {
+        assert!(
+            is_well_formed_field(scheme) && is_well_formed_field(variant),
+            "scheme qualifier fields must be non-empty and free of `/`, `:`, `[` and `]`"
+        );
         Self {
             base,
             qualifier: Some(CategoryQualifier::Scheme { scheme, variant }),

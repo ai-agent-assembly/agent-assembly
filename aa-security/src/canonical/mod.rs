@@ -96,3 +96,4 @@ pub use finding::{
     ByteSpan, CanonicalFinding, ConfidenceBand, DetectionMethod, FindingStatus, Provenance, Recognizer, Severity,
 };
 pub use lift::{LiftError, SCANNER_PROVENANCE};
+pub use mapping::ParseCategoryError;

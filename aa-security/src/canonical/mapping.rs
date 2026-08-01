@@ -188,9 +188,62 @@ impl CanonicalCategory {
     }
 }
 
+/// Why a string is not the rendered form of a category this build knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ParseCategoryError {
+    /// The string does not render any category in this build's catalogue.
+    ///
+    /// This is the right answer for a category a *newer* build produced — a
+    /// B-7 locale category read by a reader that predates it — because the
+    /// alternative is fabricating a category whose meaning this build does not
+    /// know (ADR 0032 §5: an unusable input is a recorded failure, never a
+    /// clean result).
+    UnknownCategory,
+}
+
+impl core::fmt::Display for ParseCategoryError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("not a category known to this build")
+    }
+}
+
+impl std::error::Error for ParseCategoryError {}
+
+impl std::str::FromStr for CanonicalCategory {
+    type Err = ParseCategoryError;
+
+    /// Parse a rendered category back.
+    ///
+    /// `Display` and this are inverse over every category this build can
+    /// produce, which is what makes the rendered form a contract rather than a
+    /// debug string — B-9's events and the dashboard have to read it back.
+    ///
+    /// Deliberately a **closed** lookup over the built-in catalogue rather than
+    /// a grammar-driven parse. A parser that split on the separators would have
+    /// to conjure `&'static str` fields out of runtime bytes, which means
+    /// `Box::leak`, which would reintroduce exactly the hole the qualifier type
+    /// exists to close: an arbitrary attacker-chosen string becoming a category.
+    /// Resolving against categories that already exist cannot do that.
+    ///
+    /// The separator rule (`/` locale, `:` scheme) is what makes the rendering
+    /// injective, and `is_well_formed_field` enforces it at construction; the
+    /// round-trip test over all 28 is what demonstrates it.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        CredentialKind::ALL
+            .iter()
+            .cloned()
+            .chain(std::iter::once(CredentialKind::Custom))
+            .map(|kind| Self::from_credential_kind(&kind))
+            .find(|category| category.to_string() == s)
+            .ok_or(ParseCategoryError::UnknownCategory)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::CategoryQualifier;
     use crate::canonical::{CanonicalFinding, ConfidenceBand, DetectionMethod, FindingStatus, Severity};
 
     /// Every `CredentialKind`, including the `Custom` variant that
@@ -449,6 +502,84 @@ mod tests {
             let result = scanner.scan(text);
             let finding = CanonicalFinding::try_from(&result.findings[0]).expect("well-formed span");
             assert_eq!(finding.status, expected, "status wrong for {text:?}");
+        }
+    }
+
+    /// `Display` and `FromStr` are inverse over every category this build has.
+    ///
+    /// Without this the rendered form was a one-way debug string: 5355 and 5359
+    /// will put it where something must read it back, and nothing defined what
+    /// reading it back meant.
+    #[test]
+    fn every_rendered_category_parses_back_to_itself() {
+        for kind in every_kind() {
+            let category = CanonicalCategory::from_credential_kind(&kind);
+            let rendered = category.to_string();
+            assert_eq!(
+                rendered.parse::<CanonicalCategory>(),
+                Ok(category),
+                "{rendered} did not parse back"
+            );
+        }
+    }
+
+    /// A category this build does not know is refused, not fabricated.
+    ///
+    /// This is the case a reader older than a B-7 locale pack will actually hit.
+    #[test]
+    fn an_unknown_rendering_is_refused() {
+        for input in [
+            "NATIONAL_ID[zh-TW/arc_new]", // a real category, but not in this build
+            "NOT_A_BASE",
+            "ACCESS_TOKEN[github:no_such_variant]",
+            "ACCESS_TOKEN[github:personal_access]extra",
+            "",
+        ] {
+            assert_eq!(
+                input.parse::<CanonicalCategory>(),
+                Err(ParseCategoryError::UnknownCategory),
+                "{input:?} should not have parsed"
+            );
+        }
+    }
+
+    /// Qualifier fields carry no separator, which is the premise the whole
+    /// disambiguation argument rests on.
+    ///
+    /// `is_well_formed_field` enforces it at construction, and because the
+    /// mapping is `const` a violation is a compile error rather than a runtime
+    /// panic. This checks the built-in catalogue actually satisfies it, so the
+    /// claim that `/` means locale and `:` means scheme is grounded rather than
+    /// merely asserted.
+    #[test]
+    fn no_qualifier_field_contains_a_separator() {
+        for kind in every_kind() {
+            let category = CanonicalCategory::from_credential_kind(&kind);
+            let Some(qualifier) = category.qualifier() else {
+                continue;
+            };
+            let (a, b) = match qualifier {
+                CategoryQualifier::Locale { tag, variant } => (tag, variant),
+                CategoryQualifier::Scheme { scheme, variant } => (scheme, variant),
+            };
+            for field in [a, b] {
+                assert!(!field.is_empty(), "empty qualifier field on {category}");
+                for bad in ['/', ':', '[', ']'] {
+                    assert!(
+                        !field.contains(bad),
+                        "qualifier field {field:?} on {category} contains {bad:?}"
+                    );
+                }
+            }
+            // Exactly one separator in the rendered body, so it cannot be read
+            // as both a locale and a scheme.
+            let body = category.to_string();
+            let body = body.split_once('[').unwrap().1.trim_end_matches(']').to_string();
+            assert_eq!(
+                usize::from(body.contains('/')) + usize::from(body.contains(':')),
+                1,
+                "rendered qualifier {body:?} is ambiguous"
+            );
         }
     }
 }
