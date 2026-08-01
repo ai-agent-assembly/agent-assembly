@@ -28,6 +28,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { routeScrubApi } from './_fixtures/scrub-routes'
 
 const EVIDENCE_DIR = resolve(process.cwd(), 'verify/5112')
 const THEME_KEY = 'aa-dashboard-theme'
@@ -92,6 +93,12 @@ async function bootstrap(
   // Permissive fallback first (least specific); the specific fixture registered
   // afterwards wins, since Playwright matches most-recently-added first.
   await page.route('**/api/**', (r) => r.fulfill({ json: {} }))
+  // AAASM-5347 wired the catalogue, the per-kind tally and the posture to real
+  // routes, and `{}` is not a valid body for any of them. The three fixtures are
+  // constant across the enforcement variants below on purpose: what each test
+  // varies is the `agent-enforcement` answer, so everything else has to hold
+  // still for the resulting stat-strip state to be attributable to it.
+  await routeScrubApi(page)
   await page.route('**/api/v1/analytics/agent-enforcement**', (r) => {
     if (fixture === 'error') return r.fulfill({ status: 503, json: { error: 'unavailable' } })
     return r.fulfill({ json: fixture === 'populated' ? ENFORCEMENT_POPULATED : [] })
