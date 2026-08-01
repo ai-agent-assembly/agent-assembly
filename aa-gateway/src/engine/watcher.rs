@@ -164,25 +164,30 @@ mod tests {
     /// (AAASM-5367).
     ///
     /// Filesystem notification delivery is a property of the platform backend,
-    /// not of this watcher. Measured on macOS/FSEvents, the same unchanged
-    /// watcher swapped anywhere between ~50 ms and ~6 s on an idle machine, and
-    /// a small fraction of writes produced no notification at all within 20 s.
-    /// Any fixed deadline short enough to be interesting is therefore a coin
-    /// flip — the old one-second sleep lost that flip on ~2 runs in 3 here.
-    /// This bound exists only so a watcher that has genuinely stopped working
-    /// fails instead of hanging; it is far above every observed success.
+    /// not of this watcher, and the two platforms are nothing alike. On Linux
+    /// (inotify — what CI runs) this test completes in **0.014 s**. On macOS
+    /// (FSEvents) the same unchanged watcher takes a median of **0.7 s**, a p90
+    /// of **5.7 s** and a worst case of **8.7 s** over 80 measured trials, and
+    /// up to **17 s** when a second workspace build shares the machine. Any
+    /// fixed deadline short enough to be interesting is therefore a coin flip on
+    /// macOS — the old one-second sleep lost that flip on ~2 runs in 3 here.
     ///
-    /// Sized against the worst case actually seen rather than a guess: during a
-    /// full `cargo nextest run --workspace` sharing the machine with a second
-    /// concurrent workspace build, this swap took **17 s**. Widening the bound
-    /// costs nothing on a healthy watcher — [`wait_for_swap`] returns the moment
-    /// the swap lands, so the bound is only ever reached when hot-reload is
-    /// genuinely broken.
+    /// So this is a backstop, not a deadline: it is only reached when the
+    /// watcher has stopped storing anything at all. The trade-off it carries,
+    /// which is real and worth stating: a *broken* watcher now costs 60 s per
+    /// attempt — with `retries = 2` in `.config/nextest.toml`, ~180 s and a
+    /// `SLOW` marker before the suite reports it. That is the deliberate price
+    /// of never failing a healthy watcher, and a healthy run pays none of it
+    /// because [`wait_for_swap`] returns the moment a store lands.
     const WATCH_LIVENESS_BOUND: Duration = Duration::from_secs(60);
 
     /// How long to wait for one application of the stimulus before re-applying
-    /// it. Chosen to comfortably exceed the common-case delivery latency so
-    /// re-writing is the exception, not the norm.
+    /// it.
+    ///
+    /// Re-writing is the *normal* path, not an exception: 55% of 80 measured
+    /// macOS runs needed more than one round (median 2, max 18). That is the
+    /// mechanism working as intended, not a symptom — see [`wait_for_swap`] for
+    /// why one write is not enough.
     const STIMULUS_ROUND: Duration = Duration::from_millis(500);
 
     fn parse_doc(yaml: &str) -> PolicyDocument {
@@ -194,11 +199,24 @@ mod tests {
     ///
     /// Two things make this deterministic where a fixed sleep was not. It polls
     /// instead of sleeping a fixed interval, so it returns as soon as the
-    /// watcher has acted — typically a few hundred milliseconds, i.e. *faster*
-    /// than the one-second sleep it replaces. And it re-applies the stimulus
-    /// each round, because a single write is not guaranteed to yield a
-    /// notification: with one write, 5 of 80 runs here saw nothing within 20 s;
-    /// re-writing rescued 80 of 80 (worst case 19 rounds).
+    /// watcher has acted rather than always paying a fixed wait. And it
+    /// re-applies the stimulus each round, because on macOS a single write is
+    /// not guaranteed to yield a notification at all.
+    ///
+    /// That second point was challenged in review and re-measured properly, as
+    /// 80 interleaved trials of one-write-only against this re-applying loop on
+    /// the same machine:
+    ///
+    /// | | one write | re-applied |
+    /// |---|---|---|
+    /// | never observed | **5 / 80 (6.25%)** | **0 / 80** |
+    /// | median latency | 0.85 s | 0.69 s |
+    /// | mean latency | 1.88 s | 1.84 s |
+    ///
+    /// Re-applying is what removes the misses, and it is not slower doing it —
+    /// the two latency distributions are indistinguishable. (A short run can
+    /// easily see 8/8 clean with one write; at a 6.25% miss rate that happens
+    /// 60% of the time, which is why the sample size matters here.)
     ///
     /// This does not weaken the property under test. The caller still asserts
     /// what landed in the slot; only "how promptly the OS reported the write"
