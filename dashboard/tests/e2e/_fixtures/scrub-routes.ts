@@ -101,9 +101,9 @@ export const SCRUB_POSTURE = {
 /**
  * Fulfil the three scrub routes.
  *
- * Register **after** any permissive `**/api/**` catch-all: Playwright matches the
- * most recently added route first, so an earlier catch-all would otherwise answer
- * these paths with whatever it serves.
+ * Register **after** any permissive `/api/` catch-all: Playwright matches the most
+ * recently added route first, so an earlier catch-all would otherwise answer these
+ * paths with whatever it serves.
  */
 export async function routeScrubApi(page: Page): Promise<void> {
   await page.route('**/api/v1/scrub/patterns**', (route) =>

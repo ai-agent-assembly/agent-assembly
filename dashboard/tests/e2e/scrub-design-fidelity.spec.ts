@@ -16,6 +16,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { routeScrubApi } from './_fixtures/scrub-routes'
 
 const EVIDENCE_DIR = resolve(process.cwd(), 'docs/verification/aaasm-1392')
 
@@ -37,6 +38,13 @@ async function injectToken(page: Page) {
 
 async function mockApi(page: Page) {
   await page.route('**/api/v1/ws/events**', (route) => route.abort())
+  // AAASM-5347: the detector catalogue is fetched rather than compiled in, so
+  // with nothing seeded the page renders its loading state, retries, and
+  // settles on an error — and none of the layout, the diff or the summary this
+  // spec measures is ever mounted. The fixture covers all seven categories the
+  // stylesheet colours, which is also what makes the severity-chip check below
+  // bite instead of skipping every selector for want of a row.
+  await routeScrubApi(page)
 }
 
 async function gotoScrub(page: Page) {
