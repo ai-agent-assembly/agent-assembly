@@ -1972,6 +1972,26 @@ mod tests {
     }
 
     #[test]
+    fn redact_fails_closed_on_a_span_inside_a_fullwidth_digit() {
+        // The concrete instance of the fail-closed guard this change puts at
+        // risk. `redact` must never emit the payload with the flagged region
+        // intact, so a span landing inside a full-width digit's three bytes has
+        // to collapse the whole value to an opaque label rather than splice.
+        // Exercised rather than assumed, because the guard is the only thing
+        // standing between a mis-computed span and a leak.
+        let text = "card=４５３２０１５１１２８３０３６６";
+        // `card=` is five bytes; the first full-width digit occupies bytes 5..8,
+        // so byte 6 is mid-character.
+        let result = ScanResult {
+            findings: vec![CredentialFinding::new(CredentialKind::CreditCardLuhn, 5, 6)],
+        };
+
+        let redacted = result.redact(text);
+        assert_eq!(redacted, "[REDACTED]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("contact: user@example.com for support");
