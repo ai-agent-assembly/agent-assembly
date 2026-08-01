@@ -218,6 +218,50 @@ pub trait LaunchableTool: Send + Sync {
     /// [`AdapterError::LaunchFailed`] only for genuine run-time failures (the
     /// binary has moved, an argument cannot be encoded) — "this tool has no
     /// launch command" is a capability declaration, not an error.
+    ///
+    /// # The environment on the returned command is part of the contract
+    ///
+    /// A caller **must** apply [`Command::get_envs`] to the child it spawns.
+    /// What comes back is not "a program and some arguments, plus some advisory
+    /// variables": for an Electron/Node tool `NODE_EXTRA_CA_CERTS` is the *only*
+    /// mechanism by which the tool's runtime trusts the intercepting proxy's CA,
+    /// so a caller that drops the environment launches a tool the proxy cannot
+    /// terminate TLS for — and reports it as governed. AAASM-5327 was exactly
+    /// that: a caller that rebuilt the child from [`Command::get_program`] and
+    /// [`Command::get_args`] alone, violating no contract on paper because none
+    /// was written down. The obligation is stated here so the next occurrence is
+    /// a contract violation rather than an oversight.
+    ///
+    /// A `None` value from [`Command::get_envs`] means **remove that variable
+    /// from the child**, never "set it to the empty string". The two are not
+    /// interchangeable, and flattening them is itself a security bug: an adapter
+    /// unsets a variable to switch a tool behaviour *off*, and an
+    /// empty-but-present variable is one the tool may still read and honour.
+    ///
+    /// # When the adapter's variables collide with the caller's
+    ///
+    /// The child's environment is the union of both sources, and on a collision
+    /// **the adapter's value wins** (the behaviour AAASM-5327 established). The
+    /// adapter is the layer that knows what the tool actually requires, and the
+    /// layer that normalises values — the gateway hands out a bare `host:port`
+    /// proxy address, which is not a proxy URL an HTTP client accepts, and only
+    /// the adapter knows which form its own tool needs. An implementer may
+    /// therefore rely on its values surviving the merge and need not defend
+    /// against a caller overwriting them. It may **not** assume it is the sole
+    /// source of the child's environment: the caller's variables are delivered
+    /// too, and a variable the adapter never mentions is passed through.
+    ///
+    /// That rule is about the caller's *ambient* environment at spawn time, and
+    /// it is the opposite of the rule for [`LaunchSpec::env`], where the caller
+    /// **wins**. The two are not in tension: `LaunchSpec::env` is an argument to
+    /// this method rather than a competing source, and it is how a caller asks
+    /// for one run to differ — pinning a CA for a test, or overriding a variable
+    /// without editing what the install recorded. An adapter should therefore
+    /// apply `spec.env` last, after its own values.
+    ///
+    /// [`Command::get_envs`]: std::process::Command::get_envs
+    /// [`Command::get_program`]: std::process::Command::get_program
+    /// [`Command::get_args`]: std::process::Command::get_args
     fn build_launch_command(&self, spec: &LaunchSpec) -> Result<std::process::Command, AdapterError>;
 }
 

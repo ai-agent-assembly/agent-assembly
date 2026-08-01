@@ -461,14 +461,19 @@ async fn topology_tree_returns_subtree_for_known_agent() {
 }
 
 /// AAASM-5036 / AAASM-5103 — the overview (AgentNode) and tree (AgentTree)
-/// responses both carry per-node `mode` (from `metadata["mode"]`), `flagged`
-/// (a recorded `PolicyViolation`, count > 0), and a nullable `trust`.
+/// responses both carry per-node `mode` (from the canonical `enforcement_mode`,
+/// AAASM-5289), `flagged` (a recorded `PolicyViolation`, count > 0), and a
+/// nullable `trust`.
 #[tokio::test]
 async fn topology_response_carries_mode_flagged_trust() {
     let state = common::test_state();
-    // Standalone root: shadow mode.
+    // Standalone root: shadow mode. AAASM-5289 — the badge now derives `mode`
+    // from the canonical `enforcement_mode` (Observe → "shadow"), NOT the
+    // free-form `metadata["mode"]`. Set a DIVERGENT metadata.mode too, so this
+    // asserts the canonical field wins over the stale metadata blob.
     let mut root = make_agent(0x01, "shadow-root", 0, None, None);
-    root.metadata.insert("mode".to_string(), "shadow".to_string());
+    root.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
+    root.metadata.insert("mode".to_string(), "enforce".to_string());
     state.agent_registry.register(root).unwrap();
     // AAASM-5103 — flag it by seeding a real PolicyViolation audit event, the
     // canonical source the badge now derives from (the record no longer carries a

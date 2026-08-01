@@ -124,6 +124,22 @@ describe('mapTopologyGraph', () => {
     expect(nodes[0].mode).toBeUndefined()
   })
 
+  // AAASM-5289 — the badge reads the canonical `mode` field the server now
+  // derives from `enforcement_mode`, not any `metadata` blob on the node. The
+  // wire node carries no metadata at all; the mapper keys solely on `mode`, so
+  // the rendered badge follows enforcement even when a legacy metadata.mode
+  // would have said otherwise.
+  it('reads the badge from the canonical wire mode, never a metadata blob', () => {
+    const { nodes } = mapTopologyGraph({
+      // `metadata` is not part of the AgentNode wire shape; the server projects
+      // `mode` from enforcement_mode. A shadow `mode` must render as shadow
+      // regardless of any stale metadata a caller might imagine.
+      nodes: [{ ...node({ id: 'x', mode: 'shadow' }), metadata: { mode: 'enforce' } } as never],
+      edges: [],
+    })
+    expect(nodes[0].mode).toBe('shadow')
+  })
+
   it('null trust maps to null (renders the no-data state, not a misleading 0)', () => {
     const { nodes } = mapTopologyGraph({ nodes: [node({ trust: null })], edges: [] })
     expect(nodes[0].trust).toBeNull()

@@ -59,16 +59,38 @@ impl From<&AgentStatus> for AgentNodeStatus {
 
 /// Enforcement-mode badge value for a node — `enforce`, `shadow`, or `off`.
 ///
-/// Read from the agent record's `metadata["mode"]`, mirroring the Fleet page's
-/// `parseMode` exactly: a recognised value is passed through, and anything else
-/// (including an absent key) falls back to `enforce`. Sourcing the badge from the
-/// same `metadata.mode` the Fleet chip uses keeps the two surfaces consistent
-/// rather than introducing a second, divergent notion of an agent's mode.
+/// Derived from the canonical `AgentRecord::enforcement_mode` field — the same
+/// per-agent override the gateway actually consults at
+/// `aa_gateway::engine` (`agent_override.unwrap_or(policy_default)`) — and NOT
+/// the free-form `metadata["mode"]` string (AAASM-5289, ADR 0021 prerequisite).
+/// The badge must not be able to claim "enforce" while enforcement is off, or
+/// vice-versa, which the old `metadata.mode` source allowed because that string
+/// does not drive enforcement.
+///
+/// Mapping mirrors `capability::project_mode` — `Observe` is the server-side
+/// mode the "shadow" UI alias names — but the topology badge has a third value
+/// (`off`) so it can represent `Disabled` truthfully rather than collapsing it:
+///
+/// | `enforcement_mode`       | Badge      |
+/// |--------------------------|------------|
+/// | `Some(Enforce)`          | `enforce`  |
+/// | `Some(Observe)`          | `shadow`   |
+/// | `Some(Disabled)`         | `off`      |
+/// | `None` (no override)     | `enforce`  |
+///
+/// `None` means no per-agent override — the resolver falls through to the policy
+/// default and finally to the server-wide `Enforce` default
+/// (`AgentRecord::enforcement_mode` doc), so `enforce` is the honest badge, not
+/// "unknown". Expiry needs no handling here: an already-expired shadow window is
+/// resolved to the base mode (`enforcement_mode = None`) in the registry
+/// (AAASM-5288), so reading the resolved field is correct.
 pub(crate) fn agent_mode(record: &AgentRecord) -> String {
-    match record.metadata.get("mode").map(String::as_str) {
-        Some(m @ ("enforce" | "shadow" | "off")) => m.to_owned(),
-        _ => "enforce".to_owned(),
+    match record.enforcement_mode {
+        Some(aa_core::EnforcementMode::Observe) => "shadow",
+        Some(aa_core::EnforcementMode::Disabled) => "off",
+        Some(aa_core::EnforcementMode::Enforce) | None => "enforce",
     }
+    .to_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -298,8 +320,11 @@ pub struct AgentNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance_level: Option<String>,
     /// Enforcement-mode badge: `enforce`, `shadow`, or `off`. Derived from the
-    /// agent record's `metadata["mode"]` (defaulting to `enforce`) so the
-    /// topology mode badge matches the Fleet page's mode chip for the same agent.
+    /// canonical `AgentRecord::enforcement_mode` field the gateway actually
+    /// consults (AAASM-5289) — not the free-form `metadata["mode"]` — so the
+    /// badge cannot show a mode enforcement is not in. `None` (no per-agent
+    /// override) resolves to `enforce`, the server-wide default. See
+    /// [`agent_mode`].
     pub mode: String,
     /// Whether the agent is policy-flagged — it has recorded at least one
     /// `PolicyViolation` audit event (`count > 0`, AAASM-5103). Drives the
@@ -520,8 +545,8 @@ pub struct AgentTree {
     /// Governance level — included only when `show_budget=true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance_level: Option<String>,
-    /// Enforcement-mode badge: `enforce`, `shadow`, or `off`. Same
-    /// `metadata["mode"]` derivation as [`AgentNode::mode`].
+    /// Enforcement-mode badge: `enforce`, `shadow`, or `off`. Same canonical
+    /// `enforcement_mode` derivation as [`AgentNode::mode`] (AAASM-5289).
     pub mode: String,
     /// Whether the agent is policy-flagged (`count > 0`). Same derivation and
     /// audit source as [`AgentNode::flagged`] (AAASM-5103).
@@ -812,19 +837,52 @@ mod tests {
     }
 
     #[test]
-    fn agent_mode_reads_metadata_and_defaults_to_enforce() {
+    fn agent_mode_reads_canonical_enforcement_mode() {
+        use aa_core::EnforcementMode;
         let mut record = make_record();
-        // Recognised values pass through.
-        for m in ["enforce", "shadow", "off"] {
-            record.metadata.insert("mode".to_string(), m.to_string());
-            assert_eq!(agent_mode(&record), m);
-        }
-        // Unrecognised value falls back to enforce (mirrors Fleet parseMode).
-        record.metadata.insert("mode".to_string(), "bogus".to_string());
+
+        record.enforcement_mode = Some(EnforcementMode::Enforce);
         assert_eq!(agent_mode(&record), "enforce");
-        // Absent key falls back to enforce.
-        record.metadata.remove("mode");
+        record.enforcement_mode = Some(EnforcementMode::Observe);
+        assert_eq!(agent_mode(&record), "shadow");
+        record.enforcement_mode = Some(EnforcementMode::Disabled);
+        assert_eq!(agent_mode(&record), "off");
+
+        // `None` = no per-agent override → the server-wide `Enforce` default,
+        // the honest base mode (not "unknown"). An expired shadow window is
+        // already resolved to `None` in the registry (AAASM-5288), so this same
+        // branch covers it.
+        record.enforcement_mode = None;
         assert_eq!(agent_mode(&record), "enforce");
+    }
+
+    /// AAASM-5289 — the divergence test that is the point of the ticket: when the
+    /// free-form `metadata["mode"]` disagrees with the canonical
+    /// `enforcement_mode` the gateway consults, the badge reports the canonical
+    /// one. A stale/spoofed `metadata.mode = "enforce"` must not mask an agent
+    /// whose enforcement is actually in `Observe` (shadow), and vice-versa.
+    #[test]
+    fn agent_mode_prefers_enforcement_mode_over_diverging_metadata() {
+        use aa_core::EnforcementMode;
+        let mut record = make_record();
+
+        // metadata says "enforce" but enforcement is really Observe → shadow.
+        record.metadata.insert("mode".to_string(), "enforce".to_string());
+        record.enforcement_mode = Some(EnforcementMode::Observe);
+        assert_eq!(
+            agent_mode(&record),
+            "shadow",
+            "badge must follow the canonical enforcement_mode, not metadata.mode"
+        );
+
+        // metadata says "shadow" but enforcement is really Enforce → enforce.
+        record.metadata.insert("mode".to_string(), "shadow".to_string());
+        record.enforcement_mode = Some(EnforcementMode::Enforce);
+        assert_eq!(
+            agent_mode(&record),
+            "enforce",
+            "a stale metadata.mode must not claim shadow while enforcement is on"
+        );
     }
 
     #[test]
@@ -840,7 +898,7 @@ mod tests {
     #[test]
     fn agent_node_from_record_derives_badge_fields() {
         let mut record = make_record();
-        record.metadata.insert("mode".to_string(), "shadow".to_string());
+        record.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
         let node = AgentNode::from(&record);
         assert_eq!(node.mode, "shadow");
         // `flagged` is enriched by the handler, not the conversion (AAASM-5103).

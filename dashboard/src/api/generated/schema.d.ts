@@ -2803,8 +2803,11 @@ export interface components {
             id: string;
             /**
              * @description Enforcement-mode badge: `enforce`, `shadow`, or `off`. Derived from the
-             *     agent record's `metadata["mode"]` (defaulting to `enforce`) so the
-             *     topology mode badge matches the Fleet page's mode chip for the same agent.
+             *     canonical `AgentRecord::enforcement_mode` field the gateway actually
+             *     consults (AAASM-5289) — not the free-form `metadata["mode"]` — so the
+             *     badge cannot show a mode enforcement is not in. `None` (no per-agent
+             *     override) resolves to `enforce`, the server-wide default. See
+             *     [`agent_mode`].
              */
             mode: string;
             /** @description Human-readable agent name. */
@@ -2965,8 +2968,8 @@ export interface components {
             /** @description Hex-encoded agent UUID. */
             id: string;
             /**
-             * @description Enforcement-mode badge: `enforce`, `shadow`, or `off`. Same
-             *     `metadata["mode"]` derivation as [`AgentNode::mode`].
+             * @description Enforcement-mode badge: `enforce`, `shadow`, or `off`. Same canonical
+             *     `enforcement_mode` derivation as [`AgentNode::mode`] (AAASM-5289).
              */
             mode: string;
             /** @description Human-readable agent name. */
