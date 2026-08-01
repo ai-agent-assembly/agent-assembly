@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAgentLineageQuery, useTopologyNodeRecentEvents } from '../../features/topology/api'
-import { useResumeAgent, useSuspendAgent } from '../../features/agents/mutations'
+import {
+  usePreviewEnforcementCascade,
+  useResumeAgent,
+  useSetEnforcementMode,
+  useSuspendAgent,
+} from '../../features/agents/mutations'
 import type {
   NodeEffectivePermissions,
   PolicyChainTier,
@@ -8,6 +13,8 @@ import type {
   TopologyNode,
 } from '../../features/topology/types'
 import { SuspendReasonDialog } from '../SuspendReasonDialog'
+import { ShadowModeDialog, type ShadowSubmit } from './ShadowModeDialog'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../../auth/usePermissions'
 import { AbsenceMarker, TruthfulValue } from '../truthfulness'
 import { certain, isKnown, type Certain } from '../../lib/truthfulness'
 import { bucketForRatio } from './budgetThreshold'
@@ -28,15 +35,19 @@ const NO_LIMIT_DETAIL = 'No daily budget limit is configured for this agent'
 const NO_CASCADE_DETAIL = 'Policy cascade is not loaded — a policy may still be in force but cannot be resolved here'
 
 /**
- * Why the two governance buttons are inert (AAASM-5140).
+ * Why the Apply-team-policy button is still inert (AAASM-5140).
  *
- * Cascade-apply and the enforcement-mode toggle have no write endpoint: the
- * mutation-safety question is ADR-0021 / AAASM-5097 and is still `Proposed`.
- * Until one exists, the honest affordance is a disabled control that says so —
- * an enabled button whose handler does nothing reads as a broken product, and
- * an operator who clicks it has no way to tell whether governance was applied.
+ * The enforcement-mode toggle now has a live backend (AAASM-5338 single-agent /
+ * AAASM-5340 cascade) and is wired below (AAASM-5341). Team-policy apply still
+ * has no write endpoint — the mutation-safety question for it is unresolved —
+ * so its honest affordance remains a disabled control that says so: an enabled
+ * button whose handler does nothing reads as a broken product.
  */
-const NO_BACKEND_TITLE = 'Backend cascade-apply / mode toggle is not available yet'
+const NO_BACKEND_TITLE = 'Backend team-policy apply is not available yet'
+
+/** Why the shadow action is hidden for a non-Admin caller. */
+const SHADOW_ADMIN_HINT =
+  'Switching to shadow mode weakens enforcement and requires Admin access.'
 
 /**
  * Budget burn as a 0–1 ratio, or `null` when there is no ratio to report.
@@ -98,7 +109,11 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
   const lineageQuery = useAgentLineageQuery(node?.id ?? '')
   const suspendMutation = useSuspendAgent()
   const resumeMutation = useResumeAgent()
+  const enforcementMutation = useSetEnforcementMode()
+  const previewMutation = usePreviewEnforcementCascade()
+  const { canWrite, canAdmin } = usePermissions()
   const [suspendOpen, setSuspendOpen] = useState(false)
+  const [shadowOpen, setShadowOpen] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
 
   const isSuspended = node?.status === 'suspended'
@@ -125,16 +140,16 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
   }, [node, nodes, edges])
 
   useEffect(() => {
-    if (!node || suspendOpen) return
+    if (!node || suspendOpen || shadowOpen) return
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [node, onClose, suspendOpen])
+  }, [node, onClose, suspendOpen, shadowOpen])
 
   useEffect(() => {
-    if (!node || suspendOpen) return
+    if (!node || suspendOpen || shadowOpen) return
     const handleDown = (e: MouseEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         onClose()
@@ -142,7 +157,7 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
     }
     document.addEventListener('mousedown', handleDown)
     return () => document.removeEventListener('mousedown', handleDown)
-  }, [node, onClose, suspendOpen])
+  }, [node, onClose, suspendOpen, shadowOpen])
 
   if (!node) return null
 
@@ -155,6 +170,19 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
   const mutationBusy = suspendMutation.isPending || resumeMutation.isPending
   const mutationError = suspendMutation.isError || resumeMutation.isError
 
+  // Enforcement-mode toggle state (AAASM-5341). The node's canonical `mode`
+  // (AAASM-5289) drives which affordance shows; a node from an older payload
+  // with no `mode` is treated as `enforce` (the server-wide default).
+  const currentMode = node.mode ?? 'enforce'
+  const isShadow = currentMode === 'shadow'
+  // The shadow (weaken) action is Admin-only, matching the backend authz. The
+  // server remains authoritative — this only hides a control the caller can't
+  // use. Strengthen (→ enforce) needs only write.
+  const strengthenBusy = enforcementMutation.isPending
+  // Surface the server's rejection verbatim (403/422/409); the apply hook maps
+  // the HTTP status to operator-facing copy.
+  const shadowServerError = enforcementMutation.error?.message ?? previewMutation.error?.message ?? null
+
   const handleResume = () => {
     resumeMutation.mutate({ id: node.id }, { onSuccess: () => onAgentMutated?.() })
   }
@@ -162,6 +190,38 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
     suspendMutation.mutate(
       { id: node.id, reason },
       { onSuccess: () => { setSuspendOpen(false); onAgentMutated?.() } },
+    )
+  }
+
+  const handleStrengthen = () => {
+    enforcementMutation.reset()
+    enforcementMutation.mutate(
+      { id: node.id, mode: 'enforce' },
+      { onSuccess: () => onAgentMutated?.() },
+    )
+  }
+  const openShadowDialog = () => {
+    enforcementMutation.reset()
+    previewMutation.reset()
+    setShadowOpen(true)
+  }
+  const closeShadowDialog = () => {
+    setShadowOpen(false)
+    enforcementMutation.reset()
+    previewMutation.reset()
+  }
+  const handleShadowPreview = () =>
+    previewMutation.mutateAsync({ id: node.id })
+  const handleShadowConfirm = (submit: ShadowSubmit) => {
+    enforcementMutation.mutate(
+      {
+        id: node.id,
+        mode: 'observe',
+        reason: submit.reason,
+        expiresAt: submit.expiresAt,
+        cascade: submit.cascade,
+      },
+      { onSuccess: () => { setShadowOpen(false); onAgentMutated?.() } },
     )
   }
 
@@ -375,9 +435,8 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
           >
             View trace →
           </button>
-          {/* Governance controls with no production path — disabled with a
-              reason, matching the View-trace button above. See NO_BACKEND_TITLE
-              for why they are not wired instead (AAASM-5140). */}
+          {/* Team-policy apply still has no production write path — disabled
+              with a reason, matching the View-trace button (AAASM-5140). */}
           <button
             type="button"
             className="node-detail-panel__action"
@@ -387,15 +446,54 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
           >
             ⚖ Apply team policy
           </button>
-          <button
-            type="button"
-            className="node-detail-panel__action"
-            data-testid="node-detail-shadow-mode"
-            disabled
-            title={NO_BACKEND_TITLE}
-          >
-            ◐ Switch to shadow mode
-          </button>
+          {/* Enforcement-mode toggle (AAASM-5341), driven by the node's
+              canonical `mode` (AAASM-5289). Shadow → enforce is a plain
+              strengthen (write scope); enforce → shadow opens the weaken form
+              and is Admin-only, matching the backend authz — the server stays
+              authoritative regardless. */}
+          {isShadow ? (
+            <button
+              type="button"
+              className="node-detail-panel__action"
+              data-testid="node-detail-shadow-mode"
+              disabled={strengthenBusy || !canWrite}
+              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+              onClick={handleStrengthen}
+            >
+              {strengthenBusy ? '⛨ Returning to enforce…' : '⛨ Return to enforce'}
+            </button>
+          ) : (
+            canAdmin && (
+              <button
+                type="button"
+                className="node-detail-panel__action"
+                data-testid="node-detail-shadow-mode"
+                disabled={strengthenBusy}
+                onClick={openShadowDialog}
+              >
+                ◐ Switch to shadow mode
+              </button>
+            )
+          )}
+          {/* A non-Admin caller on an enforce node sees no shadow affordance;
+              surface why rather than silently omitting the row. */}
+          {!isShadow && !canAdmin && (
+            <div
+              className="node-detail-panel__hint"
+              data-testid="node-detail-shadow-admin-hint"
+            >
+              {SHADOW_ADMIN_HINT}
+            </div>
+          )}
+          {enforcementMutation.isError && !shadowOpen && (
+            <div
+              className="node-detail-panel__hint node-detail-panel__hint--err"
+              data-testid="node-detail-enforcement-error"
+              role="alert"
+            >
+              {enforcementMutation.error.message}
+            </div>
+          )}
           {/* Suspend/resume — real gateway wiring (AAASM-5071). A suspended
               agent shows Resume; otherwise Suspend opens the reason dialog. */}
           {isSuspended ? (
@@ -433,6 +531,18 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
           pending={suspendMutation.isPending}
           onConfirm={handleSuspendConfirm}
           onCancel={() => setSuspendOpen(false)}
+        />
+      )}
+
+      {shadowOpen && (
+        <ShadowModeDialog
+          agentName={node.name}
+          pending={enforcementMutation.isPending}
+          previewPending={previewMutation.isPending}
+          serverError={shadowServerError}
+          onPreview={handleShadowPreview}
+          onConfirm={handleShadowConfirm}
+          onCancel={closeShadowDialog}
         />
       )}
     </>
