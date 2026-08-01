@@ -205,7 +205,7 @@ mod tests {
     /// stops being part of the assertion.
     fn wait_for_swap(
         slot: &ArcSwap<PolicyDocument>,
-        previous: &PolicyDocument,
+        previous: &Arc<PolicyDocument>,
         mut stimulus: impl FnMut(),
     ) -> Arc<PolicyDocument> {
         let start = std::time::Instant::now();
@@ -214,16 +214,24 @@ mod tests {
             let round = std::time::Instant::now();
             while round.elapsed() < STIMULUS_ROUND {
                 let current = slot.load_full();
-                if *current != *previous {
+                // Compare *identity*, not value. The handler allocates a fresh
+                // Arc for every store, so this observes the store itself rather
+                // than the store's effect. A value comparison would be blind to
+                // a watcher that swaps in a document equal to the live one —
+                // the natural shape of a "reload read stale content" bug — and
+                // would then time out and blame a watcher that is in fact
+                // firing constantly. The caller checks the content.
+                if !Arc::ptr_eq(&current, previous) {
                     return current;
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
         }
         panic!(
-            "watcher never swapped the policy slot within {WATCH_LIVENESS_BOUND:?} \
-             despite the policy file being rewritten every {STIMULUS_ROUND:?} — \
-             hot-reload is broken"
+            "watcher stored nothing into the policy slot within \
+             {WATCH_LIVENESS_BOUND:?}, despite the policy file being rewritten \
+             every {STIMULUS_ROUND:?} — the watcher is not firing at all, or is \
+             firing but rejecting the content it reads"
         );
     }
 
@@ -233,14 +241,14 @@ mod tests {
         write!(tmp, "{}", ALLOW_YAML).unwrap();
         tmp.flush().unwrap();
 
-        let initial_doc = parse_doc(ALLOW_YAML);
-        let slot = Arc::new(ArcSwap::new(Arc::new(initial_doc.clone())));
+        let initial = Arc::new(parse_doc(ALLOW_YAML));
+        let slot = Arc::new(ArcSwap::new(initial.clone()));
 
         let _watcher = start_watcher(tmp.path(), slot.clone()).unwrap();
 
         // Overwrite the file with the DENY policy until the watcher reports it.
         let path = tmp.path().to_path_buf();
-        let current_doc = wait_for_swap(&slot, &initial_doc, || {
+        let current_doc = wait_for_swap(&slot, &initial, || {
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)
