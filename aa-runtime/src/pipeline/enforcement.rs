@@ -101,7 +101,13 @@ pub struct EnforcementOutcome {
     pub findings: Vec<CredentialFinding>,
     /// Number of fields that hit the size cap and were redacted whole.
     pub oversized_fields: usize,
-    /// Total bytes actually handed to the scanner across all fields.
+    /// Total **input** bytes inspected across all fields.
+    ///
+    /// Counted from the field as it arrived, never from a decoded form of it:
+    /// `String::from_utf8_lossy` expands every invalid byte into a 3-byte
+    /// U+FFFD, so counting the decoded length would inflate this figure — and
+    /// the `aa_runtime_scan_payload_bytes` histogram it feeds — by up to 3x for
+    /// a binary payload (AAASM-5346).
     pub scanned_bytes: usize,
     /// Number of SDK-supplied trust-marker labels (see [`TRUST_MARKER_LABELS`])
     /// that were stripped from the event — i.e. forgery attempts the runtime
@@ -285,9 +291,12 @@ impl RuntimeScanner {
             self.apply_oversized_bytes(field, outcome);
             return;
         }
+        // Count the payload as it arrived. `from_utf8_lossy` below can expand
+        // it (each invalid byte becomes a 3-byte U+FFFD), and the accounting
+        // must describe the payload, not an artefact of decoding it.
+        outcome.scanned_bytes += field.len();
         // Normalize: a `bytes` payload is scanned as lossy UTF-8 text.
         let text = String::from_utf8_lossy(field);
-        outcome.scanned_bytes += text.len();
         let result = self.scanner.scan(&text);
         if !result.is_clean() {
             let redacted = result.redact(&text);
