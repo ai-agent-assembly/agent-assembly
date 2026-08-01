@@ -237,11 +237,25 @@ impl CanonicalCategory {
 pub enum ParseCategoryError {
     /// The string does not render any category in this build's catalogue.
     ///
-    /// This is the right answer for a category a *newer* build produced — a
-    /// B-7 locale category read by a reader that predates it — because the
-    /// alternative is fabricating a category whose meaning this build does not
-    /// know (ADR 0032 §5: an unusable input is a recorded failure, never a
-    /// clean result).
+    /// The right answer for a category a *newer* build produced — a 5353 locale
+    /// category read by a reader that predates it — because the alternative is
+    /// fabricating one whose meaning this build does not know (ADR 0032 §5: an
+    /// unusable input is a recorded failure, never a clean result).
+    ///
+    /// It deliberately carries **no recognised base**, even though the base of
+    /// `NATIONAL_ID[zh-TW/arc_new]` is legible to a build that has never heard
+    /// of that locale, and even though the base is the level policy matches on.
+    /// Handing back a base would let an older dashboard route a newer finding,
+    /// which is a real cost — but it would also let a *decision* path act on a
+    /// category it cannot fully interpret, and the qualifier is not decoration:
+    /// a locale can change what a finding means. Degrading to a partial
+    /// category is how a confident-looking wrong answer gets made, and ADR 0032
+    /// §5 exists to stop exactly that.
+    ///
+    /// The read path that genuinely wants this is display, not enforcement, and
+    /// it should ask for it explicitly rather than receive it as a fallback.
+    /// That belongs with AAASM-5355, which owns the dashboard projection and
+    /// can add a `parse_base` whose name says it is doing something weaker.
     UnknownCategory,
 }
 
