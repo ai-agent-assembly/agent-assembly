@@ -6,8 +6,9 @@
 
 This ADR records how Agent Assembly detects sensitive data: a deterministic
 in-process fast path that stays authoritative for every synchronous decision, a
-canonical provider-neutral finding model, and optional local-only providers
-consulted asynchronously for large or high-risk payloads. It **complements**
+canonical provider-neutral finding model, and — **deferred post-v1 by decision
+D-1** — optional local-only providers consulted asynchronously for large or
+high-risk payloads. It **complements**
 [ADR 0015](0015-dlp-trust-boundary-and-redaction-semantics.md), whose trust
 boundary and fail-safety rules it preserves unchanged and whose reconsideration
 trigger #2 ("an upstream classifier") invited it; it **defers to**
@@ -19,12 +20,18 @@ a local boundary may take. It supersedes nothing.
 Supporting evidence, measurements and the full current-state survey are in
 [the AAASM-5269 Spike report](../research/AAASM-5269-sensitive-data-provider-architecture.md).
 
-> **Both open decisions were resolved on 2026-08-01** (AAASM-5343). D-1:
-> out-of-process providers are **not in scope for v1**. D-2: `RuntimeVerdict`
-> stays frozen and an additive `sensitive_data_disposition` field carries the
-> finer vocabulary. See §10. Sections 6 and 7 therefore describe **deferred
-> post-v1 specification**, not v1 commitments — they are retained rather than
-> deleted so the follow-up ADR inherits the analysis instead of repeating it.
+> **Both open decisions were resolved on 2026-08-01** by the product owner
+> (Bryant Liu), recorded in AAASM-5343, and a third decision (D-3, the release
+> target for the `zh-TW` defect) is recorded alongside them. D-1: out-of-process
+> providers are **not in scope for v1**. D-2: `RuntimeVerdict` stays frozen and
+> an additive `sensitive_data_disposition` field carries the finer vocabulary.
+> See §10.
+>
+> **Sections 4 through 7 therefore describe deferred post-v1 specification**, not
+> v1 commitments — they are retained rather than deleted so the follow-up ADR
+> inherits the analysis instead of repeating it. Parts of the Accepted risks,
+> Consequences, Operational guidance and Validation requirements sections are
+> likewise scoped to that deferred work and are marked where they are.
 
 ---
 
@@ -71,15 +78,18 @@ tokenisation and entropy model that must first be made script-aware.
 
 The adversary set differs by deployment and must not be collapsed:
 
-- **A malicious or compromised provider.** It sees payload content by
-  construction, so the mitigations are containment (no egress) and non-authority
-  (its output is evidence, never a decision). It may also return crafted spans;
-  redaction must remain fail-closed.
-- **A local unprivileged user.** On a developer host, any local user can reach a
-  `127.0.0.1` socket, and the kernel supplies no peer identity over loopback TCP
-  — the reasoning ADR 0030 forbidden design #7 already recorded.
-- **A supply-chain adversary.** Mutable image tags, unsigned artifacts and
-  runtime model downloads are the delivery vectors.
+- **A malicious or compromised provider** *(not a v1 adversary — D-1)*. It sees
+  payload content by construction, so the mitigations are containment (no egress)
+  and non-authority (its output is evidence, never a decision). It may also
+  return crafted spans — and **that half is a v1 concern regardless**, because
+  any detection source can produce a bad span: redaction must remain fail-closed.
+- **A local unprivileged user** *(not a v1 adversary — D-1; there is no local
+  socket in v1)*. On a developer host, any local user can reach a `127.0.0.1`
+  socket, and the kernel supplies no peer identity over loopback TCP — the
+  reasoning ADR 0030 forbidden design #7 already recorded.
+- **A supply-chain adversary** *(not a v1 adversary for provider artifacts —
+  D-1)*. Mutable image tags, unsigned artifacts and runtime model downloads are
+  the delivery vectors.
 - **An agent attempting evasion.** Encoding, splitting and script-mixing are all
   live techniques; the zh-TW finding shows script-mixing already changes detector
   behavior today.
@@ -128,6 +138,12 @@ Escalation is by risk class and payload size, never by default.
 
 ### 4. Providers are sensors with a declared capability set
 
+> **Deferred post-v1 (D-1).** No provider exists in v1, so nothing here is a v1
+> requirement. Two rules in this section are **not** deferred, because they are
+> general sensor-fusion invariants that bind the canonical finding model itself:
+> an unsupported locale or exceeded ceiling is a **capability miss, never a clean
+> scan**, and no detection source may return raw secret material.
+
 A provider declares the categories, locales, payload-size ceiling and confidence
 semantics it supports. Routing consults only providers whose declared
 capabilities cover the request.
@@ -142,6 +158,10 @@ locale would silently report "no sensitive data" for every Chinese payload.
 must set it and must reject any response carrying raw match text.
 
 ### 5. Provider failure semantics are explicit and never silently clean
+
+> **Deferred post-v1 (D-1).** No provider exists in v1. The invariant that a
+> detection failure **never downgrades to "clean"** is *not* deferred — it binds
+> any detection path, including the in-process one.
 
 Timeout, error, unavailability, capability miss and fallback are distinct
 outcomes, each recorded. A deep-path failure never downgrades to "clean"; it
@@ -186,9 +206,12 @@ Otherwise use a **cluster-local shared service**. Presidio at 746 MiB fails the
 first test and, being ineligible for the synchronous path, does not need the
 second — Presidio is shared-service-only.
 
-Docker Compose examples are in scope. Kubernetes production orchestration remains
-a research question under [ADR 0006](0006-limited-self-host-k8s-terraform.md),
-not committed implementation work.
+**Provider** Docker Compose examples are in scope for the deferred work — this
+sentence scopes provider assets only and does not narrow the workspace-wide
+policy that Compose examples are permitted. Kubernetes production orchestration
+remains a research question under
+[ADR 0006](0006-limited-self-host-k8s-terraform.md), not committed
+implementation work.
 
 ### 8. Sensitive-data decisions get their own event and projection
 
@@ -237,7 +260,9 @@ every PII category and admits only long random secrets.
 
 ### 10. Resolved product decisions
 
-Both decisions this ADR opened were answered on **2026-08-01** (AAASM-5343).
+Both decisions this ADR opened were answered by the product owner (Bryant Liu)
+on **2026-08-01**, recorded in AAASM-5343. A third decision, D-3, was made at the
+same time and is recorded below.
 
 #### D-1 — out-of-process providers are NOT in scope for v1
 
@@ -252,21 +277,27 @@ Consequences that bind implementation:
   post-v1 specification.** They are retained, not deleted, so a future ADR
   inherits the analysis and the measurements rather than re-deriving them. No v1
   ticket may cite them as a requirement.
-- The **provider port abstraction may still be introduced**, because the
-  canonical finding model needs a seam and an in-tree test double is not an
-  out-of-process provider. What may not ship is any adapter that leaves the
-  process.
+- The **provider port and its in-tree test double remain in v1** — not as a new
+  permission this ADR grants itself, but because they are Phase 2 of the
+  migration in the [Spike report §8](../research/AAASM-5269-sensitive-data-provider-architecture.md),
+  and the option the product owner adopted is that report's option A,
+  "in-process, in-tree adapters only (v1)". The v1 line falls between Phase 3 and
+  Phase 4. Two constraints on that seam: it **must not be reachable from a
+  synchronous enforcement path** (forbidden design #1), and **no adapter that
+  leaves the process may ship**.
 - The v1 threat model **shrinks**: provider compromise, provider egress and
   provider supply-chain are not v1 threats, since no provider exists. The
-  corresponding entries in §5 of the Spike report remain valid for the deferred
+  corresponding entries in §5.5 of the Spike report remain valid for the deferred
   work only.
 - The forbidden designs in this ADR remain in force regardless — in particular
   #1 (no provider on a synchronous path) and #7/#8, which constrain the deferred
   design if and when it is taken up.
 
-The evidence that made this the low-cost answer: Phases 0–3 of §8 contain no
-provider at all and deliver the locale correctness fix, the canonical model and
-the entire event/analytics layer without touching any accepted ADR.
+The evidence that made this the low-cost answer: Phases 0–3 of the
+[Spike report's §8 migration](../research/AAASM-5269-sensitive-data-provider-architecture.md)
+contain no *out-of-process* provider and still deliver the locale correctness
+fix, the canonical model and the entire event/analytics layer without touching
+any accepted ADR.
 
 #### D-2 — `RuntimeVerdict` stays frozen; disposition is a separate additive field
 
@@ -286,31 +317,53 @@ Binding rules for its implementation:
 - It is **additive and optional**. Absent or `none` must mean exactly what
   today's absence of the field means, so every existing consumer keeps working
   unchanged.
-- `RuntimeVerdict::Scrub` remains the verdict for **every** transforming
-  disposition; the new field distinguishes *which* transformation beneath it. A
-  reader that only understands `RuntimeVerdict` must still reach a correct, if
-  coarser, conclusion.
+- Every disposition maps onto an existing `RuntimeVerdict`, so a reader that
+  understands only `RuntimeVerdict` still reaches a correct, if coarser,
+  conclusion. The mapping is part of the contract and is not left to the
+  implementer:
+
+  | `sensitive_data_disposition` | `RuntimeVerdict` |
+  |---|---|
+  | `redact` / `mask` / `tokenize` | `Scrub` |
+  | `require_approval` | `Pending` |
+  | `approval_granted` | `Allow` |
+  | `approval_denied` | `Deny` |
+  | `shadow_only` | `Allow` |
+  | `none` | unchanged — the verdict carries the whole meaning |
+
 - The Rust and wire representations must be designed together and must satisfy
   ADR 0018 and ADR 0024. Public API and wire compatibility are preserved; any
   breaking representation requires a separately approved ticket.
-- The field is a **disposition**, not a decision: it records what was done to the
-  payload, never why it was authorised.
+- The field records **what happened to the payload and to the approval of the
+  action**, at a granularity `RuntimeVerdict` deliberately does not carry. It is
+  not a second authorisation channel: nothing may consult it to decide whether an
+  action is permitted, and `RuntimeVerdict` remains the authoritative outcome.
 
-#### D-3 — the `zh-TW` false-positive defect ships in `v0.0.1-rc.7`
+#### D-3 — the fix for the `zh-TW` false-positive defect ships in `v0.0.1-rc.7`
 
-Recorded here for traceability; the fix is carried by its own Bug ticket rather
+Recorded here for traceability; the fix is carried by
+[AAASM-5344](https://lightning-dust-mite.atlassian.net/browse/AAASM-5344) rather
 than by this ADR. It is treated as an urgent production defect **ahead of** the
 architecture migration, because under `credential_action: Block` an agent
 communicating in Chinese is denied outright today.
 
-Two constraints on that fix, both of which this ADR's §9 and the Spike report
-§4.1 already imply:
+Two constraints on that fix, stated as the product owner gave them:
 
 - it must ship with **CJK/script-aware conformance coverage**, since the absence
   of any CJK vector is precisely why the defect survived;
-- it must **not weaken** ASCII base64, hex, API-key or private-key detection —
-  a secret in those encodings is ASCII by definition, so a script-aware fix
-  costs no detection strength.
+- it must **not weaken detection of ASCII base64, hex or high-entropy secrets**.
+
+Note the third term: the detector being modified *is* the high-entropy one, so
+"do not weaken high-entropy detection" is the constraint that actually binds this
+fix, not a formality. In particular a naive "skip any token containing
+non-ASCII" implementation would create a script-prefix bypass — prepend one CJK
+character to a secret and the whole token is skipped. AAASM-5344 therefore
+requires an explicit bypass test.
+
+The supporting constraints already in this ADR are §2 (the `CredentialKind`
+variants and labels are frozen and pinned by 26 conformance vectors), forbidden
+design #9 (never edit a committed golden vector to make a change pass) and
+validation requirements 2–3.
 
 ---
 
@@ -325,11 +378,13 @@ Two constraints on that fix, both of which this ADR's §9 and the Spike report
   checksum; phone and passport formats have no checksum at all. Context keywords
   reduce but do not eliminate this. We state the residual rather than claim
   precision.
-- **A provider sees payload content.** Containment (no egress) and non-authority
-  bound the damage; they do not eliminate the exposure. Accepted only for
-  operator-deployed local providers.
-- **Deep-path findings arrive after the action.** By construction, asynchronous
-  inspection cannot prevent the transmission it inspects. Its value is detection,
+- **A provider sees payload content** *(not a v1 risk — D-1; no provider
+  exists)*. Containment (no egress) and non-authority bound the damage; they do
+  not eliminate the exposure. Accepted only for operator-deployed local
+  providers.
+- **Deep-path findings arrive after the action** *(not a v1 risk — D-1; there is
+  no deep path)*. By construction, asynchronous inspection cannot prevent the
+  transmission it inspects. Its value is detection,
   alerting and subsequent policy adjustment — and the metric dictionary must not
   let those be counted as prevention.
 - **Writing a second projection duplicates storage.** Accepted for the duration
@@ -378,9 +433,10 @@ Two constraints on that fix, both of which this ADR's §9 and the Spike report
 ## Consequences
 
 **Operators** gain sensitive-data analytics that distinguish blocked from
-redacted and events from findings, and a truthful prevention metric. They take on
-provider lifecycle if they opt into the deep path — Agent Assembly generates and
-validates the assets but does not run the container runtime.
+redacted and events from findings, and a truthful prevention metric. In v1 they
+take on **no** provider lifecycle, because there is no provider; if the deferred
+deep path is later accepted, they would — Agent Assembly generates and validates
+the assets but does not run the container runtime.
 
 **SaaS** gains a bounded-cardinality metric surface and a tenant-scoped event
 store. Deep-path providers are a per-tenant cost decision, not a platform default.
@@ -388,7 +444,7 @@ store. Deep-path providers are a per-tenant cost decision, not a platform defaul
 **SDK / CLI consumers** see no change. `CredentialKind` and the redaction labels
 are frozen, so no vector, SDK or generated client moves.
 
-**`zh-TW` deployments** get correct behavior once the Phase 0 defect fix lands,
+**`zh-TW` deployments** get correct behavior once the AAASM-5344 defect fix lands,
 and first-party Taiwan recognizers thereafter — which no external provider offers
 at all.
 
@@ -403,6 +459,15 @@ kept honest as adapters are added.
 
 ## Operational guidance
 
+**Applies to v1:**
+
+- Under `credential_action: Block`, `zh-TW` traffic is unsafe until the fix in
+  [AAASM-5344](https://lightning-dust-mite.atlassian.net/browse/AAASM-5344)
+  ships in `v0.0.1-rc.7`. Operators running Chinese-language agents should use a
+  non-blocking `credential_action` until then.
+
+**Deferred post-v1 (D-1) — there is no provider to operate in v1:**
+
 - The deep path is **off by default**. Enabling it is an explicit configuration
   act.
 - Pin provider artifacts by **digest**, never by mutable tag; verify signatures
@@ -413,33 +478,39 @@ kept honest as adapters are added.
 - Give provider workloads no egress. Verify with a negative test, not by
   inspection.
 - Size a shared provider service for the cluster; do not multiply it per Pod.
-- Under `credential_action: Block`, `zh-TW` traffic is unsafe until the Phase 0
-  fix ships.
 
 ---
 
 ## Validation requirements
 
-A reviewer can confirm this ADR is enforced by checking that:
+**Enforceable in v1** — a reviewer can confirm this ADR is enforced by checking
+that:
 
-1. No synchronous enforcement path can reach a provider — a compile-time or
-   type-level boundary, not a convention.
-2. Conformance vectors cover CJK and full-width false-positive cases and pass.
-3. All 26 existing vectors pass unchanged.
-4. A negative egress test proves provider workloads cannot reach the internet.
-5. A provider returning crafted or out-of-range spans cannot cause raw content to
-   be emitted — the existing fail-closed redaction test extended to adapter input.
-6. A capability miss and a timeout each produce a distinct recorded outcome, and
-   neither produces a clean result.
-7. An adapter test asserts no raw secret material appears in any adapter output.
-8. A metric-label cardinality test rejects `agent_id`, `destination`,
+1. Conformance vectors cover CJK and full-width false-positive cases and pass.
+2. All 26 existing vectors pass unchanged, with no golden vector edited to make a
+   change pass.
+3. A detection source returning crafted or out-of-range spans cannot cause raw
+   content to be emitted — the existing fail-closed redaction test, which binds
+   the in-process scanner just as much as any future adapter.
+4. A metric-label cardinality test rejects `agent_id`, `destination`,
    `session_id` and fingerprints.
-9. A counting test asserts the §8 worked example: three findings in one blocked
+5. A counting test asserts the §8 worked example: three findings in one blocked
    action give `blocked_event_count = 1`, `blocked_finding_count = 3`.
-10. A prevention-metric test asserts that absence of execution evidence prevents
-    an event from counting as prevented.
-11. A benchmark shows the fast path has not regressed against the numbers in the
-    Spike report.
+6. A prevention-metric test asserts that absence of execution evidence prevents
+   an event from counting as prevented.
+7. A benchmark shows the fast path has not regressed against the numbers in the
+   Spike report.
+8. The provider port, if introduced, is not reachable from a synchronous
+   enforcement path — a compile-time or type-level boundary, not a convention.
+
+**Deferred with §4–§7 (D-1)** — these cannot be satisfied in v1 because the thing
+they validate does not exist. They become required when the follow-up provider
+ADR is accepted:
+
+- A negative egress test proves provider workloads cannot reach the internet.
+- A capability miss and a timeout each produce a distinct recorded outcome, and
+  neither produces a clean result.
+- An adapter test asserts no raw secret material appears in any adapter output.
 
 ---
 
@@ -449,9 +520,14 @@ A reviewer can confirm this ADR is enforced by checking that:
   fast path, making synchronous provider consultation arguable.
 - Presidio (or a successor) ships genuine `zh-TW` recognizers, changing the
   build-versus-adopt calculus for the locale pack.
-- Measured deep-path value proves too low to justify the operational cost.
+- **A concrete, v1-shipped need for third-party engine coverage that the
+  deterministic path cannot meet** — unstructured-PII NER is the likely trigger.
+  This is what reopens **D-1**, via the follow-up provider ADR, and it is the
+  most consequential trigger on this list.
+- Measured deep-path value proves too low to justify the operational cost
+  *(applies to the deferred provider work only)*.
 - A provider compromise occurs in the wild, or a supply-chain incident affects a
-  recommended provider.
+  recommended provider *(applies to the deferred provider work only)*.
 - The product commits to Kubernetes production orchestration, which would move
   §7 from analysis to specification.
 - `RuntimeVerdict` is reopened for any other reason, making D-2 moot.
@@ -475,5 +551,5 @@ A reviewer can confirm this ADR is enforced by checking that:
 | [ADR 0030](0030-developer-integration-boundaries-and-trust-model.md) | constrains local transport and adapter loading |
 | [ADR 0002](0002-sdk-security-boundary.md) | detection authority stays in trusted layers |
 | [ADR 0006](0006-limited-self-host-k8s-terraform.md) | self-host scope for §7 |
-| Implementation PRs | tracked as the `B-` series under AAASM-5270 |
-| Fix version for D-3 | `agent-assembly v0.0.1-rc.7` |
+| [AAASM-5344](https://lightning-dust-mite.atlassian.net/browse/AAASM-5344) | carries the D-3 `zh-TW` fix; ships in `v0.0.1-rc.7` |
+| Implementation PRs | none yet — `B-1`/`B-2`/`B-3`/`B-4` exist as AAASM-5347/5344/5345/5346; the rest of the `B-` series is proposed, not created |
