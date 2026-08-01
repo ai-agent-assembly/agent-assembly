@@ -925,6 +925,34 @@ mod tests {
         );
     }
 
+    /// Contract item 5: enrolment credentials stay separate from the durable
+    /// identity key.
+    ///
+    /// The gateway's `credential_token` is a short-lived bootstrap credential
+    /// held in memory (`AssemblyClient` keeps it in a `Zeroizing<String>`), and
+    /// the registration nonce is per-handshake. Neither may be parked in the key
+    /// file: a durable file holding a bearer token is a token with the lifetime
+    /// of an identity, and one holding the nonce would make the possession proof
+    /// precomputable again. Pinning the record's field set is what stops that
+    /// happening by accident later.
+    #[test]
+    fn a_key_file_holds_only_the_identity_key_and_never_a_bootstrap_credential() {
+        let store = store("fields");
+        store.enroll("agent-a").expect("enrolment");
+        let contents = fs::read_to_string(store.key_path("agent-a")).expect("read");
+
+        let mut lines = contents.lines();
+        assert_eq!(lines.next(), Some(KEY_FILE_MAGIC));
+
+        let fields: Vec<&str> = lines.filter_map(|l| l.split_once('=').map(|(k, _)| k)).collect();
+        assert_eq!(
+            fields,
+            vec!["agent_id_hex", "created_at_unix", "secret_seed_hex"],
+            "the key file's field set changed; a durable file must not gain a credential token, \
+             a registration nonce, or anything else with a shorter life than the identity"
+        );
+    }
+
     // ── rotation and revocation ───────────────────────────────────────────
 
     #[test]
