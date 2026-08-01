@@ -891,6 +891,27 @@ mod tests {
         assert!(!rendered.contains(AWS_KEY));
     }
 
+    /// AAASM-5346: dropping a payload whole because it could not be decoded is a
+    /// coarser redaction than configured, so operators get a dedicated counter
+    /// rather than having it disappear into the generic finding metric.
+    #[test]
+    fn enforce_emits_undecodable_metric() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, || {
+            let scanner = RuntimeScanner::new();
+            let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+                args_json: binary_payload_with_secret(),
+                ..Default::default()
+            }));
+            scanner.enforce(&mut event);
+        });
+
+        let rendered = handle.render();
+        assert!(rendered.contains("aa_runtime_scan_undecodable_total"));
+        assert!(!rendered.contains(AWS_KEY), "the raw secret never reaches a metric");
+    }
+
     #[test]
     fn from_runtime_config_maps_size_cap_and_keeps_fail_closed_policy() {
         let rc = RuntimeConfig {
