@@ -28,6 +28,29 @@ use crate::scanner::{CredentialFinding, CredentialKind};
 /// bytes may legitimately differ.
 pub const SCANNER_PROVENANCE: Provenance = Provenance::new(Recognizer::BuiltinScanner, env!("CARGO_PKG_VERSION"));
 
+/// The recognizer identity carried by findings produced from an operator's
+/// `data.sensitive_patterns` regex.
+///
+/// Versioned with this crate too: the regex is the operator's, but the
+/// finding's shape and the mapping that interprets it are ours.
+pub const POLICY_REGEX_PROVENANCE: Provenance = Provenance::new(Recognizer::PolicyRegex, env!("CARGO_PKG_VERSION"));
+
+/// Which recognizer actually produced a finding of this kind.
+///
+/// [`CredentialKind::Custom`] is the label the scanner applies to matches from
+/// an operator's `data.sensitive_patterns` regex, and those are constructed by
+/// `aa-gateway` via
+/// [`CredentialFinding::from_regex_match`](crate::scanner::CredentialFinding::from_regex_match)
+/// — the built-in scanner never sees them. Stamping every lift with
+/// [`SCANNER_PROVENANCE`] named a detector that had not run: the `method` axis
+/// said `policy_defined` while the identity axis said `aa-security::scanner`.
+const fn provenance_for(kind: &CredentialKind) -> Provenance {
+    match kind {
+        CredentialKind::Custom => POLICY_REGEX_PROVENANCE,
+        _ => SCANNER_PROVENANCE,
+    }
+}
+
 impl DetectionMethod {
     /// How the built-in scanner detects this kind.
     ///
@@ -143,28 +166,29 @@ impl TryFrom<&CredentialFinding> for CanonicalFinding {
             return Err(LiftError::MalformedSpan { offset, end });
         }
         let confidence = ConfidenceBand::for_credential_kind(&finding.kind);
-        Ok(Self {
-            category: CanonicalCategory::from_credential_kind(&finding.kind),
-            severity: Severity::for_credential_kind(&finding.kind),
+        Self::new(
+            CanonicalCategory::from_credential_kind(&finding.kind),
+            Severity::for_credential_kind(&finding.kind),
             confidence,
-            span: ByteSpan::new(offset, end),
-            method: DetectionMethod::for_credential_kind(&finding.kind),
-            provenance: SCANNER_PROVENANCE,
+            ByteSpan::new(offset, end),
+            DetectionMethod::for_credential_kind(&finding.kind),
+            provenance_for(&finding.kind),
             // A detection the recognizer cannot be wrong about is `Confirmed`;
             // anything the recognizer itself rates lower is a real finding from
             // a source that can be wrong about it, which is `Suspected`. Note
             // that neither means "clean" — no status does (ADR 0032 §5).
-            status: match confidence {
+            match confidence {
                 ConfidenceBand::High => FindingStatus::Confirmed,
                 ConfidenceBand::Medium | ConfidenceBand::Low => FindingStatus::Suspected,
             },
-        })
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::{CanonicalCategory, LiftError, Recognizer};
     use crate::CredentialScanner;
 
     /// The exact bypass this module's fallibility exists for.
@@ -220,12 +244,12 @@ mod tests {
         for text in corpus {
             for finding in &scanner.scan(text).findings {
                 let canonical = CanonicalFinding::try_from(finding).expect("scanner spans are well formed");
-                assert_eq!(canonical.span.start(), finding.offset, "start moved");
-                assert_eq!(canonical.span.end(), finding.end(), "end moved");
+                assert_eq!(canonical.span().start(), finding.offset, "start moved");
+                assert_eq!(canonical.span().end(), finding.end(), "end moved");
                 // A span that reproduces both bounds must also slice the text.
-                assert!(text.is_char_boundary(canonical.span.start()));
-                assert!(text.is_char_boundary(canonical.span.end()));
-                assert!(!canonical.span.is_empty(), "a finding always covers bytes");
+                assert!(text.is_char_boundary(canonical.span().start()));
+                assert!(text.is_char_boundary(canonical.span().end()));
+                assert!(!canonical.span().is_empty(), "a finding always covers bytes");
                 checked += 1;
             }
         }
@@ -233,5 +257,58 @@ mod tests {
             checked >= 5,
             "corpus produced too few findings to prove anything: {checked}"
         );
+    }
+
+    /// A hand-built finding runs the same span check the lift does.
+    ///
+    /// `TryFrom` guarded one construction path; `CanonicalFinding` had seven
+    /// public fields, so a struct literal in any downstream crate reproduced
+    /// exactly the state that guard exists to reject — and could assign one
+    /// afterwards. The fields are private now, so this is the only door and it
+    /// is checked. An invariant enforced on one path is not an invariant.
+    #[test]
+    fn a_hand_built_finding_cannot_carry_a_malformed_span() {
+        let build = |span| {
+            CanonicalFinding::new(
+                CanonicalCategory::unqualified(crate::canonical::CategoryBase::EmailAddress),
+                Severity::Medium,
+                ConfidenceBand::Medium,
+                span,
+                DetectionMethod::Heuristic,
+                SCANNER_PROVENANCE,
+                FindingStatus::Suspected,
+            )
+        };
+        assert_eq!(
+            build(ByteSpan::new(6, 0)),
+            Err(LiftError::MalformedSpan { offset: 6, end: 0 })
+        );
+        assert_eq!(
+            build(ByteSpan::new(4, 4)),
+            Err(LiftError::MalformedSpan { offset: 4, end: 4 })
+        );
+        assert!(build(ByteSpan::new(4, 5)).is_ok());
+    }
+
+    /// A policy-regex finding is attributed to the policy engine, not to the
+    /// scanner that never saw it.
+    ///
+    /// `CredentialKind::Custom` is what the gateway produces via
+    /// `from_regex_match` at `engine/mod.rs:1450` and `:2220`. Stamping it
+    /// `aa-security::scanner` made the identity axis contradict the `method`
+    /// axis, which already said `policy_defined`.
+    #[test]
+    fn a_policy_regex_finding_is_not_attributed_to_the_builtin_scanner() {
+        let custom = CredentialFinding::from_regex_match(3, 19);
+        let lifted = CanonicalFinding::try_from(&custom).expect("well-formed span");
+        assert_eq!(lifted.provenance().recognizer, Recognizer::PolicyRegex);
+        assert_eq!(lifted.provenance().recognizer.as_str(), "aa-gateway::policy_regex");
+        assert_eq!(lifted.method(), DetectionMethod::PolicyDefined);
+
+        // Everything the scanner itself detects keeps the scanner's identity.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("aws_access_key_id = AKIAIOSFODNN7EXAMPLE");
+        let lifted = CanonicalFinding::try_from(&result.findings[0]).expect("well-formed span");
+        assert_eq!(lifted.provenance().recognizer, Recognizer::BuiltinScanner);
     }
 }

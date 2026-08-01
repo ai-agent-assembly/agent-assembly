@@ -202,6 +202,14 @@ impl FindingStatus {
 pub enum Recognizer {
     /// The built-in Aho-Corasick scanner in [`crate::scanner`].
     BuiltinScanner,
+    /// An operator-authored `data.sensitive_patterns` regex, evaluated by the
+    /// gateway's policy engine rather than by the built-in scanner.
+    ///
+    /// These findings reach the canonical model through
+    /// [`CredentialFinding::from_regex_match`](crate::scanner::CredentialFinding::from_regex_match),
+    /// which `aa-gateway` calls from `engine/mod.rs`. Attributing them to the
+    /// built-in scanner would name a detector that never ran.
+    PolicyRegex,
 }
 
 impl Recognizer {
@@ -209,6 +217,7 @@ impl Recognizer {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::BuiltinScanner => "aa-security::scanner",
+            Self::PolicyRegex => "aa-gateway::policy_regex",
         }
     }
 }
@@ -244,27 +253,125 @@ impl Provenance {
 
 /// One canonical, provider-neutral sensitive-data finding (ADR 0032 §2).
 ///
-/// Note what this struct does *not* have: an owned `String`. Category and
-/// provenance are `&'static str` behind their types, and the rest is enums and
-/// offsets. A raw matched value is not merely forbidden here, it is
-/// unrepresentable, which is the strongest form of the guarantee
-/// [`CredentialFinding`](crate::scanner::CredentialFinding) makes by storing the
-/// redaction label instead of the match (ADR 0032 §9, validation requirement 9).
+/// # Construction
+///
+/// Fields are private and there are exactly two ways in:
+/// [`TryFrom<&CredentialFinding>`](CanonicalFinding#impl-TryFrom<%26CredentialFinding>)
+/// and [`new`](Self::new). Both run the same span check.
+///
+/// That is deliberate rather than tidiness. With public fields a caller could
+/// write the struct literal directly and reproduce exactly the state the
+/// fallible lift exists to reject — an inverted span carrying the built-in
+/// scanner's provenance — and could equally assign one after the fact. An
+/// invariant enforced only on one construction path is not an invariant.
+///
+/// # What it cannot carry, and what it can
+///
+/// There is no owned `String` field: category and provenance hold
+/// `&'static str`, and the rest is enums and offsets. So a finding built by
+/// this crate carries no raw matched value — the lift derives category and
+/// provenance from compiled-in constants only, never from scanned bytes, which
+/// is the same guarantee [`CredentialFinding`](crate::scanner::CredentialFinding)
+/// gives by storing the redaction label instead of the match (ADR 0032 §9,
+/// validation requirement 9).
+///
+/// This is a property of **how this crate constructs findings**, not of the
+/// types. `&'static str` does not mean "compiled in": `Box::leak` produces one
+/// from arbitrary runtime bytes in safe stable Rust, so a caller determined to
+/// put a secret in a qualifier or a version string can. See
+/// [`CategoryQualifier`](crate::canonical::CategoryQualifier) for the same note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
 pub struct CanonicalFinding {
+    category: CanonicalCategory,
+    severity: Severity,
+    confidence: ConfidenceBand,
+    span: ByteSpan,
+    method: DetectionMethod,
+    provenance: Provenance,
+    status: FindingStatus,
+}
+
+impl CanonicalFinding {
+    /// Assemble a finding, rejecting a span that is empty or inverted.
+    ///
+    /// The same check [`TryFrom<&CredentialFinding>`](CanonicalFinding) applies,
+    /// so a hand-built finding cannot express a state a lifted one could not.
+    ///
+    /// # Errors
+    ///
+    /// [`LiftError::MalformedSpan`](crate::canonical::LiftError::MalformedSpan)
+    /// when `span.end() <= span.start()`. A finding covers at least one byte.
+    pub fn new(
+        category: CanonicalCategory,
+        severity: Severity,
+        confidence: ConfidenceBand,
+        span: ByteSpan,
+        method: DetectionMethod,
+        provenance: Provenance,
+        status: FindingStatus,
+    ) -> Result<Self, crate::canonical::LiftError> {
+        if span.end() <= span.start() {
+            return Err(crate::canonical::LiftError::MalformedSpan {
+                offset: span.start(),
+                end: span.end(),
+            });
+        }
+        Ok(Self {
+            category,
+            severity,
+            confidence,
+            span,
+            method,
+            provenance,
+            status,
+        })
+    }
+
     /// What was found, in provider-neutral terms.
-    pub category: CanonicalCategory,
+    pub const fn category(&self) -> CanonicalCategory {
+        self.category
+    }
+
     /// How damaging its exposure would be.
-    pub severity: Severity,
+    pub const fn severity(&self) -> Severity {
+        self.severity
+    }
+
     /// How much the recognizer trusts the finding. Never an authorisation input.
-    pub confidence: ConfidenceBand,
+    pub const fn confidence(&self) -> ConfidenceBand {
+        self.confidence
+    }
+
     /// The byte region covered. Audit tier only — see [`ByteSpan`].
-    pub span: ByteSpan,
+    pub const fn span(&self) -> ByteSpan {
+        self.span
+    }
+
     /// The technique that produced it.
-    pub method: DetectionMethod,
+    pub const fn method(&self) -> DetectionMethod {
+        self.method
+    }
+
     /// Which recognizer produced it, and at which version.
-    pub provenance: Provenance,
+    pub const fn provenance(&self) -> Provenance {
+        self.provenance
+    }
+
     /// Its triage state.
-    pub status: FindingStatus,
+    pub const fn status(&self) -> FindingStatus {
+        self.status
+    }
+
+    /// The same finding with a different triage state.
+    ///
+    /// Status is the one field a later stage legitimately changes — a review
+    /// dismisses a finding or escalates it — and it carries no invariant, so it
+    /// moves through a transition rather than through a mutable field.
+    #[must_use]
+    pub const fn with_status(mut self, status: FindingStatus) -> Self {
+        self.status = status;
+        self
+    }
 }
