@@ -247,6 +247,29 @@ mod tests {
         );
     }
 
+    /// The label a category redacts to must reproduce the frozen published one
+    /// where a kind exists, and must fail closed where none does.
+    ///
+    /// The second half is the one worth a test. An unmappable finding that
+    /// produced no label would be indistinguishable from a clean scan by the
+    /// time it reached a caller, which is forbidden design #2; one that
+    /// produced `[REDACTED:NATIONAL_ID[zh-TW/arc_new]]` would publish a pattern
+    /// name absent from `GET /api/v1/scrub/patterns`.
+    #[test]
+    fn a_category_with_no_detector_redacts_to_the_opaque_label_not_to_nothing() {
+        let taiwan_arc = CanonicalCategory::with_locale(Base::NationalId, "zh-TW", "arc_new");
+        assert_eq!(taiwan_arc.redaction_label(), "[REDACTED]");
+
+        for kind in every_kind() {
+            assert_eq!(
+                CanonicalCategory::from_credential_kind(&kind).redaction_label(),
+                format!("[REDACTED:{}]", kind.as_str()),
+                "canonical redaction label diverged from the frozen label for {}",
+                kind.as_str()
+            );
+        }
+    }
+
     /// A category that no built-in detector produces has no `CredentialKind`,
     /// and the reverse mapping must say so rather than guess. This is the shape
     /// every B-7 locale category will have.
