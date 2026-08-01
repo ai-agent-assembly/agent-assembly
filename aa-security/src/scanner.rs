@@ -1918,6 +1918,34 @@ mod tests {
     }
 
     #[test]
+    fn fullwidth_finding_spans_are_char_boundaries_of_the_original_text() {
+        // The span contract `redact` depends on, asserted directly rather than
+        // inferred from redaction output: offsets index the *original* text and
+        // land on character boundaries. A span that satisfies this can always be
+        // spliced; one that does not sends `redact` down its fail-closed path.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "card=４５３２０１５１１２８３０３６６",
+            "ssn=１２３-４５-６７８９",
+            "card=4532０15112830366",
+        ] {
+            let result = scanner.scan(text);
+            assert!(!result.findings.is_empty(), "no finding for {text:?}");
+            for f in &result.findings {
+                assert!(
+                    text.is_char_boundary(f.offset),
+                    "offset {} splits a character",
+                    f.offset
+                );
+                assert!(text.is_char_boundary(f.end), "end {} splits a character", f.end);
+                // The span must cover the whole value, not a prefix of it.
+                assert!(contains_no_digit(&text[..f.offset]));
+                assert!(contains_no_digit(&text[f.end..]));
+            }
+        }
+    }
+
+    #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("contact: user@example.com for support");
