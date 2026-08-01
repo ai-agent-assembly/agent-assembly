@@ -5,6 +5,12 @@ name: Doc Links
 # docs/src/architecture.md etc. 404'd) that AAASM-4670 makes un-repeatable.
 # Internal-link only: no network calls, so no flaky external-URL failures and
 # no new heavy dependency (portable bash in scripts/check-doc-links.sh).
+#
+# Also guards against a Markdown file being added under docs/ outside the
+# mdBook src/ tree without a deliberate decision -- the AAASM-5328 regression
+# (five docs/devtools/ pages never rendered because book.toml's src = "src"
+# excludes anything outside docs/src/) that scripts/check-doc-orphans.sh
+# makes un-repeatable.
 permissions:
   contents: read
 
@@ -13,13 +19,17 @@ on:
     branches: [main]
     paths:
       - 'README.md'
+      - 'docs/**'
       - 'scripts/check-doc-links.sh'
+      - 'scripts/check-doc-orphans.sh'
       - '.github/workflows/doc-links.yml'
   push:
     branches: [main]
     paths:
       - 'README.md'
+      - 'docs/**'
       - 'scripts/check-doc-links.sh'
+      - 'scripts/check-doc-orphans.sh'
       - '.github/workflows/doc-links.yml'
 
 jobs:
@@ -30,3 +40,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Validate internal Markdown links in README
         run: bash scripts/check-doc-links.sh README.md
+      - name: Check for orphaned docs/ Markdown files outside src/
+        run: bash scripts/check-doc-orphans.sh
