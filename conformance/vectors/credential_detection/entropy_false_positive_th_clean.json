@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5344: clean Thai prose — no findings. Thai is the third space-less script and sits outside the Han ranges entirely, so a fix written as a CJK-codepoint exemption would satisfy the Chinese and Japanese vectors and still leave this one exposed. Thai's UTF-8 shape (a constant E0 lead byte and only two distinct second bytes) caps its byte entropy near 3.2, so unlike the Han vectors it clears today's 4.5 gate on entropy rather than on script — meaning it is the vector that fails first if the gate is ever retuned downward without accounting for multi-byte scripts. Its 45-byte clause sits inside the 20–64 window, so only the ASCII-run narrowing keeps it out of the gate's reach at any threshold.",
+  "input_text": "เอเจนต์จะสอบถามนโยบายจากเกตเวย์ ก่อนเรียกใช้เครื่องมือ หากนโยบายปฏิเสธ การเรียกใช้จะไม่เกิดขึ้น",
+  "expected_findings": [],
+  "expected_redacted": "เอเจนต์จะสอบถามนโยบายจากเกตเวย์ ก่อนเรียกใช้เครื่องมือ หากนโยบายปฏิเสธ การเรียกใช้จะไม่เกิดขึ้น"
+}
