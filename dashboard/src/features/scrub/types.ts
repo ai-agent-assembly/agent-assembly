@@ -81,6 +81,36 @@ export function redactionLabel(kind: string): string {
   return `[REDACTED:${kind}]`
 }
 
+/**
+ * One catalogue row as the gateway reports it (AAASM-5347).
+ *
+ * The API is the authority for *which* detectors exist and for the four facts it
+ * serves — kind, category, severity, and the exact redaction label. `local` is
+ * the dashboard's own transcription of how that kind is detected and how the
+ * in-page preview approximates it, joined on by kind; the API serves neither, so
+ * they cannot be sourced. It is optional on purpose: a scanner that gains a kind
+ * before the dashboard transcribes it must still appear in the catalogue, with
+ * the untranscribed parts rendering as explicit absences rather than the row
+ * silently vanishing.
+ *
+ * Note `severity` is a *sourced* field here. It was removed from
+ * {@link ScrubDetector} under AAASM-5156 because nothing in the product modelled
+ * it; `CredentialKind::severity()` now does, and the endpoint serves it.
+ */
+export interface ScrubCatalogueEntry {
+  /** `CredentialKind::as_str()` — the identity used everywhere else. */
+  readonly kind: string
+  /** Coarse detector family, verbatim from the API (e.g. `api_key`). */
+  readonly category: string
+  /** Fixed leak severity, verbatim from the API: critical/high/medium/low. */
+  readonly severity: string
+  /** The exact `[REDACTED:<kind>]` string this detector emits. */
+  readonly redactionLabel: string
+  readonly builtin: boolean
+  /** Local prose + preview approximation for this kind, when one is known. */
+  readonly local?: ScrubDetector
+}
+
 export interface ScrubPlainToken {
   kind: 'plain'
   text: string
