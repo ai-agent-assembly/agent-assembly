@@ -129,7 +129,7 @@ agent action
    │                                   ▼            ▼
    ├─► LAYER 2  aa-proxy (MitM HTTPS)  │   aa-gateway  EngineInner::evaluate
    │      scans body PRE-forward       │     engine/mod.rs:889  (sync fn)
-   │      probe_adjudication.rs:143    │     Stage 6: self.scanner.scan(text)
+   │      probe_adjudication.rs:144    │     Stage 6: self.scanner.scan(text)
    │      ForwardedPayload::NotForwarded     engine/mod.rs:1443  built-in + policy
    │      ── proves non-transmission          patterns merged → one findings list
    │         (probe branch only — §6.5)
@@ -172,7 +172,7 @@ agent action
 `aa-security` uses **no regex at all** — `aho-corasick = "1"` is its only
 detection dependency (`aa-security/Cargo.toml:10`). Detection is five passes
 (`scanner.rs:552`): an Aho-Corasick literal-prefix pass over **28** patterns
-(`aa-security/src/scanner.rs:14-53`), a digit-sequence pass (credit card + US
+(`aa-security/src/scanner.rs:14-54`), a digit-sequence pass (credit card + US
 SSN), an email pass, a high-entropy pass, and an Azure `AccountKey=` pass.
 
 > Two in-repo comments still say "18 patterns" — `aa-security/src/scanner.rs:545`
@@ -267,7 +267,9 @@ Two consequences:
 
 ### 2.5 `CredentialLeakBlocked` does not mean blocked
 
-The mapping is at `aa-gateway/src/service/convert.rs:150-158`:
+The configured action becomes a proto `Decision` at
+`aa-gateway/src/service/convert.rs:150-158`, and that `Decision` becomes the
+recorded event type at `aa-gateway/src/service/audit_service.rs:192-199`:
 
 | Configured action | Recorded event type | What actually happened |
 |---|---|---|
@@ -397,8 +399,8 @@ All nine rows the harness emits, from one quiesced run (`scan` only):
 | mixed zh-TW, 32 KB, *clean* | 32 799 | **87** ← see §4.1 | 388 µs | 417 µs | 437 µs |
 | high density, 500 findings | 59 300 | 600 | **922 µs** | 979 µs | 1.02 ms |
 
-`CredentialScanner::new()` costs 130 µs p50 — a per-process fixed cost, not a
-per-request one.
+`CredentialScanner::new()` costs ~130–160 µs p50 across runs — a per-process
+fixed cost, not a per-request one.
 
 Run-to-run variance on an unquiesced laptop is roughly ±10% at the p50 and
 much larger at the max — the harness prints a `max` column (not reproduced
@@ -411,16 +413,21 @@ Three conclusions:
   i.e. cost is linear in bytes. For an Aho-Corasick automaton that is slow; the
   dominant cost is the entropy/digit/email passes, not the AC pass.
 - **Finding count adds a real super-linear tail.** 500 findings in 59 300 B
-  costs 922 µs against 379 µs for 32 954 B with 4 findings. Byte-linear
+  costs 922 µs (600 findings — 500 planted credentials, plus the emails among them matching a second detector) against 379 µs for 32 954 B with 4 findings. Byte-linear
   extrapolation alone predicts ~682 µs, so input length accounts for roughly
   56% of the 543 µs delta and finding count for the remaining 44% — about a 35%
   excess over the byte-linear prediction, from the sort and overlap-coalescing
   tail.
-- Redaction is close to free relative to detection. Measured `scan + redact`
-  against `scan` across the classes above ranges from −2% to +8% (i.e. within
-  run-to-run noise except on the zh-TW case), so the budget to govern is
-  detection, not redaction. Both tables are printed by
-  `spike_5269_percentiles`.
+- **Redaction never dominates detection, but it is not free either.** It costs a
+  full payload `to_string()` plus a `replace_range` per coalesced span, so it
+  scales with both payload size and finding count. The measured `scan + redact`
+  versus `scan` delta was too unstable on an unquiesced laptop to quote as a
+  range — across runs it moved from roughly −3% to +30%, with the largest
+  excesses on the 1 MB and high-finding-count rows, which is the direction the
+  implementation predicts. The stable result is the ordering, not a percentage:
+  the budget to govern is detection. `spike_5269_percentiles` prints both tables
+  side by side; compare them on your own hardware rather than relying on a single
+  figure here.
 
 ### 3.3 Out-of-process transport floor
 
@@ -428,9 +435,13 @@ Measured with a stand-in provider that parses the request and returns an empty
 finding list — **no detection whatsoever**. These are lower bounds for any
 out-of-process design.
 
+The harness's small-payload fixture builds out to 592 B (the same construction
+the Presidio probe uses), so it is not byte-identical to §3.2's 449 B row — the
+same caveat as §3.4, and immaterial at these ratios.
+
 | payload | JSON encode+decode only | loopback TCP, persistent | TCP, new conn/req | UDS, persistent |
 |---|---:|---:|---:|---:|
-| ~450 B | 0.58 µs | **43.79 µs** | 61.58 µs | **9.08 µs** |
+| 592 B | 0.58 µs | **43.79 µs** | 61.58 µs | **9.08 µs** |
 | 32 KB | 13.58 µs | 38.17 µs | 76.62 µs | 45.71 µs |
 | 1 MB | 427 µs | 539 µs | 590 µs | 1.13 ms |
 
@@ -446,11 +457,16 @@ Set against §3.2, this is the decisive result of the Spike:
 lives, and is negligible precisely where deep inspection is actually wanted.**
 The architecture follows from the numbers rather than from taste.
 
-Note also that **UDS beats loopback TCP by ~4.8× for small payloads** but loses
+These figures are less stable than §3.2's: they involve the scheduler and the
+loopback stack, and on an unquiesced machine the UDS and 1 MB rows in particular
+move by 50% or more between runs. The small-payload TCP figure and the
+qualitative ordering reproduce reliably; treat the rest as single-run
+observations. Note that **UDS beats loopback TCP by roughly 3–5× for small
+payloads** but loses
 by ~2× at 1 MB (buffer sizing), and that a fresh connection per request adds
-~40% on top of the persistent-connection cost — so a provider transport must be
-a persistent connection, and for the small payloads that dominate, a Unix domain
-socket. That is the same conclusion ADR 0030 forbidden design #7 reaches from
+40–100% on top of the persistent-connection cost at small and medium payloads —
+so a provider transport must be a persistent connection, and for the small
+payloads that dominate, a Unix domain socket. That is the same conclusion ADR 0030 forbidden design #7 reaches from
 the security side, for unrelated reasons.
 
 ### 3.4 Presidio Analyzer, measured
@@ -551,7 +567,9 @@ generated runs per length):
 The rate is corpus-sensitive: sampling uniformly from a 100-character
 common-Hanzi pool gives the lower bound of each range, and sampling from the
 wider set used in the prose fixture gives the upper. The ranges above bracket
-both. The load-bearing claim is the shape — **around half at 13 characters,
+both, and were independently reproduced during review. Unlike every figure in
+§3, this table has **no committed harness** — it is a one-off measurement, which
+is a further reason to read it as a shape rather than as calibrated numbers. The load-bearing claim is the shape — **around half at 13 characters,
 most at 17, nearly all at 20** — not any single decimal, and it is insensitive
 to which pool is used. A fix ticket should pin one corpus and report exact
 figures against it.
@@ -605,7 +623,7 @@ It is the fix ticket's regression test.
   `CreditCardLuhn` or `SsnPattern`. This is a live evasion and is not `zh-TW`
   specific.
 - **`String::from_utf8_lossy` + `into_bytes()` write-back**
-  (`aa-runtime/src/pipeline/enforcement.rs:288-292`) corrupts chunk-split CJK
+  (`aa-runtime/src/pipeline/enforcement.rs:289-294`) corrupts chunk-split CJK
   payloads.
 
 A hypothesis worth recording as **refuted**: byte offsets cannot slice a CJK
@@ -701,7 +719,7 @@ than new `CredentialKind` variants, so policies need no per-locale rewrite and
 | License | product-owned | MIT | MIT | product-owned |
 | Governance | us | **`data-privacy-stack`, community-run — no longer Microsoft** | zricethezav/gitleaks | us |
 | Invocation | in-process library | HTTP service | CLI, file-oriented | our choice |
-| Small-call latency | **6 µs** | **12.3 ms** | process spawn (unmeasured) | transport floor 6.6–14 µs |
+| Small-call latency | **6 µs** | **12.3 ms** | process spawn (unmeasured) | transport floor 9.1 µs UDS / 43.8 µs loopback TCP |
 | Large payload | 12.1 ms @ 1 MB | **fails ≥ 524 KB** | file-oriented, fine | n/a |
 | Idle RSS | ~0 (shared automaton) | **746 MiB** | ~0 between invocations | provider-defined |
 | Offline / egress-deny | native | **verified working**, models baked in | native | by construction |
@@ -730,8 +748,8 @@ than new `CredentialKind` variants, so policies need no per-locale rewrite and
 | Topology | Isolation | Latency | Amplification | Verdict |
 |---|---|---|---|---|
 | in-process Rust | none (same address space) | **0** | none | **fast path — default and always available** |
-| local child process | process | ~7 µs UDS | 1× per host | good for a custom provider |
-| container, Docker Compose | container | ~14 µs loopback | 1× per host | **the self-host example shape** |
+| local child process | process | ~9 µs UDS | 1× per host | good for a custom provider |
+| container, Docker Compose | container | ~44 µs loopback TCP | 1× per host | **the self-host example shape** |
 | **same-Pod sidecar** | container, shared netns | loopback | **× replica count** | only for tiny providers; **never Presidio** |
 | **cluster-local Deployment** | pod + network | real network hop | 1× per cluster | **the K8s answer for heavy providers** |
 | node-local DaemonSet | pod | loopback-ish | × node count | middle ground; not needed at current scale |
@@ -870,7 +888,7 @@ An event may be counted as **prevented transmission** only when all four hold:
 4. the action was not in observe/dry-run mode.
 
 The observable in (3) **already exists**: `ForwardedPayload::NotForwarded`
-(`aa-proxy/src/probe_adjudication.rs:143`), returned before the
+(`aa-proxy/src/probe_adjudication.rs:144`), returned before the
 `dial_upstream_tls` on that path. `dial_upstream_tls` is defined once
 (`aa-proxy/src/proxy/mod.rs:367`) but called from two sites (`:678`, `:912`), and
 `ProbeAdjudication::new` (`:881`) precedes only the second — so today the
@@ -1012,7 +1030,7 @@ product review.
 | `B-1` | ✨ (dashboard): Wire the Scrub surface to the shipped `/api/v1/scrub/*` routes | — |
 | `B-2` | 🐛 (aa-security): Stop classifying non-ASCII text as high-entropy secrets | — |
 | `B-3` | 🐛 (aa-security): Normalise full-width digits before Luhn/SSN detection | — |
-| `B-4` | 🐛 (aa-runtime): Preserve non-UTF-8 and chunk-split payloads on redaction write-back | — |
+| `B-4` | 🐛 (aa-runtime): Preserve non-UTF-8 and chunk-split payloads on redaction write-back (`enforcement.rs:289-294`) | — |
 | `B-5` | ✅ (conformance): Add CJK and full-width false-positive vectors | `B-2`, `B-3` |
 | `B-6` | ✨ (aa-security): Canonical sensitive-data finding model over the existing scanner | ADR 0032 |
 | `B-7` | ✨ (aa-security): `zh-TW` deterministic recognizer pack | `B-2`, `B-6` |
@@ -1034,17 +1052,18 @@ proposal of shape, not an authorisation to start them.
 B-1  (independent — correctness, ship now)
 B-4  (independent)
 
-B-2 ──┬─────────────────► B-5
-B-3 ──┘                    ▲
-  └──────────────┐         │
-                 │      (B-3)
-                 ▼
+B-2 ──┬──► B-5
+B-3 ──┘
+
 ADR 0032 ──► B-6 ──┬──► B-7   (also needs B-2)
                    ├──► B-8
                    ├──► B-9 ──┬──► B-10 ──┬──► B-12 ──► B-16
                    │          └──► B-11 ──┘
-                   └──► B-13 ──┬──► B-14      (B-13 also needs the D-1 follow-up ADR)
+                   └──► B-13 ──┬──► B-14
                                └──► B-15
+
+B-13 additionally requires the D-1 follow-up ADR (§10), which is why B-13..B-15
+cannot start on ADR 0032 alone.
 ```
 
 ---
