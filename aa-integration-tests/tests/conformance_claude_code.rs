@@ -56,8 +56,16 @@
 //! scenario that needs the real `claude` binary
 //! ([`the_real_binary_launched_through_the_installed_environment_is_protected`])
 //! prints `SKIP [...]` with the reason and returns, so a skip is visible in the
-//! output rather than looking like a pass — and a run that captures no traffic
-//! prints `NOT MEASURED` rather than passing on an empty capture set.
+//! output rather than looking like a pass.
+//!
+//! There are exactly two things that scenario may decline on — a host that is
+//! not macOS, and a host with no `claude`. Past that pair it has **committed to
+//! measuring**: a run that then captures no traffic is a failed measurement,
+//! not an opt-out, and it fails. Every outcome — measured, skipped, not
+//! measured — is also written to the machine-readable ledger described in
+//! [`conformance_support::outcome`], because a runner counts a skip as a pass
+//! and the summary line alone cannot otherwise distinguish a lane that measured
+//! from one that declined to.
 //!
 //! # Safety
 //!
@@ -81,7 +89,7 @@ use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, MANAGED_KEYS, STEP_NODE_EXTR
 use aa_devtool_claude_code::probe::ProtectionProbe as _;
 use aa_devtool_claude_code::ProxyAdjudicatedProbe;
 use aa_runtime::devint::IntegrationLifecycle;
-use conformance_support::{ConformanceHarness, SYNTHETIC_SECRET};
+use conformance_support::{ConformanceHarness, Measurement, SYNTHETIC_SECRET};
 use spike_support::proxy_harness::{drive_direct, drive_emulated_client};
 use spike_support::{assert_recorded_and_secret_absent, assert_recorded_and_secret_present, AnthropicMock};
 
@@ -1580,6 +1588,11 @@ fn the_probe_and_the_proxy_agree_on_the_correlation_contract() {
 ///
 /// Skips with a printed reason where the binary is absent (Linux CI) or the host
 /// is not macOS. `AA_SPIKE_CLAUDE_BIN` opts a lane in explicitly.
+///
+/// Those two are the whole of what this scenario may decline on. Once both hold
+/// it has committed to measuring, so observing no traffic **fails**: the
+/// question the lane exists to answer went unanswered, and a green run that
+/// answered nothing is exactly the outcome the suite's design rule forbids.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_real_binary_launched_through_the_installed_environment_is_protected() -> anyhow::Result<()> {
     const SCENARIO: &str = "real-tool lane";
@@ -1630,14 +1643,29 @@ async fn the_real_binary_launched_through_the_installed_environment_is_protected
     println!("MEASURED real-binary requests reaching the provider: {observed}");
     println!("MEASURED real-binary request lines: {:?}", h.upstream.request_lines());
     if observed == 0 {
-        println!(
-            "NOT MEASURED [{SCENARIO}]: the real binary produced no upstream traffic through the \
-             installed endpoint (exit={:?}, stopped_by_harness={}). This is a gap in the evidence, \
-             not a pass — nothing about the tool was established.",
-            run.exit_code, run.timed_out
+        // Both opt-outs are behind us: the host is macOS and the binary exists,
+        // so the scenario committed to measuring. Zero traffic here is a failed
+        // measurement — the tool did not reach the endpoint the install
+        // produced — and a failed measurement is a failure. Returning `Ok(())`
+        // with an explanatory line was indistinguishable from a pass to
+        // everything except a human reading `--no-capture` stdout.
+        let detail = format!(
+            "no upstream traffic through the installed endpoint (exit={:?}, stopped_by_harness={}, \
+             elapsed={:?})",
+            run.exit_code, run.timed_out, run.elapsed
         );
+        conformance_support::outcome::record(SCENARIO, Measurement::NotMeasured, &detail);
+        // The launch's own output is the only evidence distinguishing "the tool
+        // refused to start" from "the product's launch environment is wrong",
+        // and it is gone once the child is reaped.
+        println!("NOT MEASURED stdout tail: {}", tail(&run.stdout));
+        println!("NOT MEASURED stderr tail: {}", tail(&run.stderr));
         h.finish(SCENARIO);
-        return Ok(());
+        anyhow::bail!(
+            "NOT MEASURED [{SCENARIO}]: the real binary produced {detail}. This is a gap in the \
+             evidence, not a pass — nothing about the tool was established, so the lane that exists \
+             to establish it has failed."
+        );
     }
 
     let bodies = h.upstream.bodies();
@@ -1657,11 +1685,30 @@ async fn the_real_binary_launched_through_the_installed_environment_is_protected
          nothing"
     );
 
+    conformance_support::outcome::record(
+        SCENARIO,
+        Measurement::Measured,
+        &format!(
+            "{observed} request(s) observed, {redacted} of {} carried the redaction placeholder",
+            bodies.len()
+        ),
+    );
     h.finish(SCENARIO);
     Ok(())
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// The last 2 KiB of a launch's output, with the synthetic secret masked.
+///
+/// Masking is not for confidentiality — the value is a compile-time constant in
+/// this repository — but because it matches `sk-ant-`, and a CI log carrying a
+/// credential-shaped literal trips secret scanners on every run that prints it.
+fn tail(output: &str) -> String {
+    let masked = output.replace(SYNTHETIC_SECRET, "[SYNTHETIC-SECRET]");
+    let start = masked.len().saturating_sub(2048);
+    masked[masked.char_indices().find(|(i, _)| *i >= start).map_or(0, |(i, _)| i)..].to_string()
+}
 
 /// A rustls client trusting exactly the certificate authority at `pem`.
 ///

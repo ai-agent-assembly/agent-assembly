@@ -26,20 +26,34 @@ permissions:
 #    `claude` binary and points `AA_SPIKE_CLAUDE_BIN` at it, so the one
 #    assertion a mock cannot make (does Claude Code's embedded Node runtime
 #    accept the Agent Assembly certificate authority through
-#    `NODE_EXTRA_CA_CERTS`) is actually taken. Not required: it depends on a
-#    third-party npm package whose availability this repository does not
-#    control. It uses no credentials and reaches no external model provider —
-#    every request is redirected to an in-process mock.
+#    `NODE_EXTRA_CA_CERTS`) is actually taken. Not required for a merge, but it
+#    can fail: see below. It uses no credentials and reaches no external model
+#    provider — every request is redirected to an in-process mock.
 #
 # The security-regression assertions are not a separate lane. They live in the
 # same binary as the scenarios they guard, because a regression set that can be
 # skipped independently of the suite it protects will eventually be skipped.
 #
-# Skipping vs passing
-# -------------------
+# Skipping vs passing vs measuring
+# --------------------------------
 # Scenarios that need the real binary print `SKIP [...]` with the reason and
 # return. `--no-capture` is deliberate: a skip must be legible in the log rather
-# than indistinguishable from a green assertion.
+# than indistinguishable from a green assertion. But a runner counts a skip as a
+# pass, so the summary line alone cannot tell a lane that measured from one that
+# declined to — which is why every lane sets `AA_CONFORMANCE_OUTCOME_DIR` and
+# renders the resulting ledger into the job summary, and why the real-tool lane
+# asserts its scenario recorded `measured`.
+#
+# Where the tolerance lives
+# -------------------------
+# This lane used to carry a job-level `continue-on-error`, on the grounds that a
+# third-party npm package this repository does not control must not read as a
+# product regression. That tolerance was far too wide: it also swallowed a
+# genuine failure of the one assertion the lane exists to make, leaving the run
+# green either way. The tolerance now sits on the single step that depends on
+# the third party. If that step fails the lane reports, loudly, that it did not
+# run — an honest absence of evidence. Everything after it is the product, and
+# fails the job.
 
 on:
   push:
@@ -94,6 +108,8 @@ jobs:
             os: ubuntu-latest
           - lane: macos
             os: macos-latest
+    env:
+      AA_CONFORMANCE_OUTCOME_DIR: ${{ runner.temp }}/conformance-outcomes
 
     steps:
       - name: Checkout
@@ -121,14 +137,34 @@ jobs:
         # a skipped scenario reads exactly like a passing one.
         run: cargo nextest run -p aa-integration-tests --test conformance_claude_code --no-capture
 
+      - name: Report what this lane measured
+        # `always()`: a lane that failed still has an outcome worth reading, and
+        # the ledger is most useful exactly when something went wrong.
+        if: always()
+        env:
+          LANE: ${{ matrix.lane }}
+        run: |
+          set -uo pipefail
+          {
+            echo "### Conformance (${LANE})"
+            echo
+            if compgen -G "${AA_CONFORMANCE_OUTCOME_DIR}/*.json" > /dev/null; then
+              jq -r '"- `\(.scenario)` — **\(.outcome)** — \(.detail)"' "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json
+            else
+              echo "- no scenario recorded an outcome"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   real-tool:
     name: Conformance (real Claude Code)
-    # Opt-in only. Depends on a third-party npm package; a transient
-    # unavailability there must not read as a product regression.
+    # Opt-in only. Not required for a merge — but it is allowed to fail, so that
+    # a run someone deliberately asked for cannot report green having measured
+    # nothing. The third-party tolerance sits on the install step below.
     if: github.event_name == 'workflow_dispatch' && inputs.real_tool
     runs-on: macos-latest
     timeout-minutes: 30
-    continue-on-error: true
+    env:
+      AA_CONFORMANCE_OUTCOME_DIR: ${{ runner.temp }}/conformance-outcomes
 
     steps:
       - name: Checkout
@@ -136,16 +172,6 @@ jobs:
 
       - name: Install protobuf compiler
         run: brew install protobuf
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-
-      - name: Install Claude Code
-        # No credential is configured and none is needed: every request the
-        # binary makes is redirected onto an in-process mock provider by the
-        # proxy under test.
-        run: npm install -g @anthropic-ai/claude-code
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
@@ -156,14 +182,72 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Install Claude Code
+        # The one step that depends on something this repository does not
+        # control, and therefore the only step allowed to fail without failing
+        # the lane. No credential is configured and none is needed: every
+        # request the binary makes is redirected onto an in-process mock
+        # provider by the proxy under test.
+        id: install_tool
+        continue-on-error: true
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Report that the lane could not run
+        if: steps.install_tool.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          note="the real-tool lane did not run: @anthropic-ai/claude-code could not be installed, so no measurement was taken. This is an absence of evidence, not a passing measurement."
+          echo "::warning title=Real-tool lane not run::${note}"
+          printf '### Conformance (real Claude Code)\n\n- **not run** — %s\n' "${note}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Report the tool version under test
+        if: steps.install_tool.outcome == 'success'
         run: claude --version
 
       - name: Run the conformance suite against the real binary
+        if: steps.install_tool.outcome == 'success'
         run: |
           set -euo pipefail
           AA_SPIKE_CLAUDE_BIN="$(command -v claude)" \
             cargo nextest run -p aa-integration-tests --test conformance_claude_code --no-capture
+
+      - name: Report what this lane measured
+        if: always() && steps.install_tool.outcome == 'success'
+        run: |
+          set -uo pipefail
+          {
+            echo "### Conformance (real Claude Code)"
+            echo
+            if compgen -G "${AA_CONFORMANCE_OUTCOME_DIR}/*.json" > /dev/null; then
+              jq -r '"- `\(.scenario)` — **\(.outcome)** — \(.detail)"' "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json
+            else
+              echo "- no scenario recorded an outcome"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Assert the lane actually measured the real binary
+        # The suite's own zero-traffic failure covers a scenario that ran and
+        # established nothing. This covers the other way the lane can be green
+        # without evidence: the scenario declining, because the binary this lane
+        # provisioned was not where it was looked for. A skip is an honest
+        # outcome on a developer laptop and a broken lane here.
+        if: steps.install_tool.outcome == 'success'
+        run: |
+          set -euo pipefail
+          record="${AA_CONFORMANCE_OUTCOME_DIR}/real-tool-lane.json"
+          if [ ! -f "${record}" ]; then
+            echo "::error title=Real-tool lane measured nothing::the real-tool scenario recorded no outcome at ${record}; the lane exists to take one measurement and did not take it."
+            exit 1
+          fi
+          if ! jq -e '.outcome == "measured"' "${record}" > /dev/null; then
+            echo "::error title=Real-tool lane measured nothing::$(jq -r '"the real-tool scenario recorded `\(.outcome)`: \(.detail)"' "${record}")"
+            exit 1
+          fi
+          jq -r '"the real-tool scenario measured: \(.detail)"' "${record}"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

@@ -27,10 +27,12 @@
 //! * `NODE_TLS_REJECT_UNAUTHORIZED` is never set. A TLS failure is a finding.
 
 pub mod harness;
+pub mod outcome;
 pub mod probe;
 pub mod proxy;
 
 pub use harness::{walk, ConformanceHarness, HarnessOptions, MEASURED_TOOL_VERSION};
+pub use outcome::Measurement;
 pub use probe::AdjudicatingProbe;
 pub use proxy::RestartableProxy;
 
@@ -60,14 +62,18 @@ pub fn assert_no_raw_secret(surfaces: &[(String, String)], needle: &str, scenari
 /// A skip must be legible in the output. A test that quietly returns having
 /// asserted nothing is indistinguishable from a pass, which is the failure mode
 /// this whole suite exists to rule out.
+///
+/// The skip is recorded in the [`outcome`] ledger as well as printed, so a lane
+/// that exists *to take* this measurement can fail on a skip it never asked
+/// for. Recording here rather than at the call site means no opt-out path can
+/// forget to declare itself.
 pub fn require_macos(scenario: &str) -> bool {
     if cfg!(target_os = "macos") {
         return true;
     }
-    println!(
-        "SKIP [{scenario}]: macOS-only scenario; this host is {}",
-        std::env::consts::OS
-    );
+    let reason = format!("macOS-only scenario; this host is {}", std::env::consts::OS);
+    println!("SKIP [{scenario}]: {reason}");
+    outcome::record(scenario, Measurement::Skipped, &reason);
     false
 }
 
@@ -75,16 +81,20 @@ pub fn require_macos(scenario: &str) -> bool {
 ///
 /// `AA_SPIKE_CLAUDE_BIN` overrides the `PATH` lookup, so the optional real-tool
 /// CI lane can point at an installation it provisioned itself.
+///
+/// As with [`require_macos`], the skip is recorded in the [`outcome`] ledger:
+/// the real-tool lane provisions the binary itself, so a skip *there* is a
+/// broken lane rather than an honest opt-out, and only a machine-readable
+/// record makes that difference assertable.
 pub fn require_claude(scenario: &str) -> Option<std::path::PathBuf> {
     if let Some(explicit) = std::env::var_os("AA_SPIKE_CLAUDE_BIN") {
         let path = std::path::PathBuf::from(explicit);
         if path.exists() {
             return Some(path);
         }
-        println!(
-            "SKIP [{scenario}]: AA_SPIKE_CLAUDE_BIN points at {}, which does not exist",
-            path.display()
-        );
+        let reason = format!("AA_SPIKE_CLAUDE_BIN points at {}, which does not exist", path.display());
+        println!("SKIP [{scenario}]: {reason}");
+        outcome::record(scenario, Measurement::Skipped, &reason);
         return None;
     }
     let found = std::process::Command::new("which")
@@ -96,9 +106,9 @@ pub fn require_claude(scenario: &str) -> Option<std::path::PathBuf> {
         .map(|s| std::path::PathBuf::from(s.trim()))
         .filter(|p| p.exists());
     if found.is_none() {
-        println!(
-            "SKIP [{scenario}]: no `claude` binary on PATH (expected on Linux CI); set AA_SPIKE_CLAUDE_BIN to opt in"
-        );
+        let reason = "no `claude` binary on PATH (expected on Linux CI); set AA_SPIKE_CLAUDE_BIN to opt in";
+        println!("SKIP [{scenario}]: {reason}");
+        outcome::record(scenario, Measurement::Skipped, reason);
     }
     found
 }
