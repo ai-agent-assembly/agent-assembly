@@ -33,12 +33,34 @@ type PolicyResponse = components['schemas']['PolicyResponse']
 /**
  * The one field the badge reads off a policy row.
  *
- * Typed from the generated response rather than written out, so renaming or
- * retyping `active` in `openapi/v1.yaml` fails this module's build.
+ * Typed from the generated response rather than written out, so *renaming*
+ * `active` in `openapi/v1.yaml` fails this module's build — indexing a key the
+ * generated type no longer has is an error.
+ *
+ * Indexing alone does **not** catch a retype, which is why the guard below
+ * exists. This docstring previously claimed it did (AAASM-5369 review): making
+ * `active` optional produced zero errors across the whole dashboard, because
+ * `PolicyResponse['active']` would widen to `boolean | undefined` and
+ * `z.boolean()`'s output is still assignable to it. The decoder would have gone
+ * on demanding a boolean, rejected every live policy row, and left a permanent
+ * absence marker on the rail of a perfectly healthy deployment.
  */
 export interface PolicyActivity {
   readonly active: PolicyResponse['active']
 }
+
+/**
+ * A conforming policy row still carries `active` under that name, required, and
+ * as a boolean.
+ *
+ * The `satisfies` below binds the decoder to {@link PolicyActivity}; this binds
+ * {@link PolicyActivity} to the generated response, in the direction the
+ * indexed access cannot. An optional or retyped `active` stops satisfying
+ * `extends`, this resolves to `never`, and the assignment fails to compile.
+ * Mirrors `features/capability/schema.ts`'s `CASCADE_FIELDS_ARE_ON_THE_WIRE`.
+ */
+type GeneratedCarriesPolicyActivity = PolicyResponse extends PolicyActivity ? true : never
+export const POLICY_ACTIVITY_IS_ON_THE_WIRE: GeneratedCarriesPolicyActivity = true
 
 const policyActivitySchema = z.object({
   active: z.boolean(),
