@@ -192,7 +192,10 @@ Key invariants from `aa-runtime/src/pipeline/enforcement.rs`:
   `already_scanned` / `clean` wire marker, and none is honoured.
 - Enforcement is **fail-closed**: a field larger than `max_field_bytes`
   (default 64 KiB) cannot be fully scanned, so it is redacted *whole*
-  (`[REDACTED:OVERSIZED]`) rather than partially forwarded.
+  (`[REDACTED:OVERSIZED]`) rather than partially forwarded. Likewise a `bytes`
+  field that is not valid UTF-8 is scanned but cannot be spliced faithfully, so a
+  finding redacts it *whole* (`[REDACTED:UNDECODABLE]`); when it is clean it is
+  forwarded byte-identical.
 - The credential scanner / redaction primitives come from the `aa-security`
   leaf crate.
 
