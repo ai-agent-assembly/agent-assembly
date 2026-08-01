@@ -251,6 +251,14 @@ pub trait LaunchableTool: Send + Sync {
     /// source of the child's environment: the caller's variables are delivered
     /// too, and a variable the adapter never mentions is passed through.
     ///
+    /// That rule is about the caller's *ambient* environment at spawn time, and
+    /// it is the opposite of the rule for [`LaunchSpec::env`], where the caller
+    /// **wins**. The two are not in tension: `LaunchSpec::env` is an argument to
+    /// this method rather than a competing source, and it is how a caller asks
+    /// for one run to differ — pinning a CA for a test, or overriding a variable
+    /// without editing what the install recorded. An adapter should therefore
+    /// apply `spec.env` last, after its own values.
+    ///
     /// [`Command::get_envs`]: std::process::Command::get_envs
     /// [`Command::get_program`]: std::process::Command::get_program
     /// [`Command::get_args`]: std::process::Command::get_args
