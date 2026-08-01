@@ -1329,6 +1329,39 @@ mod tree_tests {
         }
     }
 
+    #[tokio::test]
+    async fn set_enforcement_mode_persisted_updates_in_memory_and_rejects_unknown() {
+        // No storage attached → the write-through path is a no-op and the
+        // in-memory record is mutated directly (AAASM-5097).
+        let reg = AgentRegistry::new();
+        let id = [7u8; 16];
+        reg.register(make_record(id, None, Some("teamA"), 0)).unwrap();
+
+        // Weaken: set Observe with a deadline.
+        let deadline = Utc::now() + chrono::Duration::hours(2);
+        reg.set_enforcement_mode_persisted(&id, Some(aa_core::EnforcementMode::Observe), Some(deadline))
+            .await
+            .expect("setting a registered agent's mode succeeds");
+        let rec = reg.get(&id).unwrap();
+        assert_eq!(rec.enforcement_mode, Some(aa_core::EnforcementMode::Observe));
+        assert_eq!(rec.enforcement_mode_expires_at, Some(deadline));
+
+        // Strengthen: back to Enforce, clearing the expiry.
+        reg.set_enforcement_mode_persisted(&id, Some(aa_core::EnforcementMode::Enforce), None)
+            .await
+            .expect("clearing the shadow window succeeds");
+        let rec = reg.get(&id).unwrap();
+        assert_eq!(rec.enforcement_mode, Some(aa_core::EnforcementMode::Enforce));
+        assert_eq!(rec.enforcement_mode_expires_at, None);
+
+        // An unknown agent is a NotFound, not a silent success.
+        let err = reg
+            .set_enforcement_mode_persisted(&[0xFFu8; 16], Some(aa_core::EnforcementMode::Enforce), None)
+            .await
+            .expect_err("an unregistered agent must be NotFound");
+        assert!(matches!(err, RegistryError::NotFound(_)));
+    }
+
     #[test]
     fn children_of_root_then_deregister() {
         let reg = AgentRegistry::new();
