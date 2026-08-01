@@ -29,7 +29,7 @@ pub struct StartArgs {
     #[arg(long)]
     pub log_file: Option<PathBuf>,
     /// State that a non-loopback `--listen` address is intended. Still refused
-    /// until the proxy can protect such a listener — see [`checked_listen`].
+    /// until the proxy can protect such a listener — see `checked_listen`.
     #[arg(long)]
     pub allow_remote_clients: bool,
 }
