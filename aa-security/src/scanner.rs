@@ -1896,6 +1896,18 @@ mod tests {
     }
 
     #[test]
+    fn redacts_a_fullwidth_ssn_to_exact_bytes() {
+        // The SSN span mixes 3-byte digits with 1-byte separators, so its end
+        // offset is the one least likely to survive a width assumption.
+        let scanner = CredentialScanner::new();
+        let text = "ssn=１２３-４５-６７８９";
+        let redacted = scanner.scan(text).redact(text);
+
+        assert_eq!(redacted, "ssn=[REDACTED:SsnPattern]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("contact: user@example.com for support");
