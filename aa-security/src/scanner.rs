@@ -1992,6 +1992,34 @@ mod tests {
     }
 
     #[test]
+    fn digit_run_longer_than_the_segment_budget_stays_clean_in_both_widths() {
+        // Pins `DIGIT_SEGMENT_MAX_CHARS`, the refactor's riskiest invariant.
+        //
+        // The budget decides how much of a long digit run one segment swallows,
+        // and shrinking it fails in the *false positive* direction: a 30-digit
+        // run is not a card number, but its first 19 digits here are
+        // Luhn-valid, so a budget of 19 would truncate the segment exactly onto
+        // that prefix and report a card that is not there. On the enforce path
+        // that means redacting a legitimate payload — worse than the missed
+        // detection a too-large budget would cause.
+        //
+        // The synthetic 19-digit prefix is Luhn-valid by construction; the
+        // trailing zeros only push the run past the budget.
+        let scanner = CredentialScanner::new();
+        let ascii = "num=004532015112830366500000000000";
+        let fullwidth = "num=００４５３２０１５１１２８３０３６６５００００００００００００";
+
+        for text in [ascii, fullwidth] {
+            let result = scanner.scan(text);
+            assert!(
+                !result.findings.iter().any(|f| f.kind == CredentialKind::CreditCardLuhn),
+                "over-long digit run must not yield a card finding: {:?}",
+                result.findings,
+            );
+        }
+    }
+
+    #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("contact: user@example.com for support");
