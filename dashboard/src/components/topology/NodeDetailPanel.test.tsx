@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { UseQueryResult } from '@tanstack/react-query'
@@ -8,6 +8,8 @@ import * as topologyApi from '../../features/topology/api'
 import * as agentMutations from '../../features/agents/mutations'
 import type { AgentLineage, RecentEvent } from '../../features/topology/api'
 import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
+import { GrantScopes } from '../../auth/GrantScopes'
+import type { Scope } from '../../auth/AuthContext'
 
 const NODE: TopologyNode = {
   id: 'agent-001',
@@ -170,50 +172,44 @@ describe('NodeDetailPanel', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('renders the governance stub buttons (Apply policy / Shadow / Suspend)', () => {
+  it('renders the governance buttons (Apply policy / Suspend); Shadow is Admin-gated', () => {
     vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
       mockRecent({ data: [], isLoading: false, isError: false }),
     )
     renderPanel(NODE)
     expect(screen.getByTestId('node-detail-apply-policy')).toBeInTheDocument()
-    expect(screen.getByTestId('node-detail-shadow-mode')).toBeInTheDocument()
     expect(screen.getByTestId('node-detail-suspend')).toBeInTheDocument()
+    // No provider ⇒ scopes fail closed (AAASM-5180): a non-Admin caller sees no
+    // shadow action, only the reason hint.
+    expect(screen.queryByTestId('node-detail-shadow-mode')).toBeNull()
+    expect(screen.getByTestId('node-detail-shadow-admin-hint')).toBeInTheDocument()
   })
 
-  // AAASM-5140. Both buttons shipped enabled with `onClick={() => {}}`: clicking
-  // a governance control and getting nothing reads as a broken product, and
-  // leaves the operator unable to tell whether the policy was applied.
-  describe('governance actions with no production path', () => {
-    const DEAD_ACTIONS = ['node-detail-apply-policy', 'node-detail-shadow-mode'] as const
-
+  // AAASM-5140. Apply-team-policy still has no write endpoint, so it stays a
+  // disabled control that says why — an enabled no-op reads as broken product.
+  describe('team-policy apply with no production path', () => {
     beforeEach(() => {
       vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
         mockRecent({ data: [], isLoading: false, isError: false }),
       )
     })
 
-    it.each(DEAD_ACTIONS)('%s is disabled and says why', (testId) => {
+    it('node-detail-apply-policy is disabled and says why', () => {
       renderPanel(NODE)
-      const button = screen.getByTestId(testId)
+      const button = screen.getByTestId('node-detail-apply-policy')
       expect(button).toBeDisabled()
       expect(button.getAttribute('title')).toMatch(/not available yet/i)
     })
 
-    it.each(DEAD_ACTIONS)('%s cannot be activated by click or keyboard', async (testId) => {
+    it('node-detail-apply-policy cannot be activated by click or keyboard', async () => {
       renderPanel(NODE)
-      const button = screen.getByTestId(testId)
-
-      // `userEvent` refuses to dispatch a pointer event to a disabled control,
-      // which is the browser's own behaviour — proving the affordance is gone
-      // rather than merely that a handler was removed.
+      const button = screen.getByTestId('node-detail-apply-policy')
       await userEvent.click(button)
       button.focus()
       expect(button).not.toHaveFocus()
     })
 
-    it('leaves the real actions alongside them usable', () => {
-      // The fix must disable only the two dead controls — a panel where every
-      // action is inert would be a different kind of lie.
+    it('leaves the real actions alongside it usable', () => {
       renderPanel(NODE)
       expect(screen.getByTestId('node-detail-suspend')).toBeEnabled()
       expect(screen.getByTestId('node-detail-view-trace')).toBeEnabled()
@@ -514,5 +510,176 @@ describe('NodeDetailPanel — lineage, cross-team, suspend/resume', () => {
     expect(resume).toHaveBeenCalledWith({ id: 'agent-001' }, expect.objectContaining({ onSuccess: expect.any(Function) }))
     expect(screen.queryByTestId('suspend-dialog')).toBeNull()
     expect(onAgentMutated).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── Enforcement-mode toggle + weaken form + cascade (AAASM-5341) ──────────────
+describe('NodeDetailPanel — enforcement-mode toggle', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  function mockLineage(partial: Partial<UseQueryResult<AgentLineage, Error>>): UseQueryResult<AgentLineage, Error> {
+    return partial as unknown as UseQueryResult<AgentLineage, Error>
+  }
+
+  function stubBaseQueries() {
+    vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+      mockRecent({ data: [], isLoading: false, isError: false }),
+    )
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
+      mockLineage({ data: undefined, isLoading: false, isError: false }),
+    )
+  }
+
+  type SetInput = Parameters<ReturnType<typeof agentMutations.useSetEnforcementMode>['mutate']>[0]
+  type SetOpts = { onSuccess?: () => void }
+
+  /** Stub the two enforcement hooks; returns the two spies plus a preview result. */
+  function stubEnforcement(opts: {
+    setImpl?: (v: SetInput, o?: SetOpts) => void
+    previewResult?: { affected_ids: string[]; count: number }
+    setError?: Error | null
+  } = {}) {
+    const set = vi.fn(opts.setImpl ?? ((_v: SetInput, o?: SetOpts) => o?.onSuccess?.()))
+    const reset = vi.fn()
+    vi.spyOn(agentMutations, 'useSetEnforcementMode').mockReturnValue(
+      { mutate: set, reset, isPending: false, isError: !!opts.setError, error: opts.setError ?? null } as unknown as ReturnType<typeof agentMutations.useSetEnforcementMode>,
+    )
+    const previewResult = opts.previewResult ?? { affected_ids: ['agent-001', 'child-a', 'child-b'], count: 3 }
+    const mutateAsync = vi.fn(async () => previewResult)
+    vi.spyOn(agentMutations, 'usePreviewEnforcementCascade').mockReturnValue(
+      { mutateAsync, reset: vi.fn(), isPending: false, isError: false, error: null } as unknown as ReturnType<typeof agentMutations.usePreviewEnforcementCascade>,
+    )
+    return { set, mutateAsync }
+  }
+
+  function renderAs(scopes: Scope[], node: TopologyNode, extra: Partial<Parameters<typeof NodeDetailPanel>[0]> = {}) {
+    return render(
+      <QueryClientProvider client={makeClient()}>
+        <GrantScopes scopes={scopes}>
+          <NodeDetailPanel node={node} onClose={vi.fn()} onViewTrace={vi.fn()} {...extra} />
+        </GrantScopes>
+      </QueryClientProvider>,
+    )
+  }
+
+  const ENFORCE_NODE: TopologyNode = { ...NODE, mode: 'enforce' }
+  const SHADOW_NODE: TopologyNode = { ...NODE, mode: 'shadow' }
+
+  /**
+   * `datetime-local` reads its value as wall-clock local time. Build a value an
+   * hour ahead in *local* time (not UTC) so `toIso` in the dialog treats it as
+   * future-and-within-window, and set it via `fireEvent.change` — `userEvent`
+   * does not reliably drive a native date picker.
+   */
+  function setExpiryOneHourAhead() {
+    const d = new Date(Date.now() + 3_600_000)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    fireEvent.change(screen.getByTestId('shadow-dialog-expiry'), { target: { value: local } })
+  }
+
+  it('strengthen calls the mutation with mode="enforce" (no reason/expiry)', async () => {
+    stubBaseQueries()
+    const { set } = stubEnforcement()
+    const onAgentMutated = vi.fn()
+    renderAs(['read', 'write'], SHADOW_NODE, { onAgentMutated })
+
+    const btn = screen.getByTestId('node-detail-shadow-mode')
+    expect(btn).toHaveTextContent('Return to enforce')
+    await userEvent.click(btn)
+    expect(set).toHaveBeenCalledWith(
+      { id: 'agent-001', mode: 'enforce' },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    )
+    expect(onAgentMutated).toHaveBeenCalledTimes(1)
+  })
+
+  it('non-admin does not see the shadow action on an enforce node', () => {
+    stubBaseQueries()
+    stubEnforcement()
+    renderAs(['read', 'write'], ENFORCE_NODE)
+    expect(screen.queryByTestId('node-detail-shadow-mode')).toBeNull()
+    expect(screen.getByTestId('node-detail-shadow-admin-hint')).toBeInTheDocument()
+  })
+
+  it('an admin sees the shadow action and it opens the weaken form', async () => {
+    stubBaseQueries()
+    stubEnforcement()
+    renderAs(['read', 'write', 'admin'], ENFORCE_NODE)
+    await userEvent.click(screen.getByTestId('node-detail-shadow-mode'))
+    expect(screen.getByTestId('shadow-dialog')).toBeInTheDocument()
+  })
+
+  it('weaken requires reason + expiry before the confirm is enabled', async () => {
+    stubBaseQueries()
+    stubEnforcement()
+    renderAs(['read', 'write', 'admin'], ENFORCE_NODE)
+    await userEvent.click(screen.getByTestId('node-detail-shadow-mode'))
+
+    const confirm = screen.getByTestId('shadow-dialog-confirm')
+    expect(confirm).toBeDisabled()
+
+    // Reason alone is not enough — the expiry is still empty.
+    await userEvent.type(screen.getByTestId('shadow-dialog-reason'), 'debugging a false positive')
+    expect(confirm).toBeDisabled()
+
+    // A future expiry within the window enables it.
+    setExpiryOneHourAhead()
+    expect(confirm).toBeEnabled()
+  })
+
+  it('single-agent weaken submits mode="observe" with reason + expiry, no cascade', async () => {
+    stubBaseQueries()
+    const { set } = stubEnforcement()
+    const onAgentMutated = vi.fn()
+    renderAs(['read', 'write', 'admin'], ENFORCE_NODE, { onAgentMutated })
+    await userEvent.click(screen.getByTestId('node-detail-shadow-mode'))
+
+    await userEvent.type(screen.getByTestId('shadow-dialog-reason'), 'incident triage')
+    setExpiryOneHourAhead()
+    await userEvent.click(screen.getByTestId('shadow-dialog-confirm'))
+
+    expect(set).toHaveBeenCalledTimes(1)
+    const [payload] = set.mock.calls[0]
+    expect(payload).toMatchObject({ id: 'agent-001', mode: 'observe', reason: 'incident triage' })
+    expect((payload as SetInput).cascade).toBeUndefined()
+    expect((payload as SetInput).expiresAt).toBeTruthy()
+    expect(onAgentMutated).toHaveBeenCalledTimes(1)
+  })
+
+  it('cascade confirm echoes back the previewed ids + count', async () => {
+    stubBaseQueries()
+    const { set, mutateAsync } = stubEnforcement({
+      previewResult: { affected_ids: ['agent-001', 'child-a', 'child-b'], count: 3 },
+    })
+    renderAs(['read', 'write', 'admin'], ENFORCE_NODE)
+    await userEvent.click(screen.getByTestId('node-detail-shadow-mode'))
+
+    await userEvent.type(screen.getByTestId('shadow-dialog-reason'), 'temporary observe window')
+    setExpiryOneHourAhead()
+    await userEvent.click(screen.getByTestId('shadow-dialog-cascade-toggle'))
+
+    // With cascade chosen the primary button previews rather than submits.
+    await userEvent.click(screen.getByTestId('shadow-dialog-preview-btn'))
+    expect(mutateAsync).toHaveBeenCalledWith({ id: 'agent-001' })
+    expect(screen.getByTestId('shadow-dialog-preview-count')).toHaveTextContent('shadow these 3 agents')
+    expect(screen.getAllByTestId('shadow-dialog-preview-id')).toHaveLength(3)
+
+    // Confirm now echoes the previewed set back verbatim.
+    await userEvent.click(screen.getByTestId('shadow-dialog-confirm'))
+    const [payload] = set.mock.calls[0]
+    expect(payload).toMatchObject({
+      id: 'agent-001',
+      mode: 'observe',
+      cascade: { expected_ids: ['agent-001', 'child-a', 'child-b'], expected_count: 3 },
+    })
+  })
+
+  it('surfaces a server rejection in the dialog', async () => {
+    stubBaseQueries()
+    stubEnforcement({ setError: new Error('Rejected — the reason or expiry is invalid.') })
+    renderAs(['read', 'write', 'admin'], ENFORCE_NODE)
+    await userEvent.click(screen.getByTestId('node-detail-shadow-mode'))
+    expect(screen.getByTestId('shadow-dialog-server-error')).toHaveTextContent('Rejected')
   })
 })

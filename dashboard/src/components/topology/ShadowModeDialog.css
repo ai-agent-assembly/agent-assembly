@@ -1,0 +1,38 @@
+.shadow-dialog__cascade-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-2);
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.shadow-dialog__cascade-choice input {
+  margin-top: 2px;
+}
+
+.shadow-dialog__preview {
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: var(--paper);
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.shadow-dialog__preview-head {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.shadow-dialog__preview-list {
+  margin: 0;
+  padding-left: 16px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+  line-height: 1.6;
+}
