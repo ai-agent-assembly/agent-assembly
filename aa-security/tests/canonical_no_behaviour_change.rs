@@ -32,12 +32,11 @@ use aa_security::{CredentialScanner, ScanResult};
 ///
 /// The Slack samples are short (`xoxb-AbCdEf`, the shape the conformance
 /// vectors use) because GitHub push protection classifies a realistic-length
-/// `xox*` literal as a live Slack API token and refuses the push. That is not
-/// free: a full-length Slack token also trips `GenericHighEntropy`'s 20–64
-/// character window, so this corpus no longer exercises the Slack-versus-entropy
-/// overlap and the priority rule that resolves it. That path is still covered by
-/// the full-length samples in `scanner.rs`'s own tests, and by the anthropic,
-/// openai and github entries below, which do produce overlapping findings.
+/// `xox*` literal as a live Slack API token and refuses the push. So the Slack
+/// entries do not exercise the overlap between a specific detector and the
+/// `GenericHighEntropy` backstop. The anthropic and openai entries do — each
+/// yields two findings over the same region, which is what pins the priority
+/// rule that decides the surviving label.
 const CORPUS: &[(&str, &str)] = &[
     ("anthropic", "auth header: sk-ant-api03-Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OTA gets sent"),
     ("openai", "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz012345\nexport it"),
@@ -157,19 +156,19 @@ fn every_scanner_finding_is_recoverable_from_its_canonical_form() {
             let canonical = CanonicalFinding::try_from(finding).expect("every scanner finding has a well-formed span");
 
             assert_eq!(
-                canonical.category.to_credential_kind().as_ref(),
+                canonical.category().to_credential_kind().as_ref(),
                 Some(&finding.kind),
                 "{name}: {} did not survive the canonical projection",
                 finding.kind.as_str()
             );
             assert_eq!(
-                canonical.span.start(),
+                canonical.span().start(),
                 finding.offset,
                 "{name}: span start moved for {}",
                 finding.kind.as_str()
             );
             assert_eq!(
-                canonical.category.redaction_label(),
+                canonical.category().redaction_label(),
                 finding.matched,
                 "{name}: redaction label changed for {}",
                 finding.kind.as_str()

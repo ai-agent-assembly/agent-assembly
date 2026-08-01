@@ -71,10 +71,18 @@
 //!
 //! [`CanonicalFinding`] has no owned-`String` field at all: category and
 //! provenance are built from `&'static str`, and everything else is an enum or
-//! a byte offset. A raw matched value is therefore not merely discouraged, it is
-//! unrepresentable — the same guarantee
-//! [`CredentialFinding`](crate::scanner::CredentialFinding) gives by storing the
-//! redaction label instead of the match (ADR 0032 §9, validation requirement 9).
+//! a byte offset. A raw matched value is therefore **not produced by any
+//! construction path in this crate** — the lift builds category and provenance
+//! from compiled-in constants only, never from the bytes it scanned, which is
+//! the same guarantee [`CredentialFinding`](crate::scanner::CredentialFinding)
+//! gives by storing the redaction label instead of the match (ADR 0032 §9,
+//! validation requirement 9).
+//!
+//! It is *not* unrepresentable, and the difference matters. `Box::leak` turns
+//! arbitrary runtime bytes into a `&'static str` in safe stable Rust, so a
+//! caller can put a secret in a qualifier or a version string if it sets out to
+//! — see the note on [`CategoryQualifier`]. The guarantee is about what this
+//! crate constructs, not about what the types forbid.
 //!
 //! There is no `Deserialize`, so a canonical finding is never reconstructed
 //! from bytes — it is always derived from something this process detected.
@@ -118,5 +126,5 @@ pub use category::{CanonicalCategory, CategoryBase, CategoryQualifier};
 pub use finding::{
     ByteSpan, CanonicalFinding, ConfidenceBand, DetectionMethod, FindingStatus, Provenance, Recognizer, Severity,
 };
-pub use lift::{LiftError, SCANNER_PROVENANCE};
+pub use lift::{LiftError, POLICY_REGEX_PROVENANCE, SCANNER_PROVENANCE};
 pub use mapping::ParseCategoryError;
