@@ -2514,6 +2514,18 @@ mod tests {
         );
     }
 
+    /// Reported reproducer 1. This redacted to `[REDACTED:GenericHighEntropy]
+    /// 的狀態`, destroying the sentence around a synthetic order reference that
+    /// is not a secret at all.
+    #[test]
+    fn zh_tw_order_reference_survives_redact() {
+        let scanner = CredentialScanner::new();
+        let text = "請查詢訂單編號：ORD20260427001 的狀態";
+        let result = scanner.scan(text);
+        assert!(result.is_clean(), "unexpected findings: {:?}", result.findings);
+        assert_eq!(result.redact(text), text);
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
