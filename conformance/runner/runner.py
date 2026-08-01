@@ -103,7 +103,25 @@ def _load_vectors(vectors_dir: Path) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _findings_match(actual: list[dict], expected: list[dict]) -> tuple[bool, str]:
-    """Return (ok, reason) comparing actual to expected findings."""
+    """Return (ok, reason) comparing actual to expected findings.
+
+    **`end` is deliberately not graded here** (AAASM-5373 AC 7). Grading it
+    would need an `end` on every `expected_findings` entry, and the vectors
+    carry none — adding one is a change to the vector schema, which ADR 0015
+    puts off-limits as a way to make an implementation pass. That is a design
+    decision to take on its own merits, not a side effect of this fix, so the
+    schema is left alone and the omission is recorded rather than papered over.
+
+    `end` is not ungraded in the suite as a whole, though, and it is no longer
+    possible to slip a wrong one past the runner. It is graded indirectly, and
+    now strictly, through the redaction comparison in `run()`: before this
+    change `_redact` skipped any span it could not splice, so a nonsense `end`
+    could vanish silently and leave the rest of the text matching. `_redact`
+    now fails closed, so a wrong `end` either splices to the wrong string or
+    collapses the whole text to "[REDACTED]" — and both mismatch
+    `expected_redacted`. The escape hatch that made this omission dangerous is
+    what closed; the omission itself is now merely narrow.
+    """
     if len(actual) != len(expected):
         return False, (
             f"finding count mismatch: got {len(actual)}, expected {len(expected)}"

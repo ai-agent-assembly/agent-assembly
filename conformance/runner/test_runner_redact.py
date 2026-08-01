@@ -42,7 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from runner import _coalesce_findings, _redact  # noqa: E402
+from runner import _coalesce_findings, _findings_match, _redact  # noqa: E402
 
 
 def _span(kind: str, text: str, secret: str) -> dict:
@@ -394,6 +394,51 @@ class RedactAsciiUnchangedTests(unittest.TestCase):
         findings = [{"kind": "SyntheticKey", "offset": 4}]
 
         self.assertEqual(_redact(text, findings), "[REDACTED]")
+
+
+class FindingsMatchGradingTests(unittest.TestCase):
+    """What `_findings_match` grades, pinned so the omission stays deliberate.
+
+    AAASM-5373 AC 7 asked for an explicit decision on `end`. The decision is:
+    leave it ungraded here, because grading it needs an `end` on every
+    `expected_findings` entry and that is a vector schema change (ADR 0015).
+    These tests make the decision executable rather than a comment, so a future
+    change to it has to be a change to this file.
+    """
+
+    def test_end_is_not_graded(self) -> None:
+        # A wildly wrong `end` is still a match at this stage. It is caught
+        # afterwards, by the redaction comparison in run().
+        ok, reason = _findings_match(
+            [{"kind": "SyntheticKey", "offset": 4, "end": 999}],
+            [{"kind": "SyntheticKey", "offset": 4}],
+        )
+
+        self.assertTrue(ok, reason)
+
+    def test_kind_and_offset_are_graded(self) -> None:
+        # Guards the test above from being vacuous: if _findings_match graded
+        # nothing at all, "end is not graded" would pass for the wrong reason.
+        expected = [{"kind": "SyntheticKey", "offset": 4}]
+
+        self.assertFalse(_findings_match([{"kind": "Other", "offset": 4}], expected)[0])
+        self.assertFalse(
+            _findings_match([{"kind": "SyntheticKey", "offset": 9}], expected)[0]
+        )
+
+    def test_a_wrong_end_still_fails_the_vector_through_redaction(self) -> None:
+        # The reason leaving `end` ungraded is tolerable: it can no longer be
+        # skipped silently. An out-of-range `end` that _findings_match waves
+        # through now collapses the redaction to "[REDACTED]", which cannot
+        # equal any vector's expected_redacted.
+        secret = "DUMMY-NOT-A-REAL-KEY"
+        text = f"key={secret}"
+        expected_redacted = "key=[REDACTED:SyntheticKey]"
+        wrong = [{"kind": "SyntheticKey", "offset": 4, "end": 999}]
+
+        self.assertTrue(_findings_match(wrong, [{"kind": "SyntheticKey", "offset": 4}])[0])
+        self.assertNotEqual(_redact(text, wrong), expected_redacted)
+        self.assertNotEqual(_redact(text, wrong), text)
 
 
 if __name__ == "__main__":
