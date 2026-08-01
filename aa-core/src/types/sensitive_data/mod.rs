@@ -5,12 +5,15 @@
 
 mod category_label;
 mod evidence;
+mod finding_record;
 mod guard;
 mod schema;
 mod verdict;
+mod vocab;
 
 pub use category_label::CategoryLabel;
 pub use evidence::{EnforcementPoint, ExecutionEvidence, InspectionFailurePath, TransmissionEvidence};
+pub use finding_record::{AggregateKey, DetectionProvenance, SensitiveDataFindingRecord};
 pub use guard::{AuditLabel, FieldPath, FieldRejection, MAX_FIELD_PATH_BYTES, MAX_LABEL_BYTES};
 pub use schema::{SchemaVersion, SENSITIVE_DATA_SCHEMA_VERSION};
 pub use verdict::RuntimeVerdictLabel;
