@@ -2624,6 +2624,31 @@ mod tests {
         assert!(!result.redact(&text).contains(secret));
     }
 
+    /// Detection-strength guard for the literal prefix pass, across the vendor
+    /// families whose prefixes dilute run entropy below the gate — for these the
+    /// AC scan is the only reliable path, so a regression here is a silent leak.
+    #[test]
+    fn ascii_api_key_prefixes_are_still_detected() {
+        let scanner = CredentialScanner::new();
+        for (text, expected) in [
+            ("k=AKIAIOSFODNN7EXAMPLE", CredentialKind::AwsAccessKey),
+            ("k=ghp_0000000000000000000000000000000000ab", CredentialKind::GitHubPat),
+            ("k=sk-ant-api03-000000000000000000000000", CredentialKind::AnthropicKey),
+            ("k=xoxb-000000000000-000000000000-abcdef", CredentialKind::SlackBotToken),
+            (
+                "url=postgres://user:notarealpassword@host:5432/db",
+                CredentialKind::PostgresUrl,
+            ),
+        ] {
+            let result = scanner.scan(text);
+            assert!(
+                result.findings.iter().any(|f| f.kind == expected),
+                "{expected:?} must still be flagged: {:?}",
+                result.findings
+            );
+        }
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
