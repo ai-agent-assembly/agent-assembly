@@ -25,7 +25,8 @@ conformance/
 └── runner/
     ├── requirements.txt        # Python runner dependencies (colorama)
     ├── runner.py               # Python SDK conformance runner
-    └── test_runner_redact.py   # Regression tests for the runner's own redaction logic
+    ├── test_runner_redact.py   # Regression tests for the runner's own redaction logic
+    └── check_redact_equivalence.py  # Differential sweep vs. the pre-AAASM-5371 redaction
 ```
 
 ## Test categories
@@ -162,6 +163,21 @@ without an SDK and without any vector file:
 ```bash
 python conformance/runner/test_runner_redact.py
 ```
+
+Changing how spans are spliced is the change most likely to break the 26 ASCII
+vectors without any of them failing, since a wrong unit still lands in the right
+place on ASCII. The differential sweep drives the current implementation and the
+pre-AAASM-5371 one over every span position in every ASCII vector and requires
+byte-identical output:
+
+```bash
+python conformance/runner/check_redact_equivalence.py
+python conformance/runner/check_redact_equivalence.py --self-check
+```
+
+`--self-check` sabotages the implementation by one character and asserts the
+sweep notices — a differential harness that silently compares one thing to itself
+reports zero mismatches forever and looks exactly like proof.
 
 ## Adding new vectors
 
