@@ -842,17 +842,24 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlinked_key_file_is_refused_rather_than_followed() {
-        let real = store("symlink-target");
+        let real = store("linktarget");
         let real_key = real.enroll("agent-a").expect("enrolment");
 
-        let attacker = store("symlink-store");
+        // Store labels deliberately avoid the word this test greps for: the
+        // refusal message embeds the path, so a label containing "symlink"
+        // would satisfy the assertion below no matter which check fired.
+        let attacker = store("linkstore");
         let _ = attacker.enroll("bootstrap").expect("create the directory");
         let link = attacker.key_path("agent-a");
         std::os::unix::fs::symlink(real.key_path("agent-a"), &link).unwrap();
 
         let err = expect_refusal(attacker.load("agent-a"), "a symlinked key file");
         assert!(matches!(err, IdentityStoreError::Untrusted { .. }), "got {err:?}");
-        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(
+            err.to_string().contains("it is a symlink"),
+            "the link must be refused *as a link* — a refusal for some other reason would mean \
+             the metadata that gets vetted is not the metadata of the bytes that get read: {err}"
+        );
 
         // And the guard is not vacuous: the target really was a loadable key.
         assert!(real.load("agent-a").is_ok());
