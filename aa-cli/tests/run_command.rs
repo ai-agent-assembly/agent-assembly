@@ -16,7 +16,6 @@ fn registration_response(registration_id: &str) -> serde_json::Value {
         "registration_id": registration_id,
         "trace_id": "trace-1",
         "session_id": "session-1",
-        "proxy_addr": null,
     })
 }
 
@@ -153,7 +152,13 @@ async fn run_command_exits_zero_and_deregisters() {
         team_id: None,
         root_agent: None,
         governance_level: None,
-        no_proxy: false,
+        // These tests measure child-process spawn and deregistration, not
+        // proxy trust. Since AAASM-5323 a launch without `--no-proxy` refuses
+        // unless a verified proxy is running on this host, which is not
+        // something an exit-code test should have to stand up — and refusing is
+        // exactly what `aa-cli`'s own
+        // `launch_refuses_when_no_trusted_proxy_can_be_established` asserts.
+        no_proxy: true,
         dry_run: false,
         enforcement_mode: None,
         observe: false,
@@ -199,7 +204,13 @@ async fn run_command_propagates_nonzero_exit_and_deregisters() {
         team_id: None,
         root_agent: None,
         governance_level: None,
-        no_proxy: false,
+        // These tests measure child-process spawn and deregistration, not
+        // proxy trust. Since AAASM-5323 a launch without `--no-proxy` refuses
+        // unless a verified proxy is running on this host, which is not
+        // something an exit-code test should have to stand up — and refusing is
+        // exactly what `aa-cli`'s own
+        // `launch_refuses_when_no_trusted_proxy_can_be_established` asserts.
+        no_proxy: true,
         dry_run: false,
         enforcement_mode: None,
         observe: false,

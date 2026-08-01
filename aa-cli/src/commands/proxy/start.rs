@@ -1,13 +1,14 @@
 //! `aasm proxy start` — spawn the aa-proxy sidecar as a background process.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use clap::Args;
 
-use super::pid;
+use super::pid::{self, ProxyState};
+use super::{identity, trust};
 
 /// Arguments for `aasm proxy start`.
 #[derive(Debug, Args)]
@@ -104,14 +105,46 @@ fn wait_for_port(addr: &str, timeout: Duration) -> bool {
     false
 }
 
-/// Write the child process's PID and listen address to the shared PID file.
-fn write_child_pid(child_pid: u32, listen_addr: &str) -> std::io::Result<()> {
-    let path = pid::pid_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+/// Build the state record for a proxy just spawned as `child_pid` from `binary`.
+///
+/// The record carries process-identity evidence because `aasm run` decides
+/// whether to launch a governed tool from it, and a PID plus an address cannot
+/// support that decision (see [`super::trust`]). The two evidence fields are
+/// captured differently on purpose:
+///
+/// * the **start time** is read back from the kernel for `child_pid`. It is set
+///   at fork and is not changed by the subsequent `exec`, so reading it now is
+///   race-free even though the child may not have exec'd yet.
+/// * the **executable** is the path that was spawned, not a read-back of the
+///   live image, because the read-back *does* race the exec. The caller
+///   canonicalises before spawning ([`canonical_binary`]), which matches what
+///   the kernel will later report — `/proc/<pid>/exe` and `proc_pidpath` both
+///   name the resolved image — so the comparison holds even when the proxy was
+///   invoked through a symlink.
+///
+/// A field the platform cannot supply is left empty, which makes the record
+/// unusable to the trust check — deliberately: an unverifiable proxy must fail
+/// the launch, not silently pass it.
+fn state_for_child(child_pid: u32, binary: &Path, listen_addr: &str) -> ProxyState {
+    ProxyState {
+        pid: child_pid,
+        listen_addr: listen_addr.to_string(),
+        start_token: identity::start_token(child_pid).unwrap_or_default(),
+        exe_path: binary.to_path_buf(),
     }
-    let content = format!("{}\n{}\n", child_pid, listen_addr);
-    std::fs::write(&path, content)
+}
+
+/// The path the proxy must actually be spawned from: the resolved one.
+///
+/// Spawning the canonical path rather than the one `PATH` happened to yield is
+/// what keeps `argv[0]` and the recorded executable the same string. That
+/// matters because `aa-proxy` marks itself non-dumpable at startup (AAASM-3584),
+/// after which the kernel will not name its image to `aasm run` and `argv[0]` is
+/// the only image fact left (see [`super::identity`]). Resolving here also means
+/// the record names the file that was executed rather than a symlink that could
+/// be repointed afterwards.
+fn canonical_binary(binary: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&binary).unwrap_or(binary)
 }
 
 pub fn dispatch(args: StartArgs) -> ExitCode {
@@ -123,6 +156,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
+    let binary = canonical_binary(binary);
 
     let mut cmd = std::process::Command::new(&binary);
     for (key, value) in proxy_child_env(&args.listen, args.gateway.as_deref()) {
@@ -188,7 +222,21 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
 
     let child_pid = child.id();
 
-    if let Err(e) = write_child_pid(child_pid, &args.listen) {
+    let state = state_for_child(child_pid, &binary, &args.listen);
+    // A record `aasm run` cannot verify is worth saying out loud here rather
+    // than only at the next launch: the operator is standing in front of this
+    // command, not the one that will refuse.
+    if state.start_token.is_empty() {
+        eprintln!(
+            "warning: this platform ({}) does not report process start times, so `aasm run` \
+             will not be able to verify this proxy and will refuse to launch.",
+            std::env::consts::OS
+        );
+    }
+    if let Err(e) = trust::verify_proxy_binary(&state.exe_path) {
+        eprintln!("warning: {e}; `aasm run` will refuse to launch against this proxy.");
+    }
+    if let Err(e) = pid::write_state(&state) {
         eprintln!("warning: could not write PID file: {e}");
     }
 
@@ -278,6 +326,35 @@ mod tests {
         assert!(!env.iter().any(|(k, _)| *k == "AA_PROXY_LLM_ONLY"));
         // The listen address is always exported.
         assert!(env.contains(&("AA_PROXY_ADDR", "127.0.0.1:8899".to_string())));
+    }
+
+    /// The record's executable field and the child's `argv[0]` have to be the
+    /// same string, because on Linux `argv[0]` is the only image fact the kernel
+    /// still publishes once the proxy has hardened itself (AAASM-5323). They are
+    /// the same string only if what gets spawned is already resolved, so a
+    /// symlinked install must be followed here rather than at record time.
+    #[test]
+    fn the_spawned_path_is_resolved_not_the_symlink_it_was_found_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("aa-proxy");
+        std::fs::write(&real, "not really a binary").unwrap();
+        let link = tmp.path().join("aa-proxy-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_eq!(
+            canonical_binary(link),
+            std::fs::canonicalize(&real).unwrap(),
+            "a proxy found through a symlink must be spawned from the file the link resolves to"
+        );
+    }
+
+    /// Whatever path the caller spawned is what the record must name — the
+    /// resolution happens before the spawn, not after it, so the two cannot
+    /// disagree.
+    #[test]
+    fn the_record_names_the_path_that_was_spawned() {
+        let state = state_for_child(std::process::id(), Path::new("/opt/aa/aa-proxy"), "127.0.0.1:8899");
+        assert_eq!(state.exe_path, PathBuf::from("/opt/aa/aa-proxy"));
     }
 
     #[test]

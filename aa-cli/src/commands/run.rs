@@ -43,7 +43,12 @@ pub struct RunArgs {
     #[arg(long)]
     pub governance_level: Option<GovernanceLevel>,
 
-    /// Skip proxy injection (not recommended for governed environments).
+    /// Launch WITHOUT routing the tool through the governed proxy.
+    ///
+    /// This is an explicit opt-out of Layer 2 interception: the tool's traffic
+    /// is not inspected and no egress policy applies to it. Without this flag
+    /// `aasm run` refuses to launch unless it can establish a trusted local
+    /// proxy endpoint (AAASM-5323) — it never launches unproxied by accident.
     #[arg(long)]
     pub no_proxy: bool,
 
@@ -125,12 +130,19 @@ fn dev_tool_kind_str(kind: &DevToolKind) -> String {
 }
 
 /// Gateway registration result for a single `aasm run` session.
+///
+/// Deliberately carries no proxy address. The gateway used to return one, and
+/// `aasm run` used to route the launched tool at it; that made a remote,
+/// unauthenticated field the authority on where this machine's traffic goes,
+/// and — because nothing ever populated it — meant every launch went out
+/// unproxied while reporting as governed. The endpoint is now a host fact
+/// resolved by [`crate::commands::proxy::trust`] and is never carried on the
+/// registration path (AAASM-5323).
 struct RegistrationHandle {
     agent_id: String,
     registration_id: String,
     trace_id: String,
     session_id: String,
-    proxy_addr: Option<String>,
     /// Carried from [`RunArgs::team_id`] (or echoed by the gateway) for `AA_TEAM_ID` injection.
     team_id: Option<String>,
 }
@@ -217,13 +229,15 @@ async fn register_with_gateway(
         return Err(anyhow::anyhow!("gateway registration failed: HTTP {}", resp.status()));
     }
 
+    // `proxy_addr` is intentionally absent from this struct: serde ignores the
+    // field if the gateway still sends it, which is the point — the response
+    // must not be able to influence where this session's traffic is routed.
     #[derive(Deserialize)]
     struct RegisterResponse {
         agent_id: Option<String>,
         registration_id: Option<String>,
         trace_id: Option<String>,
         session_id: Option<String>,
-        proxy_addr: Option<String>,
         team_id: Option<String>,
     }
 
@@ -234,7 +248,6 @@ async fn register_with_gateway(
         registration_id: reg.registration_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         trace_id: reg.trace_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
         session_id: reg.session_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-        proxy_addr: reg.proxy_addr,
         team_id: reg.team_id.or_else(|| args.team_id.clone()),
     })
 }
@@ -251,8 +264,24 @@ fn emit_observe_banner() {
 /// Build the environment map to be inherited by the child process.
 ///
 /// Starts from the current process environment, then overlays governance
-/// identity variables. `HTTPS_PROXY` / `HTTP_PROXY` are only injected when
-/// `handle.proxy_addr` is set and `no_proxy` is `false`.
+/// identity variables.
+///
+/// # Proxy variables
+///
+/// `proxy` is the endpoint [`crate::commands::proxy::trust`] vouched for, or
+/// `None`. The three cases are distinct and none of them is "leave whatever was
+/// there":
+///
+/// * `Some(url)` — both variables are set to it, overwriting anything the
+///   operator's shell had. An ambient `HTTPS_PROXY` is an environment-supplied
+///   proxy address, which is exactly the class of input this feature exists to
+///   stop treating as authoritative.
+/// * `None` with `no_proxy` — the operator asked for an unproxied launch, so
+///   their own proxy configuration is left alone. This is the documented
+///   opt-out, not a fallback.
+/// * `None` without `no_proxy` — reachable only from `--dry-run`, since a live
+///   launch refuses before it gets here. The variables are *removed* so the
+///   preview cannot show an ambient proxy and read as a governed launch.
 ///
 /// `AA_ENFORCEMENT_MODE` is set whenever `mode` differs from the pre-feature
 /// default (`Enforce`) so tools that branch on the env var see the operator's
@@ -260,6 +289,7 @@ fn emit_observe_banner() {
 /// avoid surprising any tool that does best-effort env sniffing.
 fn build_child_env(
     handle: &RegistrationHandle,
+    proxy: Option<&str>,
     no_proxy: bool,
     mode: aa_core::EnforcementMode,
 ) -> HashMap<String, String> {
@@ -271,16 +301,47 @@ fn build_child_env(
     if let Some(ref team_id) = handle.team_id {
         env.insert("AA_TEAM_ID".into(), team_id.clone());
     }
-    if let Some(ref proxy) = handle.proxy_addr {
-        if !no_proxy {
-            env.insert("HTTPS_PROXY".into(), proxy.clone());
-            env.insert("HTTP_PROXY".into(), proxy.clone());
+    match proxy {
+        Some(url) => {
+            env.insert("HTTPS_PROXY".into(), url.to_string());
+            env.insert("HTTP_PROXY".into(), url.to_string());
         }
+        None if !no_proxy => {
+            env.remove("HTTPS_PROXY");
+            env.remove("HTTP_PROXY");
+        }
+        None => {}
     }
     if mode != aa_core::EnforcementMode::Enforce {
         env.insert("AA_ENFORCEMENT_MODE".into(), enforcement_mode_str(mode).into());
     }
     env
+}
+
+/// Resolve the endpoint this launch will be routed through, or explain why the
+/// launch must not happen.
+///
+/// The only `Ok(None)` is the operator's explicit `--no-proxy`. Every other
+/// outcome is either a vouched-for endpoint or a refusal: there is no path from
+/// "the proxy could not be verified" to "launch anyway", because that path is a
+/// direct, uninspected connection made by a session presenting as governed.
+fn resolve_launch_proxy(no_proxy: bool) -> Result<Option<String>> {
+    if no_proxy {
+        eprintln!(
+            "warning: --no-proxy — launching WITHOUT interception. This session's traffic is not \
+             inspected and no egress policy applies to it."
+        );
+        return Ok(None);
+    }
+    let url = crate::commands::proxy::trust::resolve_trusted_endpoint()
+        .map_err(|e| anyhow::anyhow!("refusing to launch ungoverned: {e}"))?;
+    // `Url` appends a path; a proxy variable wants the bare origin.
+    Ok(Some(format!(
+        "{}://{}:{}",
+        url.scheme(),
+        url.host_str().unwrap_or_default(),
+        url.port().unwrap_or_default()
+    )))
 }
 
 /// Synthesize a `RegistrationHandle` for `--dry-run` without contacting the
@@ -301,7 +362,6 @@ fn dry_run_handle(args: &RunArgs) -> RegistrationHandle {
         registration_id: format!("dry-run-{}", Uuid::new_v4()),
         trace_id: format!("dry-run-{}", Uuid::new_v4()),
         session_id: format!("dry-run-{}", Uuid::new_v4()),
-        proxy_addr: None,
         team_id: args.team_id.clone(),
     }
 }
@@ -522,7 +582,18 @@ pub async fn execute_with_adapters(
 
     if args.dry_run {
         let handle = dry_run_handle(args);
-        let child_env = build_child_env(&handle, args.no_proxy, mode);
+        // A preview launches nothing, so an unresolvable endpoint is reported
+        // rather than fatal — but it is reported, because a preview that
+        // silently omits the proxy reads exactly like a governed one.
+        let proxy = match resolve_launch_proxy(args.no_proxy) {
+            Ok(proxy) => proxy,
+            Err(e) => {
+                eprintln!("warning: {e}");
+                eprintln!("warning: a live `aasm run` with these flags would refuse to launch.");
+                None
+            }
+        };
+        let child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
         let settings = "<dry-run: managed settings not generated>".to_string();
         let mut cmd = std::process::Command::new(&args.tool);
         cmd.args(&args.tool_args);
@@ -543,8 +614,12 @@ pub async fn execute_with_adapters(
         info.governance_level,
     );
 
+    // Resolved before registration on purpose: a launch that is going to be
+    // refused should not first create a gateway registration it then abandons.
+    let proxy = resolve_launch_proxy(args.no_proxy)?;
+
     let handle = register_with_gateway(&info, args, ctx).await?;
-    let child_env = build_child_env(&handle, args.no_proxy, mode);
+    let child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
 
     let policy = load_policy();
     let settings = adapter
@@ -562,7 +637,7 @@ pub async fn execute_with_adapters(
             &args.tool_args,
             &handle.agent_id,
             handle.team_id.as_deref(),
-            handle.proxy_addr.as_deref(),
+            proxy.as_deref(),
         )
         .map_err(|e| anyhow::anyhow!("failed to build launch command: {e}"))?;
     // No `cmd.envs(&child_env)` here: `spawn_and_wait` applies both sources with
@@ -892,21 +967,56 @@ mod tests {
 
     // --- build_child_env tests ---
 
-    fn stub_handle(proxy_addr: Option<&str>, team_id: Option<&str>) -> RegistrationHandle {
+    fn stub_handle(team_id: Option<&str>) -> RegistrationHandle {
         RegistrationHandle {
             agent_id: "test-agent".into(),
             registration_id: "test-reg".into(),
             trace_id: "test-trace".into(),
             session_id: "test-session".into(),
-            proxy_addr: proxy_addr.map(String::from),
             team_id: team_id.map(String::from),
+        }
+    }
+
+    /// Set `HTTPS_PROXY` / `HTTP_PROXY` on this process for the duration of the
+    /// guard, so `build_child_env`'s copy of the ambient environment carries an
+    /// operator-supplied proxy the way a real shell would.
+    struct AmbientProxy {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prior: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl AmbientProxy {
+        fn set(value: &str) -> Self {
+            let lock = crate::test_support::env_guard();
+            let mut prior = Vec::new();
+            for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
+                prior.push((key, std::env::var(key).ok()));
+                std::env::set_var(key, value);
+            }
+            Self { _lock: lock, prior }
+        }
+    }
+
+    impl Drop for AmbientProxy {
+        fn drop(&mut self) {
+            for (key, prior) in self.prior.drain(..) {
+                match prior {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
         }
     }
 
     #[test]
     fn build_child_env_sets_proxy() {
-        let handle = stub_handle(Some("http://proxy:8080"), None);
-        let env = build_child_env(&handle, false, aa_core::EnforcementMode::Enforce);
+        let handle = stub_handle(None);
+        let env = build_child_env(
+            &handle,
+            Some("http://proxy:8080"),
+            false,
+            aa_core::EnforcementMode::Enforce,
+        );
         assert_eq!(
             env.get("HTTPS_PROXY").map(String::as_str),
             Some("http://proxy:8080"),
@@ -923,31 +1033,73 @@ mod tests {
         assert_eq!(env.get("AA_REGISTRATION_ID").map(String::as_str), Some("test-reg"));
     }
 
+    /// `--no-proxy` is an opt-out of *our* injection, not a scrub of the
+    /// operator's own configuration: a developer behind a corporate proxy who
+    /// asks for an unproxied launch still needs their own proxy to reach the
+    /// network.
     #[test]
-    fn build_child_env_skips_proxy_when_no_proxy() {
-        let handle = stub_handle(Some("http://proxy:8080"), None);
-        let env = build_child_env(&handle, true, aa_core::EnforcementMode::Enforce);
+    fn build_child_env_leaves_the_ambient_proxy_alone_under_no_proxy() {
+        let _ambient = AmbientProxy::set("http://corporate:3128");
+        let handle = stub_handle(None);
+        let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
+        assert_eq!(
+            env.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://corporate:3128"),
+            "--no-proxy must not rewrite the operator's own proxy configuration"
+        );
+    }
+
+    /// An environment-supplied proxy address is not authoritative: whatever the
+    /// operator's shell (or anything that wrote to it) had must lose to the
+    /// endpoint the host-side trust check vouched for.
+    #[test]
+    fn build_child_env_overwrites_an_ambient_proxy_with_the_trusted_endpoint() {
+        let _ambient = AmbientProxy::set("http://attacker.example:8080");
+        let handle = stub_handle(None);
+        let env = build_child_env(
+            &handle,
+            Some("http://127.0.0.1:8899"),
+            false,
+            aa_core::EnforcementMode::Enforce,
+        );
+        for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
+            assert_eq!(
+                env.get(key).map(String::as_str),
+                Some("http://127.0.0.1:8899"),
+                "`{key}` must carry the trusted endpoint, not the ambient one"
+            );
+        }
+    }
+
+    /// The dry-run path: no trusted endpoint and no opt-out. An inherited
+    /// `HTTPS_PROXY` must be dropped rather than shown, or the preview reads as
+    /// a governed launch that the live run would have refused.
+    #[test]
+    fn build_child_env_drops_an_ambient_proxy_when_none_was_vouched_for() {
+        let _ambient = AmbientProxy::set("http://corporate:3128");
+        let handle = stub_handle(None);
+        let env = build_child_env(&handle, None, false, aa_core::EnforcementMode::Enforce);
         assert!(
             !env.contains_key("HTTPS_PROXY"),
-            "HTTPS_PROXY must not be set when no_proxy=true"
+            "an unvouched-for ambient HTTPS_PROXY must not reach the child"
         );
         assert!(
             !env.contains_key("HTTP_PROXY"),
-            "HTTP_PROXY must not be set when no_proxy=true"
+            "an unvouched-for ambient HTTP_PROXY must not reach the child"
         );
     }
 
     #[test]
     fn build_child_env_sets_team_id_when_present() {
-        let handle = stub_handle(None, Some("my-team"));
-        let env = build_child_env(&handle, false, aa_core::EnforcementMode::Enforce);
+        let handle = stub_handle(Some("my-team"));
+        let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
         assert_eq!(env.get("AA_TEAM_ID").map(String::as_str), Some("my-team"));
     }
 
     #[test]
     fn build_child_env_omits_team_id_when_absent() {
-        let handle = stub_handle(None, None);
-        let env = build_child_env(&handle, false, aa_core::EnforcementMode::Enforce);
+        let handle = stub_handle(None);
+        let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
         assert!(
             !env.contains_key("AA_TEAM_ID"),
             "AA_TEAM_ID must not be set when team_id is None"
@@ -959,8 +1111,8 @@ mod tests {
         // Pre-feature behaviour: an enforce-mode launch must not introduce
         // any new env var so tools that env-sniff don't pick up a phantom
         // posture marker.
-        let handle = stub_handle(None, None);
-        let env = build_child_env(&handle, false, aa_core::EnforcementMode::Enforce);
+        let handle = stub_handle(None);
+        let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
         assert!(
             !env.contains_key("AA_ENFORCEMENT_MODE"),
             "AA_ENFORCEMENT_MODE must be absent in plain enforce-mode launches"
@@ -972,14 +1124,14 @@ mod tests {
         // The downstream tool / SDK reads this env var to decide whether to
         // surface a "running under observe mode" badge / banner in its own
         // UX. Locks in the snake_case wire form.
-        let handle = stub_handle(None, None);
-        let observe_env = build_child_env(&handle, false, aa_core::EnforcementMode::Observe);
+        let handle = stub_handle(None);
+        let observe_env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Observe);
         assert_eq!(
             observe_env.get("AA_ENFORCEMENT_MODE").map(String::as_str),
             Some("observe")
         );
 
-        let disabled_env = build_child_env(&handle, false, aa_core::EnforcementMode::Disabled);
+        let disabled_env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Disabled);
         assert_eq!(
             disabled_env.get("AA_ENFORCEMENT_MODE").map(String::as_str),
             Some("disabled")
@@ -1036,7 +1188,6 @@ mod tests {
         assert_eq!(handle.registration_id, "gw-reg-id");
         assert_eq!(handle.trace_id, "gw-trace-id");
         assert_eq!(handle.session_id, "gw-session-id");
-        assert_eq!(handle.proxy_addr.as_deref(), Some("http://gw-proxy:9090"));
         assert_eq!(handle.team_id.as_deref(), Some("my-team"));
 
         // Verify the request body shape
@@ -1297,12 +1448,85 @@ mod tests {
             api_key: None,
         };
 
+        // `--no-proxy`, because this test is about detect + register + spawn.
+        // Without it the launch would (correctly) refuse: no proxy is running
+        // in the test process's data dir. The refusal itself is asserted by
+        // `launch_refuses_when_no_trusted_proxy_can_be_established`.
+        let mut args = run_args("claude");
+        args.no_proxy = true;
+
         assert!(
-            execute_with_adapters(&run_args("claude"), &ctx, &adapters)
-                .await
-                .is_ok(),
+            execute_with_adapters(&args, &ctx, &adapters).await.is_ok(),
             "execute_with_adapters should succeed when detect() returns Some and gateway responds 201"
         );
+    }
+
+    /// The core claim of AAASM-5323: with no trusted proxy on this host, a
+    /// launch is refused — and a `proxy_addr` in the gateway's response cannot
+    /// rescue it, because the response is not a source of truth for where this
+    /// machine's traffic goes.
+    ///
+    /// Not `#[tokio::test]`: the `AA_DATA_DIR` redirection needs the crate's
+    /// environment lock, and holding a `std` guard across an `.await` is a
+    /// deadlock hazard clippy rightly rejects. Driving the async body through a
+    /// local runtime keeps the whole guarded region await-free.
+    #[test]
+    fn launch_refuses_when_no_trusted_proxy_can_be_established() {
+        let _lock = crate::test_support::env_guard();
+        let prior = std::env::var("AA_DATA_DIR").ok();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("AA_DATA_DIR", tmp.path());
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build test runtime");
+        let outcome = rt.block_on(async {
+            let mock_server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/v1/agents"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                    "agent_id": "a1",
+                    "registration_id": "r1",
+                    "trace_id": "t1",
+                    "session_id": "s1",
+                    // A gateway insisting there is a proxy. There isn't.
+                    "proxy_addr": "127.0.0.1:8899"
+                })))
+                .mount(&mock_server)
+                .await;
+
+            let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
+            adapters.insert("claude", Box::new(StubDetected { version: None }));
+            let ctx = ResolvedContext {
+                name: None,
+                api_url: mock_server.uri(),
+                api_key: None,
+            };
+
+            let result = execute_with_adapters(&run_args("claude"), &ctx, &adapters).await;
+            let registered = mock_server.received_requests().await.unwrap().len();
+            (result, registered)
+        });
+
+        match prior {
+            Some(v) => std::env::set_var("AA_DATA_DIR", v),
+            None => std::env::remove_var("AA_DATA_DIR"),
+        }
+
+        let (result, registered) = outcome;
+        let err = result.expect_err(
+            "with no proxy running, `aasm run` must refuse to launch rather than launch \
+             unproxied — a gateway-supplied address is not evidence that a proxy exists",
+        );
+        assert!(
+            err.to_string().contains("refusing to launch ungoverned"),
+            "the refusal must say what it refused and why; got: {err}"
+        );
+
+        // And nothing was registered: the refusal happens before the session
+        // exists, so there is no abandoned registration to reap.
+        assert_eq!(registered, 0, "a refused launch must not have registered a session");
     }
 
     #[tokio::test]
@@ -1385,7 +1609,6 @@ mod tests {
             registration_id: "reg-xyz".into(),
             trace_id: "trace-xyz".into(),
             session_id: "session-xyz".into(),
-            proxy_addr: None,
             team_id: None,
         };
         let settings = r#"{"mode":"strict"}"#;
@@ -1439,7 +1662,6 @@ mod tests {
             registration_id: "reg-xyz".into(),
             trace_id: "trace-xyz".into(),
             session_id: "session-xyz".into(),
-            proxy_addr: None,
             team_id: None,
         };
         let cmd = std::process::Command::new("mock-tool");
@@ -1479,7 +1701,6 @@ mod tests {
             registration_id: "reg-xyz".into(),
             trace_id: "trace-xyz".into(),
             session_id: "session-xyz".into(),
-            proxy_addr: None,
             team_id: None,
         };
         let cmd = std::process::Command::new("mock-tool");
