@@ -18,6 +18,7 @@ use crate::error::ProblemDetail;
 use crate::models::verdict::RuntimeVerdict;
 use crate::pagination::PaginationParams;
 use crate::state::AppState;
+use chrono::{DateTime, Utc};
 
 /// Enforce tenant ownership of an agent for a caller that already cleared the
 /// scope gate (AAASM-3726 / AAASM-3687).
@@ -354,6 +355,75 @@ pub struct ResumeResponse {
     pub new_status: String,
 }
 
+/// Maximum shadow (weakening) window a single `POST
+/// /api/v1/agents/{id}/enforcement-mode` call may request, in hours (ADR 0021
+/// §Decision item 3, `MAX_SHADOW_DURATION`).
+///
+/// A weakening change (`→ Observe`) must carry a mandatory `expires_at` that is
+/// in the future and no further than this bound from now; a request beyond it is
+/// rejected `422` rather than clamped. Bounds the realistic failure the ADR
+/// names — a shadow toggle left on after a 2am incident — so a forgotten window
+/// self-heals when the reconciliation watcher (AAASM-5339, out of scope here)
+/// reverts it.
+const SHADOW_MAX_HOURS: i64 = 72;
+
+/// Target enforcement mode a `POST /api/v1/agents/{id}/enforcement-mode` request
+/// may ask for (AAASM-5097 / ADR 0021).
+///
+/// **`Disabled` is intentionally not a variant.** ADR 0021 §Decision item 2
+/// forbids exposing `Disabled` via the API under any input (its own definition
+/// restricts it to hermetic test environments), so it is unrepresentable here —
+/// a body of `{"mode":"disabled"}` fails deserialization and never reaches the
+/// handler. Serializes the same `snake_case` wire labels as
+/// [`aa_core::EnforcementMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementModeTarget {
+    /// Strengthen governance back to full enforcement (the safe direction).
+    Enforce,
+    /// Weaken to shadow (observe-only) mode — the high-privilege, fail-open
+    /// direction (Admin + reason + bounded expiry required).
+    Observe,
+}
+
+/// Request body for `POST /api/v1/agents/:id/enforcement-mode` (AAASM-5097).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct EnforcementModeRequest {
+    /// Target enforcement mode. `enforce` (strengthen) or `observe` (weaken /
+    /// shadow); `disabled` is not accepted (ADR 0021).
+    pub mode: EnforcementModeTarget,
+    /// Operator justification. **Required and non-empty on a weakening
+    /// (`observe`) change** — the audit record has nothing to say otherwise;
+    /// ignored on a strengthening (`enforce`) change.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// When the shadow window ends. **Required on a weakening (`observe`)
+    /// change**, must be in the future and within [`SHADOW_MAX_HOURS`] of now;
+    /// ignored (and cleared) on a strengthening (`enforce`) change.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Response from `POST /api/v1/agents/:id/enforcement-mode`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct EnforcementModeResponse {
+    /// Hex-encoded agent UUID.
+    pub agent_id: String,
+    /// The agent's enforcement mode before the change (`enforce` / `observe` /
+    /// `disabled`), or `null` when it had no per-agent override (inheriting the
+    /// policy default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_mode: Option<EnforcementModeLabel>,
+    /// The enforcement mode now in force after the change.
+    pub new_mode: EnforcementModeLabel,
+    /// The shadow-window deadline, echoed back on a weakening change; `null` on a
+    /// strengthening change (the expiry is cleared).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
 /// Paginated `GET /api/v1/agents` body (AAASM-4892).
 ///
 /// A named wrapper (mirroring `PaginatedApprovalResponse`) so the OpenAPI schema
@@ -676,6 +746,161 @@ pub async fn resume_agent(
             agent_id: id,
             previous_status,
             new_status: "Active".to_string(),
+        }),
+    ))
+}
+
+/// `POST /api/v1/agents/:id/enforcement-mode` — set an agent's enforcement mode.
+///
+/// Direction-asymmetric governance mutation (AAASM-5097, ADR 0021 Option B).
+/// The operation is split by *direction of effect*, because the two directions
+/// have opposite blast radius:
+///
+/// - **Strengthening** (`→ enforce`) turns governance back *on* — it fails safe.
+///   It needs only tenant-scoped `Write` (via [`authorize_agent_access`]), no
+///   `reason`, no `expires_at`; the per-agent expiry is cleared so the agent
+///   returns to permanent enforcement.
+/// - **Weakening** (`→ observe`, i.e. shadow) turns denials *and credential
+///   redaction off* for the agent — it fails **open**. It is the high-privilege
+///   path: it requires `Admin` scope in addition to tenant ownership, a required
+///   non-empty `reason`, and a required `expires_at` that is in the future and
+///   within [`SHADOW_MAX_HOURS`] of now. A missing/empty reason or a
+///   missing/past/too-distant deadline is rejected `422`.
+///
+/// `disabled` is not reachable under any input (it is not a variant of
+/// [`EnforcementModeTarget`], so it fails deserialization — ADR 0021).
+///
+/// A single handler gates both directions rather than two extractors: the
+/// `Write` floor authenticates and denies a read-only caller up front
+/// (deny-by-default — an unauthenticated caller never reaches the logic), then
+/// the weakening path additionally requires `Admin` in-handler. On success the
+/// canonical `enforcement_mode` (the field the enforcement resolver reads, not
+/// `metadata["mode"]`) is written durably and a `GovernanceMutation` audit is
+/// emitted with the **verified** actor + tenant from the authenticated caller —
+/// never the request body.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/enforcement-mode",
+    params(("id" = String, Path, description = "Hex-encoded agent UUID")),
+    request_body = EnforcementModeRequest,
+    responses(
+        (status = 200, description = "Enforcement mode changed", body = EnforcementModeResponse),
+        (status = 400, description = "Invalid agent ID format"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "Caller lacks the scope required for the requested direction"),
+        (status = 404, description = "Agent not found"),
+        (status = 422, description = "Weakening request missing/invalid reason or expires_at"),
+    ),
+    tag = "agents"
+)]
+pub async fn set_enforcement_mode(
+    // The `Write` floor authenticates the caller and rejects anything below
+    // Write up front (deny-by-default). Strengthening needs exactly Write;
+    // weakening additionally requires Admin, enforced in-handler below.
+    RequireWrite(caller): RequireWrite,
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<EnforcementModeRequest>,
+) -> Result<(StatusCode, Json<EnforcementModeResponse>), ProblemDetail> {
+    let agent_id = parse_agent_id(&id)?;
+
+    // Tenant ownership before any state change or existence disclosure — mirrors
+    // suspend/resume. An admin may act on any agent; a team-scoped caller only on
+    // its own team's; a caller with neither is denied before the mode branch.
+    authorize_agent_access(&caller, &state, &agent_id, &id)?;
+
+    // Snapshot the prior override so the audit before/after and the response are
+    // truthful. `None` (no per-agent override) is recorded as "inherit".
+    let previous_override = state.agent_registry.get(&agent_id).and_then(|r| r.enforcement_mode);
+    let previous_label = project_config_mode(previous_override);
+    let previous_wire = previous_override.map(|m| m.as_wire()).unwrap_or("inherit");
+
+    // Resolve the durable mode + expiry per direction, enforcing the
+    // direction-specific authz and validation. `Disabled` is unreachable: it is
+    // not a variant of `EnforcementModeTarget`.
+    let (new_mode, new_expiry) = match body.mode {
+        // ── Strengthening (→ Enforce): the safe direction. Write + tenant only,
+        // no ceremony. Clears any prior shadow expiry so the agent returns to
+        // permanent enforcement.
+        EnforcementModeTarget::Enforce => (aa_core::EnforcementMode::Enforce, None),
+
+        // ── Weakening (→ Observe / shadow): the fail-open, high-privilege path.
+        EnforcementModeTarget::Observe => {
+            // Admin, in addition to the tenant check above. A Write-but-not-Admin
+            // caller is refused here (not by the extractor) so the strengthen
+            // path stays open to Write while weakening stays Admin-only.
+            if !caller.scopes.contains(&Scope::Admin) {
+                return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+                    .with_detail("Weakening enforcement to shadow (observe) mode requires admin scope"));
+            }
+
+            // Mandatory non-empty reason — the audit record must have a
+            // justification to record for a fail-open action.
+            let reason = body.reason.as_deref().unwrap_or("").trim();
+            if reason.is_empty() {
+                return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                    .with_detail("A non-empty 'reason' is required to weaken enforcement to shadow (observe) mode"));
+            }
+
+            // Mandatory expiry, in the future and within the server maximum. A
+            // shadow window with no deadline (or one past / too distant) is
+            // rejected so a forgotten toggle self-heals (ADR 0021 item 3).
+            let expires_at = body.expires_at.ok_or_else(|| {
+                ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                    .with_detail("An 'expires_at' deadline is required to weaken enforcement to shadow (observe) mode")
+            })?;
+            let now = Utc::now();
+            if expires_at <= now {
+                return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                    .with_detail("'expires_at' must be in the future"));
+            }
+            if expires_at > now + chrono::Duration::hours(SHADOW_MAX_HOURS) {
+                return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                    .with_detail(format!("'expires_at' must be within {SHADOW_MAX_HOURS}h of now")));
+            }
+
+            (aa_core::EnforcementMode::Observe, Some(expires_at))
+        }
+    };
+
+    // Persist durably (in-memory + storage write-through, AAASM-5288 bridge). A
+    // missing agent surfaces as 404 — the tenant check above already confirmed
+    // it exists, so this guards a concurrent deregister.
+    state
+        .agent_registry
+        .set_enforcement_mode_persisted(&agent_id, Some(new_mode), new_expiry)
+        .await
+        .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")))?;
+
+    // Actor-attributed audit: actor + tenant come from the authenticated caller,
+    // NEVER the body (AAASM-5287). A weakening carries the operator reason; a
+    // strengthening has none, so record a fixed non-empty justification (the
+    // audit rejects an empty reason).
+    let audit_reason = match body.mode {
+        EnforcementModeTarget::Observe => body.reason.as_deref().unwrap_or("").trim().to_string(),
+        EnforcementModeTarget::Enforce => "strengthen to enforce".to_string(),
+    };
+    emit_governance_mutation_audit(
+        &state,
+        &caller,
+        &agent_id,
+        "enforcement_mode",
+        &audit_reason,
+        previous_wire,
+        new_mode.as_wire(),
+    );
+
+    Ok((
+        StatusCode::OK,
+        Json(EnforcementModeResponse {
+            agent_id: id,
+            previous_mode: previous_label,
+            new_mode: match new_mode {
+                aa_core::EnforcementMode::Enforce => EnforcementModeLabel::Enforce,
+                aa_core::EnforcementMode::Observe => EnforcementModeLabel::Observe,
+                aa_core::EnforcementMode::Disabled => EnforcementModeLabel::Disabled,
+            },
+            expires_at: new_expiry,
         }),
     ))
 }
@@ -2237,6 +2462,233 @@ mod tests {
         .await
         .expect_err("a team-beta caller must not read a team-alpha agent's config");
 
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
+    }
+
+    // ── AAASM-5097 / ADR-0021: enforcement-mode toggle ──────────────────────
+
+    /// A tenant-scoped caller holding `Write` (but not `Admin`) in `team_id`.
+    fn write_caller(team_id: &str) -> RequireWrite {
+        RequireWrite(AuthenticatedCaller {
+            key_id: "writer".to_string(),
+            scopes: vec![Scope::Write],
+            tenant: crate::auth::Tenant {
+                org_id: None,
+                team_id: Some(team_id.to_string()),
+            },
+        })
+    }
+
+    /// An `Admin` caller (satisfies the `RequireWrite` extractor floor and the
+    /// in-handler Admin gate). No team scope — an admin is not tenant-confined.
+    fn admin_write() -> RequireWrite {
+        RequireWrite(AuthenticatedCaller {
+            key_id: "root".to_string(),
+            scopes: vec![Scope::Admin],
+            tenant: crate::auth::Tenant {
+                org_id: None,
+                team_id: None,
+            },
+        })
+    }
+
+    fn enforce_body() -> EnforcementModeRequest {
+        EnforcementModeRequest {
+            mode: EnforcementModeTarget::Enforce,
+            reason: None,
+            expires_at: None,
+        }
+    }
+
+    fn observe_body(reason: Option<&str>, expires_at: Option<DateTime<Utc>>) -> EnforcementModeRequest {
+        EnforcementModeRequest {
+            mode: EnforcementModeTarget::Observe,
+            reason: reason.map(str::to_string),
+            expires_at,
+        }
+    }
+
+    /// `disabled` is not a variant of the request target, so a body naming it
+    /// fails deserialization and never reaches the handler (ADR-0021: Disabled
+    /// is not exposed via the API under any input).
+    #[test]
+    fn disabled_mode_is_not_deserializable() {
+        let err = serde_json::from_str::<EnforcementModeRequest>(r#"{"mode":"disabled"}"#);
+        assert!(err.is_err(), "'disabled' must not deserialize as a target mode");
+        // The two legitimate targets do deserialize.
+        assert!(serde_json::from_str::<EnforcementModeRequest>(r#"{"mode":"enforce"}"#).is_ok());
+        assert!(serde_json::from_str::<EnforcementModeRequest>(
+            r#"{"mode":"observe","reason":"x","expires_at":"2030-01-01T00:00:00Z"}"#
+        )
+        .is_ok());
+    }
+
+    /// Weakening to shadow requires Admin: a Write-but-not-Admin caller is
+    /// refused 403 even with a valid reason + expiry, and the agent's mode is
+    /// left untouched (the fail-open direction is Admin-only).
+    #[tokio::test]
+    async fn weaken_requires_admin() {
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let registry = state.agent_registry.clone();
+
+        let err = set_enforcement_mode(
+            write_caller("team-alpha"),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(observe_body(
+                Some("incident debug"),
+                Some(Utc::now() + chrono::Duration::hours(1)),
+            )),
+        )
+        .await
+        .expect_err("a Write-only caller must not weaken enforcement");
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
+        // Mode unchanged — the refused mutation never touched the record.
+        assert_eq!(registry.get(&[0x01u8; 16]).unwrap().enforcement_mode, None);
+    }
+
+    /// Weakening requires a non-empty reason: an Admin caller with a valid
+    /// expiry but a missing or whitespace-only reason is refused 422.
+    #[tokio::test]
+    async fn weaken_requires_non_empty_reason() {
+        for reason in [None, Some("   ")] {
+            let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+            let err = set_enforcement_mode(
+                admin_write(),
+                Extension(state),
+                axum::extract::Path(hex::encode([0x01u8; 16])),
+                Json(observe_body(reason, Some(Utc::now() + chrono::Duration::hours(1)))),
+            )
+            .await
+            .expect_err("a weaken with no reason must be rejected");
+            assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+        }
+    }
+
+    /// Weakening requires an expiry: an Admin caller with a valid reason but no
+    /// `expires_at` is refused 422 (a shadow window must self-heal).
+    #[tokio::test]
+    async fn weaken_requires_expires_at() {
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(observe_body(Some("incident debug"), None)),
+        )
+        .await
+        .expect_err("a weaken with no expires_at must be rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    }
+
+    /// The shadow window is bounded: an `expires_at` beyond SHADOW_MAX_HOURS, or
+    /// one in the past, is refused 422.
+    #[tokio::test]
+    async fn weaken_rejects_expiry_past_or_beyond_max() {
+        // Beyond the 72h cap.
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(observe_body(
+                Some("too long"),
+                Some(Utc::now() + chrono::Duration::hours(SHADOW_MAX_HOURS + 1)),
+            )),
+        )
+        .await
+        .expect_err("an expiry beyond the max must be rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+
+        // In the past.
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(observe_body(
+                Some("already gone"),
+                Some(Utc::now() - chrono::Duration::minutes(1)),
+            )),
+        )
+        .await
+        .expect_err("a past expiry must be rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    }
+
+    /// A valid weaken by an Admin sets the canonical `enforcement_mode` to
+    /// Observe and records the shadow deadline durably; the response echoes both.
+    #[tokio::test]
+    async fn weaken_success_sets_observe_and_expiry() {
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let registry = state.agent_registry.clone();
+        let deadline = Utc::now() + chrono::Duration::hours(2);
+
+        let (status, Json(body)) = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(observe_body(Some("incident debug"), Some(deadline))),
+        )
+        .await
+        .expect("a valid weaken succeeds");
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.new_mode, EnforcementModeLabel::Observe);
+        assert_eq!(body.expires_at, Some(deadline));
+        // The canonical field the enforcement resolver reads is set, with expiry.
+        let rec = registry.get(&[0x01u8; 16]).unwrap();
+        assert_eq!(rec.enforcement_mode, Some(aa_core::EnforcementMode::Observe));
+        assert_eq!(rec.enforcement_mode_expires_at, Some(deadline));
+    }
+
+    /// Strengthening (→ enforce) is the safe direction: a plain `Write` caller
+    /// may do it with no reason and no expiry, and any prior shadow expiry is
+    /// cleared so the agent returns to permanent enforcement.
+    #[tokio::test]
+    async fn strengthen_allowed_for_write_and_clears_expiry() {
+        let mut rec = record(0x01, Some("team-alpha"));
+        // Pre-existing shadow window that the strengthen must clear.
+        rec.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
+        rec.enforcement_mode_expires_at = Some(Utc::now() + chrono::Duration::hours(1));
+        let state = state_with_policies(vec![rec], vec![]);
+        let registry = state.agent_registry.clone();
+
+        let (status, Json(body)) = set_enforcement_mode(
+            write_caller("team-alpha"),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(enforce_body()),
+        )
+        .await
+        .expect("a Write caller may strengthen with no ceremony");
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.new_mode, EnforcementModeLabel::Enforce);
+        assert_eq!(body.previous_mode, Some(EnforcementModeLabel::Observe));
+        assert_eq!(body.expires_at, None, "strengthen echoes no expiry");
+        let after = registry.get(&[0x01u8; 16]).unwrap();
+        assert_eq!(after.enforcement_mode, Some(aa_core::EnforcementMode::Enforce));
+        assert_eq!(
+            after.enforcement_mode_expires_at, None,
+            "strengthen must clear the prior shadow expiry"
+        );
+    }
+
+    /// Deny-by-default / tenant confinement: a Write caller from another team
+    /// may not toggle a team-alpha agent (mirrors suspend's tenant gate).
+    #[tokio::test]
+    async fn toggle_denies_cross_tenant_caller() {
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let err = set_enforcement_mode(
+            write_caller("team-beta"),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(enforce_body()),
+        )
+        .await
+        .expect_err("a team-beta caller must not toggle a team-alpha agent");
         assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
     }
 }

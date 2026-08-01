@@ -1022,6 +1022,65 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Set a single agent's per-agent enforcement-mode override **and** write
+    /// through to durable storage (AAASM-5097 / ADR 0021).
+    ///
+    /// Sets `enforcement_mode` and `enforcement_mode_expires_at` on the
+    /// in-memory record, then — when a storage handle is attached — persists the
+    /// full record via [`StorageBackend::upsert_agent`](crate::storage::StorageBackend::upsert_agent)
+    /// so a shadow window survives a restart (the storage bridge and
+    /// rehydrate path from AAASM-5288 already round-trip both columns). If the
+    /// storage write fails, the in-memory mutation is rolled back to the prior
+    /// values so the two views never diverge.
+    ///
+    /// `mode` is the canonical override to store (`Some(Observe)` for a shadow
+    /// weaken, `Some(Enforce)` for a strengthen, matching how the enforcement
+    /// resolver reads it); `expires_at` is the mandatory shadow deadline on a
+    /// weaken and must be `None` on a strengthen (the caller clears it). This
+    /// method does not itself gate direction or validate the deadline — the
+    /// HTTP handler owns the direction-asymmetric authz and 72h bound; this is
+    /// the durable write primitive only.
+    ///
+    /// Returns [`RegistryError::NotFound`] if the agent is not registered.
+    pub async fn set_enforcement_mode_persisted(
+        &self,
+        agent_id: &[u8; 16],
+        mode: Option<aa_core::EnforcementMode>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<(), RegistryError> {
+        // Mutate in-memory first, capturing the prior values so a failed storage
+        // write can be rolled back. The updated clone is what we persist, so the
+        // durable row matches the in-memory record exactly.
+        let (prior_mode, prior_expiry, durable) = {
+            let mut entry = self
+                .agents
+                .get_mut(agent_id)
+                .ok_or(RegistryError::NotFound(*agent_id))?;
+            let prior_mode = entry.enforcement_mode;
+            let prior_expiry = entry.enforcement_mode_expires_at;
+            entry.enforcement_mode = mode;
+            entry.enforcement_mode_expires_at = expires_at;
+            let durable = self
+                .storage
+                .as_ref()
+                .map(|_| super::storage_bridge::runtime_to_storage(&entry));
+            (prior_mode, prior_expiry, durable)
+        };
+
+        if let (Some(storage), Some(durable)) = (self.storage.as_ref(), durable) {
+            if let Err(err) = storage.upsert_agent(durable).await {
+                // Roll back the in-memory mutation so the registry never
+                // diverges from durable state after a failed persist.
+                if let Some(mut entry) = self.agents.get_mut(agent_id) {
+                    entry.enforcement_mode = prior_mode;
+                    entry.enforcement_mode_expires_at = prior_expiry;
+                }
+                return Err(RegistryError::Storage(err));
+            }
+        }
+        Ok(())
+    }
+
     /// Suspend an agent and recursively suspend all its descendants.
     ///
     /// The root agent is suspended with `reason`. Each descendant receives
@@ -1268,6 +1327,39 @@ mod tree_tests {
             enforcement_mode_expires_at: None,
             org_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn set_enforcement_mode_persisted_updates_in_memory_and_rejects_unknown() {
+        // No storage attached → the write-through path is a no-op and the
+        // in-memory record is mutated directly (AAASM-5097).
+        let reg = AgentRegistry::new();
+        let id = [7u8; 16];
+        reg.register(make_record(id, None, Some("teamA"), 0)).unwrap();
+
+        // Weaken: set Observe with a deadline.
+        let deadline = Utc::now() + chrono::Duration::hours(2);
+        reg.set_enforcement_mode_persisted(&id, Some(aa_core::EnforcementMode::Observe), Some(deadline))
+            .await
+            .expect("setting a registered agent's mode succeeds");
+        let rec = reg.get(&id).unwrap();
+        assert_eq!(rec.enforcement_mode, Some(aa_core::EnforcementMode::Observe));
+        assert_eq!(rec.enforcement_mode_expires_at, Some(deadline));
+
+        // Strengthen: back to Enforce, clearing the expiry.
+        reg.set_enforcement_mode_persisted(&id, Some(aa_core::EnforcementMode::Enforce), None)
+            .await
+            .expect("clearing the shadow window succeeds");
+        let rec = reg.get(&id).unwrap();
+        assert_eq!(rec.enforcement_mode, Some(aa_core::EnforcementMode::Enforce));
+        assert_eq!(rec.enforcement_mode_expires_at, None);
+
+        // An unknown agent is a NotFound, not a silent success.
+        let err = reg
+            .set_enforcement_mode_persisted(&[0xFFu8; 16], Some(aa_core::EnforcementMode::Enforce), None)
+            .await
+            .expect_err("an unregistered agent must be NotFound");
+        assert!(matches!(err, RegistryError::NotFound(_)));
     }
 
     #[test]
