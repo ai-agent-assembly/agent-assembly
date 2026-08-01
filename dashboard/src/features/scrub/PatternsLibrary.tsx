@@ -40,7 +40,7 @@
  */
 import { useMemo, useState } from 'react'
 import { TruthfulValue } from '../../components/truthfulness'
-import { certainText, type Certain } from '../../lib/truthfulness'
+import { certainText, mapCertain, type Certain } from '../../lib/truthfulness'
 import { alertsForKind, type PatternAlertTally } from './api'
 import { classSlug, entryName } from './catalogue'
 import type { ScrubCatalogueEntry } from './types'
@@ -193,6 +193,26 @@ export function PatternsLibrary({
           </tbody>
         </table>
       </div>
+      {/*
+        The column total, placed under the column it totals rather than in the
+        stat strip. `total_hits` is very nearly the same measurement as the
+        strip's `leaks_intercepted` — both count `secret_detected` alerts — and
+        putting two near-identical figures over different windows side by side
+        invites an operator to hunt for a difference that is only the window.
+        Here it is unambiguous: it is the sum of the cells directly above.
+      */}
+      <p className="scrub-patterns-total" data-testid="scrub-patterns-total">
+        <TruthfulValue
+          value={mapCertain(alerts, (t) => t.totalAlerts)}
+          testId="scrub-patterns-total-value"
+        />{' '}
+        alerts across{' '}
+        <TruthfulValue
+          value={mapCertain(alerts, (t) => t.byKind.size)}
+          testId="scrub-patterns-total-kinds"
+        />{' '}
+        kinds in the last <TruthfulValue value={alertWindow} testId="scrub-patterns-total-window" />
+      </p>
     </section>
   )
 }

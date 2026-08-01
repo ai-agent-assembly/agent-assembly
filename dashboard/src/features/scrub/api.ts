@@ -248,6 +248,15 @@ export function scrubCatalogueFromQuery(
  */
 export interface PatternAlertTally {
   readonly byKind: ReadonlyMap<string, number>
+  /**
+   * The server's `total_hits` — every `secret_detected` alert in the window that
+   * carried a kind, summed across kinds.
+   *
+   * Read from the response rather than re-derived from `byKind`: the handler
+   * sums the same map, but an alert whose `detected_pattern_type` is absent is
+   * dropped before either figure is computed, and taking the server's number
+   * keeps the page reporting what it was told rather than what it recomputed.
+   */
   readonly totalAlerts: number
   readonly windowSeconds: number
 }
