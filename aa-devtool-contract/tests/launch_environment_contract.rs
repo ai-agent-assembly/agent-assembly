@@ -240,6 +240,25 @@ fn the_adapters_value_wins_where_it_collides_with_the_callers() {
 }
 
 #[test]
+fn a_launch_spec_variable_overrides_the_adapters_own() {
+    // The other collision axis, and it resolves the other way: `LaunchSpec::env`
+    // is an argument to the adapter rather than a competing source, so it is how
+    // a caller pins a CA for one run without editing what the install recorded.
+    // An adapter that applied its own values last would silently ignore the
+    // request.
+    const PINNED: &str = "/tmp/pinned-ca.pem";
+    let spec = LaunchSpec::new("agent-1")
+        .through_proxy("127.0.0.1:8080")
+        .with_env("NODE_EXTRA_CA_CERTS", PINNED);
+    let command = EnvBearingTool
+        .build_launch_command(&spec)
+        .expect("building the launch command must succeed");
+    let child = observed_child_environment(command, CallerBehaviour::Conforming);
+
+    assert_eq!(child.get("NODE_EXTRA_CA_CERTS").map(String::as_str), Some(PINNED));
+}
+
+#[test]
 fn the_callers_own_variables_still_reach_the_child() {
     // The merge is a union, not a replacement: an adapter that assumed it owned
     // the whole environment would be relying on something the contract does not
