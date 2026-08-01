@@ -186,6 +186,154 @@ impl ProxyConfig {
     }
 }
 
+/// A protection a proxy listener must have before it may face anything other
+/// than loopback, and whether `aa-proxy` can supply it today.
+///
+/// `available` is a compile-time constant rather than a config knob because it
+/// describes what this crate *implements*, not what an operator asked for — an
+/// operator cannot switch on a handshake that does not exist. Whoever
+/// implements one flips its constant and [`check_bind_addr`] relaxes on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteProtection {
+    /// Named verbatim in the refusal, so the operator is told which specific
+    /// protection is absent rather than that "something" is.
+    pub name: &'static str,
+    /// Whether `aa-proxy` implements it. See [`REMOTE_PROTECTIONS`].
+    pub available: bool,
+}
+
+/// What a network-reachable `aa-proxy` would need, and what it has.
+///
+/// Both are `false`, and that is a statement about the current code rather than
+/// a placeholder:
+///
+/// * **Listener TLS** — [`crate::proxy::ProxyServer::run`] binds a bare
+///   [`tokio::net::TcpListener`] and speaks plain HTTP `CONNECT` on it. The
+///   `rustls` server configs in that module are the per-host MitM certificates
+///   presented *inside* an established tunnel; none of them protects the
+///   listener itself. Off-host traffic to it, including the `CONNECT` line and
+///   any plain-HTTP body, crosses the network in the clear.
+/// * **Client authentication** — nothing in the crate reads
+///   `Proxy-Authorization` or answers `407`. Every connection that completes a
+///   TCP handshake is served, so with a non-loopback bind the set of authorised
+///   clients is exactly the set of hosts that can route to the port.
+///
+/// That second point is why reachability must never be read as trust here.
+/// `aa-proxy` is a credential-disclosure surface on both sides of the tunnel:
+/// it terminates client TLS with leaves issued from a CA whose root is
+/// installed in this machine's trust store (`crate::tls::CaStore`), so it can
+/// read every intercepted request; and it injects the operator's provider keys
+/// into forwarded requests (`crate::credentials::CredentialStore`), so it will
+/// spend those keys on behalf of whoever connects. An unauthenticated listener
+/// on a routable address hands both of those to the network.
+pub const REMOTE_PROTECTIONS: [RemoteProtection; 2] = [
+    RemoteProtection {
+        name: "TLS on the proxy listener",
+        available: false,
+    },
+    RemoteProtection {
+        name: "client authentication and authorization",
+        available: false,
+    },
+];
+
+/// The protections from [`REMOTE_PROTECTIONS`] that `aa-proxy` cannot supply.
+///
+/// Empty means a non-loopback listener could be protected; today it never is.
+pub fn missing_remote_protections() -> Vec<&'static str> {
+    REMOTE_PROTECTIONS
+        .iter()
+        .filter(|p| !p.available)
+        .map(|p| p.name)
+        .collect()
+}
+
+/// Why a requested proxy listen address was refused.
+///
+/// Both variants are refusals — they differ only in what the operator has to be
+/// told, because "you did not ask for this" and "you asked, and it cannot be
+/// done safely" are different problems with different next steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BindRefusal {
+    /// A non-loopback address, with no explicit opt-in.
+    RemoteNotRequested(SocketAddr),
+    /// The opt-in was given, but [`REMOTE_PROTECTIONS`] are missing.
+    Unprotected {
+        addr: SocketAddr,
+        missing: Vec<&'static str>,
+    },
+    /// Port 0 — "any free port". The proxy would bind a real port, but nothing
+    /// records which one.
+    EphemeralPort(SocketAddr),
+}
+
+impl std::fmt::Display for BindRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RemoteNotRequested(addr) => write!(
+                f,
+                "refusing to listen on {addr}: it is not a loopback address, so the proxy would \
+                 accept connections from other hosts. aa-proxy reads intercepted traffic under a \
+                 CA this machine trusts and injects the operator's provider credentials into \
+                 forwarded requests, so anything that can reach the listener can do both. Listen \
+                 on a loopback address (for example 127.0.0.1:{}), or pass --allow-remote-clients \
+                 to state the intent explicitly.",
+                addr.port(),
+            ),
+            Self::Unprotected { addr, missing } => write!(
+                f,
+                "refusing to listen on {addr}: --allow-remote-clients was given, but a proxy \
+                 reachable from other hosts also requires protection aa-proxy does not implement: \
+                 {}. Being reachable is not being trusted — without those, every host that can \
+                 route to {addr} is an authorized client of an interception endpoint that holds \
+                 CA material and provider credentials. Listen on a loopback address instead.",
+                missing.join(", "),
+            ),
+            Self::EphemeralPort(addr) => write!(
+                f,
+                "refusing to listen on {addr}: port 0 asks the OS for any free port, but the \
+                 recorded endpoint would still say port 0. The proxy would bind a real port that \
+                 nothing can name: `aasm run` refuses a port-0 endpoint, `aasm proxy stop` could \
+                 not reach the process, and the start itself would be reported as failed while \
+                 the proxy kept running. Name the port you want (for example 127.0.0.1:8899).",
+            ),
+        }
+    }
+}
+
+/// Whether the proxy may listen on `addr`.
+///
+/// Loopback is always allowed and is the default. Anything else is refused
+/// unless the operator opted in **and** every [`REMOTE_PROTECTIONS`] entry is
+/// available — which is why the opt-in currently refuses too. A flag whose
+/// preconditions cannot be met is honest; a flag that exposes an
+/// unauthenticated interception endpoint is not.
+///
+/// The loopback test is the same one `aasm run` applies before it will route a
+/// governed tool at a recorded proxy endpoint, so the two commands cannot
+/// disagree about which endpoints are usable (AAASM-5348).
+pub fn check_bind_addr(addr: SocketAddr, allow_remote_clients: bool) -> Result<(), BindRefusal> {
+    // Checked before the loopback branch because it disqualifies every address:
+    // the recorded endpoint keeps the literal `:0` the operator typed, so the
+    // real port the OS assigns is written down nowhere. `verify_endpoint`
+    // already rejects a port-0 endpoint, and refusing here is what keeps the
+    // two from disagreeing — the same reason the loopback test is shared.
+    if addr.port() == 0 {
+        return Err(BindRefusal::EphemeralPort(addr));
+    }
+    if addr.ip().is_loopback() {
+        return Ok(());
+    }
+    if !allow_remote_clients {
+        return Err(BindRefusal::RemoteNotRequested(addr));
+    }
+    let missing = missing_remote_protections();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(BindRefusal::Unprotected { addr, missing })
+}
+
 /// Directory, under the Agent Assembly state root, holding one MitM host list
 /// per installed developer integration.
 const MITM_HOSTS_DIR: &str = "mitm-hosts.d";
@@ -387,6 +535,126 @@ mod tests {
         std::env::remove_var("AA_PROXY_GATEWAY_ENDPOINT");
         std::env::remove_var("AA_PROXY_MCP_FAIL_OPEN");
         std::env::remove_var("AASM_STATE_DIR");
+    }
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().expect("test address literal")
+    }
+
+    /// The default, and the address an operator types when they mean "this
+    /// machine only". Both must keep working — the guard exists to stop an
+    /// exposure, not to stop the proxy.
+    #[test]
+    fn a_loopback_listen_address_is_accepted() {
+        for literal in ["127.0.0.1:8899", "[::1]:8899", "127.9.9.9:8899"] {
+            assert_eq!(
+                check_bind_addr(addr(literal), false),
+                Ok(()),
+                "{literal} is loopback and must be accepted without any opt-in"
+            );
+        }
+    }
+
+    /// Port 0 is the same split this ticket closes, reached by a different
+    /// property of the address: `verify_endpoint` rejects a port-0 endpoint, so
+    /// a proxy started on one could never be routed at. Left unrefused it is
+    /// also the worse outcome of the two — the child binds a real port, the
+    /// five-second wait on port 0 fails, the pid file is removed, and an
+    /// interception process holding CA material and provider credentials keeps
+    /// running with nothing able to name or stop it.
+    #[test]
+    fn port_zero_is_refused_on_every_address() {
+        for literal in ["127.0.0.1:0", "[::1]:0", "0.0.0.0:0"] {
+            let refusal = check_bind_addr(addr(literal), false)
+                .expect_err("{literal}: a port the endpoint cannot record must not be bound");
+            assert_eq!(refusal, BindRefusal::EphemeralPort(addr(literal)));
+            assert!(
+                refusal.to_string().contains("port 0"),
+                "must say which part of the address disqualified it, got: {refusal}"
+            );
+        }
+    }
+
+    /// The opt-in states an intent about *reachability*; it says nothing about
+    /// the port being recordable, so it must not carry port 0 past the check.
+    #[test]
+    fn the_remote_opt_in_does_not_permit_port_zero() {
+        assert_eq!(
+            check_bind_addr(addr("0.0.0.0:0"), true),
+            Err(BindRefusal::EphemeralPort(addr("0.0.0.0:0")))
+        );
+    }
+
+    /// AAASM-5348. Anything reachable off-host is refused by default, and the
+    /// operator is told which fact about the address disqualified it and what
+    /// the alternatives are — a bare "invalid address" would leave them
+    /// guessing.
+    #[test]
+    fn a_non_loopback_listen_address_is_refused_without_the_opt_in() {
+        for literal in ["0.0.0.0:8899", "192.168.1.7:8899", "[::]:8899"] {
+            let refusal = check_bind_addr(addr(literal), false).expect_err(&format!(
+                "{literal} is reachable from other hosts and must not be accepted by default"
+            ));
+            assert_eq!(refusal, BindRefusal::RemoteNotRequested(addr(literal)));
+
+            let msg = refusal.to_string();
+            assert!(msg.contains(literal), "the refusal must name the address, got: {msg}");
+            assert!(
+                msg.contains("not a loopback address"),
+                "the refusal must say what disqualified the address, got: {msg}"
+            );
+            assert!(
+                msg.contains("--allow-remote-clients"),
+                "the refusal must name the option that states the intent, got: {msg}"
+            );
+        }
+    }
+
+    /// The heart of AAASM-5348: asking is not enough. `aa-proxy` can neither
+    /// encrypt its listener nor tell one client from another, so with the
+    /// opt-in given the answer is still no — and the diagnostic names both
+    /// absent protections rather than reporting a generic failure.
+    #[test]
+    fn the_opt_in_alone_does_not_make_a_remote_listen_address_acceptable() {
+        let requested = addr("0.0.0.0:8899");
+        let refusal = check_bind_addr(requested, true)
+            .expect_err("--allow-remote-clients must not by itself authorize an unprotected listener");
+
+        let BindRefusal::Unprotected { addr: refused, missing } = &refusal else {
+            panic!("expected an Unprotected refusal naming what is absent, got: {refusal:?}");
+        };
+        assert_eq!(*refused, requested);
+        assert_eq!(
+            missing,
+            &["TLS on the proxy listener", "client authentication and authorization"]
+        );
+
+        let msg = refusal.to_string();
+        assert!(
+            msg.contains("TLS on the proxy listener"),
+            "the refusal must name the missing transport protection, got: {msg}"
+        );
+        assert!(
+            msg.contains("client authentication and authorization"),
+            "the refusal must name the missing client-identity protection, got: {msg}"
+        );
+        assert!(
+            msg.contains("Being reachable is not being trusted"),
+            "the refusal must say why reaching the port is not authorization, got: {msg}"
+        );
+    }
+
+    /// The refusal above is derived from the crate's real capabilities, not
+    /// hardcoded — so this records that today it supplies neither, and turns
+    /// into a failure the moment someone implements one without revisiting
+    /// [`check_bind_addr`].
+    #[test]
+    fn neither_remote_protection_is_implemented_today() {
+        assert_eq!(
+            missing_remote_protections(),
+            vec!["TLS on the proxy listener", "client authentication and authorization"],
+            "both protections are absent; a change here must be matched by one in the listener"
+        );
     }
 
     /// AAASM-5276 condition C5. An installed integration extends the DLP

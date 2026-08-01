@@ -28,6 +28,50 @@ pub struct StartArgs {
     /// File to redirect proxy stdout/stderr to (background mode only).
     #[arg(long)]
     pub log_file: Option<PathBuf>,
+    // The doc comment is the `--help` text clap shows, so it is written for the
+    // operator reading it; the reasoning behind the refusal lives on
+    // `checked_listen`.
+    /// State that a non-loopback `--listen` address is intended
+    ///
+    /// Intent is not authorization. A proxy reachable from other hosts also
+    /// needs TLS on its listener and client authentication, neither of which
+    /// aa-proxy implements — so this option currently changes only which
+    /// refusal you get, and never permits the bind.
+    #[arg(long)]
+    pub allow_remote_clients: bool,
+}
+
+/// Whether a proxy may be started on `listen`, or the message to print instead.
+///
+/// AAASM-5348. Before this check, `aasm proxy start --listen 0.0.0.0:PORT`
+/// succeeded and `aasm proxy status` reported a healthy proxy, while every
+/// `aasm run` refused to route a governed tool at it — [`trust::verify_endpoint`]
+/// requires a loopback literal. The operator was left holding a proxy that
+/// worked for everything except the one job it exists to do, with nothing
+/// explaining the contradiction. Applying the same loopback rule here is what
+/// removes that split: an address `aasm run` will never trust is one
+/// `aasm proxy start` never produces.
+///
+/// Refusing rather than teaching `aasm run` to accept a remote endpoint is the
+/// deliberate direction. `aasm run` refuses because the endpoint is reachable
+/// off-host, and reachability is not authorization: `aa-proxy` has no listener
+/// TLS and no client authentication ([`aa_proxy::config::REMOTE_PROTECTIONS`]),
+/// so a routable listener is an interception endpoint that reads traffic under
+/// a CA this machine trusts and spends the operator's provider keys for anyone
+/// who connects. Until it can tell clients apart, the honest answer at start
+/// time is no.
+///
+/// Separate from [`dispatch`] so the decision is testable without spawning a
+/// process, and called from its first statement so a refusal happens before any
+/// socket is bound and before any state file is written.
+fn checked_listen(listen: &str, allow_remote_clients: bool) -> Result<(), String> {
+    // Parsed here rather than left to the child: the loopback question cannot be
+    // asked of a string, and a `--listen` the proxy could not parse already
+    // failed — just later, as an opaque "did not bind within 5s".
+    let addr: SocketAddr = listen
+        .parse()
+        .map_err(|_| format!("invalid --listen {listen:?}: it is not an `ip:port` literal"))?;
+    aa_proxy::config::check_bind_addr(addr, allow_remote_clients).map_err(|refusal| refusal.to_string())
 }
 
 fn default_log_path() -> PathBuf {
@@ -148,6 +192,14 @@ fn canonical_binary(binary: PathBuf) -> PathBuf {
 }
 
 pub fn dispatch(args: StartArgs) -> ExitCode {
+    // First, before the binary is resolved, before anything is spawned, and
+    // before a state file exists: a refused start must not leave the operator
+    // with a half-started proxy to clean up.
+    if let Err(reason) = checked_listen(&args.listen, args.allow_remote_clients) {
+        eprintln!("error: {reason}");
+        return ExitCode::FAILURE;
+    }
+
     let Some(binary) = resolve_binary() else {
         eprintln!(
             "error: aa-proxy binary not found.\n\
@@ -278,6 +330,72 @@ mod tests {
     fn start_args_custom_listen_address() {
         let w = Wrapper::parse_from(["test", "--listen", "0.0.0.0:9000"]);
         assert_eq!(w.inner.listen, "0.0.0.0:9000");
+    }
+
+    /// The default is the address `aasm run` will trust, so the shipped
+    /// behaviour must survive the guard untouched.
+    #[test]
+    fn the_default_listen_address_is_accepted() {
+        let default = Wrapper::parse_from(["test"]).inner.listen;
+        assert_eq!(checked_listen(&default, false), Ok(()), "default {default} must start");
+    }
+
+    #[test]
+    fn an_explicit_loopback_listen_address_is_accepted() {
+        assert_eq!(checked_listen("127.0.0.1:9000", false), Ok(()));
+        assert_eq!(checked_listen("[::1]:9000", false), Ok(()));
+    }
+
+    /// AAASM-5348: the address that used to start a proxy `aasm run` would
+    /// never trust. The diagnostic has to carry the reason, since the operator
+    /// asked for this address on purpose.
+    #[test]
+    fn a_bare_non_loopback_listen_address_is_refused() {
+        let reason = checked_listen("0.0.0.0:9000", false)
+            .expect_err("a proxy reachable from other hosts must not start by default");
+        assert!(reason.contains("0.0.0.0:9000"), "must name the address, got: {reason}");
+        assert!(
+            reason.contains("not a loopback address"),
+            "must say what disqualified it, got: {reason}"
+        );
+        assert!(
+            reason.contains("--allow-remote-clients"),
+            "must point at the option that states the intent, got: {reason}"
+        );
+    }
+
+    /// The opt-in records intent; it cannot supply protections the proxy does
+    /// not have. Naming them is the point — "refused" alone would read as a bug.
+    #[test]
+    fn the_opt_in_does_not_authorize_an_unprotected_remote_listener() {
+        let reason = checked_listen("0.0.0.0:9000", true)
+            .expect_err("--allow-remote-clients must not open an unauthenticated listener");
+        assert!(
+            reason.contains("TLS on the proxy listener"),
+            "must name the missing transport protection, got: {reason}"
+        );
+        assert!(
+            reason.contains("client authentication and authorization"),
+            "must name the missing client-identity protection, got: {reason}"
+        );
+    }
+
+    /// A `--listen` the proxy cannot parse is refused here rather than becoming
+    /// an opaque "did not bind within 5s" after a process has been spawned.
+    #[test]
+    fn an_unparseable_listen_address_is_refused() {
+        let reason = checked_listen("localhost:9000", false).expect_err("a hostname is not an ip:port literal");
+        assert!(reason.contains("localhost:9000"), "must quote the input, got: {reason}");
+    }
+
+    #[test]
+    fn start_args_allow_remote_clients_defaults_false() {
+        assert!(!Wrapper::parse_from(["test"]).inner.allow_remote_clients);
+        assert!(
+            Wrapper::parse_from(["test", "--allow-remote-clients"])
+                .inner
+                .allow_remote_clients
+        );
     }
 
     #[test]
