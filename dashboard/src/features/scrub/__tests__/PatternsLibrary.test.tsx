@@ -130,6 +130,21 @@ describe('PatternsLibrary — the count column', () => {
     expect(screen.queryByRole('columnheader', { name: /finding/i })).toBeNull()
   })
 
+  it('totals the column under the column, from the server’s total_hits', () => {
+    renderLibrary({ alerts: tally([{ kind: 'AwsAccessKey', hits: 4 }, { kind: 'EmailAddress', hits: 2 }]) })
+    const total = screen.getByTestId('scrub-patterns-total')
+    expect(screen.getByTestId('scrub-patterns-total-value')).toHaveTextContent('6')
+    expect(screen.getByTestId('scrub-patterns-total-kinds')).toHaveTextContent('2')
+    expect(total).toHaveTextContent(/alerts across/)
+  })
+
+  it('renders the total as an absence, never zero, when the tally is absent', () => {
+    renderLibrary({ alerts: absent('unavailable', 'HTTP 503') })
+    const value = screen.getByTestId('scrub-patterns-total-value')
+    expect(value).toHaveAttribute('data-truth-state', 'unavailable')
+    expect(value.textContent ?? '').not.toMatch(/\b0\b/)
+  })
+
   it('states the window the server aggregated over', () => {
     renderLibrary()
     expect(screen.getByTestId('scrub-patterns-window')).toHaveTextContent('24h')
