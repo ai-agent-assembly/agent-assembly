@@ -214,7 +214,7 @@ exit 0
             )
         });
         let seen = parse_dump(&raw);
-        let did = expected_did(AGENT_ID);
+        let did = expected_did(&root.join("state"), AGENT_ID);
         for (key, expected) in [
             ("AA_AGENT_ID", AGENT_ID.to_string()),
             ("AA_AGENT_DID", did.clone()),

@@ -27,6 +27,15 @@ pub enum SdkClientError {
     /// The gateway rejected the `Register` call. Carries the gRPC status message
     /// (e.g. an invalid did:key or public_key).
     RegisterFailed(String),
+    /// The agent's durable identity key could not be established, so there is
+    /// nothing to register as (AAASM-5332). Carries the store's reason —
+    /// unresolvable state directory, a key file owned by another user or
+    /// readable beyond its owner, a revoked identity, or an unreadable CSPRNG.
+    ///
+    /// Always a refusal. There is deliberately no weaker identity to fall back
+    /// to: the whole point of the durable key is that an agent which cannot
+    /// prove possession of a secret does not get to register.
+    IdentityUnavailable(String),
 }
 
 impl std::fmt::Display for SdkClientError {
@@ -47,6 +56,9 @@ impl std::fmt::Display for SdkClientError {
             }
             SdkClientError::RegisterFailed(msg) => {
                 write!(f, "gateway rejected registration: {msg}")
+            }
+            SdkClientError::IdentityUnavailable(reason) => {
+                write!(f, "this agent has no usable durable identity key: {reason}")
             }
         }
     }

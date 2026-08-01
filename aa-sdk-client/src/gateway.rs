@@ -97,50 +97,59 @@ impl GatewayRegistrationClient {
 /// Build the `ChallengeRequest` for the registration possession-proof handshake
 /// (AAASM-3866).
 ///
-/// Derives the same deterministic [`AgentKeypair`] as [`build_register_request`]
-/// so the `agent_id` + `public_key` the challenge is bound to match the ones the
-/// agent later registers with.
-pub fn build_challenge_request(config: &AssemblyConfig) -> ChallengeRequest {
-    let keypair = AgentKeypair::derive_transport_key(&config.agent_id);
-    ChallengeRequest {
+/// Loads the same durable [`AgentKeypair`] as [`build_register_request`] so the
+/// `agent_id` + `public_key` the challenge is bound to match the ones the agent
+/// later registers with — the gateway binds the nonce to that exact pair and
+/// `Register` will refuse a proof presented for a different one.
+pub fn build_challenge_request(config: &AssemblyConfig) -> Result<ChallengeRequest, SdkClientError> {
+    let keypair = identity_keypair(config)?;
+    Ok(ChallengeRequest {
         agent_id: Some(ProtoAgentId {
             org_id: String::new(),
             team_id: config.team_id.clone().unwrap_or_default(),
-            agent_id: config.registration_did(),
+            agent_id: keypair.did_key(),
         }),
         public_key: keypair.public_key_hex(),
-    }
+    })
 }
 
 /// Build the `RegisterRequest` the gateway requires from the SDK config.
 ///
-/// Derives a deterministic [`AgentKeypair`] from `config.agent_id` so the
-/// `agent_id` did:key and the `public_key` hex encode the *same* valid Ed25519
-/// key — both of which the gateway validates at registration.
+/// The `did:key`, the `public_key` and the possession proof all come from one
+/// load of the agent's **durable identity key** (AAASM-5332), so the DID and the
+/// `public_key` encode the same valid Ed25519 key — which is what the gateway's
+/// `enforce_did_key_binding` requires — and the signature is made with the
+/// private half of that same key.
+///
+/// The DID is taken from the keypair rather than resolved separately, so the
+/// binding the gateway checks holds *by construction*: there is no arrangement
+/// of configuration under which this function can emit a DID and a `public_key`
+/// that name different keys.
 ///
 /// `nonce` is the server-issued challenge from [`build_challenge_request`] +
-/// `request_challenge` (AAASM-3866); the possession proof signs it (not the
-/// public, deterministic did:key) so the proof cannot be precomputed or
-/// replayed.
+/// `request_challenge` (AAASM-3866); the possession proof signs it so the proof
+/// cannot be precomputed or replayed. Since AAASM-5332 the signing key is
+/// randomly generated and stored owner-only rather than derived from the public
+/// agent id, so the proof now demonstrates possession of a secret rather than
+/// the ability to hash a published string.
 pub fn build_register_request(
     config: &AssemblyConfig,
     name: String,
     framework: String,
     nonce: &[u8],
-) -> RegisterRequest {
-    let keypair = AgentKeypair::derive_transport_key(&config.agent_id);
-    let registration_did = config.registration_did();
+) -> Result<RegisterRequest, SdkClientError> {
+    let keypair = identity_keypair(config)?;
 
     // AAASM-3591 / AAASM-3866: prove possession of the private key by signing the
     // server-issued nonce. The gateway verifies this over the same nonce before
     // minting a credential_token.
     let possession_proof = keypair.sign(nonce).to_vec();
 
-    RegisterRequest {
+    Ok(RegisterRequest {
         agent_id: Some(ProtoAgentId {
             org_id: String::new(),
             team_id: config.team_id.clone().unwrap_or_default(),
-            agent_id: registration_did,
+            agent_id: keypair.did_key(),
         }),
         name,
         framework,
@@ -150,13 +159,40 @@ pub fn build_register_request(
         possession_proof,
         registration_nonce: nonce.to_vec(),
         ..Default::default()
+    })
+}
+
+/// Load the agent's durable identity key, mapping the store's refusal onto the
+/// SDK's error type.
+///
+/// A failure here is a refusal to register, never a fallback: an agent whose
+/// durable key cannot be established has no identity to present, and presenting
+/// a computable stand-in is precisely the defect AAASM-5332 removed.
+fn identity_keypair(config: &AssemblyConfig) -> Result<AgentKeypair, SdkClientError> {
+    // A `did:key` configured as the agent id names a key this crate does not
+    // hold, so no proof it could build would verify. Refuse locally with a
+    // message that says so, rather than sending a request the gateway can only
+    // reject as `Unauthenticated` for reasons the operator cannot see.
+    if config.agent_id.starts_with("did:key:") {
+        return Err(SdkClientError::IdentityUnavailable(
+            crate::identity_store::IdentityStoreError::ProvisionedDidUnsupported {
+                did: config.agent_id.clone(),
+            }
+            .to_string(),
+        ));
     }
+    config
+        .identity_keypair()
+        .map_err(|e| SdkClientError::IdentityUnavailable(e.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A config whose identity key lives in a directory unique to this test, so
+    /// no case can pass by reading a key another case enrolled and none of them
+    /// touch the developer's real `~/.aasm`.
     fn cfg(agent_id: &str) -> AssemblyConfig {
         AssemblyConfig {
             agent_id: agent_id.to_string(),
@@ -165,6 +201,17 @@ mod tests {
             team_id: None,
             parent_agent_id: None,
             sdk_version: None,
+            identity_dir: Some(
+                std::env::temp_dir()
+                    .join(format!(
+                        "aa-gateway-req-test-{}-{}-{:?}",
+                        agent_id,
+                        std::process::id(),
+                        std::thread::current().id()
+                    ))
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         }
     }
 
@@ -173,7 +220,7 @@ mod tests {
     #[test]
     fn register_request_carries_did_and_consistent_public_key() {
         let config = cfg("my-agent");
-        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE);
+        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE).expect("enrolment");
 
         let agent_id = req.agent_id.expect("agent_id must be set");
         assert!(agent_id.agent_id.starts_with("did:key:z"), "got {}", agent_id.agent_id);
@@ -200,7 +247,7 @@ mod tests {
         use ed25519_dalek::{Signature, VerifyingKey};
 
         let config = cfg("my-agent");
-        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE);
+        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE).expect("enrolment");
 
         assert_eq!(req.registration_nonce, TEST_NONCE);
 
@@ -217,8 +264,8 @@ mod tests {
     #[test]
     fn challenge_request_binds_same_did_and_public_key_as_register() {
         let config = cfg("my-agent");
-        let challenge = build_challenge_request(&config);
-        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE);
+        let challenge = build_challenge_request(&config).expect("enrolment");
+        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE).expect("load");
 
         assert_eq!(challenge.agent_id, req.agent_id);
         assert_eq!(challenge.public_key, req.public_key);
@@ -230,7 +277,7 @@ mod tests {
         config.team_id = Some("team-payments".into());
         config.parent_agent_id = Some("11111111-2222-3333-4444-555555555555".into());
 
-        let req = build_register_request(&config, "Child".into(), "custom".into(), TEST_NONCE);
+        let req = build_register_request(&config, "Child".into(), "custom".into(), TEST_NONCE).expect("enrolment");
 
         assert_eq!(req.agent_id.expect("agent_id must be set").team_id, "team-payments");
         assert_eq!(
@@ -242,7 +289,7 @@ mod tests {
     #[test]
     fn register_request_omits_lineage_when_unset() {
         let config = cfg("root-agent");
-        let req = build_register_request(&config, "Root".into(), "custom".into(), TEST_NONCE);
+        let req = build_register_request(&config, "Root".into(), "custom".into(), TEST_NONCE).expect("enrolment");
 
         assert_eq!(req.agent_id.expect("agent_id must be set").team_id, "");
         assert_eq!(req.parent_agent_id, None);

@@ -28,6 +28,14 @@ fn sdk_config(agent_id: &str, endpoint: String) -> AssemblyConfig {
         team_id: None,
         parent_agent_id: None,
         sdk_version: None,
+        // A per-process temporary identity store, so the durable key this test
+        // enrols never lands in the developer's real `~/.aasm`.
+        identity_dir: Some(
+            std::env::temp_dir()
+                .join(format!("aa-api-grpc-reg-identity-{}", std::process::id()))
+                .to_string_lossy()
+                .into_owned(),
+        ),
     }
 }
 
@@ -64,7 +72,7 @@ async fn grpc_registered_agent_is_visible_via_rest() {
             .await
             .expect("connect to embedded gRPC AgentLifecycleService");
         let challenge = client
-            .request_challenge(build_challenge_request(&config))
+            .request_challenge(build_challenge_request(&config).expect("the agent must have a durable identity key"))
             .await
             .expect("request_challenge succeeds");
         let request = build_register_request(
@@ -72,7 +80,8 @@ async fn grpc_registered_agent_is_visible_via_rest() {
             "grpc-reg-test-agent".to_string(),
             "langgraph".to_string(),
             &challenge.nonce,
-        );
+        )
+        .expect("the agent must have a durable identity key");
         let response = client.register(request).await.expect("register succeeds");
         assert!(
             !response.credential_token.is_empty(),

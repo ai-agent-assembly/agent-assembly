@@ -58,7 +58,27 @@ fn sdk_config(agent_id: &str) -> AssemblyConfig {
         team_id: Some(TEAM.to_string()),
         parent_agent_id: None,
         sdk_version: None,
+        // Each test binary keeps its enrolments in its own directory rather than
+        // the developer's real `~/.aasm`, and the CLI under test is pointed at
+        // the same one by `AASM_STATE_DIR` so both surfaces read one key.
+        identity_dir: Some(identity_dir()),
     }
+}
+
+/// One temporary identity store per test process, shared by every case in it.
+///
+/// Shared rather than per-test on purpose: several cases below assert that the
+/// CLI and an SDK configured with the same identifier arrive at the *same*
+/// identity, which is a statement about one stored key and is unprovable if each
+/// call enrols its own.
+fn identity_dir() -> String {
+    // Exactly where the store resolves `${AASM_STATE_DIR}/identity` to, so the
+    // CLI (which reads the environment) and these configs (which are explicit)
+    // name one directory and therefore one key.
+    gateway_support::state_dir()
+        .join("identity")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Submit `request` to `endpoint` exactly as a client would.
@@ -74,7 +94,7 @@ async fn fresh_nonce(endpoint: &str, config: &AssemblyConfig) -> Vec<u8> {
     let mut client = AgentLifecycleServiceClient::connect(endpoint.to_string())
         .await
         .expect("the test gateway must be reachable");
-    let challenge: ChallengeRequest = build_challenge_request(config);
+    let challenge: ChallengeRequest = build_challenge_request(config).expect("the agent must have a durable identity");
     client
         .request_challenge(challenge)
         .await
@@ -300,7 +320,8 @@ async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
     // identity is taken rather than filing a second record beside it.
     let config = sdk_config("shared-identity");
     let nonce = fresh_nonce(gateway.endpoint(), &config).await;
-    let sdk = build_register_request(&config, "sdk-agent".into(), "langgraph".into(), &nonce);
+    let sdk = build_register_request(&config, "sdk-agent".into(), "langgraph".into(), &nonce)
+        .expect("the SDK agent must have a durable identity");
     assert_eq!(
         sdk.agent_id.as_ref().expect("agent_id is set").agent_id,
         cli.registration_did,
@@ -334,7 +355,8 @@ async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
         "sdk-agent".into(),
         "langgraph".into(),
         &fresh_nonce(gateway.endpoint(), &other).await,
-    );
+    )
+    .expect("the SDK agent must have a durable identity");
     proofless.possession_proof = Vec::new();
     let status = submit(gateway.endpoint(), proofless)
         .await

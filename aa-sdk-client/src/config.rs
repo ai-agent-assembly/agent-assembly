@@ -37,6 +37,15 @@ pub struct AssemblyConfig {
     /// shared `aa-sdk-client` crate version. `None` falls back to the crate's
     /// `CARGO_PKG_VERSION` (AAASM-3683), preserving the pre-passthrough behaviour.
     pub sdk_version: Option<String>,
+    /// Explicit directory for this agent's durable identity key (AAASM-5332).
+    /// When `None`, resolved from `AASM_STATE_DIR`, else `~/.aasm/identity`.
+    ///
+    /// Follows the same explicit-overrides-ambient shape as `socket_path` and
+    /// `gateway_endpoint` above. An embedder that keeps agent state somewhere of
+    /// its own choosing needs the key to follow it, and a test needs each case's
+    /// enrolments to be its own — a process-wide environment variable cannot
+    /// give parallel tests separate identities.
+    pub identity_dir: Option<String>,
 }
 
 impl AssemblyConfig {
@@ -112,12 +121,47 @@ impl AssemblyConfig {
     /// Return the agent identity to send on gateway registration.
     ///
     /// The gateway's `AgentLifecycleService.Register` rejects a plain
-    /// `agent_id`; it must be a `did:key` DID. This derives a conformant
-    /// `did:key` from the configured `agent_id` (passing through an
-    /// already-`did:key` identifier unchanged). The socket-path / event-tag
-    /// `agent_id` is intentionally left as-is.
-    pub fn registration_did(&self) -> String {
-        crate::identity::agent_id_to_did_key(&self.agent_id)
+    /// `agent_id`; it must be a `did:key` DID naming the key the registration's
+    /// possession proof is made with. This resolves the configured `agent_id` to
+    /// the DID of that agent's **durable identity key**, enrolling one on first
+    /// use (AAASM-5332). An `agent_id` that is already a `did:key` is refused:
+    /// this crate holds no private key for a DID it did not generate, so it
+    /// could not prove possession of one. The socket-path / event-tag `agent_id`
+    /// is intentionally left as-is.
+    ///
+    /// Fallible because the identity now lives on disk: there is no DID to
+    /// report for an agent whose key cannot be established, and returning a
+    /// plausible-looking one would recreate the defect this replaced.
+    pub fn registration_did(&self) -> Result<String, crate::identity_store::IdentityStoreError> {
+        if self.agent_id.starts_with("did:key:") {
+            return Err(crate::identity_store::IdentityStoreError::ProvisionedDidUnsupported {
+                did: self.agent_id.clone(),
+            });
+        }
+        Ok(self.identity_keypair()?.did_key())
+    }
+
+    /// The agent's durable identity keypair, enrolling one on first use.
+    ///
+    /// The single place the registration path obtains key material, so the
+    /// `did:key`, the `public_key` and the possession-proof signature in one
+    /// `RegisterRequest` cannot come from different keys.
+    pub fn identity_keypair(&self) -> Result<crate::keypair::AgentKeypair, crate::identity_store::IdentityStoreError> {
+        self.identity_store()?.load_or_enroll(&self.agent_id)
+    }
+
+    /// The identity store this config's agent keeps its durable key in.
+    ///
+    /// Resolution order:
+    /// 1. Explicit `identity_dir` if provided
+    /// 2. `${AASM_STATE_DIR:-$HOME/.aasm}/identity`
+    pub fn identity_store(
+        &self,
+    ) -> Result<crate::identity_store::IdentityStore, crate::identity_store::IdentityStoreError> {
+        match self.identity_dir {
+            Some(ref dir) if !dir.is_empty() => Ok(crate::identity_store::IdentityStore::at(dir)),
+            _ => crate::identity_store::IdentityStore::default_location(),
+        }
     }
 }
 
@@ -133,6 +177,7 @@ mod tests {
             team_id: None,
             parent_agent_id: None,
             sdk_version: None,
+            identity_dir: None,
         }
     }
 
@@ -162,6 +207,7 @@ mod tests {
             team_id: None,
             parent_agent_id: None,
             sdk_version: None,
+            identity_dir: None,
         };
         assert_eq!(config.resolve_gateway_endpoint(), "http://gw.example:50051");
     }

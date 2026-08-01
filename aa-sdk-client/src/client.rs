@@ -103,9 +103,12 @@ impl AssemblyClient {
     /// the gateway's `validate_credential_token` does not deny a registered
     /// agent.
     ///
-    /// `config` supplies the agent identity (its `agent_id` is derived into a
-    /// `did:key` + a consistent Ed25519 `public_key`) and the gateway gRPC
-    /// endpoint. Returns the assigned policy id from the gateway on success.
+    /// `config` supplies the agent identity (its `agent_id` selects the durable
+    /// identity key, whose public half becomes the `did:key` and the
+    /// `public_key`) and the gateway gRPC endpoint. Returns the assigned policy
+    /// id from the gateway on success, and
+    /// [`SdkClientError::IdentityUnavailable`] if the durable key cannot be
+    /// established — an agent with no identity does not register.
     pub async fn register(
         &self,
         config: &AssemblyConfig,
@@ -119,8 +122,8 @@ impl AssemblyClient {
         // register request. This round-trip is what makes the possession proof
         // non-replayable — the gateway rejects any proof over a stale, reused, or
         // attacker-derivable challenge.
-        let challenge = client.request_challenge(build_challenge_request(config)).await?;
-        let request = build_register_request(config, name, framework, &challenge.nonce);
+        let challenge = client.request_challenge(build_challenge_request(config)?).await?;
+        let request = build_register_request(config, name, framework, &challenge.nonce)?;
         let response = client.register(request).await?;
 
         {

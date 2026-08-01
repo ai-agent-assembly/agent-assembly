@@ -19,6 +19,15 @@
 //! * `verify_possession_proof` over a **server-issued, single-use, time-bound**
 //!   nonce obtained from `RequestChallenge` (AAASM-3591 / AAASM-3866).
 //!
+//! Those three checks only bite if the private key behind them is a secret.
+//! Until AAASM-5332 it was not — it was `SHA-256(agent_id)`, and the agent id is
+//! published in audit records and on the dashboard — so all three were
+//! satisfiable by anyone who had read one. The key is now generated randomly and
+//! stored owner-only by `aa-sdk-client`'s `identity_store`, and this module
+//! registers with that key: `register` refuses with
+//! [`RegistrationError::IdentityUnavailable`] rather than launching under an
+//! identity it cannot prove it holds.
+//!
 //! Serving the CLI over a second, weaker route would have meant one product with
 //! two registration contracts, the weaker of which is reachable by anything that
 //! can speak HTTP. So `aasm run` registers through the *same* gRPC handshake the
@@ -55,15 +64,25 @@ const LAUNCH_FRAMEWORK: &str = "aasm-run";
 /// A registration the gateway accepted, and the identity it was accepted under.
 #[derive(Clone)]
 pub struct GovernedRegistration {
-    /// The operator-facing identifier the keypair (and therefore the DID) is
-    /// derived from. This is the value handed to the launched tool as
+    /// The operator-facing identifier that *selects* the agent's durable
+    /// identity key. This is the value handed to the launched tool as
     /// `AA_AGENT_ID`, and it is what makes the correlation in
     /// [`registration_did`](Self::registration_did) reproducible: anything that
-    /// derives from this identifier — an SDK inside the launched tool, a later
-    /// `aasm run` for the same agent — arrives at the same DID.
+    /// resolves this identifier — an SDK inside the launched tool, a later
+    /// `aasm run` for the same agent — loads the same stored key and so arrives
+    /// at the same DID.
+    ///
+    /// Since AAASM-5332 it selects a key rather than *being* one. The identifier
+    /// is public (it appears in audit records and on the dashboard); the key it
+    /// names is random and readable only by this user.
     pub agent_id: String,
-    /// The `did:key` the gateway registered, and the identity every audit record
-    /// for this session is attributed to.
+    /// The `did:key` the gateway registered, and the identity the **gateway's**
+    /// audit records for this session are attributed to (they carry
+    /// `SHA-256(did)[..16]`).
+    ///
+    /// Not the whole attribution story: entries written by `aa-runtime` on the
+    /// SDK path hash the plaintext `AA_AGENT_ID` instead, so the two halves of
+    /// the trail are joined by this struct rather than by a shared identifier.
     pub registration_did: String,
     /// The gateway's own registry key for this agent, hex-encoded.
     ///
@@ -104,6 +123,9 @@ pub enum RegistrationError {
     ChallengeRefused { endpoint: String, reason: String },
     /// The gateway refused the registration itself.
     RegistrationRefused { endpoint: String, reason: String },
+    /// This machine has no usable durable identity key for the agent, so there
+    /// is nothing to register as (AAASM-5332).
+    IdentityUnavailable { reason: String },
 }
 
 impl std::error::Error for RegistrationError {}
@@ -116,6 +138,11 @@ impl fmt::Display for RegistrationError {
                 "the governance gateway at {endpoint} is unreachable, so this session cannot be \
                  registered. Start one with `aasm gateway start`, or point `AA_GATEWAY_ENDPOINT` \
                  at the right gRPC endpoint (note: the gRPC port, not the `--api-url` HTTP one)"
+            ),
+            Self::IdentityUnavailable { reason } => write!(
+                f,
+                "this session cannot be registered because the agent has no usable durable \
+                 identity key: {reason}"
             ),
             Self::ChallengeRefused { endpoint, reason } => write!(
                 f,
@@ -172,9 +199,10 @@ pub fn gateway_endpoint() -> String {
 /// The `AssemblyConfig` an SDK would build for this identity.
 ///
 /// Registration identity comes from exactly one place for both surfaces: the
-/// `did:key` and `public_key` are derived here by `aa-sdk-client` from
-/// `agent_id`, so a CLI launch and an SDK agent configured with the same
-/// identifier register as the same DID under the same key.
+/// `did:key` and `public_key` are read by `aa-sdk-client` from the durable
+/// identity key that `agent_id` selects, so a CLI launch and an SDK agent
+/// configured with the same identifier register as the same DID under the same
+/// key — because it is literally the same key file.
 fn sdk_config(agent_id: &str, team_id: Option<&str>, parent_agent_id: Option<&str>) -> AssemblyConfig {
     AssemblyConfig {
         agent_id: agent_id.to_string(),
@@ -183,13 +211,74 @@ fn sdk_config(agent_id: &str, team_id: Option<&str>, parent_agent_id: Option<&st
         team_id: team_id.map(str::to_string),
         parent_agent_id: parent_agent_id.map(str::to_string),
         sdk_version: None,
+        identity_dir: identity_dir_override(),
     }
 }
 
-/// The `did:key` a given operator-facing identifier registers as.
-pub fn registration_did(agent_id: &str) -> String {
-    sdk_config(agent_id, None, None).registration_did()
+/// Where the durable identity key lives. `None` in production, so the store
+/// resolves `${AASM_STATE_DIR:-~/.aasm}/identity` like every other piece of
+/// installation state.
+#[cfg(not(test))]
+fn identity_dir_override() -> Option<String> {
+    None
 }
+
+/// Under `cargo test`, redirect every unit test in this binary to one temporary
+/// directory instead of the developer's real `~/.aasm`.
+///
+/// Enrolment is a filesystem write, and a unit test that asks for an agent's DID
+/// would otherwise mint a real key in the developer's home — including the tests
+/// in `run.rs`, which reach this module through
+/// [`registration_did`](super::run_registration::registration_did) and cannot be
+/// made to opt in from here. One directory for the whole process (rather than
+/// one per test) is deliberate: `run.rs` asserts that two separate calls for one
+/// identifier agree, which is exactly the durability property, and per-test
+/// isolation would break it for the wrong reason.
+#[cfg(test)]
+fn identity_dir_override() -> Option<String> {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<String> = OnceLock::new();
+    Some(
+        DIR.get_or_init(|| {
+            std::env::temp_dir()
+                .join(format!("aasm-cli-test-identity-{}", std::process::id()))
+                .to_string_lossy()
+                .into_owned()
+        })
+        .clone(),
+    )
+}
+
+/// The `did:key` a given operator-facing identifier registers as, enrolling the
+/// agent's durable identity key on first use.
+///
+/// Since AAASM-5332 the DID is a rendering of a randomly-generated key kept
+/// under `AASM_STATE_DIR`, not a hash of the identifier, so this reads the
+/// filesystem and can fail. The signature stays infallible because the preview
+/// path in `run.rs` needs a `String`; when the key cannot be established it
+/// returns [`UNRESOLVED_IDENTITY`] — a value that is deliberately **not** a
+/// `did:key`, so nothing downstream can mistake it for an identity the gateway
+/// would accept. The live path does not come through here: `register` surfaces
+/// the store's own reason as
+/// [`RegistrationError::IdentityUnavailable`](RegistrationError).
+///
+/// Repeated calls for one identifier return the same DID because they read the
+/// same stored key back — which is what keeps the identity that registered, the
+/// identity the launch runs under, and the identity audit attributes to, one
+/// principal.
+pub fn registration_did(agent_id: &str) -> String {
+    sdk_config(agent_id, None, None)
+        .registration_did()
+        .unwrap_or_else(|_| UNRESOLVED_IDENTITY.to_string())
+}
+
+/// Stand-in returned by [`registration_did`] when no durable identity key can be
+/// established.
+///
+/// Not a `did:key`, and deliberately so: the gateway rejects it outright, and a
+/// reader of `--dry-run` output sees that the identity is unresolved rather than
+/// a plausible DID that would never have been the one registered.
+pub const UNRESOLVED_IDENTITY: &str = "<no-durable-identity-key>";
 
 /// The gateway's registry key for `(team, did)`, hex-encoded.
 pub fn registry_id(team_id: Option<&str>, did: &str) -> String {
@@ -216,9 +305,10 @@ fn proto_enforcement_mode(mode: aa_core::EnforcementMode) -> i32 {
 /// actually sends. A test that rebuilt it would be asserting against its own
 /// copy, which can agree with itself while having drifted from this one — the
 /// shape of a fixture that cannot express the state it is supposed to catch.
-fn build_session_request(desc: &SessionDescriptor<'_>, nonce: &[u8]) -> RegisterRequest {
+fn build_session_request(desc: &SessionDescriptor<'_>, nonce: &[u8]) -> Result<RegisterRequest, RegistrationError> {
     let config = sdk_config(desc.agent_id, desc.team_id, desc.parent_agent_id);
-    let mut request = build_register_request(&config, desc.name.to_string(), LAUNCH_FRAMEWORK.to_string(), nonce);
+    let mut request = build_register_request(&config, desc.name.to_string(), LAUNCH_FRAMEWORK.to_string(), nonce)
+        .map_err(identity_unavailable)?;
     // Descriptive fields only. `build_register_request` owns every field the
     // gate reads (agent_id, public_key, registration_nonce, possession_proof);
     // overwriting any of those here would be the second implementation of the
@@ -228,7 +318,16 @@ fn build_session_request(desc: &SessionDescriptor<'_>, nonce: &[u8]) -> Register
     request
         .metadata
         .insert("governance_level".to_string(), desc.governance_level.to_string());
-    request
+    Ok(request)
+}
+
+/// Map an SDK-side identity failure onto this module's refusal.
+///
+/// Kept separate so every path that needs the durable key produces the same
+/// error with the store's own explanation intact — an operator whose key file is
+/// group-readable needs to be told that, not merely that registration failed.
+fn identity_unavailable(e: SdkClientError) -> RegistrationError {
+    RegistrationError::IdentityUnavailable { reason: e.to_string() }
 }
 
 /// Register this session with the gateway over gRPC.
@@ -249,15 +348,17 @@ pub async fn register(desc: SessionDescriptor<'_>) -> Result<GovernedRegistratio
         })?;
 
     let challenge = client
-        .request_challenge(build_challenge_request(&config))
+        .request_challenge(build_challenge_request(&config).map_err(identity_unavailable)?)
         .await
         .map_err(|e| RegistrationError::ChallengeRefused {
             endpoint: endpoint.clone(),
             reason: reason_of(e),
         })?;
 
-    let request = build_session_request(&desc, &challenge.nonce);
-    let did = config.registration_did();
+    let request = build_session_request(&desc, &challenge.nonce)?;
+    let did = config
+        .registration_did()
+        .map_err(|e| RegistrationError::IdentityUnavailable { reason: e.to_string() })?;
     let response = client
         .register(request)
         .await
@@ -327,18 +428,63 @@ mod tests {
     }
 
     /// The whole point of routing the CLI through `aa-sdk-client`: the identity
-    /// the CLI registers under is the identity the SDK derives from the same
+    /// the CLI registers under is the identity the SDK resolves for the same
     /// identifier. If these ever diverge the two surfaces are separate agents to
     /// the gateway, and nothing about "one contract" survives.
+    ///
+    /// Asserted against the SDK's own request builder rather than against
+    /// `agent_id_to_did_key`, because since AAASM-5332 the DID comes from a
+    /// stored key: the two surfaces must agree by *reading the same key*, which
+    /// only a shared store can demonstrate.
     #[test]
     fn the_cli_registers_under_the_same_did_as_the_sdk_for_the_same_identifier() {
-        for id in ["ops-laptop", "team-a/bot", "did:key:z6MkfoobarNotDerived"] {
+        for id in ["ops-laptop", "team-a/bot"] {
+            let sdk = build_register_request(
+                &sdk_config(id, None, None),
+                "any".to_string(),
+                "langgraph".to_string(),
+                &server_issued_nonce(id),
+            )
+            .expect("the SDK must resolve an identity")
+            .agent_id
+            .expect("agent_id is set")
+            .agent_id;
+
             assert_eq!(
                 registration_did(id),
-                aa_sdk_client::agent_id_to_did_key(id),
-                "the CLI must not derive its own identity for `{id}`"
+                sdk,
+                "the CLI must not resolve its own identity for `{id}`"
             );
         }
+    }
+
+    /// The identity is durable: asking twice returns the same DID because the
+    /// second call reads back the key the first one stored. This is contract
+    /// item 6 — registration, launch and audit must name one principal — and it
+    /// is what `run.rs` relies on when it asserts `AA_AGENT_DID` re-derives from
+    /// `AA_AGENT_ID`.
+    #[test]
+    fn one_identifier_keeps_one_identity_across_calls() {
+        let first = registration_did("durable-check");
+        let second = registration_did("durable-check");
+
+        assert_eq!(first, second);
+        assert!(first.starts_with("did:key:z"), "got {first}");
+    }
+
+    /// A `did:key` configured as the agent id is refused rather than registered
+    /// under a substituted identity. The CLI holds no private key for a DID it
+    /// did not generate, so no proof it could build would verify — and silently
+    /// registering something else would mean the launch runs under an identity
+    /// the operator never named.
+    #[test]
+    fn a_provisioned_did_as_agent_id_yields_no_registrable_identity() {
+        let resolved = registration_did("did:key:z6MkfoobarNotDerived");
+        assert_eq!(resolved, UNRESOLVED_IDENTITY);
+        assert!(
+            !resolved.starts_with("did:key:"),
+            "the stand-in must not look like an identity the gateway would accept; got {resolved}"
+        );
     }
 
     /// A stand-in for the nonce the gateway issues, built at run time rather
@@ -374,7 +520,7 @@ mod tests {
         use aa_gateway::registry::convert::{assert_did_key_binds_public_key, validate_proto_agent_id};
 
         let desc = descriptor("binding-check", Some("team-a"));
-        let request = build_session_request(&desc, &server_issued_nonce("binding-check"));
+        let request = build_session_request(&desc, &server_issued_nonce("binding-check")).expect("enrolment");
         let proto_id = request.agent_id.as_ref().expect("agent_id is set");
 
         validate_proto_agent_id(proto_id).expect("the gateway must accept the submitted agent_id");
@@ -399,7 +545,7 @@ mod tests {
     fn the_possession_proof_signs_the_server_nonce_and_verifies_under_the_public_key() {
         let desc = descriptor("proof-check", None);
         let nonce = server_issued_nonce("proof-check");
-        let request = build_session_request(&desc, &nonce);
+        let request = build_session_request(&desc, &nonce).expect("enrolment");
 
         assert_eq!(
             request.registration_nonce, nonce,
@@ -430,8 +576,8 @@ mod tests {
     #[test]
     fn two_registrations_of_one_identity_produce_different_proofs() {
         let desc = descriptor("replay-check", None);
-        let first = build_session_request(&desc, &server_issued_nonce("replay-first"));
-        let second = build_session_request(&desc, &server_issued_nonce("replay-second"));
+        let first = build_session_request(&desc, &server_issued_nonce("replay-first")).expect("enrolment");
+        let second = build_session_request(&desc, &server_issued_nonce("replay-second")).expect("load");
 
         assert_eq!(
             first.public_key, second.public_key,
@@ -449,22 +595,30 @@ mod tests {
     fn the_cli_signs_with_the_same_key_the_sdk_would() {
         let nonce = server_issued_nonce("parity-check");
         let desc = descriptor("parity-check", None);
-        let cli = build_session_request(&desc, &nonce);
+        let cli = build_session_request(&desc, &nonce).expect("enrolment");
         let sdk = build_register_request(
             &sdk_config("parity-check", None, None),
             "any-name".to_string(),
             "langgraph".to_string(),
             &nonce,
-        );
+        )
+        .expect("load");
 
         assert_eq!(cli.public_key, sdk.public_key);
         assert_eq!(
             cli.possession_proof, sdk.possession_proof,
             "the two surfaces must present the same proof for the same identity and nonce"
         );
-        assert_eq!(
+
+        // AAASM-5332: the registration key must NOT be the key anyone can
+        // recompute from the identifier. Before this ticket the two were equal,
+        // and that equality was the vulnerability — the possession proof could
+        // be produced by anybody who had seen the agent id in an audit record.
+        assert_ne!(
             AgentKeypair::derive_transport_key("parity-check").public_key_hex(),
-            cli.public_key
+            cli.public_key,
+            "the registration key is recomputable from the public agent id, so the possession \
+             proof proves nothing"
         );
     }
 

@@ -312,11 +312,14 @@ async fn register_with_sdk_derived_did_key_is_accepted() {
         .await
         .unwrap();
 
-    // A human-readable agent_id of the kind SDKs configure today — which the
-    // gateway rejects verbatim — converted via the shared SDK derivation.
-    let plain_agent_id = "my-agent-001";
-    let did = aa_sdk_client::agent_id_to_did_key(plain_agent_id);
-    assert!(did.starts_with("did:key:z"), "derived DID must be a did:key, got {did}");
+    // The gateway rejects a human-readable agent_id verbatim, so the fixture
+    // registers the `did:key` of the keypair it also proves possession of.
+    // Taken from the keypair rather than from an identifier, because since
+    // AAASM-5332 a DID names a specific key rather than being a function of a
+    // name — and what this test exercises is the gateway's binding check, not
+    // where the SDK gets its key from.
+    let did = test_keypair().did_key();
+    assert!(did.starts_with("did:key:z"), "the DID must be a did:key, got {did}");
 
     let resp = register_with_challenge(
         &mut client,
