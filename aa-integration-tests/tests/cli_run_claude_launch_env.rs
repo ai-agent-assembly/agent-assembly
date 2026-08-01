@@ -58,6 +58,18 @@
 //! register does not happen at all, so these tests would measure nothing without
 //! one. Registration itself is not this file's subject — see
 //! `aa-cli/tests/run_registration_gateway.rs`.
+//!
+//! # The policy is a precondition too
+//!
+//! Since AAASM-5349 a governed launch refuses when no effective policy resolves,
+//! because an unconfigured policy means nobody has said what the agent may do —
+//! which is not the same as everything being permitted. So each run supplies one
+//! with `--policy`, alongside the gateway and the verified proxy. It is narrow
+//! and enforcing rather than allow-all: this file measures a *governed* launch,
+//! and a session under a policy that restricts nothing would not be one. What
+//! the policy says has no bearing on the launch environment asserted below —
+//! tool permissions are rendered into Claude's settings file, not into the
+//! child's environment — so it is a precondition, not a variable.
 
 // `RealHomeGuard` is reused rather than reimplemented: it fingerprints the live
 // settings file on length+mtime and never reads its contents.
@@ -157,6 +169,8 @@ exit 0
         project: PathBuf,
         state_dir: PathBuf,
         dump: PathBuf,
+        /// The effective policy every run of this host launches under.
+        policy: PathBuf,
         path_var: std::ffi::OsString,
     }
 
@@ -177,10 +191,40 @@ exit 0
             parts.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
             let path_var = std::env::join_paths(parts)?;
 
+            // A governed launch refuses when no effective policy resolves
+            // (AAASM-5349), so the host carries one — a precondition of this
+            // scenario in the same way the gateway and the verified proxy are.
+            //
+            // Narrow and enforcing rather than allow-all: this file measures a
+            // *governed* launch, and a session under a policy that restricts
+            // nothing would not be one. The rules name tool permissions, which
+            // the adapter renders into Claude's settings file; they have no
+            // bearing on the launch environment this file actually asserts on.
+            //
+            // Written into the host's own temp root and passed with `--policy`
+            // rather than installed at `$HOME/.aasm/policy.yaml`, so the run
+            // measures the same thing on a developer machine that happens to
+            // have an operator policy installed and on a bare CI runner.
+            let policy = root.join("policy.yaml");
+            std::fs::write(
+                &policy,
+                "apiVersion: agent-assembly/v1\n\
+                 kind: Policy\n\
+                 metadata:\n\
+                 \x20 name: aaasm5327-launch-env\n\
+                 spec:\n\
+                 \x20 tools:\n\
+                 \x20   read_file:\n\
+                 \x20     allow: true\n\
+                 \x20   shell:\n\
+                 \x20     allow: false\n",
+            )?;
+
             Ok(Self {
                 _tmp: tmp,
                 state_dir: root.join("state"),
                 dump: root.join("child-env.txt"),
+                policy,
                 root,
                 home,
                 project,
@@ -224,7 +268,16 @@ exit 0
                 // before anything is launched, so a run that measured nothing
                 // here would be a run that never got past the gate.
                 .env("AA_GATEWAY_ENDPOINT", gateway.endpoint())
-                .args(["run", "claude", "--agent-id", AGENT_ID, "--team-id", TEAM_ID])
+                .args([
+                    "run",
+                    "claude",
+                    "--policy",
+                    &self.policy.to_string_lossy(),
+                    "--agent-id",
+                    AGENT_ID,
+                    "--team-id",
+                    TEAM_ID,
+                ])
                 .output()
                 .expect("aasm run claude should execute");
 

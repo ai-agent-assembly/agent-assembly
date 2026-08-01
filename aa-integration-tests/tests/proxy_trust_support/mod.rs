@@ -322,6 +322,35 @@ impl Drop for TrustedProxy {
     }
 }
 
+/// A start token that is well-formed for whatever scheme the running `aasm`
+/// wrote into `state_file`, but names a different incarnation of the PID.
+///
+/// The scheme tag has to be preserved. Since AAASM-5333 the trust check refuses
+/// an *unrecognised* scheme with a diagnostic of its own — that is how a record
+/// left by an older `aasm` is told apart from a PID that really was recycled —
+/// so substituting an arbitrary string would exercise that path instead of the
+/// start-time comparison, and the test would still see a refusal while measuring
+/// the wrong one.
+pub fn foreign_incarnation_token(state_file: &Path) -> anyhow::Result<String> {
+    let content = std::fs::read_to_string(state_file)?;
+    let recorded = content
+        .lines()
+        .nth(2)
+        .ok_or_else(|| anyhow::anyhow!("state record at {} has no start-token line", state_file.display()))?;
+    let (scheme, _) = recorded
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("recorded start token {recorded:?} carries no scheme tag"))?;
+    // `0` is a value no scheme can genuinely produce: the Linux schemes lead
+    // with a start tick, which is zero only for a process that began at boot,
+    // and the macOS scheme leads with an epoch second.
+    let substitute = format!("{scheme}:0");
+    anyhow::ensure!(
+        substitute != recorded,
+        "the substitute token must differ from the recorded one, or the refusal proves nothing"
+    );
+    Ok(substitute)
+}
+
 /// `PATH` with `first` prepended, so a `which` probe in a child finds our binary
 /// while the child keeps whatever else it needs from the host.
 pub fn prefixed_path(first: &Path) -> anyhow::Result<std::ffi::OsString> {
