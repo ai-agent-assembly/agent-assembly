@@ -10,8 +10,11 @@ easy to assert and easy to get wrong, because every committed ASCII vector passe
 either way. This script is the evidence for it, kept runnable so the number in the
 PR is reproducible rather than something you have to take on trust.
 
-It drives both implementations over every span position in every ASCII vector and
-compares their output byte for byte.
+It drives both implementations over span positions in every ASCII vector and
+compares their output byte for byte. "Every position" for inputs up to 160 bytes;
+above that `_positions` samples ~160 evenly spaced ones, always including the
+endpoint, because an exhaustive pair sweep over a few-thousand-byte private key
+adds hours without adding span *shapes*.
 
 AAASM-5373 then changed the semantics on purpose — `_redact` now coalesces
 overlapping findings and fails closed on a span it cannot splice — so a flat

@@ -318,6 +318,14 @@ def _redact(text: str, findings: list[dict]) -> str:
     splice can move a byte that a later check looks at, and because the only
     two outcomes are "every span spliced" and "`[REDACTED]`" — which of several
     invalid spans is noticed first cannot change the answer.
+
+    One condition here has no Rust counterpart rather than mirroring one:
+    `offset < 0`. Rust offsets are `usize` and cannot be negative, so
+    `ScanResult::redact` has no such branch; Python would read a negative index
+    as counting from the end and splice into the middle of the text. It is
+    treated as unspliceable for the same reason as the rest. So "byte for byte
+    what `ScanResult::redact` does" holds for every span Rust can express, and
+    this is strictly stronger on the one it cannot.
     """
     buf = text.encode("utf-8")
     spans = _coalesce_findings(findings)
