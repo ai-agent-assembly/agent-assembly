@@ -62,6 +62,22 @@ import { describe, expect, it } from 'vitest'
 import * as capabilityApi from '../../../features/capability/api'
 import * as policyBadge from '../../../features/policies/policyBadge'
 import { isKnown, type Certain, type QueryOutcome } from '..'
+import eslintrc from '../../../../.eslintrc.cjs'
+
+/**
+ * The allowlist as ESLint actually reads it.
+ *
+ * Taken from the config object rather than re-typed here, so this compares the
+ * two lists instead of comparing this file to a copy of itself. The allowlist
+ * override is the one that switches `no-restricted-imports` off for a set of
+ * literal paths; the other such override targets glob patterns (the
+ * vocabulary's own module and the test files), which is what distinguishes
+ * them.
+ */
+const ESLINT_ALLOWLIST: readonly string[] = (eslintrc.overrides ?? [])
+  .filter((o) => o.rules?.['no-restricted-imports'] === 'off')
+  .filter((o) => o.files.every((f) => !f.includes('*')))
+  .flatMap((o) => o.files)
 
 type Disposition = 'guarded-at-fetch' | 'constructed-client-side' | 'hazardous'
 
@@ -115,7 +131,7 @@ const AUDIT: readonly FoldSite[] = [
     calls: 1,
     disposition: 'hazardous',
     reason:
-      'features/onboarding/api.ts reads `data.total` / `data.items` off a cast body. A missing `total` renders an empty meter and the pane prints "the registry answered: no agents registered yet"; a non-array `items` throws in `.map` at render. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
+      'features/onboarding/api.ts reads `data.total` / `data.items` off a cast body. A missing `total` renders an empty meter and the pane prints "the registry answered: no agents registered yet"; a non-array `items` throws in `.map` at render. Note there is no `?? []` here — the hook throws on an absent body and then reads `data.total` / `data.items` raw, so this is a cast, not a fail-open. Follow-up: AAASM-5380.',
   },
   {
     file: 'pages/AlertsPage.tsx',
@@ -260,10 +276,55 @@ describe('the undecoded-fold audit is complete', () => {
       // A live defect has to name the ticket tracking it, not just say that
       // one exists. A bare "Follow-up." is the same untraceable gesture this
       // audit replaced prose with.
+      //
+      // Anchored to the `Follow-up:` marker, not a bare /AAASM-\d+/ (AAASM-5369
+      // delta review): two of these reasons already cite an unrelated ticket in
+      // their body — AAASM-5167 for the approvals comment, AAASM-5369 for the
+      // sibling defect — so the loose form matched them even after the
+      // follow-up was reverted to a bare "Follow-up.", and the assertion passed
+      // with the exact defect it was added to catch.
       if (site.disposition === 'hazardous') {
-        expect(site.reason).toMatch(/AAASM-\d+/)
+        expect(site.reason).toMatch(/Follow-up: AAASM-\d+/)
       }
     }
+  })
+
+  /**
+   * The third door, which neither half of the ratchet was watching
+   * (AAASM-5369 delta review).
+   *
+   * The eslintrc's allowlist is not the only way to ship an undecoded fold. Two
+   * lines defeat *both* halves at once:
+   *
+   *   // eslint-disable-next-line no-restricted-imports
+   *   import { certainFromQuery as fold } from '../lib/truthfulness'
+   *
+   * ESLint stays silent because the directive is genuinely used, so
+   * `--report-unused-disable-directives` does not fire either; and `countCalls`
+   * skips `import` lines and looks for `certainFromQuery` followed by `(` or
+   * `<`, so `fold(` is invisible to it. Verified: eslint exit 0 and this file
+   * 18/18 green, with a live undecoded fold in the tree.
+   *
+   * Suppressing the rule is therefore a decision that has to be made in the
+   * open, in `.eslintrc.cjs`, rather than in the file that wants the exemption.
+   */
+  it('lets no file suppress the undecoded-fold rule inline', () => {
+    const suppressors: string[] = []
+    for (const [path, source] of Object.entries(SOURCES)) {
+      const rel = path.replace(/^\/src\//, '')
+      if (rel.includes('__tests__/foldAudit')) continue
+      if (/eslint-disable[^\n]*no-restricted-imports/.test(source)) suppressors.push(rel)
+    }
+    expect(suppressors).toEqual([])
+  })
+
+  /**
+   * The eslintrc allowlist and this AUDIT are one list kept in two places, and
+   * the premise of the whole ratchet is that manual bookkeeping decays. So the
+   * bookkeeping is checked too.
+   */
+  it('agrees with the eslintrc allowlist, file for file', () => {
+    expect([...ESLINT_ALLOWLIST].sort()).toEqual(AUDIT.map((s) => `src/${s.file}`).sort())
   })
 
   it('has not quietly relabelled the two lanes AAASM-5369 migrated', () => {
