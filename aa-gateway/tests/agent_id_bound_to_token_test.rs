@@ -107,6 +107,7 @@ fn register(
         children: vec![],
         parent_key: None,
         enforcement_mode: mode,
+        enforcement_mode_expires_at: None,
         org_id: None,
     };
     registry.register(record).unwrap();

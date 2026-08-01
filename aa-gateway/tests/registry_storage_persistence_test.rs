@@ -54,6 +54,7 @@ fn record(id: [u8; 16], name: &str, team_id: Option<&str>) -> AgentRecord {
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }

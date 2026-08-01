@@ -73,6 +73,7 @@ fn agent_with_tenant(id_byte: u8, team: &str, org: &str) -> AgentRecord {
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: Some(org.to_string()),
     }
 }

@@ -122,6 +122,9 @@ fn row_to_agent_record(row: &sqlx::postgres::PgRow) -> StorageResult<AgentRecord
         enforcement_mode: row
             .try_get("enforcement_mode")
             .map_err(|e| StorageError::QueryFailed(format!("enforcement_mode column: {e}")))?,
+        enforcement_mode_expires_at: row
+            .try_get("enforcement_mode_expires_at")
+            .map_err(|e| StorageError::QueryFailed(format!("enforcement_mode_expires_at column: {e}")))?,
     })
 }
 
@@ -453,14 +456,16 @@ impl StorageBackend for PostgresBackend {
             .map_err(|e| StorageError::QueryFailed(format!("metadata serialize: {e}")))?;
         sqlx::query(
             "INSERT INTO agent_registry \
-             (agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             (agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode, \
+              enforcement_mode_expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
              ON CONFLICT (agent_id) DO UPDATE SET \
-               team_id          = EXCLUDED.team_id, \
-               org_id           = EXCLUDED.org_id, \
-               metadata         = EXCLUDED.metadata, \
-               last_seen_at     = EXCLUDED.last_seen_at, \
-               enforcement_mode = EXCLUDED.enforcement_mode",
+               team_id                     = EXCLUDED.team_id, \
+               org_id                      = EXCLUDED.org_id, \
+               metadata                    = EXCLUDED.metadata, \
+               last_seen_at                = EXCLUDED.last_seen_at, \
+               enforcement_mode            = EXCLUDED.enforcement_mode, \
+               enforcement_mode_expires_at = EXCLUDED.enforcement_mode_expires_at",
         )
         .bind(agent_id_to_text(&record.agent_id))
         .bind(record.team_id.as_deref())
@@ -469,6 +474,7 @@ impl StorageBackend for PostgresBackend {
         .bind(record.registered_at)
         .bind(record.last_seen_at)
         .bind(&record.enforcement_mode)
+        .bind(record.enforcement_mode_expires_at)
         .execute(&self.pool)
         .await
         .map(|_| ())
@@ -482,7 +488,7 @@ impl StorageBackend for PostgresBackend {
     async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
         let row = sqlx::query(
             "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
-             enforcement_mode FROM agent_registry WHERE agent_id = $1",
+             enforcement_mode, enforcement_mode_expires_at FROM agent_registry WHERE agent_id = $1",
         )
         .bind(agent_id_to_text(id))
         .fetch_optional(&self.pool)
@@ -499,7 +505,7 @@ impl StorageBackend for PostgresBackend {
     async fn list_agents(&self, filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
-             enforcement_mode FROM agent_registry",
+             enforcement_mode, enforcement_mode_expires_at FROM agent_registry",
         );
         push_agent_where(&mut qb, &filter);
         qb.push(" ORDER BY agent_id");
@@ -1349,6 +1355,7 @@ mod tests {
             registered_at,
             last_seen_at,
             enforcement_mode: "enforce".to_string(),
+            enforcement_mode_expires_at: None,
         }
     }
 

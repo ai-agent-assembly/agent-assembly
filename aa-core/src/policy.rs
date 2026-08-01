@@ -94,6 +94,32 @@ impl EnforcementMode {
             _ => None,
         }
     }
+
+    /// Canonical lower-case wire string for this mode.
+    ///
+    /// Matches the `serde(rename_all = "snake_case")` representation and the
+    /// values persisted in the `agent_registry.enforcement_mode` column so the
+    /// storage layer can round-trip the mode without a serde-json hop.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Enforce => "enforce",
+            Self::Observe => "observe",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// Parse the canonical wire string back into a mode.
+    ///
+    /// Returns `None` for any unrecognized value so callers can fall back to a
+    /// server-side default rather than silently coercing.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "enforce" => Some(Self::Enforce),
+            "observe" => Some(Self::Observe),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
 }
 
 /// A single rule inside a `PolicyDocument`.
@@ -378,6 +404,26 @@ mod tests {
         assert_eq!(EnforcementMode::from_proto_i32(0), None);
         assert_eq!(EnforcementMode::from_proto_i32(-1), None);
         assert_eq!(EnforcementMode::from_proto_i32(99), None);
+    }
+
+    #[test]
+    fn enforcement_mode_wire_round_trips_and_matches_snake_case() {
+        // as_wire/from_wire back the durable `agent_registry.enforcement_mode`
+        // column; they must agree with the snake_case serde tokens and reject
+        // anything else so a corrupt column falls back to a server default.
+        for mode in [
+            EnforcementMode::Enforce,
+            EnforcementMode::Observe,
+            EnforcementMode::Disabled,
+        ] {
+            assert_eq!(EnforcementMode::from_wire(mode.as_wire()), Some(mode));
+        }
+        assert_eq!(EnforcementMode::Enforce.as_wire(), "enforce");
+        assert_eq!(EnforcementMode::Observe.as_wire(), "observe");
+        assert_eq!(EnforcementMode::Disabled.as_wire(), "disabled");
+        assert_eq!(EnforcementMode::from_wire("shadow"), None);
+        assert_eq!(EnforcementMode::from_wire(""), None);
+        assert_eq!(EnforcementMode::from_wire("Enforce"), None);
     }
 
     #[cfg(feature = "serde")]

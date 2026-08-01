@@ -115,11 +115,12 @@ fn wait_for_port(addr: &str, timeout: Duration) -> bool {
 /// * the **start time** is read back from the kernel for `child_pid`. It is set
 ///   at fork and is not changed by the subsequent `exec`, so reading it now is
 ///   race-free even though the child may not have exec'd yet.
-/// * the **executable** is the canonicalised path that was spawned, not a
-///   read-back of the live image, because the read-back *does* race the exec.
-///   Canonicalising matches what the kernel will later report (`/proc/<pid>/exe`
-///   and `proc_pidpath` both name the resolved image), so the comparison holds
-///   even when the proxy was invoked through a symlink.
+/// * the **executable** is the path that was spawned, not a read-back of the
+///   live image, because the read-back *does* race the exec. The caller
+///   canonicalises before spawning ([`canonical_binary`]), which matches what
+///   the kernel will later report — `/proc/<pid>/exe` and `proc_pidpath` both
+///   name the resolved image — so the comparison holds even when the proxy was
+///   invoked through a symlink.
 ///
 /// A field the platform cannot supply is left empty, which makes the record
 /// unusable to the trust check — deliberately: an unverifiable proxy must fail
@@ -129,8 +130,21 @@ fn state_for_child(child_pid: u32, binary: &Path, listen_addr: &str) -> ProxySta
         pid: child_pid,
         listen_addr: listen_addr.to_string(),
         start_token: identity::start_token(child_pid).unwrap_or_default(),
-        exe_path: std::fs::canonicalize(binary).unwrap_or_else(|_| binary.to_path_buf()),
+        exe_path: binary.to_path_buf(),
     }
+}
+
+/// The path the proxy must actually be spawned from: the resolved one.
+///
+/// Spawning the canonical path rather than the one `PATH` happened to yield is
+/// what keeps `argv[0]` and the recorded executable the same string. That
+/// matters because `aa-proxy` marks itself non-dumpable at startup (AAASM-3584),
+/// after which the kernel will not name its image to `aasm run` and `argv[0]` is
+/// the only image fact left (see [`super::identity`]). Resolving here also means
+/// the record names the file that was executed rather than a symlink that could
+/// be repointed afterwards.
+fn canonical_binary(binary: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&binary).unwrap_or(binary)
 }
 
 pub fn dispatch(args: StartArgs) -> ExitCode {
@@ -142,6 +156,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
+    let binary = canonical_binary(binary);
 
     let mut cmd = std::process::Command::new(&binary);
     for (key, value) in proxy_child_env(&args.listen, args.gateway.as_deref()) {
@@ -311,6 +326,35 @@ mod tests {
         assert!(!env.iter().any(|(k, _)| *k == "AA_PROXY_LLM_ONLY"));
         // The listen address is always exported.
         assert!(env.contains(&("AA_PROXY_ADDR", "127.0.0.1:8899".to_string())));
+    }
+
+    /// The record's executable field and the child's `argv[0]` have to be the
+    /// same string, because on Linux `argv[0]` is the only image fact the kernel
+    /// still publishes once the proxy has hardened itself (AAASM-5323). They are
+    /// the same string only if what gets spawned is already resolved, so a
+    /// symlinked install must be followed here rather than at record time.
+    #[test]
+    fn the_spawned_path_is_resolved_not_the_symlink_it_was_found_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("aa-proxy");
+        std::fs::write(&real, "not really a binary").unwrap();
+        let link = tmp.path().join("aa-proxy-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert_eq!(
+            canonical_binary(link),
+            std::fs::canonicalize(&real).unwrap(),
+            "a proxy found through a symlink must be spawned from the file the link resolves to"
+        );
+    }
+
+    /// Whatever path the caller spawned is what the record must name — the
+    /// resolution happens before the spawn, not after it, so the two cannot
+    /// disagree.
+    #[test]
+    fn the_record_names_the_path_that_was_spawned() {
+        let state = state_for_child(std::process::id(), Path::new("/opt/aa/aa-proxy"), "127.0.0.1:8899");
+        assert_eq!(state.exe_path, PathBuf::from("/opt/aa/aa-proxy"));
     }
 
     #[test]

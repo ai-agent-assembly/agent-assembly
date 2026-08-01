@@ -47,6 +47,7 @@ fn test_agent(id_byte: u8, status: AgentStatus) -> AgentRecord {
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }

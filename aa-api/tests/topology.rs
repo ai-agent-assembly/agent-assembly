@@ -41,6 +41,7 @@ fn make_agent(id_byte: u8, name: &str, depth: u32, team_id: Option<&str>, parent
         children: Vec::new(),
         parent_key: parent_id,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }

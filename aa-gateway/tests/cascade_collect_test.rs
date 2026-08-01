@@ -80,6 +80,7 @@ fn register_agent(registry: &AgentRegistry, agent_id: AgentId, org_id: Option<&s
             children: Vec::new(),
             parent_key: None,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         })
         .unwrap();

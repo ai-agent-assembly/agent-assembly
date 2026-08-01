@@ -73,8 +73,17 @@ pub enum ProxyTrustError {
     MalformedRecord { path: PathBuf },
     /// The recorded PID is not a process this user can signal.
     ProxyNotRunning { pid: u32 },
-    /// The platform cannot supply the identity evidence the check needs.
-    IdentityUnavailable { pid: u32 },
+    /// This host has no way to identify a running process at all.
+    IdentityUnsupportedPlatform { pid: u32 },
+    /// This host can identify processes, but not *this* one: it has exited and
+    /// is awaiting reaping, or its `/proc` entry could not be read. Carries
+    /// which fact was missing and why, because "the platform cannot do it" and
+    /// "this process is gone" are different problems with different fixes.
+    IdentityUnreadable {
+        pid: u32,
+        fact: &'static str,
+        reason: &'static str,
+    },
     /// The PID is live but is not the process that was recorded.
     IdentityMismatch { pid: u32, field: &'static str },
     /// The record names something other than the proxy binary.
@@ -109,11 +118,16 @@ impl fmt::Display for ProxyTrustError {
                 f,
                 "the recorded proxy (PID {pid}) is not running. Re-run `aasm proxy start`"
             ),
-            Self::IdentityUnavailable { pid } => write!(
+            Self::IdentityUnsupportedPlatform { pid } => write!(
                 f,
-                "this platform ({}) cannot report the identity of PID {pid}, so the recorded proxy \
-                 cannot be verified",
+                "this platform ({}) cannot report the identity of any process, so the recorded \
+                 proxy (PID {pid}) cannot be verified",
                 std::env::consts::OS
+            ),
+            Self::IdentityUnreadable { pid, fact, reason } => write!(
+                f,
+                "the {fact} of PID {pid} could not be read: {reason}. The recorded proxy cannot be \
+                 verified — re-run `aasm proxy start`"
             ),
             Self::IdentityMismatch { pid, field } => write!(
                 f,
@@ -251,16 +265,32 @@ pub fn verify_proxy_binary(exe: &std::path::Path) -> Result<(), ProxyTrustError>
 /// precisely what the start time closes: a successor cannot have started before
 /// its predecessor exited, so a matching `(pid, start time)` pair identifies one
 /// incarnation of one process.
+///
+/// The executable comparison accepts either source of image evidence (see
+/// [`identity::ImageEvidence`]) because the proxy deliberately hides its image
+/// from the kernel's authoritative answer; what it must never accept is the
+/// *absence* of evidence, which is why the two non-answers below are distinct
+/// refusals rather than a shared "unavailable" that also covers a live process.
 pub fn verify_identity(state: &ProxyState) -> Result<(), ProxyTrustError> {
     if !identity::is_alive(state.pid) {
         return Err(ProxyTrustError::ProxyNotRunning { pid: state.pid });
     }
 
-    let (Some(exe), Some(token)) = (identity::exe_path(state.pid), identity::start_token(state.pid)) else {
-        // Either the process vanished between the liveness check and here, or
-        // the platform has no implementation. Both mean "cannot verify", and
-        // cannot-verify is a refusal, never a pass.
-        return Err(ProxyTrustError::IdentityUnavailable { pid: state.pid });
+    let exe = match identity::image(state.pid) {
+        identity::ImageEvidence::Reported(path) | identity::ImageEvidence::InvokedAs(path) => path,
+        // The PID is signallable but has no image: it exited between the
+        // liveness check and here, or it is a zombie whose address space the
+        // kernel has already released. Cannot-verify is a refusal, never a pass.
+        identity::ImageEvidence::Unreadable(reason) => {
+            return Err(ProxyTrustError::IdentityUnreadable {
+                pid: state.pid,
+                fact: "executable",
+                reason,
+            })
+        }
+        identity::ImageEvidence::Unsupported => {
+            return Err(ProxyTrustError::IdentityUnsupportedPlatform { pid: state.pid })
+        }
     };
 
     if exe != state.exe_path {
@@ -269,6 +299,14 @@ pub fn verify_identity(state: &ProxyState) -> Result<(), ProxyTrustError> {
             field: "executable",
         });
     }
+
+    let Some(token) = identity::start_token(state.pid) else {
+        return Err(ProxyTrustError::IdentityUnreadable {
+            pid: state.pid,
+            fact: "start time",
+            reason: "its /proc entry could not be read",
+        });
+    };
     if token != state.start_token {
         return Err(ProxyTrustError::IdentityMismatch {
             pid: state.pid,
@@ -360,7 +398,7 @@ mod tests {
             pid,
             listen_addr: "127.0.0.1:8899".into(),
             start_token: identity::start_token(pid).expect("own start token"),
-            exe_path: identity::exe_path(pid).expect("own exe path"),
+            exe_path: identity::image(pid).path().expect("own exe path").to_path_buf(),
         }
     }
 
@@ -527,10 +565,114 @@ mod tests {
         assert!(
             matches!(
                 err,
-                ProxyTrustError::ProxyNotRunning { .. } | ProxyTrustError::IdentityUnavailable { .. }
+                ProxyTrustError::ProxyNotRunning { .. } | ProxyTrustError::IdentityUnreadable { .. }
             ),
             "expected the record to be refused as not-running, got {err:?}"
         );
+    }
+
+    /// AAASM-5323 regression. `aa-proxy` hides its image from same-uid
+    /// inspection (`prctl(PR_SET_DUMPABLE, 0)`, AAASM-3584), which makes the
+    /// kernel refuse `/proc/<pid>/exe` even to the user who started it. The
+    /// first cut of this check read only that link and refused every genuine
+    /// proxy on Linux — `aasm run` could not launch at all. A truthful record
+    /// about such a process must be accepted.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_truthful_record_about_a_process_that_hides_itself_is_accepted() {
+        let child = hidden_child();
+        let state = ProxyState {
+            pid: child.pid,
+            listen_addr: "127.0.0.1:8899".into(),
+            start_token: identity::start_token(child.pid).expect("the child's start time must read"),
+            exe_path: identity::image(child.pid)
+                .path()
+                .expect("a live process that hid itself must still be identifiable")
+                .to_path_buf(),
+        };
+        verify_identity(&state).expect("a truthful record about a live hardened proxy must be accepted");
+    }
+
+    /// The evidence that survives hardening must not also let a *gone* process
+    /// through. A zombie still answers `kill(pid, 0)` and still has a readable
+    /// start time, so it is refused only if the image evidence refuses it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_is_refused() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn `true`");
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            if stat.rfind(')').and_then(|i| stat.as_bytes().get(i + 2)) == Some(&b'Z') {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let mut state = truthful_state_for_self();
+        state.pid = pid;
+        // Both reads happen before the child is reaped: the case is only
+        // meaningful while the PID is still signallable, which is exactly what
+        // makes a zombie able to fool a liveness-only check.
+        let signallable = identity::is_alive(pid);
+        let outcome = verify_identity(&state);
+        child.wait().expect("reap `true`");
+
+        assert!(
+            signallable,
+            "a zombie must still answer kill(pid, 0), or this proves nothing"
+        );
+        let err = outcome.expect_err("an exited-but-unreaped process must be refused");
+        assert!(
+            matches!(err, ProxyTrustError::IdentityUnreadable { .. }),
+            "expected IdentityUnreadable for a zombie, got {err:?}"
+        );
+    }
+
+    /// A child of this process carrying the same hardening `aa-proxy` applies to
+    /// itself. `fork` rather than `Command`, because `execve` clears the
+    /// dumpable flag — only a process that sets it after its last exec is
+    /// hidden, which is the shape the proxy has.
+    #[cfg(target_os = "linux")]
+    fn hidden_child() -> HiddenChild {
+        // Safety: the child path calls only `prctl`, `pause` and `_exit`, all
+        // async-signal-safe; it never returns into test code.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed: {}", std::io::Error::last_os_error());
+        if pid == 0 {
+            unsafe {
+                libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        let child = HiddenChild { pid: pid as u32 };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            match std::fs::read_link(format!("/proc/{}/exe", child.pid)) {
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return child,
+                _ => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        panic!("pid {} never became non-dumpable", child.pid);
+    }
+
+    #[cfg(target_os = "linux")]
+    struct HiddenChild {
+        pid: u32,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for HiddenChild {
+        fn drop(&mut self) {
+            // Safety: both calls take the PID by value; the child is ours to reap.
+            unsafe {
+                libc::kill(self.pid as libc::pid_t, libc::SIGKILL);
+                libc::waitpid(self.pid as libc::pid_t, std::ptr::null_mut(), 0);
+            }
+        }
     }
 
     /// PID reuse, executable-visible case: the number is live but is running

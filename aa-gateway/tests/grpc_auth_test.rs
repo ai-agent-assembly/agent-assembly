@@ -69,6 +69,7 @@ fn agent_record(agent_id: [u8; 16], token: &str, team: Option<&str>) -> AgentRec
         children: vec![],
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
     }
 }
 

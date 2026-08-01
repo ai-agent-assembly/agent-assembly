@@ -93,6 +93,7 @@ fn agent_with_tenant(id_byte: u8, team: Option<&str>, org: Option<&str>) -> Agen
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: org.map(str::to_string),
     }
 }
