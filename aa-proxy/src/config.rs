@@ -186,6 +186,135 @@ impl ProxyConfig {
     }
 }
 
+/// A protection a proxy listener must have before it may face anything other
+/// than loopback, and whether `aa-proxy` can supply it today.
+///
+/// `available` is a compile-time constant rather than a config knob because it
+/// describes what this crate *implements*, not what an operator asked for — an
+/// operator cannot switch on a handshake that does not exist. Whoever
+/// implements one flips its constant and [`check_bind_addr`] relaxes on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteProtection {
+    /// Named verbatim in the refusal, so the operator is told which specific
+    /// protection is absent rather than that "something" is.
+    pub name: &'static str,
+    /// Whether `aa-proxy` implements it. See [`REMOTE_PROTECTIONS`].
+    pub available: bool,
+}
+
+/// What a network-reachable `aa-proxy` would need, and what it has.
+///
+/// Both are `false`, and that is a statement about the current code rather than
+/// a placeholder:
+///
+/// * **Listener TLS** — [`crate::proxy::ProxyServer::run`] binds a bare
+///   [`tokio::net::TcpListener`] and speaks plain HTTP `CONNECT` on it. The
+///   `rustls` server configs in that module are the per-host MitM certificates
+///   presented *inside* an established tunnel; none of them protects the
+///   listener itself. Off-host traffic to it, including the `CONNECT` line and
+///   any plain-HTTP body, crosses the network in the clear.
+/// * **Client authentication** — nothing in the crate reads
+///   `Proxy-Authorization` or answers `407`. Every connection that completes a
+///   TCP handshake is served, so with a non-loopback bind the set of authorised
+///   clients is exactly the set of hosts that can route to the port.
+///
+/// That second point is why reachability must never be read as trust here.
+/// `aa-proxy` is a credential-disclosure surface on both sides of the tunnel:
+/// it terminates client TLS with leaves issued from a CA whose root is
+/// installed in this machine's trust store (`crate::tls::CaStore`), so it can
+/// read every intercepted request; and it injects the operator's provider keys
+/// into forwarded requests (`crate::credentials::CredentialStore`), so it will
+/// spend those keys on behalf of whoever connects. An unauthenticated listener
+/// on a routable address hands both of those to the network.
+pub const REMOTE_PROTECTIONS: [RemoteProtection; 2] = [
+    RemoteProtection {
+        name: "TLS on the proxy listener",
+        available: false,
+    },
+    RemoteProtection {
+        name: "client authentication and authorization",
+        available: false,
+    },
+];
+
+/// The protections from [`REMOTE_PROTECTIONS`] that `aa-proxy` cannot supply.
+///
+/// Empty means a non-loopback listener could be protected; today it never is.
+pub fn missing_remote_protections() -> Vec<&'static str> {
+    REMOTE_PROTECTIONS
+        .iter()
+        .filter(|p| !p.available)
+        .map(|p| p.name)
+        .collect()
+}
+
+/// Why a requested proxy listen address was refused.
+///
+/// Both variants are refusals — they differ only in what the operator has to be
+/// told, because "you did not ask for this" and "you asked, and it cannot be
+/// done safely" are different problems with different next steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BindRefusal {
+    /// A non-loopback address, with no explicit opt-in.
+    RemoteNotRequested(SocketAddr),
+    /// The opt-in was given, but [`REMOTE_PROTECTIONS`] are missing.
+    Unprotected {
+        addr: SocketAddr,
+        missing: Vec<&'static str>,
+    },
+}
+
+impl std::fmt::Display for BindRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RemoteNotRequested(addr) => write!(
+                f,
+                "refusing to listen on {addr}: it is not a loopback address, so the proxy would \
+                 accept connections from other hosts. aa-proxy reads intercepted traffic under a \
+                 CA this machine trusts and injects the operator's provider credentials into \
+                 forwarded requests, so anything that can reach the listener can do both. Listen \
+                 on a loopback address (for example 127.0.0.1:{}), or pass --allow-remote-clients \
+                 to state the intent explicitly.",
+                addr.port(),
+            ),
+            Self::Unprotected { addr, missing } => write!(
+                f,
+                "refusing to listen on {addr}: --allow-remote-clients was given, but a proxy \
+                 reachable from other hosts also requires protection aa-proxy does not implement: \
+                 {}. Being reachable is not being trusted — without those, every host that can \
+                 route to {addr} is an authorized client of an interception endpoint that holds \
+                 CA material and provider credentials. Listen on a loopback address instead.",
+                missing.join(", "),
+            ),
+        }
+    }
+}
+
+/// Whether the proxy may listen on `addr`.
+///
+/// Loopback is always allowed and is the default. Anything else is refused
+/// unless the operator opted in **and** every [`REMOTE_PROTECTIONS`] entry is
+/// available — which is why the opt-in currently refuses too. A flag whose
+/// preconditions cannot be met is honest; a flag that exposes an
+/// unauthenticated interception endpoint is not.
+///
+/// The loopback test is the same one `aasm run` applies before it will route a
+/// governed tool at a recorded proxy endpoint, so the two commands cannot
+/// disagree about which endpoints are usable (AAASM-5348).
+pub fn check_bind_addr(addr: SocketAddr, allow_remote_clients: bool) -> Result<(), BindRefusal> {
+    if addr.ip().is_loopback() {
+        return Ok(());
+    }
+    if !allow_remote_clients {
+        return Err(BindRefusal::RemoteNotRequested(addr));
+    }
+    let missing = missing_remote_protections();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(BindRefusal::Unprotected { addr, missing })
+}
+
 /// Directory, under the Agent Assembly state root, holding one MitM host list
 /// per installed developer integration.
 const MITM_HOSTS_DIR: &str = "mitm-hosts.d";
