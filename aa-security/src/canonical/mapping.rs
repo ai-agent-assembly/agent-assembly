@@ -191,6 +191,7 @@ impl CanonicalCategory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::{CanonicalFinding, ConfidenceBand, DetectionMethod, FindingStatus, Severity};
 
     /// Every `CredentialKind`, including the `Custom` variant that
     /// [`CredentialKind::ALL`] deliberately excludes.
@@ -344,5 +345,110 @@ mod tests {
             .map(|(k, c)| ((*k).to_string(), (*c).to_string()))
             .collect();
         assert_eq!(rendered, expected);
+    }
+
+    /// Severity, confidence, method and status for all 28 kinds, pinned.
+    ///
+    /// These four fields had no coverage at all. Every one of these mutations
+    /// passed the entire suite: severity forced to `Low`, `GenericHighEntropy`'s
+    /// method changed to `Nlp`, its confidence raised to `High` (which also
+    /// flips `status` to `Confirmed`). They are exactly the fields B-9 will put
+    /// into events and that operators will read in a false-positive report, so
+    /// an unnoticed change to them is a silent change to what those reports say.
+    ///
+    /// `status` is included because it is derived from confidence rather than
+    /// stored, so a change to the confidence table moves it without any line of
+    /// the status code being touched.
+    #[test]
+    fn every_kind_has_its_pinned_severity_confidence_method_and_status() {
+        const EXPECTED: &[(&str, &str, &str, &str, &str)] = &[
+            ("AnthropicKey", "critical", "high", "deterministic", "confirmed"),
+            ("AwsAccessKey", "critical", "high", "deterministic", "confirmed"),
+            ("GcpServiceAccount", "critical", "high", "deterministic", "confirmed"),
+            ("OpenAiKey", "critical", "high", "deterministic", "confirmed"),
+            (
+                "AzureConnectionString",
+                "critical",
+                "high",
+                "deterministic",
+                "confirmed",
+            ),
+            ("GitHubAppToken", "critical", "high", "deterministic", "confirmed"),
+            ("GitHubOAuthToken", "critical", "high", "deterministic", "confirmed"),
+            ("GitHubPat", "critical", "high", "deterministic", "confirmed"),
+            ("GitHubRefreshToken", "critical", "high", "deterministic", "confirmed"),
+            ("GitHubUserToken", "critical", "high", "deterministic", "confirmed"),
+            ("SlackAppToken", "critical", "high", "deterministic", "confirmed"),
+            ("SlackBotToken", "critical", "high", "deterministic", "confirmed"),
+            ("SlackOAuthToken", "critical", "high", "deterministic", "confirmed"),
+            ("SlackRefreshToken", "critical", "high", "deterministic", "confirmed"),
+            ("SlackUserToken", "critical", "high", "deterministic", "confirmed"),
+            ("MongodbUrl", "high", "high", "deterministic", "confirmed"),
+            ("MysqlUrl", "high", "high", "deterministic", "confirmed"),
+            ("PostgresUrl", "high", "high", "deterministic", "confirmed"),
+            ("EcPrivateKey", "critical", "high", "deterministic", "confirmed"),
+            ("OpensshPrivateKey", "critical", "high", "deterministic", "confirmed"),
+            ("PgpPrivateKey", "critical", "high", "deterministic", "confirmed"),
+            ("PrivateKey", "critical", "high", "deterministic", "confirmed"),
+            ("RsaPrivateKey", "critical", "high", "deterministic", "confirmed"),
+            ("CreditCardLuhn", "critical", "medium", "deterministic", "suspected"),
+            ("EmailAddress", "medium", "medium", "heuristic", "suspected"),
+            ("SsnPattern", "critical", "medium", "deterministic", "suspected"),
+            ("GenericHighEntropy", "low", "low", "heuristic", "suspected"),
+            ("Custom", "high", "high", "policy_defined", "confirmed"),
+        ];
+
+        let actual: Vec<(String, String, String, String, String)> = every_kind()
+            .map(|k| {
+                let confidence = ConfidenceBand::for_credential_kind(&k);
+                let status = match confidence {
+                    ConfidenceBand::High => FindingStatus::Confirmed,
+                    _ => FindingStatus::Suspected,
+                };
+                (
+                    k.as_str().to_string(),
+                    Severity::for_credential_kind(&k).as_str().to_string(),
+                    confidence.as_str().to_string(),
+                    DetectionMethod::for_credential_kind(&k).as_str().to_string(),
+                    status.as_str().to_string(),
+                )
+            })
+            .collect();
+        let expected: Vec<(String, String, String, String, String)> = EXPECTED
+            .iter()
+            .map(|(k, s, c, m, st)| {
+                (
+                    (*k).to_string(),
+                    (*s).to_string(),
+                    (*c).to_string(),
+                    (*m).to_string(),
+                    (*st).to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    /// The status a lifted finding actually carries must match the table above.
+    ///
+    /// The table derives status from confidence the same way the lift does, so
+    /// on its own it would pass even if the lift stopped agreeing with it. This
+    /// closes that by reading the status off a real `CanonicalFinding`.
+    #[test]
+    fn the_lifted_status_agrees_with_the_confidence_band() {
+        let scanner = crate::CredentialScanner::new();
+        let cases = [
+            (
+                "token ghp_16C7e42F292c6912E7710c838347Ae178B4a",
+                FindingStatus::Confirmed,
+            ),
+            ("contact alice.smith@example.com now", FindingStatus::Suspected),
+            ("employee record 123-45-6789 filed", FindingStatus::Suspected),
+        ];
+        for (text, expected) in cases {
+            let result = scanner.scan(text);
+            let finding = CanonicalFinding::try_from(&result.findings[0]).expect("well-formed span");
+            assert_eq!(finding.status, expected, "status wrong for {text:?}");
+        }
     }
 }
