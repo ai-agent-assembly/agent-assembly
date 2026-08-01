@@ -15,6 +15,138 @@ Unrecognised keys are **warnings**, not errors — the file still validates, but
 the unknown key is ignored at runtime, so a typo'd field silently does nothing.
 Treat warnings as bugs.
 
+## Where a governed launch finds this file
+
+A valid policy that nothing loads governs nothing. `aasm run` resolves exactly
+**one** effective policy document before it launches a tool, and **refuses the
+launch when it cannot** — an absent policy is not permission. "Nobody has said
+what this agent may do" is a different fact from "this agent may do anything",
+and only the second one is a decision an operator made
+(`aa-cli/src/commands/run_policy.rs`).
+
+This is the resolution `aasm run` performs for itself. It is **not** satisfied
+by [`aasm policy apply`](cli/policy.md#aasm-policy-apply), which uploads a
+document to the gateway's version history and writes nothing to the locations
+below — a policy can be live on the gateway and still leave `aasm run`
+unconfigured.
+
+### Resolution order
+
+The same order [`aasm gateway start`](cli/gateway.md) uses, so the two commands
+agree about where your policy lives. The first location that **exists** is the
+one used; a later location is never consulted to repair an earlier one.
+
+| Order | Source | Notes |
+|---|---|---|
+| 1 | `--policy <FILE>` | When given, this is the *entire* search. Naming a file that does not exist is an operator error worth reporting, not a cue to fall back to an ambient policy you did not ask for. |
+| 2 | `$AA_POLICY` | Skipped when unset or empty. |
+| 3 | `~/.aasm/policy.yaml` | The usual place to install a personal policy. |
+| 4 | `~/.aasm/policies/` | Directory — see below. |
+| 5 | `/etc/aasm/policy.yaml` | Host-wide. |
+| 6 | `/etc/aasm/policies/` | Directory — see below. |
+
+**A directory does not resolve for `aasm run`.** The two directory entries are
+the gateway's [multi-document cascade](operations/policy-cascade-loader.md).
+`aasm run` renders one tool's managed settings and has no cascade merger, so it
+reports the directory as a load failure rather than picking a file out of it and
+calling that the effective policy. If you drive the gateway from a cascade, pass
+`--policy <FILE>` to `aasm run`.
+
+### The four states
+
+Every resolution lands in exactly one of these. Two of them refuse.
+
+| State | When | Launch |
+|---|---|---|
+| `enforced` | A document loaded and carries at least one tool rule. | Proceeds. |
+| `permissive` | The document is an explicit allow-all artifact (below) — it restricts nothing at all. | Proceeds, and says so loudly. |
+| `unconfigured` | Nothing was found at any searched location, **or** a document parsed cleanly but declares no tool rule. | **Refused.** |
+| `load_failed` | An artifact was selected but could not be turned into a policy: unreadable, invalid YAML, failed validation, or a directory. | **Refused.** |
+
+`unconfigured` and `load_failed` are kept apart on purpose. An operator whose
+YAML has a typo has already made a decision about governance and needs to be
+sent to *their file*; an operator with no policy at all needs to be sent to the
+concept. Collapsing them would also make a corrupted policy indistinguishable
+from an absent one in the audit trail.
+
+Note that a document with a `budget:` or `network:` section but no `tools:`
+entry is `unconfigured`, not partially enforced: only the `tools:` dimension
+crosses into a dev-tool launch, because an adapter writes tool permissions into
+the tool's own settings file and has nowhere to put a spend cap or an egress
+allowlist. Those are enforced by the gateway and the proxy instead.
+
+### The refusal, and what to do about it
+
+Refusal happens *before* the tool is started and before the session is
+registered — a tool already running under no policy cannot be retroactively
+governed. It is not waived by `--observe` or `--enforcement-mode`: those choose
+what happens to a decision, and there is no policy here to decide anything from.
+
+```text
+$ aasm run claude
+policy=unconfigured — no policy artifact found; a governed launch is refused
+error: refusing to launch ungoverned: no effective policy is configured, so this
+session would run under no rules at all. An absent policy is not permission.
+
+Searched, in order: $AA_POLICY, ~/.aasm/policy.yaml, ~/.aasm/policies/,
+/etc/aasm/policy.yaml, /etc/aasm/policies/
+
+Supply a policy, then re-run:
+  aasm run --policy <FILE> <tool>
+  AA_POLICY=<FILE> aasm run <tool>
+  install one at ~/.aasm/policy.yaml (or /etc/aasm/policy.yaml)
+Check it first with: aasm policy validate <FILE>
+```
+
+The `load_failed` refusal names the file and the reason instead, and points at
+`aasm policy validate <that file>` — because a broken artifact was *selected* as
+this session's policy, and guessing what it meant is not safe.
+
+### Deliberately unrestricted: the allow-all artifact
+
+Permissive execution is still available. It just has to be **said**:
+
+```yaml
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: allow-all
+spec:
+  tools:
+    "*":
+      allow: true
+```
+
+That is the whole shape of it — a wildcard tool rule, allowed, restricting
+nothing on any other dimension. There is no `permissive: true` switch, and its
+absence is the point: a switch is easy to set without reading what it turns off,
+whereas writing the wildcard out is the smallest thing that is unambiguously
+deliberate. It also validates through the same validator as every other policy
+rather than through a bypass.
+
+The `permissive` classification is conservative. A wildcard-allow `tools:`
+section alongside a `network:` allowlist, a `budget:`, a `schedule:`, a
+`capabilities:` block, or sensitive-data patterns is `enforced`, not
+`permissive` — something is still being enforced, and labelling that permissive
+would understate the governance in place.
+
+### Reading the state from outside
+
+The resolved state is surfaced three ways, using the same stable tokens
+(`enforced` / `permissive` / `unconfigured` / `load_failed`):
+
+- **A banner on `stderr`**, ahead of any tool output —
+  `policy=enforced — 3 rule(s) from /Users/you/.aasm/policy.yaml`.
+- **The `--dry-run` receipt**, which prints a `--- policy ---` section with
+  `state`, `source` and `detail` for all four states — including the two that
+  refuse. A preview exists to tell you what a live run would do, so it *warns*
+  and completes rather than refusing — the warning that a live run with these
+  flags would refuse to launch is the answer you ran the preview for.
+- **`AA_POLICY_STATE` and `AA_POLICY_SOURCE`** in the launched tool's
+  environment, so an SDK inside the tool or a log scraper can tell an enforced
+  session from a deliberately permissive one without re-deriving it.
+  `AA_POLICY_SOURCE` is absent when no artifact was found.
+
 ## Document formats
 
 A policy may be written in either of two equivalent shapes.
