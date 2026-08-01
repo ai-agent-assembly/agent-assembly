@@ -29,7 +29,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { routeScrubApi } from './_fixtures/scrub-routes'
+import { AWS_KEY_ALERTS, routeScrubApi } from './_fixtures/scrub-routes'
 
 const EVIDENCE_DIR = resolve(process.cwd(), 'verify/5112')
 const THEME_KEY = 'aa-dashboard-theme'
@@ -283,10 +283,26 @@ test.describe('AAASM-5112 review — the Scrub surface stops fabricating a DLP p
         expect(detailText).not.toContain(phantom)
       }
 
-      // ── every 24h cell is an absence, never a fixture integer ────────────
+      // ── the alerts column is the served tally, never a local constant ────
+      // AAASM-5156 required every cell here to be an absence because nothing in
+      // the product aggregated by credential kind. /scrub/pattern-counts does,
+      // and AAASM-5347 wires it, so a blanket "always an absence" would now be
+      // the page refusing to report a real measurement — the defect this ticket
+      // exists to remove.
+      //
+      // What survives is the part that was ever load-bearing: where the number
+      // comes from. `AWS_KEY_ALERTS` appears in no detector table, design mock
+      // or other fixture, so a cell showing it can only have been served. A kind
+      // the populated tally omits shows `0` because the handler emits a row only
+      // for kinds that fired — that zero is measured, not defaulted. The case
+      // where the tally is *absent* is covered by its own test below, which is
+      // where "never a fabricated 0" is now enforced.
       const hits = page.getByTestId('scrub-patterns-hits-AwsAccessKey')
-      await expect(hits).toHaveAttribute('data-truth-state', 'not-supported')
-      await expect(hits.locator('.truth-absent__glyph')).toHaveText('—')
+      await expect(hits).toHaveAttribute('data-truth-state', 'known')
+      await expect(hits).toHaveText(String(AWS_KEY_ALERTS))
+      const quiet = page.getByTestId('scrub-patterns-hits-RsaPrivateKey')
+      await expect(quiet).toHaveAttribute('data-truth-state', 'known')
+      await expect(quiet).toHaveText('0')
 
       // ── 7. no toggle, and the dead actions are disabled ──────────────────
       await expect(catalogue.locator('input[type="checkbox"]')).toHaveCount(0)
