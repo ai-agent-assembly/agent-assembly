@@ -28,8 +28,15 @@ pub struct StartArgs {
     /// File to redirect proxy stdout/stderr to (background mode only).
     #[arg(long)]
     pub log_file: Option<PathBuf>,
-    /// State that a non-loopback `--listen` address is intended. Still refused
-    /// until the proxy can protect such a listener — see `checked_listen`.
+    // The doc comment is the `--help` text clap shows, so it is written for the
+    // operator reading it; the reasoning behind the refusal lives on
+    // `checked_listen`.
+    /// State that a non-loopback `--listen` address is intended
+    ///
+    /// Intent is not authorization. A proxy reachable from other hosts also
+    /// needs TLS on its listener and client authentication, neither of which
+    /// aa-proxy implements — so this option currently changes only which
+    /// refusal you get, and never permits the bind.
     #[arg(long)]
     pub allow_remote_clients: bool,
 }
