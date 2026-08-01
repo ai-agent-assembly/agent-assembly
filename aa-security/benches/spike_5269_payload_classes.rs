@@ -105,9 +105,10 @@ fn payload_classes() -> Vec<(&'static str, String)> {
             "mixed_zh_tw_32kb_clean",
             build_payload(BENIGN_BLOCK_ZH_TW, 32 * 1024, 0),
         ),
-        // High finding density: 500 credentials in ~32 KB. Bounds the cost of the
-        // sort + overlap-coalescing tail of `scan`, which is superlinear in
-        // finding count rather than in input length.
+        // High finding density: 500 credentials appended to ~32 KB of filler,
+        // giving a ~59 KB payload. Bounds the cost of the sort +
+        // overlap-coalescing tail of `scan`, which grows with finding count on
+        // top of the byte-linear base cost.
         ("high_density_500_findings", build_payload(BENIGN_BLOCK, 32 * 1024, 500)),
     ]
 }
@@ -134,10 +135,14 @@ fn bench_scan_and_redact(c: &mut Criterion) {
     let scanner = CredentialScanner::new();
     let mut group = c.benchmark_group("spike5269_scan_redact");
 
+    let scanner_for_probe = CredentialScanner::new();
     for (label, payload) in payload_classes() {
-        // Redaction is a no-op cost on clean payloads; skip them to keep the
-        // comparison to cases where redaction actually does work.
-        if label.ends_with("_clean") {
+        // Skip only payloads that genuinely produce no findings, since redaction
+        // is a no-op there. Filtering on the `_clean` label instead would drop
+        // `mixed_zh_tw_32kb_clean`, which is named "clean" because it contains no
+        // planted secret yet still yields 87 findings (§4.1) — precisely the case
+        // this benchmark exists to measure.
+        if scanner_for_probe.scan(&payload).findings.is_empty() {
             continue;
         }
         group.throughput(Throughput::Bytes(payload.len() as u64));
