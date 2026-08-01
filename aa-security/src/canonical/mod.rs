@@ -86,6 +86,7 @@
 
 mod category;
 mod finding;
+mod mapping;
 
 pub use category::{CanonicalCategory, CategoryBase, CategoryQualifier};
 pub use finding::{ByteSpan, CanonicalFinding, ConfidenceBand, DetectionMethod, FindingStatus, Provenance, Severity};
