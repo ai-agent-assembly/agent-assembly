@@ -2583,6 +2583,26 @@ mod tests {
         assert!(!result.redact(&text).contains(secret));
     }
 
+    /// Detection-strength guard for the base64-run pass. Deliberately shaped as
+    /// compact JSON with no whitespace and a run past 64 chars, so the
+    /// whitespace-token pass cannot reach it — this asserts pass 3 specifically.
+    #[test]
+    fn ascii_base64_secret_is_still_detected() {
+        let scanner = CredentialScanner::new();
+        let secret = "aGVsbG9Xb3JsZFRoaXNJc0FWZXJ5TG9uZ0Jhc2U2NFNlY3JldFRva2VuQmV5b25kU2l4dHlGb3VyQ2hhcnM5OQ";
+        let text = format!("{{\"api_token\":\"{secret}\"}}");
+        let result = scanner.scan(&text);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "ASCII base64 secret must still be flagged: {:?}",
+            result.findings
+        );
+        assert!(!result.redact(&text).contains(secret));
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
