@@ -2,7 +2,7 @@
 
 **Ticket**: [AAASM-5269](https://lightning-dust-mite.atlassian.net/browse/AAASM-5269)
 **Epic**: [AAASM-5270](https://lightning-dust-mite.atlassian.net/browse/AAASM-5270)
-**Proposed ADR**: [ADR 0032](../adr/0032-local-first-sensitive-data-provider-architecture.md) (status `Proposed`)
+**ADR**: [ADR 0032](../adr/0032-local-first-sensitive-data-provider-architecture.md) (status **`Accepted`**, 2026-08-01)
 **Surveyed against**: `main` @ `77bd2bf9`
 **Date**: 2026-08
 
@@ -1183,7 +1183,7 @@ measured result, and is labelled as such.
 | [AAASM-5269](https://lightning-dust-mite.atlassian.net/browse/AAASM-5269) | this Spike |
 | [AAASM-5270](https://lightning-dust-mite.atlassian.net/browse/AAASM-5270) | parent Epic |
 | [AAASM-5174](https://lightning-dust-mite.atlassian.net/browse/AAASM-5174) | dispositioned in §2.7 — remains valid, split |
-| [ADR 0032](../adr/0032-local-first-sensitive-data-provider-architecture.md) | the proposed decision |
+| [ADR 0032](../adr/0032-local-first-sensitive-data-provider-architecture.md) | the accepted decision |
 | [ADR 0015](../adr/0015-dlp-trust-boundary-and-redaction-semantics.md) | parent decision; invariants preserved |
 | [ADR 0018](../adr/0018-canonical-runtime-verdict-and-enriched-decision-record.md) | owns the verdict vocabulary; see §6.3 / D-2 |
 | [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) | constrains provider form; see §5.4 |
