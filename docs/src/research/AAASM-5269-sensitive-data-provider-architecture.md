@@ -1044,9 +1044,9 @@ product review.
 | `B-15` | ✨ (aa-*): Gitleaks adapter with mandatory `--redact=100` | `B-13` |
 | `B-16` | ✨ (dashboard): Sensitive-data analytics views | `B-12` |
 
-`B-13`–`B-15` are the out-of-process work that D-1 recommends deferring, so they
-are gated on the follow-up ADR as well as on ADR 0032. Listing them here is a
-proposal of shape, not an authorisation to start them.
+`B-13`–`B-15` are the out-of-process work that **D-1 has now deferred out of
+v1** (resolved 2026-08-01). They are recorded as post-v1 scope only, gated on a
+future provider ADR, and must not be started during the v1 programme.
 
 ```
 B-1  (independent — correctness, ship now)
@@ -1068,7 +1068,23 @@ cannot start on ADR 0032 alone.
 
 ---
 
-## 10. Decisions required from Bryant
+## 10. Decisions required from Bryant — ALL RESOLVED 2026-08-01
+
+> **Resolved.** All three were answered on 2026-08-01 (AAASM-5343) and are now
+> recorded in [ADR 0032 §10](../adr/0032-local-first-sensitive-data-provider-architecture.md),
+> which is **Accepted**. The recommendations below were adopted in full:
+>
+> - **D-1 → NO.** Out-of-process providers are not in v1. `B-13`/`B-14`/`B-15`
+>   are deferred post-v1 and must not be started.
+> - **D-2 → keep `RuntimeVerdict` frozen**, add an additive
+>   `sensitive_data_disposition` field.
+> - **D-3 → fix the `zh-TW` defect in `agent-assembly v0.0.1-rc.7`**, ahead of
+>   the migration, with CJK conformance coverage and no weakening of ASCII
+>   secret detection.
+>
+> The original framing is kept below unchanged, because the evidence and the
+> options are what justify the answers.
+
 
 Only these three. Everything else in this report was derivable from code,
 measurement or first-party sources, and none of these blocks further research.
