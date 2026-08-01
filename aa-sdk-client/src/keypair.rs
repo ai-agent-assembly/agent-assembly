@@ -13,7 +13,7 @@
 //! This module deliberately exposes two *different* kinds of keypair, because
 //! the crate needs two things that look alike and are not:
 //!
-//! * [`AgentKeypair::generate`] / [`AgentKeypair::from_seed`] — the **durable
+//! * `AgentKeypair::generate` / `AgentKeypair::from_seed` — the **durable
 //!   agent identity key**. Its private half is real key material: randomly
 //!   generated from the OS CSPRNG, persisted once by
 //!   [`crate::identity_store`], and never reconstructible from anything public.
@@ -65,8 +65,7 @@ const ED25519_MULTICODEC_PREFIX: [u8; 2] = [0xed, 0x01];
 /// genuine, valid Ed25519 keypair that the gateway will accept.
 ///
 /// How the instance was built decides whether its private half is a secret at
-/// all — see the module docs. [`generate`](Self::generate) and
-/// [`from_seed`](Self::from_seed) produce identity keys;
+/// all — see the module docs. `generate` and `from_seed` produce identity keys;
 /// [`derive_transport_key`](Self::derive_transport_key) produces the
 /// deliberately non-secret IPC transport key.
 pub struct AgentKeypair {

@@ -20,7 +20,7 @@
 //!
 //! # The guarantees
 //!
-//! * **Random, never derived.** [`random_seed`] reads the kernel CSPRNG; no
+//! * **Random, never derived.** `random_seed` reads the kernel CSPRNG; no
 //!   part of the private half is a function of the agent id, the DID, or any
 //!   other public value.
 //! * **One durable key per agent identity.** The key is written once and read
