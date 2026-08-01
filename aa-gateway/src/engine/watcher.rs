@@ -153,79 +153,233 @@ fn is_yaml_path(path: &Path) -> bool {
 mod tests {
     use super::*;
     use arc_swap::ArcSwap;
+    use notify::event::{DataChange, ModifyKind};
     use std::{io::Write, sync::Arc, time::Duration};
     use tempfile::NamedTempFile;
 
     const ALLOW_YAML: &str = "version: \"1\"\ntools:\n  search:\n    allow: true\n";
     const DENY_YAML: &str = "version: \"1\"\ntools:\n  search:\n    allow: false\n";
 
+    /// Overall bound on observing a hot-reload, and *not* a latency assertion
+    /// (AAASM-5367).
+    ///
+    /// Filesystem notification delivery is a property of the platform backend,
+    /// not of this watcher, and the two platforms are nothing alike. On Linux
+    /// (inotify — what CI runs) this test completes in **0.014 s**. On macOS
+    /// (FSEvents) the same unchanged watcher takes a median of **0.7 s**, a p90
+    /// of **5.7 s** and a worst case of **8.7 s** over 80 measured trials, and
+    /// up to **17 s** when a second workspace build shares the machine. Any
+    /// fixed deadline short enough to be interesting is therefore a coin flip on
+    /// macOS — the old one-second sleep lost that flip on ~2 runs in 3 here.
+    ///
+    /// So this is a backstop, not a deadline: it is only reached when the
+    /// watcher has stopped storing anything at all. The trade-off it carries,
+    /// which is real and worth stating: a *broken* watcher now costs 60 s per
+    /// attempt — with `retries = 2` in `.config/nextest.toml`, ~180 s and a
+    /// `SLOW` marker before the suite reports it. That is the deliberate price
+    /// of never failing a healthy watcher, and a healthy run pays none of it
+    /// because [`wait_for_swap`] returns the moment a store lands.
+    const WATCH_LIVENESS_BOUND: Duration = Duration::from_secs(60);
+
+    /// How long to wait for one application of the stimulus before re-applying
+    /// it.
+    ///
+    /// Re-writing is the *normal* path, not an exception: 55% of 80 measured
+    /// macOS runs needed more than one round (median 2, max 18). That is the
+    /// mechanism working as intended, not a symptom — see [`wait_for_swap`] for
+    /// why one write is not enough.
+    const STIMULUS_ROUND: Duration = Duration::from_millis(500);
+
     fn parse_doc(yaml: &str) -> PolicyDocument {
         PolicyValidator::from_yaml(yaml).unwrap().document
     }
 
+    /// Drive `stimulus` until `slot` holds something other than `previous`,
+    /// returning whatever was swapped in.
+    ///
+    /// Two things make this deterministic where a fixed sleep was not. It polls
+    /// instead of sleeping a fixed interval, so it returns as soon as the
+    /// watcher has acted rather than always paying a fixed wait. And it
+    /// re-applies the stimulus each round, because on macOS a single write is
+    /// not guaranteed to yield a notification at all.
+    ///
+    /// That second point was challenged in review and re-measured properly, as
+    /// 80 interleaved trials of one-write-only against this re-applying loop on
+    /// the same machine:
+    ///
+    /// | | one write | re-applied |
+    /// |---|---|---|
+    /// | never observed | **5 / 80 (6.25%)** | **0 / 80** |
+    /// | median latency | 0.85 s | 0.69 s |
+    /// | mean latency | 1.88 s | 1.84 s |
+    ///
+    /// Re-applying is what removes the misses, and it is not slower doing it —
+    /// the two latency distributions are indistinguishable. (A short run can
+    /// easily see 8/8 clean with one write; at a 6.25% miss rate that happens
+    /// 60% of the time, which is why the sample size matters here.)
+    ///
+    /// The limit of what this proves, stated so nobody over-reads it: because
+    /// the stimulus repeats, a *lossy* watcher still passes. A mutant dropping
+    /// 49 of every 50 notifications is not caught — it merely takes ~24 s. The
+    /// test therefore proves hot-reload works, not that it works promptly, and
+    /// it cannot distinguish a healthy watcher from a badly degraded one. That
+    /// is the deliberate cost of tolerating a platform which loses ~6% of
+    /// notifications on its own; a test that failed on loss would flake.
+    ///
+    /// This does not weaken the property under test. The caller still asserts
+    /// what landed in the slot; only "how promptly the OS reported the write"
+    /// stops being part of the assertion.
+    fn wait_for_swap(
+        slot: &ArcSwap<PolicyDocument>,
+        previous: &Arc<PolicyDocument>,
+        mut stimulus: impl FnMut(),
+    ) -> Arc<PolicyDocument> {
+        let start = std::time::Instant::now();
+        while start.elapsed() < WATCH_LIVENESS_BOUND {
+            stimulus();
+            let round = std::time::Instant::now();
+            while round.elapsed() < STIMULUS_ROUND {
+                let current = slot.load_full();
+                // Compare *identity*, not value. The handler allocates a fresh
+                // Arc for every store, so this observes the store itself rather
+                // than the store's effect. A value comparison would be blind to
+                // a watcher that swaps in a document equal to the live one —
+                // the natural shape of a "reload read stale content" bug — and
+                // would then time out and blame a watcher that is in fact
+                // firing constantly. The caller checks the content.
+                if !Arc::ptr_eq(&current, previous) {
+                    return current;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        panic!(
+            "watcher stored nothing into the policy slot within \
+             {WATCH_LIVENESS_BOUND:?}, despite the policy file being rewritten \
+             every {STIMULUS_ROUND:?} — the watcher is not firing at all, or is \
+             firing but rejecting the content it reads"
+        );
+    }
+
     #[test]
-    fn hot_reload_reflects_new_policy_within_one_second() {
+    fn hot_reload_swaps_in_the_new_policy() {
         let mut tmp = NamedTempFile::new().unwrap();
         write!(tmp, "{}", ALLOW_YAML).unwrap();
         tmp.flush().unwrap();
 
-        let initial_doc = parse_doc(ALLOW_YAML);
-        let slot = Arc::new(ArcSwap::new(Arc::new(initial_doc.clone())));
+        let initial = Arc::new(parse_doc(ALLOW_YAML));
+        let slot = Arc::new(ArcSwap::new(initial.clone()));
 
         let _watcher = start_watcher(tmp.path(), slot.clone()).unwrap();
 
-        // Overwrite file with DENY policy.
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(tmp.path())
-            .unwrap();
-        write!(f, "{}", DENY_YAML).unwrap();
-        f.flush().unwrap();
-        drop(f);
+        // Overwrite the file with the DENY policy until the watcher reports it.
+        let path = tmp.path().to_path_buf();
+        let current_doc = wait_for_swap(&slot, &initial, || {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .unwrap();
+            write!(f, "{}", DENY_YAML).unwrap();
+            f.flush().unwrap();
+        });
 
-        std::thread::sleep(Duration::from_secs(1));
-
-        let loaded = slot.load();
-        let current_doc: &PolicyDocument = &loaded;
-        assert_ne!(
-            current_doc, &initial_doc,
-            "slot should have been swapped to the new policy"
-        );
+        // Assert on *what* was swapped in: a swap to the wrong document fails
+        // here immediately rather than being waited out.
         assert!(
             !current_doc.tools["search"].allow,
             "search.allow should be false after hot-reload"
         );
     }
 
+    /// A content-change `Modify` event for `path`, shaped as the notify
+    /// backends report one.
+    fn modify_event(path: &Path) -> notify::Result<notify::Event> {
+        Ok(notify::Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content))).add_path(path.to_path_buf()))
+    }
+
+    fn write_file(path: &Path, contents: &str) {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .unwrap();
+        write!(f, "{}", contents).unwrap();
+        f.flush().unwrap();
+    }
+
+    /// A truncated policy file must not clobber the live policy (AAASM-3561).
+    ///
+    /// `handle_fs_event` skips zero-byte reads because a truncate-then-write
+    /// edit fires a Modify event for the empty file first. Without that guard an
+    /// empty document parses as a Global allow-all and would replace a deny
+    /// policy for the width of the write — a fail-*open* window. The guard had
+    /// no test of its own: deleting it left every other test in this module
+    /// green. The cascade watcher's equivalent is covered by
+    /// `cascade_hot_reload_invalid_yaml_preserves_cascade`; this is the
+    /// single-file twin.
+    #[test]
+    fn truncated_file_keeps_previous_policy() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
+
+        let initial_doc = parse_doc(DENY_YAML);
+        let slot = Arc::new(ArcSwap::new(Arc::new(initial_doc.clone())));
+
+        // Whitespace-only stands in for the mid-truncation read: it is what the
+        // watcher sees between the truncate and the new bytes landing.
+        write_file(path, "   \n");
+        handle_fs_event(modify_event(path), path, &slot);
+        assert_eq!(
+            *slot.load_full(),
+            initial_doc,
+            "a truncated file must not clobber the live policy with an allow-all"
+        );
+
+        write_file(path, ALLOW_YAML);
+        handle_fs_event(modify_event(path), path, &slot);
+        assert!(
+            slot.load_full().tools["search"].allow,
+            "control: the same event over valid YAML must reach the parse step \
+             and swap, otherwise the assertion above proves nothing"
+        );
+    }
+
+    /// Drives [`handle_fs_event`] directly rather than through a real watcher
+    /// (AAASM-5367).
+    ///
+    /// This asserts a *negative* — that nothing is swapped in — so waiting a
+    /// fixed second for a notification made it pass for the wrong reason
+    /// whenever the notification simply hadn't arrived yet, which measurement
+    /// showed is the common case. Feeding the handler the event removes the
+    /// notification path from the test entirely: the ignore-invalid-content
+    /// decision is exercised on every run, deterministically and instantly.
+    ///
+    /// The valid-content half is the control that keeps the negative honest —
+    /// it proves this event actually reaches the parse step, so the first
+    /// assertion cannot pass merely because the handler discarded the event.
     #[test]
     fn invalid_yaml_keeps_previous_policy() {
-        let mut tmp = NamedTempFile::new().unwrap();
-        write!(tmp, "{}", ALLOW_YAML).unwrap();
-        tmp.flush().unwrap();
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
 
         let initial_doc = parse_doc(ALLOW_YAML);
         let slot = Arc::new(ArcSwap::new(Arc::new(initial_doc.clone())));
 
-        let _watcher = start_watcher(tmp.path(), slot.clone()).unwrap();
-
-        // Overwrite file with invalid YAML.
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(tmp.path())
-            .unwrap();
-        write!(f, "invalid: yaml: [[[").unwrap();
-        f.flush().unwrap();
-        drop(f);
-
-        std::thread::sleep(Duration::from_secs(1));
-
-        let loaded = slot.load();
-        let current_doc: &PolicyDocument = &loaded;
+        write_file(path, "invalid: yaml: [[[");
+        handle_fs_event(modify_event(path), path, &slot);
         assert_eq!(
-            current_doc, &initial_doc,
+            *slot.load_full(),
+            initial_doc,
             "slot should still hold the original policy after an invalid parse"
+        );
+
+        write_file(path, DENY_YAML);
+        handle_fs_event(modify_event(path), path, &slot);
+        assert!(
+            !slot.load_full().tools["search"].allow,
+            "control: the same event over valid YAML must reach the parse step \
+             and swap, otherwise the assertion above proves nothing"
         );
     }
 }
