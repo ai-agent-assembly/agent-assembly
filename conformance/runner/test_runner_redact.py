@@ -16,9 +16,9 @@ units coincide, so nothing caught it. These fixtures are deliberately multi-byte
 so the units cannot coincide: they fail against a code-point-slicing `_redact`
 and pass against a byte-slicing one.
 
-AAASM-5373 added the next half of the same contract: `_redact` coalesces
-overlapping findings before splicing, so a region two detectors both flag is
-replaced once rather than spliced twice.
+AAASM-5373 added the other two halves of the same contract: `_redact` coalesces
+overlapping findings before splicing, and fails closed on a span it cannot
+splice, so it now mirrors `ScanResult::redact` rather than approximating it.
 
 Most fixtures here are synthetic and defined inline rather than loaded from
 `conformance/vectors/` on purpose — the runner must be provable independently of
@@ -90,32 +90,63 @@ class RedactByteOffsetTests(unittest.TestCase):
             "一=[REDACTED:SyntheticKey]、二=[REDACTED:SyntheticToken]",
         )
 
-    def test_span_inside_a_character_is_skipped_pending_fail_closed(self) -> None:
+    def test_span_inside_a_character_fails_closed(self) -> None:
         # A span that starts mid-character cannot be spliced without producing
-        # invalid UTF-8, so the runner drops it — never mojibake, never a raise.
+        # invalid UTF-8. Skipping it would return the flagged region in the
+        # clear, so the whole value collapses to "[REDACTED]" — what
+        # ScanResult::redact does (aa-security/src/scanner.rs:454-458, "never
+        # return the raw text with a secret intact") and what ADR 0015 requires.
         #
-        # This pins CURRENT HARNESS BEHAVIOUR, NOT DESIRED BEHAVIOUR. The Rust
-        # reference rejects the same span and then fails *closed*: it returns
-        # "[REDACTED]" for the entire text rather than hand back text it cannot
-        # prove is clean (aa-security/src/scanner.rs:454-458 — "never return the
-        # raw text with a secret intact"). The runner fails open here.
-        #
-        # Closing that gap is AAASM-5373. Whoever does it must change this
-        # assertion — it is a marker for the divergence, not an endorsement of it.
+        # The assertion that matters is `!= text`: a fail-open implementation
+        # returns the input unchanged, so this cannot pass while the runner
+        # leaks the region it was told about.
         text = "番号=1234"
         findings = [{"kind": "SyntheticNumber", "offset": 1, "end": 6}]
 
-        self.assertEqual(_redact(text, findings), text)
+        self.assertEqual(_redact(text, findings), "[REDACTED]")
+        self.assertNotEqual(_redact(text, findings), text)
 
-    def test_out_of_range_span_is_skipped_pending_fail_closed(self) -> None:
-        # Same divergence as above for an out-of-range span: the runner skips it,
-        # Rust returns "[REDACTED]" for the whole text
-        # (aa-security/src/scanner.rs:447-458). Pins current behaviour; see
-        # AAASM-5373.
+    def test_out_of_range_span_fails_closed(self) -> None:
+        # Same contract for a span running past the end of the buffer.
         text = "番号=1234"
         findings = [{"kind": "SyntheticNumber", "offset": 3, "end": 999}]
 
-        self.assertEqual(_redact(text, findings), text)
+        self.assertEqual(_redact(text, findings), "[REDACTED]")
+
+    def test_inverted_span_fails_closed(self) -> None:
+        # offset > end is not a span the scanner can produce, but it is one a
+        # buggy SDK can report. Rust's `span.offset <= span.end` guard rejects
+        # it and falls into the same fail-closed branch.
+        text = "key=DUMMY-NOT-A-REAL-KEY"
+        findings = [{"kind": "SyntheticKey", "offset": 20, "end": 4}]
+
+        self.assertEqual(_redact(text, findings), "[REDACTED]")
+
+    def test_negative_offset_fails_closed(self) -> None:
+        # Unreachable from Rust (offsets are `usize`) and therefore not a branch
+        # ScanResult::redact has, but reachable from Python, where a negative
+        # index silently means "from the end" and would splice into the middle
+        # of the text. Treated as unspliceable rather than wrapped.
+        text = "key=DUMMY-NOT-A-REAL-KEY"
+        findings = [{"kind": "SyntheticKey", "offset": -4, "end": 10}]
+
+        self.assertEqual(_redact(text, findings), "[REDACTED]")
+
+    def test_one_bad_span_condemns_the_whole_text(self) -> None:
+        # Fail-closed is all-or-nothing: a second, perfectly spliceable span
+        # does not earn a partial result. Rust returns "[REDACTED]" from inside
+        # the splice loop regardless of how many spans already succeeded.
+        #
+        # Without this, an implementation that failed closed only when *every*
+        # span was bad would still pass the tests above.
+        secret = "DUMMY-NOT-A-REAL-KEY"
+        text = f"key={secret} tail"
+        findings = [
+            _span("SyntheticKey", text, secret),
+            {"kind": "SyntheticOther", "offset": 25, "end": 9999},
+        ]
+
+        self.assertEqual(_redact(text, findings), "[REDACTED]")
 
 
 class CoalesceSemanticsTests(unittest.TestCase):
@@ -350,13 +381,19 @@ class RedactAsciiUnchangedTests(unittest.TestCase):
 
         self.assertEqual(_redact(text, []), text)
 
-    def test_finding_without_end_is_skipped(self) -> None:
+    def test_finding_without_end_fails_closed(self) -> None:
         # The schema's `expected_findings` entries carry no `end`; only the SDK's
-        # reply does. A finding without one is not redactable and must be left be.
+        # reply does. A reply that omits it names a flagged region of unknown
+        # extent — the runner cannot prove that region was removed, so it fails
+        # closed rather than returning the text untouched.
+        #
+        # This is a runner-only branch: a Rust `CredentialFinding` always has an
+        # `end`, so ScanResult::redact never faces the case. It is resolved the
+        # same way for the same reason (ADR 0015).
         text = "key=DUMMY-NOT-A-REAL-KEY"
         findings = [{"kind": "SyntheticKey", "offset": 4}]
 
-        self.assertEqual(_redact(text, findings), text)
+        self.assertEqual(_redact(text, findings), "[REDACTED]")
 
 
 if __name__ == "__main__":

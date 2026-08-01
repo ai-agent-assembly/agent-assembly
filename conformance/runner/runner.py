@@ -28,7 +28,8 @@ a scan() function with this signature:
         #   "offset" (int)  — start of the finding, as a byte offset into the
         #                     UTF-8 encoding of `text` (not a str index)
         #   "end"    (int)  — end of the match, same unit. Required: a finding
-        #                     without it cannot be redacted and is skipped.
+        #                     without it names a region of unknown extent, so
+        #                     the redaction fails closed (see _redact).
 
 If AA_SDK_MODULE is unset the runner uses a no-op stub that always returns []
 and prints a warning — all vectors with expected_findings will fail.
@@ -159,9 +160,8 @@ def run(vectors_dir: Path, verbose: bool) -> bool:
                 print(f"{_RED}{msg}{_RESET}")
             continue
 
-        # Redact check: reconstruct the redacted string from findings.
-        # Approximates Rust's ScanResult::redact() — see _redact for the two
-        # ways it still diverges (no coalescing, fails open).
+        # Redact check: reconstruct the redacted string from findings, the same
+        # way Rust's ScanResult::redact() does (coalesce, splice, fail closed).
         redacted = _redact(input_text, actual_findings)
         if redacted != expected_redacted:
             failed += 1
@@ -233,7 +233,9 @@ def _coalesce_findings(findings: list[dict]) -> list[tuple[int, int, str]] | Non
     with `<=` would silently emit one label where Rust emits two.
 
     Returns `None` when a finding carries no usable span at all (`offset` or
-    `end` missing), which the caller cannot splice.
+    `end` missing), which the caller turns into a fail-closed result: a finding
+    names a region the scanner flagged, and one whose extent is unknown cannot
+    be proven redacted.
     """
     spans: list[tuple[int, int, str]] = []
     for finding in sorted(
@@ -255,7 +257,7 @@ def _coalesce_findings(findings: list[dict]) -> list[tuple[int, int, str]] | Non
 
 
 def _redact(text: str, findings: list[dict]) -> str:
-    """Apply findings to text, coalescing them first, in reverse offset order.
+    """Reconstruct the redacted text, mirroring Rust's `ScanResult::redact`.
 
     `offset` and `end` are **byte** positions in the UTF-8 encoding of *text* —
     that is the unit the reference scanner emits and the unit the vector schema
@@ -265,29 +267,34 @@ def _redact(text: str, findings: list[dict]) -> str:
 
     Findings are coalesced into non-overlapping spans first (see
     `_coalesce_findings`), then spliced in reverse offset order so the earlier
-    spans' byte positions stay valid across each replacement. Without that step
-    a region flagged by two detectors is spliced twice, which mangles the first
-    label and can leave raw bytes of the secret behind it.
+    spans' byte positions stay valid across each replacement.
 
-    A span that is out of range, inverted, or not aligned to a character
-    boundary is skipped rather than spliced, so this never emits invalid UTF-8.
+    **Fails closed.** A span that is out of range, inverted, or not aligned to a
+    character boundary cannot be spliced, but it still marks a region the
+    scanner flagged as a secret. Returning the rest of the text would hand back
+    that region in the clear, so the whole value collapses to `"[REDACTED]"`
+    instead — byte for byte what `ScanResult::redact` does
+    (aa-security/src/scanner.rs:443-461, "never return the raw text with a
+    secret intact"), and what ADR 0015 requires of a DLP trust boundary.
 
-    That skip is where this **still diverges from** Rust's `ScanResult::redact`,
-    which fails closed on exactly those spans and returns `"[REDACTED]"` for the
-    whole text (aa-security/src/scanner.rs:447-458). That gap is the remaining
-    half of AAASM-5373 — until it closes, do not describe this function as
-    mirroring the Rust one.
+    Rust evaluates its bounds and char-boundary checks against the buffer as it
+    is being spliced; this validates every span against the original buffer
+    up front. The two agree because coalescing leaves the spans disjoint, so no
+    splice can move a byte that a later check looks at, and because the only
+    two outcomes are "every span spliced" and "`[REDACTED]`" — which of several
+    invalid spans is noticed first cannot change the answer.
     """
     buf = text.encode("utf-8")
     spans = _coalesce_findings(findings)
     if spans is None:
-        return text
+        return "[REDACTED]"
+    for offset, end, _kind in spans:
+        if offset < 0 or end > len(buf) or offset > end:
+            return "[REDACTED]"
+        if not _is_utf8_boundary(buf, offset) or not _is_utf8_boundary(buf, end):
+            return "[REDACTED]"
     result = buf
     for offset, end, kind in reversed(spans):
-        if offset < 0 or end > len(result) or offset > end:
-            continue
-        if not _is_utf8_boundary(result, offset) or not _is_utf8_boundary(result, end):
-            continue
         placeholder = f"[REDACTED:{kind}]".encode("utf-8")
         result = result[:offset] + placeholder + result[end:]
     return result.decode("utf-8")
