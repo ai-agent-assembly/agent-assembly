@@ -518,6 +518,96 @@ mod tests {
         std::env::remove_var("AASM_STATE_DIR");
     }
 
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().expect("test address literal")
+    }
+
+    /// The default, and the address an operator types when they mean "this
+    /// machine only". Both must keep working — the guard exists to stop an
+    /// exposure, not to stop the proxy.
+    #[test]
+    fn a_loopback_listen_address_is_accepted() {
+        for literal in ["127.0.0.1:8899", "127.0.0.1:0", "[::1]:8899", "127.9.9.9:8899"] {
+            assert_eq!(
+                check_bind_addr(addr(literal), false),
+                Ok(()),
+                "{literal} is loopback and must be accepted without any opt-in"
+            );
+        }
+    }
+
+    /// AAASM-5348. Anything reachable off-host is refused by default, and the
+    /// operator is told which fact about the address disqualified it and what
+    /// the alternatives are — a bare "invalid address" would leave them
+    /// guessing.
+    #[test]
+    fn a_non_loopback_listen_address_is_refused_without_the_opt_in() {
+        for literal in ["0.0.0.0:8899", "192.168.1.7:8899", "[::]:8899"] {
+            let refusal = check_bind_addr(addr(literal), false).expect_err(&format!(
+                "{literal} is reachable from other hosts and must not be accepted by default"
+            ));
+            assert_eq!(refusal, BindRefusal::RemoteNotRequested(addr(literal)));
+
+            let msg = refusal.to_string();
+            assert!(msg.contains(literal), "the refusal must name the address, got: {msg}");
+            assert!(
+                msg.contains("not a loopback address"),
+                "the refusal must say what disqualified the address, got: {msg}"
+            );
+            assert!(
+                msg.contains("--allow-remote-clients"),
+                "the refusal must name the option that states the intent, got: {msg}"
+            );
+        }
+    }
+
+    /// The heart of AAASM-5348: asking is not enough. `aa-proxy` can neither
+    /// encrypt its listener nor tell one client from another, so with the
+    /// opt-in given the answer is still no — and the diagnostic names both
+    /// absent protections rather than reporting a generic failure.
+    #[test]
+    fn the_opt_in_alone_does_not_make_a_remote_listen_address_acceptable() {
+        let requested = addr("0.0.0.0:8899");
+        let refusal = check_bind_addr(requested, true)
+            .expect_err("--allow-remote-clients must not by itself authorize an unprotected listener");
+
+        let BindRefusal::Unprotected { addr: refused, missing } = &refusal else {
+            panic!("expected an Unprotected refusal naming what is absent, got: {refusal:?}");
+        };
+        assert_eq!(*refused, requested);
+        assert_eq!(
+            missing,
+            &["TLS on the proxy listener", "client authentication and authorization"]
+        );
+
+        let msg = refusal.to_string();
+        assert!(
+            msg.contains("TLS on the proxy listener"),
+            "the refusal must name the missing transport protection, got: {msg}"
+        );
+        assert!(
+            msg.contains("client authentication and authorization"),
+            "the refusal must name the missing client-identity protection, got: {msg}"
+        );
+        assert!(
+            msg.contains("Being reachable is not being trusted"),
+            "the refusal must say why reaching the port is not authorization, got: {msg}"
+        );
+    }
+
+    /// The refusal above is derived from the crate's real capabilities, not
+    /// hardcoded — so this records that today it supplies neither, and turns
+    /// into a failure the moment someone implements one without revisiting
+    /// [`check_bind_addr`].
+    #[test]
+    fn neither_remote_protection_is_implemented_today() {
+        assert_eq!(
+            missing_remote_protections(),
+            vec!["TLS on the proxy listener", "client authentication and authorization"],
+            "both protections are absent; a change here must be matched by one in the listener"
+        );
+    }
+
     /// AAASM-5276 condition C5. An installed integration extends the DLP
     /// surface to the hosts it named, and `llm_only` stays on — the alternative
     /// (turning it off) would MitM every host on the machine.
