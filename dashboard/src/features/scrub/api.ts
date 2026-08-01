@@ -44,26 +44,49 @@
  * as {@link scrubbed24hFromQuery} already does for its own route. A *populated*
  * answer is self-evidently in scope, so it — including a kind that legitimately
  * contributed no alerts to it — is reported as the real measurement it is.
+ *
+ * ## Why every fold below starts from `unknown` (AAASM-5366)
+ *
+ * A `200` is not a promise that the body matches the schema, and reading a field
+ * off one that did not threw a `TypeError` that unmounted the whole page. So no
+ * hook here declares its data as a response type: what arrived is `unknown`
+ * until `certainFromShapedQuery` has put it through the matching decoder in
+ * `schema.ts`, and `unknown` has no fields to reach for. A fold that skips the
+ * decoder does not compile — which is the point, because the fold that skips it
+ * has not been written yet.
  */
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
-import type { components } from '../../api/generated/schema'
 import {
   absent,
-  certainFromQuery,
+  certainFromShapedQuery,
   isKnown,
   known,
   propagateAbsence,
   type Certain,
   type QueryOutcome,
 } from '../../lib/truthfulness'
+import {
+  decodeAgentEnforcement,
+  decodePatternCounts,
+  decodePosture,
+  decodeScrubCatalogue,
+  decodeScrubWindow,
+  type ScrubPatternRow,
+} from './schema'
 
-export type AgentEnforcementCounts = components['schemas']['AgentEnforcementCounts']
+export type {
+  AgentEnforcementCounts,
+  PatternCountsResponse,
+  PostureResponse,
+  ScrubCatalogueResponse,
+  ScrubPatternRow,
+} from './schema'
 
 export const SCRUBBED_24H_KEY = ['scrub', 'agent-enforcement', '24h'] as const
 
 export function useScrubbed24hQuery() {
-  return useQuery<AgentEnforcementCounts[]>({
+  return useQuery<unknown>({
     queryKey: SCRUBBED_24H_KEY,
     queryFn: async () => {
       const { data, error } = await api.GET('/api/v1/analytics/agent-enforcement', {
@@ -116,10 +139,8 @@ export function useScrubbed24hQuery() {
  * some agent was audited, and none of its decisions was a redaction — and is
  * reported as one.
  */
-export function scrubbed24hFromQuery(
-  outcome: QueryOutcome<AgentEnforcementCounts[]>,
-): Certain<number> {
-  const rows = certainFromQuery(outcome)
+export function scrubbed24hFromQuery(outcome: QueryOutcome<unknown>): Certain<number> {
+  const rows = certainFromShapedQuery(outcome, decodeAgentEnforcement)
   if (!isKnown(rows)) return propagateAbsence(rows)
   if (rows.value.length === 0) {
     return absent(
@@ -133,11 +154,6 @@ export function scrubbed24hFromQuery(
 // ---------------------------------------------------------------------------
 // The three AAASM-5174 routes (wired by AAASM-5347)
 // ---------------------------------------------------------------------------
-
-export type ScrubCatalogueResponse = components['schemas']['ScrubCatalogueResponse']
-export type ScrubPatternRow = components['schemas']['ScrubPattern']
-export type PatternCountsResponse = components['schemas']['PatternCountsResponse']
-export type PostureResponse = components['schemas']['PostureResponse']
 
 /**
  * The window presets both aggregations accept (`ScrubWindowParams`).
@@ -161,7 +177,7 @@ export const scrubPostureKey = (range: ScrubRange) => ['scrub', 'posture', range
  * the same for every caller and every window.
  */
 export function useScrubPatternsQuery() {
-  return useQuery<ScrubCatalogueResponse>({
+  return useQuery<unknown>({
     queryKey: SCRUB_PATTERNS_KEY,
     queryFn: async () => {
       const { data, error } = await api.GET('/api/v1/scrub/patterns')
@@ -172,7 +188,7 @@ export function useScrubPatternsQuery() {
 }
 
 export function useScrubPatternCountsQuery(range: ScrubRange) {
-  return useQuery<PatternCountsResponse>({
+  return useQuery<unknown>({
     queryKey: scrubPatternCountsKey(range),
     queryFn: async () => {
       const { data, error } = await api.GET('/api/v1/scrub/pattern-counts', {
@@ -185,7 +201,7 @@ export function useScrubPatternCountsQuery(range: ScrubRange) {
 }
 
 export function useScrubPostureQuery(range: ScrubRange) {
-  return useQuery<PostureResponse>({
+  return useQuery<unknown>({
     queryKey: scrubPostureKey(range),
     queryFn: async () => {
       const { data, error } = await api.GET('/api/v1/scrub/posture', {
@@ -210,10 +226,8 @@ const TENANT_SCOPE_AMBIGUITY =
  * as, say, 30-day. Known as soon as any body arrives — an idle window still has
  * a length.
  */
-export function scrubWindowFromQuery(
-  outcome: QueryOutcome<{ window_seconds: number }>,
-): Certain<number> {
-  const body = certainFromQuery(outcome)
+export function scrubWindowFromQuery(outcome: QueryOutcome<unknown>): Certain<number> {
+  const body = certainFromShapedQuery(outcome, decodeScrubWindow)
   if (!isKnown(body)) return propagateAbsence(body)
   return known(body.value.window_seconds)
 }
@@ -227,9 +241,9 @@ export function scrubWindowFromQuery(
  * that the gateway ships nothing.
  */
 export function scrubCatalogueFromQuery(
-  outcome: QueryOutcome<ScrubCatalogueResponse>,
+  outcome: QueryOutcome<unknown>,
 ): Certain<readonly ScrubPatternRow[]> {
-  const body = certainFromQuery(outcome)
+  const body = certainFromShapedQuery(outcome, decodeScrubCatalogue)
   if (!isKnown(body)) return propagateAbsence(body)
   if (body.value.patterns.length === 0) {
     return absent(
@@ -262,9 +276,9 @@ export interface PatternAlertTally {
 }
 
 export function patternAlertsFromQuery(
-  outcome: QueryOutcome<PatternCountsResponse>,
+  outcome: QueryOutcome<unknown>,
 ): Certain<PatternAlertTally> {
-  const body = certainFromQuery(outcome)
+  const body = certainFromShapedQuery(outcome, decodePatternCounts)
   if (!isKnown(body)) return propagateAbsence(body)
   const { counts, total_hits, window_seconds } = body.value
   if (counts.length === 0) {
@@ -310,9 +324,9 @@ export interface ScrubPosture {
  * is self-evidently in scope and is reported as measured.
  */
 export function scrubPostureFromQuery(
-  outcome: QueryOutcome<PostureResponse>,
+  outcome: QueryOutcome<unknown>,
 ): Certain<ScrubPosture> {
-  const body = certainFromQuery(outcome)
+  const body = certainFromShapedQuery(outcome, decodePosture)
   if (!isKnown(body)) return propagateAbsence(body)
   const { leaks_intercepted, distinct_kinds, window_seconds } = body.value
   if (leaks_intercepted === 0) {
@@ -337,8 +351,8 @@ export function scrubPostureFromQuery(
  * than hard-coded so the page starts reporting a rate by itself on the day the
  * denominator lands, instead of silently continuing to say "not supported".
  */
-export function leakRateFromQuery(outcome: QueryOutcome<PostureResponse>): Certain<number> {
-  const body = certainFromQuery(outcome)
+export function leakRateFromQuery(outcome: QueryOutcome<unknown>): Certain<number> {
+  const body = certainFromShapedQuery(outcome, decodePosture)
   if (!isKnown(body)) return propagateAbsence(body)
   const { rate_computed, leak_rate } = body.value
   if (!rate_computed || leak_rate === null || leak_rate === undefined) {
