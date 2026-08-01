@@ -23,16 +23,16 @@ the survey and benchmarks establish:
 
 1. **The provider question is not the urgent one.** The measured behavior of the
    *existing* scanner on non-English input is a live defect (§4.1): 32 KB of
-   ordinary Traditional-Chinese prose containing zero secrets produces **87**
-   findings, and under `credential_action: Block` an agent communicating in
+   ordinary mixed `zh-TW`/English agent traffic containing zero secrets produces
+   **87** findings, and under `credential_action: Block` an agent communicating in
    Chinese is denied outright. No provider choice touches that code path. It
    should be fixed ahead of, and independently of, this architecture.
 
 2. **External providers are disqualified from the synchronous path by physics,
    not by preference.** Presidio costs **12.28 ms** on a 592-byte tool call
-   against the Rust scanner's **6.1 µs** — a ~2 000× ratio (§3.2) — and the
+   against the Rust scanner's **5.8 µs** — a ~2 000× ratio (§3.4) — and the
    out-of-process transport tax alone, with a provider that does no work at all,
-   is 2.3× the entire current scan for that payload class (§3.3). The same
+   is over 7× the entire current scan for that payload class (§3.3). The same
    providers are, however, entirely reasonable for large or high-risk payloads
    handled asynchronously. The economics therefore prescribe the architecture:
    **a deterministic in-process fast path, and an asynchronous deep path**.
@@ -107,10 +107,12 @@ semantics. ADR 0030 set the precedent for the shape: it created a new ADR rather
 than amending ADR 0002.
 
 **Next unused ADR number is `0032`.** The index at `docs/src/adr/README.md:9`
-says "0005 never existed"; git history says otherwise — `0005-sdk-only-gateway-access.md`
-was created (`90679f35`) and withdrawn (`643700e5`), and `0028` was used twice
+previously said "0005 never existed"; git history says otherwise —
+`0005-sdk-only-gateway-access.md` was created (`90679f35`), then reframed and
+renamed by `643700e5` before the number was retired later. `0028` was used twice
 (`0989bf9a`, then `7b444d51`, retired in `bd867a23`). Both gaps stay permanently
-empty. Highest existing is `0031`.
+empty either way, so the conclusion was unaffected; the index sentence and its
+stale active-ADR count are corrected on this branch. Highest existing is `0031`.
 
 ---
 
@@ -128,8 +130,9 @@ agent action
    ├─► LAYER 2  aa-proxy (MitM HTTPS)  │   aa-gateway  EngineInner::evaluate
    │      scans body PRE-forward       │     engine/mod.rs:889  (sync fn)
    │      probe_adjudication.rs:143    │     Stage 6: self.scanner.scan(text)
-   │      ForwardedPayload::NotForwarded     engine/mod.rs:1438  built-in + policy
+   │      ForwardedPayload::NotForwarded     engine/mod.rs:1443  built-in + policy
    │      ── proves non-transmission          patterns merged → one findings list
+   │         (probe branch only — §6.5)
    │                                   │            │
    │                          aa-runtime pipeline   │
    │                          pipeline/mod.rs:127   │
@@ -154,7 +157,7 @@ agent action
                     │                                    (write-only)
                     ▼
          analytics re-scan JSONL per request
-         analytics.rs:373 — capped at 100 000 events
+         aa-api/src/routes/analytics.rs:373 — capped at 100 000 events
                     │
                     ▼
          GET /api/v1/analytics/agent-enforcement
@@ -168,15 +171,22 @@ agent action
 
 `aa-security` uses **no regex at all** — `aho-corasick = "1"` is its only
 detection dependency (`aa-security/Cargo.toml:10`). Detection is five passes
-(`scanner.rs:552`): an Aho-Corasick literal-prefix pass over 18 patterns, a
-digit-sequence pass (credit card + US SSN), an email pass, a high-entropy pass,
-and an Azure `AccountKey=` pass.
+(`scanner.rs:552`): an Aho-Corasick literal-prefix pass over **28** patterns
+(`aa-security/src/scanner.rs:14-53`), a digit-sequence pass (credit card + US
+SSN), an email pass, a high-entropy pass, and an Azure `AccountKey=` pass.
 
-`CredentialKind` has 27 variants, each with a `category()`, a `severity()` and an
-`as_str()` redaction label (`scanner.rs:95-196`). Those labels are a **public
-contract**: they appear in `[REDACTED:<kind>]` output pinned by 26 conformance
-vectors, and `CredentialKind::ALL` is exposed over HTTP by the shipped
-`/api/v1/scrub/patterns`.
+> Two in-repo comments still say "18 patterns" — `aa-security/src/scanner.rs:545`
+> and `aa-gateway/src/engine/mod.rs:1437`. Both are stale (AAASM-3727 added three
+> GCP variants and AAASM-4128 added seven more). Correcting them is folded into
+> `B-2` in §9.
+
+`CredentialKind` has **28** variants (`scanner.rs:95-162`), each with a
+`category()` (`:210`), a `severity()` (`:245`) and an `as_str()` redaction label
+(`:277`). **27** of them are built-in detectors enumerated by
+`CredentialKind::ALL` (`:177-205`), which deliberately excludes `Custom`. Those
+labels are a **public contract**: they appear in `[REDACTED:<kind>]` output
+pinned by 26 conformance vectors, and `CredentialKind::ALL` is exposed over HTTP
+by the shipped `/api/v1/scrub/patterns`.
 
 PII coverage is exactly three detectors — `CreditCardLuhn`, `EmailAddress`, and a
 US-only `SsnPattern`. **There is no Taiwan identifier of any kind, and no
@@ -205,8 +215,8 @@ Related behaviors worth recording, each verified:
 | Behavior | Evidence | Consequence |
 |---|---|---|
 | `redact_only` — the default — collapses to a hard **deny** on the SDK path | `aa-runtime/src/pipeline/mod.rs:656-671` | the default action is more severe than its name |
-| the gateway's redacted payload never reaches the wire | `convert.rs:179` emits `"$.{kind:?}"`, a JSONPath | redaction is signalled, not delivered, on that path |
-| `ScannerConfig` has **zero production callers** | grep across workspace | the `disabled` kill switch and the literal custom-pattern slot are unreachable |
+| the gateway's redacted payload never reaches the wire | `aa-gateway/src/service/convert.rs:179` emits `"$.{kind:?}"`, a JSONPath | redaction is signalled, not delivered, on that path |
+| no caller ever constructs a **non-default** `ScannerConfig` | `CredentialScanner::new` passes `ScannerConfig::default()` (`aa-security/src/scanner.rs:508`); every other construction is under `#[cfg(test)]` | the `disabled` kill switch and the literal custom-pattern slot are unreachable in production |
 | the proxy's JSONL audit writer is never instantiated in production | `aa-proxy/src/lib.rs:70` → `proxy/mod.rs:172` passes `None` | proxy findings never reach disk |
 | redaction fails **closed** on an unspliceable span | `scanner.rs:443-461`, returns `"[REDACTED]"` | correct, and required by ADR 0015 |
 
@@ -249,13 +259,15 @@ Two consequences:
 - **The durable table is write-only.** `query_audit_events` and
   `count_audit_events` have no non-test caller anywhere in the workspace. Every
   analytics endpoint re-scans the JSONL files per request, capped at 100 000
-  events (`analytics.rs:373`) — and `get_agent_enforcement` calls the
+  events (`aa-api/src/routes/analytics.rs:373`) — and `get_agent_enforcement` calls the
   *non*-truncation-aware fetch, so it can silently return partial counts even
   though a `truncated` flag exists.
 - **The persisted payload is the raw one, not the redacted one.** That is a data
   -minimisation defect in its own right, independent of this Epic.
 
 ### 2.5 `CredentialLeakBlocked` does not mean blocked
+
+The mapping is at `aa-gateway/src/service/convert.rs:150-158`:
 
 | Configured action | Recorded event type | What actually happened |
 |---|---|---|
@@ -271,9 +283,13 @@ direction — it reports prevention where there was forwarding.
 ### 2.6 Event-versus-finding conflation is already shipped
 
 `GET /api/v1/scrub/pattern-counts` counts **alerts by their first kind**, not
-findings by kind. An action containing one AWS key and three emails increments
-one bucket by one. The distinction this Spike is asked to define is therefore not
-merely a future design concern — it is a live inaccuracy in a shipped API.
+findings by kind: one `StoredAlert` is written per action
+(`aa-api/src/alerts/mod.rs:195-211`), its `detected_pattern_type` comes from
+`primary_kind()` — which is just `kinds.first()` (`aa-gateway/src/alerts.rs:39-41`)
+— and `tally_by_kind` then counts those alerts (`aa-api/src/routes/scrub.rs:210-220`).
+An action containing one AWS key and three emails increments one bucket by one.
+The distinction this Spike is asked to define is therefore not merely a future
+design concern — it is a live inaccuracy in a shipped API.
 
 Separately, `agent-enforcement` never inspects `dry_run`, while
 `transform_for_observe_mode` rewrites `Deny → Allow` before the event type is
@@ -331,35 +347,62 @@ Apple M3 Max (16 cores), 128 GB, macOS 26.4.1, `rustc 1.97.0 (2d8144b78 2026-07-
 release profile. Presidio in Docker Desktop 28.3.2 (linux/aarch64 VM, 4 vCPU /
 7.75 GiB) with `--memory=4g`. Commit `77bd2bf9`. Every fixture is synthetic.
 
-Reproduce with:
+Every measurement in this section has a committed harness. Reproduce with:
 
 ```bash
+# §3.2 — the built-in Rust fast path
 cargo bench -p aa-security --bench spike_5269_payload_classes    # criterion, throughput
 cargo bench -p aa-security --bench spike_5269_percentiles        # true p50/p95/p99
+
+# §3.3 — out-of-process transport floor (stand-in provider, no detection)
+cargo bench -p aa-security --bench spike_5269_transport_floor
+
+# §3.4 / §4.5 — Presidio, pinned by digest (never by a mutable tag)
+docker run -d --rm --name aaasm5269-presidio -p 15001:3000 --memory=4g \
+  ghcr.io/data-privacy-stack/presidio-analyzer@sha256:ae8f6f111ac2f04e3fec552f7f80edd0dcbfa2dd69ee1b9e030475be31669885
+python3 scripts/research/aaasm-5269-presidio-probe.py
+
+# egress-denied verification
+docker network create --internal aaasm5269-noegress
+docker run -d --rm --name aaasm5269-offline --network aaasm5269-noegress --memory=4g \
+  ghcr.io/data-privacy-stack/presidio-analyzer@sha256:ae8f6f111ac2f04e3fec552f7f80edd0dcbfa2dd69ee1b9e030475be31669885
 ```
 
-Both bench targets are committed on this branch. They assert nothing and gate
-nothing.
+The three bench targets and the probe script are committed on this branch. They
+assert nothing and gate nothing.
+
+**Artifacts measured**, pinned by digest because ADR 0032 forbids relying on a
+mutable tag:
+
+| artifact | digest / version |
+|---|---|
+| `ghcr.io/data-privacy-stack/presidio-analyzer` | `sha256:ae8f6f111ac2f04e3fec552f7f80edd0dcbfa2dd69ee1b9e030475be31669885` (941 MB on-disk, 566 MB compressed) |
+| `ghcr.io/ai-agent-assembly/aa-runtime` | `v0.0.1-rc.6` — 6.8 MB compressed, 14.4 MB on disk |
+| toolchain | `rustc 1.97.0 (2d8144b78 2026-07-07)` |
+| repo | `main` @ `77bd2bf9` |
 
 ### 3.2 The built-in Rust fast path
 
+All nine rows the harness emits, from one quiesced run (`scan` only):
+
 | payload | bytes | findings | p50 | p95 | p99 |
 |---|---:|---:|---:|---:|---:|
-| small tool call, 1 finding | 449 | 1 | **6.13 µs** | 6.29 µs | 7.50 µs |
-| small tool call, clean | 410 | 0 | **5.00 µs** | 5.13 µs | 5.92 µs |
-| medium prompt, 32 KB | 32 954 | 4 | **394 µs** | 416 µs | 433 µs |
-| medium prompt, 32 KB, clean | 32 800 | 0 | 434 µs | 468 µs | 508 µs |
-| large document, 1 MB | 1 049 045 | 6 | **12.47 ms** | 13.67 ms | 14.47 ms |
-| mixed zh-TW, 32 KB | 32 953 | **91** | 407 µs | 420 µs | 443 µs |
-| mixed zh-TW, 32 KB, *clean* | 32 799 | **87** ← see §4.1 | 396 µs | 417 µs | 439 µs |
-| high density, 500 findings | 59 300 | 600 | **956 µs** | 1.11 ms | 1.12 ms |
+| small tool call, 1 finding | 449 | 1 | **5.83 µs** | 7.54 µs | 7.75 µs |
+| small tool call, clean | 410 | 0 | **4.83 µs** | 6.25 µs | 6.42 µs |
+| medium prompt, 32 KB | 32 954 | 4 | **379 µs** | 404 µs | 428 µs |
+| medium prompt, 32 KB, clean | 32 800 | 0 | 376 µs | 406 µs | 425 µs |
+| large document, 1 MB | 1 049 045 | 6 | **12.14 ms** | 12.41 ms | 12.71 ms |
+| large document, 1 MB, clean | 1 048 780 | 0 | 12.15 ms | 12.49 ms | 12.75 ms |
+| mixed zh-TW, 32 KB | 32 953 | **91** | 392 µs | 423 µs | 450 µs |
+| mixed zh-TW, 32 KB, *clean* | 32 799 | **87** ← see §4.1 | 388 µs | 417 µs | 437 µs |
+| high density, 500 findings | 59 300 | 600 | **922 µs** | 979 µs | 1.02 ms |
 
-`CredentialScanner::new()` costs 132 µs p50 — a per-process fixed cost, not a
+`CredentialScanner::new()` costs 130 µs p50 — a per-process fixed cost, not a
 per-request one.
 
 Run-to-run variance on an unquiesced laptop is roughly ±10% at the p50 and
-larger at the max (background load produces occasional millisecond outliers, as
-the `max` column shows). The conclusions below depend on ratios spanning two to
+much larger at the max — the harness prints a `max` column (not reproduced
+here) in which background load shows up as occasional millisecond outliers. The conclusions below depend on ratios spanning two to
 three orders of magnitude, so none of them is sensitive to that.
 
 Three conclusions:
@@ -367,10 +410,17 @@ Three conclusions:
 - Throughput is a near-constant **~80 MiB/s** across three orders of magnitude,
   i.e. cost is linear in bytes. For an Aho-Corasick automaton that is slow; the
   dominant cost is the entropy/digit/email passes, not the AC pass.
-- **Finding count matters more than size.** 500 findings in ~58 KB costs 956 µs
-  against 394 µs for 32 KB with 4 findings — a penalty driven by the sort and
-  overlap-coalescing tail rather than by input length.
-- Redaction adds ~5% on top of the scan, so the interesting budget is detection.
+- **Finding count adds a real super-linear tail.** 500 findings in 59 300 B
+  costs 922 µs against 379 µs for 32 954 B with 4 findings. Byte-linear
+  extrapolation alone predicts ~682 µs, so input length accounts for roughly
+  56% of the 543 µs delta and finding count for the remaining 44% — about a 35%
+  excess over the byte-linear prediction, from the sort and overlap-coalescing
+  tail.
+- Redaction is close to free relative to detection. Measured `scan + redact`
+  against `scan` across the classes above ranges from −2% to +8% (i.e. within
+  run-to-run noise except on the zh-TW case), so the budget to govern is
+  detection, not redaction. Both tables are printed by
+  `spike_5269_percentiles`.
 
 ### 3.3 Out-of-process transport floor
 
@@ -380,29 +430,33 @@ out-of-process design.
 
 | payload | JSON encode+decode only | loopback TCP, persistent | TCP, new conn/req | UDS, persistent |
 |---|---:|---:|---:|---:|
-| ~450 B | 0.71 µs | **14.12 µs** | 43.29 µs | **6.62 µs** |
-| 32 KB | 14.33 µs | 33.67 µs | 55.54 µs | 42.25 µs |
-| 1 MB | 445 µs | 536 µs | 579 µs | 1.06 ms |
+| ~450 B | 0.58 µs | **43.79 µs** | 61.58 µs | **9.08 µs** |
+| 32 KB | 13.58 µs | 38.17 µs | 76.62 µs | 45.71 µs |
+| 1 MB | 427 µs | 539 µs | 590 µs | 1.13 ms |
 
 Set against §3.2, this is the decisive result of the Spike:
 
 | payload | in-process scan | transport tax alone | tax as % of scan |
 |---|---:|---:|---:|
-| small tool call | 6.1 µs | 14.1 µs (TCP) / 6.6 µs (UDS) | **230%** / 108% |
-| 32 KB | 394 µs | 33.7 µs | 9% |
-| 1 MB | 12.5 ms | 536 µs | 4% |
+| small tool call | 5.8 µs | 43.8 µs (TCP) / 9.1 µs (UDS) | **755%** / 157% |
+| 32 KB | 379 µs | 38.2 µs (TCP) | 10% |
+| 1 MB | 12.1 ms | 539 µs (TCP) | 4% |
 
 **Transport overhead dominates precisely where the synchronous enforcement path
 lives, and is negligible precisely where deep inspection is actually wanted.**
 The architecture follows from the numbers rather than from taste.
 
-Note also that UDS beats TCP by 2× for small payloads but loses by 2× at 1 MB
-(buffer sizing), and that a fresh connection per request triples small-payload
-cost — so a provider transport must be a persistent connection.
+Note also that **UDS beats loopback TCP by ~4.8× for small payloads** but loses
+by ~2× at 1 MB (buffer sizing), and that a fresh connection per request adds
+~40% on top of the persistent-connection cost — so a provider transport must be
+a persistent connection, and for the small payloads that dominate, a Unix domain
+socket. That is the same conclusion ADR 0030 forbidden design #7 reaches from
+the security side, for unrelated reasons.
 
 ### 3.4 Presidio Analyzer, measured
 
-Image `ghcr.io/data-privacy-stack/presidio-analyzer:latest`.
+Image `ghcr.io/data-privacy-stack/presidio-analyzer@sha256:ae8f6f11…9885`
+(resolved from `:latest` on 2026-08-01; see the artifact table in §3.1).
 
 | metric | measured |
 |---|---|
@@ -411,16 +465,20 @@ Image `ghcr.io/data-privacy-stack/presidio-analyzer:latest`.
 | supported entities | 19, all US/UK-centric |
 | image size (compressed, amd64) | 566 MB, of which one 409 MB layer is the spaCy model |
 
-For scale, `aa-runtime:latest` is a **6.8 MB** image; one Presidio replica's
-resident memory is ~110× that.
+For scale, the `aa-runtime` image is **6.8 MB compressed** (14.4 MB on disk);
+one Presidio replica's resident memory is ~50× its on-disk size and ~110× its
+compressed size.
 
-Latency, same payload classes:
+Latency. The payload *classes* are the same, but the exact byte counts differ
+between the two harnesses (the Rust fixture is 449 B where the Presidio one is
+592 B), so the ratios are approximate by construction — which is immaterial at
+three orders of magnitude:
 
 | payload | Rust in-process p50 | Presidio p50 | ratio |
 |---|---:|---:|---:|
-| small tool call (~592 B) | 6.1 µs | **12.28 ms** | **~2 000×** |
-| medium prompt 32 KB | 394 µs | **613 ms** | **~1 600×** |
-| large document 1 MB | 12.5 ms | **HTTP 500** | — |
+| small tool call (449 B Rust / 592 B Presidio) | 5.8 µs | **12.28 ms** | **~2 000×** |
+| medium prompt 32 KB | 379 µs | **613 ms** | **~1 600×** |
+| large document 1 MB | 12.1 ms | **HTTP 500** | — |
 
 Scaling is superlinear and then hits a wall:
 
@@ -430,12 +488,14 @@ Scaling is superlinear and then hits a wall:
 | 131 128 | OK, 886 findings | 3 830 ms |
 | 262 256 | OK, 1 772 findings | **11 331 ms** |
 | 524 364 | **HTTP 500** (bare HTML) | — |
+| 786 472 | **HTTP 500** (bare HTML) | — |
 | 1 048 580 | **HTTP 500** `[E088] Text of length 1048580 exceeds maximum of 1000000` | — |
 
-Only the last is a documented limit (spaCy's `nlp.max_length`). The 524 KB and
-786 KB failures are *below* that limit and return an unhandled HTML 500 — so **an
-adapter cannot distinguish "too large" from "crashed" by status code**, which
-bears directly on fail-open/fail-closed semantics.
+Only the last is a documented limit (spaCy's `nlp.max_length`, which counts
+**characters**). The 524 KB and 786 KB failures are *below* that limit and return
+an unhandled HTML 500 — so **an adapter cannot distinguish "too large" from
+"crashed" by status code**, which bears directly on fail-open/fail-closed
+semantics.
 
 **Local-first is satisfied.** On a `docker network create --internal` network
 Presidio reached `healthy` in 5.4 s, served a real `/analyze` request from inside
@@ -466,8 +526,11 @@ machine, are the durable result.
 
 Found while building the benchmark; root-caused and independently reproduced.
 
-32 KB of benign `zh-TW` prose containing **zero** planted secrets yields **87**
-`GenericHighEntropy` findings. The byte-equivalent English yields **0**.
+32 KB of benign mixed `zh-TW`/English agent traffic containing **zero** planted
+secrets yields **87** `GenericHighEntropy` findings. The byte-equivalent English
+yields **0**. (The fixture is deliberately mixed rather than pure Chinese,
+because that is what real `zh-TW` agent traffic looks like — and because the
+defect is triggered precisely by a CJK run adjacent to an ASCII token.)
 
 | input | findings | `redact()` output |
 |---|---:|---|
@@ -476,13 +539,22 @@ Found while building the benchmark; root-caused and independently reproduced.
 | `聯絡電話：0912-345-678，請於上班時間撥打` | 1 | `[REDACTED:GenericHighEntropy]` — the whole string |
 | `文件連結：https://example.com/docs/guide 請參考` | 1 | `[REDACTED:GenericHighEntropy] 請參考` |
 
-Measured false-positive rate by Han-character run length (2 000 trials each):
+Measured false-positive rate by Han-character run length (2 000 randomly
+generated runs per length):
 
 | Han chars | FP rate |
 |---:|---:|
-| 13 | 50.5% |
-| 17 | **93.9%** |
-| 20 | 99.5% |
+| 13 | ~34–51% |
+| 17 | ~80–94% |
+| 20 | ~95–99% |
+
+The rate is corpus-sensitive: sampling uniformly from a 100-character
+common-Hanzi pool gives the lower bound of each range, and sampling from the
+wider set used in the prose fixture gives the upper. The ranges above bracket
+both. The load-bearing claim is the shape — **around half at 13 characters,
+most at 17, nearly all at 20** — not any single decimal, and it is insensitive
+to which pool is used. A fix ticket should pin one corpus and report exact
+figures against it.
 
 **Cause** — three individually reasonable lines in `aa-security/src/scanner.rs`:
 
@@ -492,7 +564,7 @@ Measured false-positive rate by Han-character run length (2 000 trials each):
    **bytes**, and a Han character is 3 UTF-8 bytes, so a 7-character Chinese
    phrase already sits inside the "looks like a secret" window.
 3. `:878-894` `shannon_entropy` counts over `s.as_bytes()` while its own doc
-   comment at `:896` calls the result "bits per **character**" — an equivalence
+   comment at `:877` calls the result "bits per **character**" — an equivalence
    that holds only for ASCII. Han characters spread bytes widely, so byte entropy
    lands at 4.6–4.9 against the `ENTROPY_BITS_GATE = 4.5` threshold (`:903`).
 
@@ -630,7 +702,7 @@ than new `CredentialKind` variants, so policies need no per-locale rewrite and
 | Governance | us | **`data-privacy-stack`, community-run — no longer Microsoft** | zricethezav/gitleaks | us |
 | Invocation | in-process library | HTTP service | CLI, file-oriented | our choice |
 | Small-call latency | **6 µs** | **12.3 ms** | process spawn (unmeasured) | transport floor 6.6–14 µs |
-| Large payload | 12.5 ms @ 1 MB | **fails ≥ 524 KB** | file-oriented, fine | n/a |
+| Large payload | 12.1 ms @ 1 MB | **fails ≥ 524 KB** | file-oriented, fine | n/a |
 | Idle RSS | ~0 (shared automaton) | **746 MiB** | ~0 between invocations | provider-defined |
 | Offline / egress-deny | native | **verified working**, models baked in | native | by construction |
 | zh-TW | none today; **buildable** | **none, and fails closed-clean** | n/a (secrets only) | by construction |
@@ -798,10 +870,14 @@ An event may be counted as **prevented transmission** only when all four hold:
 4. the action was not in observe/dry-run mode.
 
 The observable in (3) **already exists**: `ForwardedPayload::NotForwarded`
-(`aa-proxy/src/probe_adjudication.rs:143`), returned before the sole
-`dial_upstream_tls`. It is currently confined to the probe reply and never
-persisted. Persisting it is the smallest change that makes a truthful prevention
-metric possible.
+(`aa-proxy/src/probe_adjudication.rs:143`), returned before the
+`dial_upstream_tls` on that path. `dial_upstream_tls` is defined once
+(`aa-proxy/src/proxy/mod.rs:367`) but called from two sites (`:678`, `:912`), and
+`ProbeAdjudication::new` (`:881`) precedes only the second — so today the
+observable exists **only** on the protection-probe branch for a `Block` verdict,
+and is never persisted. Generalising it to every pre-transmission decision and
+persisting it is the smallest change that makes a truthful prevention metric
+possible.
 
 Everything else is **detected**, not prevented. Note that redaction *forwards*
 scrubbed bytes, so a redacted action is a transformed transmission, not a
@@ -908,7 +984,7 @@ Six phases. The first two contain no provider at all.
 |---|---|---|---|
 | **0** | fix the CJK entropy defect + full-width digits; add CJK conformance vectors | **yes — a bug fix** | revert; vectors are new |
 | **1** | canonical finding model wrapping the existing scanner, 1:1 with `CredentialKind` | **none** | type-only revert |
-| **2** | provider port + in-tree test double; formalise the seam already hardcoded at `aa-gateway/src/engine/mod.rs:1438` | **none** (test double only) | remove trait impl |
+| **2** | provider port + in-tree test double; formalise the seam already hardcoded at `aa-gateway/src/engine/mod.rs:1443` | **none** (test double only) | remove trait impl |
 | **3** | sensitive-data decision event + durable projection, written **alongside** the existing bridge | additive only | stop writing the projection |
 | **4** | optional local adapters behind explicit config, default off, async deep path only | opt-in only | config flag |
 | **5** | risk-based escalation, provider budgets, API/dashboard semantics | gated on shadow-mode agreement | feature flag |
@@ -933,34 +1009,42 @@ product review.
 
 | ID | Title | Depends on |
 |---|---|---|
+| `B-1` | ✨ (dashboard): Wire the Scrub surface to the shipped `/api/v1/scrub/*` routes | — |
 | `B-2` | 🐛 (aa-security): Stop classifying non-ASCII text as high-entropy secrets | — |
 | `B-3` | 🐛 (aa-security): Normalise full-width digits before Luhn/SSN detection | — |
 | `B-4` | 🐛 (aa-runtime): Preserve non-UTF-8 and chunk-split payloads on redaction write-back | — |
-| `B-1` | ✨ (dashboard): Wire the Scrub surface to the shipped `/api/v1/scrub/*` routes | — |
 | `B-5` | ✅ (conformance): Add CJK and full-width false-positive vectors | `B-2`, `B-3` |
 | `B-6` | ✨ (aa-security): Canonical sensitive-data finding model over the existing scanner | ADR 0032 |
 | `B-7` | ✨ (aa-security): `zh-TW` deterministic recognizer pack | `B-2`, `B-6` |
-| `B-8` | ♻️ (aa-gateway): Formalise the detection seam at `engine/mod.rs:1438` behind the provider port | `B-6` |
+| `B-8` | ♻️ (aa-gateway): Formalise the detection seam at `engine/mod.rs:1443` behind the provider port | `B-6` |
 | `B-9` | ✨ (aa-core): `SensitiveDataDecisionEvent` + finding records | ADR 0032, `B-6` |
 | `B-10` | ✨ (aa-gateway): Durable sensitive-data projection alongside the audit bridge | `B-9` |
 | `B-11` | ✨ (aa-proxy): Persist `ForwardedPayload::NotForwarded` as execution evidence | `B-9` |
 | `B-12` | ✨ (aa-api): Sensitive-data analytics + drill-down endpoints | `B-10`, `B-11` |
-| `B-13` | ✨ (aa-*): Local provider protocol + in-tree test double | ADR 0032, `B-6` |
+| `B-13` | ✨ (aa-*): Local provider protocol + in-tree test double | ADR 0032, `B-6`, **follow-up ADR (D-1)** |
 | `B-14` | ✨ (aa-*): Presidio adapter, async deep path, opt-in | `B-13` |
 | `B-15` | ✨ (aa-*): Gitleaks adapter with mandatory `--redact=100` | `B-13` |
 | `B-16` | ✨ (dashboard): Sensitive-data analytics views | `B-12` |
 
+`B-13`–`B-15` are the out-of-process work that D-1 recommends deferring, so they
+are gated on the follow-up ADR as well as on ADR 0032. Listing them here is a
+proposal of shape, not an authorisation to start them.
+
 ```
-B-2 ─┬─► B-5
-B-3 ─┘        B-7 ◄── B-6 ◄── ADR 0032
-              ▲        │
-              │        ├─► B-8
-              │        ├─► B-9 ─┬─► B-10 ─┬─► B-12 ──► B-16
-              │        │        └─► B-11 ─┘
-              │        └─► B-13 ─┬─► B-14
-              │                  └─► B-15
-B-1 (independent — correctness, ship now)
-B-4 (independent)
+B-1  (independent — correctness, ship now)
+B-4  (independent)
+
+B-2 ──┬─────────────────► B-5
+B-3 ──┘                    ▲
+  └──────────────┐         │
+                 │      (B-3)
+                 ▼
+ADR 0032 ──► B-6 ──┬──► B-7   (also needs B-2)
+                   ├──► B-8
+                   ├──► B-9 ──┬──► B-10 ──┬──► B-12 ──► B-16
+                   │          └──► B-11 ──┘
+                   └──► B-13 ──┬──► B-14      (B-13 also needs the D-1 follow-up ADR)
+                               └──► B-15
 ```
 
 ---
@@ -1026,7 +1110,38 @@ comparison Phase 5 depends on.
 
 ---
 
-## 11. Traceability
+## 11. Sources for third-party claims
+
+The claims in §4.3–§4.5 and §5 about software we do not own are the ones a
+reviewer is least able to check and most likely to inherit into a ticket, so
+their sources are listed here rather than left implicit. Everything about *our*
+code is cited inline as `path:line`; everything measured is reproducible via
+§3.1.
+
+| Claim | Source |
+|---|---|
+| Presidio moved from `microsoft/presidio` to `data-privacy-stack/presidio`; docs at `presidio.dataprivacystack.org`; images on `ghcr.io/data-privacy-stack/*` | the GitHub redirect from `microsoft/presidio`, and the project's own docs site |
+| Presidio is MIT | `LICENSE` in the upstream repository |
+| Presidio supports `en` only by default; no Chinese or Taiwan recognizer | `presidio-analyzer` `default_analyzer.yaml` (`supported_languages: [en]`) and the predefined-recognizer list in its docs — **also confirmed by direct measurement** (§4.5: `language: "zh"` → HTTP 500) |
+| Presidio ships SPDX SBOM + SLSA provenance as buildkit in-toto attestations | the published image manifests on `ghcr.io` |
+| Presidio's upstream `docker-compose.yml` adds an `ollama` service that pulls models at runtime | that file in the upstream repository |
+| Gitleaks is MIT; ships SLSA provenance but no SBOM; has no locale dimension | the upstream repository's `LICENSE`, release attestations, and rule schema |
+| Gitleaks populates `report.Finding.Secret` with the raw secret unless `--redact=100` | the `report.Finding` struct and the `--redact` flag handling in the upstream source |
+| TruffleHog is AGPL-3.0 and its core feature is outbound credential verification | the upstream repository's `LICENSE` and its verification documentation |
+| `zh_core_web_sm` ≈ 46 MB, NER F 68.42; `zh_core_web_trf` ≈ 396 MB, F 74.26; `zh_core_web_lg` wheel ≈ 603 MB; all trained on OntoNotes 5 (Simplified) | spaCy's published Chinese model cards |
+| 統一編號 checksum changed from mod-10 to mod-5 on 2023-04-01 | Ministry of Finance announcement of the unified business number rule change |
+| 2021 ARC format uses the same algorithm as the national ID, differing only in the first digit | National Immigration Agency's published new-format ARC specification |
+
+Two caveats stated plainly: these were read during the Spike but are not pinned
+by digest or revision the way the measured artifacts in §3.1 are, so a reader
+checking them later may find upstream has moved. And the zh-TW model F-scores
+are the vendors' own reported figures on Simplified-Chinese benchmarks — §4.5's
+estimate of ~0.62–0.70 for Traditional Chinese is *our extrapolation*, not a
+measured result, and is labelled as such.
+
+---
+
+## 12. Traceability
 
 | Reference | Relation |
 |---|---|
@@ -1037,5 +1152,7 @@ comparison Phase 5 depends on.
 | [ADR 0015](../adr/0015-dlp-trust-boundary-and-redaction-semantics.md) | parent decision; invariants preserved |
 | [ADR 0018](../adr/0018-canonical-runtime-verdict-and-enriched-decision-record.md) | owns the verdict vocabulary; see §6.3 / D-2 |
 | [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) | constrains provider form; see §5.4 |
-| `aa-security/benches/spike_5269_payload_classes.rs` | reproduces §3.2 |
-| `aa-security/benches/spike_5269_percentiles.rs` | reproduces §3.2 percentiles |
+| `aa-security/benches/spike_5269_payload_classes.rs` | reproduces §3.2 (throughput) |
+| `aa-security/benches/spike_5269_percentiles.rs` | reproduces §3.2 (percentiles) |
+| `aa-security/benches/spike_5269_transport_floor.rs` | reproduces §3.3 |
+| `scripts/research/aaasm-5269-presidio-probe.py` | reproduces §3.4 and §4.5 |
