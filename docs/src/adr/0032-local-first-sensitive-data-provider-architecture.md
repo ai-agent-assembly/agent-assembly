@@ -30,8 +30,9 @@ Supporting evidence, measurements and the full current-state survey are in
 ## Context
 
 Detection today is a single Aho-Corasick-based scanner in `aa-security`
-(`scanner.rs`), consulted synchronously by the gateway and the proxy. It has 27
-`CredentialKind` variants, three PII detectors (credit card, email, US SSN), and
+(`scanner.rs`), consulted synchronously by the gateway and the proxy. It has 28
+`CredentialKind` variants — 27 of them built-in detectors enumerated by
+`CredentialKind::ALL` — three PII detectors (credit card, email, US SSN), and
 no locale dimension at all. The Epic asks whether external engines should be
 allowed to contribute findings, and under what boundary.
 
@@ -58,7 +59,7 @@ served real requests, and could not reach the public internet. Models are baked
 into the published image.
 
 **The current heuristic layer is mis-calibrated for non-English input.** 32 KB of
-ordinary Traditional-Chinese prose containing zero secrets produces 87
+ordinary mixed `zh-TW`/English agent traffic containing zero secrets produces 87
 `GenericHighEntropy` findings; the byte-equivalent English produces none. Under
 `credential_action: Block` an agent communicating in Chinese is denied outright.
 This is a defect in existing code, fixed ahead of and independently of this
@@ -166,7 +167,7 @@ Container lifecycle is the operator's; Agent Assembly validates and reports.
 Where a local transport is needed it is a **Unix domain socket with
 peer-credential checks**, not loopback TCP — following the reasoning of ADR 0030
 forbidden design #7, and independently supported by the measurement that UDS is
-2× faster than loopback TCP for small payloads.
+roughly 4–5× faster than loopback TCP for small payloads.
 
 ### 7. Deployment placement is chosen by resident memory and latency need
 
@@ -201,8 +202,11 @@ collapsed. An action containing three findings that is blocked increments
 only when the enforcement point is pre-transmission, the decision was deny or a
 transforming disposition, explicit execution evidence records that the action did
 not reach its destination, and the action was not in observe mode. The observable
-already exists — `ForwardedPayload::NotForwarded`, returned before the sole
-`dial_upstream_tls` — and merely needs persisting. Everything else is *detected*.
+already exists — `ForwardedPayload::NotForwarded` — but only on one of the two
+`dial_upstream_tls` call sites, so today it is produced solely on the
+protection-probe branch and is never persisted. Generalising it to every
+pre-transmission decision and persisting it is what this requires. Everything
+else is *detected*.
 
 Note that redaction **forwards** scrubbed bytes upstream, so a redacted action is
 a transformed transmission and not a prevented one.
