@@ -22,7 +22,8 @@
  *     (`AWS_SECRET`, `JWT`, `INTERNAL_URL`, `PHONE`) are gone;
  *  7. the catalogue offers no enable/disable control, and the actions with no
  *     production path are disabled;
- *  8. all of the above holds in light *and* dark, with no console errors.
+ *  8. a failed per-kind tally leaves the alerts column absent, never `0`;
+ *  9. all of the above holds in light *and* dark, with no console errors.
  *
  * Screenshots land in dashboard/verify/5112/.
  */
@@ -317,6 +318,52 @@ test.describe('AAASM-5112 review — the Scrub surface stops fabricating a DLP p
       await catalogue.screenshot({ path: `${EVIDENCE_DIR}/scrub-catalogue-${theme}.png` })
       await page.getByTestId('scrub-diff').screenshot({
         path: `${EVIDENCE_DIR}/scrub-payload-diff-${theme}.png`,
+      })
+
+      expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
+    })
+
+    test(`a failed tally leaves the alerts column absent, never 0, in ${theme}`, async ({
+      page,
+    }) => {
+      const harness = await bootstrap(page, theme, 'populated')
+      // Registered after the fixture, so it wins: Playwright matches the most
+      // recently added route first.
+      await page.route('**/api/v1/scrub/pattern-counts**', (r) =>
+        r.fulfill({ status: 503, json: { error: 'unavailable' } }),
+      )
+      await gotoScrub(page)
+
+      // Until AAASM-5347 the alerts column had no source, and asserting it was
+      // permanently `not-supported` was enough to stop a number appearing there.
+      // Now that it has one, that guard has to be re-stated as the thing it was
+      // protecting: a column with a source can fail, and a failed fetch must not
+      // land in the table as `0`. Every detector reads as an absence, including
+      // the total above the column.
+      //
+      // The 30s allowance is TanStack's default three retries with exponential
+      // backoff — the settled state is what is under test, not the pending one.
+      const hits = page.getByTestId('scrub-patterns-hits-AwsAccessKey')
+      await expect(hits).toHaveAttribute('data-truth-state', 'unavailable', {
+        timeout: 30_000,
+      })
+      await expect(hits).not.toHaveText('0')
+      await expect(hits.locator('.truth-absent__glyph')).toHaveText('—')
+
+      const total = page.getByTestId('scrub-patterns-total-value')
+      await expect(total).toHaveAttribute('data-truth-state', 'unavailable')
+      await expect(total).not.toHaveText('0')
+
+      // No cell anywhere in the column invented a figure to fill the gap.
+      const cells = page.locator('[data-testid^="scrub-patterns-hits-"]')
+      const cellCount = await cells.count()
+      expect(cellCount).toBeGreaterThan(0)
+      for (let i = 0; i < cellCount; i += 1) {
+        await expect(cells.nth(i)).toHaveAttribute('data-truth-state', 'unavailable')
+      }
+
+      await page.getByTestId('scrub-patterns').screenshot({
+        path: `${EVIDENCE_DIR}/scrub-alerts-unavailable-${theme}.png`,
       })
 
       expect(harness.errors, 'no console errors or uncaught exceptions').toEqual([])
