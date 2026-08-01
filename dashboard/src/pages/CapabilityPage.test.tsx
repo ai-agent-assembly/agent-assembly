@@ -53,6 +53,21 @@ function renderPage() {
 const FIXTURE = CAPABILITY_MATRIX_FIXTURE
 
 /**
+ * The matrix an API predating AAASM-5106 sends: every field the grid renders,
+ * and no `cascadeLoaded` key at all.
+ *
+ * Spelled out field by field rather than destructured off the fixture, so the
+ * omission is the visible point of the constant and cannot be reintroduced by a
+ * later spread.
+ */
+const MATRIX_WITHOUT_CASCADE_FLAG = {
+  agents: FIXTURE.agents,
+  resources: FIXTURE.resources,
+  policies: FIXTURE.policies,
+  sampleCalls: FIXTURE.sampleCalls,
+} as unknown as CapabilityMatrix
+
+/**
  * The matrix shaped the way the live endpoint actually shapes it.
  *
  * `GET /capability/matrix` projects a static capability set, so every cell it
@@ -213,8 +228,7 @@ describe('CapabilityPage', () => {
     // made `!undefined` true and the page announced "No policy cascade is
     // loaded". That is a specific, actionable claim about the operator's
     // deployment, made about a body the dashboard never parsed.
-    const { cascadeLoaded: _dropped, ...withoutFlag } = FIXTURE
-    getMatrix.mockResolvedValue(withoutFlag as unknown as CapabilityMatrix)
+    getMatrix.mockResolvedValue(MATRIX_WITHOUT_CASCADE_FLAG)
     renderPage()
 
     // The warning is still shown — the grid below is untrustworthy either way,
@@ -233,8 +247,7 @@ describe('CapabilityPage', () => {
     // aria-live discipline (AAASM-5173): `role="alert"` is reserved for a
     // failed request. Nothing failed here — a 200 arrived — so interrupting the
     // operator would devalue the interruptions that do matter.
-    const { cascadeLoaded: _dropped, ...withoutFlag } = FIXTURE
-    getMatrix.mockResolvedValue(withoutFlag as unknown as CapabilityMatrix)
+    getMatrix.mockResolvedValue(MATRIX_WITHOUT_CASCADE_FLAG)
     renderPage()
 
     const banner = await screen.findByTestId('capability-cascade-unloaded-state')
