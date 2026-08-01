@@ -24,7 +24,8 @@ conformance/
 │   └── session_lifecycle/      # 10 vectors: Register, Heartbeat, Deregister, ControlCommand
 └── runner/
     ├── requirements.txt        # Python runner dependencies (colorama)
-    └── runner.py               # Python SDK conformance runner
+    ├── runner.py               # Python SDK conformance runner
+    └── test_runner_redact.py   # Regression tests for the runner's own redaction logic
 ```
 
 ## Test categories
@@ -81,6 +82,27 @@ Vector schema:
 }
 ```
 
+#### Offset unit — normative
+
+`expected_findings[].offset` is a **byte offset into the UTF-8 encoding of
+`input_text`**, counting from zero. So is the `end` an SDK reports alongside it.
+This is not negotiable per language: it is the unit `CredentialScanner` emits,
+and the vectors are the same bytes for every SDK.
+
+It matters because each language's native string index means something different,
+and for ASCII input all three units coincide — so a harness that picks the wrong
+one still passes every ASCII vector and only breaks on the first multi-byte one:
+
+| Language | Native string index | Correct against this schema? |
+|---|---|---|
+| Rust | bytes (`&str[a..b]`) | yes, directly |
+| Go | bytes (`s[a:b]`) | yes, directly |
+| Python | code points (`s[a:b]`) | **no** — encode to `bytes`, splice, decode back |
+| Node/TS | UTF-16 code units (`s.slice(a, b)`) | **no** — splice a `Buffer`/`Uint8Array` instead |
+
+An offset that does not fall on a character boundary is not redactable; reject it
+rather than splicing, so no harness can emit invalid UTF-8 or a partial value.
+
 Categories: API keys (Anthropic, OpenAI, AWS, GCP, Azure), auth tokens (GitHub,
 Slack), database URLs (Postgres, MySQL, MongoDB), private keys (RSA, EC, OpenSSH,
 PKCS8, PGP), PII (credit card, SSN, email), high-entropy tokens.
@@ -126,6 +148,20 @@ The `scan()` function must return a list of dicts, each with:
 - `"kind"` (str) — credential kind string matching `CredentialKind.as_str()`
 - `"offset"` (int) — byte offset of the finding in the input text
 - `"end"` (int) — byte end of the matched region (used for redaction)
+
+Both positions are byte offsets into the UTF-8 encoding of the input, per
+[Offset unit — normative](#offset-unit--normative). A Python SDK that reports
+`str` indices will pass every ASCII vector and fail every non-ASCII one.
+
+### Testing the runner itself
+
+The runner reconstructs the redacted string from the spans an SDK reports, so it
+can be wrong in exactly the same way an SDK can. Its own regression tests run
+without an SDK and without any vector file:
+
+```bash
+python conformance/runner/test_runner_redact.py
+```
 
 ## Adding new vectors
 
