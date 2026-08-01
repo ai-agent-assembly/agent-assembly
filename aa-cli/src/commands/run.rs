@@ -1583,6 +1583,88 @@ mod tests {
         );
     }
 
+    /// The four effective-policy states must survive as far as the artefact an
+    /// operator actually reads.
+    ///
+    /// This is the assertion that a four-variant enum on its own does not
+    /// satisfy: a consumer that renders every state the same way — or that
+    /// collapses them into "a policy loaded" / "it did not" — passes the type
+    /// checker and fails the contract. So the check is on the rendered receipt,
+    /// and it is pairwise: `enforced` and `permissive` both launch, and are the
+    /// pair most likely to be flattened into each other.
+    #[test]
+    fn the_dry_run_receipt_distinguishes_all_four_policy_states() {
+        let handle = stub_handle(None);
+        let cmd = std::process::Command::new("mock-tool");
+        let env = HashMap::new();
+
+        let states = [
+            run_policy::PolicyResolution::Enforced {
+                source: PathBuf::from("/p.yaml"),
+                document: PolicyDocument {
+                    version: 1,
+                    name: "p".into(),
+                    rules: vec![aa_core::PolicyRule {
+                        action_pattern: "bash".into(),
+                        decision: aa_core::PolicyDecision::Deny,
+                    }],
+                    enforcement_mode: aa_core::EnforcementMode::default(),
+                },
+            },
+            run_policy::PolicyResolution::Permissive {
+                source: PathBuf::from("/p.yaml"),
+                document: PolicyDocument {
+                    version: 1,
+                    name: "p".into(),
+                    rules: vec![aa_core::PolicyRule {
+                        action_pattern: "*".into(),
+                        decision: aa_core::PolicyDecision::Allow,
+                    }],
+                    enforcement_mode: aa_core::EnforcementMode::default(),
+                },
+            },
+            run_policy::PolicyResolution::Unconfigured(run_policy::Unconfigured::NoSource { searched: vec![] }),
+            run_policy::PolicyResolution::LoadFailed {
+                source: PathBuf::from("/p.yaml"),
+                detail: "bad".into(),
+            },
+        ];
+
+        let sections: Vec<String> = states
+            .iter()
+            .map(|state| {
+                let output = format_dry_run_output(&handle, state, "{}", &cmd, &env);
+                let start = output
+                    .find("--- policy ---")
+                    .expect("receipt must carry a policy section");
+                let rest = &output[start..];
+                let end = rest.find("--- managed settings ---").unwrap_or(rest.len());
+                rest[..end].to_string()
+            })
+            .collect();
+
+        for (state, section) in states.iter().zip(&sections) {
+            assert!(
+                section.contains(state.state_token()),
+                "the receipt must name the state it is reporting; {} is missing from:\n{section}",
+                state.state_token()
+            );
+        }
+
+        for (i, a) in sections.iter().enumerate() {
+            for (j, b) in sections.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    a,
+                    b,
+                    "states {} and {} render an identical policy receipt, so an operator cannot \
+                     tell them apart",
+                    states[i].state_token(),
+                    states[j].state_token()
+                );
+            }
+        }
+    }
+
     #[test]
     fn dry_run_masks_secret_and_connection_url_env_vars() {
         let handle = RegistrationHandle {
