@@ -1,6 +1,6 @@
 # ADR 0021: Topology Enforcement-Mode Mutation — Authorization, Blast Radius & Reversibility
 
-**Status**: Accepted — *direction only* (2026-07-30, Option B). The security model is ratified: tightening enforcement may use tenant-scoped Write; loosening/disabling requires Admin; preview must precede apply; shadow mode carries a mandatory expiry; every change records actor + tenant + reason + before/after + time; and shadow mode must NEVER disable authentication, tenant isolation, sandbox boundaries, or any non-policy safety control. **Implementation remains gated** on three prerequisites, tracked separately (AAASM-5287 actor-aware mutation+audit, AAASM-5288 durable enforcement_mode persistence, AAASM-5289 Topology reads the canonical enforcement field not `metadata.mode`). The shadow-mode / cascade-apply feature itself is NOT to be implemented until those three land.
+**Status**: Accepted — **Option B, full implementation authorised (2026-08-01)**. The three prerequisites are all Done (AAASM-5287 actor-aware mutation+audit ✅, AAASM-5288 durable enforcement_mode + shadow-expiry persistence ✅, AAASM-5289 Topology reads the canonical enforcement field not `metadata.mode` ✅), and the five open questions are resolved in [§ Decision](#decision-2026-08-01): (1) a runtime enforcement-mode endpoint **does** exist (B, not C); (2) weakening requires **Admin**, strengthening requires tenant-scoped Write; (3) expiry is **mandatory** on a weakening (shadow) change, server maximum **72h**; (4) cascade **is** in scope, `MAX_CASCADE_AGENTS = 50`, **echo-back confirmation required**; (5) actor-attributed audit is a hard prerequisite and is satisfied by AAASM-5287. `Disabled` is never reachable via the API; shadow mode never disables auth, tenant isolation, sandbox boundaries, or any non-policy safety control. Implemented under AAASM-5097.
 **Date**: 2026-07 (direction ratified 2026-07-30)
 **Ticket**: [AAASM-5097](https://lightning-dust-mite.atlassian.net/browse/AAASM-5097) (Epic [AAASM-5082](https://lightning-dust-mite.atlassian.net/browse/AAASM-5082))
 
@@ -369,23 +369,37 @@ already works.
   ([AAASM-5071](https://lightning-dust-mite.atlassian.net/browse/AAASM-5071), ratified
   in ADR 0017; mock at `design/v1/hi-fi/topology.jsx:626-636` and `:738`).
 
-## Decision required from: architecture + security
+<a id="decision-2026-08-01"></a>
+## Decision (2026-08-01, architecture + security)
 
-1. **Does a runtime enforcement-off endpoint exist at all** (A/B) **or does mode
-   change stay in policy/config** (C), given AAASM-4121's explicit stance at
-   `aa-gateway/src/service/lifecycle_service.rs:188-219`?
-2. **What scope gates a weakening change** — `RequireWrite` + tenant (matching
-   `aa-auth/src/scope.rs:20-24`'s convention) or `RequireAdmin` (matching the
-   fail-open severity)? Is direction-asymmetric authz acceptable, or does it
-   complicate the model too much?
-3. **Is expiry mandatory on shadow, and what is the server maximum?**
-4. **Is cascade in scope at all**, and if so what is `MAX_CASCADE_AGENTS` and is
-   echo-back confirmation required?
-5. **Is actor-attributed audit a hard prerequisite** (recommended yes) or may the
-   endpoint ship before AAASM-237?
+Option B is adopted in full. The five open questions are resolved; implementation of
+AAASM-5097 is authorised against the answers below.
 
-Until items 1–2 are answered, **no implementation ticket should be opened**. Merging
-this ADR does not authorise any of the options.
+1. **A runtime enforcement-mode endpoint DOES exist** (Option B, not C):
+   `POST /api/v1/agents/{id}/enforcement-mode` with body `{ mode, reason, expires_at }`.
+   Operators need the in-incident capability; policy-document-per-agent (C) was judged
+   too slow at the wrong moment.
+2. **Direction-asymmetric authz** — a *strengthening* change (`→ Enforce`) requires
+   tenant-scoped `RequireWrite` (no reason, no expiry: you can always turn governance
+   back on). A *weakening* change (`→ Observe`) requires `RequireAdmin` + tenant + a
+   required non-empty `reason` + a required `expires_at`. `Disabled` is **not** exposed
+   via the API under any circumstance.
+3. **Expiry is mandatory on a weakening (shadow) change; server maximum 72h.** A
+   request with no `expires_at`, or one beyond 72h, is rejected. Reversion to `Enforce`
+   is driven by a reconciliation watcher modelled on the alert-silence watcher
+   (`aa-api/src/alerts/silence_store.rs`), so an expired shadow window self-heals even
+   across restarts (the persisted expiry from AAASM-5288 backs this).
+4. **Cascade is in scope.** Two-step: `POST …/enforcement-mode/preview` returns the
+   explicit affected agent-id list + count; the apply call must echo back that exact
+   list (or its hash) + expected count. `MAX_CASCADE_AGENTS = 50` — a cascade that would
+   exceed it is rejected outright, never truncated. Echo-back is **required** (defeats
+   the mis-click that would un-govern a whole subtree).
+5. **Actor-attributed audit is a hard prerequisite — satisfied.** AAASM-5287 shipped the
+   actor-aware `GovernanceMutation` audit record (actor + tenant + reason + before/after
+   + time, non-spoofable); the shadow-toggle reuses it.
+
+Prerequisites (all Done): AAASM-5287 ✅ · AAASM-5288 ✅ · AAASM-5289 ✅.
+**Implementation authorised** under AAASM-5097.
 
 ## Reconsideration triggers
 
