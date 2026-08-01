@@ -33,6 +33,20 @@
 //! gRPC. So the expectations below are *derived* the way the CLI derives them
 //! rather than picked, and the monitoring claim is read off a real registry.
 //!
+//! # The gates a governed launch passes, and why they are ordered
+//!
+//! `aasm run` refuses on three separate grounds, checked in order: it cannot
+//! vouch for a local proxy (AAASM-5323), no effective policy resolves
+//! (AAASM-5349), or the gateway will not accept the session. Every scenario here
+//! therefore supplies a verified proxy, a policy, and a live gateway — except
+//! the one that is *about* a gate, which supplies the other two so the refusal
+//! it measures is attributable to the gate it names rather than to whichever
+//! check happened to fire first.
+//!
+//! The policies are narrow and enforcing rather than allow-all: this file's
+//! claim is about a *governed* launch, and a session running under a policy that
+//! restricts nothing would make that claim untrue.
+//!
 //! # Safety
 //!
 //! `ClaudeCodeAdapter::new()` resolves its binary with `which claude` and its
@@ -86,6 +100,40 @@ mod governed_launch {
     /// values the session ends up with are derived from them below.
     const AGENT_ID: &str = "aaasm1112-agent";
     const TEAM_ID: &str = "aaasm1112-team";
+
+    /// Write the policy this host's sessions run under and return its path.
+    ///
+    /// Since AAASM-5349 a governed launch refuses when no effective policy
+    /// resolves, so every run here has to supply one — the same way it has to
+    /// supply a gateway and a verified proxy. It is a precondition of the
+    /// scenario, not part of what the scenario measures.
+    ///
+    /// Deliberately a **narrow, enforced** policy rather than the allow-all
+    /// artifact: these tests claim to exercise a *governed* launch, and a
+    /// session running under a policy that restricts nothing would make that
+    /// claim untrue. One real allow and one real deny is the smallest policy
+    /// that is honestly enforcing something.
+    ///
+    /// Passed with `--policy` rather than installed at `$HOME/.aasm/policy.yaml`
+    /// so the run measures the same thing on a developer machine that happens to
+    /// have an operator policy installed and on a bare CI runner.
+    fn write_test_policy(dir: &Path) -> std::io::Result<PathBuf> {
+        let path = dir.join("policy.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: agent-assembly/v1\n\
+             kind: Policy\n\
+             metadata:\n\
+             \x20 name: aaasm1112-governed-launch\n\
+             spec:\n\
+             \x20 tools:\n\
+             \x20   read_file:\n\
+             \x20     allow: true\n\
+             \x20   shell:\n\
+             \x20     allow: false\n",
+        )?;
+        Ok(path)
+    }
 
     /// A `claude` stand-in that answers `--version` with a supported version and,
     /// when launched, writes the governance variables it can see to a file.
@@ -161,6 +209,7 @@ exit 0
         std::fs::create_dir_all(home.join(".claude"))?;
         std::fs::create_dir_all(&project)?;
         let stub = write_stub_binary(root)?;
+        let policy = write_test_policy(root)?;
         let dump = root.join("child-env.txt");
 
         // `PATH` is prefixed rather than replaced: `build_launch_command`'s
@@ -192,6 +241,8 @@ exit 0
             .args([
                 "run",
                 "claude",
+                "--policy",
+                &policy.to_string_lossy(),
                 "--agent-id",
                 AGENT_ID,
                 "--team-id",
@@ -214,7 +265,7 @@ exit 0
             )
         });
         let seen = parse_dump(&raw);
-        let did = expected_did(AGENT_ID);
+        let did = expected_did(&root.join("state"), AGENT_ID);
         for (key, expected) in [
             ("AA_AGENT_ID", AGENT_ID.to_string()),
             ("AA_AGENT_DID", did.clone()),
@@ -344,6 +395,7 @@ exit 0
         std::fs::create_dir_all(home.join(".claude"))?;
         std::fs::create_dir_all(&project)?;
         let stub = write_stub_binary(root)?;
+        let policy = write_test_policy(root)?;
         let dump = root.join("child-env.txt");
 
         let path_var = {
@@ -363,7 +415,14 @@ exit 0
             .env("AA_DATA_DIR", proxy.data_dir())
             .env("AA_TEST_ENV_DUMP", &dump)
             .env("AA_GATEWAY_ENDPOINT", format!("http://{dead}"))
-            .args(["run", "claude", "--agent-id", AGENT_ID])
+            .args([
+                "run",
+                "claude",
+                "--policy",
+                &policy.to_string_lossy(),
+                "--agent-id",
+                AGENT_ID,
+            ])
             .output()
             .expect("aasm run claude should execute");
 
@@ -372,10 +431,32 @@ exit 0
             !out.status.success(),
             "a session the gateway never accepted must not exit successfully\nstderr:\n{stderr}",
         );
+
+        // Every gate ahead of registration must be *passed*, not merely present.
+        //
+        // `aasm run` refuses on several grounds, and they are checked in order:
+        // proxy trust, then effective policy, then registration. A run that
+        // tripped an earlier gate would still exit non-zero and still launch
+        // nothing — so it would satisfy this test's other two assertions while
+        // establishing nothing about the registration gate this test is named
+        // for. Pinning the resolved policy state is what makes the refusal below
+        // attributable: the run got past policy resolution, so registration is
+        // the gate that stopped it.
+        assert!(
+            stderr.contains("policy=enforced"),
+            "the run must reach registration with an effective policy in hand; if it refused on \
+             policy instead, the assertion below would pass for the wrong reason and this test \
+             would no longer test what it names:\n{stderr}",
+        );
         assert!(
             stderr.contains("refusing to launch unregistered"),
             "the operator must be told the launch was refused and why, not left to infer it from \
              an exit code:\n{stderr}",
+        );
+        assert!(
+            !stderr.contains("refusing to launch ungoverned"),
+            "the refusal names a policy or proxy failure, not the registration failure this test \
+             exists to measure:\n{stderr}",
         );
         assert!(
             !dump.exists(),
@@ -559,6 +640,33 @@ mod real_binary_governed_launch {
         std::fs::create_dir_all(&project)?;
         std::fs::create_dir_all(&ca_dir)?;
 
+        // ── the policy the session runs under ──────────────────────────────
+        //
+        // A precondition since AAASM-5349, alongside the gateway and the
+        // verified proxy: a launch that resolves no effective policy refuses,
+        // and a refused launch emits no upstream traffic — so without this the
+        // scenario reports NOT MEASURED rather than failing on its own subject.
+        //
+        // Narrow and enforcing rather than allow-all, for the same reason as in
+        // the stub scenario: this file's claim is about a *governed* launch. The
+        // rules name tool permissions, which the adapter renders into Claude's
+        // settings file; they do not gate the provider request whose
+        // interception and redaction is what this test actually measures.
+        let real_policy = root.join("policy.yaml");
+        std::fs::write(
+            &real_policy,
+            "apiVersion: agent-assembly/v1\n\
+             kind: Policy\n\
+             metadata:\n\
+             \x20 name: aaasm1112-real-governed-launch\n\
+             spec:\n\
+             \x20 tools:\n\
+             \x20   read_file:\n\
+             \x20     allow: true\n\
+             \x20   shell:\n\
+             \x20     allow: false\n",
+        )?;
+
         // ── the provider, behind the proxy's own certificate authority ─────
         //
         // One CA for three roles: the mock's leaf is signed by it, the proxy
@@ -655,7 +763,17 @@ mod real_binary_governed_launch {
             .stderr(std::fs::File::create(&stderr_path)?)
             // Its own group, so the tool it launches can be reaped with it.
             .process_group(0)
-            .args(["run", "claude", "--agent-id", AGENT_ID, "--", "-p", &prompt]);
+            .args([
+                "run",
+                "claude",
+                "--policy",
+                &real_policy.to_string_lossy(),
+                "--agent-id",
+                AGENT_ID,
+                "--",
+                "-p",
+                &prompt,
+            ]);
         let mut child = cmd.spawn().expect("aasm run claude should execute");
         let pgid = child.id() as i32;
         let _reaper = GroupReaper(pgid);

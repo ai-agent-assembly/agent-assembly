@@ -32,6 +32,7 @@ pub mod decision;
 pub mod error;
 pub mod gateway;
 pub mod identity;
+pub mod identity_store;
 pub mod ipc;
 pub mod keypair;
 #[cfg(feature = "preflight")]
@@ -41,7 +42,8 @@ pub use client::AssemblyClient;
 pub use config::AssemblyConfig;
 pub use decision::resolve_decision;
 pub use error::SdkClientError;
-pub use identity::agent_id_to_did_key;
+pub use identity::{agent_id_to_did_key, legacy_derived_did};
+pub use identity_store::{IdentityStore, IdentityStoreError};
 pub use keypair::AgentKeypair;
 #[cfg(feature = "preflight")]
 pub use preflight::Preflight;

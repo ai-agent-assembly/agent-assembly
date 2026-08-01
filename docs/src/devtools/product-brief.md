@@ -378,6 +378,7 @@ reachable from a profile:
 | **`EnforcementMode`** | `Enforce` | `Enforce` | `Observe` |
 | **Sensitive-data finding on a model-bound path** | **Redact and proceed.** The match is replaced with a `[REDACTED:<kind>]` placeholder and the request continues (`aa-security` `redact()`; policy pipeline Stage 6 redacts and never denies). | **Redact and proceed by default; block the request when the finding is in a configured high-severity class** — _planned_ (`AAASM-5277`, `AAASM-5281`). Blocking on a scanner finding is **not** core behaviour today; Stage 6 redacts unconditionally. Until that lands, `Strict` differs from `Recommended` on the other four rows only. | **Record only.** The finding is audited; the payload is forwarded unchanged. |
 | **Unscannable (oversized) field** | Replaced wholesale with `[REDACTED:OVERSIZED]` — fail-closed (`aa-runtime` `OversizedPolicy::RedactWhole`). | Same. | Recorded; forwarded unchanged, because `Observe` applies nothing. |
+| **Undecodable field with a finding** | A `bytes` field that is not valid UTF-8 (a binary body, or multi-byte text cut by a chunk boundary) is still scanned, but a detected secret cannot be spliced out precisely — the finding's offsets index the lossy decoding, not the payload. The field is replaced wholesale with `[REDACTED:UNDECODABLE]` — fail-closed (`aa-runtime`, ADR 0015 §1). A **clean** undecodable field is forwarded byte-identical. | Same. | Recorded; forwarded unchanged, because `Observe` applies nothing. |
 | **Approval posture** | Approval required only where policy declares it (`requires_approval_if` → `RequireApproval`). Pending halts execution until decided. | Approval required for the declared cases **plus** destructive tool classes; an approval that times out resolves as deny. | No approval prompts. A would-be `RequireApproval` is audited as a shadow decision and the action proceeds. |
 | **Network egress** | Policy allowlist enforced at Stage 2 and at the wire by `aa-proxy`; hosts outside a non-empty allowlist are denied. | Same enforcement, with a narrower default allowlist: model provider endpoints and the local gateway only. | Egress evaluated and audited; nothing blocked. |
 | **Budget** | Enforced (`action_on_exceed`, default `Deny`). | Enforced; `Suspend` available. | Tracked and audited; not enforced. |
@@ -485,7 +486,10 @@ Two words carry weight throughout and are used precisely:
 > **We guarantee:** on supported model-bound paths, content is scanned before it leaves the
 > machine, and every detected secret is replaced with a `[REDACTED:<kind>]` placeholder so the raw
 > value is not transmitted. A field too large to scan reliably is replaced wholesale with
-> `[REDACTED:OVERSIZED]` rather than forwarded — the scanner fails closed. The agent still
+> `[REDACTED:OVERSIZED]` rather than forwarded — the scanner fails closed. A field that cannot
+> be decoded as UTF-8 and carries a finding is likewise replaced wholesale, with
+> `[REDACTED:UNDECODABLE]`, because the secret cannot be excised precisely from bytes the
+> scanner could only read through a lossy decoding. The agent still
 > receives a semantics-preserving placeholder, so the request remains usable.
 
 > **This does NOT guarantee:** that every secret is found. Detection is deterministic and

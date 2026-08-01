@@ -119,6 +119,7 @@
 # Migration
 
 - [Migration Template](migration/template.md)
+- [Agent identity keys (AAASM-5332)](migration/agent-identity-keys.md)
 
 # Events
 

@@ -26,9 +26,15 @@
 //! audit events. The handshake adds defence-in-depth (a consistent identity and
 //! an authenticated version) *within* that boundary.
 //!
-//! The SDK (`aa-sdk-client`'s `AgentKeypair::derive`) and the runtime are both
-//! configured with the same `AA_AGENT_ID`, so both sides arrive at the same
-//! keypair without exchanging key material.
+//! The SDK (`aa-sdk-client`'s `AgentKeypair::derive_transport_key`) and the
+//! runtime are both configured with the same `AA_AGENT_ID`, so both sides arrive
+//! at the same keypair without exchanging key material.
+//!
+//! Note the name: since AAASM-5332 the SDK also holds a *durable identity key*,
+//! randomly generated and stored owner-only, which is what it registers with and
+//! proves possession of to the gateway. This transport key is deliberately not
+//! that key — the runtime could not verify a randomly generated key, having no
+//! way to learn it — and the two must not be conflated.
 
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -42,7 +48,7 @@ pub const NONCE_LEN: usize = 32;
 /// Derive the Ed25519 verifying key the runtime expects an SDK handshake to be
 /// signed with, from the configured agent id.
 ///
-/// Mirrors `aa-sdk-client::keypair::AgentKeypair::derive`: the seed is
+/// Mirrors `aa-sdk-client::keypair::AgentKeypair::derive_transport_key`: the seed is
 /// `SHA-256(agent_id)`, which is always a valid 32-byte Ed25519 secret scalar
 /// seed, so derivation never fails.
 ///

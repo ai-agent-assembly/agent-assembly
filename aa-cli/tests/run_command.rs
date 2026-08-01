@@ -286,6 +286,36 @@ async fn run_command_refuses_a_lineage_the_gateway_will_not_accept() {
     );
 }
 
+/// A real policy artifact on disk, shared by every test in this binary.
+///
+/// Since AAASM-5349 a governed launch refuses when no effective policy
+/// resolves, so a spawn/deregistration test has to supply one — the same way it
+/// has to supply a gateway. Pinning it with `--policy` rather than leaning on
+/// `$AA_POLICY` or `~/.aasm/policy.yaml` keeps these tests hermetic: they
+/// measure the same thing on a host that happens to have an operator policy
+/// installed and on one that does not.
+fn test_policy_path() -> &'static std::path::Path {
+    static POLICY: std::sync::OnceLock<(tempfile::TempDir, PathBuf)> = std::sync::OnceLock::new();
+    let (_dir, path) = POLICY.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("policy.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: agent-assembly/v1\n\
+             kind: Policy\n\
+             metadata:\n\
+             \x20 name: run-command-test\n\
+             spec:\n\
+             \x20 tools:\n\
+             \x20   bash:\n\
+             \x20     allow: false\n",
+        )
+        .expect("write policy");
+        (dir, path)
+    });
+    path
+}
+
 /// Args shared by every test here.
 ///
 /// `--no-proxy`: these tests measure child-process spawn and deregistration, not
@@ -302,6 +332,7 @@ fn run_args(tool: &str) -> RunArgs {
         root_agent: None,
         governance_level: None,
         no_proxy: true,
+        policy: Some(test_policy_path().to_path_buf()),
         dry_run: false,
         enforcement_mode: None,
         observe: false,

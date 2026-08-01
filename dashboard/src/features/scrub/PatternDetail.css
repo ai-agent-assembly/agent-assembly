@@ -47,6 +47,22 @@
 .scrub-detail-cat--generic,
 .scrub-detail-cat--policy-defined { color: var(--ink-3); }
 
+/* Severity as `/scrub/patterns` serves it (AAASM-5347). Same colour ramp as the
+   catalogue table so a kind reads identically in both places. */
+.scrub-detail-sev {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-left: 8px;
+  color: var(--ink-3);
+}
+
+.scrub-detail-sev--critical { color: var(--danger); }
+.scrub-detail-sev--high { color: var(--warn); }
+.scrub-detail-sev--medium { color: var(--info); }
+.scrub-detail-sev--low { color: var(--ink-3); }
+
 .scrub-detail-collapse-btn {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
@@ -64,7 +80,10 @@
 
 .scrub-detail-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  /* Four cells since AAASM-5347 added the windowed alert count. `auto-fit` with
+     a floor keeps them on one row on a wide pane and wraps to two on a narrow
+     one, rather than crushing the detection prose to an unreadable column. */
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 14px;
   margin-top: 12px;
 }
@@ -98,6 +117,17 @@
   font-size: 11px;
   line-height: 1.5;
   color: var(--ink-2);
+}
+
+/* The alert cell's event-vs-finding caveat. It sits with the number rather than
+   only in a tooltip, because a tooltip is not reachable by every operator and
+   this distinction is the difference between a count and an overstatement. */
+.scrub-detail-hint {
+  margin: 4px 0 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--ink-4);
 }
 
 .scrub-detail-code--replace {

@@ -114,15 +114,39 @@ impl Drop for TestGateway {
 pub struct GatewayEnv {
     _lock: std::sync::MutexGuard<'static, ()>,
     prior: Option<String>,
+    prior_state_dir: Option<String>,
 }
 
 impl GatewayEnv {
+    /// Point the code under test at `endpoint`, and at a throwaway state
+    /// directory.
+    ///
+    /// `AASM_STATE_DIR` is set as well because since AAASM-5332 registration
+    /// reads a durable identity key from `${AASM_STATE_DIR}/identity`. Left
+    /// unset, the CLI would enrol into the developer's real `~/.aasm` — and,
+    /// worse for these tests, into a *different* store than the one the
+    /// test-local `AssemblyConfig`s name, so the two surfaces would present
+    /// different identities and the parity assertions would be comparing
+    /// strangers.
     pub fn point_at(endpoint: &str) -> Self {
         let lock = env_lock().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let prior = std::env::var("AA_GATEWAY_ENDPOINT").ok();
+        let prior_state_dir = std::env::var("AASM_STATE_DIR").ok();
         std::env::set_var("AA_GATEWAY_ENDPOINT", endpoint);
-        Self { _lock: lock, prior }
+        std::env::set_var("AASM_STATE_DIR", state_dir());
+        Self {
+            _lock: lock,
+            prior,
+            prior_state_dir,
+        }
     }
+}
+
+/// One throwaway state directory per test process.
+pub fn state_dir() -> std::path::PathBuf {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| std::env::temp_dir().join(format!("aasm-gwtest-state-{}", std::process::id())))
+        .clone()
 }
 
 impl Drop for GatewayEnv {
@@ -130,6 +154,10 @@ impl Drop for GatewayEnv {
         match self.prior.take() {
             Some(v) => std::env::set_var("AA_GATEWAY_ENDPOINT", v),
             None => std::env::remove_var("AA_GATEWAY_ENDPOINT"),
+        }
+        match self.prior_state_dir.take() {
+            Some(v) => std::env::set_var("AASM_STATE_DIR", v),
+            None => std::env::remove_var("AASM_STATE_DIR"),
         }
     }
 }

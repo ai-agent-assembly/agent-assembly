@@ -34,7 +34,7 @@ use tonic::transport::{Channel, Server};
 /// `agent_id` did:key to `public_key` (AAASM-4787), so the did:key, the
 /// `public_key`, and the possession proof are all derived from one keypair.
 fn test_keypair() -> aa_sdk_client::AgentKeypair {
-    aa_sdk_client::AgentKeypair::derive("aaasm-enforce-selfreg-agent")
+    aa_sdk_client::AgentKeypair::derive_transport_key("aaasm-enforce-selfreg-agent")
 }
 
 fn test_public_key_hex() -> String {
