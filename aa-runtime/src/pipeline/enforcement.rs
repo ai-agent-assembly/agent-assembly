@@ -733,6 +733,15 @@ mod tests {
             !contains(&out, REPLACEMENT_CHAR),
             "surviving bytes must not carry U+FFFD"
         );
+        // Pin the actual disposition. The U+FFFD assertion above is necessary
+        // but not sufficient: once the field is dropped whole, *nothing*
+        // survives, so that check alone would pass trivially and would keep
+        // passing if the branch silently changed to emit something else.
+        assert_eq!(
+            out,
+            UNDECODABLE_MARKER.as_bytes(),
+            "the split payload is replaced whole, exactly as the binary case is"
+        );
         assert_eq!(outcome.undecodable_fields, 1);
         assert!(!outcome.is_clean());
     }
