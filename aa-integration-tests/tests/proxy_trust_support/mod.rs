@@ -49,11 +49,31 @@ pub fn cargo_target_dir() -> PathBuf {
 /// and ten tests each taking cargo's package lock in turn does not make the
 /// result any fresher — it only serialises the suite behind it.
 fn build_binary(package: &str, bin: &str) -> PathBuf {
+    build_target(package, "--bin", bin, cargo_target_dir().join("debug").join(bin))
+}
+
+/// As [`build_binary`], for a cargo **example** target.
+///
+/// Examples land in `target/debug/examples/`, so the output path cannot be
+/// derived from the target kind alone and is passed in.
+fn build_example(package: &str, example: &str) -> PathBuf {
+    build_target(
+        package,
+        "--example",
+        example,
+        cargo_target_dir().join("debug").join("examples").join(example),
+    )
+}
+
+/// Build one cargo target and return the artefact path, memoised per test
+/// binary. See [`build_binary`] for why the build is unconditional.
+fn build_target(package: &str, kind: &str, name: &str, output: PathBuf) -> PathBuf {
     static BUILT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> =
         std::sync::OnceLock::new();
     let cache = BUILT.get_or_init(Default::default);
     let mut cache = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(path) = cache.get(bin) {
+    let key = format!("{kind} {name}");
+    if let Some(path) = cache.get(&key) {
         return path.clone();
     }
 
@@ -61,21 +81,20 @@ fn build_binary(package: &str, bin: &str) -> PathBuf {
     // hermetic in a temp working directory (cargo cannot find a manifest from
     // there, so `cargo run`-style resolution is not an option).
     let status = std::process::Command::new(env!("CARGO"))
-        .args(["build", "--quiet", "-p", package, "--bin", bin])
+        .args(["build", "--quiet", "-p", package, kind, name])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .status()
-        .unwrap_or_else(|e| panic!("failed to invoke cargo to build {bin}: {e}"));
-    assert!(status.success(), "`cargo build -p {package} --bin {bin}` failed");
+        .unwrap_or_else(|e| panic!("failed to invoke cargo to build {name}: {e}"));
+    assert!(status.success(), "`cargo build -p {package} {kind} {name}` failed");
 
-    let path = cargo_target_dir().join("debug").join(bin);
     assert!(
-        path.is_file(),
-        "no `{bin}` binary at {} even after building it. Skipping instead would leave the \
+        output.is_file(),
+        "no `{name}` artefact at {} even after building it. Skipping instead would leave the \
          behaviour unmeasured.",
-        path.display(),
+        output.display(),
     );
-    cache.insert(bin.to_string(), path.clone());
-    path
+    cache.insert(key, output.clone());
+    output
 }
 
 /// Absolute path to a freshly built `aasm`.
@@ -92,6 +111,16 @@ pub fn aasm_binary() -> PathBuf {
 /// escape hatch as [`aasm_binary`]'s.
 pub fn aa_proxy_binary() -> PathBuf {
     explicit_binary("AA_PROXY_BIN_PATH").unwrap_or_else(|| build_binary("aa-proxy", "aa-proxy"))
+}
+
+/// Absolute path to a freshly built `examples/proxy_with_mock_upstream` — the
+/// shipped `ProxyServer` in a process, with its upstream dial redirected.
+///
+/// No `*_BIN_PATH` escape hatch: this artefact only ever exists because the
+/// running tree built it, so an externally supplied one could not be current by
+/// construction.
+pub fn proxy_with_mock_upstream_binary() -> PathBuf {
+    build_example("aa-integration-tests", "proxy_with_mock_upstream")
 }
 
 fn explicit_binary(var: &str) -> Option<PathBuf> {
@@ -144,6 +173,100 @@ impl TrustedProxy {
                 &addr,
                 "--ca-dir",
                 root.join("ca").to_str().expect("temp path is utf-8"),
+                "--log-file",
+                root.join("proxy.log").to_str().expect("temp path is utf-8"),
+            ])
+            .output()?;
+        anyhow::ensure!(
+            out.status.success(),
+            "`aasm proxy start` failed — without a running proxy every `aasm run` in this test \
+             refuses, and the refusal would be mistaken for the behaviour under test\n\
+             stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+
+        Ok(Self {
+            _tmp: tmp,
+            aasm,
+            data_dir,
+            proxy_bin_dir,
+            addr,
+        })
+    }
+
+    /// A trusted proxy whose upstream dial lands on `upstream` instead of the
+    /// real provider, sharing `ca_dir` with the caller and reading integration
+    /// state from `state_dir`.
+    ///
+    /// # Why this is a second constructor rather than a flag on the first
+    ///
+    /// The shipped `aa-proxy` binary cannot be pointed at a loopback mock —
+    /// `ProxyConfig::from_env` leaves `upstream_override` at `None` and the SSRF
+    /// guard refuses private dial targets, both deliberately and neither
+    /// reachable from the environment. So the process started here is
+    /// `examples/proxy_with_mock_upstream`: the same
+    /// [`aa_proxy::proxy::ProxyServer`] built from the same
+    /// `ProxyConfig::from_env`, with that one field overridden. See that file's
+    /// module docs for what is and is not production code in it.
+    ///
+    /// It is copied to a file named `aa-proxy` because `aasm proxy start`
+    /// resolves the binary with `which aa-proxy` and the trust check requires
+    /// the recorded executable to carry that name. **That check is therefore not
+    /// under test through this constructor** — `cli_run_trusted_proxy.rs`
+    /// measures it against the genuine binary, and nothing here relaxes it.
+    ///
+    /// `ca_dir` is the caller's so the certificate authority the mock's leaf is
+    /// signed by, the one the proxy issues MitM leaves from, and the one the
+    /// integration install copies into the launch environment are all one CA. A
+    /// harness holding three of them would pass or fail for reasons that have
+    /// nothing to do with the product.
+    pub fn start_intercepting(ca_dir: &Path, upstream: std::net::SocketAddr, state_dir: &Path) -> anyhow::Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let aasm = aasm_binary();
+        let built = proxy_with_mock_upstream_binary();
+
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().to_path_buf();
+        let data_dir = root.join("data");
+        let proxy_bin_dir = root.join("bin");
+        std::fs::create_dir_all(&data_dir)?;
+        std::fs::create_dir_all(&proxy_bin_dir)?;
+
+        let proxy_bin = proxy_bin_dir.join("aa-proxy");
+        std::fs::copy(&built, &proxy_bin)?;
+        std::fs::set_permissions(&proxy_bin, std::fs::Permissions::from_mode(0o755))?;
+
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            listener.local_addr()?.port()
+        };
+        let addr = format!("127.0.0.1:{port}");
+
+        let out = std::process::Command::new(&aasm)
+            .env("AA_DATA_DIR", &data_dir)
+            .env("PATH", prefixed_path(&proxy_bin_dir)?)
+            // Inherited by the spawned proxy: `aasm proxy start` sets a handful
+            // of variables on the child and passes the rest of its own
+            // environment through.
+            .env("AA_TEST_PROXY_UPSTREAM", upstream.to_string())
+            // Mirrors the conformance harness: the tool's side channels carry
+            // prompt and telemetry bodies too, and a capture set scoped to the
+            // model endpoint alone would let a secret leaking down one of them
+            // pass unnoticed.
+            .env("AA_PROXY_LLM_ONLY", "false")
+            // The mock's leaf is signed by the throwaway CA above, which no
+            // public root store knows. Debug-only; ignored in release builds.
+            .env("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY", "1")
+            .env("AASM_STATE_DIR", state_dir)
+            .args([
+                "proxy",
+                "start",
+                "--listen",
+                &addr,
+                "--ca-dir",
+                ca_dir.to_str().expect("temp path is utf-8"),
                 "--log-file",
                 root.join("proxy.log").to_str().expect("temp path is utf-8"),
             ])
