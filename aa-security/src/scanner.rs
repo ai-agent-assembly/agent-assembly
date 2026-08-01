@@ -1875,6 +1875,26 @@ mod tests {
         );
     }
 
+    /// Every digit character a redacted payload must never still contain —
+    /// both widths, so a partial splice cannot hide behind the assertion.
+    fn contains_no_digit(s: &str) -> bool {
+        !s.chars().any(|c| c.is_ascii_digit() || matches!(c, '０'..='９'))
+    }
+
+    #[test]
+    fn redacts_a_fullwidth_credit_card_to_exact_bytes() {
+        // Counting findings is not enough: the failure mode this fix risks is a
+        // span that is off by a byte or two, which still yields one finding but
+        // splices the wrong region and leaves digits in the clear. Assert the
+        // exact output bytes.
+        let scanner = CredentialScanner::new();
+        let text = "card=４５３２０１５１１２８３０３６６";
+        let redacted = scanner.scan(text).redact(text);
+
+        assert_eq!(redacted, "card=[REDACTED:CreditCardLuhn]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
     #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
