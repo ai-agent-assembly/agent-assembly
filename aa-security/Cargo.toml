@@ -28,5 +28,12 @@ harness = false
 name = "spike_5269_payload_classes"
 harness = false
 
+# AAASM-5269 research harness. Criterion reports a mean/median; a synchronous
+# enforcement budget needs the tail, so this one times each call and prints real
+# p50/p95/p99. Also not a gate.
+[[bench]]
+name = "spike_5269_percentiles"
+harness = false
+
 [lints]
 workspace = true
