@@ -3,11 +3,13 @@
 //!
 //! Types only — nothing here writes, stores or serves anything.
 
+mod category_label;
 mod evidence;
 mod guard;
 mod schema;
 mod verdict;
 
+pub use category_label::CategoryLabel;
 pub use evidence::{EnforcementPoint, ExecutionEvidence, InspectionFailurePath, TransmissionEvidence};
 pub use guard::{AuditLabel, FieldPath, FieldRejection, MAX_FIELD_PATH_BYTES, MAX_LABEL_BYTES};
 pub use schema::{SchemaVersion, SENSITIVE_DATA_SCHEMA_VERSION};

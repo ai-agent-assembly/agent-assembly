@@ -114,7 +114,7 @@ impl core::fmt::Display for FieldRejection {
 impl std::error::Error for FieldRejection {}
 
 /// Shape check shared by every guarded string: non-empty, bounded, printable.
-fn check_shape(candidate: &str, limit: usize) -> Result<(), FieldRejection> {
+pub(super) fn check_shape(candidate: &str, limit: usize) -> Result<(), FieldRejection> {
     if candidate.is_empty() {
         return Err(FieldRejection::Empty);
     }
