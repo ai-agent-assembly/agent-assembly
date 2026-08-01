@@ -14,7 +14,8 @@
 //! here — a second severity table would drift from the published one.
 
 use super::{
-    ByteSpan, CanonicalCategory, CanonicalFinding, ConfidenceBand, DetectionMethod, FindingStatus, Provenance, Severity,
+    ByteSpan, CanonicalCategory, CanonicalFinding, ConfidenceBand, DetectionMethod, FindingStatus, Provenance,
+    Recognizer, Severity,
 };
 use crate::scanner::{CredentialFinding, CredentialKind};
 
@@ -25,7 +26,7 @@ use crate::scanner::{CredentialFinding, CredentialKind};
 /// the crate: a finding recorded under `0.0.1-rc.6` was produced by that
 /// release's detectors and its entropy gate, and a later re-scan of the same
 /// bytes may legitimately differ.
-pub const SCANNER_PROVENANCE: Provenance = Provenance::new("aa-security::scanner", env!("CARGO_PKG_VERSION"));
+pub const SCANNER_PROVENANCE: Provenance = Provenance::new(Recognizer::BuiltinScanner, env!("CARGO_PKG_VERSION"));
 
 impl DetectionMethod {
     /// How the built-in scanner detects this kind.

@@ -190,25 +190,55 @@ impl FindingStatus {
     }
 }
 
+/// A detection source that exists in this build.
+///
+/// A closed enum rather than a string, so a recognizer identity cannot be
+/// invented at runtime. `&'static str` would not have achieved that: `Box::leak`
+/// turns any runtime `String` into a `&'static str` in safe, stable Rust, so a
+/// string-typed identity is a convention, not a boundary. Adding a recognizer —
+/// B-7's locale packs are next — is a source change, which is the point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub enum Recognizer {
+    /// The built-in Aho-Corasick scanner in [`crate::scanner`].
+    BuiltinScanner,
+}
+
+impl Recognizer {
+    /// The stable spelling used in events and metric labels.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::BuiltinScanner => "aa-security::scanner",
+        }
+    }
+}
+
 /// Which recognizer produced a finding, and at which version.
 ///
-/// Both fields are `&'static str`, so provenance can only name something that
-/// was compiled in. A recognizer identity that arrived over a wire cannot be
-/// recorded here without a code change — the compile-time boundary ADR 0032
-/// validation requirement 10 asks for, applied at the point where an
-/// out-of-process adapter would otherwise attribute findings to itself.
+/// The identity is a [`Recognizer`], so it cannot be forged from runtime bytes.
+/// The version is descriptive rather than a trust signal — it says which build's
+/// detectors ran, not that they really did.
+///
+/// **This is not an authenticity boundary.** Provenance is stamped by whoever
+/// constructs the finding; it records which recognizer a value *claims* to come
+/// from. Nothing in this crate can distinguish a genuine scanner finding from a
+/// well-formed forgery, and no v1 code path needs to — ADR 0032 validation
+/// requirement 10 is about an out-of-process provider being unreachable from a
+/// synchronous path, which is trivially satisfied here because no provider
+/// exists (D-1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Provenance {
-    /// Stable identifier of the recognizer, e.g. `aa-security::scanner`.
-    pub recognizer: &'static str,
+    /// Which recognizer the finding claims to come from.
+    pub recognizer: Recognizer,
     /// Version of that recognizer.
     pub version: &'static str,
 }
 
 impl Provenance {
     /// Name a recognizer and its version.
-    pub const fn new(recognizer: &'static str, version: &'static str) -> Self {
+    pub const fn new(recognizer: Recognizer, version: &'static str) -> Self {
         Self { recognizer, version }
     }
 }

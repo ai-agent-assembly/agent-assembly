@@ -90,5 +90,7 @@ mod lift;
 mod mapping;
 
 pub use category::{CanonicalCategory, CategoryBase, CategoryQualifier};
-pub use finding::{ByteSpan, CanonicalFinding, ConfidenceBand, DetectionMethod, FindingStatus, Provenance, Severity};
+pub use finding::{
+    ByteSpan, CanonicalFinding, ConfidenceBand, DetectionMethod, FindingStatus, Provenance, Recognizer, Severity,
+};
 pub use lift::{LiftError, SCANNER_PROVENANCE};
