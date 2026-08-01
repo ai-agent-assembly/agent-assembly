@@ -1830,6 +1830,23 @@ mod tests {
         assert!(redacted.contains("[REDACTED:SsnPattern]"));
     }
 
+    // --- AAASM-5345: full-width digits (U+FF10–U+FF19) must not evade the
+    //     credit-card and SSN detectors. All fixtures are synthetic. ---
+
+    #[test]
+    fn detects_fullwidth_credit_card_as_the_same_kind_as_ascii() {
+        // The same synthetic Visa test number in both digit widths must be
+        // classified identically — switching input mode must not change the
+        // verdict.
+        let scanner = CredentialScanner::new();
+        let ascii = scanner.scan("card=4532015112830366");
+        let fullwidth = scanner.scan("card=４５３２０１５１１２８３０３６６");
+
+        let kinds = |r: &ScanResult| r.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&ascii), vec![CredentialKind::CreditCardLuhn]);
+        assert_eq!(kinds(&fullwidth), kinds(&ascii));
+    }
+
     #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
