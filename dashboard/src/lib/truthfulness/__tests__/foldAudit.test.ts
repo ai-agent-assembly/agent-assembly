@@ -33,12 +33,30 @@
  *   They are recorded rather than fixed here because each needs its own
  *   decoder, its own absence rendering and its own mutation proof, and folding
  *   eight page migrations into a shell-and-capability bugfix would make the
- *   diff unreviewable. Each carries the follow-up it belongs to.
+ *   diff unreviewable. Each names the ticket that carries it.
  *
  * `hazardous` is deliberately allowed to pass this test. A test that failed on
  * them would be turned off within a day, and the value here is the ratchet:
  * the *set* cannot grow silently, and nothing can move out of `hazardous`
  * without someone editing this file and saying why.
+ *
+ * ## Exactly how much of this is machine-checked
+ *
+ * Two things, and they are the two that decay: the **set of files** that fold a
+ * query undecoded, and the **count per file**. Nothing here resolves a query
+ * function or re-derives a disposition — those came from a human reading each
+ * `queryFn`, and the `reason` strings are that human's claim, checked only for
+ * shape. Do not describe this file as machine-checking the dispositions; the
+ * AAASM-5369 review caught exactly that overstatement being made about it, on a
+ * PR whose subject is artefacts claiming properties the code does not provide.
+ *
+ * The set and the count are enforced by a **text scan**, which an import alias
+ * (`import { certainFromQuery as fold }`) or a namespace call (`T.certainFromQuery`)
+ * would slip past. The compiler-enforced half of the ratchet is the
+ * `no-restricted-imports` rule in `.eslintrc.cjs`, whose allowlist is the same
+ * eleven files; it catches aliasing and namespace access for free. Neither half
+ * is sufficient alone — the lint rule cannot count folds within a file, and this
+ * scan cannot see through a rename.
  */
 import { describe, expect, it } from 'vitest'
 import * as capabilityApi from '../../../features/capability/api'
@@ -76,70 +94,70 @@ const AUDIT: readonly FoldSite[] = [
     calls: 1,
     disposition: 'hazardous',
     reason:
-      'A non-array `resources` throws inside the generator `tallyVerdicts` consumes, at render, outside any queryFn. A truthy non-array `policies` makes `cascadeEvidenceOf` read `.length` as `undefined`, which is not `0`, so the empty-cascade guard is skipped and counting proceeds on unread data. `api/capability.ts` casts the body (`data as CapabilityMatrix`); the hook only incidentally checks `agents` via `.find`. Follow-up.',
+      'A non-array `resources` throws inside the generator `tallyVerdicts` consumes, at render, outside any queryFn. A truthy non-array `policies` makes `cascadeEvidenceOf` read `.length` as `undefined`, which is not `0`, so the empty-cascade guard is skipped and counting proceeds on unread data. `api/capability.ts` casts the body (`data as CapabilityMatrix`); the hook only incidentally checks `agents` via `.find`. Follow-up: AAASM-5380.',
   },
   {
     file: 'features/approvals/ApprovalsBellButton.tsx',
     calls: 1,
     disposition: 'hazardous',
     reason:
-      'features/approvals/api.ts returns `data?.items ?? []`, so a body with no `items` becomes a known empty queue and the header aria-label reads "no approvals are waiting" — an affirmative all-clear from an unread body. The AAASM-5167 comment claiming "the three cases are now distinct" holds for a transport failure only. Follow-up.',
+      'features/approvals/api.ts returns `data?.items ?? []`, so a body with no `items` becomes a known empty queue and the header aria-label reads "no approvals are waiting" — an affirmative all-clear from an unread body. The AAASM-5167 comment claiming "the three cases are now distinct" holds for a transport failure only. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
   },
   {
     file: 'features/onboarding/steps/Step2InstallSdk.tsx',
     calls: 1,
     disposition: 'hazardous',
     reason:
-      'The non-2xx path is validated by `asHealthResponse`, but the 2xx path in features/onboarding/api.ts returns the body unchecked, and `buildProbeLines` calls `Object.entries(health.checks)` — a TypeError on a 200 without `checks`. It cannot emit a false "gateway reachable" (a missing `status` fails `!== "ok"`), so this is a crash rather than a fabrication. Follow-up.',
+      'The non-2xx path is validated by `asHealthResponse`, but the 2xx path in features/onboarding/api.ts returns the body unchecked, and `buildProbeLines` calls `Object.entries(health.checks)` — a TypeError on a 200 without `checks`. It cannot emit a false "gateway reachable" (a missing `status` fails `!== "ok"`), so this is a crash rather than a fabrication. Follow-up: AAASM-5380.',
   },
   {
     file: 'features/onboarding/steps/Step5EnrollAgent.tsx',
     calls: 1,
     disposition: 'hazardous',
     reason:
-      'features/onboarding/api.ts reads `data.total` / `data.items` off a cast body. A missing `total` renders an empty meter and the pane prints "the registry answered: no agents registered yet"; a non-array `items` throws in `.map` at render. Follow-up.',
+      'features/onboarding/api.ts reads `data.total` / `data.items` off a cast body. A missing `total` renders an empty meter and the pane prints "the registry answered: no agents registered yet"; a non-array `items` throws in `.map` at render. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
   },
   {
     file: 'pages/AlertsPage.tsx',
     calls: 3,
     disposition: 'hazardous',
     reason:
-      'Two of the three are safe — `alertsState` and `totalState` come through `parseAlertList` / `finiteOrNull`. The third, `rulesState`, comes from `useAlertRulesQuery`, which is a bare `as` cast over `response.json()`; `indexRulesById` then builds a Map from it and throws on a non-array. Recorded as hazardous because the file contains a live one. Follow-up.',
+      'Two of the three are safe — `alertsState` and `totalState` come through `parseAlertList` / `finiteOrNull`. The third, `rulesState`, comes from `useAlertRulesQuery`, which is a bare `as` cast over `response.json()`; `indexRulesById` then builds a Map from it and throws on a non-array. Recorded as hazardous because the file contains a live one. Follow-up: AAASM-5380.',
   },
   {
     file: 'pages/CostsPage.tsx',
     calls: 2,
     disposition: 'hazardous',
     reason:
-      'Both hooks in features/teams/api.ts end in `data as CostSummary` / `data as TopologyOverview` — the module comment calls them accepted-risk casts. Every downstream read is optional-chained, so nothing throws; instead `whenEmpty: "unconfigured"` never fires (the body is non-null) and `countBlockedByBudget` returns a measured-looking `known(0)` teams blocked by budget. Follow-up.',
+      'Both hooks in features/teams/api.ts end in `data as CostSummary` / `data as TopologyOverview` — the module comment calls them accepted-risk casts. Every downstream read is optional-chained, so nothing throws; instead `whenEmpty: "unconfigured"` never fires (the body is non-null) and `countBlockedByBudget` returns a measured-looking `known(0)` teams blocked by budget. Follow-up: AAASM-5380.',
   },
   {
     file: 'pages/FleetPage.tsx',
     calls: 1,
     disposition: 'hazardous',
     reason:
-      'features/agents/api.ts returns `data?.items ?? []`, so a body with no `items` renders the "no agents registered" empty state — an affirmative claim about the fleet from an unread body. A truthy non-array `items` throws in a sibling `.map` on the same render. Follow-up.',
+      'features/agents/api.ts returns `data?.items ?? []`, so a body with no `items` renders the "no agents registered" empty state — an affirmative claim about the fleet from an unread body. A truthy non-array `items` throws in a sibling `.map` on the same render. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
   },
   {
     file: 'pages/LiveOpsPage.tsx',
     calls: 1,
     disposition: 'hazardous',
     reason:
-      'Same `?? []` in features/approvals/api.ts as the bell. ApprovalPool then renders "No pending approvals / Nothing is waiting for a human decision right now" with no absence badge. The comment there frames the `?? []` as a safety property; it is the fail-open. Follow-up.',
+      'Same `?? []` in features/approvals/api.ts as the bell. ApprovalPool then renders "No pending approvals / Nothing is waiting for a human decision right now" with no absence badge. The comment there frames the `?? []` as a safety property; it is the fail-open. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
   },
   {
     file: 'pages/OverviewPage.tsx',
     calls: 4,
     disposition: 'hazardous',
     reason:
-      'Mixed. `alerts` is guarded by `parseAlertList`; `enforcement` is a Map built client-side. `approvals` inherits the `?? []` and renders a confident "0 pending approvals". `policies` is the *same* defect AAASM-5369 fixed for the nav rail — `usePoliciesQuery` checks `!data?.items` for truthiness only, so `{"items":[{},{}]}` still counts to a confident 2 here. That one is the direct sibling of this ticket and should take the same decoder. Follow-up.',
+      'Mixed. `alerts` is guarded by `parseAlertList`; `enforcement` is a Map built client-side. `approvals` inherits the `?? []` and renders a confident "0 pending approvals". `policies` is the *same* defect AAASM-5369 fixed for the nav rail — `usePoliciesQuery` checks `!data?.items` for truthiness only, so `{"items":[{},{}]}` still counts to a confident 2 here. That one is the direct sibling of this ticket and should take the same decoder. Follow-up: AAASM-5379 (the literal `undefined` it renders), AAASM-5378 (the approvals `?? []`), AAASM-5380 (the migration).',
   },
   {
     file: 'pages/TeamsPage.tsx',
     calls: 2,
     disposition: 'hazardous',
     reason:
-      'The topology-agents hook constructs its object but passes `nodes` through a `?? []`, so a missing `nodes` renders a confident "0 unclaimed" chip and a truthy non-array throws in `.filter`. The overview hook is a bare cast, and a missing `total_agent_count` makes the census `unaccountedFor` compute to `NaN` rather than reporting the disagreement it exists to report. Follow-up.',
+      'The topology-agents hook constructs its object but passes `nodes` through a `?? []`, so a missing `nodes` renders a confident "0 unclaimed" chip and a truthy non-array throws in `.filter`. The overview hook is a bare cast, and a missing `total_agent_count` makes the census `unaccountedFor` compute to `NaN` rather than reporting the disagreement it exists to report. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
   },
 ]
 
@@ -218,16 +236,32 @@ describe('the undecoded-fold audit is complete', () => {
     )
   })
 
-  it('gives every entry a reason that cites code, not a nearby comment', () => {
+  /**
+   * What this block does **not** do (AAASM-5369 review).
+   *
+   * It reads no query function and resolves no import. These are assertions
+   * about the *prose* — that a reason is long enough to be a reason, that a
+   * "safe" verdict names a mechanism, that a "hazardous" one names its ticket.
+   * The dispositions themselves were established by a human reading each query
+   * function, and nothing here re-derives that.
+   *
+   * The distinction matters because this PR's own review caught the claim
+   * "machine-checked disposition" being made about exactly this code. The
+   * machine checks two things: the *set* of files, and the *count* per file.
+   * Everything else in `AUDIT` is an author's claim, and should be read as one.
+   */
+  it('gives every entry a prose reason of the shape its disposition requires', () => {
     for (const site of AUDIT) {
       expect(site.reason.length).toBeGreaterThan(80)
       // A disposition of "safe" has to name what makes it safe.
       if (site.disposition !== 'hazardous') {
         expect(site.reason).toMatch(/throw|constructs|built|Map/i)
       }
-      // A live defect has to name where it is tracked.
+      // A live defect has to name the ticket tracking it, not just say that
+      // one exists. A bare "Follow-up." is the same untraceable gesture this
+      // audit replaced prose with.
       if (site.disposition === 'hazardous') {
-        expect(site.reason).toMatch(/follow-up/i)
+        expect(site.reason).toMatch(/AAASM-\d+/)
       }
     }
   })
@@ -271,6 +305,7 @@ describe('every *FromQuery the migrated modules export, on a body that is not it
 
   it('finds every fold these modules use, so the sweep cannot pass vacuously', () => {
     expect(folds.map(([name]) => name)).toEqual([
+      'features/capability/api#capabilityMatrixFromQuery',
       'features/capability/api#cascadeEvidenceFromQuery',
       'features/policies/policyBadge#inactivePolicyBadgeFromQuery',
     ])
