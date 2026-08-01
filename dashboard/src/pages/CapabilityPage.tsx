@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router'
 import { capabilityClient } from '../api/capability'
@@ -12,6 +12,13 @@ import { ErrorState } from '../components/ErrorState'
 import { LoadingState } from '../components/LoadingState'
 import { useToast } from '../components/Toast'
 import { StatusState } from '../components/truthfulness'
+import {
+  cascadeIsEmpty,
+  isKnown,
+  type CascadeEvidence,
+  type Certain,
+  type TruthState,
+} from '../lib/truthfulness'
 import { BulkActionBar } from '../features/capability/BulkActionBar'
 import { CapabilityMatrixGrid, type CellSelection } from '../features/capability/CapabilityMatrixGrid'
 import { CapabilityFilterBar } from '../features/capability/CapabilityFilterBar'
@@ -28,6 +35,65 @@ import type { CapabilityMatrix, OverridableDecision, Verb } from '../features/ca
 import './CapabilityPage.css'
 
 type Tab = 'matrix' | 'resource' | 'agent'
+
+interface CascadeBanner {
+  readonly state: TruthState
+  readonly title: string
+  readonly description: ReactNode
+  readonly detail?: string
+}
+
+/**
+ * What the matrix-level banner may claim about the grid below it (AAASM-5369).
+ *
+ * Three outcomes, and the middle one is the reason this is a function rather
+ * than the `!matrix.cascadeLoaded` expression it replaced:
+ *
+ *  - **Cascade loaded** — `null`. The grid is a measurement; no banner.
+ *  - **Cascade absent** — we could not obtain the flag: the request failed, is
+ *    in flight, or answered with a body that is not a capability matrix. The
+ *    grid is untrustworthy for a reason we cannot name as a deployment state,
+ *    so the banner says that and carries the reason verbatim. Saying "no policy
+ *    cascade is loaded" here — which is what reading `!undefined` produced —
+ *    tells an operator to go and load a policy on the strength of a body nobody
+ *    parsed, and is exactly the fabricated-measurement class AAASM-5112 exists
+ *    to prevent.
+ *  - **Cascade loaded but empty** — the genuine AAASM-5106 condition, unchanged.
+ *
+ * The banner is not suppressed in the middle case. The grid still paints
+ * whatever cells it has, and an unqualified wall of ALLOW reads as a clean bill
+ * of health; withholding the warning to avoid an inaccurate reason would trade
+ * one untruth for a larger one.
+ */
+function bannerForCascade(cascade: Certain<CascadeEvidence>): CascadeBanner | null {
+  if (!isKnown(cascade)) {
+    return {
+      state: cascade.state,
+      title: 'Capability matrix could not be read',
+      description: (
+        <>
+          These cells are not a measurement of what each agent can do, and whether a policy
+          cascade is loaded at all could not be determined. Enforcement is unaffected and still
+          applies the active policy.
+        </>
+      ),
+      detail: cascade.detail,
+    }
+  }
+  if (!cascadeIsEmpty(cascade.value)) return null
+  return {
+    state: 'unconfigured',
+    title: 'Capability matrix not evaluated',
+    description: (
+      <>
+        No policy cascade is loaded, so these cells are not a measurement of what each agent can
+        do — an unconstrained cell reads as <code>allow</code> by default. Enforcement is
+        unaffected and still applies the active policy; this page cannot resolve it until the
+        cascade is loaded.
+      </>
+    ),
+  }
+}
 
 export function CapabilityPage() {
   const [tab, setTab] = useState<Tab>('matrix')
@@ -157,6 +223,11 @@ export function CapabilityPage() {
     ? sortAgents(applyFilters(matrix.agents, filters), matrix.resources, verb, sort)
     : []
 
+  // What the matrix-level banner is entitled to say (AAASM-5369). `null` means
+  // the cascade is loaded and the grid is a measurement, so there is nothing to
+  // warn about.
+  const cascadeBanner = bannerForCascade(cascadeEvidence)
+
   if (loadError) {
     return (
       <div className="capability-page" data-testid="capability-page">
@@ -265,20 +336,25 @@ export function CapabilityPage() {
           matrix-level "not evaluated" banner that tells the operator the grid
           cannot be trusted, rather than letting a uniform wall of ALLOW read as
           a clean bill of health. This is the interim honesty fix; per-cell
-          rendering is a scoped follow-up. */}
-      {tab === 'matrix' && matrix && !matrix.cascadeLoaded && (
+          rendering is a scoped follow-up.
+
+          AAASM-5369 — driven off `cascadeEvidence` rather than off
+          `matrix.cascadeLoaded` directly. The raw read was the same defect as
+          the fold beside it and louder: on a body that carries no
+          `cascadeLoaded` key, `!undefined` is `true`, so this banner asserted
+          "No policy cascade is loaded" — a specific, actionable claim about the
+          operator's deployment — for a matrix the dashboard had not read. It
+          still renders when the matrix is unreadable, because the grid below is
+          equally untrustworthy either way and silence there would leave a wall
+          of ALLOW with no caveat at all; what changes is that it now says which
+          of the two situations it is in. */}
+      {tab === 'matrix' && cascadeBanner && (
         <div className="capability-cascade-banner" data-testid="capability-cascade-unloaded">
           <StatusState
-            state="unconfigured"
-            title="Capability matrix not evaluated"
-            description={
-              <>
-                No policy cascade is loaded, so these cells are not a measurement of what each
-                agent can do — an unconstrained cell reads as <code>allow</code> by default.
-                Enforcement is unaffected and still applies the active policy; this page cannot
-                resolve it until the cascade is loaded.
-              </>
-            }
+            state={cascadeBanner.state}
+            title={cascadeBanner.title}
+            description={cascadeBanner.description}
+            detail={cascadeBanner.detail}
             testId="capability-cascade-unloaded-state"
           />
         </div>

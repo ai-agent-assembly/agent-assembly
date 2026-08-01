@@ -207,6 +207,41 @@ describe('CapabilityPage', () => {
     expect(screen.queryByTestId('capability-cascade-unloaded')).not.toBeInTheDocument()
   })
 
+  it('does not claim the cascade is unloaded when it could not read the matrix', async () => {
+    // AAASM-5369. The banner used to read `!matrix.cascadeLoaded` straight off
+    // the cast body, so an API predating AAASM-5106 — which sends no such key —
+    // made `!undefined` true and the page announced "No policy cascade is
+    // loaded". That is a specific, actionable claim about the operator's
+    // deployment, made about a body the dashboard never parsed.
+    const { cascadeLoaded: _dropped, ...withoutFlag } = FIXTURE
+    getMatrix.mockResolvedValue(withoutFlag as unknown as CapabilityMatrix)
+    renderPage()
+
+    // The warning is still shown — the grid below is untrustworthy either way,
+    // and a wall of ALLOW with no caveat would be the worse outcome.
+    const banner = await screen.findByTestId('capability-cascade-unloaded-state')
+    expect(banner).toHaveAttribute('data-truth-state', 'unknown')
+    expect(banner).toHaveTextContent(/could not be read/i)
+    // But it no longer states the deployment fact it cannot know.
+    expect(banner).not.toHaveTextContent(/No policy cascade is loaded/i)
+    expect(banner).not.toHaveTextContent(/not evaluated/i)
+    // And it names the reason, so the operator has somewhere to go.
+    expect(banner).toHaveTextContent(/capability matrix came back in a shape/i)
+  })
+
+  it('announces the unreadable-matrix banner politely, not as an alert', async () => {
+    // aria-live discipline (AAASM-5173): `role="alert"` is reserved for a
+    // failed request. Nothing failed here — a 200 arrived — so interrupting the
+    // operator would devalue the interruptions that do matter.
+    const { cascadeLoaded: _dropped, ...withoutFlag } = FIXTURE
+    getMatrix.mockResolvedValue(withoutFlag as unknown as CapabilityMatrix)
+    renderPage()
+
+    const banner = await screen.findByTestId('capability-cascade-unloaded-state')
+    expect(banner).toHaveAttribute('role', 'status')
+    expect(banner).not.toHaveAttribute('role', 'alert')
+  })
+
   it('shows the matrix tab count badge and the summary row', async () => {
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
