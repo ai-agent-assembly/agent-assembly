@@ -2563,6 +2563,26 @@ mod tests {
         assert_eq!(result.redact(text), text);
     }
 
+    /// Detection-strength guard: the plain ASCII high-entropy token is the case
+    /// the whitespace-token pass exists for, and the case this change edits. It
+    /// must be unaffected.
+    #[test]
+    fn ascii_high_entropy_token_is_still_detected() {
+        let scanner = CredentialScanner::new();
+        let secret = "xK9mP2nQvR7sT4wY1aB6dF3hJ8lN0eC5";
+        let text = format!("token={secret}");
+        let result = scanner.scan(&text);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "ASCII high-entropy token must still be flagged: {:?}",
+            result.findings
+        );
+        assert!(!result.redact(&text).contains(secret));
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
