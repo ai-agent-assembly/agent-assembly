@@ -839,16 +839,38 @@ fn luhn_valid(digits: &str) -> bool {
 /// in multi-byte digits partway through the number and lose the match.
 const DIGIT_SEGMENT_MAX_CHARS: usize = 24;
 
+/// The ASCII digit equivalent of `c` — `c` itself for `'0'..='9'`, and the
+/// corresponding ASCII digit for the full-width forms `'０'..='９'`
+/// (U+FF10–U+FF19). `None` for anything else.
+///
+/// AAASM-5345: full-width digits render near-identically to ASCII in most
+/// fonts, are one keystroke away on any CJK input method, and round-trip
+/// through JSON unchanged — so a card number or SSN typed in full-width form
+/// was a working evasion of both PII detectors, which compared raw ASCII bytes.
+///
+/// Normalisation is for **matching only**. A full-width digit occupies three
+/// UTF-8 bytes against ASCII's one, so callers must keep every reported offset
+/// in terms of the original text; normalising the text and matching on the
+/// result would yield offsets that index the wrong bytes.
+fn ascii_digit_of(c: char) -> Option<char> {
+    match c {
+        '0'..='9' => Some(c),
+        '\u{FF10}'..='\u{FF19}' => char::from_u32(c as u32 - 0xFF10 + u32::from(b'0')),
+        _ => None,
+    }
+}
+
 /// Result of walking one digit segment (see [`digit_segment`]).
 struct DigitSegment {
     /// Byte offset just past the segment — where the outer scan resumes, and
     /// the `end` of any finding the segment produces.
     end: usize,
-    /// The segment's digits and the separators between them, in order.
-    /// Matched against the `DDD-DD-DDDD` SSN shape by [`is_ssn`].
+    /// The segment's digits — normalised to ASCII by [`ascii_digit_of`] — and
+    /// the separators between them, in order. Matched against the
+    /// `DDD-DD-DDDD` SSN shape by [`is_ssn`].
     normalised: String,
-    /// The segment's digits only, without separators — what [`luhn_valid`]
-    /// computes the checksum over.
+    /// The segment's normalised digits only, without separators — what
+    /// [`luhn_valid`] computes the checksum over.
     digits: String,
 }
 
@@ -869,9 +891,11 @@ fn digit_segment(text: &str, start: usize) -> DigitSegment {
     while chars < DIGIT_SEGMENT_MAX_CHARS {
         let Some(c) = text[end..].chars().next() else { break };
 
-        if c.is_ascii_digit() {
-            normalised.push(c);
-            digits.push(c);
+        if let Some(d) = ascii_digit_of(c) {
+            normalised.push(d);
+            digits.push(d);
+            // Advance by the *original* character's width, never the ASCII
+            // equivalent's, so `end` stays an offset into `text`.
             end += c.len_utf8();
             chars += 1;
             continue;
@@ -887,7 +911,8 @@ fn digit_segment(text: &str, start: usize) -> DigitSegment {
             && text[end + c.len_utf8()..]
                 .chars()
                 .next()
-                .is_some_and(|next| next.is_ascii_digit())
+                .and_then(ascii_digit_of)
+                .is_some()
         {
             normalised.push(c);
             end += c.len_utf8();
@@ -906,13 +931,18 @@ fn digit_segment(text: &str, start: usize) -> DigitSegment {
 }
 
 /// Scans `text` for credit card numbers (Luhn-validated) and SSN patterns (`DDD-DD-DDDD`).
+///
+/// Digits are normalised by [`ascii_digit_of`], so a value written in full-width
+/// digits is detected as the same kind as its ASCII equivalent (AAASM-5345).
+/// Findings still span the **original** text: normalisation never reaches the
+/// offsets, only the strings the two checks are run against.
 fn scan_digit_sequences(text: &str, findings: &mut Vec<CredentialFinding>) {
     let mut i = 0usize;
     while i < text.len() {
         // `i` is always on a char boundary: it advances either by one whole
         // character or to a segment's `end`, which is itself a boundary.
         let Some(c) = text[i..].chars().next() else { break };
-        if !c.is_ascii_digit() {
+        if ascii_digit_of(c).is_none() {
             i += c.len_utf8();
             continue;
         }
