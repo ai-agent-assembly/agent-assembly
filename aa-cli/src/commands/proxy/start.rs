@@ -325,6 +325,72 @@ mod tests {
         assert_eq!(w.inner.listen, "0.0.0.0:9000");
     }
 
+    /// The default is the address `aasm run` will trust, so the shipped
+    /// behaviour must survive the guard untouched.
+    #[test]
+    fn the_default_listen_address_is_accepted() {
+        let default = Wrapper::parse_from(["test"]).inner.listen;
+        assert_eq!(checked_listen(&default, false), Ok(()), "default {default} must start");
+    }
+
+    #[test]
+    fn an_explicit_loopback_listen_address_is_accepted() {
+        assert_eq!(checked_listen("127.0.0.1:9000", false), Ok(()));
+        assert_eq!(checked_listen("[::1]:9000", false), Ok(()));
+    }
+
+    /// AAASM-5348: the address that used to start a proxy `aasm run` would
+    /// never trust. The diagnostic has to carry the reason, since the operator
+    /// asked for this address on purpose.
+    #[test]
+    fn a_bare_non_loopback_listen_address_is_refused() {
+        let reason = checked_listen("0.0.0.0:9000", false)
+            .expect_err("a proxy reachable from other hosts must not start by default");
+        assert!(reason.contains("0.0.0.0:9000"), "must name the address, got: {reason}");
+        assert!(
+            reason.contains("not a loopback address"),
+            "must say what disqualified it, got: {reason}"
+        );
+        assert!(
+            reason.contains("--allow-remote-clients"),
+            "must point at the option that states the intent, got: {reason}"
+        );
+    }
+
+    /// The opt-in records intent; it cannot supply protections the proxy does
+    /// not have. Naming them is the point — "refused" alone would read as a bug.
+    #[test]
+    fn the_opt_in_does_not_authorize_an_unprotected_remote_listener() {
+        let reason = checked_listen("0.0.0.0:9000", true)
+            .expect_err("--allow-remote-clients must not open an unauthenticated listener");
+        assert!(
+            reason.contains("TLS on the proxy listener"),
+            "must name the missing transport protection, got: {reason}"
+        );
+        assert!(
+            reason.contains("client authentication and authorization"),
+            "must name the missing client-identity protection, got: {reason}"
+        );
+    }
+
+    /// A `--listen` the proxy cannot parse is refused here rather than becoming
+    /// an opaque "did not bind within 5s" after a process has been spawned.
+    #[test]
+    fn an_unparseable_listen_address_is_refused() {
+        let reason = checked_listen("localhost:9000", false).expect_err("a hostname is not an ip:port literal");
+        assert!(reason.contains("localhost:9000"), "must quote the input, got: {reason}");
+    }
+
+    #[test]
+    fn start_args_allow_remote_clients_defaults_false() {
+        assert!(!Wrapper::parse_from(["test"]).inner.allow_remote_clients);
+        assert!(
+            Wrapper::parse_from(["test", "--allow-remote-clients"])
+                .inner
+                .allow_remote_clients
+        );
+    }
+
     #[test]
     fn start_args_gateway_is_optional() {
         let w = Wrapper::parse_from(["test"]);
