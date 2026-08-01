@@ -1,0 +1,2 @@
+# Byte-code caches from running the conformance runner and its tests locally.
+__pycache__/
