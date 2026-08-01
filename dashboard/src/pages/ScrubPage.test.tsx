@@ -346,6 +346,15 @@ describe('ScrubPage — the stat strip', () => {
     )
   })
 
+  it('exposes the strip as a named group, not an unnamed run of text', async () => {
+    // A bare <div aria-label> is name-from-author on a generic container, which
+    // most AT drops — the label was inert before the role was added.
+    await renderLoaded()
+    expect(screen.getByRole('group', { name: 'scrubbing posture' })).toBe(
+      screen.getByTestId('scrub-stats-measured').parentElement,
+    )
+  })
+
   it('states the posture window the server reported', async () => {
     await renderLoaded()
     expect(screen.getByTestId('scrub-stats-posture-window')).toHaveTextContent('30d')
