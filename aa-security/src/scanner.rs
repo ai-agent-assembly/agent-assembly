@@ -2526,6 +2526,18 @@ mod tests {
         assert_eq!(result.redact(text), text);
     }
 
+    /// Reported reproducer 2, redacted in its entirety. The digits are a
+    /// synthetic Taiwanese mobile number: 10 digits, so neither the SSN shape
+    /// nor the Luhn range applies and the PII passes are not what fired here.
+    #[test]
+    fn zh_tw_contact_line_survives_redact() {
+        let scanner = CredentialScanner::new();
+        let text = "聯絡電話：0912-345-678，請於上班時間撥打";
+        let result = scanner.scan(text);
+        assert!(result.is_clean(), "unexpected findings: {:?}", result.findings);
+        assert_eq!(result.redact(text), text);
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
