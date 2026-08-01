@@ -93,6 +93,20 @@ function describeError(error: unknown): string | undefined {
  * is never consulted. Failures therefore have to be intercepted at the network
  * layer (or, in tests, via `page.route`) — not by swapping `fetch` — and this
  * helper only ever sees the outcome, never the transport.
+ *
+ * @deprecated Prefer {@link certainFromShapedQuery} (`./shape`), which takes a
+ * `QueryOutcome<unknown>` plus a decoder. This function's `QueryOutcome<T>`
+ * carries a `T` the wire has not earned — usually a `data as T` at the fetch
+ * boundary — so a fold can read a field off a body that never matched the
+ * schema. That is not hypothetical: it threw out of `AppShell`'s render and
+ * emptied the document, and it reported an unread capability matrix as a
+ * measured zero policy documents (AAASM-5369).
+ *
+ * Still exported, and still correct, for the eleven modules recorded in
+ * `__tests__/foldAudit.test.ts` — several of which are safe because their query
+ * function validates and throws first. The deprecation is a signpost for new
+ * code; the enforcement is the `no-restricted-imports` allowlist in
+ * `.eslintrc.cjs`. Retiring both is AAASM-5380.
  */
 export function certainFromQuery<T>(
   outcome: QueryOutcome<T>,
