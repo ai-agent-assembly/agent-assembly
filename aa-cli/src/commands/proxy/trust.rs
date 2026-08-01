@@ -797,7 +797,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "{}\n127.0.0.1:8899\nlinux-starttime:1\n/usr/local/bin/{PROXY_BINARY_NAME}\n",
+                "{}\n127.0.0.1:8899\nlinux-pidfs:1.2\n/usr/local/bin/{PROXY_BINARY_NAME}\n",
                 std::process::id()
             ),
         )
