@@ -429,6 +429,13 @@ impl IdentityStore {
     /// responsible for deregistering [`Rotation::previous_did`]. See the crate
     /// docs on migration for why that is a deliberate consequence rather than a
     /// gap.
+    ///
+    /// If enrolment fails *after* the rename — a full disk, a CSPRNG that will
+    /// not read — the agent is left with no current key and a retired one, and
+    /// the error names the retired path. That is recoverable by renaming it back
+    /// and is preferred to an automatic rollback, which would be a second write
+    /// on an already-failing filesystem and could destroy the retired key while
+    /// trying to restore it. Nothing here deletes a key under any outcome.
     pub fn rotate(&self, agent_id: &str) -> Result<Rotation, IdentityStoreError> {
         let previous = self.load(agent_id)?;
         let previous_did = previous.did_key();
@@ -440,7 +447,13 @@ impl IdentityStore {
             reason: format!("the superseded key could not be retired ({e})"),
         })?;
 
-        let current = self.enroll(agent_id)?;
+        let current = self.enroll(agent_id).map_err(|e| IdentityStoreError::Io {
+            path: retired_path.clone(),
+            reason: format!(
+                "the superseded key was retired but no replacement could be enrolled ({e});                  this agent currently has no identity key — rename the retired file back to {}                  to restore the previous identity",
+                path.display()
+            ),
+        })?;
         Ok(Rotation {
             previous_did,
             retired_path,
