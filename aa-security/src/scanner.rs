@@ -400,6 +400,18 @@ impl CredentialFinding {
         }
     }
 
+    /// Byte offset one past the end of the match.
+    ///
+    /// Deliberately `pub(crate)`. A length paired with a category can identify a
+    /// value in a small domain, so ADR 0032 §9 permits offsets and lengths only
+    /// in the tamper-evident audit tier; keeping the end offset crate-private
+    /// stops it reaching an API response or a metric label by accident. The
+    /// canonical model reads it to build a [`ByteSpan`](crate::canonical::ByteSpan),
+    /// which carries the same restriction.
+    pub(crate) fn end(&self) -> usize {
+        self.end
+    }
+
     /// Construct a finding for a match produced by a policy-defined regex pattern.
     ///
     /// Used by `aa-gateway` when custom `data.sensitive_patterns` regexes match.
