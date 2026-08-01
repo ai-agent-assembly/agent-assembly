@@ -3,6 +3,8 @@
 //!
 //! Types only — nothing here writes, stores or serves anything.
 
+mod guard;
 mod schema;
 
+pub use guard::{AuditLabel, FieldPath, FieldRejection, MAX_FIELD_PATH_BYTES, MAX_LABEL_BYTES};
 pub use schema::{SchemaVersion, SENSITIVE_DATA_SCHEMA_VERSION};
