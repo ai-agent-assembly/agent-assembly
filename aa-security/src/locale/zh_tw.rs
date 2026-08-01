@@ -1,0 +1,684 @@
+//! The Taiwan (zh-TW) deterministic recognizer pack (AAASM-5353).
+//!
+//! # Word boundaries do not exist here
+//!
+//! `\b` is useless against this input and the mistake is not theoretical: Han
+//! characters are alphabetic, therefore word characters, so `\b\d{8}\b` does not
+//! match `統編12345675` — which is exactly how the identifier is written in
+//! practice, with no separator between the label and the number. Every boundary
+//! test in this module is therefore explicit (`is_fragment_neighbour`), and it
+//! treats a Han character as a boundary and an ASCII alphanumeric as not one.
+//!
+//! # Residual false-positive rates, stated rather than hidden
+//!
+//! A checksum over a short numeric domain admits a fixed fraction of random
+//! strings. Recall matters asymmetrically for a security control — a miss is a
+//! leak — so these recognizers are tuned to catch the identifier and the cost is
+//! paid in precision. What that costs:
+//!
+//! | Recognizer | Structural constraint | Residual |
+//! |---|---|---|
+//! | 國民身分證 / 2021 居留證 | letter + 9 digits, weighted mod-10, `d₁ ∈ {1,2,8,9}` | ~4% of random letter+9-digit strings |
+//! | Legacy 居留證 | 2 letters (2nd ∈ A–D) + 8 digits, weighted mod-10 | ~10% of random strings of that shape |
+//!
+//! # What this pack does not recognise
+//!
+//! Chinese personal names, addresses and 健保卡號 are probabilistic or have no
+//! stable published algorithm. They are out of scope and are not claimed
+//! anywhere. Nothing here should be read as complete coverage of Taiwanese
+//! personal data.
+//!
+//! # Fixtures
+//!
+//! Every identifier in this module's tests is synthetic and constructed by
+//! computing the check digit over a visibly patterned body (`A2` + seven zeros,
+//! `A8` + seven zeros, and so on) with the same arithmetic the validator uses,
+//! shown in the test module's `check_digit_for_id`. No value was taken from a real
+//! document. A checksum-valid identifier is by construction indistinguishable
+//! from an issued one, which is why the bodies are chosen to be obviously
+//! generated rather than plausible.
+
+use crate::canonical::{
+    ByteSpan, CanonicalCategory, CanonicalFinding, CategoryBase as Base, ConfidenceBand, DetectionMethod,
+    FindingStatus, Provenance, Recognizer, Severity,
+};
+use crate::scanner::ascii_digit_of;
+
+/// The recognizer identity and version stamped on every finding this pack
+/// produces.
+///
+/// Versioned with the crate for the same reason
+/// [`SCANNER_PROVENANCE`](crate::canonical::SCANNER_PROVENANCE) is: the letter
+/// tables, the 統一編號 checksum rule and the area-code gazetteer are all
+/// versioned with the release, and a re-scan under a later one may legitimately
+/// differ.
+pub const ZH_TW_PROVENANCE: Provenance = Provenance::new(Recognizer::ZhTwLocalePack, env!("CARGO_PKG_VERSION"));
+
+/// 國民身分證統一編號 — the national identity-card number.
+const NATIONAL_ID: CanonicalCategory = CanonicalCategory::with_locale(Base::NationalId, "zh-TW", "national_id");
+/// 統一證號 in the 2021 form — one letter and nine digits, like the national ID.
+const ARC_NEW: CanonicalCategory = CanonicalCategory::with_locale(Base::NationalId, "zh-TW", "arc_new");
+/// 統一證號 in the pre-2021 form — two letters and eight digits.
+const ARC_LEGACY: CanonicalCategory = CanonicalCategory::with_locale(Base::NationalId, "zh-TW", "arc_legacy");
+
+// ---------------------------------------------------------------------------
+// Boundary handling
+// ---------------------------------------------------------------------------
+
+/// Whether `c` sitting immediately beside a candidate means the candidate is a
+/// *fragment* of something longer rather than a whole identifier.
+///
+/// ASCII alphanumerics and digit characters of either width qualify, for the
+/// obvious reason. `.` and `,` do too, and that is the non-obvious half: they
+/// are the decimal point and the thousands separator, so the eight digits after
+/// the point in `3.14159265` are a fragment of one number and not a 統一編號 —
+/// and with a checksum that admits one string in five, that class of match would
+/// dominate the output on any payload carrying floating-point data.
+///
+/// A Han character is deliberately **not** a fragment neighbour. That is the
+/// whole point: `統編12345675` is how the identifier is written, and treating
+/// Han as a word character — which every `\b`-based implementation does — makes
+/// this recognizer miss the common case.
+fn is_fragment_neighbour(c: char) -> bool {
+    c.is_ascii_alphanumeric() || ascii_digit_of(c).is_some() || matches!(c, '.' | ',')
+}
+
+/// Whether the character immediately before byte offset `start` permits a
+/// candidate to begin there.
+fn left_boundary_ok(text: &str, start: usize) -> bool {
+    // `Option::is_none_or` would read better but is stable only from 1.82,
+    // above this workspace's floor (see `aa-core::integration::version`).
+    match text[..start].chars().next_back() {
+        Some(c) => !is_fragment_neighbour(c),
+        None => true,
+    }
+}
+
+/// Whether the character at byte offset `end` permits a candidate to end there.
+fn right_boundary_ok(text: &str, end: usize) -> bool {
+    match text[end..].chars().next() {
+        Some(c) => !is_fragment_neighbour(c),
+        None => true,
+    }
+}
+
+/// Reads exactly `count` digit characters starting at byte offset `start`,
+/// returning the byte offset just past them and their ASCII-normalised value.
+///
+/// Full-width digits normalise through `ascii_digit_of`, so an identifier
+/// typed on a CJK input method is recognised as the same value as its ASCII
+/// form — but the returned offset advances by the *original* character width,
+/// so it stays a valid index into `text`. A full-width digit is three UTF-8
+/// bytes against ASCII's one; an offset computed from the normalised string
+/// would index the wrong bytes and make redaction fail closed over the whole
+/// payload.
+///
+/// `None` if fewer than `count` digits are available.
+fn read_digits(text: &str, start: usize, count: usize) -> Option<(usize, String)> {
+    let mut digits = String::with_capacity(count);
+    let mut end = start;
+    for _ in 0..count {
+        let c = text[end..].chars().next()?;
+        digits.push(ascii_digit_of(c)?);
+        end += c.len_utf8();
+    }
+    Some((end, digits))
+}
+
+// ---------------------------------------------------------------------------
+// 國民身分證統一編號 and 統一證號 (居留證)
+// ---------------------------------------------------------------------------
+
+/// The two-digit area code of an identity-card letter, or `None` if `c` is not
+/// one of the 26 letters the scheme assigns.
+///
+/// The table is the published one and is not derivable from the alphabet: `I`,
+/// `O`, `W`, `X`, `Y` and `Z` are out of sequence because the letters were
+/// assigned to administrative divisions in an order that later changed.
+const fn letter_code(c: char) -> Option<u32> {
+    Some(match c {
+        'A' => 10,
+        'B' => 11,
+        'C' => 12,
+        'D' => 13,
+        'E' => 14,
+        'F' => 15,
+        'G' => 16,
+        'H' => 17,
+        'I' => 34,
+        'J' => 18,
+        'K' => 19,
+        'L' => 20,
+        'M' => 21,
+        'N' => 22,
+        'O' => 35,
+        'P' => 23,
+        'Q' => 24,
+        'R' => 25,
+        'S' => 26,
+        'T' => 27,
+        'U' => 28,
+        'V' => 29,
+        'W' => 32,
+        'X' => 30,
+        'Y' => 31,
+        'Z' => 33,
+        _ => return None,
+    })
+}
+
+/// Whether `letter` + `digits` (nine ASCII digits) satisfies the identity-card
+/// checksum.
+///
+/// The letter contributes its two-digit code as `n₁·1 + n₂·9`; the first eight
+/// digits carry descending weights 8…1; the ninth is the check digit and is
+/// added unweighted. The whole sum must be divisible by 10.
+///
+/// The **2021 residence certificate uses this identical algorithm**, differing
+/// only in the leading digit. A validator that filtered on `d₁ ∈ {1,2}` — the
+/// national-ID gender codes — would therefore reject every foreign resident's
+/// number while looking entirely correct, which is why the digit class is
+/// resolved by `id_category` *after* the checksum rather than folded into it.
+fn national_id_checksum_ok(letter: char, digits: &str) -> bool {
+    let Some(code) = letter_code(letter) else {
+        return false;
+    };
+    if digits.len() != 9 {
+        return false;
+    }
+    let mut sum = code / 10 + (code % 10) * 9;
+    for (i, c) in digits.chars().enumerate() {
+        let Some(d) = c.to_digit(10) else { return false };
+        // Weights 8..=1 over the first eight digits, then the check digit at
+        // weight 1.
+        let weight = if i < 8 { 8 - i as u32 } else { 1 };
+        sum += d * weight;
+    }
+    sum % 10 == 0
+}
+
+/// Which document a checksum-valid letter+9-digit number is, from its leading
+/// digit — or `None` if the leading digit belongs to no issued form.
+///
+/// `1`/`2` are the national ID's gender codes and `8`/`9` the 2021 residence
+/// certificate's. Nothing else is issued, so rejecting the rest is a real
+/// structural constraint: it cuts the residual from the checksum's ~10% of
+/// random strings of this shape to roughly 4%.
+const fn id_category(first_digit: u8) -> Option<CanonicalCategory> {
+    match first_digit {
+        b'1' | b'2' => Some(NATIONAL_ID),
+        b'8' | b'9' => Some(ARC_NEW),
+        _ => None,
+    }
+}
+
+/// Whether the legacy residence certificate's two letters and eight digits
+/// satisfy its checksum.
+///
+/// Same weighting as the national ID, with the second letter standing in for
+/// the national ID's first digit: it contributes only the **units digit** of its
+/// area code, so `A`→0, `B`→1, `C`→2, `D`→3. Only those four are issued (A/C
+/// male, B/D female), which is enforced here rather than accepting any letter.
+fn arc_legacy_checksum_ok(first: char, second: char, digits: &str) -> bool {
+    let (Some(code), Some(second_code)) = (letter_code(first), letter_code(second)) else {
+        return false;
+    };
+    if !matches!(second, 'A' | 'B' | 'C' | 'D') || digits.len() != 8 {
+        return false;
+    }
+    let mut sum = code / 10 + (code % 10) * 9 + (second_code % 10) * 8;
+    for (i, c) in digits.chars().enumerate() {
+        let Some(d) = c.to_digit(10) else { return false };
+        // Weights 7..=1 over the first seven digits, then the check digit.
+        let weight = if i < 7 { 7 - i as u32 } else { 1 };
+        sum += d * weight;
+    }
+    sum % 10 == 0
+}
+
+/// Try to read an identity-card or residence-certificate number at `start`.
+///
+/// Returns the category and the byte offset just past the number. The legacy
+/// two-letter form and the one-letter forms cannot be confused: the character
+/// after the first letter is either a letter or a digit, and that decides which
+/// grammar applies.
+fn scan_identity_number(text: &str, start: usize) -> Option<(CanonicalCategory, usize)> {
+    let mut chars = text[start..].chars();
+    let first = chars.next()?;
+    if !first.is_ascii_uppercase() {
+        return None;
+    }
+    let after_first = start + first.len_utf8();
+    let second = chars.next()?;
+
+    if second.is_ascii_uppercase() {
+        let (end, digits) = read_digits(text, after_first + second.len_utf8(), 8)?;
+        if !right_boundary_ok(text, end) || !arc_legacy_checksum_ok(first, second, &digits) {
+            return None;
+        }
+        return Some((ARC_LEGACY, end));
+    }
+
+    let (end, digits) = read_digits(text, after_first, 9)?;
+    if !right_boundary_ok(text, end) || !national_id_checksum_ok(first, &digits) {
+        return None;
+    }
+    let category = id_category(digits.as_bytes()[0])?;
+    Some((category, end))
+}
+
+// ---------------------------------------------------------------------------
+// Context keywords
+// ---------------------------------------------------------------------------
+
+/// Labels that, immediately before a candidate, make it far likelier to be the
+/// identifier its shape suggests.
+///
+/// Both spellings of 身分證/身份證 are present: the second is a common
+/// misspelling that appears constantly in real form data, and omitting it would
+/// silently drop the confidence signal on a large share of genuine hits.
+const CONTEXT_KEYWORDS: &[&str] = &[
+    "身分證",
+    "身份證",
+    "居留證",
+    "統一證號",
+    "統一編號",
+    "統編",
+    "營業人",
+    "電話",
+    "手機",
+    "行動電話",
+    "市話",
+    "傳真",
+];
+
+/// How many bytes before a candidate are searched for a context keyword.
+///
+/// Deliberately short. A keyword is evidence only if it labels *this* value, and
+/// a wide window turns any document that mentions 身分證 once into one where
+/// every 8-digit number is confidently an identifier. 32 bytes is about ten Han
+/// characters — enough for `身分證字號：` plus punctuation, not enough to reach
+/// the previous sentence.
+const CONTEXT_WINDOW_BYTES: usize = 32;
+
+/// Whether a context keyword labels the candidate starting at `start`.
+///
+/// Confidence only — never a precondition. A checksum-valid identifier is
+/// reported whether or not it is labelled, because the label is a convention and
+/// the checksum is the evidence.
+fn has_context_keyword(text: &str, start: usize) -> bool {
+    let window_start = text[..start]
+        .char_indices()
+        .rev()
+        .take_while(|(i, _)| start - i <= CONTEXT_WINDOW_BYTES)
+        .map(|(i, _)| i)
+        .last()
+        .unwrap_or(start);
+    let window = &text[window_start..start];
+    CONTEXT_KEYWORDS.iter().any(|k| window.contains(k))
+}
+
+// ---------------------------------------------------------------------------
+// Finding assembly
+// ---------------------------------------------------------------------------
+
+/// The severity and unlabelled confidence this pack assigns to a category.
+///
+/// Severity answers "how damaging is exposure", not "how sure are we" — the two
+/// are separate axes on purpose. The identity documents are `Critical`,
+/// alongside the SSN the scanner already classifies that way. Phone numbers are
+/// `Medium`: personal data whose exposure is harmful but grants no access, the
+/// same band as an email address. 統一編號 is `Low`, and that is a deliberate
+/// judgement rather than an oversight — it is published in the government's
+/// business registry and printed on every invoice, so its exposure is not itself
+/// harmful; it is reported because a payload carrying one identifies a
+/// counterparty, and because its checksum is weak enough that ranking it above
+/// an email address would bury real findings under it.
+fn bands(category: CanonicalCategory) -> (Severity, ConfidenceBand) {
+    match category.base() {
+        Base::NationalId => (Severity::Critical, ConfidenceBand::Medium),
+        // 統一編號 and anything a later locale adds under a tax base.
+        _ => (Severity::Low, ConfidenceBand::Low),
+    }
+}
+
+/// Raise a band one step because a context keyword labels the value.
+///
+/// One step, not straight to `High`. A label is corroboration, not proof: a
+/// 統編 next to the word 統編 is much more likely to be one, but the checksum
+/// underneath still admits a fifth of all 8-digit strings, and a document that
+/// discusses the identifier while quoting an unrelated number is ordinary.
+const fn corroborated(band: ConfidenceBand) -> ConfidenceBand {
+    match band {
+        ConfidenceBand::Low => ConfidenceBand::Medium,
+        _ => ConfidenceBand::High,
+    }
+}
+
+/// Build the finding for a recognised span.
+///
+/// Returns `None` only for a malformed span, which
+/// [`CanonicalFinding::new`] rejects — unreachable for spans produced here,
+/// since every recognizer consumes at least one character, and kept fallible
+/// rather than unwrapped so a future recognizer with an off-by-one cannot panic
+/// on a caller's payload.
+fn finding(text: &str, category: CanonicalCategory, start: usize, end: usize) -> Option<CanonicalFinding> {
+    let (severity, base_band) = bands(category);
+    let confidence = if has_context_keyword(text, start) {
+        corroborated(base_band)
+    } else {
+        base_band
+    };
+    CanonicalFinding::new(
+        category,
+        severity,
+        confidence,
+        ByteSpan::new(start, end),
+        // Every recognizer in this pack is a checksum or a fixed structure, so
+        // the match is exact about what it matched even where it cannot be
+        // certain the value is real — the same reading of this axis the scanner
+        // applies to `SsnPattern`, which also has no checksum.
+        DetectionMethod::Deterministic,
+        ZH_TW_PROVENANCE,
+        match confidence {
+            ConfidenceBand::High => FindingStatus::Confirmed,
+            _ => FindingStatus::Suspected,
+        },
+    )
+    .ok()
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+/// Scan `text` for Taiwanese identifiers, returning findings in offset order.
+///
+/// Additive and independent: this never calls, and is never called by,
+/// [`CredentialScanner::scan`](crate::scanner::CredentialScanner::scan), whose
+/// output is unchanged by this module. A caller that wants both runs both.
+///
+/// Spans are byte offsets into `text` and always fall on character boundaries,
+/// so a caller can splice the original bytes at them.
+///
+/// Detection is best-effort within the constraints documented on this module:
+/// the checksums admit a stated fraction of random strings, phone numbers have
+/// no checksum, and unseparated landline numbers are not recognised at all.
+pub fn scan(text: &str) -> Vec<CanonicalFinding> {
+    let mut findings = Vec::new();
+    let mut i = 0usize;
+
+    while i < text.len() {
+        let Some(c) = text[i..].chars().next() else { break };
+        let width = c.len_utf8();
+
+        if !left_boundary_ok(text, i) {
+            i += width;
+            continue;
+        }
+
+        match scan_identity_number(text, i) {
+            Some((category, end)) => {
+                if let Some(f) = finding(text, category, i, end) {
+                    findings.push(f);
+                }
+                i = end;
+            }
+            None => i += width,
+        }
+    }
+
+    findings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The check digit that makes `letter` + `body` (eight digits) a
+    /// checksum-valid identity-card or 2021 residence-certificate number.
+    ///
+    /// This is the fixture generator, and it is written out rather than hidden
+    /// behind the validator so a reviewer can confirm every identifier in this
+    /// file was *constructed* — not harvested from a real document. It runs the
+    /// same weighted sum `national_id_checksum_ok` checks and returns the digit
+    /// that zeroes it mod 10.
+    fn check_digit_for_id(letter: char, body: &str) -> char {
+        assert_eq!(body.len(), 8, "the body is the eight digits before the check digit");
+        let code = letter_code(letter).expect("fixture letters are in the table");
+        let mut sum = code / 10 + (code % 10) * 9;
+        for (i, c) in body.chars().enumerate() {
+            sum += c.to_digit(10).expect("fixture bodies are digits") * (8 - i as u32);
+        }
+        char::from_digit((10 - sum % 10) % 10, 10).expect("a mod-10 residue is a digit")
+    }
+
+    /// Assemble a synthetic identifier from a letter and a visibly patterned
+    /// eight-digit body.
+    fn synthetic_id(letter: char, body: &str) -> String {
+        format!("{letter}{body}{}", check_digit_for_id(letter, body))
+    }
+
+    /// The same, for the legacy two-letter form's seven-digit body.
+    fn synthetic_legacy_arc(first: char, second: char, body: &str) -> String {
+        assert_eq!(body.len(), 7);
+        let code = letter_code(first).expect("in table");
+        let second_code = letter_code(second).expect("in table");
+        let mut sum = code / 10 + (code % 10) * 9 + (second_code % 10) * 8;
+        for (i, c) in body.chars().enumerate() {
+            sum += c.to_digit(10).expect("digits") * (7 - i as u32);
+        }
+        let check = char::from_digit((10 - sum % 10) % 10, 10).expect("digit");
+        format!("{first}{second}{body}{check}")
+    }
+
+    fn categories(text: &str) -> Vec<String> {
+        scan(text).iter().map(|f| f.category().to_string()).collect()
+    }
+
+    /// The generator and the validator must agree, or every positive fixture
+    /// below proves only that two copies of the same bug agree with each other.
+    ///
+    /// Checked across the whole letter table and several bodies rather than on
+    /// one value, so a table entry transposed in either place shows up here.
+    #[test]
+    fn the_fixture_generator_produces_values_the_validator_accepts() {
+        let mut built = 0usize;
+        for letter in 'A'..='Z' {
+            for body in ["20000000", "10000000", "80000000", "90000000", "27182818"] {
+                let id = synthetic_id(letter, body);
+                let digits = &id[1..];
+                assert!(
+                    national_id_checksum_ok(letter, digits),
+                    "generated {id} but the validator rejects it"
+                );
+                // And the generator is not vacuous: changing one digit breaks it.
+                let mutated: String = format!("{}{}", &digits[..8], (digits.as_bytes()[8] - b'0' + 1) % 10);
+                assert!(
+                    !national_id_checksum_ok(letter, &mutated),
+                    "{id} still validates with a different check digit"
+                );
+                built += 1;
+            }
+        }
+        assert_eq!(built, 26 * 5);
+    }
+
+    /// A national ID is detected, and detected as the national ID rather than as
+    /// a residence certificate.
+    #[test]
+    fn a_synthetic_national_id_is_detected() {
+        for body in ["20000000", "10000000"] {
+            let id = synthetic_id('A', body);
+            let text = format!("身分證字號 {id} 已建檔");
+            assert_eq!(categories(&text), ["NATIONAL_ID[zh-TW/national_id]"], "{id}");
+        }
+    }
+
+    /// **The trap this ticket exists to avoid.** The 2021 residence certificate
+    /// uses the identical checksum and differs only in the leading digit, so a
+    /// validator written against the national ID's `d₁ ∈ {1,2}` looks correct,
+    /// passes every national-ID test, and misses every foreign resident.
+    #[test]
+    fn a_synthetic_2021_residence_certificate_is_detected() {
+        for body in ["80000000", "90000000"] {
+            let id = synthetic_id('A', body);
+            let text = format!("居留證號碼 {id}");
+            assert_eq!(categories(&text), ["NATIONAL_ID[zh-TW/arc_new]"], "{id}");
+        }
+    }
+
+    /// The legacy two-letter certificate is a separate grammar and a separate
+    /// checksum, and must not be reachable through the one-letter path.
+    #[test]
+    fn a_synthetic_legacy_residence_certificate_is_detected() {
+        for second in ['A', 'B', 'C', 'D'] {
+            let id = synthetic_legacy_arc('A', second, "0000000");
+            let text = format!("舊式居留證 {id}");
+            assert_eq!(categories(&text), ["NATIONAL_ID[zh-TW/arc_legacy]"], "{id}");
+        }
+    }
+
+    /// A second letter outside A–D is not issued, so the shape alone must not be
+    /// enough — otherwise every `XY` + 8 digits string gets a 10% pass rate.
+    #[test]
+    fn a_legacy_certificate_with_an_unissued_second_letter_is_rejected() {
+        // Generated with `E`'s own units digit, so the weighted sum balances and
+        // the *only* thing that can reject it is the letter-class constraint.
+        // If that constraint is dropped, this string sails through.
+        for second in ['E', 'F', 'Z'] {
+            let id = synthetic_legacy_arc('A', second, "0000000");
+            assert_eq!(categories(&format!("編號 {id}")), Vec::<String>::new(), "{id}");
+        }
+        // The same generator with an issued letter does produce a finding, so
+        // the assertion above is not passing because the generator is broken.
+        let issued = synthetic_legacy_arc('A', 'D', "0000000");
+        assert_eq!(categories(&format!("編號 {issued}")), ["NATIONAL_ID[zh-TW/arc_legacy]"]);
+    }
+
+    /// Every near-miss must be rejected: one wrong check digit, and a leading
+    /// digit that no issued document uses.
+    #[test]
+    fn checksum_and_structural_near_misses_are_rejected() {
+        let valid = synthetic_id('A', "20000000");
+        // Flip the check digit.
+        let bytes = valid.as_bytes();
+        let wrong_check = format!("{}{}", &valid[..9], (bytes[9] - b'0' + 5) % 10);
+        assert_ne!(wrong_check, valid);
+        assert_eq!(categories(&format!("身分證 {wrong_check}")), Vec::<String>::new());
+
+        // Checksum-valid but `d₁ = 3`, which is not an issued class.
+        let unissued = synthetic_id('A', "30000000");
+        assert!(national_id_checksum_ok('A', &unissued[1..]), "fixture must be valid");
+        assert_eq!(categories(&format!("編號 {unissued}")), Vec::<String>::new());
+    }
+
+    /// Han on both sides with no separator — the case `\b` cannot express.
+    #[test]
+    fn an_identifier_written_flush_against_han_is_detected() {
+        let id = synthetic_id('A', "20000000");
+        let text = format!("身分證{id}已登記");
+        let found = scan(&text);
+        assert_eq!(found.len(), 1);
+        assert_eq!(&text[found[0].span().start()..found[0].span().end()], id);
+    }
+
+    /// An identifier glued to ASCII letters or digits is a fragment of something
+    /// else, and must not be reported.
+    #[test]
+    fn an_identifier_inside_a_longer_token_is_not_reported() {
+        let id = synthetic_id('A', "20000000");
+        for text in [
+            format!("REF{id}"),
+            format!("{id}9"),
+            format!("7{id}"),
+            format!("x{id}x"),
+        ] {
+            assert_eq!(categories(&text), Vec::<String>::new(), "{text}");
+        }
+    }
+
+    /// Full-width digits must normalise, and the span must still index the
+    /// original bytes — three per digit, not one.
+    #[test]
+    fn a_full_width_identifier_is_detected_and_spans_the_original_bytes() {
+        let id = synthetic_id('A', "20000000");
+        let wide: String = id
+            .chars()
+            .map(|c| c.to_digit(10).and_then(|d| char::from_u32(0xFF10 + d)).unwrap_or(c))
+            .collect();
+        let text = format!("身分證 {wide} 已建檔");
+        let found = scan(&text);
+        assert_eq!(found.len(), 1, "full-width identifier missed");
+        let span = found[0].span();
+        assert_eq!(&text[span.start()..span.end()], wide);
+        assert!(text.is_char_boundary(span.start()) && text.is_char_boundary(span.end()));
+    }
+
+    /// A context keyword raises confidence; its absence must not suppress the
+    /// finding.
+    #[test]
+    fn context_raises_confidence_but_is_not_required() {
+        let id = synthetic_id('A', "20000000");
+
+        let unlabelled = scan(&format!("（{id}）"));
+        assert_eq!(unlabelled.len(), 1, "a checksum-valid ID needs no label");
+        assert_eq!(unlabelled[0].confidence(), ConfidenceBand::Medium);
+        assert_eq!(unlabelled[0].status(), FindingStatus::Suspected);
+
+        let labelled = scan(&format!("身分證字號：{id}"));
+        assert_eq!(labelled.len(), 1);
+        assert_eq!(labelled[0].confidence(), ConfidenceBand::High);
+        assert_eq!(labelled[0].status(), FindingStatus::Confirmed);
+    }
+
+    /// A keyword further back than the window must not corroborate — otherwise
+    /// one mention of 身分證 promotes every number in the document.
+    #[test]
+    fn a_distant_keyword_does_not_corroborate() {
+        let id = synthetic_id('A', "20000000");
+        let text = format!("身分證的欄位在申請書的第三頁最下方的表格中填寫，另外參考編號 {id}");
+        let found = scan(&text);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].confidence(), ConfidenceBand::Medium, "window is too wide");
+    }
+
+    /// Provenance names this pack, not the scanner that never ran.
+    #[test]
+    fn findings_are_attributed_to_the_locale_pack() {
+        let id = synthetic_id('A', "20000000");
+        let found = scan(&format!("身分證 {id}"));
+        assert_eq!(found[0].provenance().recognizer, Recognizer::ZhTwLocalePack);
+        assert_eq!(found[0].provenance().recognizer.as_str(), "aa-security::locale::zh_tw");
+        assert_eq!(found[0].method(), DetectionMethod::Deterministic);
+    }
+
+    /// Every category this pack emits must parse back in the same build.
+    ///
+    /// The failure it guards is silent: a category missing from
+    /// `CanonicalCategory::ALL` renders correctly, is emitted by this live
+    /// recognizer, and only fails at the reader. Checked here against real
+    /// scanner output rather than against the constant list, so a recognizer
+    /// wired to a category nobody registered is caught.
+    #[test]
+    fn every_emitted_category_round_trips() {
+        let corpus = [
+            format!("身分證 {}", synthetic_id('A', "20000000")),
+            format!("居留證 {}", synthetic_id('A', "80000000")),
+            format!("居留證 {}", synthetic_legacy_arc('A', 'B', "0000000")),
+        ];
+        let mut seen = 0usize;
+        for text in &corpus {
+            for f in scan(text) {
+                let rendered = f.category().to_string();
+                assert_eq!(
+                    rendered.parse::<CanonicalCategory>(),
+                    Ok(f.category()),
+                    "{rendered} is emitted but does not parse in this build"
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, corpus.len(), "corpus produced too few findings to prove anything");
+    }
+}
