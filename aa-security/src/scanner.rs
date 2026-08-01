@@ -2538,6 +2538,19 @@ mod tests {
         assert_eq!(result.redact(text), text);
     }
 
+    /// Reported reproducer 3. The URL is the interesting part: it is a 30-char
+    /// ASCII run, squarely inside the 20-64 window, and it stays clean because
+    /// its entropy is genuinely below the gate — the same verdict the identical
+    /// URL gets in English text. That is the equivalence the fix restores.
+    #[test]
+    fn zh_tw_document_link_survives_redact() {
+        let scanner = CredentialScanner::new();
+        let text = "文件連結：https://example.com/docs/guide 請參考";
+        let result = scanner.scan(text);
+        assert!(result.is_clean(), "unexpected findings: {:?}", result.findings);
+        assert_eq!(result.redact(text), text);
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
