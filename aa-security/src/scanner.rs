@@ -940,6 +940,39 @@ const HEX_RUN_MIN_LEN: usize = 64;
 /// and clean regardless of length.
 const BASE64_RUN_MIN_LEN: usize = 20;
 
+/// Yields each maximal run of ASCII bytes in `s` as `(byte offset in s, run)`.
+///
+/// The whitespace-token entropy pass needs this because both halves of its gate
+/// are byte-denominated while their thresholds are character-denominated: a
+/// 7-character Han phrase is 21 bytes, already inside the 20-64 "looks like a
+/// secret" window, and [`shannon_entropy`] then scores its UTF-8 bytes above a
+/// gate calibrated on English. Narrowing to ASCII runs restores bytes ==
+/// characters, which is what both thresholds were written for (AAASM-5344).
+///
+/// Runs — rather than dropping any token that holds a non-ASCII byte — is the
+/// security-critical part. A secret worth hiding is ASCII by construction
+/// (base64, hex, base62 key material), so a whole-token test would let an
+/// attacker prepend one glyph from any non-Latin script and carry the secret
+/// straight through the gate. Segmenting keeps every ASCII candidate visible no
+/// matter what surrounds it.
+fn ascii_runs(s: &str) -> impl Iterator<Item = (usize, &str)> {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    std::iter::from_fn(move || {
+        while i < bytes.len() && !bytes[i].is_ascii() {
+            i += 1;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii() {
+            i += 1;
+        }
+        // Both bounds are ASCII-adjacent, hence UTF-8 char boundaries: `start`
+        // is an ASCII byte and `i` is either the end of `s` or the lead byte of
+        // a multi-byte sequence, since a continuation byte never follows ASCII.
+        (start < i).then(|| (start, &s[start..i]))
+    })
+}
+
 /// Returns `true` if `b` is in the base64 / base64url alphabet
 /// (alphanumerics plus `+ / - _`). `=` padding and all delimiters are excluded.
 fn is_base64_char(b: u8) -> bool {
@@ -953,8 +986,11 @@ fn is_base64_char(b: u8) -> bool {
 /// A secret caught by more than one pass yields overlapping same-kind findings
 /// that [`scan`]'s final [`dedupe_same_kind_overlaps`] collapses back to one:
 ///
-/// 1. **Whitespace-token entropy** (unchanged spec behaviour) — a whitespace
-///    token of length 20–64 with Shannon entropy > [`ENTROPY_BITS_GATE`].
+/// 1. **Whitespace-token entropy** (unchanged spec behaviour for ASCII input) —
+///    an ASCII run *within* a whitespace token, of length 20–64 with Shannon
+///    entropy > [`ENTROPY_BITS_GATE`]. For ASCII-only text the run and the
+///    token are the same slice, so this is the original rule; for mixed text it
+///    is what stops the gate scoring UTF-8 bytes (see [`ascii_runs`]).
 /// 2. **Long hex run** (AAASM-3870) — a contiguous hex run ≥ [`HEX_RUN_MIN_LEN`],
 ///    closing the hex-encoding evasion (hex entropy is capped at 4.0 bits/char,
 ///    below the gate, so pass 1 never catches it at any length).
@@ -974,19 +1010,30 @@ fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
     for token in text.split_whitespace() {
         let token_offset = text[offset..].find(token).map(|i| offset + i).unwrap_or(offset);
         let whitespace_end = token_offset + token.len();
-        let len = token.len();
-        if (20..=64).contains(&len) && shannon_entropy(token) > ENTROPY_BITS_GATE {
-            // The whitespace token can still carry trailing delimiters when a
-            // secret is embedded in structured text (e.g. `...key"}]}` in compact
-            // JSON). Clamp the finding's `end` at the first token-terminating
-            // character so the span covers only the credential — matching how the
-            // AC literal scan derives its `end`.
-            let end = token_end(text, token_offset);
-            findings.push(CredentialFinding::new(
-                CredentialKind::GenericHighEntropy,
-                token_offset,
-                end,
-            ));
+        // Gate each of the token's ASCII runs, not the token itself. A script
+        // that does not delimit words with spaces (Chinese, Japanese, Thai)
+        // makes one "token" an entire clause, and both the length window and
+        // the entropy gate then measure UTF-8 bytes against character-scale
+        // thresholds — which classified ordinary Chinese prose as leaked
+        // secrets. See [`ascii_runs`] for why this segments rather than skips
+        // (AAASM-5344). For ASCII-only text the run is the whole token, so
+        // every pre-existing finding is reproduced byte-identically.
+        for (run_offset, run) in ascii_runs(token) {
+            let run_start = token_offset + run_offset;
+            if (20..=64).contains(&run.len()) && shannon_entropy(run) > ENTROPY_BITS_GATE {
+                // The whitespace token can still carry trailing delimiters when a
+                // secret is embedded in structured text (e.g. `...key"}]}` in compact
+                // JSON). Clamp the finding's `end` at the first token-terminating
+                // character so the span covers only the credential — matching how the
+                // AC literal scan derives its `end`. The run's own end bounds it too,
+                // so a trailing non-ASCII neighbour is never swallowed into the span.
+                let end = token_end(text, run_start).min(run_start + run.len());
+                findings.push(CredentialFinding::new(
+                    CredentialKind::GenericHighEntropy,
+                    run_start,
+                    end,
+                ));
+            }
         }
         offset = whitespace_end;
     }
