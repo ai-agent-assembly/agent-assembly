@@ -426,11 +426,11 @@ class FindingsMatchGradingTests(unittest.TestCase):
             _findings_match([{"kind": "SyntheticKey", "offset": 9}], expected)[0]
         )
 
-    def test_a_wrong_end_still_fails_the_vector_through_redaction(self) -> None:
-        # The reason leaving `end` ungraded is tolerable: it can no longer be
-        # skipped silently. An out-of-range `end` that _findings_match waves
-        # through now collapses the redaction to "[REDACTED]", which cannot
-        # equal any vector's expected_redacted.
+    def test_a_wrong_end_fails_the_vector_on_an_unsubsumed_finding(self) -> None:
+        # Named for what it actually tests: a *single* finding, whose span
+        # nothing else overlaps. There the redaction does catch a wrong `end`.
+        # The general claim — that a wrong `end` is always caught — is false;
+        # see the counterexample below.
         secret = "DUMMY-NOT-A-REAL-KEY"
         text = f"key={secret}"
         expected_redacted = "key=[REDACTED:SyntheticKey]"
@@ -439,6 +439,40 @@ class FindingsMatchGradingTests(unittest.TestCase):
         self.assertTrue(_findings_match(wrong, [{"kind": "SyntheticKey", "offset": 4}])[0])
         self.assertNotEqual(_redact(text, wrong), expected_redacted)
         self.assertNotEqual(_redact(text, wrong), text)
+
+    def test_a_subsumed_wrong_end_is_not_detected(self) -> None:
+        # The residual, made executable. `_redact` validates the *coalesced*
+        # spans, so a finding whose span is swallowed by an overlapping sibling
+        # has its `end` absorbed into `max(last_end, end)` and never checked.
+        #
+        # Here the real vector is used: db_urls_postgres reports PostgresUrl at
+        # offset 13 with end 59, and EmailAddress/GenericHighEntropy both span
+        # [0,59). Report the credential as a one-byte span, or as the inverted
+        # span [13,0), and the vector still passes completely.
+        #
+        # This is faithful to Rust, which also validates after coalescing — it
+        # is a limit on what the corpus can grade, not a conformance defect.
+        # If a future change makes these detectable, this test should fail and
+        # the residual note in runner._findings_match should be revised.
+        with (_VECTORS_DIR / "db_urls_postgres.json").open(encoding="utf-8") as fh:
+            vector = json.load(fh)
+
+        for bad_end, shape in [(14, "one-byte span"), (0, "inverted span")]:
+            with self.subTest(shape=shape):
+                findings = [
+                    {"kind": "EmailAddress", "offset": 0, "end": 59},
+                    {"kind": "GenericHighEntropy", "offset": 0, "end": 59},
+                    {"kind": "PostgresUrl", "offset": 13, "end": bad_end},
+                ]
+
+                self.assertTrue(
+                    _findings_match(findings, vector["expected_findings"])[0]
+                )
+                self.assertEqual(
+                    _redact(vector["input_text"], findings),
+                    vector["expected_redacted"],
+                    f"{shape} was detected — the residual has changed",
+                )
 
 
 if __name__ == "__main__":

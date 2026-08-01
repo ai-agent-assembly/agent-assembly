@@ -112,15 +112,32 @@ def _findings_match(actual: list[dict], expected: list[dict]) -> tuple[bool, str
     decision to take on its own merits, not a side effect of this fix, so the
     schema is left alone and the omission is recorded rather than papered over.
 
-    `end` is not ungraded in the suite as a whole, though, and it is no longer
-    possible to slip a wrong one past the runner. It is graded indirectly, and
-    now strictly, through the redaction comparison in `run()`: before this
-    change `_redact` skipped any span it could not splice, so a nonsense `end`
-    could vanish silently and leave the rest of the text matching. `_redact`
-    now fails closed, so a wrong `end` either splices to the wrong string or
-    collapses the whole text to "[REDACTED]" — and both mismatch
-    `expected_redacted`. The escape hatch that made this omission dangerous is
-    what closed; the omission itself is now merely narrow.
+    **The residual, stated precisely.** `end` is graded only for a finding whose
+    span is *not* subsumed by an overlapping sibling. Where findings overlap —
+    which is every multi-finding vector in the corpus — a wrong `end` is absorbed
+    by the union that `_coalesce_findings` takes and is never detected: the span
+    is merged into `max(last_end, end)` before anything validates it, so neither
+    the redaction nor the bounds check ever sees the value the SDK reported.
+
+    On the four multi-finding vectors, 554 wrong single-`end` values pass
+    end-to-end — `_findings_match` True *and* the redaction equal to the golden.
+    `db_urls_postgres` accepts any `end` in 0-58 for its `PostgresUrl@13`
+    finding, so an SDK reporting that credential as a one-byte span, or as the
+    inverted span [13,0), passes the vector completely. For three of the four,
+    the credential-identifying finding's `end` is therefore effectively
+    ungraded.
+
+    This is **not** a divergence from Rust — `ScanResult::redact` also validates
+    after coalescing, so the runner is faithful. It is a limit on what the
+    corpus can grade, and the reason it cannot be closed here is the same one
+    above: it needs a golden `end` to compare against.
+
+    An earlier version of this docstring claimed a wrong `end` "either splices to
+    the wrong string or collapses the whole text to [REDACTED] — and both
+    mismatch expected_redacted". That is false, and it is recorded here rather
+    than deleted because it is exactly the kind of plausible safety argument that
+    survives review by sounding right. `test_a_subsumed_wrong_end_is_not_detected`
+    pins the counterexample so the residual stays executable.
     """
     if len(actual) != len(expected):
         return False, (
