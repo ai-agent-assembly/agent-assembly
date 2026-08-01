@@ -10,8 +10,9 @@ use uuid::Uuid;
 #[cfg(unix)]
 use tokio::signal::unix::SignalKind;
 
-use aa_core::{DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, PolicyDocument, PolicyRule};
+use aa_core::{DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel};
 
+use crate::commands::run_policy;
 use crate::commands::run_registration::{self, GovernedRegistration};
 use crate::commands::status::models::redact_database_url;
 use crate::config::ResolvedContext;
@@ -51,6 +52,15 @@ pub struct RunArgs {
     /// proxy endpoint (AAASM-5323) — it never launches unproxied by accident.
     #[arg(long)]
     pub no_proxy: bool,
+
+    /// Policy YAML file this session runs under.
+    ///
+    /// When absent the policy is resolved from `$AA_POLICY` and the default
+    /// locations, in the same order `aasm gateway start` uses. A governed
+    /// launch refuses when no effective policy resolves — an unconfigured
+    /// policy is not an implicit allow-all (AAASM-5349).
+    #[arg(long)]
+    pub policy: Option<std::path::PathBuf>,
 
     /// Show the launch command and settings without executing.
     #[arg(long)]
@@ -378,14 +388,21 @@ fn dry_run_handle(args: &RunArgs) -> RegistrationHandle {
     }
 }
 
-/// Construct a default policy document used until a real loader is wired in.
-fn load_policy() -> PolicyDocument {
-    PolicyDocument {
-        version: 1,
-        name: "default".into(),
-        rules: Vec::<PolicyRule>::new(),
-        enforcement_mode: aa_core::EnforcementMode::default(),
-    }
+/// Resolve the effective policy for this launch, and announce which of the four
+/// states it landed in.
+///
+/// This used to be a `load_policy()` that returned a hard-coded empty rule set,
+/// which meant every `aasm run` delivered an intercepted, registered, monitored
+/// launch enforcing nothing — and reported that as success. The banner is
+/// unconditional for the same reason the observe-mode banner is: the posture a
+/// session actually runs under has to be visible at the top of its output, not
+/// inferred later from what the tool was or was not stopped from doing.
+fn resolve_policy(args: &RunArgs) -> run_policy::PolicyResolution {
+    let resolution = run_policy::resolve(args.policy.as_deref());
+    // `summary()` already opens with the state token, so the `policy=<token>`
+    // prefix an audit scraper matches on falls out of it without repeating it.
+    eprintln!("policy={}", resolution.summary());
+    resolution
 }
 
 /// Mask a credential-bearing env value before it is printed in the dry-run
@@ -425,8 +442,15 @@ fn mask_value(key: &str, value: &str) -> String {
 }
 
 /// Build the structured dry-run output string.
+///
+/// The `--- policy ---` section is the preview's receipt of which of the four
+/// effective-policy states this launch resolved to. It is printed for all four,
+/// including the two that would refuse: a preview that showed a policy section
+/// only when one loaded would make "no policy at all" look like a formatting
+/// quirk rather than the reason the live run stops.
 fn format_dry_run_output(
     handle: &RegistrationHandle,
+    policy: &run_policy::PolicyResolution,
     settings: &str,
     cmd: &std::process::Command,
     env: &HashMap<String, String>,
@@ -455,11 +479,14 @@ fn format_dry_run_output(
         .collect();
 
     format!(
-        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
+        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
         handle.agent_id,
         handle.registration_did,
         handle.trace_id,
         handle.session_id,
+        policy.state_token(),
+        policy.source().map_or("<none>".to_string(), |p| p.display().to_string()),
+        policy.summary(),
         truncated_settings,
         cmd_line,
         env_lines,
@@ -598,12 +625,25 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
                 None
             }
         };
-        let child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
+        // A preview reports the policy state rather than refusing on it, for the
+        // same reason it reports an unresolvable proxy: the operator ran this to
+        // find out what a live run would do, and the answer "it would refuse"
+        // is only useful if they are shown it.
+        let resolution = resolve_policy(args);
+        if let Err(e) = resolution.clone().into_enforceable() {
+            eprintln!("warning: {e}");
+            eprintln!("warning: a live `aasm run` with these flags would refuse to launch.");
+        }
+        let mut child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
+        resolution.annotate_env(&mut child_env);
         let settings = "<dry-run: managed settings not generated>".to_string();
         let mut cmd = std::process::Command::new(&args.tool);
         cmd.args(&args.tool_args);
         cmd.envs(&child_env);
-        print!("{}", format_dry_run_output(&handle, &settings, &cmd, &child_env));
+        print!(
+            "{}",
+            format_dry_run_output(&handle, &resolution, &settings, &cmd, &child_env)
+        );
         return Ok(0);
     }
 
@@ -623,14 +663,22 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // refused should not first create a gateway registration it then abandons.
     let proxy = resolve_launch_proxy(args.no_proxy)?;
 
+    // Same reason, and the same ordering rule: a session with no effective
+    // policy is refused here, before any registration exists, because a
+    // registered session that never launched is a governed identity with no
+    // process behind it — and because there is nothing to govern a tool with.
+    // An absent policy is not permission (AAASM-5349).
+    let resolution = resolve_policy(args);
+    let policy = resolution.clone().into_enforceable()?;
+
     // Fatal on failure, and fatal *before* anything is launched: a session the
     // gateway did not accept has no governed identity, and a tool started under
     // no identity is an ungoverned process wearing a governed launch's name.
     let registration = register_with_gateway(&info, args).await?;
     let handle = RegistrationHandle::of(&registration);
-    let child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
+    let mut child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
+    resolution.annotate_env(&mut child_env);
 
-    let policy = load_policy();
     let settings = adapter
         .generate_managed_settings(&policy)
         .await
@@ -704,7 +752,7 @@ mod tests {
 
     // Stub adapters below implement DevToolAdapter, so the test module carries
     // the trait-object plumbing the production path no longer needs.
-    use aa_core::{AdapterError, DevToolInfo, DevToolKind, McpServerInfo};
+    use aa_core::{AdapterError, DevToolInfo, DevToolKind, McpServerInfo, PolicyDocument};
     use async_trait::async_trait;
     use clap::Parser;
 
@@ -984,6 +1032,23 @@ mod tests {
             trace_id: "test-trace".into(),
             session_id: "test-session".into(),
             team_id: team_id.map(String::from),
+        }
+    }
+
+    /// A resolved-and-enforced policy, for tests whose subject is not the
+    /// policy state itself.
+    fn stub_resolution() -> run_policy::PolicyResolution {
+        run_policy::PolicyResolution::Enforced {
+            source: PathBuf::from("/tmp/test-policy.yaml"),
+            document: PolicyDocument {
+                version: 1,
+                name: "test".into(),
+                rules: vec![aa_core::PolicyRule {
+                    action_pattern: "bash".into(),
+                    decision: aa_core::PolicyDecision::Deny,
+                }],
+                enforcement_mode: aa_core::EnforcementMode::default(),
+            },
         }
     }
 
@@ -1329,6 +1394,7 @@ mod tests {
             root_agent: None,
             governance_level: None,
             no_proxy: false,
+            policy: None,
             dry_run: false,
             enforcement_mode: None,
             observe: false,
@@ -1483,7 +1549,7 @@ mod tests {
         env.insert("MY_API_KEY".into(), "secret123".into());
         env.insert("NORMAL_VAR".into(), "hello".into());
 
-        let output = format_dry_run_output(&handle, settings, &cmd, &env);
+        let output = format_dry_run_output(&handle, &stub_resolution(), settings, &cmd, &env);
 
         assert!(output.contains("agent_id:"), "missing identity section: {output}");
         assert!(output.contains("agent-xyz"), "missing agent_id value: {output}");
@@ -1519,6 +1585,88 @@ mod tests {
         );
     }
 
+    /// The four effective-policy states must survive as far as the artefact an
+    /// operator actually reads.
+    ///
+    /// This is the assertion that a four-variant enum on its own does not
+    /// satisfy: a consumer that renders every state the same way — or that
+    /// collapses them into "a policy loaded" / "it did not" — passes the type
+    /// checker and fails the contract. So the check is on the rendered receipt,
+    /// and it is pairwise: `enforced` and `permissive` both launch, and are the
+    /// pair most likely to be flattened into each other.
+    #[test]
+    fn the_dry_run_receipt_distinguishes_all_four_policy_states() {
+        let handle = stub_handle(None);
+        let cmd = std::process::Command::new("mock-tool");
+        let env = HashMap::new();
+
+        let states = [
+            run_policy::PolicyResolution::Enforced {
+                source: PathBuf::from("/p.yaml"),
+                document: PolicyDocument {
+                    version: 1,
+                    name: "p".into(),
+                    rules: vec![aa_core::PolicyRule {
+                        action_pattern: "bash".into(),
+                        decision: aa_core::PolicyDecision::Deny,
+                    }],
+                    enforcement_mode: aa_core::EnforcementMode::default(),
+                },
+            },
+            run_policy::PolicyResolution::Permissive {
+                source: PathBuf::from("/p.yaml"),
+                document: PolicyDocument {
+                    version: 1,
+                    name: "p".into(),
+                    rules: vec![aa_core::PolicyRule {
+                        action_pattern: "*".into(),
+                        decision: aa_core::PolicyDecision::Allow,
+                    }],
+                    enforcement_mode: aa_core::EnforcementMode::default(),
+                },
+            },
+            run_policy::PolicyResolution::Unconfigured(run_policy::Unconfigured::NoSource { searched: vec![] }),
+            run_policy::PolicyResolution::LoadFailed {
+                source: PathBuf::from("/p.yaml"),
+                detail: "bad".into(),
+            },
+        ];
+
+        let sections: Vec<String> = states
+            .iter()
+            .map(|state| {
+                let output = format_dry_run_output(&handle, state, "{}", &cmd, &env);
+                let start = output
+                    .find("--- policy ---")
+                    .expect("receipt must carry a policy section");
+                let rest = &output[start..];
+                let end = rest.find("--- managed settings ---").unwrap_or(rest.len());
+                rest[..end].to_string()
+            })
+            .collect();
+
+        for (state, section) in states.iter().zip(&sections) {
+            assert!(
+                section.contains(state.state_token()),
+                "the receipt must name the state it is reporting; {} is missing from:\n{section}",
+                state.state_token()
+            );
+        }
+
+        for (i, a) in sections.iter().enumerate() {
+            for (j, b) in sections.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    a,
+                    b,
+                    "states {} and {} render an identical policy receipt, so an operator cannot \
+                     tell them apart",
+                    states[i].state_token(),
+                    states[j].state_token()
+                );
+            }
+        }
+    }
+
     #[test]
     fn dry_run_masks_secret_and_connection_url_env_vars() {
         let handle = RegistrationHandle {
@@ -1534,7 +1682,7 @@ mod tests {
         env.insert("AA_JWT_SECRET".into(), "super-secret-signing-key".into());
         env.insert("DATABASE_URL".into(), "postgresql://aasm:hunter2@db:5432/aasm".into());
 
-        let output = format_dry_run_output(&handle, "{}", &cmd, &env);
+        let output = format_dry_run_output(&handle, &stub_resolution(), "{}", &cmd, &env);
 
         assert!(
             !output.contains("super-secret-signing-key"),
@@ -1573,7 +1721,7 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("MONGODB_URI".into(), "mongodb://user:p4ss@host:27017/db".into());
 
-        let output = format_dry_run_output(&handle, "{}", &cmd, &env);
+        let output = format_dry_run_output(&handle, &stub_resolution(), "{}", &cmd, &env);
 
         assert!(
             !output.contains("p4ss"),
