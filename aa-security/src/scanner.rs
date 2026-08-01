@@ -2484,6 +2484,36 @@ mod tests {
         assert_eq!(result.redact(&corpus), corpus, "clean traffic must survive redact()");
     }
 
+    /// The evasion this fix must not create. Skipping any whitespace token that
+    /// holds a non-ASCII byte would have fixed the false positives and handed an
+    /// attacker a one-glyph bypass: prepend a Han character and the secret rides
+    /// through untouched. The fixture's punctuation keeps it out of the base64
+    /// alphabet, so passes 2-4 cannot cover for pass 1 here — the whitespace-token
+    /// pass is the only thing that can catch it, which is the point.
+    ///
+    /// Asserting the exact span also pins the offset arithmetic: the finding must
+    /// start after the leading Han characters (3 bytes each) and stop before the
+    /// trailing ones rather than swallowing the surrounding prose.
+    #[test]
+    fn a_cjk_prefix_cannot_hide_an_ascii_secret() {
+        let scanner = CredentialScanner::new();
+        let secret = "Xk9!mQ2*vB7#nR4$wT6%zP1&";
+        let text = format!("日誌：{secret}，狀態正常");
+
+        let result = scanner.scan(&text);
+        let hit = result
+            .findings
+            .iter()
+            .find(|f| f.kind == CredentialKind::GenericHighEntropy)
+            .expect("an ASCII secret must stay visible behind a CJK prefix");
+
+        assert_eq!(&text[hit.offset..hit.end], secret, "span must cover exactly the secret");
+        assert!(
+            !result.redact(&text).contains(secret),
+            "secret must not survive redact()"
+        );
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
