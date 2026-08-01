@@ -2452,6 +2452,38 @@ mod tests {
         assert_eq!(runs, vec![(0, token)]);
     }
 
+    /// Synthetic mixed `zh-TW`/English agent traffic carrying no credential.
+    const BENIGN_ZH_TW_BLOCK: &str = "使用者請求：請協助查詢訂單狀態，並將結果整理成報表。\
+         系統回應：查詢完成，共 12 筆資料，處理時間 340 毫秒。\
+         備註 (note): the retrieval step returned 12 rows from the orders table. \
+         設定檔版本 version = \"1.0.0\"，環境 environment = production。\
+         日誌：2026-04-27T12:00:00Z 資訊 處理中 request_id=abc123 狀態正常。\
+         客戶反映系統登入失敗請協助處理謝謝，我們已於今日上午完成修復並通知使用者。\
+         測試涵蓋率報告顯示核心模組的分支覆蓋率為百分之九十二，尚有兩個邊界案例待補。";
+
+    /// The headline defect: 32 KB of this traffic produced 87 `GenericHighEntropy`
+    /// findings while the byte-equivalent English produced none, so a `zh-TW`
+    /// tenant on `credential_action: Block` was denied for speaking Chinese.
+    #[test]
+    fn benign_mixed_zh_tw_traffic_yields_no_findings() {
+        let mut corpus = String::new();
+        while corpus.len() < 32 * 1024 {
+            corpus.push_str(BENIGN_ZH_TW_BLOCK);
+        }
+
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan(&corpus);
+
+        assert!(
+            result.findings.is_empty(),
+            "{} bytes of benign zh-TW traffic must be clean, got {} findings: {:?}",
+            corpus.len(),
+            result.findings.len(),
+            result.findings,
+        );
+        assert_eq!(result.redact(&corpus), corpus, "clean traffic must survive redact()");
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
