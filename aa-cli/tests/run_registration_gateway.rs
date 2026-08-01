@@ -58,7 +58,27 @@ fn sdk_config(agent_id: &str) -> AssemblyConfig {
         team_id: Some(TEAM.to_string()),
         parent_agent_id: None,
         sdk_version: None,
+        // Each test binary keeps its enrolments in its own directory rather than
+        // the developer's real `~/.aasm`, and the CLI under test is pointed at
+        // the same one by `AASM_STATE_DIR` so both surfaces read one key.
+        identity_dir: Some(identity_dir()),
     }
+}
+
+/// One temporary identity store per test process, shared by every case in it.
+///
+/// Shared rather than per-test on purpose: several cases below assert that the
+/// CLI and an SDK configured with the same identifier arrive at the *same*
+/// identity, which is a statement about one stored key and is unprovable if each
+/// call enrols its own.
+fn identity_dir() -> String {
+    // Exactly where the store resolves `${AASM_STATE_DIR}/identity` to, so the
+    // CLI (which reads the environment) and these configs (which are explicit)
+    // name one directory and therefore one key.
+    gateway_support::state_dir()
+        .join("identity")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Submit `request` to `endpoint` exactly as a client would.
@@ -74,7 +94,7 @@ async fn fresh_nonce(endpoint: &str, config: &AssemblyConfig) -> Vec<u8> {
     let mut client = AgentLifecycleServiceClient::connect(endpoint.to_string())
         .await
         .expect("the test gateway must be reachable");
-    let challenge: ChallengeRequest = build_challenge_request(config);
+    let challenge: ChallengeRequest = build_challenge_request(config).expect("the agent must have a durable identity");
     client
         .request_challenge(challenge)
         .await
@@ -220,19 +240,86 @@ async fn replaying_the_clis_own_registration_is_refused() -> anyhow::Result<()> 
     Ok(())
 }
 
+/// **Bypass attempt: knowing the victim's identifier is not enough (AAASM-5332).**
+///
+/// This is the ticket's core acceptance criterion, attempted for real against
+/// the real gateway. The attacker is given every public fact about the victim —
+/// the operator-facing agent id, which appears in audit records, topology views
+/// and on the dashboard, plus the `did:key` it registered under — and tries the
+/// break that worked before AAASM-5332: reconstruct the private key by hashing
+/// the identifier, then present a genuine signature made with it.
+///
+/// It fails at the DID↔key binding, because the victim's DID now names a
+/// randomly generated key rather than `SHA-256(agent_id)`. The registry is
+/// checked afterwards so a refusal cannot be confused with a refusal that still
+/// left a record behind.
+#[tokio::test(flavor = "multi_thread")]
+async fn knowing_the_victims_identifier_does_not_let_an_attacker_register_as_it() -> anyhow::Result<()> {
+    let gateway = TestGateway::start().await?;
+    let _env = GatewayEnv::point_at(gateway.endpoint());
+
+    // The victim registers normally; the attacker observes what is public.
+    let victim = run_registration::register(descriptor("finance-bot", "L2Enforce")).await?;
+    let public_identifier = victim.agent_id.clone();
+    let public_did = victim.registration_did.clone();
+
+    // The pre-AAASM-5332 derivation, applied to the public identifier. This is
+    // precisely the computation that used to yield the victim's private key.
+    let reconstructed = AgentKeypair::derive_transport_key(&public_identifier);
+    assert_ne!(
+        reconstructed.did_key(),
+        public_did,
+        "the identifier still derives the victim's DID, so the key behind it is still public"
+    );
+
+    // A challenge for the attacker's own derived identity — the gateway issues
+    // it, because the attacker does hold that key. The nonce is then aimed at
+    // the victim's DID, which is the attack.
+    let attacker_config = sdk_config("attacker-5332");
+    let nonce = fresh_nonce(gateway.endpoint(), &attacker_config).await;
+
+    let forged = RegisterRequest {
+        agent_id: Some(ProtoAgentId {
+            org_id: String::new(),
+            team_id: TEAM.to_string(),
+            agent_id: public_did.clone(),
+        }),
+        name: "claude_code".to_string(),
+        framework: "aasm-run".to_string(),
+        version: "2.1.999".to_string(),
+        public_key: reconstructed.public_key_hex(),
+        possession_proof: reconstructed.sign(&nonce).to_vec(),
+        registration_nonce: nonce,
+        ..Default::default()
+    };
+
+    let status = submit(gateway.endpoint(), forged)
+        .await
+        .expect_err("an identity reconstructed from the public agent id must be refused");
+    assert_eq!(status.code(), tonic::Code::Unauthenticated, "{status:?}");
+
+    // Exactly one record — the victim's own. The attacker created nothing.
+    let records = gateway.registry().list();
+    assert_eq!(
+        records.len(),
+        1,
+        "the forged registration must not have produced a record"
+    );
+    Ok(())
+}
+
 /// **Bypass attempt: use the CLI's identity with an attacker's key.**
 ///
-/// Presents the victim's `did:key` — the one the CLI registers under, and which
-/// anyone can derive from a public identifier — paired with the attacker's own
-/// public key and a *valid* proof under that key. Only the DID↔key binding
-/// stands between this and a squatted identity (AAASM-4787).
+/// Presents the victim's `did:key` paired with the attacker's own public key and
+/// a *valid* proof under that key. Only the DID↔key binding stands between this
+/// and a squatted identity (AAASM-4787).
 #[tokio::test(flavor = "multi_thread")]
 async fn registering_the_clis_did_under_a_foreign_key_is_refused() -> anyhow::Result<()> {
     let gateway = TestGateway::start().await?;
     let _env = GatewayEnv::point_at(gateway.endpoint());
 
     let victim_did = run_registration::registration_did("ops-laptop");
-    let attacker = AgentKeypair::derive("attacker");
+    let attacker = AgentKeypair::derive_transport_key("attacker");
 
     // A challenge for the attacker's *own* identity, which the gateway will
     // issue: the attacker holds that key. The nonce is then redirected at the
@@ -300,7 +387,8 @@ async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
     // identity is taken rather than filing a second record beside it.
     let config = sdk_config("shared-identity");
     let nonce = fresh_nonce(gateway.endpoint(), &config).await;
-    let sdk = build_register_request(&config, "sdk-agent".into(), "langgraph".into(), &nonce);
+    let sdk = build_register_request(&config, "sdk-agent".into(), "langgraph".into(), &nonce)
+        .expect("the SDK agent must have a durable identity");
     assert_eq!(
         sdk.agent_id.as_ref().expect("agent_id is set").agent_id,
         cli.registration_did,
@@ -334,7 +422,8 @@ async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
         "sdk-agent".into(),
         "langgraph".into(),
         &fresh_nonce(gateway.endpoint(), &other).await,
-    );
+    )
+    .expect("the SDK agent must have a durable identity");
     proofless.possession_proof = Vec::new();
     let status = submit(gateway.endpoint(), proofless)
         .await

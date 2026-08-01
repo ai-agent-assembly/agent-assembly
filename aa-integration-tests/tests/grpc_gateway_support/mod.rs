@@ -136,13 +136,23 @@ impl Drop for GrpcGateway {
     }
 }
 
-/// The `did:key` `aasm run --agent-id <identity>` registers under.
+/// The `did:key` `aasm run --agent-id <identity>` registered under, read back
+/// from the durable identity key the launch enrolled in `state_dir`.
 ///
-/// Derived with `aa-sdk-client`'s own function — the one the CLI calls — so a
-/// change to the derivation moves the expectation with it instead of leaving
-/// these tests asserting a value nothing produces.
-pub fn expected_did(identity: &str) -> String {
-    aa_sdk_client::agent_id_to_did_key(identity)
+/// Read with `aa-sdk-client`'s own store — the one the CLI writes through — so a
+/// change to how identity is resolved moves the expectation with it instead of
+/// leaving these tests asserting a value nothing produces.
+///
+/// Deliberately a *load*, not a load-or-enrol: since AAASM-5332 the DID is a
+/// rendering of a randomly generated key, so the only way this can name the DID
+/// the child registered is by reading the key the child actually created. If the
+/// launch enrolled nothing, this panics rather than quietly minting a second
+/// identity and comparing it against itself.
+pub fn expected_did(state_dir: &std::path::Path, identity: &str) -> String {
+    aa_sdk_client::IdentityStore::at(state_dir.join("identity"))
+        .load(identity)
+        .unwrap_or_else(|e| panic!("the launch should have enrolled a durable identity key for `{identity}`: {e}"))
+        .did_key()
 }
 
 /// The registry key the gateway files that identity under, hex-encoded — the

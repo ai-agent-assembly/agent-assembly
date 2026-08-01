@@ -204,7 +204,7 @@ async fn perform_handshake(stream: &mut UnixStream, agent_id: &str) {
     // (AAASM-3666). This client sends no version (empty), so the signed payload
     // reduces to the bare nonce — the backward-compat path — and the runtime
     // verifies it exactly as before.
-    let keypair = AgentKeypair::derive(agent_id);
+    let keypair = AgentKeypair::derive_transport_key(agent_id);
     let sdk_version = String::new();
     let mut signed_payload = challenge.nonce.clone();
     signed_payload.extend_from_slice(sdk_version.as_bytes());

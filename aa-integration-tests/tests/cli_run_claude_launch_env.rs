@@ -354,7 +354,7 @@ exit 0
         // ── and the session identity is still there ────────────────────────
         //
         // The merge adds a source; it must not cost the one that already worked.
-        let did = expected_did(AGENT_ID);
+        let did = expected_did(&host.state_dir, AGENT_ID);
         for (key, expected) in [
             ("AA_AGENT_ID", AGENT_ID.to_string()),
             ("AA_AGENT_DID", did.clone()),
