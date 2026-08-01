@@ -39,10 +39,11 @@ Four facts from the survey shape the answer, and each is a measurement rather
 than a preference.
 
 **The fast path is genuinely fast, and the transport tax is not.** The built-in
-scanner costs 6.1 µs p50 on a ~450-byte tool call. Moving that same payload to an
-out-of-process provider that performs *no detection at all* costs 14.1 µs over
-loopback TCP — 2.3× the entire current scan — and 43.3 µs if the connection is
-not reused. At 32 KB the same tax is 9%, and at 1 MB it is 4%. Out-of-process
+scanner costs 5.8 µs p50 on a 449-byte tool call. Moving that same payload to an
+out-of-process provider that performs *no detection at all* costs 43.8 µs over
+loopback TCP — over 7× the entire current scan — 9.1 µs over a Unix domain
+socket, and 61.6 µs if the connection is not reused. At 32 KB the same TCP tax
+is 10%, and at 1 MB it is 4%. Out-of-process
 inspection is uneconomical exactly where the synchronous enforcement path lives,
 and cheap exactly where deep inspection is wanted.
 
