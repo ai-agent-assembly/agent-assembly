@@ -135,14 +135,13 @@ fn bench_scan_and_redact(c: &mut Criterion) {
     let scanner = CredentialScanner::new();
     let mut group = c.benchmark_group("spike5269_scan_redact");
 
-    let scanner_for_probe = CredentialScanner::new();
     for (label, payload) in payload_classes() {
         // Skip only payloads that genuinely produce no findings, since redaction
         // is a no-op there. Filtering on the `_clean` label instead would drop
         // `mixed_zh_tw_32kb_clean`, which is named "clean" because it contains no
         // planted secret yet still yields 87 findings (§4.1) — precisely the case
         // this benchmark exists to measure.
-        if scanner_for_probe.scan(&payload).findings.is_empty() {
+        if scanner.scan(&payload).findings.is_empty() {
             continue;
         }
         group.throughput(Throughput::Bytes(payload.len() as u64));
