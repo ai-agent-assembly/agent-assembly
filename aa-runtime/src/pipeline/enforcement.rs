@@ -43,6 +43,14 @@ pub const DEFAULT_MAX_FIELD_BYTES: usize = 64 * 1024;
 /// Replacement written into a field that exceeded the configured size cap.
 pub const OVERSIZED_MARKER: &str = "[REDACTED:OVERSIZED]";
 
+/// Replacement written into a `bytes` field that carries a finding but cannot be
+/// decoded as UTF-8, so no faithful per-finding splice exists (AAASM-5346).
+///
+/// Distinct from [`OVERSIZED_MARKER`] because the reason differs and operators
+/// need to tell them apart: oversized means *not fully scanned*, undecodable
+/// means *scanned, found dirty, but not precisely repairable*.
+pub const UNDECODABLE_MARKER: &str = "[REDACTED:UNDECODABLE]";
+
 /// Behaviour when a secret-bearing field exceeds [`EnforcementConfig::max_field_bytes`].
 ///
 /// The runtime is a security gate, so the policy is **fail-closed**: an
@@ -95,13 +103,38 @@ impl EnforcementConfig {
 /// Carries only finding metadata (kind + offset + redacted label) — never a
 /// raw secret. Consumed by the metrics layer (AAASM-2585) and the verification
 /// suite (AAASM-2587).
+///
+/// `#[non_exhaustive]` because this struct records *what enforcement did*, and
+/// that vocabulary keeps growing — `undecodable_fields` (AAASM-5346) is the
+/// latest, and the ADR 0032 `sensitive_data_disposition` work will add more.
+/// Without it every such addition is a semver break for any out-of-crate struct
+/// literal. Construct it with [`Default`] and functional-update syntax
+/// (`..Default::default()`); field *reads* are unaffected (AAASM-5346).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EnforcementOutcome {
     /// Every credential finding across all scanned fields of the event.
     pub findings: Vec<CredentialFinding>,
     /// Number of fields that hit the size cap and were redacted whole.
     pub oversized_fields: usize,
-    /// Total bytes actually handed to the scanner across all fields.
+    /// Number of `bytes` fields that carried a finding but could not be decoded
+    /// as UTF-8, and so were redacted whole rather than spliced (AAASM-5346).
+    ///
+    /// Records the payload as *inspected but not precisely transformable*. It is
+    /// a counter on this internal outcome, **not** a verdict: decision D-2
+    /// (ADR 0032 §10) freezes [`RuntimeVerdict`], and the finer disposition
+    /// vocabulary belongs to the future additive `sensitive_data_disposition`
+    /// field, which this counter is intended to feed.
+    ///
+    /// [`RuntimeVerdict`]: https://github.com/ai-agent-assembly/agent-assembly/blob/main/docs/src/adr/0018-canonical-runtime-verdict-and-enriched-decision-record.md
+    pub undecodable_fields: usize,
+    /// Total **input** bytes inspected across all fields.
+    ///
+    /// Counted from the field as it arrived, never from a decoded form of it:
+    /// `String::from_utf8_lossy` expands every invalid byte into a 3-byte
+    /// U+FFFD, so counting the decoded length would inflate this figure — and
+    /// the `aa_runtime_scan_payload_bytes` histogram it feeds — by up to 3x for
+    /// a binary payload (AAASM-5346).
     pub scanned_bytes: usize,
     /// Number of SDK-supplied trust-marker labels (see [`TRUST_MARKER_LABELS`])
     /// that were stripped from the event — i.e. forgery attempts the runtime
@@ -121,8 +154,18 @@ impl EnforcementOutcome {
     }
 
     /// Total number of redactions applied (findings + oversized fields).
+    ///
+    /// `undecodable_fields` is deliberately **not** added: such a field is only
+    /// counted when it produced at least one finding, so it is already included
+    /// via `findings.len()`. Adding it here would double-count (AAASM-5346).
     pub fn redaction_count(&self) -> usize {
         self.findings.len() + self.oversized_fields
+    }
+
+    /// `true` when at least one field was scanned dirty but could not be decoded
+    /// well enough to splice, and was therefore dropped whole.
+    pub fn has_undecodable_fields(&self) -> bool {
+        self.undecodable_fields > 0
     }
 
     /// `true` when at least one forged SDK trust-marker label was stripped.
@@ -272,11 +315,32 @@ impl RuntimeScanner {
         }
     }
 
-    /// Normalize a `bytes` field to UTF-8, then scan and redact it in place.
+    /// Scan a `bytes` field and redact it in place without ever corrupting it
+    /// (AAASM-5346).
     ///
-    /// The original bytes are left untouched when the field is clean; they are
-    /// rewritten (from the normalized, redacted text) only when a finding is
-    /// present.
+    /// Every payload is scanned — an undecodable one is *never* waved through,
+    /// because skipping the write-back must never mean skipping the decision.
+    /// What differs is how a dirty payload is repaired:
+    ///
+    /// * **Valid UTF-8** — finding offsets are byte offsets into `field` itself,
+    ///   so [`ScanResult::redact`] splices exactly the flagged spans and every
+    ///   other byte survives verbatim.
+    /// * **Not valid UTF-8** (binary body, or a multi-byte character cut by a
+    ///   chunk boundary) — the scan runs against a lossy decoding, in which each
+    ///   invalid byte has become a 3-byte U+FFFD. Those offsets do not map back
+    ///   onto `field`, so no faithful splice exists. Writing the decoded text
+    ///   back would replace the caller's bytes with replacement characters —
+    ///   silent corruption, and the bug this method was rewritten to fix.
+    ///
+    ///   ADR 0015 §1 already decides this case ("caller text ≠ scanned text"):
+    ///   redaction degrades to an opaque whole-value replacement rather than
+    ///   passing the original through. Leaving the payload alone would forward a
+    ///   detected secret in the clear — a fail-open — so the field is dropped
+    ///   whole into [`UNDECODABLE_MARKER`] and counted in
+    ///   [`EnforcementOutcome::undecodable_fields`], mirroring the
+    ///   [`OversizedPolicy::RedactWhole`] precedent.
+    ///
+    /// A clean payload is left byte-identical in both branches.
     fn scan_bytes(&self, field: &mut Vec<u8>, outcome: &mut EnforcementOutcome) {
         if field.is_empty() {
             return;
@@ -285,14 +349,46 @@ impl RuntimeScanner {
             self.apply_oversized_bytes(field, outcome);
             return;
         }
-        // Normalize: a `bytes` payload is scanned as lossy UTF-8 text.
-        let text = String::from_utf8_lossy(field);
-        outcome.scanned_bytes += text.len();
-        let result = self.scanner.scan(&text);
-        if !result.is_clean() {
-            let redacted = result.redact(&text);
-            *field = redacted.into_bytes();
-            outcome.findings.extend(result.findings);
+        // Count the payload as it arrived. Lossy decoding can expand it (each
+        // invalid byte becomes a 3-byte U+FFFD), and the accounting must
+        // describe the payload, not an artefact of decoding it.
+        outcome.scanned_bytes += field.len();
+
+        // Computed inside the match so the immutable borrow of `field` taken by
+        // the decode ends before the write-back below.
+        let replacement: Option<Vec<u8>> = match std::str::from_utf8(field) {
+            Ok(text) => {
+                let result = self.scanner.scan(text);
+                if result.is_clean() {
+                    None
+                } else {
+                    let redacted = result.redact(text).into_bytes();
+                    outcome.findings.extend(result.findings);
+                    Some(redacted)
+                }
+            }
+            Err(_) => {
+                let text = String::from_utf8_lossy(field);
+                let result = self.scanner.scan(&text);
+                if result.is_clean() {
+                    None
+                } else {
+                    // These findings are **kind-only**. Their `offset` / `end`
+                    // index the lossy decoding, so they match neither the input
+                    // bytes nor the marker that replaces them. Nothing consumes
+                    // the spans today (the metrics layer reads `kind`, and
+                    // redaction already happened above), but a future consumer
+                    // must not treat them as positions in the payload. They are
+                    // kept rather than dropped because *what kind* of secret was
+                    // found is the audit-relevant fact.
+                    outcome.findings.extend(result.findings);
+                    outcome.undecodable_fields += 1;
+                    Some(UNDECODABLE_MARKER.as_bytes().to_vec())
+                }
+            }
+        };
+        if let Some(bytes) = replacement {
+            *field = bytes;
         }
     }
 
@@ -341,6 +437,12 @@ fn emit_metrics(outcome: &EnforcementOutcome, elapsed: Duration) {
     if outcome.oversized_fields > 0 {
         ::metrics::counter!("aa_runtime_scan_oversized_total").increment(outcome.oversized_fields as u64);
     }
+    // A payload dropped whole because it could not be decoded is a *coarser*
+    // redaction than the operator asked for, so it must be visible rather than
+    // hidden inside the generic finding counter (AAASM-5346).
+    if outcome.undecodable_fields > 0 {
+        ::metrics::counter!("aa_runtime_scan_undecodable_total").increment(outcome.undecodable_fields as u64);
+    }
     for finding in &outcome.findings {
         ::metrics::counter!("aa_runtime_scan_findings_total", "kind" => finding.kind.as_str()).increment(1);
     }
@@ -359,6 +461,52 @@ mod tests {
     const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
     /// A GitHub PAT — detected via the `ghp_` literal pattern.
     const GH_PAT: &str = "ghp_0123456789abcdefABCDEF0123456789abcd";
+
+    /// UTF-8 encoding of U+FFFD, the character `from_utf8_lossy` substitutes for
+    /// every byte it cannot decode. Its presence in an output payload is the
+    /// signature of the AAASM-5346 corruption bug.
+    const REPLACEMENT_CHAR: &[u8] = "\u{FFFD}".as_bytes();
+
+    /// Traditional-Chinese sample: eight 3-byte characters, so every character
+    /// boundary is a candidate chunk-split point.
+    const CJK: &str = "台北市政府資訊局";
+
+    /// [`CJK`] with its first and last bytes shaved off, so a 3-byte character is
+    /// cut in half at **both** ends — exactly what a stream chunk boundary does
+    /// to multi-byte text. Invalid UTF-8 in isolation, valid in aggregate.
+    fn chunk_split_cjk() -> Vec<u8> {
+        let bytes = CJK.as_bytes();
+        assert!(
+            std::str::from_utf8(&bytes[1..bytes.len() - 1]).is_err(),
+            "fixture must be invalid UTF-8 or it does not exercise the split path"
+        );
+        bytes[1..bytes.len() - 1].to_vec()
+    }
+
+    /// Byte-level substring search — the AAASM-5346 assertions must run over raw
+    /// `Vec<u8>`, never a lossy `String` view of it, or they would compare the
+    /// very decoding that causes the bug and pass either way.
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// A genuinely binary payload wrapping a synthetic secret: a PNG signature,
+    /// a `0xFF 0xFE` pair no UTF-8 decoder accepts, and a truncated 2-byte
+    /// sequence plus a lone continuation byte at the tail.
+    fn binary_payload_with_secret() -> Vec<u8> {
+        let mut payload = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0xFF, 0xFE];
+        payload.extend_from_slice(AWS_KEY.as_bytes());
+        payload.extend_from_slice(&[0x00, 0xC3, 0x28, 0x80]);
+        payload
+    }
+
+    /// Extract the `args_json` payload from an event whose detail is a ToolCall.
+    fn args_json_of(event: EnrichedEvent) -> Vec<u8> {
+        let Some(Detail::ToolCall(tc)) = event.inner.detail else {
+            unreachable!("detail was a ToolCall");
+        };
+        tc.args_json
+    }
 
     /// Build an [`EnrichedEvent`] wrapping `detail` with throwaway metadata.
     fn event_with(detail: Detail) -> EnrichedEvent {
@@ -502,6 +650,163 @@ mod tests {
         assert_eq!(outcome.scanned_bytes, original.len());
     }
 
+    /// AAASM-5346: the write-back used to splice a lossy decoding over the
+    /// caller's bytes, so a binary payload carrying a secret came back riddled
+    /// with U+FFFD. It must now be dropped whole instead — fail-closed, and
+    /// never a half-rewritten buffer the caller cannot detect.
+    #[test]
+    fn binary_payload_with_secret_is_dropped_whole_never_corrupted() {
+        let scanner = RuntimeScanner::new();
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: binary_payload_with_secret(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let out = args_json_of(event);
+        assert!(!contains(&out, AWS_KEY.as_bytes()), "raw secret must not survive");
+        assert!(
+            !contains(&out, REPLACEMENT_CHAR),
+            "payload was corrupted: U+FFFD spliced into the output"
+        );
+        assert_eq!(
+            out,
+            UNDECODABLE_MARKER.as_bytes(),
+            "an undecodable dirty payload is replaced whole, not partially rewritten"
+        );
+        assert_eq!(outcome.undecodable_fields, 1, "the coarse redaction is recorded");
+        assert!(outcome.has_undecodable_fields());
+        assert!(!outcome.findings.is_empty(), "the decision was made, not skipped");
+        assert!(
+            !outcome.is_clean(),
+            "fail-closed: never reported as a clean pass-through"
+        );
+    }
+
+    /// AAASM-5346: a multi-byte character cut by a chunk boundary makes the
+    /// payload invalid UTF-8. With no finding present nothing may be written
+    /// back, so the bytes must survive exactly — compared as `Vec<u8>`, never as
+    /// a lossy `String`.
+    #[test]
+    fn chunk_split_multibyte_clean_payload_round_trips_byte_identically() {
+        let scanner = RuntimeScanner::new();
+        let original = chunk_split_cjk();
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: original.clone(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert_eq!(
+            args_json_of(event),
+            original,
+            "a clean split payload must round-trip byte-identically"
+        );
+        assert!(outcome.is_clean());
+        assert_eq!(
+            outcome.undecodable_fields, 0,
+            "a clean payload is not a coarse redaction"
+        );
+    }
+
+    /// AAASM-5346: the same split payload *with* a synthetic secret. Pre-fix the
+    /// surviving CJK bytes came back as U+FFFD; the flagged payload must now be
+    /// handled without any replacement character reaching the output.
+    #[test]
+    fn chunk_split_multibyte_payload_with_secret_introduces_no_replacement_char() {
+        let scanner = RuntimeScanner::new();
+        let mut payload = chunk_split_cjk();
+        payload.extend_from_slice(format!(" key={AWS_KEY} ").as_bytes());
+        payload.extend_from_slice(&chunk_split_cjk());
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: payload,
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let out = args_json_of(event);
+        assert!(!contains(&out, AWS_KEY.as_bytes()), "raw secret must not survive");
+        assert!(
+            !contains(&out, REPLACEMENT_CHAR),
+            "surviving bytes must not carry U+FFFD"
+        );
+        // Pin the actual disposition. The U+FFFD assertion above is necessary
+        // but not sufficient: once the field is dropped whole, *nothing*
+        // survives, so that check alone would pass trivially and would keep
+        // passing if the branch silently changed to emit something else.
+        assert_eq!(
+            out,
+            UNDECODABLE_MARKER.as_bytes(),
+            "the split payload is replaced whole, exactly as the binary case is"
+        );
+        assert_eq!(outcome.undecodable_fields, 1);
+        assert!(!outcome.is_clean());
+    }
+
+    /// AAASM-5346: `scanned_bytes` counted the *lossy* decoding, which expands
+    /// each invalid byte into a 3-byte U+FFFD — over-reporting a binary payload
+    /// by up to 3x in the `aa_runtime_scan_payload_bytes` histogram.
+    #[test]
+    fn scanned_bytes_counts_input_bytes_not_the_lossy_expansion() {
+        let scanner = RuntimeScanner::new();
+        let original = chunk_split_cjk();
+        let lossy_len = String::from_utf8_lossy(&original).len();
+        assert!(
+            lossy_len > original.len(),
+            "fixture must actually expand under lossy decoding, else it proves nothing"
+        );
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: original.clone(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert_eq!(
+            outcome.scanned_bytes,
+            original.len(),
+            "scanned_bytes must describe the payload, not its decoding"
+        );
+    }
+
+    /// AAASM-5346 guard on the *unchanged* path: a payload that is valid UTF-8
+    /// still gets a precise per-finding splice, so multi-byte text around the
+    /// secret survives byte-for-byte rather than being dropped whole.
+    #[test]
+    fn valid_utf8_multibyte_payload_keeps_surrounding_bytes_on_redaction() {
+        let scanner = RuntimeScanner::new();
+        let payload = format!("{CJK} key={AWS_KEY} {CJK}");
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: payload.into_bytes(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        let out = args_json_of(event);
+        assert!(!contains(&out, AWS_KEY.as_bytes()), "raw secret must not survive");
+        assert!(
+            !contains(&out, REPLACEMENT_CHAR),
+            "no lossy substitution on a valid payload"
+        );
+        assert!(
+            contains(&out, CJK.as_bytes()),
+            "CJK bytes either side of the secret must survive verbatim"
+        );
+        assert!(
+            contains(&out, b"[REDACTED:"),
+            "a precise splice, not a whole-field drop"
+        );
+        assert_eq!(
+            outcome.undecodable_fields, 0,
+            "a decodable payload is repaired precisely, not coarsely"
+        );
+        assert!(!outcome.is_clean());
+    }
+
     #[test]
     fn oversized_field_is_redacted_whole_fail_closed() {
         let scanner = RuntimeScanner::with_config(EnforcementConfig {
@@ -609,6 +914,27 @@ mod tests {
         assert!(rendered.contains("aa_runtime_scan_findings_total"));
         // The finding metric is labelled by kind; the raw secret never appears.
         assert!(!rendered.contains(AWS_KEY));
+    }
+
+    /// AAASM-5346: dropping a payload whole because it could not be decoded is a
+    /// coarser redaction than configured, so operators get a dedicated counter
+    /// rather than having it disappear into the generic finding metric.
+    #[test]
+    fn enforce_emits_undecodable_metric() {
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, || {
+            let scanner = RuntimeScanner::new();
+            let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+                args_json: binary_payload_with_secret(),
+                ..Default::default()
+            }));
+            scanner.enforce(&mut event);
+        });
+
+        let rendered = handle.render();
+        assert!(rendered.contains("aa_runtime_scan_undecodable_total"));
+        assert!(!rendered.contains(AWS_KEY), "the raw secret never reaches a metric");
     }
 
     #[test]
