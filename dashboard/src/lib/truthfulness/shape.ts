@@ -31,6 +31,18 @@
  *    `unknown` has no properties. That is what makes the *next* fold safe without
  *    anyone remembering: not a lint rule, a type error.
  *
+ * ## How far that guarantee actually reaches
+ *
+ * Only as far as the lanes that call *this*. AAASM-5366 converted the folds in
+ * `features/scrub/` — the ticket's scope — so on that surface the guarantee is
+ * total. Everywhere else `certainFromQuery` is still called with a
+ * `QueryOutcome<T>` whose `T` is an unverified wire claim, and the same defect
+ * class is live there: `AppShell` filters the policies list, and
+ * `features/capability/api.ts` reads `cascadeLoaded`, both without checking the
+ * body first. Those are **AAASM-5369**, not this module's to assert. Do not read
+ * "a fold cannot read a field before decoding" as a dashboard-wide property
+ * until 5369 has moved the remaining lanes over.
+ *
  * ## What an unreadable body is reported as
  *
  * `unknown` — we asked, we were answered, and we cannot determine the value —
