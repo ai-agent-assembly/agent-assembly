@@ -109,7 +109,7 @@ jobs:
           - lane: macos
             os: macos-latest
     env:
-      AA_CONFORMANCE_OUTCOME_DIR: ${{ runner.temp }}/conformance-outcomes
+      AA_CONFORMANCE_OUTCOME_DIR: ${{ github.workspace }}/.conformance-outcomes
 
     steps:
       - name: Checkout
@@ -164,7 +164,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     env:
-      AA_CONFORMANCE_OUTCOME_DIR: ${{ runner.temp }}/conformance-outcomes
+      AA_CONFORMANCE_OUTCOME_DIR: ${{ github.workspace }}/.conformance-outcomes
 
     steps:
       - name: Checkout

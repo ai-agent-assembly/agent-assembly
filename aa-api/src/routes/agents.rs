@@ -18,6 +18,7 @@ use crate::error::ProblemDetail;
 use crate::models::verdict::RuntimeVerdict;
 use crate::pagination::PaginationParams;
 use crate::state::AppState;
+use chrono::{DateTime, Utc};
 
 /// Enforce tenant ownership of an agent for a caller that already cleared the
 /// scope gate (AAASM-3726 / AAASM-3687).
@@ -354,6 +355,161 @@ pub struct ResumeResponse {
     pub new_status: String,
 }
 
+/// Maximum shadow (weakening) window a single `POST
+/// /api/v1/agents/{id}/enforcement-mode` call may request, in hours (ADR 0021
+/// §Decision item 3, `MAX_SHADOW_DURATION`).
+///
+/// A weakening change (`→ Observe`) must carry a mandatory `expires_at` that is
+/// in the future and no further than this bound from now; a request beyond it is
+/// rejected `422` rather than clamped. Bounds the realistic failure the ADR
+/// names — a shadow toggle left on after a 2am incident — so a forgotten window
+/// self-heals when the reconciliation watcher (AAASM-5339, out of scope here)
+/// reverts it.
+const SHADOW_MAX_HOURS: i64 = 72;
+
+/// Target enforcement mode a `POST /api/v1/agents/{id}/enforcement-mode` request
+/// may ask for (AAASM-5097 / ADR 0021).
+///
+/// **`Disabled` is intentionally not a variant.** ADR 0021 §Decision item 2
+/// forbids exposing `Disabled` via the API under any input (its own definition
+/// restricts it to hermetic test environments), so it is unrepresentable here —
+/// a body of `{"mode":"disabled"}` fails deserialization and never reaches the
+/// handler. Serializes the same `snake_case` wire labels as
+/// [`aa_core::EnforcementMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementModeTarget {
+    /// Strengthen governance back to full enforcement (the safe direction).
+    Enforce,
+    /// Weaken to shadow (observe-only) mode — the high-privilege, fail-open
+    /// direction (Admin + reason + bounded expiry required).
+    Observe,
+}
+
+/// Request body for `POST /api/v1/agents/:id/enforcement-mode` (AAASM-5097).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct EnforcementModeRequest {
+    /// Target enforcement mode. `enforce` (strengthen) or `observe` (weaken /
+    /// shadow); `disabled` is not accepted (ADR 0021).
+    pub mode: EnforcementModeTarget,
+    /// Operator justification. **Required and non-empty on a weakening
+    /// (`observe`) change** — the audit record has nothing to say otherwise;
+    /// ignored on a strengthening (`enforce`) change.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// When the shadow window ends. **Required on a weakening (`observe`)
+    /// change**, must be in the future and within [`SHADOW_MAX_HOURS`] of now;
+    /// ignored (and cleared) on a strengthening (`enforce`) change.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Optional cascade confirmation (AAASM-5340). When present, the toggle is a
+    /// **cascade** over the subtree rooted at `{id}` (root included) rather than
+    /// the single agent, and the caller must echo back the exact affected-id set
+    /// and count it was shown by the `/enforcement-mode/preview` dry-run. The
+    /// handler recomputes the current subtree and rejects a mismatch (`409`) — a
+    /// TOCTOU / mis-click guard. Absent → the single-agent path (unchanged from
+    /// AAASM-5338).
+    #[serde(default)]
+    pub cascade: Option<CascadeConfirmation>,
+}
+
+/// Upper bound on the number of agents a single cascade may touch (AAASM-5340,
+/// ADR 0021 Option B).
+///
+/// A cascade whose affected set (root + descendants) exceeds this bound is
+/// **rejected outright** (`422`), never truncated: a partially applied
+/// fail-open weakening across an unbounded subtree is a worse governance state
+/// than an outright refusal that forces the operator to narrow the scope.
+/// Applies identically to both the preview dry-run and the apply path.
+const MAX_CASCADE_AGENTS: usize = 50;
+
+/// Echo-back confirmation a cascade apply must carry (AAASM-5340).
+///
+/// The `/enforcement-mode/preview` dry-run returns the explicit affected-id set
+/// and count; a subsequent cascade apply echoes them back here. The handler
+/// recomputes the current subtree and compares as an **order-independent set**
+/// (plus the count): if the tree changed between preview and apply — an agent
+/// spawned or deregistered, a mis-click on a stale UI — the apply is rejected
+/// `409` so the operator re-previews rather than acting on a stale picture.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct CascadeConfirmation {
+    /// The hex-encoded affected agent ids the caller was shown by the preview.
+    /// Compared as a set (order-independent) against the recomputed subtree.
+    pub expected_ids: Vec<String>,
+    /// The affected-agent count the caller was shown by the preview. Must equal
+    /// the recomputed subtree size.
+    pub expected_count: usize,
+}
+
+/// Response from `POST /api/v1/agents/{id}/enforcement-mode/preview`
+/// (AAASM-5340).
+///
+/// The explicit affected-agent set for a cascade rooted at `{id}`, computed
+/// without mutating anything. The order is deterministic: the root first, then
+/// its descendants in the BFS order [`AgentRegistry::descendants_of`] returns.
+/// The set is what a subsequent cascade apply must echo back verbatim.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct EnforcementModeCascadePreviewResponse {
+    /// Hex-encoded affected agent ids: root first, then descendants in BFS order.
+    pub affected_ids: Vec<String>,
+    /// The number of affected agents (`affected_ids.len()`, i.e. root + descendants).
+    pub count: usize,
+}
+
+/// Response from a cascade `POST /api/v1/agents/{id}/enforcement-mode`
+/// (AAASM-5340) — returned only when the request carried a `cascade`
+/// confirmation. Reports the full affected set the mode was applied to.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct EnforcementModeCascadeResponse {
+    /// Hex-encoded affected agent ids the mode was applied to: root first, then
+    /// descendants in BFS order.
+    pub affected_ids: Vec<String>,
+    /// The number of affected agents the mode was applied to.
+    pub count: usize,
+    /// The enforcement mode now in force across the whole affected set.
+    pub new_mode: EnforcementModeLabel,
+    /// The shadow-window deadline, echoed on a weakening cascade; `null` on a
+    /// strengthening cascade (the expiry is cleared).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// The body of a successful `POST /api/v1/agents/{id}/enforcement-mode`
+/// response (AAASM-5340). Untagged so the wire shape is exactly the inner
+/// variant: a single-agent toggle (no `cascade` field) serializes as an
+/// [`EnforcementModeResponse`] — byte-identical to AAASM-5338 — while a cascade
+/// serializes as an [`EnforcementModeCascadeResponse`]. Discriminated by the
+/// presence of `affected_ids`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum EnforcementModeApplyResponse {
+    /// A single-agent toggle result (the AAASM-5338 shape, unchanged).
+    Single(EnforcementModeResponse),
+    /// A cascade toggle result over the subtree (AAASM-5340).
+    Cascade(EnforcementModeCascadeResponse),
+}
+
+/// Response from `POST /api/v1/agents/:id/enforcement-mode`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct EnforcementModeResponse {
+    /// Hex-encoded agent UUID.
+    pub agent_id: String,
+    /// The agent's enforcement mode before the change (`enforce` / `observe` /
+    /// `disabled`), or `null` when it had no per-agent override (inheriting the
+    /// policy default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_mode: Option<EnforcementModeLabel>,
+    /// The enforcement mode now in force after the change.
+    pub new_mode: EnforcementModeLabel,
+    /// The shadow-window deadline, echoed back on a weakening change; `null` on a
+    /// strengthening change (the expiry is cleared).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
 /// Paginated `GET /api/v1/agents` body (AAASM-4892).
 ///
 /// A named wrapper (mirroring `PaginatedApprovalResponse`) so the OpenAPI schema
@@ -677,6 +833,409 @@ pub async fn resume_agent(
             previous_status,
             new_status: "Active".to_string(),
         }),
+    ))
+}
+
+/// Resolve the durable mode + expiry for a requested direction, running the
+/// full ADR 0021 direction-asymmetric authz + validation **once** (AAASM-5340).
+///
+/// This is the single-agent decision logic of [`set_enforcement_mode`] factored
+/// out so a cascade can run it exactly once for the whole affected set (the
+/// direction, the Admin gate, the reason, and the expiry window are set-wide
+/// properties, not per-agent). It performs no state mutation and no per-agent
+/// tenant check — the caller is responsible for authorizing each affected agent
+/// via [`authorize_agent_access`]. Returns the `(mode, expiry)` to persist, or a
+/// `ProblemDetail` (`403` for a Write-only caller attempting to weaken, `422`
+/// for a missing/empty reason or a missing/past/too-distant `expires_at`).
+fn resolve_enforcement_transition(
+    caller: &AuthenticatedCaller,
+    mode: EnforcementModeTarget,
+    reason: Option<&str>,
+    expires_at: Option<DateTime<Utc>>,
+) -> Result<(aa_core::EnforcementMode, Option<DateTime<Utc>>), ProblemDetail> {
+    match mode {
+        // ── Strengthening (→ Enforce): the safe direction. Write + tenant only,
+        // no ceremony. Clears any prior shadow expiry.
+        EnforcementModeTarget::Enforce => Ok((aa_core::EnforcementMode::Enforce, None)),
+
+        // ── Weakening (→ Observe / shadow): the fail-open, high-privilege path.
+        EnforcementModeTarget::Observe => {
+            if !caller.scopes.contains(&Scope::Admin) {
+                return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+                    .with_detail("Weakening enforcement to shadow (observe) mode requires admin scope"));
+            }
+
+            let reason = reason.unwrap_or("").trim();
+            if reason.is_empty() {
+                return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                    .with_detail("A non-empty 'reason' is required to weaken enforcement to shadow (observe) mode"));
+            }
+
+            let expires_at = expires_at.ok_or_else(|| {
+                ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                    .with_detail("An 'expires_at' deadline is required to weaken enforcement to shadow (observe) mode")
+            })?;
+            let now = Utc::now();
+            if expires_at <= now {
+                return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                    .with_detail("'expires_at' must be in the future"));
+            }
+            if expires_at > now + chrono::Duration::hours(SHADOW_MAX_HOURS) {
+                return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                    .with_detail(format!("'expires_at' must be within {SHADOW_MAX_HOURS}h of now")));
+            }
+
+            Ok((aa_core::EnforcementMode::Observe, Some(expires_at)))
+        }
+    }
+}
+
+/// Map a resolved [`aa_core::EnforcementMode`] to its API wire label.
+fn mode_label(mode: aa_core::EnforcementMode) -> EnforcementModeLabel {
+    match mode {
+        aa_core::EnforcementMode::Enforce => EnforcementModeLabel::Enforce,
+        aa_core::EnforcementMode::Observe => EnforcementModeLabel::Observe,
+        aa_core::EnforcementMode::Disabled => EnforcementModeLabel::Disabled,
+    }
+}
+
+/// Build the ordered, tenant-authorized affected set for a cascade rooted at
+/// `root` (AAASM-5340).
+///
+/// The affected set is `[root] ++ descendants_of(root)` — the root first, then
+/// its descendants in the BFS order [`AgentRegistry::descendants_of`] returns
+/// (a deterministic order the preview publishes and the apply echo-back is
+/// compared against). Security invariants, enforced here as a unit:
+///
+/// - **Root authorization**: the root is gated by [`authorize_agent_access`]
+///   (403 for an unauthorized caller, 404 when the root is unknown).
+/// - **Tenant confinement on every descendant**: a descendant the caller cannot
+///   access (delegated into another team) causes an outright `403` — the node is
+///   never silently dropped, which would let a cross-tenant subtree be partially
+///   cascaded (AAASM-4841 hazard). An admin may act on any node.
+/// - **Bounded blast radius**: a set larger than [`MAX_CASCADE_AGENTS`] is
+///   rejected `422`, never truncated.
+fn build_cascade_set(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    root: &[u8; 16],
+    root_id: &str,
+) -> Result<Vec<[u8; 16]>, ProblemDetail> {
+    // Authorize the root (existence + tenant ownership) before disclosing the
+    // subtree — mirrors the single-agent path.
+    authorize_agent_access(caller, state, root, root_id)?;
+
+    let mut affected = Vec::with_capacity(1 + state.agent_registry.descendants_of(root).len());
+    affected.push(*root);
+    affected.extend(state.agent_registry.descendants_of(root));
+
+    // Bounded blast radius: reject outright, never truncate.
+    if affected.len() > MAX_CASCADE_AGENTS {
+        return Err(
+            ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY).with_detail(format!(
+                "Cascade affects {} agents, exceeding the maximum of {MAX_CASCADE_AGENTS}; narrow the scope",
+                affected.len()
+            )),
+        );
+    }
+
+    // Tenant confinement on EVERY affected agent. The root cleared the up-front
+    // scope floor in `authorize_agent_access`; each descendant is gated on the
+    // same team boundary `list_agents` uses. A node the caller cannot see is a
+    // hard 403 — never dropped.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin {
+        for id in affected.iter().skip(1) {
+            let visible = state
+                .agent_registry
+                .get(id)
+                .map(|r| descendant_visible_to(caller, &r))
+                .unwrap_or(false);
+            if !visible {
+                return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN).with_detail(
+                    "The cascade subtree contains an agent outside the caller's tenant; \
+                     re-scope or use an admin credential",
+                ));
+            }
+        }
+    }
+
+    Ok(affected)
+}
+
+/// Hex-encode a 16-byte agent id (matches the encoding used across the API).
+fn hex_id(id: &[u8; 16]) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `POST /api/v1/agents/{id}/enforcement-mode/preview` — dry-run the cascade.
+///
+/// Compute the explicit affected-agent set for a cascade rooted at `{id}`.
+///
+/// Returns the affected agent ids (the subtree rooted at `{id}`, **including the
+/// root**) and their count without mutating any agent — a preview the UI shows
+/// before an operator commits a subtree-wide enforcement-mode change
+/// (AAASM-5340, ADR 0021 Option B). The order is deterministic: the root first,
+/// then its descendants in BFS order. A subsequent cascade apply must echo this
+/// exact set + count back (the TOCTOU / mis-click guard).
+///
+/// It shares the whole authorization contract of the apply path: the root is
+/// tenant-authorized (403/404), every descendant is tenant-confined (a node
+/// outside the caller's tenant is a `403`, never dropped), and a set larger than
+/// `MAX_CASCADE_AGENTS` (50) is rejected `422` — matching apply so the UI can
+/// surface the over-limit rejection before the operator commits. The `Write`
+/// floor authenticates the caller; the preview is direction-agnostic (it takes
+/// no body) so it needs no Admin gate — the weakening Admin check happens on the
+/// apply path.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/enforcement-mode/preview",
+    params(("id" = String, Path, description = "Hex-encoded root agent UUID")),
+    responses(
+        (status = 200, description = "Affected agent set for the cascade", body = EnforcementModeCascadePreviewResponse),
+        (status = 400, description = "Invalid agent ID format"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "Caller lacks access to the root or a subtree agent"),
+        (status = 404, description = "Root agent not found"),
+        (status = 422, description = "Cascade exceeds the maximum affected-agent count"),
+    ),
+    tag = "agents"
+)]
+pub async fn preview_enforcement_mode_cascade(
+    // A preview is a read of governance state; the `Write` floor (not `Read`)
+    // matches the mutating apply it precedes, so a read-only caller cannot probe
+    // the subtree it could never toggle.
+    RequireWrite(caller): RequireWrite,
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<(StatusCode, Json<EnforcementModeCascadePreviewResponse>), ProblemDetail> {
+    let root = parse_agent_id(&id)?;
+    let affected = build_cascade_set(&caller, &state, &root, &id)?;
+    let affected_ids: Vec<String> = affected.iter().map(hex_id).collect();
+    let count = affected_ids.len();
+    Ok((
+        StatusCode::OK,
+        Json(EnforcementModeCascadePreviewResponse { affected_ids, count }),
+    ))
+}
+
+/// `POST /api/v1/agents/:id/enforcement-mode` — set an agent's enforcement mode.
+///
+/// Direction-asymmetric governance mutation (AAASM-5097, ADR 0021 Option B).
+/// The operation is split by *direction of effect*, because the two directions
+/// have opposite blast radius:
+///
+/// - **Strengthening** (`→ enforce`) turns governance back *on* — it fails safe.
+///   It needs only tenant-scoped `Write` (via [`authorize_agent_access`]), no
+///   `reason`, no `expires_at`; the per-agent expiry is cleared so the agent
+///   returns to permanent enforcement.
+/// - **Weakening** (`→ observe`, i.e. shadow) turns denials *and credential
+///   redaction off* for the agent — it fails **open**. It is the high-privilege
+///   path: it requires `Admin` scope in addition to tenant ownership, a required
+///   non-empty `reason`, and a required `expires_at` that is in the future and
+///   within [`SHADOW_MAX_HOURS`] of now. A missing/empty reason or a
+///   missing/past/too-distant deadline is rejected `422`.
+///
+/// `disabled` is not reachable under any input (it is not a variant of
+/// [`EnforcementModeTarget`], so it fails deserialization — ADR 0021).
+///
+/// A single handler gates both directions rather than two extractors: the
+/// `Write` floor authenticates and denies a read-only caller up front
+/// (deny-by-default — an unauthenticated caller never reaches the logic), then
+/// the weakening path additionally requires `Admin` in-handler. On success the
+/// canonical `enforcement_mode` (the field the enforcement resolver reads, not
+/// `metadata["mode"]`) is written durably and a `GovernanceMutation` audit is
+/// emitted with the **verified** actor + tenant from the authenticated caller —
+/// never the request body.
+///
+/// **Cascade (AAASM-5340).** When the request carries a `cascade`
+/// confirmation, the toggle applies to the whole subtree rooted at `{id}` (root
+/// included) rather than the single agent. The direction, Admin gate, reason,
+/// and expiry window are validated **once** for the set; then the mode is
+/// persisted to every affected agent, each with its **own** actor-attributed
+/// `GovernanceMutation` audit. The caller must echo back the exact affected-id
+/// set + count it was shown by `/enforcement-mode/preview`:
+/// - the recomputed subtree (compared as an order-independent **set**, plus the
+///   count) differing from the echo-back → **`409` Conflict** (the tree changed
+///   since preview — re-preview), chosen over `422` because the request is
+///   well-formed but *stale* against current state, exactly the semantics of a
+///   version conflict;
+/// - a recomputed set larger than `MAX_CASCADE_AGENTS` → **`422`** (an
+///   unprocessable over-limit request, never truncated);
+/// - a subtree agent outside the caller's tenant → **`403`** (never dropped).
+///
+/// Without a `cascade` field the behaviour is byte-identical to AAASM-5338.
+#[utoipa::path(
+    post,
+    path = "/api/v1/agents/{id}/enforcement-mode",
+    params(("id" = String, Path, description = "Hex-encoded agent UUID")),
+    request_body = EnforcementModeRequest,
+    responses(
+        (status = 200, description = "Enforcement mode changed", body = EnforcementModeApplyResponse),
+        (status = 400, description = "Invalid agent ID format"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "Caller lacks the scope required for the requested direction, or a subtree agent is out of tenant"),
+        (status = 404, description = "Agent not found"),
+        (status = 409, description = "Cascade echo-back set/count differs from the current subtree (re-preview)"),
+        (status = 422, description = "Weakening request missing/invalid reason or expires_at, or cascade exceeds the maximum agent count"),
+    ),
+    tag = "agents"
+)]
+pub async fn set_enforcement_mode(
+    // The `Write` floor authenticates the caller and rejects anything below
+    // Write up front (deny-by-default). Strengthening needs exactly Write;
+    // weakening additionally requires Admin, enforced in-handler below.
+    RequireWrite(caller): RequireWrite,
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<EnforcementModeRequest>,
+) -> Result<(StatusCode, Json<EnforcementModeApplyResponse>), ProblemDetail> {
+    let agent_id = parse_agent_id(&id)?;
+
+    // A cascade confirmation routes to the subtree path; its absence preserves
+    // the AAASM-5338 single-agent behaviour exactly.
+    if let Some(cascade) = body.cascade.as_ref() {
+        return apply_enforcement_cascade(&caller, &state, &agent_id, &id, &body, cascade).await;
+    }
+
+    // Tenant ownership before any state change or existence disclosure — mirrors
+    // suspend/resume. An admin may act on any agent; a team-scoped caller only on
+    // its own team's; a caller with neither is denied before the mode branch.
+    authorize_agent_access(&caller, &state, &agent_id, &id)?;
+
+    // Snapshot the prior override so the audit before/after and the response are
+    // truthful. `None` (no per-agent override) is recorded as "inherit".
+    let previous_override = state.agent_registry.get(&agent_id).and_then(|r| r.enforcement_mode);
+    let previous_label = project_config_mode(previous_override);
+    let previous_wire = previous_override.map(|m| m.as_wire()).unwrap_or("inherit");
+
+    // Resolve the durable mode + expiry per direction, enforcing the
+    // direction-specific authz and validation. `Disabled` is unreachable: it is
+    // not a variant of `EnforcementModeTarget`.
+    let (new_mode, new_expiry) =
+        resolve_enforcement_transition(&caller, body.mode, body.reason.as_deref(), body.expires_at)?;
+
+    // Persist durably (in-memory + storage write-through, AAASM-5288 bridge). A
+    // missing agent surfaces as 404 — the tenant check above already confirmed
+    // it exists, so this guards a concurrent deregister.
+    state
+        .agent_registry
+        .set_enforcement_mode_persisted(&agent_id, Some(new_mode), new_expiry)
+        .await
+        .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")))?;
+
+    // Actor-attributed audit: actor + tenant come from the authenticated caller,
+    // NEVER the body (AAASM-5287). A weakening carries the operator reason; a
+    // strengthening has none, so record a fixed non-empty justification (the
+    // audit rejects an empty reason).
+    let audit_reason = cascade_audit_reason(body.mode, body.reason.as_deref());
+    emit_governance_mutation_audit(
+        &state,
+        &caller,
+        &agent_id,
+        "enforcement_mode",
+        &audit_reason,
+        previous_wire,
+        new_mode.as_wire(),
+    );
+
+    Ok((
+        StatusCode::OK,
+        Json(EnforcementModeApplyResponse::Single(EnforcementModeResponse {
+            agent_id: id,
+            previous_mode: previous_label,
+            new_mode: mode_label(new_mode),
+            expires_at: new_expiry,
+        })),
+    ))
+}
+
+/// The non-empty justification recorded on the `GovernanceMutation` audit for an
+/// enforcement toggle. A weakening carries the operator's reason; a
+/// strengthening has none, so a fixed non-empty label is recorded (the audit
+/// record rejects an empty reason).
+fn cascade_audit_reason(mode: EnforcementModeTarget, reason: Option<&str>) -> String {
+    match mode {
+        EnforcementModeTarget::Observe => reason.unwrap_or("").trim().to_string(),
+        EnforcementModeTarget::Enforce => "strengthen to enforce".to_string(),
+    }
+}
+
+/// Apply an enforcement-mode change to the whole subtree rooted at `root`
+/// (AAASM-5340), gated by an echo-back confirmation.
+///
+/// Runs the ADR 0021 direction/authz/expiry validation **once** for the set,
+/// verifies the caller's echoed affected-id set + count against the recomputed
+/// current subtree (a `409` on mismatch — the TOCTOU / mis-click guard), then
+/// persists the mode to every affected agent, each with its own
+/// actor-attributed `GovernanceMutation` audit (actor + tenant from the
+/// authenticated caller, never the body). The subtree is bounded to
+/// [`MAX_CASCADE_AGENTS`] (`422` if exceeded) and tenant-confined on every node
+/// (`403` if any node is out of tenant), both enforced by [`build_cascade_set`].
+async fn apply_enforcement_cascade(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    root: &[u8; 16],
+    root_id: &str,
+    body: &EnforcementModeRequest,
+    cascade: &CascadeConfirmation,
+) -> Result<(StatusCode, Json<EnforcementModeApplyResponse>), ProblemDetail> {
+    // Build + authorize the affected set (root authz, per-node tenant
+    // confinement, and the MAX_CASCADE_AGENTS bound) before any mutation.
+    let affected = build_cascade_set(caller, state, root, root_id)?;
+    let affected_ids: Vec<String> = affected.iter().map(hex_id).collect();
+
+    // Echo-back check: the recomputed set must match what the caller previewed,
+    // compared order-independently (as a set) plus the count. A change since
+    // preview — a spawn, a deregister, a stale UI — is a well-formed but STALE
+    // request, so it is a 409 Conflict (re-preview), not a 422.
+    let recomputed: std::collections::HashSet<&String> = affected_ids.iter().collect();
+    let echoed: std::collections::HashSet<&String> = cascade.expected_ids.iter().collect();
+    if cascade.expected_count != affected_ids.len() || recomputed != echoed {
+        return Err(ProblemDetail::from_status(StatusCode::CONFLICT).with_detail(
+            "The cascade set changed since it was previewed; re-preview and retry with the current affected set",
+        ));
+    }
+
+    // Resolve the transition ONCE — the direction, Admin gate, reason, and
+    // expiry window are set-wide, not per-agent.
+    let (new_mode, new_expiry) =
+        resolve_enforcement_transition(caller, body.mode, body.reason.as_deref(), body.expires_at)?;
+    let audit_reason = cascade_audit_reason(body.mode, body.reason.as_deref());
+
+    // Apply the mode + emit an OWN audit for every affected agent. Each agent's
+    // prior override is snapshotted for its own before/after.
+    for id in &affected {
+        let previous_override = state.agent_registry.get(id).and_then(|r| r.enforcement_mode);
+        let previous_wire = previous_override.map(|m| m.as_wire()).unwrap_or("inherit");
+        state
+            .agent_registry
+            .set_enforcement_mode_persisted(id, Some(new_mode), new_expiry)
+            .await
+            .map_err(|_| {
+                ProblemDetail::from_status(StatusCode::NOT_FOUND)
+                    .with_detail(format!("Agent not found: {}", hex_id(id)))
+            })?;
+        emit_governance_mutation_audit(
+            state,
+            caller,
+            id,
+            "enforcement_mode",
+            &audit_reason,
+            previous_wire,
+            new_mode.as_wire(),
+        );
+    }
+
+    let count = affected_ids.len();
+    Ok((
+        StatusCode::OK,
+        Json(EnforcementModeApplyResponse::Cascade(EnforcementModeCascadeResponse {
+            affected_ids,
+            count,
+            new_mode: mode_label(new_mode),
+            expires_at: new_expiry,
+        })),
     ))
 }
 
@@ -2238,5 +2797,614 @@ mod tests {
         .expect_err("a team-beta caller must not read a team-alpha agent's config");
 
         assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
+    }
+
+    // ── AAASM-5097 / ADR-0021: enforcement-mode toggle ──────────────────────
+
+    /// A tenant-scoped caller holding `Write` (but not `Admin`) in `team_id`.
+    fn write_caller(team_id: &str) -> RequireWrite {
+        RequireWrite(AuthenticatedCaller {
+            key_id: "writer".to_string(),
+            scopes: vec![Scope::Write],
+            tenant: crate::auth::Tenant {
+                org_id: None,
+                team_id: Some(team_id.to_string()),
+            },
+        })
+    }
+
+    /// An `Admin` caller (satisfies the `RequireWrite` extractor floor and the
+    /// in-handler Admin gate). No team scope — an admin is not tenant-confined.
+    fn admin_write() -> RequireWrite {
+        RequireWrite(AuthenticatedCaller {
+            key_id: "root".to_string(),
+            scopes: vec![Scope::Admin],
+            tenant: crate::auth::Tenant {
+                org_id: None,
+                team_id: None,
+            },
+        })
+    }
+
+    fn enforce_body() -> EnforcementModeRequest {
+        EnforcementModeRequest {
+            mode: EnforcementModeTarget::Enforce,
+            reason: None,
+            expires_at: None,
+            cascade: None,
+        }
+    }
+
+    fn observe_body(reason: Option<&str>, expires_at: Option<DateTime<Utc>>) -> EnforcementModeRequest {
+        EnforcementModeRequest {
+            mode: EnforcementModeTarget::Observe,
+            reason: reason.map(str::to_string),
+            expires_at,
+            cascade: None,
+        }
+    }
+
+    /// Unwrap a single-agent apply response, failing loudly on a cascade shape.
+    fn expect_single(body: EnforcementModeApplyResponse) -> EnforcementModeResponse {
+        match body {
+            EnforcementModeApplyResponse::Single(r) => r,
+            EnforcementModeApplyResponse::Cascade(_) => panic!("expected a single-agent response, got a cascade"),
+        }
+    }
+
+    /// Unwrap a cascade apply response, failing loudly on a single shape.
+    fn expect_cascade(body: EnforcementModeApplyResponse) -> EnforcementModeCascadeResponse {
+        match body {
+            EnforcementModeApplyResponse::Cascade(r) => r,
+            EnforcementModeApplyResponse::Single(_) => panic!("expected a cascade response, got a single-agent one"),
+        }
+    }
+
+    /// `disabled` is not a variant of the request target, so a body naming it
+    /// fails deserialization and never reaches the handler (ADR-0021: Disabled
+    /// is not exposed via the API under any input).
+    #[test]
+    fn disabled_mode_is_not_deserializable() {
+        let err = serde_json::from_str::<EnforcementModeRequest>(r#"{"mode":"disabled"}"#);
+        assert!(err.is_err(), "'disabled' must not deserialize as a target mode");
+        // The two legitimate targets do deserialize.
+        assert!(serde_json::from_str::<EnforcementModeRequest>(r#"{"mode":"enforce"}"#).is_ok());
+        assert!(serde_json::from_str::<EnforcementModeRequest>(
+            r#"{"mode":"observe","reason":"x","expires_at":"2030-01-01T00:00:00Z"}"#
+        )
+        .is_ok());
+    }
+
+    /// Weakening to shadow requires Admin: a Write-but-not-Admin caller is
+    /// refused 403 even with a valid reason + expiry, and the agent's mode is
+    /// left untouched (the fail-open direction is Admin-only).
+    #[tokio::test]
+    async fn weaken_requires_admin() {
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let registry = state.agent_registry.clone();
+
+        let err = set_enforcement_mode(
+            write_caller("team-alpha"),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(observe_body(
+                Some("incident debug"),
+                Some(Utc::now() + chrono::Duration::hours(1)),
+            )),
+        )
+        .await
+        .expect_err("a Write-only caller must not weaken enforcement");
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
+        // Mode unchanged — the refused mutation never touched the record.
+        assert_eq!(registry.get(&[0x01u8; 16]).unwrap().enforcement_mode, None);
+    }
+
+    /// Weakening requires a non-empty reason: an Admin caller with a valid
+    /// expiry but a missing or whitespace-only reason is refused 422.
+    #[tokio::test]
+    async fn weaken_requires_non_empty_reason() {
+        for reason in [None, Some("   ")] {
+            let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+            let err = set_enforcement_mode(
+                admin_write(),
+                Extension(state),
+                axum::extract::Path(hex::encode([0x01u8; 16])),
+                Json(observe_body(reason, Some(Utc::now() + chrono::Duration::hours(1)))),
+            )
+            .await
+            .expect_err("a weaken with no reason must be rejected");
+            assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+        }
+    }
+
+    /// Weakening requires an expiry: an Admin caller with a valid reason but no
+    /// `expires_at` is refused 422 (a shadow window must self-heal).
+    #[tokio::test]
+    async fn weaken_requires_expires_at() {
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(observe_body(Some("incident debug"), None)),
+        )
+        .await
+        .expect_err("a weaken with no expires_at must be rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    }
+
+    /// The shadow window is bounded: an `expires_at` beyond SHADOW_MAX_HOURS, or
+    /// one in the past, is refused 422.
+    #[tokio::test]
+    async fn weaken_rejects_expiry_past_or_beyond_max() {
+        // Beyond the 72h cap.
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(observe_body(
+                Some("too long"),
+                Some(Utc::now() + chrono::Duration::hours(SHADOW_MAX_HOURS + 1)),
+            )),
+        )
+        .await
+        .expect_err("an expiry beyond the max must be rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+
+        // In the past.
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(observe_body(
+                Some("already gone"),
+                Some(Utc::now() - chrono::Duration::minutes(1)),
+            )),
+        )
+        .await
+        .expect_err("a past expiry must be rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    }
+
+    /// A valid weaken by an Admin sets the canonical `enforcement_mode` to
+    /// Observe and records the shadow deadline durably; the response echoes both.
+    #[tokio::test]
+    async fn weaken_success_sets_observe_and_expiry() {
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let registry = state.agent_registry.clone();
+        let deadline = Utc::now() + chrono::Duration::hours(2);
+
+        let (status, Json(body)) = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(observe_body(Some("incident debug"), Some(deadline))),
+        )
+        .await
+        .expect("a valid weaken succeeds");
+
+        assert_eq!(status, StatusCode::OK);
+        let body = expect_single(body);
+        assert_eq!(body.new_mode, EnforcementModeLabel::Observe);
+        assert_eq!(body.expires_at, Some(deadline));
+        // The canonical field the enforcement resolver reads is set, with expiry.
+        let rec = registry.get(&[0x01u8; 16]).unwrap();
+        assert_eq!(rec.enforcement_mode, Some(aa_core::EnforcementMode::Observe));
+        assert_eq!(rec.enforcement_mode_expires_at, Some(deadline));
+    }
+
+    /// Strengthening (→ enforce) is the safe direction: a plain `Write` caller
+    /// may do it with no reason and no expiry, and any prior shadow expiry is
+    /// cleared so the agent returns to permanent enforcement.
+    #[tokio::test]
+    async fn strengthen_allowed_for_write_and_clears_expiry() {
+        let mut rec = record(0x01, Some("team-alpha"));
+        // Pre-existing shadow window that the strengthen must clear.
+        rec.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
+        rec.enforcement_mode_expires_at = Some(Utc::now() + chrono::Duration::hours(1));
+        let state = state_with_policies(vec![rec], vec![]);
+        let registry = state.agent_registry.clone();
+
+        let (status, Json(body)) = set_enforcement_mode(
+            write_caller("team-alpha"),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(enforce_body()),
+        )
+        .await
+        .expect("a Write caller may strengthen with no ceremony");
+
+        assert_eq!(status, StatusCode::OK);
+        let body = expect_single(body);
+        assert_eq!(body.new_mode, EnforcementModeLabel::Enforce);
+        assert_eq!(body.previous_mode, Some(EnforcementModeLabel::Observe));
+        assert_eq!(body.expires_at, None, "strengthen echoes no expiry");
+        let after = registry.get(&[0x01u8; 16]).unwrap();
+        assert_eq!(after.enforcement_mode, Some(aa_core::EnforcementMode::Enforce));
+        assert_eq!(
+            after.enforcement_mode_expires_at, None,
+            "strengthen must clear the prior shadow expiry"
+        );
+    }
+
+    /// Deny-by-default / tenant confinement: a Write caller from another team
+    /// may not toggle a team-alpha agent (mirrors suspend's tenant gate).
+    #[tokio::test]
+    async fn toggle_denies_cross_tenant_caller() {
+        let state = state_with_policies(vec![record(0x01, Some("team-alpha"))], vec![]);
+        let err = set_enforcement_mode(
+            write_caller("team-beta"),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(enforce_body()),
+        )
+        .await
+        .expect_err("a team-beta caller must not toggle a team-alpha agent");
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
+    }
+
+    // ── AAASM-5340 / ADR-0021: cascade preview + echo-back apply ─────────────
+
+    /// A child agent under `parent`, owned by `team_id`. `register` wires the
+    /// parent→child link from `parent_key`, so `descendants_of(root)` sees it.
+    fn child_record(id_byte: u8, parent_byte: u8, team_id: Option<&str>) -> aa_gateway::registry::AgentRecord {
+        let mut r = record(id_byte, team_id);
+        r.parent_key = Some([parent_byte; 16]);
+        r.parent_agent_id = Some(hex::encode([parent_byte; 16]));
+        r.root_agent_id = Some([parent_byte; 16]);
+        r.depth = 1;
+        r
+    }
+
+    /// An admin-scoped `RequireWrite` caller wired with an audit sink, returning
+    /// the state plus a receiver the test drains to count emitted audits.
+    fn state_with_audit(
+        records: Vec<aa_gateway::registry::AgentRecord>,
+    ) -> (AppState, tokio::sync::mpsc::Receiver<AuditEntry>) {
+        let mut state = state_with_policies(records, vec![]);
+        let (tx, rx) = tokio::sync::mpsc::channel::<AuditEntry>(4096);
+        state.audit_sender = Some(tx);
+        (state, rx)
+    }
+
+    fn cascade_body(
+        mode: EnforcementModeTarget,
+        reason: Option<&str>,
+        expires_at: Option<DateTime<Utc>>,
+        expected_ids: Vec<String>,
+        expected_count: usize,
+    ) -> EnforcementModeRequest {
+        EnforcementModeRequest {
+            mode,
+            reason: reason.map(str::to_string),
+            expires_at,
+            cascade: Some(CascadeConfirmation {
+                expected_ids,
+                expected_count,
+            }),
+        }
+    }
+
+    /// Preview lists the subtree (root first, then descendants) with the count,
+    /// and mutates nothing — every agent's mode is unchanged after the call.
+    #[tokio::test]
+    async fn preview_lists_subtree_and_mutates_nothing() {
+        // root(0x01) → child(0x02), child(0x03); child(0x02) → grandchild(0x04).
+        let state = state_with_policies(
+            vec![
+                record(0x01, Some("team-alpha")),
+                child_record(0x02, 0x01, Some("team-alpha")),
+                child_record(0x03, 0x01, Some("team-alpha")),
+                child_record(0x04, 0x02, Some("team-alpha")),
+            ],
+            vec![],
+        );
+        let registry = state.agent_registry.clone();
+
+        let (status, Json(body)) = preview_enforcement_mode_cascade(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+        )
+        .await
+        .expect("admin may preview the cascade");
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.count, 4, "root + 3 descendants");
+        assert_eq!(body.affected_ids.len(), 4);
+        assert_eq!(body.affected_ids[0], hex::encode([0x01u8; 16]), "root is first");
+        for b in [0x02u8, 0x03, 0x04] {
+            assert!(
+                body.affected_ids.contains(&hex::encode([b; 16])),
+                "descendant {b} present"
+            );
+        }
+        // Nothing mutated.
+        for b in [0x01u8, 0x02, 0x03, 0x04] {
+            assert_eq!(
+                registry.get(&[b; 16]).unwrap().enforcement_mode,
+                None,
+                "preview must not mutate agent {b}"
+            );
+        }
+    }
+
+    /// A valid echo-back cascade applies the mode to EVERY agent in the set,
+    /// and emits one GovernanceMutation audit per agent.
+    #[tokio::test]
+    async fn cascade_apply_mutates_all_and_audits_per_agent() {
+        let (state, mut rx) = state_with_audit(vec![
+            record(0x01, Some("team-alpha")),
+            child_record(0x02, 0x01, Some("team-alpha")),
+            child_record(0x03, 0x01, Some("team-alpha")),
+        ]);
+        let registry = state.agent_registry.clone();
+        let ids: Vec<String> = [0x01u8, 0x02, 0x03].iter().map(|b| hex::encode([*b; 16])).collect();
+
+        let (status, Json(body)) = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(cascade_body(EnforcementModeTarget::Enforce, None, None, ids, 3)),
+        )
+        .await
+        .expect("a valid echo-back cascade succeeds");
+
+        assert_eq!(status, StatusCode::OK);
+        let body = expect_cascade(body);
+        assert_eq!(body.count, 3);
+        assert_eq!(body.new_mode, EnforcementModeLabel::Enforce);
+        // Every agent in the set is at the target mode.
+        for b in [0x01u8, 0x02, 0x03] {
+            assert_eq!(
+                registry.get(&[b; 16]).unwrap().enforcement_mode,
+                Some(aa_core::EnforcementMode::Enforce),
+                "agent {b} must be at enforce after the cascade"
+            );
+        }
+        // One GovernanceMutation audit per affected agent.
+        let mut govern = 0;
+        while let Ok(entry) = rx.try_recv() {
+            if entry.event_type() == aa_core::audit::AuditEventType::GovernanceMutation {
+                govern += 1;
+            }
+        }
+        assert_eq!(govern, 3, "one governance-mutation audit per affected agent");
+    }
+
+    /// A cascade whose echoed id set differs from the current subtree → 409.
+    #[tokio::test]
+    async fn cascade_apply_rejects_wrong_id_set() {
+        let state = state_with_policies(
+            vec![
+                record(0x01, Some("team-alpha")),
+                child_record(0x02, 0x01, Some("team-alpha")),
+            ],
+            vec![],
+        );
+        // Echo an id that is not in the subtree (0x09) in place of 0x02.
+        let ids = vec![hex::encode([0x01u8; 16]), hex::encode([0x09u8; 16])];
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(cascade_body(EnforcementModeTarget::Enforce, None, None, ids, 2)),
+        )
+        .await
+        .expect_err("a mismatched echo-back id set must be rejected");
+        assert_eq!(err.status, StatusCode::CONFLICT.as_u16());
+    }
+
+    /// A cascade whose echoed count differs from the current subtree → 409,
+    /// even when the id set matches (defence against a count/set desync).
+    #[tokio::test]
+    async fn cascade_apply_rejects_wrong_count() {
+        let state = state_with_policies(
+            vec![
+                record(0x01, Some("team-alpha")),
+                child_record(0x02, 0x01, Some("team-alpha")),
+            ],
+            vec![],
+        );
+        let ids = vec![hex::encode([0x01u8; 16]), hex::encode([0x02u8; 16])];
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(cascade_body(EnforcementModeTarget::Enforce, None, None, ids, 3)),
+        )
+        .await
+        .expect_err("a mismatched echo-back count must be rejected");
+        assert_eq!(err.status, StatusCode::CONFLICT.as_u16());
+    }
+
+    /// A subtree larger than MAX_CASCADE_AGENTS is rejected 422 — for BOTH the
+    /// preview and the apply — never truncated. Built as a root with 50 direct
+    /// children (51 total).
+    #[tokio::test]
+    async fn cascade_over_limit_rejected_on_preview_and_apply() {
+        let mut records = vec![record(0x01, Some("team-alpha"))];
+        for i in 0..(MAX_CASCADE_AGENTS as u8) {
+            // Distinct non-root ids: 0x64.. avoids colliding with the root.
+            records.push(child_record(0x64 + i, 0x01, Some("team-alpha")));
+        }
+        assert_eq!(records.len(), MAX_CASCADE_AGENTS + 1);
+
+        // Preview: 422.
+        let state = state_with_policies(records.clone(), vec![]);
+        let err = preview_enforcement_mode_cascade(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+        )
+        .await
+        .expect_err("an over-limit subtree preview must be rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+
+        // Apply: also 422 (the guard runs before the echo-back compare).
+        let state = state_with_policies(records, vec![]);
+        let ids = vec![hex::encode([0x01u8; 16])];
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(cascade_body(
+                EnforcementModeTarget::Enforce,
+                None,
+                None,
+                ids,
+                MAX_CASCADE_AGENTS + 1,
+            )),
+        )
+        .await
+        .expect_err("an over-limit subtree apply must be rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    }
+
+    /// Weakening a cascade carries the same direction-asymmetric gates as the
+    /// single-agent case, applied to the set as a unit: Write-only → 403,
+    /// missing reason → 422, missing expiry → 422.
+    #[tokio::test]
+    async fn cascade_weaken_requires_admin_reason_and_expiry() {
+        let subtree = || {
+            vec![
+                record(0x01, Some("team-alpha")),
+                child_record(0x02, 0x01, Some("team-alpha")),
+            ]
+        };
+        let ids = || vec![hex::encode([0x01u8; 16]), hex::encode([0x02u8; 16])];
+        let future = Utc::now() + chrono::Duration::hours(1);
+
+        // Write-only caller weakening → 403.
+        let state = state_with_policies(subtree(), vec![]);
+        let err = set_enforcement_mode(
+            write_caller("team-alpha"),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(cascade_body(
+                EnforcementModeTarget::Observe,
+                Some("dbg"),
+                Some(future),
+                ids(),
+                2,
+            )),
+        )
+        .await
+        .expect_err("a Write-only caller must not weaken a cascade");
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
+
+        // Admin, missing reason → 422.
+        let state = state_with_policies(subtree(), vec![]);
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(cascade_body(
+                EnforcementModeTarget::Observe,
+                None,
+                Some(future),
+                ids(),
+                2,
+            )),
+        )
+        .await
+        .expect_err("a weaken cascade with no reason must be rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+
+        // Admin, missing expiry → 422.
+        let state = state_with_policies(subtree(), vec![]);
+        let err = set_enforcement_mode(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(cascade_body(
+                EnforcementModeTarget::Observe,
+                Some("dbg"),
+                None,
+                ids(),
+                2,
+            )),
+        )
+        .await
+        .expect_err("a weaken cascade with no expiry must be rejected");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    }
+
+    /// Tenant confinement: a subtree containing an agent the caller cannot
+    /// access → 403 (the node is never silently dropped). The root is in the
+    /// caller's team but a descendant was delegated into another team.
+    #[tokio::test]
+    async fn cascade_denies_when_subtree_crosses_tenant() {
+        let state = state_with_policies(
+            vec![
+                record(0x01, Some("team-alpha")),
+                // Descendant delegated into team-beta — invisible to a team-alpha caller.
+                child_record(0x02, 0x01, Some("team-beta")),
+            ],
+            vec![],
+        );
+
+        // Preview surfaces the 403.
+        let err = preview_enforcement_mode_cascade(
+            write_caller("team-alpha"),
+            Extension(state.clone()),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+        )
+        .await
+        .expect_err("a cross-tenant descendant must forbid the preview");
+        assert_eq!(err.status, StatusCode::FORBIDDEN.as_u16());
+
+        // An admin, not tenant-confined, may cascade over the mixed subtree.
+        let (status, Json(body)) = preview_enforcement_mode_cascade(
+            admin_write(),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+        )
+        .await
+        .expect("an admin is not tenant-confined");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.count, 2);
+    }
+
+    /// REGRESSION (AAASM-5338): the single-agent path (no `cascade` field) is
+    /// unchanged — a Write caller strengthens one agent and nothing else, and
+    /// the response is the single-agent shape.
+    #[tokio::test]
+    async fn single_agent_path_unchanged_without_cascade_field() {
+        let state = state_with_policies(
+            vec![
+                record(0x01, Some("team-alpha")),
+                child_record(0x02, 0x01, Some("team-alpha")),
+            ],
+            vec![],
+        );
+        let registry = state.agent_registry.clone();
+
+        let (status, Json(body)) = set_enforcement_mode(
+            write_caller("team-alpha"),
+            Extension(state),
+            axum::extract::Path(hex::encode([0x01u8; 16])),
+            Json(enforce_body()),
+        )
+        .await
+        .expect("the single-agent path still works");
+
+        assert_eq!(status, StatusCode::OK);
+        let body = expect_single(body);
+        assert_eq!(body.agent_id, hex::encode([0x01u8; 16]));
+        assert_eq!(body.new_mode, EnforcementModeLabel::Enforce);
+        // Only the root changed — the child (a descendant) is untouched.
+        assert_eq!(
+            registry.get(&[0x01u8; 16]).unwrap().enforcement_mode,
+            Some(aa_core::EnforcementMode::Enforce)
+        );
+        assert_eq!(
+            registry.get(&[0x02u8; 16]).unwrap().enforcement_mode,
+            None,
+            "a non-cascade toggle must not touch descendants"
+        );
     }
 }

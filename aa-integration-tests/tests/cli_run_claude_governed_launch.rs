@@ -14,18 +14,24 @@
 //!   configuration, not behaviour.
 //! * `aa-cli/tests/run_command.rs` does spawn a child and does exercise
 //!   register/deregister, but through a hand-written stub adapter whose launch
-//!   command is `echo`, with `proxy_addr: null`. Nothing about the Claude Code
-//!   adapter, and nothing at all about the proxy, is established by it.
+//!   command is `echo`. Nothing about the Claude Code adapter, and nothing at
+//!   all about the proxy, is established by it.
 //! * `aa-cli/src/commands/run.rs`'s `build_child_env_*` unit tests assert the
 //!   env **map** is built correctly, which is one function call away from
 //!   asserting a launched process actually received it.
 //!
 //! So this test closes the loop the AC describes: the real `aasm` binary, the
 //! real `ClaudeCodeAdapter` resolved through `aa_devtool::registry` (the same
-//! path production takes — no override constructor), a real HTTP gateway that
-//! hands back a proxy address, a real child process, and assertions made on
-//! what that child *observed in its own environment* rather than on what the
-//! parent intended to send it.
+//! path production takes — no override constructor), a real gateway
+//! `AgentLifecycleService` the session genuinely registers with, a real child
+//! process, and assertions made on what that child *observed in its own
+//! environment* rather than on what the parent intended to send it.
+//!
+//! Since AAASM-5323 the identity in that environment is no longer whatever a
+//! mock gateway put in a JSON body: `aasm run` derives a `did:key`, proves
+//! possession of the matching key over a server-issued nonce, and registers over
+//! gRPC. So the expectations below are *derived* the way the CLI derives them
+//! rather than picked, and the monitoring claim is read off a real registry.
 //!
 //! # Safety
 //!
@@ -57,66 +63,22 @@ mod spike_support;
 #[allow(unused_imports)]
 mod proxy_trust_support;
 
+#[allow(unused_imports)]
+mod grpc_gateway_support;
+
 #[cfg(unix)]
 mod governed_launch {
+    use super::grpc_gateway_support::{expected_did, expected_registration_id, GrpcGateway};
     use super::proxy_trust_support::{aasm_binary, TrustedProxy};
     use super::spike_support::RealHomeGuard;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
 
-    use axum::extract::{Path as AxumPath, State};
-    use axum::http::StatusCode;
-    use axum::routing::{delete, post};
-    use axum::{Json, Router};
-
-    /// Identity the mock gateway issues. Distinct, obviously-synthetic values so
-    /// a wrong-field mix-up in the child's environment is a failure rather than
-    /// an accidental match.
+    /// Identity the operator names on the command line. The gateway does not
+    /// issue identity any more — it *accepts* one — so these are inputs, and the
+    /// values the session ends up with are derived from them below.
     const AGENT_ID: &str = "aaasm1112-agent";
-    const REGISTRATION_ID: &str = "aaasm1112-registration";
-    const TRACE_ID: &str = "aaasm1112-trace";
-    const SESSION_ID: &str = "aaasm1112-session";
     const TEAM_ID: &str = "aaasm1112-team";
-    /// The address the gateway assigns this session. Nothing listens on it, and
-    /// since AAASM-5323 nothing is supposed to route at it either: the endpoint
-    /// is resolved and verified host-side, so this value is the decoy that makes
-    /// the proxy assertion below mean something.
-    const PROXY_ADDR: &str = "127.0.0.1:19999";
-
-    /// What the mock gateway saw. Registration and deregistration are the
-    /// monitoring half of the AC: the gateway knows the session began and knows
-    /// it ended.
-    #[derive(Default)]
-    struct Recorder {
-        registrations: Vec<serde_json::Value>,
-        deregistrations: Vec<String>,
-    }
-
-    type Shared = Arc<Mutex<Recorder>>;
-
-    async fn register(
-        State(rec): State<Shared>,
-        Json(body): Json<serde_json::Value>,
-    ) -> (StatusCode, Json<serde_json::Value>) {
-        rec.lock().expect("recorder poisoned").registrations.push(body);
-        (
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "agent_id": AGENT_ID,
-                "registration_id": REGISTRATION_ID,
-                "trace_id": TRACE_ID,
-                "session_id": SESSION_ID,
-                "team_id": TEAM_ID,
-                "proxy_addr": PROXY_ADDR,
-            })),
-        )
-    }
-
-    async fn deregister(State(rec): State<Shared>, AxumPath(id): AxumPath<String>) -> StatusCode {
-        rec.lock().expect("recorder poisoned").deregistrations.push(id);
-        StatusCode::NO_CONTENT
-    }
 
     /// A `claude` stand-in that answers `--version` with a supported version and,
     /// when launched, writes the governance variables it can see to a file.
@@ -139,6 +101,7 @@ if [ "$1" = "--version" ]; then
 fi
 {
   echo "AA_AGENT_ID=$AA_AGENT_ID"
+  echo "AA_AGENT_DID=$AA_AGENT_DID"
   echo "AA_TRACE_ID=$AA_TRACE_ID"
   echo "AA_SESSION_ID=$AA_SESSION_ID"
   echo "AA_REGISTRATION_ID=$AA_REGISTRATION_ID"
@@ -162,8 +125,8 @@ exit 0
             .collect()
     }
 
-    /// The whole of AC4 in one run: identity issued by the gateway reaches the
-    /// launched tool, the proxy the gateway assigned reaches it too, and the
+    /// The whole of AC4 in one run: the session's registered identity reaches
+    /// the launched tool, the proxy *this host verified* reaches it too, and the
     /// gateway observes both the start and the end of the session.
     #[tokio::test(flavor = "multi_thread")]
     async fn run_claude_launches_the_tool_with_identity_proxy_and_a_monitored_session() -> anyhow::Result<()> {
@@ -177,16 +140,11 @@ exit 0
         let proxy = TrustedProxy::start()?;
 
         // ── the gateway ────────────────────────────────────────────────────
-        let recorder: Shared = Arc::new(Mutex::new(Recorder::default()));
-        let app = Router::new()
-            .route("/api/v1/agents", post(register))
-            .route("/api/v1/agents/{id}", delete(deregister))
-            .with_state(recorder.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let api_url = format!("http://{}", listener.local_addr()?);
-        let server = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
+        //
+        // The real `AgentLifecycleService`. A launch that cannot satisfy its
+        // registration gate does not happen at all, so reaching the assertions
+        // below is itself evidence the handshake succeeded.
+        let gateway = GrpcGateway::start().await?;
 
         // ── a host that is entirely ours ───────────────────────────────────
         let tmp = tempfile::tempdir()?;
@@ -221,7 +179,17 @@ exit 0
             .env("AASM_CLAUDE_MANAGED_ROOT", root.join("managed"))
             .env("AA_DATA_DIR", proxy.data_dir())
             .env("AA_TEST_ENV_DUMP", &dump)
-            .args(["--api-url", &api_url, "run", "claude"]);
+            // Registration is a gRPC call to `AgentLifecycleService`; `--api-url`
+            // names the HTTP surface and no longer reaches this path.
+            .env("AA_GATEWAY_ENDPOINT", gateway.endpoint())
+            .args([
+                "run",
+                "claude",
+                "--agent-id",
+                AGENT_ID,
+                "--team-id",
+                TEAM_ID,
+            ]);
         let out = cmd.output().expect("aasm run claude should execute");
 
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -239,19 +207,32 @@ exit 0
             )
         });
         let seen = parse_dump(&raw);
+        let did = expected_did(AGENT_ID);
         for (key, expected) in [
-            ("AA_AGENT_ID", AGENT_ID),
-            ("AA_TRACE_ID", TRACE_ID),
-            ("AA_SESSION_ID", SESSION_ID),
-            ("AA_REGISTRATION_ID", REGISTRATION_ID),
-            ("AA_TEAM_ID", TEAM_ID),
+            ("AA_AGENT_ID", AGENT_ID.to_string()),
+            ("AA_AGENT_DID", did.clone()),
+            ("AA_REGISTRATION_ID", expected_registration_id(Some(TEAM_ID), &did)),
+            ("AA_TEAM_ID", TEAM_ID.to_string()),
         ] {
             assert_eq!(
                 seen.get(key).map(String::as_str),
-                Some(expected),
-                "the launched tool must carry the identity the gateway issued in `{key}`; saw:\n{raw}",
+                Some(expected.as_str()),
+                "the launched tool must carry the registered identity in `{key}`; saw:\n{raw}",
             );
         }
+
+        // `AA_TRACE_ID` / `AA_SESSION_ID` are minted by this process, not issued
+        // by the gateway, so there is no constant to pin them to — but they must
+        // be present and distinct, because a launch whose correlation ids are
+        // absent or identical cannot be traced back to it.
+        let trace = seen.get("AA_TRACE_ID").cloned().unwrap_or_default();
+        let session = seen.get("AA_SESSION_ID").cloned().unwrap_or_default();
+        assert!(!trace.is_empty(), "the launch must carry a trace id; saw:\n{raw}");
+        assert!(!session.is_empty(), "the launch must carry a session id; saw:\n{raw}");
+        assert_ne!(
+            trace, session,
+            "trace and session must be distinct ids, not one value copied twice",
+        );
 
         // ── proxy, as the launched tool saw it ─────────────────────────────
         //
@@ -264,49 +245,58 @@ exit 0
         // AAASM-5331 then realigned this assertion, which had been left pinning
         // the pre-fix bare `host:port`.
         //
-        // AAASM-5323 changes what the right answer *is*. The child is now routed
-        // at the endpoint **this host** resolved and verified, not at anything
-        // the gateway named: a registration response is remote and
-        // unauthenticated, so it is not entitled to choose where this session's
-        // traffic goes. `PROXY_ADDR` is deliberately a different, dead address,
-        // so a regression that reinstated the gateway as the source would show
-        // up here as a wrong value rather than as a silent pass.
+        // AAASM-5323 changes what the right answer *is*. The child is routed at
+        // the endpoint **this host** resolved and verified, and nothing on the
+        // registration path names a proxy any more — the field was removed from
+        // the response entirely. A gateway reply is remote and unauthenticated,
+        // so it is not entitled to choose where this session's traffic goes.
+        // `PROXY_ADDR` survives only as a deliberately dead test-local constant,
+        // so a regression that reinstated *any* remote source for the route
+        // would show up here as a wrong value rather than as a silent pass.
         let expected_proxy = proxy.expected_proxy_url();
         for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
             assert_eq!(
                 seen.get(key).map(String::as_str),
                 Some(expected_proxy.as_str()),
-                "the launched tool must be routed at the verified local proxy via `{key}`. \
-                 `{PROXY_ADDR}` or `http://{PROXY_ADDR}` here would mean the gateway's response \
-                 chose the route; an empty value would mean no interception at all. Saw:\n{raw}",
+                "the launched tool must be routed at the verified local proxy via `{key}`; an \
+                 empty value would mean no interception at all. Saw:\n{raw}",
             );
         }
 
         // ── monitoring: the gateway saw the session open and close ─────────
-        let rec = recorder.lock().expect("recorder poisoned");
+        let registrations = gateway.session().registrations();
         assert_eq!(
-            rec.registrations.len(),
+            registrations.len(),
             1,
-            "exactly one registration should have opened the session; saw {:?}",
-            rec.registrations,
+            "exactly one registration should have opened the session",
         );
-        let body = &rec.registrations[0];
+        let request = &registrations[0];
         assert_eq!(
-            body.get("kind").and_then(serde_json::Value::as_str),
-            Some("claude_code"),
-            "the gateway must be told which tool is running; body: {body}",
-        );
-        assert_eq!(
-            body.get("version").and_then(serde_json::Value::as_str),
-            Some("2.1.999"),
-            "the registration must carry the detected version, not a placeholder; body: {body}",
+            request.agent_id.as_ref().map(|id| id.agent_id.as_str()),
+            Some(did.as_str()),
+            "the session must be registered under the identity the tool was launched with",
         );
         assert_eq!(
-            rec.deregistrations,
-            vec![REGISTRATION_ID.to_string()],
-            "the session must be closed with the registration id the gateway issued",
+            request.name, "claude_code",
+            "the gateway must be told which tool is running",
         );
-        drop(rec);
+        assert_eq!(
+            request.version, "2.1.999",
+            "the registration must carry the detected version, not a placeholder",
+        );
+        assert!(
+            !request.possession_proof.is_empty() && !request.registration_nonce.is_empty(),
+            "the session must have proved key possession over a server nonce to be registered",
+        );
+        assert_eq!(
+            gateway.session().deregistrations(),
+            vec![did.clone()],
+            "the session must be closed under the identity that opened it",
+        );
+        assert!(
+            !gateway.holds(Some(TEAM_ID), &did),
+            "the agent is still registered after the tool exited; the session was never closed",
+        );
 
         // ── nothing of the developer's was touched ─────────────────────────
         real_home.assert_unchanged("cli_run_claude_governed_launch");
@@ -315,33 +305,30 @@ exit 0
             "the managed settings must have landed in the redirected home",
         );
 
-        server.abort();
         Ok(())
     }
 
-    /// AAASM-1112 finding (1), measured against the **real** gateway rather than
-    /// a mock: `aasm run` registers by `POST /api/v1/agents`, and the Agent
-    /// Assembly API does not serve that. `aa-api`'s router mounts
-    /// `.route("/agents", get(agents::list_agents))` and `openapi/v1.yaml`
-    /// declares `get` as the only method on `/api/v1/agents`.
+    /// The other half of fail-closed: a launch that cannot register starts
+    /// nothing.
     ///
-    /// The consequence is the whole of AC4: registration fails, so the launcher
-    /// returns before `build_launch_command`, and Claude Code is never started.
-    /// The passing test above establishes that identity, proxy and session
-    /// monitoring flow correctly *given* a gateway that answers the call — which
-    /// no shipped gateway does.
-    ///
-    /// Asserting the failure is deliberate. It is the honest floor: a run that
-    /// cannot register must not be readable as a governed launch. If a future
-    /// change adds the endpoint, this test fails and forces AC4's verdict — and
-    /// this file's expectations — to be re-derived rather than silently inherited.
+    /// This test used to pin the *defect* — `aasm run` registered by
+    /// `POST /api/v1/agents`, a route no gateway serves, so it always failed.
+    /// The route was deliberately not added (see
+    /// `the_http_surface_still_offers_no_registration_route` below); the CLI was
+    /// moved onto the gRPC gate instead. What survives, and is the part worth
+    /// keeping, is the claim the old test made incidentally: a session the
+    /// gateway never accepted must not produce a running tool.
     #[tokio::test(flavor = "multi_thread")]
-    async fn against_the_real_gateway_the_launcher_cannot_register_and_never_starts_the_tool() -> anyhow::Result<()> {
-        let fixture = super::common::cli::CliFixture::start().await?;
-
+    async fn a_launch_that_cannot_register_never_starts_the_tool() -> anyhow::Result<()> {
         // A verified proxy, so the run reaches the registration call this test
         // is about instead of being refused before it (AAASM-5323).
         let proxy = TrustedProxy::start()?;
+
+        // A gateway endpoint nothing is listening on: bound and released.
+        let dead = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            listener.local_addr()?
+        };
 
         let tmp = tempfile::tempdir()?;
         let root = tmp.path();
@@ -368,32 +355,56 @@ exit 0
             .env("AASM_CLAUDE_MANAGED_ROOT", root.join("managed"))
             .env("AA_DATA_DIR", proxy.data_dir())
             .env("AA_TEST_ENV_DUMP", &dump)
-            .args(["--api-url", &fixture.base_url(), "run", "claude"])
+            .env("AA_GATEWAY_ENDPOINT", format!("http://{dead}"))
+            .args(["run", "claude", "--agent-id", AGENT_ID])
             .output()
             .expect("aasm run claude should execute");
 
         let stderr = String::from_utf8_lossy(&out.stderr);
-        println!(
-            "MEASURED `aasm run claude` against the real gateway at {}: exit={:?}\nstderr:\n{stderr}",
-            fixture.base_url(),
-            out.status.code(),
-        );
-
         assert!(
             !out.status.success(),
-            "unexpected success: the gateway answered POST /api/v1/agents. NOTE: this pins the \
-             CURRENT, DEFECTIVE behaviour on purpose — the designed behaviour is a successful \
-             registration (AAASM-5323). A success here means that bug is fixed: invert this \
-             assertion and re-derive the AAASM-201 AC4 verdict.\nstderr:\n{stderr}",
+            "a session the gateway never accepted must not exit successfully\nstderr:\n{stderr}",
         );
         assert!(
-            stderr.contains("gateway registration failed"),
-            "the failure must be the registration call, not something incidental:\n{stderr}",
+            stderr.contains("refusing to launch unregistered"),
+            "the operator must be told the launch was refused and why, not left to infer it from \
+             an exit code:\n{stderr}",
         );
         assert!(
             !dump.exists(),
-            "the tool must not have been launched when registration failed — an ungoverned launch \
-             is worse than no launch",
+            "the tool was launched for a session with no governed identity — an ungoverned launch \
+             wearing a governed launch's name is worse than no launch",
+        );
+        Ok(())
+    }
+
+    /// The bypass that was considered and rejected: an HTTP registration route.
+    ///
+    /// `aasm run` was fixed by putting the CLI *through* the gRPC gate, not by
+    /// teaching the API to accept a body with no key, no challenge and no proof.
+    /// This asserts that decision is still in force — if a `POST` on this path
+    /// ever starts succeeding, there is a second registration contract, and it
+    /// is the weaker one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_http_surface_still_offers_no_registration_route() -> anyhow::Result<()> {
+        let fixture = super::common::cli::CliFixture::start().await?;
+
+        let response = reqwest::Client::new()
+            .post(format!("{}/api/v1/agents", fixture.base_url()))
+            .json(&serde_json::json!({
+                "kind": "claude_code",
+                "version": "2.1.999",
+                "agent_id": AGENT_ID,
+            }))
+            .send()
+            .await?;
+
+        assert!(
+            !response.status().is_success(),
+            "the API accepted a registration carrying no public key, no challenge and no \
+             possession proof. That is a second, weaker registration contract reachable by \
+             anything that can speak HTTP (status {})",
+            response.status(),
         );
         Ok(())
     }

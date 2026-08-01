@@ -5,7 +5,6 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Args;
-use serde::Deserialize;
 use uuid::Uuid;
 
 #[cfg(unix)]
@@ -13,6 +12,7 @@ use tokio::signal::unix::SignalKind;
 
 use aa_core::{DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, PolicyDocument, PolicyRule};
 
+use crate::commands::run_registration::{self, GovernedRegistration};
 use crate::commands::status::models::redact_database_url;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
@@ -129,7 +129,7 @@ fn dev_tool_kind_str(kind: &DevToolKind) -> String {
     }
 }
 
-/// Gateway registration result for a single `aasm run` session.
+/// Identity for a single `aasm run` session, as the launched tool sees it.
 ///
 /// Deliberately carries no proxy address. The gateway used to return one, and
 /// `aasm run` used to route the launched tool at it; that made a remote,
@@ -138,25 +138,72 @@ fn dev_tool_kind_str(kind: &DevToolKind) -> String {
 /// unproxied while reporting as governed. The endpoint is now a host fact
 /// resolved by [`crate::commands::proxy::trust`] and is never carried on the
 /// registration path (AAASM-5323).
+///
+/// It also carries no credential token. The token the gateway mints
+/// authenticates *as the registered agent*; the launched tool is the software
+/// that registration exists to govern, so it is the last process that should be
+/// able to speak for its own governance record.
+///
+/// Which of these values the *server* issued, and which this process minted, is
+/// no longer left to guesswork — the three fields that used to be
+/// `response.field.unwrap_or_else(Uuid::new_v4)` looked server-issued and never
+/// were:
+///
+/// * `agent_id` / `registration_did` / `registration_id` are identity. They are
+///   derived from, and accepted by, the gateway (see
+///   [`crate::commands::run_registration`]).
+/// * `trace_id` / `session_id` are **locally minted correlation ids**, because
+///   the registration contract has no server-side model for either. Naming that
+///   plainly is the point: a value the gateway never saw must not be presented
+///   as one it issued.
 struct RegistrationHandle {
+    /// The operator-facing identifier the session's keypair is derived from.
     agent_id: String,
+    /// The `did:key` the gateway registered this session under — the identity
+    /// audit attributes the session's actions to.
+    registration_did: String,
+    /// The gateway's registry key for this agent, hex-encoded (32 hex chars).
     registration_id: String,
+    /// Locally minted; correlates this launch's records with each other. There
+    /// is no server-issued trace id at registration time to prefer over it.
     trace_id: String,
+    /// Locally minted; identifies this single `aasm run` invocation.
     session_id: String,
     /// Carried from [`RunArgs::team_id`] (or echoed by the gateway) for `AA_TEAM_ID` injection.
     team_id: Option<String>,
 }
 
-/// RAII guard that sends a best-effort `DELETE /api/v1/agents/<registration_id>` on drop.
+impl RegistrationHandle {
+    /// The launched tool's view of an accepted registration, plus this
+    /// invocation's freshly minted correlation ids.
+    fn of(registration: &GovernedRegistration) -> Self {
+        Self {
+            agent_id: registration.agent_id.clone(),
+            registration_did: registration.registration_did.clone(),
+            registration_id: registration.registration_id.clone(),
+            trace_id: Uuid::new_v4().to_string(),
+            session_id: Uuid::new_v4().to_string(),
+            team_id: registration.team_id.clone(),
+        }
+    }
+}
+
+/// RAII guard that releases the gateway registration on drop.
 ///
-/// The primary deregistration path is the explicit `deregister_with_gateway` async call
-/// in `execute_with_adapters`. Set `deregistered = true` after that call to suppress the
-/// duplicate backup. The backup fires only when a panic unwinds the stack before the
-/// explicit call can run.
+/// The primary deregistration path is the explicit `deregister_with_gateway`
+/// async call in `execute_with_adapters`. Set `deregistered = true` after that
+/// call to suppress the duplicate backup. The backup fires only when a panic
+/// unwinds the stack before the explicit call can run.
+///
+/// It releases the registration over the same gRPC service that granted it,
+/// authenticated by that registration's own credential token. The
+/// `DELETE /api/v1/agents/{id}` this guard used to send could not have worked
+/// even in principle: that route parses `{id}` as 32 hex characters
+/// (`aa-api/src/routes/agents.rs`) and the id being sent was a dashed UUID, so
+/// every teardown was a `400` — and it is authenticated as the *operator*, not
+/// as the agent, which is a different principal than the one that registered.
 pub struct RegistrationGuard {
-    registration_id: String,
-    api_url: String,
-    api_key: Option<String>,
+    registration: GovernedRegistration,
     /// True after `deregister_with_gateway` ran; suppresses the backup Drop.
     pub deregistered: bool,
 }
@@ -166,25 +213,13 @@ impl Drop for RegistrationGuard {
         if self.deregistered {
             return;
         }
-        let url = format!(
-            "{}/api/v1/agents/{}",
-            self.api_url.trim_end_matches('/'),
-            self.registration_id,
-        );
-        let api_key = self.api_key.clone();
+        let registration = self.registration.clone();
         // Spawn a detached OS thread so we never block or create a runtime inside
         // an existing tokio async context. Fire-and-forget: not guaranteed to reach
         // the gateway before process termination (panic path only).
         let _ = std::thread::spawn(move || {
             if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                rt.block_on(async {
-                    let client = reqwest::Client::new();
-                    let mut req = client.delete(&url);
-                    if let Some(ref key) = api_key {
-                        req = req.header("Authorization", format!("Bearer {key}"));
-                    }
-                    let _ = req.send().await;
-                });
+                rt.block_on(run_registration::deregister(&registration, "aasm run panicked"));
             }
         });
     }
@@ -192,64 +227,27 @@ impl Drop for RegistrationGuard {
 
 /// Register the detected tool with the Agent Assembly gateway.
 ///
-/// POSTs `{kind, version, agent_id, team_id, root_agent, governance_level}` to
-/// `POST {ctx.api_url}/api/v1/agents`. UUIDs are generated locally for any
-/// identity fields the gateway omits from its response.
-async fn register_with_gateway(
-    info: &DevToolInfo,
-    args: &RunArgs,
-    ctx: &ResolvedContext,
-) -> Result<RegistrationHandle> {
+/// Goes through [`crate::commands::run_registration`], which performs the same
+/// `RequestChallenge` → sign → `Register` handshake, built by the same
+/// `aa-sdk-client` code, that every SDK-instrumented agent performs. There is no
+/// CLI-shaped shortcut around it: the gateway applies its `did:key`↔`public_key`
+/// binding and its possession-proof check to this request exactly as it does to
+/// an SDK's.
+async fn register_with_gateway(info: &DevToolInfo, args: &RunArgs) -> Result<GovernedRegistration> {
     let agent_id = args.agent_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    let governance_level = info.governance_level.to_string();
 
-    let body = serde_json::json!({
-        "kind": dev_tool_kind_str(&info.kind),
-        "version": info.version.as_deref().unwrap_or("unknown"),
-        "agent_id": &agent_id,
-        "team_id": args.team_id,
-        "root_agent": args.root_agent,
-        "governance_level": info.governance_level.to_string(),
-        // AAASM-1558: per-agent enforcement_mode override; the gateway maps
-        // it onto RegisterRequest.enforcement_mode (proto enum) via its
-        // REST → gRPC bridge. Omitted from the JSON when the user is on
-        // the pre-feature default (Enforce) so legacy gateway routes that
-        // reject unknown keys stay quiet.
-        "enforcement_mode": enforcement_mode_str(args.resolved_enforcement_mode()),
-    });
-
-    let url = format!("{}/api/v1/agents", ctx.api_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    let mut req = client.post(&url).json(&body);
-    if let Some(ref key) = ctx.api_key {
-        req = req.header("Authorization", format!("Bearer {key}"));
-    }
-
-    let resp = req.send().await?;
-    if !resp.status().is_success() {
-        return Err(anyhow::anyhow!("gateway registration failed: HTTP {}", resp.status()));
-    }
-
-    // `proxy_addr` is intentionally absent from this struct: serde ignores the
-    // field if the gateway still sends it, which is the point — the response
-    // must not be able to influence where this session's traffic is routed.
-    #[derive(Deserialize)]
-    struct RegisterResponse {
-        agent_id: Option<String>,
-        registration_id: Option<String>,
-        trace_id: Option<String>,
-        session_id: Option<String>,
-        team_id: Option<String>,
-    }
-
-    let reg: RegisterResponse = resp.json().await?;
-
-    Ok(RegistrationHandle {
-        agent_id: reg.agent_id.unwrap_or(agent_id),
-        registration_id: reg.registration_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-        trace_id: reg.trace_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-        session_id: reg.session_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-        team_id: reg.team_id.or_else(|| args.team_id.clone()),
+    run_registration::register(run_registration::SessionDescriptor {
+        agent_id: &agent_id,
+        name: &dev_tool_kind_str(&info.kind),
+        version: info.version.as_deref().unwrap_or("unknown"),
+        team_id: args.team_id.as_deref(),
+        parent_agent_id: args.root_agent.as_deref(),
+        enforcement_mode: args.resolved_enforcement_mode(),
+        governance_level: &governance_level,
     })
+    .await
+    .map_err(|e| anyhow::anyhow!("refusing to launch unregistered: {e}"))
 }
 
 /// Sandbox banner printed to stderr when `--observe` is in effect. The text is
@@ -295,6 +293,12 @@ fn build_child_env(
 ) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().collect();
     env.insert("AA_AGENT_ID".into(), handle.agent_id.clone());
+    // The identity the gateway actually registered and audit attributes actions
+    // to. Exported so anything downstream — an SDK inside the launched tool, a
+    // log scraper joining child output to a registry record — can name it
+    // without re-deriving it, and so a mismatch between the launched session and
+    // the registered one is visible rather than assumed.
+    env.insert("AA_AGENT_DID".into(), handle.registration_did.clone());
     env.insert("AA_TRACE_ID".into(), handle.trace_id.clone());
     env.insert("AA_SESSION_ID".into(), handle.session_id.clone());
     env.insert("AA_REGISTRATION_ID".into(), handle.registration_id.clone());
@@ -348,18 +352,26 @@ fn resolve_launch_proxy(no_proxy: bool) -> Result<Option<String>> {
 /// gateway. Used by the dry-run short-circuit so the planning preview works
 /// in CI runners where no AI dev tool is installed and no gateway is reachable.
 ///
-/// All identity fields are prefixed `dry-run-` to make it obvious in stdout
-/// that no real registration occurred. The caller-supplied `--agent-id` /
-/// `--team-id` overrides are honored verbatim so the printed plan reflects
-/// what the live run *would* have submitted.
+/// The locally-minted correlation ids are prefixed `dry-run-` to make it obvious
+/// in stdout that no real registration occurred. The caller-supplied
+/// `--agent-id` / `--team-id` overrides are honored verbatim so the printed plan
+/// reflects what the live run *would* have submitted.
+///
+/// `registration_did` and `registration_id`, by contrast, are **not** faked: both
+/// are pure derivations of the identity the live run would present, so the
+/// preview can show the DID that would be registered and the registry key it
+/// would occupy. Substituting a `dry-run-` placeholder there would hide the one
+/// thing about the identity worth previewing.
 fn dry_run_handle(args: &RunArgs) -> RegistrationHandle {
     let agent_id = args
         .agent_id
         .clone()
         .unwrap_or_else(|| format!("dry-run-{}", Uuid::new_v4()));
+    let registration_did = run_registration::registration_did(&agent_id);
     RegistrationHandle {
+        registration_id: run_registration::registry_id(args.team_id.as_deref(), &registration_did),
         agent_id,
-        registration_id: format!("dry-run-{}", Uuid::new_v4()),
+        registration_did,
         trace_id: format!("dry-run-{}", Uuid::new_v4()),
         session_id: format!("dry-run-{}", Uuid::new_v4()),
         team_id: args.team_id.clone(),
@@ -443,8 +455,9 @@ fn format_dry_run_output(
         .collect();
 
     format!(
-        "--- aasm run dry-run ---\nagent_id:    {}\ntrace_id:    {}\nsession_id:  {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
+        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
         handle.agent_id,
+        handle.registration_did,
         handle.trace_id,
         handle.session_id,
         truncated_settings,
@@ -469,21 +482,12 @@ fn resolve_adapter(tool: &str) -> Result<Box<dyn DevToolAdapter>> {
     })
 }
 
-/// Send `DELETE /api/v1/agents/<registration_id>` using the async HTTP client.
+/// Release the registration over the gRPC service that issued it.
 ///
-/// Errors are silently discarded — the DELETE is idempotent and best-effort.
-async fn deregister_with_gateway(registration_id: &str, ctx: &ResolvedContext) {
-    let url = format!(
-        "{}/api/v1/agents/{}",
-        ctx.api_url.trim_end_matches('/'),
-        registration_id,
-    );
-    let client = reqwest::Client::new();
-    let mut req = client.delete(&url);
-    if let Some(ref key) = ctx.api_key {
-        req = req.header("Authorization", format!("Bearer {key}"));
-    }
-    let _ = req.send().await;
+/// Errors are silently discarded — the session is already over, and a gateway
+/// that has gone away leaves the caller nothing to do about it.
+async fn deregister_with_gateway(registration: &GovernedRegistration) {
+    run_registration::deregister(registration, "aasm run session ended").await;
 }
 
 /// Spawn `cmd` as a tokio child process, forward SIGTERM/SIGINT on Unix,
@@ -553,11 +557,12 @@ async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, 
 /// `register_with_gateway()` so the planning preview works even when no AI
 /// dev tool is installed and no gateway is reachable (e.g. CI runners). The
 /// printed plan reflects what the live run *would* do with the same flags.
-pub async fn execute_with_adapters(
-    args: &RunArgs,
-    ctx: &ResolvedContext,
-    adapters: &HashMap<&str, Box<dyn DevToolAdapter>>,
-) -> Result<i32> {
+/// `ctx` is deliberately absent. It named the `:8080` HTTP/OpenAPI surface, and
+/// registration no longer travels over it — keeping the parameter would suggest
+/// `--api-url` still steers where a session registers, which it does not
+/// (AAASM-5323). The gateway gRPC endpoint is resolved by
+/// [`crate::commands::run_registration::gateway_endpoint`].
+pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<dyn DevToolAdapter>>) -> Result<i32> {
     let adapter = adapters.get(args.tool.as_str()).ok_or_else(|| {
         anyhow::anyhow!(
             "unknown tool: {}, supported: {}",
@@ -618,7 +623,11 @@ pub async fn execute_with_adapters(
     // refused should not first create a gateway registration it then abandons.
     let proxy = resolve_launch_proxy(args.no_proxy)?;
 
-    let handle = register_with_gateway(&info, args, ctx).await?;
+    // Fatal on failure, and fatal *before* anything is launched: a session the
+    // gateway did not accept has no governed identity, and a tool started under
+    // no identity is an ungoverned process wearing a governed launch's name.
+    let registration = register_with_gateway(&info, args).await?;
+    let handle = RegistrationHandle::of(&registration);
     let child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
 
     let policy = load_policy();
@@ -646,9 +655,7 @@ pub async fn execute_with_adapters(
     // faithfully carry forward the very values it is meant to override.
 
     let mut guard = RegistrationGuard {
-        registration_id: handle.registration_id.clone(),
-        api_url: ctx.api_url.clone(),
-        api_key: ctx.api_key.clone(),
+        registration: registration.clone(),
         deregistered: false,
     };
 
@@ -657,24 +664,28 @@ pub async fn execute_with_adapters(
     // Primary deregistration path — async, reliable. Mark the guard first so its
     // Drop does not fire a duplicate request when the function returns normally.
     guard.deregistered = true;
-    deregister_with_gateway(&handle.registration_id, ctx).await;
+    deregister_with_gateway(&registration).await;
 
     Ok(code)
 }
 
 /// Launch the specified AI dev tool with governance wiring.
-pub async fn execute(args: RunArgs, ctx: &ResolvedContext) -> Result<i32> {
+pub async fn execute(args: RunArgs) -> Result<i32> {
     let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
     for tool in aa_devtool::registry::SUPPORTED_TOOLS {
         adapters.insert(tool, resolve_adapter(tool)?);
     }
-    execute_with_adapters(&args, ctx, &adapters).await
+    execute_with_adapters(&args, &adapters).await
 }
 
 /// Entry point for `aasm run`.
-pub fn dispatch(args: RunArgs, ctx: &ResolvedContext, _output: OutputFormat) -> ExitCode {
+///
+/// `_ctx` is unused: `--api-url` names the HTTP surface, and this command's only
+/// gateway conversation is the gRPC registration handshake. The parameter stays
+/// so the `commands::dispatch` table keeps one shape.
+pub fn dispatch(args: RunArgs, _ctx: &ResolvedContext, _output: OutputFormat) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    match rt.block_on(execute(args, ctx)) {
+    match rt.block_on(execute(args)) {
         Ok(code) => std::process::exit(code),
         Err(e) => {
             eprintln!("error: {e}");
@@ -696,8 +707,6 @@ mod tests {
     use aa_core::{AdapterError, DevToolInfo, DevToolKind, McpServerInfo};
     use async_trait::async_trait;
     use clap::Parser;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
 
@@ -970,6 +979,7 @@ mod tests {
     fn stub_handle(team_id: Option<&str>) -> RegistrationHandle {
         RegistrationHandle {
             agent_id: "test-agent".into(),
+            registration_did: run_registration::registration_did("test-agent"),
             registration_id: "test-reg".into(),
             trace_id: "test-trace".into(),
             session_id: "test-session".into(),
@@ -1005,6 +1015,47 @@ mod tests {
                     None => std::env::remove_var(key),
                 }
             }
+        }
+    }
+
+    /// Constraint: the identity that registered must be the identity the launch
+    /// runs under. `AA_AGENT_ID` is the seed the DID is derived from, so anything
+    /// downstream that derives from it — an SDK inside the launched tool, a later
+    /// `aasm run` for the same agent — must land on the DID the gateway
+    /// registered. If these two ever disagree, the launched process is operating
+    /// under an identity the gateway never accepted.
+    #[test]
+    fn the_launched_tool_carries_the_registered_identity_and_can_rederive_it() {
+        let handle = stub_handle(Some("team-a"));
+        let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
+
+        let seed = env.get("AA_AGENT_ID").expect("the launch must carry an agent id");
+        let did = env
+            .get("AA_AGENT_DID")
+            .expect("the launch must carry the registered DID");
+        assert_eq!(
+            did,
+            &run_registration::registration_did(seed),
+            "`AA_AGENT_DID` must be what `AA_AGENT_ID` derives to; a child that re-derives the \
+             identity would otherwise reach a different agent than the one that registered"
+        );
+        assert!(did.starts_with("did:key:z"), "got {did}");
+    }
+
+    /// The gateway's credential token authenticates *as the registered agent*.
+    /// The launched tool is the software that registration exists to govern, so
+    /// it must never receive one — and `--dry-run` prints this whole map, so a
+    /// leak here reaches stdout and from there a CI log.
+    #[test]
+    fn no_gateway_credential_reaches_the_launched_tool() {
+        let handle = stub_handle(Some("team-a"));
+        let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
+
+        for key in env.keys().filter(|k| k.starts_with("AA_")) {
+            assert!(
+                !key.contains("CREDENTIAL") && !key.contains("TOKEN"),
+                "`{key}` hands the governed process a credential for its own governance record"
+            );
         }
     }
 
@@ -1139,124 +1190,14 @@ mod tests {
     }
 
     // --- register_with_gateway tests ---
-
-    #[tokio::test]
-    async fn register_with_gateway_posts_correct_body() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/agents"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-                "agent_id": "gw-agent-id",
-                "registration_id": "gw-reg-id",
-                "trace_id": "gw-trace-id",
-                "session_id": "gw-session-id",
-                "proxy_addr": "http://gw-proxy:9090"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let info = DevToolInfo {
-            kind: DevToolKind::ClaudeCode,
-            version: Some("1.2.3".into()),
-            install_path: PathBuf::from("/usr/local/bin/claude"),
-            governance_level: GovernanceLevel::L2Enforce,
-            supports_mcp: true,
-            supports_managed_settings: true,
-        };
-        let args = RunArgs {
-            tool: "claude".into(),
-            tool_args: vec![],
-            agent_id: Some("my-agent".into()),
-            team_id: Some("my-team".into()),
-            root_agent: None,
-            governance_level: None,
-            no_proxy: false,
-            dry_run: false,
-            enforcement_mode: None,
-            observe: false,
-        };
-        let ctx = ResolvedContext {
-            name: None,
-            api_url: mock_server.uri(),
-            api_key: None,
-        };
-
-        let handle = register_with_gateway(&info, &args, &ctx).await.unwrap();
-
-        assert_eq!(handle.agent_id, "gw-agent-id");
-        assert_eq!(handle.registration_id, "gw-reg-id");
-        assert_eq!(handle.trace_id, "gw-trace-id");
-        assert_eq!(handle.session_id, "gw-session-id");
-        assert_eq!(handle.team_id.as_deref(), Some("my-team"));
-
-        // Verify the request body shape
-        let reqs = mock_server.received_requests().await.unwrap();
-        assert_eq!(reqs.len(), 1, "expected exactly one POST request");
-        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
-        assert_eq!(body["kind"], "claude_code");
-        assert_eq!(body["version"], "1.2.3");
-        assert_eq!(body["agent_id"], "my-agent");
-        assert_eq!(body["team_id"], "my-team");
-        assert_eq!(body["governance_level"], "L2Enforce");
-        // Default invocation must still emit "enforce" so the gateway sees
-        // an explicit posture instead of a missing field on the legacy path.
-        assert_eq!(body["enforcement_mode"], "enforce");
-    }
-
-    #[tokio::test]
-    async fn register_with_gateway_sends_observe_when_flag_set() {
-        // Operator runs `aa run --observe claude` → registration body carries
-        // enforcement_mode = "observe". The gateway's REST → gRPC bridge then
-        // maps that onto RegisterRequest.enforcement_mode = OBSERVE so the
-        // per-agent override storage (AAASM-1557) records it.
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/agents"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-                "agent_id": "obs-agent",
-                "registration_id": "obs-reg",
-                "trace_id": "obs-trace",
-                "session_id": "obs-session"
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let info = DevToolInfo {
-            kind: DevToolKind::ClaudeCode,
-            version: Some("1.0.0".into()),
-            install_path: PathBuf::from("/usr/local/bin/claude"),
-            governance_level: GovernanceLevel::L0Discover,
-            supports_mcp: true,
-            supports_managed_settings: true,
-        };
-        let args = RunArgs {
-            tool: "claude".into(),
-            tool_args: vec![],
-            agent_id: Some("my-agent".into()),
-            team_id: None,
-            root_agent: None,
-            governance_level: None,
-            no_proxy: false,
-            dry_run: false,
-            enforcement_mode: None,
-            observe: true, // shorthand path
-        };
-        let ctx = ResolvedContext {
-            name: None,
-            api_url: mock_server.uri(),
-            api_key: None,
-        };
-
-        register_with_gateway(&info, &args, &ctx).await.unwrap();
-
-        let reqs = mock_server.received_requests().await.unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
-        assert_eq!(
-            body["enforcement_mode"], "observe",
-            "registration body must carry the resolved enforcement_mode for the gateway",
-        );
-    }
+    //
+    // What the CLI *submits* is asserted in `run_registration`'s own unit tests
+    // (identity derivation, the did:key ↔ public_key binding, the possession
+    // proof over the server nonce, the enforcement-mode mapping). Whether a real
+    // gateway *accepts* it is asserted in `tests/run_registration_gateway.rs`
+    // against `AgentLifecycleServiceImpl` itself. Neither claim can be made
+    // against a mock HTTP endpoint that answers a route no gateway serves, which
+    // is all the two tests that used to sit here could do.
 
     // --- execute_with_adapters tests ---
 
@@ -1394,22 +1335,12 @@ mod tests {
         }
     }
 
-    fn dummy_ctx() -> ResolvedContext {
-        ResolvedContext {
-            name: None,
-            api_url: "http://localhost:8080".into(),
-            api_key: None,
-        }
-    }
-
     #[tokio::test]
     async fn tool_not_found_errors() {
         let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
         adapters.insert("claude", Box::new(StubNotInstalled));
 
-        let err = execute_with_adapters(&run_args("claude"), &dummy_ctx(), &adapters)
-            .await
-            .unwrap_err();
+        let err = execute_with_adapters(&run_args("claude"), &adapters).await.unwrap_err();
         assert!(
             err.to_string().contains("is not installed"),
             "expected 'is not installed' in error, got: {err}"
@@ -1420,46 +1351,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn detected_tool_succeeds() {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/agents"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-                "agent_id": "a1",
-                "registration_id": "r1",
-                "trace_id": "t1",
-                "session_id": "s1",
-                "proxy_addr": null
-            })))
-            .mount(&mock_server)
-            .await;
-
-        let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
-        adapters.insert(
-            "claude",
-            Box::new(StubDetected {
-                version: Some("1.2.3".into()),
-            }),
-        );
-        let ctx = ResolvedContext {
-            name: None,
-            api_url: mock_server.uri(),
-            api_key: None,
-        };
-
-        // `--no-proxy`, because this test is about detect + register + spawn.
-        // Without it the launch would (correctly) refuse: no proxy is running
-        // in the test process's data dir. The refusal itself is asserted by
-        // `launch_refuses_when_no_trusted_proxy_can_be_established`.
-        let mut args = run_args("claude");
-        args.no_proxy = true;
-
-        assert!(
-            execute_with_adapters(&args, &ctx, &adapters).await.is_ok(),
-            "execute_with_adapters should succeed when detect() returns Some and gateway responds 201"
-        );
-    }
+    // `detected_tool_succeeds` moved to `tests/run_registration_gateway.rs`: a
+    // detected tool now has to register with a real `AgentLifecycleService`
+    // before it can launch, and the mock HTTP endpoint that used to stand in for
+    // that answered a route no gateway serves.
 
     /// The core claim of AAASM-5323: with no trusted proxy on this host, a
     /// launch is refused — and a `proxy_addr` in the gateway's response cannot
@@ -1482,31 +1377,9 @@ mod tests {
             .build()
             .expect("build test runtime");
         let outcome = rt.block_on(async {
-            let mock_server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path("/api/v1/agents"))
-                .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-                    "agent_id": "a1",
-                    "registration_id": "r1",
-                    "trace_id": "t1",
-                    "session_id": "s1",
-                    // A gateway insisting there is a proxy. There isn't.
-                    "proxy_addr": "127.0.0.1:8899"
-                })))
-                .mount(&mock_server)
-                .await;
-
             let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
             adapters.insert("claude", Box::new(StubDetected { version: None }));
-            let ctx = ResolvedContext {
-                name: None,
-                api_url: mock_server.uri(),
-                api_key: None,
-            };
-
-            let result = execute_with_adapters(&run_args("claude"), &ctx, &adapters).await;
-            let registered = mock_server.received_requests().await.unwrap().len();
-            (result, registered)
+            execute_with_adapters(&run_args("claude"), &adapters).await
         });
 
         match prior {
@@ -1514,8 +1387,7 @@ mod tests {
             None => std::env::remove_var("AA_DATA_DIR"),
         }
 
-        let (result, registered) = outcome;
-        let err = result.expect_err(
+        let err = outcome.expect_err(
             "with no proxy running, `aasm run` must refuse to launch rather than launch \
              unproxied — a gateway-supplied address is not evidence that a proxy exists",
         );
@@ -1524,16 +1396,23 @@ mod tests {
             "the refusal must say what it refused and why; got: {err}"
         );
 
-        // And nothing was registered: the refusal happens before the session
-        // exists, so there is no abandoned registration to reap.
-        assert_eq!(registered, 0, "a refused launch must not have registered a session");
+        // And the refusal is the *proxy* one, which is how this test shows the
+        // launch never reached registration: `AA_GATEWAY_ENDPOINT` is unset here,
+        // so a run that got as far as registering would have failed against the
+        // default `127.0.0.1:50051` with an unreachable-gateway message instead.
+        // A refused launch must leave no abandoned session behind.
+        assert!(
+            !err.to_string().contains("refusing to launch unregistered"),
+            "the launch reached registration before the proxy check; the refusal must come \
+             first so no session is created for a launch that will not happen. Got: {err}"
+        );
     }
 
     #[tokio::test]
     async fn unknown_tool_in_adapters_errors() {
         let adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
 
-        let err = execute_with_adapters(&run_args("notathing"), &dummy_ctx(), &adapters)
+        let err = execute_with_adapters(&run_args("notathing"), &adapters)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("unknown tool"), "got: {err}");
@@ -1554,7 +1433,7 @@ mod tests {
         let mut args = run_args("claude");
         args.dry_run = true;
 
-        let result = execute_with_adapters(&args, &dummy_ctx(), &adapters).await;
+        let result = execute_with_adapters(&args, &adapters).await;
         assert!(
             result.is_ok(),
             "--dry-run should succeed without detect() or gateway: {result:?}",
@@ -1564,19 +1443,8 @@ mod tests {
 
     #[tokio::test]
     async fn dry_run_does_not_apply_settings() {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/agents"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
-                "agent_id": "dr-agent",
-                "registration_id": "dr-reg",
-                "trace_id": "dr-trace",
-                "session_id": "dr-session",
-                "proxy_addr": null
-            })))
-            .mount(&mock_server)
-            .await;
-
+        // No gateway of any kind: `--dry-run` short-circuits before registration,
+        // and a preview that needed one could not run where this test runs.
         let apply_called = Arc::new(AtomicBool::new(false));
         let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
         adapters.insert(
@@ -1588,13 +1456,8 @@ mod tests {
 
         let mut args = run_args("claude");
         args.dry_run = true;
-        let ctx = ResolvedContext {
-            name: None,
-            api_url: mock_server.uri(),
-            api_key: None,
-        };
 
-        let result = execute_with_adapters(&args, &ctx, &adapters).await;
+        let result = execute_with_adapters(&args, &adapters).await;
         assert!(result.is_ok(), "dry-run should succeed: {result:?}");
         assert!(
             !apply_called.load(Ordering::SeqCst),
@@ -1606,6 +1469,7 @@ mod tests {
     fn dry_run_prints_command_line() {
         let handle = RegistrationHandle {
             agent_id: "agent-xyz".into(),
+            registration_did: run_registration::registration_did("agent-xyz"),
             registration_id: "reg-xyz".into(),
             trace_id: "trace-xyz".into(),
             session_id: "session-xyz".into(),
@@ -1659,6 +1523,7 @@ mod tests {
     fn dry_run_masks_secret_and_connection_url_env_vars() {
         let handle = RegistrationHandle {
             agent_id: "agent-xyz".into(),
+            registration_did: run_registration::registration_did("agent-xyz"),
             registration_id: "reg-xyz".into(),
             trace_id: "trace-xyz".into(),
             session_id: "session-xyz".into(),
@@ -1698,6 +1563,7 @@ mod tests {
     fn dry_run_redacts_uri_connection_strings() {
         let handle = RegistrationHandle {
             agent_id: "agent-xyz".into(),
+            registration_did: run_registration::registration_did("agent-xyz"),
             registration_id: "reg-xyz".into(),
             trace_id: "trace-xyz".into(),
             session_id: "session-xyz".into(),

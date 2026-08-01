@@ -125,6 +125,20 @@ fn protected_router() -> Router {
         .route("/agents/{id}", get(agents::get_agent).delete(agents::delete_agent))
         .route("/agents/{id}/suspend", post(agents::suspend_agent))
         .route("/agents/{id}/resume", post(agents::resume_agent))
+        // Direction-asymmetric enforcement-mode toggle (AAASM-5097, ADR 0021):
+        // Write to strengthen (→ enforce), Admin + reason + bounded expiry to
+        // weaken (→ observe / shadow).
+        .route(
+            "/agents/{id}/enforcement-mode",
+            post(agents::set_enforcement_mode),
+        )
+        // Cascade dry-run: the affected subtree (root + descendants) for a
+        // subtree-wide enforcement-mode change, computed without mutating
+        // anything (AAASM-5340). The apply path echoes this set back.
+        .route(
+            "/agents/{id}/enforcement-mode/preview",
+            post(agents::preview_enforcement_mode_cascade),
+        )
         .route("/agents/{id}/capabilities", get(agents::get_agent_capabilities))
         // Per-agent config projection for the agent-detail Config-YAML tab (AAASM-5098)
         .route("/agents/{id}/config", get(agents::get_agent_config))
