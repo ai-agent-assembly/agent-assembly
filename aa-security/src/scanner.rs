@@ -1946,6 +1946,21 @@ mod tests {
     }
 
     #[test]
+    fn does_not_flag_a_fullwidth_number_that_fails_luhn() {
+        // The point of the fix is to widen what reaches the checksum, not to
+        // weaken the checksum. A full-width number with one digit altered must
+        // be rejected exactly as its ASCII equivalent is
+        // (`does_not_flag_invalid_luhn` above).
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("num=４５３２０１５１１２８３０３６７");
+        assert!(
+            !result.findings.iter().any(|f| f.kind == CredentialKind::CreditCardLuhn),
+            "Luhn gate must reject a full-width number too: {:?}",
+            result.findings,
+        );
+    }
+
+    #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("contact: user@example.com for support");
