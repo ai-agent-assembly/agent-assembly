@@ -2551,6 +2551,18 @@ mod tests {
         assert_eq!(result.redact(text), text);
     }
 
+    /// Reported reproducer 4, and the end-to-end one: on the enforcement path
+    /// this whole sentence became `[REDACTED:GenericHighEntropy]`, so a support
+    /// request written in Chinese reached the model as nothing at all.
+    #[test]
+    fn zh_tw_support_request_survives_redact() {
+        let scanner = CredentialScanner::new();
+        let text = "客戶反映系統登入失敗請協助處理謝謝";
+        let result = scanner.scan(text);
+        assert!(result.is_clean(), "unexpected findings: {:?}", result.findings);
+        assert_eq!(result.redact(text), text);
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
