@@ -721,6 +721,32 @@ mod tests {
         assert!(!outcome.is_clean());
     }
 
+    /// AAASM-5346: `scanned_bytes` counted the *lossy* decoding, which expands
+    /// each invalid byte into a 3-byte U+FFFD — over-reporting a binary payload
+    /// by up to 3x in the `aa_runtime_scan_payload_bytes` histogram.
+    #[test]
+    fn scanned_bytes_counts_input_bytes_not_the_lossy_expansion() {
+        let scanner = RuntimeScanner::new();
+        let original = chunk_split_cjk();
+        let lossy_len = String::from_utf8_lossy(&original).len();
+        assert!(
+            lossy_len > original.len(),
+            "fixture must actually expand under lossy decoding, else it proves nothing"
+        );
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: original.clone(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert_eq!(
+            outcome.scanned_bytes,
+            original.len(),
+            "scanned_bytes must describe the payload, not its decoding"
+        );
+    }
+
     #[test]
     fn oversized_field_is_redacted_whole_fail_closed() {
         let scanner = RuntimeScanner::with_config(EnforcementConfig {
