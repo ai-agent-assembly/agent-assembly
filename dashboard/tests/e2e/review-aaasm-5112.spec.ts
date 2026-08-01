@@ -133,6 +133,12 @@ async function gotoScrub(page: Page) {
     window.dispatchEvent(new PopStateEvent('popstate'))
   })
   await page.getByTestId('scrub-page').waitFor()
+  // Since AAASM-5347 `scrub-page` also wraps the loading skeleton, so it no
+  // longer means the page has rendered. That matters most for the
+  // forbidden-literal sweep, which reads `textContent` once with no retry: a
+  // skeleton contains none of the fabrications either, so the strongest guard
+  // in this file would have passed against a page that had not loaded yet.
+  await page.getByTestId('scrub-patterns').waitFor()
 }
 
 test.describe('AAASM-5112 review — the Scrub surface stops fabricating a DLP posture', () => {

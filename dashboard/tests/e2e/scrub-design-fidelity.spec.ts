@@ -49,7 +49,13 @@ async function mockApi(page: Page) {
 
 async function gotoScrub(page: Page) {
   await page.goto('/scrub')
-  await page.getByTestId('scrub-page').waitFor()
+  // `scrub-page` is on the <main> and is therefore already present while the
+  // catalogue request is in flight — since AAASM-5347 it wraps the loading
+  // skeleton too. Waiting on it alone let a test read an unmounted page and,
+  // for the non-retrying `.count()` below, fail under parallel load. The body
+  // grid only exists once the catalogue has arrived, so it is the honest
+  // ready signal.
+  await page.locator('.scrub-body').waitFor()
 }
 
 function describeAtViewport(width: number, height: number) {
