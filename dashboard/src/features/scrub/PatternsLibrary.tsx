@@ -107,6 +107,28 @@ export function PatternsLibrary({
         e-mail addresses adds one to <code>AwsAccessKey</code> and nothing to{' '}
         <code>EmailAddress</code>.
       </p>
+      {/*
+        The column's total, placed directly above the column rather than below
+        it. Below, it sat at the far end of a 27-row table that scrolls with the
+        page — a summary an operator only reaches after passing everything it
+        summarises. It is also deliberately not in the stat strip: `total_hits`
+        and the strip's `leaks_intercepted` are very nearly the same measurement
+        (both count `secret_detected` alerts), so side by side over two different
+        windows they read as a discrepancy worth investigating, when the only
+        difference is the window.
+      */}
+      <p className="scrub-patterns-total" data-testid="scrub-patterns-total">
+        <TruthfulValue
+          value={mapCertain(alerts, (t) => t.totalAlerts)}
+          testId="scrub-patterns-total-value"
+        />{' '}
+        alerts across{' '}
+        <TruthfulValue
+          value={mapCertain(alerts, (t) => t.byKind.size)}
+          testId="scrub-patterns-total-kinds"
+        />{' '}
+        kinds in the last <TruthfulValue value={alertWindow} testId="scrub-patterns-total-window" />
+      </p>
       <div className="scrub-patterns-table-wrap">
         <table className="scrub-patterns-table">
           <thead>
@@ -193,26 +215,6 @@ export function PatternsLibrary({
           </tbody>
         </table>
       </div>
-      {/*
-        The column total, placed under the column it totals rather than in the
-        stat strip. `total_hits` is very nearly the same measurement as the
-        strip's `leaks_intercepted` — both count `secret_detected` alerts — and
-        putting two near-identical figures over different windows side by side
-        invites an operator to hunt for a difference that is only the window.
-        Here it is unambiguous: it is the sum of the cells directly above.
-      */}
-      <p className="scrub-patterns-total" data-testid="scrub-patterns-total">
-        <TruthfulValue
-          value={mapCertain(alerts, (t) => t.totalAlerts)}
-          testId="scrub-patterns-total-value"
-        />{' '}
-        alerts across{' '}
-        <TruthfulValue
-          value={mapCertain(alerts, (t) => t.byKind.size)}
-          testId="scrub-patterns-total-kinds"
-        />{' '}
-        kinds in the last <TruthfulValue value={alertWindow} testId="scrub-patterns-total-window" />
-      </p>
     </section>
   )
 }

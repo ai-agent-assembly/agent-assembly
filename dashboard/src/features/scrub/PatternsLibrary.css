@@ -195,14 +195,15 @@
   clip: rect(0 0 0 0);
 }
 
-/* The alerts column's total, under the column rather than in the stat strip —
-   see the component for why it is not hoisted up there. */
+/* The alerts column's total. Sits above the table, not in the stat strip — see
+   the component for both placement decisions. */
 .scrub-patterns-total {
   margin: 0;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   background: var(--paper-2);
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  color: var(--ink-3);
+  color: var(--ink-2);
 }
