@@ -20,6 +20,17 @@
 //! |---|---|---|
 //! | 國民身分證 / 2021 居留證 | letter + 9 digits, weighted mod-10, `d₁ ∈ {1,2,8,9}` | ~4% of random letter+9-digit strings |
 //! | Legacy 居留證 | 2 letters (2nd ∈ A–D) + 8 digits, weighted mod-10 | ~10% of random strings of that shape |
+//! | 統一編號 | 8 whole digits, weighted digit-sum mod 5 | **~20% of random 8-digit strings** |
+//!
+//! The 統一編號 row is the one that matters. Roughly one 8-digit numeric literal
+//! in five passes, so a bare `YYYYMMDD` date, a build number or an order
+//! reference will sometimes be reported —
+//! `a_bare_eight_digit_date_is_a_known_business_id_residual` pins that rather
+//! than leaving a reviewer to discover it. It is reported at
+//! `ConfidenceBand::Low` without a context keyword for exactly this reason, and
+//! `Severity::Low`, so it sorts below findings that carry real harm. Narrowing
+//! it further would mean *requiring* a context keyword, which the identifier
+//! does not always carry and which the acceptance criteria rule out.
 //!
 //! # What this pack does not recognise
 //!
@@ -60,6 +71,8 @@ const NATIONAL_ID: CanonicalCategory = CanonicalCategory::with_locale(Base::Nati
 const ARC_NEW: CanonicalCategory = CanonicalCategory::with_locale(Base::NationalId, "zh-TW", "arc_new");
 /// 統一證號 in the pre-2021 form — two letters and eight digits.
 const ARC_LEGACY: CanonicalCategory = CanonicalCategory::with_locale(Base::NationalId, "zh-TW", "arc_legacy");
+/// 統一編號 — the business registration / tax number.
+const BUSINESS_ID: CanonicalCategory = CanonicalCategory::with_locale(Base::TaxIdentifier, "zh-TW", "business_id");
 
 // ---------------------------------------------------------------------------
 // Boundary handling
@@ -268,6 +281,90 @@ fn scan_identity_number(text: &str, start: usize) -> Option<(CanonicalCategory, 
 }
 
 // ---------------------------------------------------------------------------
+// 統一編號 (business registration / tax number)
+// ---------------------------------------------------------------------------
+
+/// Positional weights of the 統一編號 checksum.
+///
+/// The seventh weight is 4, not 2 — the sequence is not the alternating 1/2 it
+/// looks like, and treating it as one produces a validator that agrees with the
+/// real rule on most inputs and disagrees on the rest.
+const BUSINESS_ID_WEIGHTS: [u32; 8] = [1, 2, 1, 2, 1, 2, 4, 1];
+
+/// Which era's rule a checksum-valid 統一編號 satisfies.
+///
+/// Modelled explicitly rather than collapsed to a boolean so the two rules are
+/// individually testable. The distinction is invisible in the output — both
+/// produce the same category — but not in the code, and it is the difference
+/// between shipping a working detector and one that misses every business
+/// registered since April 2023.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BusinessIdEra {
+    /// Satisfies the pre-2023-04-01 rule: the weighted digit-sum is divisible
+    /// by 10.
+    PreApril2023,
+    /// Satisfies only the current rule: divisible by 5 but not by 10.
+    ///
+    /// This variant is the trap. The Ministry of Finance relaxed the divisor
+    /// from 10 to 5 on 2023-04-01, and because every mod-10-valid number is also
+    /// mod-5-valid, a legacy-only validator passes every test written against
+    /// numbers issued before that date while silently missing everything issued
+    /// after it.
+    CurrentOnly,
+}
+
+/// The weighted digit-sum the 統一編號 rule is applied to.
+///
+/// Each digit is multiplied by its positional weight and the **digits of the
+/// product** are summed, not the product — so `7 × 4 = 28` contributes 10, not
+/// 28. Summing the products instead gives a validator that is right about
+/// roughly half of all inputs.
+fn business_id_sum(digits: &str) -> Option<u32> {
+    if digits.len() != 8 {
+        return None;
+    }
+    let mut sum = 0u32;
+    for (i, c) in digits.chars().enumerate() {
+        let product = c.to_digit(10)? * BUSINESS_ID_WEIGHTS[i];
+        sum += product / 10 + product % 10;
+    }
+    Some(sum)
+}
+
+/// Which rule, if any, `digits` satisfies.
+///
+/// The historical seventh-digit exception applies under both eras: when the
+/// seventh digit is 7, the sum is allowed to be one short of a multiple of the
+/// divisor, because that digit's weight-4 product was originally carried
+/// differently.
+fn business_id_era(digits: &str) -> Option<BusinessIdEra> {
+    let sum = business_id_sum(digits)?;
+    let seventh_is_seven = digits.as_bytes()[6] == b'7';
+    let satisfies = |divisor: u32| sum % divisor == 0 || (seventh_is_seven && (sum + 1) % divisor == 0);
+
+    if satisfies(10) {
+        Some(BusinessIdEra::PreApril2023)
+    } else if satisfies(5) {
+        Some(BusinessIdEra::CurrentOnly)
+    } else {
+        None
+    }
+}
+
+/// Try to read a 統一編號 at `start`: exactly eight digits, whole.
+///
+/// "Whole" is doing real work. The checksum admits roughly one 8-digit string in
+/// five, so without the boundary tests every eight-digit window of every longer
+/// number would be a candidate and the output would be dominated by fragments.
+fn scan_business_id(text: &str, start: usize) -> Option<(CanonicalCategory, usize)> {
+    let (end, digits) = read_digits(text, start, 8)?;
+    if !right_boundary_ok(text, end) {
+        return None;
+    }
+    business_id_era(&digits).map(|_| (BUSINESS_ID, end))
+}
+
+// ---------------------------------------------------------------------------
 // Context keywords
 // ---------------------------------------------------------------------------
 
@@ -417,7 +514,12 @@ pub fn scan(text: &str) -> Vec<CanonicalFinding> {
             continue;
         }
 
-        match scan_identity_number(text, i) {
+        // Letter-initial forms and digit-initial forms cannot collide, so the
+        // order between these two is arbitrary; the order *within* the digit
+        // forms is not, and is fixed where they are combined.
+        let hit = scan_identity_number(text, i).or_else(|| scan_business_id(text, i));
+
+        match hit {
             Some((category, end)) => {
                 if let Some(f) = finding(text, category, i, end) {
                     findings.push(f);
@@ -653,6 +755,121 @@ mod tests {
         assert_eq!(found[0].method(), DetectionMethod::Deterministic);
     }
 
+    /// The 統一編號 fixtures, with their arithmetic written out so a reviewer can
+    /// confirm each is constructed rather than harvested.
+    ///
+    /// Body `1000000` puts a single 1 at weight 1, so the weighted digit-sum is
+    /// `1 + check`. Body `1000007` adds `7 × 4 = 28`, whose digits sum to 10, so
+    /// the total is `11 + check` and the seventh digit is a 7 — which is what
+    /// arms the historical exception.
+    ///
+    /// | Value | Sum | Era |
+    /// |---|---|---|
+    /// | `10000009` | 10 | divisible by 10 — valid before and after 2023 |
+    /// | `10000004` | 5 | divisible by 5 only — **valid only under the current rule** |
+    /// | `10000078` | 19 | 19+1 = 20, seventh digit is 7 — valid via the exception |
+    /// | `10000007` | 8 | divisible by neither, exception not armed — invalid |
+    const LEGACY_ERA_ID: &str = "10000009";
+    const CURRENT_ERA_ONLY_ID: &str = "10000004";
+    const SEVENTH_DIGIT_EXCEPTION_ID: &str = "10000078";
+    const INVALID_ID: &str = "10000007";
+
+    /// The fixture table's arithmetic must be what the implementation computes,
+    /// or the era tests below prove nothing about which rule is in force.
+    #[test]
+    fn the_business_id_fixtures_have_the_sums_the_table_claims() {
+        for (value, sum) in [
+            (LEGACY_ERA_ID, 10),
+            (CURRENT_ERA_ONLY_ID, 5),
+            (SEVENTH_DIGIT_EXCEPTION_ID, 19),
+            (INVALID_ID, 8),
+        ] {
+            assert_eq!(business_id_sum(value), Some(sum), "{value}");
+        }
+    }
+
+    /// **The second trap this ticket exists to avoid.** The divisor changed from
+    /// 10 to 5 on 2023-04-01, and every mod-10-valid number is also mod-5-valid
+    /// — so a legacy-only validator passes every test written against older
+    /// numbers while missing every business registered since. `CURRENT_ERA_ONLY_ID`
+    /// is the discriminating case: it fails mod-10 and passes mod-5.
+    #[test]
+    fn both_the_pre_and_post_2023_business_id_rules_are_honoured() {
+        assert_eq!(business_id_era(LEGACY_ERA_ID), Some(BusinessIdEra::PreApril2023));
+        assert_eq!(business_id_era(CURRENT_ERA_ONLY_ID), Some(BusinessIdEra::CurrentOnly));
+        assert_eq!(
+            business_id_era(SEVENTH_DIGIT_EXCEPTION_ID),
+            Some(BusinessIdEra::PreApril2023),
+        );
+        assert_eq!(business_id_era(INVALID_ID), None);
+
+        // And both eras reach the scanner, not just the validator.
+        for value in [LEGACY_ERA_ID, CURRENT_ERA_ONLY_ID, SEVENTH_DIGIT_EXCEPTION_ID] {
+            assert_eq!(
+                categories(&format!("統一編號 {value}")),
+                ["TAX_IDENTIFIER[zh-TW/business_id]"],
+                "{value}"
+            );
+        }
+        assert_eq!(categories(&format!("統一編號 {INVALID_ID}")), Vec::<String>::new());
+    }
+
+    /// The acceptance criteria's own example: no separator, flush against Han on
+    /// the left. This is the case `\b\d{8}\b` cannot match.
+    #[test]
+    fn the_cjk_adjacent_business_id_from_the_acceptance_criteria_is_detected() {
+        let text = "統編12345675";
+        let found = scan(text);
+        assert_eq!(found.len(), 1, "統編12345675 must be detected");
+        assert_eq!(found[0].category().to_string(), "TAX_IDENTIFIER[zh-TW/business_id]");
+        assert_eq!(&text[found[0].span().start()..found[0].span().end()], "12345675");
+        // The label is adjacent, so the finding is corroborated.
+        assert_eq!(found[0].confidence(), ConfidenceBand::Medium);
+    }
+
+    /// Eight digits inside a longer number are a fragment, not an identifier.
+    ///
+    /// With a checksum that admits one string in five this is not a nicety: an
+    /// unbounded match would report a hit inside most long numeric literals.
+    #[test]
+    fn eight_digits_inside_a_longer_number_are_not_a_business_id() {
+        for text in [
+            format!("{LEGACY_ERA_ID}5"),
+            format!("5{LEGACY_ERA_ID}"),
+            // The decimal-point case: the fractional digits are part of one
+            // number, which is why `.` is a fragment neighbour.
+            format!("3.{LEGACY_ERA_ID}"),
+            format!("{LEGACY_ERA_ID}.5"),
+        ] {
+            assert_eq!(categories(&text), Vec::<String>::new(), "{text}");
+        }
+    }
+
+    /// A documented, deliberate residual — recorded rather than hidden.
+    ///
+    /// The checksum admits roughly one 8-digit string in five, and a compact
+    /// `YYYYMMDD` date is an 8-digit string. `20260801` has weighted digit-sum
+    /// 15, so it is reported. Nothing here is broken; the acceptance criteria
+    /// require the checksum-valid match without a context keyword, and this is
+    /// the price. The test exists so the behaviour is visible in the suite and
+    /// so a future change to the trade-off has to touch it deliberately.
+    #[test]
+    fn a_bare_eight_digit_date_is_a_known_business_id_residual() {
+        assert_eq!(business_id_sum("20260801"), Some(15));
+        let found = scan("批次 20260801 已完成");
+        assert_eq!(found.len(), 1, "the residual is real and this test documents it");
+        assert_eq!(found[0].category().to_string(), "TAX_IDENTIFIER[zh-TW/business_id]");
+        // Reported at the lowest bands precisely because of this, so it sorts
+        // below anything that carries real harm.
+        assert_eq!(found[0].confidence(), ConfidenceBand::Low);
+        assert_eq!(found[0].severity(), Severity::Low);
+        assert_eq!(found[0].status(), FindingStatus::Suspected);
+
+        // A date written with separators is *not* an 8-digit run, so the common
+        // written form does not trip it.
+        assert_eq!(categories("批次 2026-08-01 已完成"), Vec::<String>::new());
+    }
+
     /// Every category this pack emits must parse back in the same build.
     ///
     /// The failure it guards is silent: a category missing from
@@ -666,6 +883,7 @@ mod tests {
             format!("身分證 {}", synthetic_id('A', "20000000")),
             format!("居留證 {}", synthetic_id('A', "80000000")),
             format!("居留證 {}", synthetic_legacy_arc('A', 'B', "0000000")),
+            format!("統一編號 {LEGACY_ERA_ID}"),
         ];
         let mut seen = 0usize;
         for text in &corpus {
