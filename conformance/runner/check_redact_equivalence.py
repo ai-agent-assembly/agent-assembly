@@ -198,11 +198,30 @@ def _wellformed_cases(n: int, positions: list[int]) -> list[list[dict]]:
                 {"kind": "B", "offset": o2, "end": min(o2 + 5, n)},
             ]
         )
-    # Degenerate shapes: no findings, missing "end", past the end, inverted.
+    # Unspliceable shapes, generated rather than hardcoded. These are the only
+    # cases that reach the fail-closed branch, and three hand-written examples
+    # made the "fail-closed bucket is non-empty" gate near-trivial to satisfy —
+    # it would have stayed green against an implementation that failed closed on
+    # almost nothing.
+    for o in positions:
+        # Inverted: every end strictly below the offset.
+        for e in positions:
+            if e < o:
+                cases.append([{"kind": "K", "offset": o, "end": e}])
+        # Out of range, just past the end and far past it.
+        for e in (n + 1, n + 2, n + 50):
+            cases.append([{"kind": "K", "offset": o, "end": e}])
+        # Mixed: one spliceable span alongside one that is not, which is what
+        # proves fail-closed condemns the whole text rather than the bad span.
+        cases.append(
+            [
+                {"kind": "A", "offset": o, "end": min(o + 3, n)},
+                {"kind": "B", "offset": o, "end": n + 7},
+            ]
+        )
+    # Degenerate shapes: no findings, and a finding with no "end" at all.
     cases.append([])
     cases.append([{"kind": "K", "offset": 0}])
-    cases.append([{"kind": "K", "offset": 3, "end": n + 50}])
-    cases.append([{"kind": "K", "offset": n, "end": 0}])
     return cases
 
 
@@ -315,10 +334,13 @@ def main() -> int:
           f"{r.differs['unchanged']} differ from legacy (must be 0)")
     print(f"  sort/merge bucket        : {r.seen['coalesced']} cases, "
           f"{r.differs['coalesced']} differ from legacy (sorted and/or merged)")
-    print(f"    of which really merged : {r.merged_cases} cases, "
-          f"{r.merged_differs} differ from legacy")
     print(f"  fail-closed bucket       : {r.seen['failclosed']} cases, "
           f"{r.differs['failclosed']} differ from legacy (fail-closed)")
+    # Not nested under the sort/merge bucket: a fail-closed case can also have
+    # had two findings merged, so this cuts across the buckets rather than
+    # sitting inside one of them.
+    print(f"cases where findings really merged (any bucket): {r.merged_cases}, "
+          f"{r.merged_differs} differ from legacy")
     print(f"malformed (offset < 0) now rejected instead of mangled: {r.malformed_differs}")
     for s in r.samples:
         print(f"  {s}")
