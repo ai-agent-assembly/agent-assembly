@@ -842,6 +842,15 @@ prevention_rate numerator  += 1     ONLY if NotForwarded evidence is present
 `redacted_event_count = 0` alongside `redacted_finding_count = 2` is the
 canonical illustration of why the two counters cannot be collapsed.
 
+It also forces one definition to be stated explicitly, because the obvious
+reading is wrong: **`redacted_finding_count` counts transformation operations
+performed, not findings whose redacted form was transmitted.** On a blocked
+action nothing reaches the wire, so those two transformations were discarded.
+Without this stated, a reader would reasonably interpret "2 redacted" on a
+blocked action as "2 secrets were scrubbed and sent", which is the opposite of
+what happened. If a "redacted and delivered" figure is ever needed, it is a
+distinct metric conditioned on execution evidence, not this one.
+
 ### 6.7 Storage tiers
 
 | Tier | Contains | Retention | Who reads |
