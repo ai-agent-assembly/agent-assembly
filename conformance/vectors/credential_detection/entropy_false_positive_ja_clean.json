@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5344: clean Japanese prose — no findings. The defect class is space-less scripts generally, not Chinese specifically. Kanji share the Han byte ranges, so the kanji-dense clause here is 63 bytes at 4.81 bits/byte and trips the byte-scored gate exactly as Chinese does; a fix scoped to a zh-TW code path or to a Chinese-only test corpus would leave it firing.",
+  "input_text": "エージェントはツールを実行する前にポリシー判定を問い合わせます。 監査記録は決定理由と対象資源を保持します。 拒否された場合、呼び出しは実行されません。",
+  "expected_findings": [],
+  "expected_redacted": "エージェントはツールを実行する前にポリシー判定を問い合わせます。 監査記録は決定理由と対象資源を保持します。 拒否された場合、呼び出しは実行されません。"
+}
