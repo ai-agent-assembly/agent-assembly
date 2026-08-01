@@ -86,6 +86,11 @@ pub enum ProxyTrustError {
     },
     /// The PID is live but is not the process that was recorded.
     IdentityMismatch { pid: u32, field: &'static str },
+    /// The record's identity evidence was gathered by something other than this
+    /// build on this host, so it cannot be compared against a fresh reading.
+    /// Distinct from [`Self::IdentityMismatch`] because it is not a statement
+    /// about the process at all — see [`identity::scheme_is_current`].
+    IdentityEvidenceUnrecognised { pid: u32 },
     /// The record names something other than the proxy binary.
     NotTheProxyBinary { exe: PathBuf },
     /// The recorded address is not a usable loopback proxy endpoint.
@@ -133,6 +138,13 @@ impl fmt::Display for ProxyTrustError {
                 f,
                 "PID {pid} is live but its {field} does not match the recorded proxy — the proxy \
                  exited and an unrelated process took its PID. Re-run `aasm proxy start`"
+            ),
+            Self::IdentityEvidenceUnrecognised { pid } => write!(
+                f,
+                "the recorded proxy (PID {pid}) carries process-identity evidence this `aasm` does \
+                 not produce — the record was written by an older version, or on a different kind \
+                 of host. It is not evidence that the PID was recycled, and it is not evidence \
+                 that the proxy is sound either. Re-run `aasm proxy start`"
             ),
             Self::NotTheProxyBinary { exe } => write!(
                 f,
@@ -307,6 +319,16 @@ pub fn verify_identity(state: &ProxyState) -> Result<(), ProxyTrustError> {
             reason: "its /proc entry could not be read",
         });
     };
+    // Checked before the comparison, not after it. An old-scheme record differs
+    // from every fresh reading, so comparing it first would report a PID-reuse
+    // mismatch — a confident, specific, wrong diagnosis that sends an operator
+    // looking for a recycled PID. Accepting it on a prefix or a shared substring
+    // would be worse still: the pre-AAASM-5333 evidence is exactly the weaker
+    // subset this scheme replaced, so honouring it re-opens the hole. Neither
+    // silently mistrusted nor silently accepted — named, and refused.
+    if !identity::scheme_is_current(&state.start_token) {
+        return Err(ProxyTrustError::IdentityEvidenceUnrecognised { pid: state.pid });
+    }
     if token != state.start_token {
         return Err(ProxyTrustError::IdentityMismatch {
             pid: state.pid,
@@ -712,6 +734,37 @@ mod tests {
                 }
             ),
             "expected a start-time mismatch, got {err:?}"
+        );
+    }
+
+    /// Compatibility, stated deliberately (AAASM-5333): a record written by an
+    /// `aasm` from before the token scheme changed. Every other field is
+    /// truthful and the PID really is the recorded process, so the *only* thing
+    /// wrong is that its identity evidence predates this build.
+    ///
+    /// It must be refused — the old evidence is the weaker subset the new scheme
+    /// replaced, so honouring it would re-open the hole — and refused as what it
+    /// is. Reporting it as a start-time mismatch would tell an operator, with
+    /// full confidence, that their proxy had been replaced by an impostor.
+    #[test]
+    fn a_record_written_under_a_superseded_token_scheme_is_refused() {
+        let mut state = truthful_state_for_self();
+        state.start_token = "linux-starttime:112163742".into();
+
+        let err = verify_identity(&state).expect_err("evidence this build cannot read must be refused");
+
+        assert!(
+            matches!(err, ProxyTrustError::IdentityEvidenceUnrecognised { .. }),
+            "expected IdentityEvidenceUnrecognised, got {err:?}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("older version"),
+            "the refusal must name the actual cause: {message}"
+        );
+        assert!(
+            message.contains("Re-run `aasm proxy start`"),
+            "the refusal must tell the operator how to fix it: {message}"
         );
     }
 

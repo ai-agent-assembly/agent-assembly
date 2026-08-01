@@ -239,6 +239,20 @@ const LINUX_SCHEME_TICKS: &str = "linux-ticks";
 #[cfg(target_os = "macos")]
 const MACOS_SCHEME: &str = "macos-starttime";
 
+/// Every scheme tag [`start_token`] can emit on this host. A recorded token
+/// tagged with anything else was not written here, or not written by this build
+/// — see [`scheme_is_current`].
+#[cfg(target_os = "linux")]
+const CURRENT_SCHEMES: &[&str] = &[LINUX_SCHEME_PIDFS, LINUX_SCHEME_TICKS];
+
+#[cfg(target_os = "macos")]
+const CURRENT_SCHEMES: &[&str] = &[MACOS_SCHEME];
+
+/// A platform with no [`start_token`] implementation produces no tokens, so no
+/// recorded token can have come from it.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const CURRENT_SCHEMES: &[&str] = &[];
+
 /// `f_type` of the `pidfs` filesystem (`"PIDF"`), which is what a `pidfd`
 /// reports from Linux 6.9 onwards.
 ///
@@ -349,8 +363,8 @@ pub fn distinguishes_within_a_tick() -> bool {
 /// earlier for the same PID, so its encoding is private to this module. It is
 /// prefixed with a scheme tag naming the evidence inside it, so that a record
 /// carried between hosts of different kinds — or written by a build that
-/// gathered different evidence — can be recognised as such rather than
-/// silently comparing unequal.
+/// gathered different evidence — is recognised as such by
+/// [`scheme_is_current`] instead of silently comparing unequal.
 #[cfg(target_os = "linux")]
 pub fn start_token(pid: u32) -> Option<String> {
     // Read the tick first: it is the fact whose absence means "there is no such
@@ -394,6 +408,31 @@ pub fn start_token(pid: u32) -> Option<String> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn start_token(_pid: u32) -> Option<String> {
     None
+}
+
+/// Whether `token` was produced by a scheme [`start_token`] still emits on this
+/// host.
+///
+/// A recorded token that fails this test cannot support a trust decision, and —
+/// this is the point — cannot be *compared* into one either: it would simply
+/// differ from every fresh reading, which reads as "the PID was recycled" and
+/// sends an operator hunting a process-identity problem that does not exist.
+/// Callers must refuse such a record with a diagnostic of its own (see
+/// [`super::trust::ProxyTrustError::IdentityEvidenceUnrecognised`]) rather than
+/// let it fall through to the equality comparison.
+///
+/// It fires for a record written by an `aasm` that gathered different evidence
+/// (before AAASM-5333, Linux tokens carried the start tick alone), and for one
+/// carried over from a host of another kind. Migration is deliberately not
+/// attempted: the older evidence is a strict subset, so honouring it would mean
+/// re-admitting exactly the weakness the new scheme exists to close.
+pub fn scheme_is_current(token: &str) -> bool {
+    match token.split_once(':') {
+        // An empty value is not a token: it names a scheme and then says
+        // nothing, which would compare equal to another empty one.
+        Some((scheme, value)) => !value.is_empty() && CURRENT_SCHEMES.contains(&scheme),
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -556,6 +595,32 @@ mod tests {
             "two processes are two incarnations even when the kernel clock cannot separate them — \
              a shared token is a PID-reuse guard that waves the second incarnation through"
         );
+    }
+
+    /// The compatibility gate. Evidence gathered under any scheme this host does
+    /// not currently emit — a record from before AAASM-5333, or one carried over
+    /// from another kind of host — must be recognised as foreign, because the
+    /// alternative is comparing it and reporting a PID reuse that never happened.
+    #[test]
+    fn only_the_scheme_this_host_emits_is_current() {
+        assert!(
+            scheme_is_current(&start_token(std::process::id()).expect("own start token")),
+            "whatever this platform emits must be recognised as its own"
+        );
+        // The superseded Linux scheme: the same start tick, without the
+        // per-process inode that makes it discriminating.
+        assert!(!scheme_is_current("linux-starttime:112163742"));
+        #[cfg(target_os = "linux")]
+        assert!(
+            !scheme_is_current("macos-starttime:1750000000.000001"),
+            "a record carried from another kind of host must not be honoured"
+        );
+        for malformed in ["", "not-a-token", "linux-pidfs:", ":112163742"] {
+            assert!(
+                !scheme_is_current(malformed),
+                "a token with no readable scheme and value must not pass: {malformed:?}"
+            );
+        }
     }
 
     #[test]
