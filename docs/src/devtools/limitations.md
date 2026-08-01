@@ -273,6 +273,26 @@ Two knock-on limits worth stating:
 * **Redaction is not encryption and not a DLP product.** An oversized field that
   cannot be scanned reliably is replaced wholesale with `[REDACTED:OVERSIZED]` —
   the scanner fails closed — but that is a containment behaviour, not detection.
+* **A flagged undecodable payload loses its whole audit content.** A `bytes` field
+  that is not valid UTF-8 — a binary body, or multi-byte text cut by a chunk
+  boundary — is still scanned, but a detected secret cannot be excised precisely,
+  because the finding's offsets index the lossy decoding rather than the payload.
+  The field is therefore replaced *in full* with `[REDACTED:UNDECODABLE]`. The
+  secret is contained, but so is everything else that was in the field: the
+  surrounding content does not reach the audit record. A **clean** undecodable
+  field is unaffected and is forwarded byte-identical (AAASM-5346).
+
+  **This is sharper for `zh-TW` traffic until [AAASM-5344] ships.** That defect
+  makes ordinary Chinese text register as `GenericHighEntropy` findings, so a
+  chunk-split Chinese payload is *dirty by false positive* and loses its entire
+  `args_json` to the 22-byte marker — where previously it was forwarded corrupted
+  but present. Containment is the correct trade, and a corrupted payload was
+  never trustworthy audit content, but the loss is real and it is why ADR 0032's
+  operational guidance treats `zh-TW` traffic as unsafe until AAASM-5344 lands in
+  `v0.0.1-rc.7`. Once it does, benign Chinese text stops producing findings and
+  this path stops being reached by ordinary traffic.
+
+[AAASM-5344]: https://lightning-dust-mite.atlassian.net/browse/AAASM-5344
 
 ## Hooks cannot carry a sensitive-data claim
 
