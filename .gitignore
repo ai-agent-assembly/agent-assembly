@@ -50,6 +50,7 @@ docs/ci/__pycache__/
 
 # Python bytecode cache from the scripts/ generators + their tests (AAASM-4910)
 scripts/__pycache__/
+scripts/research/__pycache__/
 
 # Conformance outcome ledger, written under the workspace by the conformance
 # workflow so job-level `env:` can name it — `runner.temp` is a steps-only

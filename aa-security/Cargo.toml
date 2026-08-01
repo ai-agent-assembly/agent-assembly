@@ -17,9 +17,34 @@ serde = ["dep:serde", "dep:serde_yaml"]
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports"] }
+# AAASM-5269 transport-floor harness only. Dev-only, so it does not enter the
+# published crate's dependency graph; the harness measures the JSON
+# serialisation tax an out-of-process provider would pay, so hand-rolling it
+# would measure something other than what a real adapter costs.
+serde_json = { workspace = true }
 
 [[bench]]
 name = "scanner_bench"
+harness = false
+
+# AAASM-5269 research benchmark. Not a gate and not asserted on — it exists so the
+# per-payload-class fast-path numbers quoted in the Spike report are reproducible.
+[[bench]]
+name = "spike_5269_payload_classes"
+harness = false
+
+# AAASM-5269 research harness. Criterion reports a mean/median; a synchronous
+# enforcement budget needs the tail, so this one times each call and prints real
+# p50/p95/p99. Also not a gate.
+[[bench]]
+name = "spike_5269_percentiles"
+harness = false
+
+# AAASM-5269 research harness. Measures what an out-of-process provider costs in
+# transport alone, with a stand-in provider that performs no detection, so the
+# architecture comparison is not confounded by provider quality. Also not a gate.
+[[bench]]
+name = "spike_5269_transport_floor"
 harness = false
 
 [lints]

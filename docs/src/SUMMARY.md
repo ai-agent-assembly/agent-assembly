@@ -183,3 +183,8 @@
   - [0029 - Capability Over-Permission Derivation](adr/0029-capability-over-permission-derivation.md)
   - [0030 - Developer Integration Boundaries & Local Trust Model](adr/0030-developer-integration-boundaries-and-trust-model.md)
   - [0031 - OSS Native Account Authentication](adr/0031-oss-native-account-authentication.md)
+  - [0032 - Local-First Sensitive-Data Provider Architecture](adr/0032-local-first-sensitive-data-provider-architecture.md)
+
+# Research
+
+- [AAASM-5269 - Local-First Sensitive-Data Provider Architecture](research/AAASM-5269-sensitive-data-provider-architecture.md)
