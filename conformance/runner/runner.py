@@ -157,7 +157,8 @@ def run(vectors_dir: Path, verbose: bool) -> bool:
             continue
 
         # Redact check: reconstruct the redacted string from findings.
-        # This mirrors the Rust ScanResult::redact() logic.
+        # Approximates Rust's ScanResult::redact() — see _redact for the two
+        # ways it still diverges (no coalescing, fails open).
         redacted = _redact(input_text, actual_findings)
         if redacted != expected_redacted:
             failed += 1
@@ -197,7 +198,7 @@ def _is_utf8_boundary(buf: bytes, index: int) -> bool:
 
 
 def _redact(text: str, findings: list[dict]) -> str:
-    """Apply findings to text in reverse offset order (mirrors Rust ScanResult::redact).
+    """Apply findings to text in reverse offset order.
 
     `offset` and `end` are **byte** positions in the UTF-8 encoding of *text* —
     that is the unit the reference scanner emits and the unit the vector schema
@@ -207,6 +208,12 @@ def _redact(text: str, findings: list[dict]) -> str:
 
     A span that is out of range, inverted, or not aligned to a character
     boundary is skipped rather than spliced, so this never emits invalid UTF-8.
+
+    That skip is where this **diverges from** Rust's `ScanResult::redact`, which
+    fails closed on exactly those spans and returns `"[REDACTED]"` for the whole
+    text (aa-security/src/scanner.rs:447-458). Rust also coalesces overlapping
+    findings before splicing; this does not. Both gaps are AAASM-5373 — until
+    they close, do not describe this function as mirroring the Rust one.
     """
     # Each finding must have "kind", "offset", and "end" (byte end of match).
     # If "end" is absent, the runner cannot redact — skip silently.
