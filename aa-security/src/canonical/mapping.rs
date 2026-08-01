@@ -164,6 +164,28 @@ impl CanonicalCategory {
         };
         Some(kind)
     }
+
+    /// The `[REDACTED:…]` label a finding in this category redacts to.
+    ///
+    /// For a category that maps back to a [`CredentialKind`] this reproduces
+    /// that kind's published label exactly, so the canonical model can drive
+    /// redaction without moving the frozen label contract (ADR 0032 §2).
+    ///
+    /// For a category with no `CredentialKind` — every B-7 locale category —
+    /// it returns the opaque `[REDACTED]`, the same sentinel
+    /// [`ScanResult::redact`](crate::scanner::ScanResult::redact) already emits
+    /// when it cannot prove a flagged region was removed. Two things it
+    /// deliberately does not do: return nothing, which would degrade an
+    /// unmappable finding into a clean result (ADR 0032 §5, forbidden design
+    /// #2), and invent a `[REDACTED:<category>]` label, which would publish a
+    /// pattern name that `GET /api/v1/scrub/patterns` does not list and so
+    /// extend the frozen catalogue by accident.
+    pub fn redaction_label(&self) -> String {
+        match self.to_credential_kind() {
+            Some(kind) => format!("[REDACTED:{}]", kind.as_str()),
+            None => "[REDACTED]".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
