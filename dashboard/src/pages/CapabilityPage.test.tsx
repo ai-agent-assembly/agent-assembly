@@ -278,9 +278,15 @@ describe('CapabilityPage', () => {
     expect(document.body.textContent ?? '').not.toMatch(/no agents (are )?registered/i)
   })
 
-  it('still renders the grid for a matrix whose collections are all present', async () => {
+  it('still renders the grid for the conforming fixture', async () => {
     // Without this the two cases above would pass against a page that reported
     // every matrix as unreadable.
+    //
+    // Deliberately the full fixture, not "any body whose four collections are
+    // present": presence is not sufficient, and claiming it was is the defect
+    // the delta review caught. `{ agents: [{}], … }` passes the decoder and
+    // still throws in `populatedCellCount` — see `decodeMatrixShape` and
+    // AAASM-5380.
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
 

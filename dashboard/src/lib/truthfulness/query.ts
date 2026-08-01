@@ -102,11 +102,14 @@ function describeError(error: unknown): string | undefined {
  * emptied the document, and it reported an unread capability matrix as a
  * measured zero policy documents (AAASM-5369).
  *
- * Still exported, and still correct, for the eleven modules recorded in
- * `__tests__/foldAudit.test.ts` — several of which are safe because their query
- * function validates and throws first. The deprecation is a signpost for new
- * code; the enforcement is the `no-restricted-imports` allowlist in
- * `.eslintrc.cjs`. Retiring both is AAASM-5380.
+ * Still exported for the eleven modules recorded in
+ * `__tests__/foldAudit.test.ts`. Exactly **one** of those modules is recorded
+ * safe — `AppShell`, whose alerts query throws in `parseAlertList` before any
+ * fold sees the body. The other ten are live defects. (Several individual
+ * *folds* inside those ten are safe; the modules are not, and an earlier draft
+ * of this note blurred the two.) The deprecation is a signpost for new code;
+ * the enforcement is the `no-restricted-imports` allowlist in `.eslintrc.cjs`.
+ * Retiring both is AAASM-5380.
  */
 export function certainFromQuery<T>(
   outcome: QueryOutcome<T>,

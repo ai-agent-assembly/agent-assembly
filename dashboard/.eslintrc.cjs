@@ -14,6 +14,15 @@
 // Adding a file here is a decision to ship an undecoded fold. The alternative
 // is `certainFromShapedQuery`, which cannot be called without a decoder because
 // its parameter is `unknown`.
+//
+// This list is not the only door, and saying it was would be the overclaim this
+// ticket exists to remove: an `// eslint-disable-next-line
+// no-restricted-imports` above an aliased import silences this rule *and* is
+// invisible to the text scan, because the directive is genuinely used (so
+// `--report-unused-disable-directives` stays quiet) and the scan skips `import`
+// lines. That door is closed from the other side — the audit test asserts no
+// source file carries such a directive — so a suppression has to be argued for
+// here, in the open, rather than in the file that wants it.
 const UNDECODED_FOLD_ALLOWLIST = [
   'src/components/AppShell.tsx',
   'src/components/agentDetail/agentPosture.ts',
