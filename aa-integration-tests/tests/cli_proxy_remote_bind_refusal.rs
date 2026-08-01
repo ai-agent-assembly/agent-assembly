@@ -176,10 +176,17 @@ fn an_explicit_loopback_listen_address_still_starts() {
         Ok(p) => p,
         Err(e) => {
             // `aasm proxy start` also installs the CA into the macOS System
-            // Keychain, which needs admin. Failing the suite on a machine that
-            // has not run `aasm proxy install-ca` would say nothing about the
-            // guard, but a silent skip would hide a real regression — so say so.
-            eprintln!("an_explicit_loopback_listen_address_still_starts: skipping — proxy start failed: {e:#}");
+            // Keychain, which needs admin, so a start can fail for reasons that
+            // say nothing about this guard. A guard that over-reached, though,
+            // would fail here too — and skipping on that would turn the
+            // regression this test exists to catch into a silent pass. So the
+            // one failure that is never environmental is re-raised.
+            let reported = format!("{e:#}");
+            assert!(
+                !reported.contains("refusing to listen on"),
+                "a loopback address must never be refused by the listen guard:\n{reported}"
+            );
+            eprintln!("an_explicit_loopback_listen_address_still_starts: skipping — proxy start failed: {reported}");
             return;
         }
     };
