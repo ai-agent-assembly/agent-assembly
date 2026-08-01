@@ -874,7 +874,15 @@ fn scan_digit_sequences(text: &str, findings: &mut Vec<CredentialFinding>) {
     }
 }
 
-/// Computes the Shannon entropy of `s` in bits per character.
+/// Computes the Shannon entropy of `s` in bits per **byte**.
+///
+/// Callers must pass an ASCII-only slice. Bytes and characters coincide only
+/// for ASCII, and every threshold this result is compared against
+/// ([`ENTROPY_BITS_GATE`]) is specified per character. Feeding it multi-byte
+/// UTF-8 measures the encoding rather than the text: Han characters spread
+/// their bytes widely and land at 4.6-4.9 bits, above a gate calibrated on
+/// English prose, which is how ordinary Chinese was reported as leaked secrets
+/// (AAASM-5344). Every call site therefore narrows to an ASCII run first.
 fn shannon_entropy(s: &str) -> f64 {
     if s.is_empty() {
         return 0.0;
@@ -893,10 +901,13 @@ fn shannon_entropy(s: &str) -> f64 {
         .sum()
 }
 
-/// Shannon-entropy gate, in bits per character.
+/// Shannon-entropy gate, in bits per character, over **ASCII** text.
 ///
 /// Base64/base85 encodings of random bytes sit around 5-6 bits/char, while
 /// English prose and `snake_case` / `kebab-case` identifiers stay below this.
+/// The corpus behind that calibration is ASCII, and the gate is only meaningful
+/// against ASCII — see [`shannon_entropy`] for why non-ASCII input measures the
+/// UTF-8 encoding instead of the text (AAASM-5344).
 /// Note hex tops out at `log2(16) = 4.0` bits/char, so hex-encoded secrets never
 /// trip this gate — they are caught by the dedicated hex rule (see
 /// [`HEX_RUN_MIN_LEN`]).
