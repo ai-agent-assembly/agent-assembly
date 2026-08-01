@@ -85,6 +85,10 @@ MARKED_FILES=(
 # ---- Files to delete outright (they consume held-back deps) ----
 DELETED_FILES=(
     "${REPO_ROOT}/aa-cli/src/commands/run.rs"
+    # AAASM-5323: `aasm run`'s gateway registration. Consumes `aa-sdk-client`
+    # (publish = false), stripped from aa-cli/Cargo.toml by the `sdkclient`
+    # region, so the module that imports it has to go with the dep.
+    "${REPO_ROOT}/aa-cli/src/commands/run_registration.rs"
     "${REPO_ROOT}/aa-cli/src/commands/tools.rs"
     "${REPO_ROOT}/aa-cli/tests/run_command.rs"
     "${REPO_ROOT}/aa-integration-tests/tests/cli_run.rs"

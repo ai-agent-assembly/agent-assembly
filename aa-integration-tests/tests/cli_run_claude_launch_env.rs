@@ -50,14 +50,14 @@
 //! # The proxy endpoint is the one this host verified, not the one it was told
 //!
 //! Since AAASM-5323 a launch is refused unless `aasm run` can vouch for a local
-//! proxy, so these tests stand up a real one ([`TrustedProxy`]). The mock gateway
-//! still answers with a `proxy_addr`, and it is a **different** address than the
-//! running proxy's — so the assertion below is not merely "the child got a proxy"
-//! but "the child got the verified one and not the one the gateway named".
+//! proxy, so these tests stand up a real one ([`TrustedProxy`]) and assert the
+//! child was routed at *that* endpoint. Nothing on the registration path names a
+//! proxy any more, so there is no competing address left to confuse it with.
 //!
-//! `aasm run` registers with `POST /api/v1/agents`, which no shipped gateway
-//! serves yet. The gateway here is a mock that answers it, so this file measures
-//! the launch environment and nothing about that separate defect.
+//! The gateway is the real `AgentLifecycleService`: a launch that cannot
+//! register does not happen at all, so these tests would measure nothing without
+//! one. Registration itself is not this file's subject — see
+//! `aa-cli/tests/run_registration_gateway.rs`.
 
 // `RealHomeGuard` is reused rather than reimplemented: it fingerprints the live
 // settings file on length+mtime and never reads its contents.
@@ -67,31 +67,25 @@ mod spike_support;
 #[allow(unused_imports)]
 mod proxy_trust_support;
 
+#[allow(unused_imports)]
+mod grpc_gateway_support;
+
 #[cfg(unix)]
 mod launch_env {
+    use super::grpc_gateway_support::{expected_did, expected_registration_id, GrpcGateway};
     use super::proxy_trust_support::{aasm_binary, TrustedProxy};
     use super::spike_support::RealHomeGuard;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
 
     use aa_devtool_claude_code::launch_env::LaunchEnvStore;
     use aa_devtool_claude_code::scope::ClaudeCodePaths;
     use aa_devtool_contract::SettingsScope;
-    use axum::extract::{Path as AxumPath, State};
-    use axum::http::StatusCode;
-    use axum::routing::{delete, post};
-    use axum::{Json, Router};
 
-    /// The address the mock gateway assigns. Nothing listens on it, and nothing
-    /// is supposed to: it is the decoy that makes the proxy assertion meaningful
-    /// — the child must be routed at the endpoint this host verified, never at
-    /// the one a registration response named (AAASM-5323).
-    const PROXY_ADDR: &str = "127.0.0.1:19771";
+    /// Identity the operator names on the command line. The values the session
+    /// ends up with are *derived* from these the way the CLI derives them
+    /// (AAASM-5323), not picked.
     const AGENT_ID: &str = "aaasm5327-agent";
-    const REGISTRATION_ID: &str = "aaasm5327-registration";
-    const TRACE_ID: &str = "aaasm5327-trace";
-    const SESSION_ID: &str = "aaasm5327-session";
     const TEAM_ID: &str = "aaasm5327-team";
 
     /// Written into the launch-env store the adapter reads. A path shape, since
@@ -108,8 +102,9 @@ mod launch_env {
 
     /// Names the stub reports. Everything the merge has to get right, plus the
     /// two probes that keep the fixture honest.
-    const REPORTED: [&str; 8] = [
+    const REPORTED: [&str; 9] = [
         "AA_AGENT_ID",
+        "AA_AGENT_DID",
         "AA_TRACE_ID",
         "AA_SESSION_ID",
         "AA_REGISTRATION_ID",
@@ -118,48 +113,6 @@ mod launch_env {
         "HTTPS_PROXY",
         "HTTP_PROXY",
     ];
-
-    type Shared = Arc<Mutex<Vec<String>>>;
-
-    async fn register(
-        State(_): State<Shared>,
-        Json(_): Json<serde_json::Value>,
-    ) -> (StatusCode, Json<serde_json::Value>) {
-        (
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "agent_id": AGENT_ID,
-                "registration_id": REGISTRATION_ID,
-                "trace_id": TRACE_ID,
-                "session_id": SESSION_ID,
-                "team_id": TEAM_ID,
-                "proxy_addr": PROXY_ADDR,
-            })),
-        )
-    }
-
-    async fn deregister(State(rec): State<Shared>, AxumPath(id): AxumPath<String>) -> StatusCode {
-        rec.lock().expect("recorder poisoned").push(id);
-        StatusCode::NO_CONTENT
-    }
-
-    /// Start a gateway that answers registration, returning its base URL.
-    ///
-    /// A mock rather than the real API on purpose: `POST /api/v1/agents` is not
-    /// served yet (AAASM-5323), and this file is not measuring that.
-    async fn start_mock_gateway() -> anyhow::Result<(String, tokio::task::JoinHandle<()>)> {
-        let recorder: Shared = Arc::new(Mutex::new(Vec::new()));
-        let app = Router::new()
-            .route("/api/v1/agents", post(register))
-            .route("/api/v1/agents/{id}", delete(deregister))
-            .with_state(recorder);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let base = format!("http://{}", listener.local_addr()?);
-        let handle = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
-        Ok((base, handle))
-    }
 
     /// A `claude` stand-in that answers `--version` with a supported version and,
     /// when launched, writes the variables it can see to `$AASM5327_ENV_DUMP`.
@@ -245,9 +198,9 @@ exit 0
             Ok(LaunchEnvStore::at(paths.launch_env_dir(SettingsScope::User)?))
         }
 
-        /// Run `aasm run claude` against `api_url`, routed through `proxy`, and
+        /// Run `aasm run claude` against `gateway`, routed through `proxy`, and
         /// return the child stub's self-reported environment.
-        fn run(&self, api_url: &str, proxy: &TrustedProxy) -> anyhow::Result<BTreeMap<String, String>> {
+        fn run(&self, gateway: &GrpcGateway, proxy: &TrustedProxy) -> anyhow::Result<BTreeMap<String, String>> {
             let out = std::process::Command::new(aasm_binary())
                 .current_dir(&self.project)
                 // Where the verified proxy's state record lives. Without it the
@@ -267,7 +220,11 @@ exit 0
                 // Whatever the developer running this happens to have set must
                 // not stand in for what the adapter is supposed to inject.
                 .env_remove("NODE_EXTRA_CA_CERTS")
-                .args(["--api-url", api_url, "run", "claude"])
+                // Registration is a gRPC call; the session must be accepted
+                // before anything is launched, so a run that measured nothing
+                // here would be a run that never got past the gate.
+                .env("AA_GATEWAY_ENDPOINT", gateway.endpoint())
+                .args(["run", "claude", "--agent-id", AGENT_ID, "--team-id", TEAM_ID])
                 .output()
                 .expect("aasm run claude should execute");
 
@@ -300,14 +257,14 @@ exit 0
     #[tokio::test(flavor = "multi_thread")]
     async fn the_adapters_launch_environment_reaches_the_launched_process() -> anyhow::Result<()> {
         let real_home = RealHomeGuard::capture();
-        let (api_url, server) = start_mock_gateway().await?;
+        let gateway = GrpcGateway::start().await?;
 
         let proxy = TrustedProxy::start()?;
         let host = GovernedHost::create()?;
         host.user_launch_env_store()?
             .set("NODE_EXTRA_CA_CERTS", CA_PATH_VALUE)?;
 
-        let seen = host.run(&api_url, &proxy)?;
+        let seen = host.run(&gateway, &proxy)?;
 
         // ── the variable the whole product depends on ──────────────────────
         //
@@ -324,20 +281,19 @@ exit 0
 
         // ── the child is routed at the endpoint this host verified ────────
         //
-        // Not at `PROXY_ADDR`, which the gateway named in its response: a
-        // registration response is remote and unauthenticated, so letting it
-        // choose where a governed session's traffic goes is the bypass
-        // AAASM-5323 closes. The value must also be a URL, not a bare authority
-        // — no HTTP client routes through the latter (AAASM-5324).
+        // Nothing on the registration path names a proxy: a gateway response is
+        // remote and unauthenticated, so letting it choose where a governed
+        // session's traffic goes is the bypass AAASM-5323 closes. The value must
+        // also be a URL, not a bare authority — no HTTP client routes through
+        // the latter (AAASM-5324).
         let expected_proxy = proxy.expected_proxy_url();
         for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
             assert_eq!(
                 seen.get(key).map(String::as_str),
                 Some(expected_proxy.as_str()),
-                "`{key}` must carry the verified local endpoint. `http://{PROXY_ADDR}` here means \
-                 the gateway's response chose the route; `{PROXY_ADDR}` means a bare authority \
-                 reached the child; `__UNSET__` means the launch was not proxied at all. \
-                 Saw:\n{}",
+                "`{key}` must carry the verified local endpoint as a URL. A bare `host:port` \
+                 means an unusable authority reached the child; `__UNSET__` means the launch was \
+                 not proxied at all. Saw:\n{}",
                 render(&seen),
             );
         }
@@ -345,24 +301,31 @@ exit 0
         // ── and the session identity is still there ────────────────────────
         //
         // The merge adds a source; it must not cost the one that already worked.
+        let did = expected_did(AGENT_ID);
         for (key, expected) in [
-            ("AA_AGENT_ID", AGENT_ID),
-            ("AA_TRACE_ID", TRACE_ID),
-            ("AA_SESSION_ID", SESSION_ID),
-            ("AA_REGISTRATION_ID", REGISTRATION_ID),
-            ("AA_TEAM_ID", TEAM_ID),
+            ("AA_AGENT_ID", AGENT_ID.to_string()),
+            ("AA_AGENT_DID", did.clone()),
+            ("AA_REGISTRATION_ID", expected_registration_id(Some(TEAM_ID), &did)),
+            ("AA_TEAM_ID", TEAM_ID.to_string()),
         ] {
             assert_eq!(
                 seen.get(key).map(String::as_str),
-                Some(expected),
-                "the launched tool must still carry the identity the gateway issued in `{key}`; \
-                 saw:\n{}",
+                Some(expected.as_str()),
+                "the launched tool must still carry the registered identity in `{key}`; saw:\n{}",
+                render(&seen),
+            );
+        }
+        for key in ["AA_TRACE_ID", "AA_SESSION_ID"] {
+            let value = seen.get(key).map(String::as_str).unwrap_or(UNSET);
+            assert!(
+                value != UNSET && !value.is_empty(),
+                "`{key}` is minted locally rather than issued, so there is no constant to pin — \
+                 but it must reach the child, or the launch cannot be correlated. Saw:\n{}",
                 render(&seen),
             );
         }
 
         real_home.assert_unchanged("cli_run_claude_launch_env");
-        server.abort();
         Ok(())
     }
 
@@ -372,12 +335,12 @@ exit 0
     #[tokio::test(flavor = "multi_thread")]
     async fn fixture_can_tell_an_absent_variable_from_an_empty_one() -> anyhow::Result<()> {
         let real_home = RealHomeGuard::capture();
-        let (api_url, server) = start_mock_gateway().await?;
+        let gateway = GrpcGateway::start().await?;
 
         // No launch-env store is written, so nothing injects the CA variable.
         let proxy = TrustedProxy::start()?;
         let host = GovernedHost::create()?;
-        let seen = host.run(&api_url, &proxy)?;
+        let seen = host.run(&gateway, &proxy)?;
 
         assert_eq!(
             seen.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
@@ -395,7 +358,6 @@ exit 0
         );
 
         real_home.assert_unchanged("cli_run_claude_launch_env");
-        server.abort();
         Ok(())
     }
 }
