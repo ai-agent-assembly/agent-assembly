@@ -87,23 +87,26 @@ def _legacy_redact(text: str, findings: list[dict]) -> str:
 
 
 def _mutated_redact(text: str, findings: list[dict]) -> str:
-    """The current `_redact` with a one-character sabotage: `offset` → `offset + 1`.
+    """`_redact` itself, sabotaged by shifting every `offset` one byte right.
 
     Used only by --self-check, to prove the sweep below can tell two nearly
     identical implementations apart.
+
+    The sabotage is injected into the *input* rather than applied to a copied
+    body on purpose. The previous version of this function was a hand-copy of
+    `_redact` that had already drifted: it omitted `_redact`'s
+    `_is_utf8_boundary` fail-closed check and decoded with `errors="replace"`
+    instead of strict. Both were inert while the sweep was ASCII-only, but they
+    meant `--self-check` was not exercising the real function's char-boundary
+    branch at all — it was exercising a stale copy that no longer had one. Any
+    such copy drifts again the moment `_redact` changes; calling the real
+    function cannot.
     """
-    buf = text.encode("utf-8")
-    spans = _coalesce_findings(findings)
-    if spans is None:
-        return "[REDACTED]"
-    for offset, end, _kind in spans:
-        if offset < 0 or end > len(buf) or offset > end:
-            return "[REDACTED]"
-    result = buf
-    for offset, end, kind in reversed(spans):
-        placeholder = f"[REDACTED:{kind}]".encode("utf-8")
-        result = result[: offset + 1] + placeholder + result[end:]  # ← the sabotage
-    return result.decode("utf-8", errors="replace")
+    shifted = [
+        {**f, "offset": f["offset"] + 1} if f.get("offset") is not None else dict(f)
+        for f in findings
+    ]
+    return _redact(text, shifted)
 
 
 def _spans_are_valid(text: str, findings: list[dict]) -> bool:
