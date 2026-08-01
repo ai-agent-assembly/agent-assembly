@@ -13,12 +13,12 @@ use aa_core::SessionId;
 use aa_gateway::registry::{AgentStatus, OrphanMode};
 
 use crate::auth::scope::{RequireRead, RequireWrite, Scope};
-use chrono::{DateTime, Utc};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::models::verdict::RuntimeVerdict;
 use crate::pagination::PaginationParams;
 use crate::state::AppState;
+use chrono::{DateTime, Utc};
 
 /// Enforce tenant ownership of an agent for a caller that already cleared the
 /// scope gate (AAASM-3726 / AAASM-3687).
@@ -830,9 +830,8 @@ pub async fn set_enforcement_mode(
             // caller is refused here (not by the extractor) so the strengthen
             // path stays open to Write while weakening stays Admin-only.
             if !caller.scopes.contains(&Scope::Admin) {
-                return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN).with_detail(
-                    "Weakening enforcement to shadow (observe) mode requires admin scope",
-                ));
+                return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+                    .with_detail("Weakening enforcement to shadow (observe) mode requires admin scope"));
             }
 
             // Mandatory non-empty reason — the audit record must have a
@@ -847,9 +846,8 @@ pub async fn set_enforcement_mode(
             // shadow window with no deadline (or one past / too distant) is
             // rejected so a forgotten toggle self-heals (ADR 0021 item 3).
             let expires_at = body.expires_at.ok_or_else(|| {
-                ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY).with_detail(
-                    "An 'expires_at' deadline is required to weaken enforcement to shadow (observe) mode",
-                )
+                ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                    .with_detail("An 'expires_at' deadline is required to weaken enforcement to shadow (observe) mode")
             })?;
             let now = Utc::now();
             if expires_at <= now {
@@ -857,9 +855,8 @@ pub async fn set_enforcement_mode(
                     .with_detail("'expires_at' must be in the future"));
             }
             if expires_at > now + chrono::Duration::hours(SHADOW_MAX_HOURS) {
-                return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY).with_detail(format!(
-                    "'expires_at' must be within {SHADOW_MAX_HOURS}h of now"
-                )));
+                return Err(ProblemDetail::from_status(StatusCode::UNPROCESSABLE_ENTITY)
+                    .with_detail(format!("'expires_at' must be within {SHADOW_MAX_HOURS}h of now")));
             }
 
             (aa_core::EnforcementMode::Observe, Some(expires_at))
@@ -2538,7 +2535,10 @@ mod tests {
             write_caller("team-alpha"),
             Extension(state),
             axum::extract::Path(hex::encode([0x01u8; 16])),
-            Json(observe_body(Some("incident debug"), Some(Utc::now() + chrono::Duration::hours(1)))),
+            Json(observe_body(
+                Some("incident debug"),
+                Some(Utc::now() + chrono::Duration::hours(1)),
+            )),
         )
         .await
         .expect_err("a Write-only caller must not weaken enforcement");
