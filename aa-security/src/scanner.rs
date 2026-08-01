@@ -542,7 +542,7 @@ impl CredentialScanner {
     /// Scan `text` for credential patterns and return a [`ScanResult`].
     ///
     /// Four passes are performed:
-    /// 1. Aho-Corasick literal prefix scan — O(n), 18 patterns covering API keys,
+    /// 1. Aho-Corasick literal prefix scan — O(n), 28 patterns covering API keys,
     ///    auth tokens, cloud credentials, database URLs, and PEM private key headers.
     /// 2. Credit card and SSN digit-sequence scan.
     /// 3. Email address scan.
@@ -557,7 +557,7 @@ impl CredentialScanner {
         let mut findings = Vec::new();
 
         // Phase 1: AC literal prefix scan (API keys, auth tokens, cloud creds,
-        //          database URLs, PEM private key headers — 18 patterns + custom)
+        //          database URLs, PEM private key headers — 28 patterns + custom)
         for mat in self.patterns.find_iter(text) {
             let kind = self.kinds[mat.pattern()].clone();
             let offset = mat.start();
