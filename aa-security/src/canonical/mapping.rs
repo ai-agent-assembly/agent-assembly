@@ -286,4 +286,63 @@ mod tests {
             Some(CredentialKind::SsnPattern)
         );
     }
+
+    /// The rendered form of every category, pinned.
+    ///
+    /// ADR 0032 §2 makes the taxonomy the vocabulary policies and events are
+    /// written in, so a rename is a breaking change to both — and unlike a
+    /// `CredentialKind` rename, which the conformance vectors catch, nothing
+    /// else in the tree would notice. This table is that alarm. It is also the
+    /// most readable form of the mapping: reviewing a change to the taxonomy
+    /// means reviewing the diff of this list.
+    #[test]
+    fn every_category_renders_to_its_pinned_form() {
+        const EXPECTED: &[(&str, &str)] = &[
+            ("AnthropicKey", "API_KEY[anthropic:key]"),
+            ("AwsAccessKey", "CLOUD_ACCESS_KEY[aws:access_key_id]"),
+            (
+                "GcpServiceAccount",
+                "CLOUD_SERVICE_ACCOUNT_KEY[gcp:service_account_json]",
+            ),
+            ("OpenAiKey", "API_KEY[openai:key]"),
+            ("AzureConnectionString", "CLOUD_CONNECTION_STRING[azure:storage]"),
+            ("GitHubAppToken", "ACCESS_TOKEN[github:app_installation]"),
+            ("GitHubOAuthToken", "ACCESS_TOKEN[github:oauth]"),
+            ("GitHubPat", "ACCESS_TOKEN[github:personal_access]"),
+            ("GitHubRefreshToken", "ACCESS_TOKEN[github:refresh]"),
+            ("GitHubUserToken", "ACCESS_TOKEN[github:user_to_server]"),
+            ("SlackAppToken", "ACCESS_TOKEN[slack:app_level]"),
+            ("SlackBotToken", "ACCESS_TOKEN[slack:bot]"),
+            ("SlackOAuthToken", "ACCESS_TOKEN[slack:oauth]"),
+            ("SlackRefreshToken", "ACCESS_TOKEN[slack:refresh]"),
+            ("SlackUserToken", "ACCESS_TOKEN[slack:user]"),
+            ("MongodbUrl", "DATABASE_CONNECTION_URI[mongodb:uri]"),
+            ("MysqlUrl", "DATABASE_CONNECTION_URI[mysql:uri]"),
+            ("PostgresUrl", "DATABASE_CONNECTION_URI[postgresql:uri]"),
+            ("EcPrivateKey", "PRIVATE_KEY[pem:ec]"),
+            ("OpensshPrivateKey", "PRIVATE_KEY[pem:openssh]"),
+            ("PgpPrivateKey", "PRIVATE_KEY[pem:pgp]"),
+            ("PrivateKey", "PRIVATE_KEY[pem:pkcs8]"),
+            ("RsaPrivateKey", "PRIVATE_KEY[pem:rsa]"),
+            ("CreditCardLuhn", "PAYMENT_CARD_NUMBER"),
+            ("EmailAddress", "EMAIL_ADDRESS"),
+            ("SsnPattern", "NATIONAL_ID[en-US/ssn]"),
+            ("GenericHighEntropy", "HIGH_ENTROPY_SECRET"),
+            ("Custom", "POLICY_DEFINED_MATCH"),
+        ];
+
+        let rendered: Vec<(String, String)> = every_kind()
+            .map(|k| {
+                (
+                    k.as_str().to_string(),
+                    CanonicalCategory::from_credential_kind(&k).to_string(),
+                )
+            })
+            .collect();
+        let expected: Vec<(String, String)> = EXPECTED
+            .iter()
+            .map(|(k, c)| ((*k).to_string(), (*c).to_string()))
+            .collect();
+        assert_eq!(rendered, expected);
+    }
 }
