@@ -341,8 +341,16 @@ export function leakRateFromQuery(outcome: QueryOutcome<PostureResponse>): Certa
   return known(leak_rate)
 }
 
-/** Human-readable window label, e.g. `24h` / `7d`. Presentation only. */
+/**
+ * Human-readable window label, e.g. `24h` / `7d`. Presentation only.
+ *
+ * Sub-two-day windows read in hours even when they divide into whole days, so
+ * the API's `24h` preset renders as `24h` beside the `redactions / 24h` figure
+ * rather than as an equal-but-differently-spelled `1d`. Two labels for one
+ * window invite an operator to read them as two different windows.
+ */
 export function formatWindow(seconds: number): string {
+  if (seconds % 3_600 === 0 && seconds < 172_800) return `${seconds / 3_600}h`
   if (seconds % 86_400 === 0) return `${seconds / 86_400}d`
   if (seconds % 3_600 === 0) return `${seconds / 3_600}h`
   return `${seconds}s`

@@ -208,7 +208,10 @@ describe('scrubWindowFromQuery', () => {
 
 describe('formatWindow', () => {
   it('renders whole-day and whole-hour windows in the units the API documents', () => {
-    expect(formatWindow(86_400)).toBe('1d')
+    // 86 400s is the API's `24h` preset. `1d` would be equally true and read as
+    // a different window from the `redactions / 24h` figure beside it, so
+    // sub-two-day windows stay in hours.
+    expect(formatWindow(86_400)).toBe('24h')
     expect(formatWindow(604_800)).toBe('7d')
     expect(formatWindow(2_592_000)).toBe('30d')
     expect(formatWindow(3_600)).toBe('1h')
