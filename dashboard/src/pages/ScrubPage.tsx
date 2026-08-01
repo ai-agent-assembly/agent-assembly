@@ -18,34 +18,76 @@
  * can ship. The fourth segment, "N stripped / 24h", summed twelve fixture
  * constants and rendered `192` on an install with no traffic at all.
  *
+ * ## What was then wrong the other way (AAASM-5347)
+ *
+ * The fix left the page saying, in present tense, that "no `scrub`, `dlp`,
+ * `redact`, `pattern` or `leak` path exists in `openapi/v1.yaml`". AAASM-5174
+ * shipped three of them — `/scrub/patterns`, `/scrub/pattern-counts` and
+ * `/scrub/posture` — and nothing here was ever wired to them. A page that
+ * declines to answer what the backend can answer, and justifies the refusal with
+ * an expired premise, is the mirror image of the original defect.
+ *
  * ## What renders now
  *
- * One figure has a production source and one only: the fleet 24h redaction count
- * from `GET /api/v1/analytics/agent-enforcement` (`openapi/v1.yaml:1102`, shipped
- * under AAASM-5084) — see `features/scrub/api.ts`. It is the sole occupant of the
- * page's only `aria-live` region, so that region announces either a measured
- * number or the reason there is not one, and never an all-clear.
+ * Sourced (see `features/scrub/api.ts`):
  *
- * Everything else the strip wants to say — leak posture, egress coverage, the
- * governing policy, whether scrubbing is on at runtime — has no route in
- * `aa-api` at all (no `scrub`, `dlp`, `redact`, `pattern` or `leak` path exists
- * in `openapi/v1.yaml`) and renders as an explicit absence carrying its reason.
- * That backend gap is AAASM-5174; the detector catalogue's own defects are
- * AAASM-5156.
+ *  - the **detector catalogue**, from `GET /api/v1/scrub/patterns` — including
+ *    each kind's severity and the exact `[REDACTED:<kind>]` label it emits;
+ *  - **per-kind alert counts**, from `GET /api/v1/scrub/pattern-counts`;
+ *  - **leaks intercepted** over a window, from `GET /api/v1/scrub/posture`;
+ *  - the fleet 24h **redaction count**, from
+ *    `GET /api/v1/analytics/agent-enforcement` (AAASM-5084).
+ *
+ * Still absent, and still saying so: whether any secret *escaped* unredacted (an
+ * interception count is the opposite measurement), the leak *rate* (the server
+ * reports `rate_computed: false` — no denominator is persisted), egress
+ * coverage, the governing policy document, and whether the scanner is switched
+ * on at runtime. See `features/scrub/posture.ts` for each reason.
+ *
+ * ## Two rules this page must not break
+ *
+ *  - **Alerts are not findings.** `pattern-counts` tallies one alert per
+ *    intercepted action under that alert's *first* detected kind, so the column
+ *    is labelled "alerts" and the rule is stated inline. See `PatternsLibrary`.
+ *  - **`aria-live` announces measurements only.** Exactly one region is live and
+ *    it contains only fetched figures, so assistive tech hears either a measured
+ *    number or the reason there is not one — never an all-clear that was not
+ *    measured. The unsourced segments sit outside it: announcing static
+ *    statements as status updates is how the fabricated all-clear reached
+ *    assistive tech in the first place.
  *
  * The page's structure, which the design QA called the most faithful port
- * audited, is unchanged: same header, same five-segment strip, same
+ * audited, is otherwise unchanged: same header, same stat strip, same
  * catalogue / detail / diff layout.
  */
 import { useContext, useMemo, useState } from 'react'
+import { ErrorState } from '../components/ErrorState'
+import { LoadingState } from '../components/LoadingState'
 import { ToastContext } from '../components/ToastContext'
-import { TruthfulValue } from '../components/truthfulness'
-import { scrubbed24hFromQuery, useScrubbed24hQuery } from '../features/scrub/api'
-import { BUILT_IN_DETECTORS, COMPILED_IN_DETECTORS } from '../features/scrub/detectors'
+import { AbsenceMarker, TruthfulValue } from '../components/truthfulness'
+import { ignorePromise } from '../lib/ignorePromise'
+import { isKnown, mapCertain } from '../lib/truthfulness'
+import {
+  alertsForKind,
+  formatWindow,
+  leakRateFromQuery,
+  patternAlertsFromQuery,
+  scrubCatalogueFromQuery,
+  scrubPostureFromQuery,
+  scrubWindowFromQuery,
+  scrubbed24hFromQuery,
+  useScrubPatternCountsQuery,
+  useScrubPatternsQuery,
+  useScrubPostureQuery,
+  useScrubbed24hQuery,
+  type ScrubRange,
+} from '../features/scrub/api'
+import { toCatalogue } from '../features/scrub/catalogue'
 import { SAMPLE_PAYLOAD } from '../features/scrub/fixtures'
 import { PatternsLibrary } from '../features/scrub/PatternsLibrary'
 import { PatternDetail } from '../features/scrub/PatternDetail'
 import { PayloadDiff } from '../features/scrub/PayloadDiff'
+import { BUILT_IN_DETECTORS } from '../features/scrub/detectors'
 import {
   LEAK_POSTURE,
   SCRUBBING_RUNTIME_STATE,
@@ -55,25 +97,79 @@ import {
 import { countMatchesByDetector, tokenize } from '../features/scrub/tokenize'
 import './ScrubPage.css'
 
-/** First row of the catalogue, so the detail panel always has a subject. */
-const DEFAULT_DETECTOR_ID = BUILT_IN_DETECTORS[0].id
+/**
+ * The per-kind alert window.
+ *
+ * `24h` keeps the column comparable with the fleet redaction figure beside it,
+ * which `agent-enforcement` only serves for 24h.
+ */
+const ALERT_RANGE: ScrubRange = '24h'
+
+/** The posture window, matching the 30 days the design mock's strip showed. */
+const POSTURE_RANGE: ScrubRange = '30d'
 
 export function ScrubPage() {
-  const [selectedId, setSelectedId] = useState<string>(DEFAULT_DETECTOR_ID)
+  const [selectedKind, setSelectedKind] = useState<string | null>(null)
   const [payload, setPayload] = useState<string>(SAMPLE_PAYLOAD)
   const [detailCollapsed, setDetailCollapsed] = useState<boolean>(false)
 
+  // The in-page preview is a local fact about local input, so it runs off the
+  // transcribed detector table rather than the served catalogue: it stays usable
+  // while the API is unreachable, and it must not imply the gateway scanned the
+  // operator's scratch payload.
   const tokens = useMemo(() => tokenize(payload), [payload])
   const matchCounts = useMemo(() => countMatchesByDetector(tokens), [tokens])
 
+  const patternsQuery = useScrubPatternsQuery()
+  const countsQuery = useScrubPatternCountsQuery(ALERT_RANGE)
+  const postureQuery = useScrubPostureQuery(POSTURE_RANGE)
   const scrubbedQuery = useScrubbed24hQuery()
-  const scrubbed24h = scrubbed24hFromQuery(scrubbedQuery)
 
-  const selected = BUILT_IN_DETECTORS.find((d) => d.id === selectedId) ?? BUILT_IN_DETECTORS[0]
+  const catalogue = scrubCatalogueFromQuery(patternsQuery)
+  const alerts = patternAlertsFromQuery(countsQuery)
+  const alertWindow = mapCertain(scrubWindowFromQuery(countsQuery), formatWindow)
+  const posture = scrubPostureFromQuery(postureQuery)
+  const postureWindow = mapCertain(scrubWindowFromQuery(postureQuery), formatWindow)
+  const leakRate = leakRateFromQuery(postureQuery)
+  const scrubbed24h = scrubbed24hFromQuery(scrubbedQuery)
 
   // Nullable so the page still renders (and these controls no-op) outside a
   // ToastProvider — e.g. in isolated component tests.
   const toast = useContext(ToastContext)?.toast
+
+  if (patternsQuery.isPending) {
+    return (
+      <main className="scrub-page" data-testid="scrub-page">
+        <LoadingState page="scrub" />
+      </main>
+    )
+  }
+
+  if (!isKnown(catalogue)) {
+    // A failed request gets the retry affordance; a 200 that carried no
+    // detectors gets the absence marker and its reason, because "we could not
+    // fetch the catalogue" and "the catalogue we fetched was impossible" are
+    // different problems and only one of them is worth retrying.
+    return (
+      <main className="scrub-page" data-testid="scrub-page">
+        {catalogue.state === 'unavailable' ? (
+          <ErrorState kind="generic" onRetry={() => ignorePromise(patternsQuery.refetch())} />
+        ) : (
+          <div className="scrub-catalogue-absent" data-testid="scrub-catalogue-absent">
+            <AbsenceMarker
+              state={catalogue.state}
+              detail={catalogue.detail}
+              showLabel
+              testId="scrub-catalogue-absent-marker"
+            />
+          </div>
+        )}
+      </main>
+    )
+  }
+
+  const entries = toCatalogue(catalogue.value)
+  const selected = entries.find((e) => e.kind === selectedKind) ?? entries[0]
 
   return (
     <main className="scrub-page" data-testid="scrub-page">
@@ -85,9 +181,8 @@ export function ScrubPage() {
           </h1>
           <p className="scrub-page-sub" data-testid="scrub-page-sub">
             Patterns redact secrets and PII from agent traffic <em>before</em> it
-            reaches external endpoints. {COMPILED_IN_DETECTORS.length} detectors
-            ship with the gateway scanner; the API reports neither which of them
-            are running nor how often each fires.
+            reaches external endpoints. The gateway reports {entries.length}{' '}
+            built-in detectors; it does not report which of them are running.
           </p>
         </div>
         <div className="scrub-head-actions">
@@ -109,37 +204,61 @@ export function ScrubPage() {
             className="scrub-head-btn"
             data-testid="scrub-export-config"
             disabled
-            title="No endpoint serves the effective scrubber configuration, so there is nothing to export (AAASM-5174)."
+            title="/scrub/patterns serves the built-in catalogue, not the effective scrubber configuration, so there is nothing complete to export."
           >
             ⏏ export config
           </button>
         </div>
       </header>
 
-      {/*
-        Deliberately NOT a live region. Four of these five segments are static
-        statements about what the API cannot answer; announcing them as status
-        updates is how the fabricated all-clear reached assistive tech in the
-        first place. Only the fetched figure below is live.
-      */}
       <div className="scrub-stats" aria-label="scrubbing posture">
-        <span className="scrub-stats-item" data-testid="scrub-stats-posture">
-          leak posture (30d):{' '}
-          <TruthfulValue value={LEAK_POSTURE} showLabel testId="scrub-stats-posture-value" />
-        </span>
-        <span className="scrub-stats-divider" />
+        {/*
+          The page's only live region, and it holds only fetched figures. The
+          segments after it are statements about what the API cannot answer;
+          announcing those as status updates is how the fabricated all-clear
+          reached assistive tech under AAASM-5112.
+        */}
         <span
-          className="scrub-stats-scrubbed"
-          data-testid="scrub-stats-stripped"
+          className="scrub-stats-measured"
+          data-testid="scrub-stats-measured"
           role="status"
           aria-live="polite"
         >
-          redactions / 24h:{' '}
-          <TruthfulValue value={scrubbed24h} showLabel testId="scrub-stats-stripped-value" />
+          <span data-testid="scrub-stats-intercepted">
+            leaks intercepted (
+            <TruthfulValue value={postureWindow} testId="scrub-stats-posture-window" />
+            ):{' '}
+            <TruthfulValue
+              value={mapCertain(posture, (p) => p.leaksIntercepted)}
+              showLabel
+              testId="scrub-stats-intercepted-value"
+            />{' '}
+            across{' '}
+            <TruthfulValue
+              value={mapCertain(posture, (p) => p.distinctKinds)}
+              testId="scrub-stats-kinds-value"
+            />{' '}
+            kinds
+          </span>
+          <span className="scrub-stats-divider" />
+          <span className="scrub-stats-scrubbed" data-testid="scrub-stats-stripped">
+            redactions / 24h:{' '}
+            <TruthfulValue value={scrubbed24h} showLabel testId="scrub-stats-stripped-value" />
+          </span>
+        </span>
+        <span className="scrub-stats-divider" />
+        <span data-testid="scrub-stats-posture">
+          escaped-leak posture:{' '}
+          <TruthfulValue value={LEAK_POSTURE} showLabel testId="scrub-stats-posture-value" />
+        </span>
+        <span className="scrub-stats-divider" />
+        <span data-testid="scrub-stats-rate">
+          leak rate:{' '}
+          <TruthfulValue value={leakRate} showLabel testId="scrub-stats-rate-value" />
         </span>
         <span className="scrub-stats-divider" />
         <span data-testid="scrub-stats-detectors">
-          {COMPILED_IN_DETECTORS.length} detectors shipped · running:{' '}
+          {entries.length} detectors served · running:{' '}
           <TruthfulValue
             value={SCRUBBING_RUNTIME_STATE}
             showLabel
@@ -159,15 +278,19 @@ export function ScrubPage() {
 
       <div className="scrub-body">
         <PatternsLibrary
-          detectors={BUILT_IN_DETECTORS}
-          selectedId={selected.id}
-          onSelect={setSelectedId}
+          entries={entries}
+          alerts={alerts}
+          alertWindow={alertWindow}
+          selectedKind={selected.kind}
+          onSelect={setSelectedKind}
           matchCounts={matchCounts}
         />
 
         <div className="scrub-right">
           <PatternDetail
-            detector={selected}
+            entry={selected}
+            alerts={alertsForKind(alerts, selected.kind)}
+            alertWindow={alertWindow}
             collapsed={detailCollapsed}
             onToggleCollapsed={() => setDetailCollapsed((c) => !c)}
             onEditPatterns={() =>
