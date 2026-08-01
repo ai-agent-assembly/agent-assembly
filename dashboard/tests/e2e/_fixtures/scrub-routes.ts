@@ -21,11 +21,16 @@
  * are transcribed from `CredentialKind::{ALL, category, severity, as_str}` in
  * `aa-security/src/scanner.rs`; the response envelopes are
  * `ScrubCatalogueResponse` / `PatternCountsResponse` / `PostureResponse` in
- * `openapi/v1.yaml`. The catalogue is a **subset** — one kind per category, in
- * `CredentialKind::ALL` declaration order — because these specs assert the shape
- * of the surface, not the size of the scanner. It deliberately contains none of
- * the four phantom detectors AAASM-5156 removed, so a spec asserting their
- * absence still discriminates: the fixture cannot be the thing that supplies them.
+ * `openapi/v1.yaml`. The catalogue is the **whole** of `CredentialKind::ALL`, in
+ * its declaration order, rather than a convenient subset: `scrub-design-fidelity`
+ * commits its screenshots to `docs/verification/`, and evidence rendered from a
+ * seven-row stand-in would understate the surface it is evidence of. `Custom` is
+ * absent because it is policy-defined and `ALL` omits it, which is exactly why
+ * the page drops it.
+ *
+ * It contains none of the four phantom detectors AAASM-5156 removed, so a spec
+ * asserting their absence still discriminates: the fixture cannot be the thing
+ * that supplies them.
  *
  * `leak_rate` stays `null` with `rate_computed: false` because that is the only
  * thing the handler can honestly say — the alert store persists detections but
@@ -56,15 +61,50 @@ function pattern(kind: string, category: string, severity: string): ScrubPattern
   }
 }
 
-/** One kind per `CredentialKind::category()` family, in declaration order. */
+// Named so a mistyped family or grade is a compile error rather than a row that
+// silently styles itself as something else.
+const API_KEY = 'api_key'
+const CLOUD = 'cloud_credential'
+const AUTH_TOKEN = 'auth_token'
+const DB_URL = 'database_url'
+const PRIVATE_KEY = 'private_key'
+const PII = 'pii'
+const GENERIC = 'generic'
+
+const CRITICAL = 'critical'
+const HIGH = 'high'
+const MEDIUM = 'medium'
+const LOW = 'low'
+
+/** `CredentialKind::ALL`, in declaration order. Diff this against `scanner.rs`. */
 export const SCRUB_PATTERNS: readonly ScrubPatternFixture[] = [
-  pattern('AnthropicKey', 'api_key', 'critical'),
-  pattern('AwsAccessKey', 'cloud_credential', 'critical'),
-  pattern('SlackBotToken', 'auth_token', 'critical'),
-  pattern('PostgresUrl', 'database_url', 'high'),
-  pattern('RsaPrivateKey', 'private_key', 'critical'),
-  pattern('EmailAddress', 'pii', 'medium'),
-  pattern('GenericHighEntropy', 'generic', 'low'),
+  pattern('AnthropicKey', API_KEY, CRITICAL),
+  pattern('AwsAccessKey', CLOUD, CRITICAL),
+  pattern('GcpServiceAccount', CLOUD, CRITICAL),
+  pattern('OpenAiKey', API_KEY, CRITICAL),
+  pattern('AzureConnectionString', CLOUD, CRITICAL),
+  pattern('GitHubAppToken', AUTH_TOKEN, CRITICAL),
+  pattern('GitHubOAuthToken', AUTH_TOKEN, CRITICAL),
+  pattern('GitHubPat', AUTH_TOKEN, CRITICAL),
+  pattern('GitHubRefreshToken', AUTH_TOKEN, CRITICAL),
+  pattern('GitHubUserToken', AUTH_TOKEN, CRITICAL),
+  pattern('SlackAppToken', AUTH_TOKEN, CRITICAL),
+  pattern('SlackBotToken', AUTH_TOKEN, CRITICAL),
+  pattern('SlackOAuthToken', AUTH_TOKEN, CRITICAL),
+  pattern('SlackRefreshToken', AUTH_TOKEN, CRITICAL),
+  pattern('SlackUserToken', AUTH_TOKEN, CRITICAL),
+  pattern('MongodbUrl', DB_URL, HIGH),
+  pattern('MysqlUrl', DB_URL, HIGH),
+  pattern('PostgresUrl', DB_URL, HIGH),
+  pattern('EcPrivateKey', PRIVATE_KEY, CRITICAL),
+  pattern('OpensshPrivateKey', PRIVATE_KEY, CRITICAL),
+  pattern('PgpPrivateKey', PRIVATE_KEY, CRITICAL),
+  pattern('PrivateKey', PRIVATE_KEY, CRITICAL),
+  pattern('RsaPrivateKey', PRIVATE_KEY, CRITICAL),
+  pattern('CreditCardLuhn', PII, CRITICAL),
+  pattern('EmailAddress', PII, MEDIUM),
+  pattern('SsnPattern', PII, CRITICAL),
+  pattern('GenericHighEntropy', GENERIC, LOW),
 ]
 
 export const SCRUB_CATALOGUE_RESPONSE = {
@@ -73,19 +113,31 @@ export const SCRUB_CATALOGUE_RESPONSE = {
 }
 
 /**
+ * The fixture's `AwsAccessKey` alert count.
+ *
+ * Exported so a spec can assert the rendered cell against it by name. The value
+ * appears in no detector table, no design mock and no other fixture in this
+ * repository, so a cell showing it can only have come from this response — which
+ * is the property the assertion is really making.
+ */
+export const AWS_KEY_ALERTS = 7
+
+/** A kind that fired less often, to show the column is not one repeated number. */
+export const SLACK_BOT_ALERTS = 2
+
+/**
  * A populated 24h alert tally.
  *
  * Only kinds that fired appear — that is the handler's contract, and it is what
  * makes a `0` in the catalogue's alerts column a measurement rather than a
- * default. `AwsAccessKey` carries a value no local table anywhere in the
- * dashboard holds, so a cell rendering it can only have come from this response.
+ * default.
  */
 export const SCRUB_PATTERN_COUNTS = {
   counts: [
-    { kind: 'AwsAccessKey', hits: 7 },
-    { kind: 'SlackBotToken', hits: 2 },
+    { kind: 'AwsAccessKey', hits: AWS_KEY_ALERTS },
+    { kind: 'SlackBotToken', hits: SLACK_BOT_ALERTS },
   ],
-  total_hits: 9,
+  total_hits: AWS_KEY_ALERTS + SLACK_BOT_ALERTS,
   window_seconds: 86_400,
 }
 
