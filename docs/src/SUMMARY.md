@@ -93,6 +93,11 @@
 
 - [Policy YAML Reference](policy-reference.md)
 - [L0-L3 Capability Matrix](governance/capability-matrix.md)
+- [Governance Limits by Tool](devtools/governance-limits.md)
+  - [Claude Code (legacy)](devtools/governance-limits/claude-code.md)
+  - [Codex CLI (legacy)](devtools/governance-limits/codex.md)
+  - [GitHub Copilot (legacy)](devtools/governance-limits/copilot.md)
+  - [Windsurf Cascade (legacy)](devtools/governance-limits/windsurf.md)
 - [Policy RBAC Role Matrix](policy-rbac.md)
 
 # Developer Integrations
