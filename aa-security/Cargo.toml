@@ -22,5 +22,11 @@ criterion = { workspace = true, features = ["html_reports"] }
 name = "scanner_bench"
 harness = false
 
+# AAASM-5269 research benchmark. Not a gate and not asserted on — it exists so the
+# per-payload-class fast-path numbers quoted in the Spike report are reproducible.
+[[bench]]
+name = "spike_5269_payload_classes"
+harness = false
+
 [lints]
 workspace = true
