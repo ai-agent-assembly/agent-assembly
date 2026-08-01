@@ -27,10 +27,12 @@
 //! * `NODE_TLS_REJECT_UNAUTHORIZED` is never set. A TLS failure is a finding.
 
 pub mod harness;
+pub mod outcome;
 pub mod probe;
 pub mod proxy;
 
 pub use harness::{walk, ConformanceHarness, HarnessOptions, MEASURED_TOOL_VERSION};
+pub use outcome::Measurement;
 pub use probe::AdjudicatingProbe;
 pub use proxy::RestartableProxy;
 
