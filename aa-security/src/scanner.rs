@@ -833,10 +833,17 @@ fn luhn_valid(digits: &str) -> bool {
 /// Maximum number of characters consumed into one digit segment.
 ///
 /// Bounds the per-segment work just above the longest value either detector
-/// recognises (a 19-digit card number, or an 11-character SSN including its two
-/// separators). The budget counts **characters, not bytes**, so it does not
-/// shrink on multi-byte input — a byte budget would truncate a segment written
-/// in multi-byte digits partway through the number and lose the match.
+/// recognises. The binding case is **not** the bare 19-digit card number: it is
+/// a 19-digit card written in separator-delimited groups of four, which is 19
+/// digits plus 4 separators — 23 characters. An 11-character SSN is well under
+/// that. Do not "tidy" this down to 20: doing so truncates a grouped card
+/// mid-number, and, worse, a budget that lands on a Luhn-valid prefix of a
+/// longer digit run reports a card that is not there (see
+/// `digit_run_longer_than_the_segment_budget_stays_clean_in_both_widths`).
+///
+/// The budget counts **characters, not bytes**, so it does not shrink on
+/// multi-byte input — a byte budget would truncate a segment written in
+/// multi-byte digits partway through the number and lose the match.
 const DIGIT_SEGMENT_MAX_CHARS: usize = 24;
 
 /// The ASCII digit equivalent of `c` — `c` itself for `'0'..='9'`, and the
