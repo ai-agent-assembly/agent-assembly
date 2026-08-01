@@ -66,7 +66,26 @@
 //!   a new base and never a new `CredentialKind` variant.
 //! - A new base is warranted only for an entity none of the existing bases
 //!   describes.
+//!
+//! # What a canonical finding may not carry
+//!
+//! [`CanonicalFinding`] has no owned-`String` field at all: category and
+//! provenance are built from `&'static str`, and everything else is an enum or
+//! a byte offset. A raw matched value is therefore not merely discouraged, it is
+//! unrepresentable — the same guarantee
+//! [`CredentialFinding`](crate::scanner::CredentialFinding) gives by storing the
+//! redaction label instead of the match (ADR 0032 §9, validation requirement 9).
+//!
+//! That property has a second consequence, and it is deliberate: because a
+//! canonical finding can only be assembled from compile-time constants, it has
+//! no `Deserialize` impl. Findings arriving as bytes from another process cannot
+//! become canonical findings without a visible code change, which is the
+//! compile-time boundary ADR 0032 validation requirement 10 asks for.
+//! `Serialize` is provided (under the `serde` feature) because emitting findings
+//! outward is exactly what the event and metric layers need.
 
 mod category;
+mod finding;
 
 pub use category::{CanonicalCategory, CategoryBase, CategoryQualifier};
+pub use finding::{ByteSpan, CanonicalFinding, ConfidenceBand, DetectionMethod, FindingStatus, Provenance, Severity};
