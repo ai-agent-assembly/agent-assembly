@@ -399,7 +399,9 @@ fn dry_run_handle(args: &RunArgs) -> RegistrationHandle {
 /// inferred later from what the tool was or was not stopped from doing.
 fn resolve_policy(args: &RunArgs) -> run_policy::PolicyResolution {
     let resolution = run_policy::resolve(args.policy.as_deref());
-    eprintln!("policy={} — {}", resolution.state_token(), resolution.summary());
+    // `summary()` already opens with the state token, so the `policy=<token>`
+    // prefix an audit scraper matches on falls out of it without repeating it.
+    eprintln!("policy={}", resolution.summary());
     resolution
 }
 
