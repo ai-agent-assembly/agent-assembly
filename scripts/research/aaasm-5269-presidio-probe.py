@@ -55,10 +55,14 @@ BENIGN_ZH = (
 
 
 def build(filler: str, target_bytes: int) -> str:
-    out = ""
-    while len(out.encode()) < target_bytes:
-        out += filler
-    return out
+    # Track the encoded length instead of re-encoding the whole string each
+    # iteration; the 1 MB case would otherwise encode gigabytes on the way up.
+    chunk = len(filler.encode())
+    parts, total = [], 0
+    while total < target_bytes:
+        parts.append(filler)
+        total += chunk
+    return "".join(parts)
 
 
 def analyze(text: str, language: str = "en", timeout: int = 300):
