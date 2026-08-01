@@ -451,6 +451,22 @@ mod tests {
     /// signature of the AAASM-5346 corruption bug.
     const REPLACEMENT_CHAR: &[u8] = "\u{FFFD}".as_bytes();
 
+    /// Traditional-Chinese sample: eight 3-byte characters, so every character
+    /// boundary is a candidate chunk-split point.
+    const CJK: &str = "台北市政府資訊局";
+
+    /// [`CJK`] with its first and last bytes shaved off, so a 3-byte character is
+    /// cut in half at **both** ends — exactly what a stream chunk boundary does
+    /// to multi-byte text. Invalid UTF-8 in isolation, valid in aggregate.
+    fn chunk_split_cjk() -> Vec<u8> {
+        let bytes = CJK.as_bytes();
+        assert!(
+            std::str::from_utf8(&bytes[1..bytes.len() - 1]).is_err(),
+            "fixture must be invalid UTF-8 or it does not exercise the split path"
+        );
+        bytes[1..bytes.len() - 1].to_vec()
+    }
+
     /// Byte-level substring search — the AAASM-5346 assertions must run over raw
     /// `Vec<u8>`, never a lossy `String` view of it, or they would compare the
     /// very decoding that causes the bug and pass either way.
@@ -649,6 +665,33 @@ mod tests {
         assert!(
             !outcome.is_clean(),
             "fail-closed: never reported as a clean pass-through"
+        );
+    }
+
+    /// AAASM-5346: a multi-byte character cut by a chunk boundary makes the
+    /// payload invalid UTF-8. With no finding present nothing may be written
+    /// back, so the bytes must survive exactly — compared as `Vec<u8>`, never as
+    /// a lossy `String`.
+    #[test]
+    fn chunk_split_multibyte_clean_payload_round_trips_byte_identically() {
+        let scanner = RuntimeScanner::new();
+        let original = chunk_split_cjk();
+        let mut event = event_with(Detail::ToolCall(ToolCallDetail {
+            args_json: original.clone(),
+            ..Default::default()
+        }));
+
+        let outcome = scanner.enforce(&mut event);
+
+        assert_eq!(
+            args_json_of(event),
+            original,
+            "a clean split payload must round-trip byte-identically"
+        );
+        assert!(outcome.is_clean());
+        assert_eq!(
+            outcome.undecodable_fields, 0,
+            "a clean payload is not a coarse redaction"
         );
     }
 
