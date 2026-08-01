@@ -171,7 +171,14 @@ mod tests {
     /// flip — the old one-second sleep lost that flip on ~2 runs in 3 here.
     /// This bound exists only so a watcher that has genuinely stopped working
     /// fails instead of hanging; it is far above every observed success.
-    const WATCH_LIVENESS_BOUND: Duration = Duration::from_secs(30);
+    ///
+    /// Sized against the worst case actually seen rather than a guess: during a
+    /// full `cargo nextest run --workspace` sharing the machine with a second
+    /// concurrent workspace build, this swap took **17 s**. Widening the bound
+    /// costs nothing on a healthy watcher — [`wait_for_swap`] returns the moment
+    /// the swap lands, so the bound is only ever reached when hot-reload is
+    /// genuinely broken.
+    const WATCH_LIVENESS_BOUND: Duration = Duration::from_secs(60);
 
     /// How long to wait for one application of the stimulus before re-applying
     /// it. Chosen to comfortably exceed the common-case delivery latency so
