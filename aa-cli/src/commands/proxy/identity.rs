@@ -22,6 +22,41 @@
 //!   process-identity pair for exactly this reason (it is what `pidfd`, systemd
 //!   and every correct pidfile implementation reduce to).
 //!
+//! # Why the start time alone is not enough on Linux (AAASM-5333)
+//!
+//! `/proc/<pid>/stat` publishes the start time in **clock ticks** — `USER_HZ`,
+//! which is 100 on every mainstream configuration, so a 10 ms grid. Two
+//! processes that started inside the same 10 ms carry byte-identical values, and
+//! a token built from that field alone cannot tell them apart. The hole is
+//! narrow but real: the executable check already rejects a recycled PID running
+//! *something else*, so the start time is the only thing left to reject a
+//! *second `aa-proxy`* that took the same number, and two incarnations landing
+//! in one tick would pass both checks.
+//!
+//! Linux exposes no finer start time, so the token pairs the tick with an
+//! independent kernel fact rather than a more precise clock: the **pidfs inode**
+//! behind `pidfd_open(2)`. From Linux 6.9 each process owns an inode on the
+//! `pidfs` filesystem, allocated at process creation from a counter that owes
+//! nothing to the clock — so a pair that collides on the tick still differs
+//! here, and forging a token now requires forging both. It survives the
+//! constraint that shapes the rest of this module, too: `pidfd_open` is not
+//! behind the ptrace gate, so it answers for the non-dumpable process every real
+//! `aa-proxy` is.
+//!
+//! Two candidates were measured and rejected. The `/proc/<pid>` directory's own
+//! inode is *not* stable — it is allocated at dentry lookup and observably
+//! changes when the dentry is evicted, which would turn a running proxy into a
+//! refused one. A nonce the proxy generates for itself would move the fact from
+//! the kernel to the process: a process can lie about a value it invents, where
+//! it cannot lie about its own creation, and identity evidence should not be
+//! sourced from the thing being identified.
+//!
+//! Kernels before 6.9 answer `pidfd_open` with one anonymous inode shared by
+//! every pidfd, which discriminates nothing. That case is detected by the
+//! filesystem magic rather than guessed at from a version number, and the token
+//! then carries a different scheme tag — the resolution it actually has is
+//! stated, never assumed.
+//!
 //! # Why per-platform, and why absent evidence is fatal rather than skippable
 //!
 //! Neither fact is portable. Each platform reads it natively; a platform with no
@@ -186,14 +221,44 @@ pub fn image(_pid: u32) -> ImageEvidence {
     ImageEvidence::Unsupported
 }
 
-/// An opaque token identifying *this* incarnation of `pid`.
-///
-/// The value is only ever compared for equality against a token captured
-/// earlier for the same PID, so its encoding is private to this module. It is
-/// prefixed with the platform that produced it so a state file carried between
-/// hosts of different kinds can never compare equal by coincidence.
+/// Scheme tag for a Linux token that carries both the start tick and the
+/// kernel's per-process pidfs inode. See the module docs for why the tick alone
+/// is not enough.
 #[cfg(target_os = "linux")]
-pub fn start_token(pid: u32) -> Option<String> {
+const LINUX_SCHEME_PIDFS: &str = "linux-pidfs";
+
+/// Scheme tag for a Linux token carrying the start tick and nothing else,
+/// emitted only where the kernel publishes no per-process inode. The tag is
+/// distinct so a token never claims a resolution it does not have.
+#[cfg(target_os = "linux")]
+const LINUX_SCHEME_TICKS: &str = "linux-ticks";
+
+/// Scheme tag for the macOS token. Unchanged: `PROC_PIDTBSDINFO` already
+/// answers in microseconds, so there is no tick-collision problem to fix here
+/// and no reason to invalidate records written by an earlier build.
+#[cfg(target_os = "macos")]
+const MACOS_SCHEME: &str = "macos-starttime";
+
+/// `f_type` of the `pidfs` filesystem (`"PIDF"`), which is what a `pidfd`
+/// reports from Linux 6.9 onwards.
+///
+/// Before that release `pidfd_open` returned an *anonymous* inode shared by
+/// every pidfd on the system, so its inode number is the same for all processes
+/// and discriminates nothing. Checking the magic distinguishes "the kernel gave
+/// me this process's own identifier" from "the kernel gave me the one global
+/// placeholder" — a distinction a bare `fstat` cannot make, and getting it wrong
+/// would append a constant to every token while appearing to strengthen it.
+#[cfg(target_os = "linux")]
+const PID_FS_MAGIC: i64 = 0x5049_4446;
+
+/// Field 22 of `/proc/<pid>/stat` — the process's start time in clock ticks
+/// since boot.
+///
+/// `USER_HZ` is 100 on every mainstream configuration, so this is a 10 ms grid
+/// and is *not* on its own a unique per-process value; see the module docs and
+/// [`start_token`], which is what callers should use.
+#[cfg(target_os = "linux")]
+fn start_ticks(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // Field 2 (`comm`) is parenthesised and may itself contain spaces and even
     // ')', so the only safe split point in `/proc/<pid>/stat` is the *last*
@@ -202,8 +267,100 @@ pub fn start_token(pid: u32) -> Option<String> {
     let rest = stat.get(stat.rfind(')')? + 1..)?;
     // Tokens after that point start at field 3 (`state`), so field 22
     // (`starttime`, in clock ticks since boot) is at index 19.
-    let ticks: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
-    Some(format!("linux-starttime:{ticks}"))
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// The kernel's own globally-unique identifier for the process currently behind
+/// `pid`, or `None` if this kernel publishes none.
+///
+/// This is the pidfs inode reached through `pidfd_open(2)`. Three properties
+/// make it the right partner for the start tick:
+///
+/// * it is allocated when the process is created, from a counter unrelated to
+///   the clock, so it cannot collide for the same reason the tick does;
+/// * it is stable for the lifetime of the process, so the value recorded at
+///   `aasm proxy start` still reads back identically at `aasm run`; and
+/// * `pidfd_open` is not behind the ptrace gate, so it answers for a process
+///   that has marked itself non-dumpable — which every real `aa-proxy` has
+///   (AAASM-3584), and which is precisely why `/proc/<pid>/exe` cannot be the
+///   fallback here.
+///
+/// A reaped PID yields `ESRCH` and therefore `None`; a zombie still answers,
+/// which is correct — rejecting a zombie is the image evidence's job, not this
+/// one's.
+#[cfg(target_os = "linux")]
+fn incarnation_inode(pid: u32) -> Option<u64> {
+    // Safety: `pidfd_open` takes a PID and a flag word by value and returns a
+    // file descriptor or -1. Nothing is dereferenced.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0 as libc::c_uint) };
+    if fd < 0 {
+        // ENOSYS on kernels before 5.3, ESRCH once the PID has been reaped.
+        return None;
+    }
+    let fd = fd as libc::c_int;
+    let inode = pidfs_inode_of(fd);
+    // Safety: `fd` was just returned by the kernel and is not used again.
+    unsafe { libc::close(fd) };
+    inode
+}
+
+/// The inode number behind an open pidfd, but only when it is a genuine `pidfs`
+/// inode. See [`PID_FS_MAGIC`] for why the filesystem is checked first.
+#[cfg(target_os = "linux")]
+fn pidfs_inode_of(fd: libc::c_int) -> Option<u64> {
+    // Safety: both calls fill a caller-owned struct of exactly the size the
+    // kernel is told, and are checked for failure before the struct is read.
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstatfs(fd, &mut fs) } != 0 || fs.f_type as i64 != PID_FS_MAGIC {
+        return None;
+    }
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut st) } != 0 {
+        return None;
+    }
+    Some(st.st_ino as u64)
+}
+
+/// Whether this host can tell apart two processes that started inside the same
+/// kernel clock tick.
+///
+/// False only on Linux before 6.9, where the tick is genuinely all the kernel
+/// offers. Exposed so the property can be asserted rather than assumed.
+#[cfg(target_os = "linux")]
+pub fn distinguishes_within_a_tick() -> bool {
+    incarnation_inode(std::process::id()).is_some()
+}
+
+/// See the Linux variant. macOS start times are microsecond-resolution, so the
+/// tick-collision case does not arise.
+#[cfg(target_os = "macos")]
+pub fn distinguishes_within_a_tick() -> bool {
+    true
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn distinguishes_within_a_tick() -> bool {
+    false
+}
+
+/// An opaque token identifying *this* incarnation of `pid`.
+///
+/// The value is only ever compared for equality against a token captured
+/// earlier for the same PID, so its encoding is private to this module. It is
+/// prefixed with a scheme tag naming the evidence inside it, so that a record
+/// carried between hosts of different kinds — or written by a build that
+/// gathered different evidence — can be recognised as such rather than
+/// silently comparing unequal.
+#[cfg(target_os = "linux")]
+pub fn start_token(pid: u32) -> Option<String> {
+    // Read the tick first: it is the fact whose absence means "there is no such
+    // process", and it must keep deciding that. `pidfd_open` still answers for a
+    // zombie, so consulting it first would turn a reaped PID into a token.
+    let ticks = start_ticks(pid)?;
+    Some(match incarnation_inode(pid) {
+        Some(inode) => format!("{LINUX_SCHEME_PIDFS}:{ticks}.{inode}"),
+        None => format!("{LINUX_SCHEME_TICKS}:{ticks}"),
+    })
 }
 
 /// An opaque token identifying *this* incarnation of `pid`. See the Linux
@@ -229,7 +386,7 @@ pub fn start_token(pid: u32) -> Option<String> {
         return None;
     }
     Some(format!(
-        "macos-starttime:{}.{:06}",
+        "{MACOS_SCHEME}:{}.{:06}",
         info.pbi_start_tvsec, info.pbi_start_tvusec
     ))
 }
@@ -302,21 +459,102 @@ mod tests {
         assert_eq!(first, second, "a process's start time must not change under it");
     }
 
-    /// The evidence is worthless if two processes share a token, so pin that a
-    /// separately-started process reports a different one.
+    /// A `sleep` child killed and reaped when it goes out of scope, so the retry
+    /// loop below cannot leave strays behind on a busy CI host.
+    struct SleepingChild(std::process::Child);
+
+    impl SleepingChild {
+        fn spawn() -> Self {
+            Self(
+                std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn()
+                    .expect("spawn sleep"),
+            )
+        }
+        fn pid(&self) -> u32 {
+            self.0.id()
+        }
+    }
+
+    impl Drop for SleepingChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Two live processes the kernel recorded as having started inside the same
+    /// clock tick.
+    ///
+    /// The collision is *verified* rather than hoped for. That is the whole
+    /// defect in the test this replaces: it assumed two separately-spawned
+    /// processes would land in different ticks, so on the runs where they did
+    /// the assertion held for a reason that had nothing to do with the token.
+    #[cfg(target_os = "linux")]
+    fn pair_started_in_one_tick() -> (SleepingChild, SleepingChild) {
+        for _ in 0..64 {
+            let first = SleepingChild::spawn();
+            let second = SleepingChild::spawn();
+            let (a, b) = (start_ticks(first.pid()), start_ticks(second.pid()));
+            assert!(
+                a.is_some() && b.is_some(),
+                "both children must publish a start tick, or the pair proves nothing"
+            );
+            if a == b {
+                return (first, second);
+            }
+        }
+        panic!(
+            "could not start two processes inside one 10 ms tick in 64 attempts — the collision \
+             this test exists to close could not be constructed, so it would have measured nothing"
+        );
+    }
+
+    /// macOS records start times in microseconds, so two processes spawned
+    /// back-to-back are already the closest-together case the platform has;
+    /// there is no coarse grid to deliberately land them both in.
+    #[cfg(not(target_os = "linux"))]
+    fn pair_started_in_one_tick() -> (SleepingChild, SleepingChild) {
+        (SleepingChild::spawn(), SleepingChild::spawn())
+    }
+
+    /// AAASM-5333 regression, and the reason the token is more than a start tick.
+    ///
+    /// `/proc/<pid>/stat` measures start time on a 10 ms grid, and under
+    /// `cargo nextest` each test runs in a process that is itself only
+    /// milliseconds old — so a test binary and the child it spawns land in one
+    /// tick as the *normal* case, not the rare one. The predecessor of this test
+    /// therefore failed on Linux CI on every attempt, including retries.
+    ///
+    /// The fix is not to give the two processes more distance. It is to make the
+    /// token survive having none, so this test removes the distance on purpose
+    /// and requires the token to hold.
     #[test]
-    fn start_token_differs_between_two_processes() {
-        let mine = start_token(std::process::id()).expect("own start token");
-        let mut child = std::process::Command::new("sleep")
-            .arg("5")
-            .spawn()
-            .expect("spawn sleep");
-        let theirs = start_token(child.id()).expect("child start token");
-        let _ = child.kill();
-        let _ = child.wait();
+    fn processes_started_in_the_same_clock_tick_do_not_share_a_start_token() {
+        let (first, second) = pair_started_in_one_tick();
+        let a = start_token(first.pid()).expect("first child's start token");
+        let b = start_token(second.pid()).expect("second child's start token");
+
+        if !distinguishes_within_a_tick() {
+            // Linux before 6.9 publishes nothing finer than the tick, so on such
+            // a host the collision is real and cannot be closed. Pin that the
+            // token *admits* it — a coarse token wearing the fine scheme's tag
+            // would be the genuine defect, and is what this branch exists to
+            // catch. Never reached on CI, which runs a kernel that can.
+            #[cfg(target_os = "linux")]
+            assert!(
+                a.starts_with(&format!("{LINUX_SCHEME_TICKS}:")),
+                "a host that cannot separate two same-tick processes must not emit a token \
+                 claiming that it can; got {a}"
+            );
+            return;
+        }
+
         assert_ne!(
-            mine, theirs,
-            "two processes started at different times must not share a start token"
+            a, b,
+            "two processes are two incarnations even when the kernel clock cannot separate them — \
+             a shared token is a PID-reuse guard that waves the second incarnation through"
         );
     }
 
