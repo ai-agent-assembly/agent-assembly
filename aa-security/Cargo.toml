@@ -16,6 +16,12 @@ serde_yaml = { workspace = true, optional = true }
 serde = ["dep:serde", "dep:serde_yaml"]
 
 [dev-dependencies]
+# AAASM-5352: enable this crate's own `serde` feature for its tests, so the
+# canonical model's serialized form is pinned by the default `cargo nextest run
+# --workspace` that CI runs — without it those tests need `--all-features` and
+# would silently never execute. Dev-only, so the published dependency graph and
+# the leaf/WASM layering are unchanged. Same pattern as `aa-core` and `aa-cache`.
+aa-security = { path = ".", features = ["serde"] }
 criterion = { workspace = true, features = ["html_reports"] }
 # AAASM-5269 transport-floor harness only. Dev-only, so it does not enter the
 # published crate's dependency graph; the harness measures the JSON

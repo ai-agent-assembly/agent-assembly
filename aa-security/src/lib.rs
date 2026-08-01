@@ -17,6 +17,7 @@
 //!   the YAML parsing of the canonical [`policy::PolicyDocument`].
 #![warn(missing_docs)]
 
+pub mod canonical;
 pub mod policy;
 pub mod redaction;
 pub mod scanner;
