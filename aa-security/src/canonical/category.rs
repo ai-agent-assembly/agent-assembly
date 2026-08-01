@@ -81,10 +81,14 @@ impl fmt::Display for CategoryBase {
 /// scheme. `NATIONAL_ID[zh-TW/arc_new]` is a Taiwanese residence-certificate
 /// number; `ACCESS_TOKEN[github:personal_access]` is a GitHub PAT.
 ///
-/// Every field is `&'static str`: a qualifier can only be spelled out in source
-/// that is compiled into the binary. Nothing parsed at runtime — a config file,
-/// a policy document, or a response from a process that is not this one — can
-/// become a qualifier without a code change (ADR 0032 validation requirement 10).
+/// Every field is `&'static str`, and the crate never leaks a runtime string
+/// into one: `FromStr` resolves against categories that already exist rather
+/// than building new ones. So a qualifier names something spelled out in source,
+/// and a config file, policy document or wire payload cannot introduce one
+/// without a code change. Note this is a property of how the crate uses the
+/// type, not of `&'static str` itself — `Box::leak` produces `&'static str` from
+/// runtime bytes in safe Rust, which is why identity elsewhere in this model is
+/// a closed enum rather than a string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum CategoryQualifier {

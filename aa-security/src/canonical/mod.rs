@@ -76,13 +76,36 @@
 //! [`CredentialFinding`](crate::scanner::CredentialFinding) gives by storing the
 //! redaction label instead of the match (ADR 0032 §9, validation requirement 9).
 //!
-//! That property has a second consequence, and it is deliberate: because a
-//! canonical finding can only be assembled from compile-time constants, it has
-//! no `Deserialize` impl. Findings arriving as bytes from another process cannot
-//! become canonical findings without a visible code change, which is the
-//! compile-time boundary ADR 0032 validation requirement 10 asks for.
-//! `Serialize` is provided (under the `serde` feature) because emitting findings
-//! outward is exactly what the event and metric layers need.
+//! There is no `Deserialize`, so a canonical finding is never reconstructed
+//! from bytes — it is always derived from something this process detected.
+//! `Serialize` is provided (under the `serde` feature) because emitting
+//! findings outward is what the event and metric layers need.
+//!
+//! # What this model does *not* guarantee
+//!
+//! Stated plainly, because an earlier draft of these docs overclaimed and the
+//! overclaim was wrong in a way that mattered.
+//!
+//! **It is not an authenticity boundary.** A [`CanonicalFinding`] records what
+//! a value *claims*, not that a recognizer really produced it. `Provenance` is
+//! stamped by whoever constructs the finding, and while [`Recognizer`] is a
+//! closed enum — so an identity cannot be invented from runtime bytes — nothing
+//! stops in-process code from stamping `BuiltinScanner` on a finding the
+//! scanner never produced.
+//!
+//! **Absence of `Deserialize` here does not make the model unreachable from a
+//! wire.** [`CredentialFinding`](crate::scanner::CredentialFinding) *does*
+//! derive `Deserialize` under the same feature, with its `end` field skipped,
+//! so a finding rebuilt from JSON arrives with a zero end offset. That is why
+//! lifting is `TryFrom` rather than `From`: the span is validated instead of
+//! trusted. The check is well-formedness, not provenance — a well-formed
+//! forgery is indistinguishable, and no v1 path needs it to be otherwise.
+//!
+//! **ADR 0032 validation requirement 10 is not what these types satisfy.** That
+//! requirement is about no out-of-process provider being reachable from a
+//! synchronous enforcement path, which holds here trivially because D-1 means
+//! no provider exists. The type-level choices above are worth making on their
+//! own merits; they are not a discharge of requirement 10.
 
 mod category;
 mod finding;
