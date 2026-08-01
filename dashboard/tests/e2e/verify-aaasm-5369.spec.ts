@@ -270,8 +270,11 @@ test.describe('AAASM-5369 — a capability matrix that never states its cascade'
     // `unconfigured` is what the fabricated `documentCount: 0` produced: a
     // measured claim about the operator's deployment, derived from a body the
     // dashboard never read. `unknown` is the truth.
+    // The contrast against `unconfigured` is a separate test below, on a body
+    // that genuinely says `cascadeLoaded: false`. Repeating it as a negative
+    // here could not fail — the line above already fixes the attribute to one
+    // value (AAASM-5369 review).
     await expect(allow).toHaveAttribute('data-truth-state', 'unknown')
-    await expect(allow).not.toHaveAttribute('data-truth-state', 'unconfigured')
     for (const testId of ['cap-summary-deny', 'cap-summary-flagged']) {
       await expect(page.getByTestId(testId)).toHaveAttribute('data-truth-state', 'unknown')
     }
@@ -286,6 +289,38 @@ test.describe('AAASM-5369 — a capability matrix that never states its cascade'
     await expectShellIntact(page, harness)
     await page.screenshot({
       path: resolve(EVIDENCE_DIR, 'capability-unknown-not-unconfigured.png'),
+      fullPage: true,
+    })
+  })
+
+  test('renders an absence for a genuine `{}` body, not a boundary fallback', async ({ page }) => {
+    // AAASM-5369 review, S5. `{}` is the body the ticket's own §2 names, and it
+    // never reached the cascade fold: the page read `matrix.agents` for
+    // `applyFilters` and for its empty-state branch first, so it threw during
+    // render and the operator got the shell's "Something went wrong" instead of
+    // the surface. The other cases here use a near-complete matrix, which
+    // exercises the fold but never this path.
+    const harness = await bootstrap(page, { matrix: {} })
+    await navigateTo(page, '/capability')
+
+    const absence = page.getByTestId('capability-unreadable-state')
+    await expect(absence).toBeVisible()
+    await expect(absence).toHaveAttribute('data-truth-state', 'unknown')
+    await expect(absence).toContainText('capability matrix came back in a shape')
+
+    // The page is a page. `error-boundary` is what the shell renders once a
+    // page throws — asserting its absence is what fails if the TypeError
+    // returns, and `capability-page` being present is what proves the operator
+    // is looking at the surface rather than at a fallback.
+    await expect(page.getByTestId('error-boundary')).toHaveCount(0)
+    await expect(page.getByTestId('capability-page')).toBeVisible()
+    // Not the onboarding empty state: "no agents are registered" is a
+    // measurement of the fleet, and this is not one.
+    await expect(page.getByTestId('empty-state')).toHaveCount(0)
+
+    await expectShellIntact(page, harness)
+    await page.screenshot({
+      path: resolve(EVIDENCE_DIR, 'capability-unreadable-matrix.png'),
       fullPage: true,
     })
   })
@@ -319,9 +354,12 @@ test.describe('AAASM-5369 — a capability matrix that never states its cascade'
     await expect(page.getByTestId('capability-page')).toBeVisible()
 
     // One allow cell for the `read` verb, one deny — real counts off a real body.
-    await expect(page.getByTestId('cap-summary-allow')).not.toHaveAttribute(
+    // Asserted positively: `TruthfulValue` stamps `data-truth-state="known"` on
+    // a measured value, so `not…'unknown'` would also have passed against
+    // `unconfigured`, `not-supported` or a missing attribute entirely.
+    await expect(page.getByTestId('cap-summary-allow')).toHaveAttribute(
       'data-truth-state',
-      'unknown',
+      'known',
     )
 
     await expectShellIntact(page, harness)

@@ -544,10 +544,13 @@ describe('AppShell chrome — a policies response the shell cannot read (AAASM-5
       expect(badge).toBeInTheDocument()
 
       const marker = screen.getByTestId('nav-badge-absent-policy')
+      // `unknown`, not `unavailable`: the request succeeded, and saying it
+      // failed would send the operator to retry something that is not broken.
+      // The contrast is pinned by "renders an explicit unavailable marker when
+      // the policies query fails" above — asserting `not…'unavailable'` here as
+      // well cannot fail, since the line above already fixes the attribute to a
+      // single value (AAASM-5369 review).
       expect(marker).toHaveAttribute('data-truth-state', 'unknown')
-      // Not `unavailable`: the request succeeded. Saying it failed would send
-      // the operator to retry something that is not broken.
-      expect(marker).not.toHaveAttribute('data-truth-state', 'unavailable')
 
       // No number is rendered where the count goes. The badge's two variants
       // are mutually exclusive in the markup — a known count renders the
