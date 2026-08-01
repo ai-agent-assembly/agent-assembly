@@ -830,47 +830,103 @@ fn luhn_valid(digits: &str) -> bool {
     sum % 10 == 0
 }
 
+/// Maximum number of characters consumed into one digit segment.
+///
+/// Bounds the per-segment work just above the longest value either detector
+/// recognises (a 19-digit card number, or an 11-character SSN including its two
+/// separators). The budget counts **characters, not bytes**, so it does not
+/// shrink on multi-byte input — a byte budget would truncate a segment written
+/// in multi-byte digits partway through the number and lose the match.
+const DIGIT_SEGMENT_MAX_CHARS: usize = 24;
+
+/// Result of walking one digit segment (see [`digit_segment`]).
+struct DigitSegment {
+    /// Byte offset just past the segment — where the outer scan resumes, and
+    /// the `end` of any finding the segment produces.
+    end: usize,
+    /// The segment's digits and the separators between them, in order.
+    /// Matched against the `DDD-DD-DDDD` SSN shape by [`is_ssn`].
+    normalised: String,
+    /// The segment's digits only, without separators — what [`luhn_valid`]
+    /// computes the checksum over.
+    digits: String,
+}
+
+/// Walk the digit segment beginning at byte offset `start` (which must be the
+/// boundary of a digit character).
+///
+/// The walk advances one whole character at a time, so [`DigitSegment::end`] is
+/// always a valid UTF-8 char boundary of `text`. That is a correctness
+/// requirement rather than a nicety: [`ScanResult::redact`] splices the original
+/// bytes at a finding's offsets, and a bound landing mid-character would make it
+/// fail closed and replace the entire payload with an opaque label.
+fn digit_segment(text: &str, start: usize) -> DigitSegment {
+    let mut normalised = String::new();
+    let mut digits = String::new();
+    let mut chars = 0usize;
+    let mut end = start;
+
+    while chars < DIGIT_SEGMENT_MAX_CHARS {
+        let Some(c) = text[end..].chars().next() else { break };
+
+        if c.is_ascii_digit() {
+            normalised.push(c);
+            digits.push(c);
+            end += c.len_utf8();
+            chars += 1;
+            continue;
+        }
+
+        // Only consume a separator that sits *between* digits. A trailing
+        // separator must not be swallowed into the segment, or an SSN like
+        // "123-45-6789 " would become 12 bytes and fail the exact-11-byte
+        // `is_ssn` check, letting the PII through unredacted (AAASM-4820).
+        if matches!(c, ' ' | '-')
+            && !digits.is_empty()
+            && chars + 1 < DIGIT_SEGMENT_MAX_CHARS
+            && text[end + c.len_utf8()..]
+                .chars()
+                .next()
+                .is_some_and(|next| next.is_ascii_digit())
+        {
+            normalised.push(c);
+            end += c.len_utf8();
+            chars += 1;
+            continue;
+        }
+
+        break;
+    }
+
+    DigitSegment {
+        end,
+        normalised,
+        digits,
+    }
+}
+
 /// Scans `text` for credit card numbers (Luhn-validated) and SSN patterns (`DDD-DD-DDDD`).
 fn scan_digit_sequences(text: &str, findings: &mut Vec<CredentialFinding>) {
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if !bytes[i].is_ascii_digit() {
-            i += 1;
+    let mut i = 0usize;
+    while i < text.len() {
+        // `i` is always on a char boundary: it advances either by one whole
+        // character or to a segment's `end`, which is itself a boundary.
+        let Some(c) = text[i..].chars().next() else { break };
+        if !c.is_ascii_digit() {
+            i += c.len_utf8();
             continue;
         }
 
         let start = i;
-        let mut digits = String::new();
-        let mut j = i;
-        let limit = (start + 24).min(bytes.len());
+        let segment = digit_segment(text, start);
+        let end = segment.end;
 
-        while j < limit {
-            match bytes[j] {
-                b if b.is_ascii_digit() => {
-                    digits.push(b as char);
-                    j += 1;
-                }
-                // Only consume a separator that sits *between* digits. A trailing
-                // separator must not be swallowed into the segment, or an SSN like
-                // "123-45-6789 " would become 12 bytes and fail the exact-11-byte
-                // `is_ssn` check, letting the PII through unredacted (AAASM-4820).
-                b' ' | b'-' if !digits.is_empty() && j + 1 < limit && bytes[j + 1].is_ascii_digit() => {
-                    j += 1;
-                }
-                _ => break,
-            }
-        }
-
-        let end = j;
-        let segment = &text[start..end];
-
-        if is_ssn(segment) {
+        if is_ssn(&segment.normalised) {
             findings.push(CredentialFinding::new(CredentialKind::SsnPattern, start, end));
-        } else if digits.len() >= 13 && digits.len() <= 19 && luhn_valid(&digits) {
+        } else if segment.digits.len() >= 13 && segment.digits.len() <= 19 && luhn_valid(&segment.digits) {
             findings.push(CredentialFinding::new(CredentialKind::CreditCardLuhn, start, end));
         }
-        i = end.max(i + 1);
+        i = end.max(start + c.len_utf8());
     }
 }
 
