@@ -43,6 +43,14 @@ pub const DEFAULT_MAX_FIELD_BYTES: usize = 64 * 1024;
 /// Replacement written into a field that exceeded the configured size cap.
 pub const OVERSIZED_MARKER: &str = "[REDACTED:OVERSIZED]";
 
+/// Replacement written into a `bytes` field that carries a finding but cannot be
+/// decoded as UTF-8, so no faithful per-finding splice exists (AAASM-5346).
+///
+/// Distinct from [`OVERSIZED_MARKER`] because the reason differs and operators
+/// need to tell them apart: oversized means *not fully scanned*, undecodable
+/// means *scanned, found dirty, but not precisely repairable*.
+pub const UNDECODABLE_MARKER: &str = "[REDACTED:UNDECODABLE]";
+
 /// Behaviour when a secret-bearing field exceeds [`EnforcementConfig::max_field_bytes`].
 ///
 /// The runtime is a security gate, so the policy is **fail-closed**: an
