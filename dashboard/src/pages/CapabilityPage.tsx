@@ -141,9 +141,19 @@ export function CapabilityPage() {
   })
   // What the page may render at all (AAASM-5369). Separate from the cascade
   // evidence above because the two answer different questions — see
-  // `decodeMatrixShape`. Every `matrix.agents` / `matrix.resources` /
-  // `matrix.policies` / `matrix.sampleCalls` read below goes through this, so
-  // there is no path from an unverified body to a field read.
+  // `decodeMatrixShape`.
+  //
+  // Every `matrix.agents` / `.resources` / `.policies` / `.sampleCalls` read in
+  // the render below goes through this. Two things it does *not* cover, both
+  // stated because an earlier draft of this comment claimed "no path from an
+  // unverified body to a field read" and neither of these is one:
+  //
+  //  - `handleBulkApply` hands the raw `matrix` to `applyOverrideLocal`. Safe
+  //    at runtime — the button that calls it only exists past the guard, so the
+  //    body decoded — but it is a raw read, not a decoded one.
+  //  - element *contents* are unverified. A row that is an empty object passes
+  //    the decoder and then throws in `populatedCellCount`; see
+  //    `decodeMatrixShape` and AAASM-5380.
   const matrixView = capabilityMatrixFromQuery({
     isPending,
     error: loadError,
@@ -474,15 +484,13 @@ export function CapabilityPage() {
           />
         )}
       </section>
-      {(
-        <CellInspectDrawer
-          cell={inspected}
-          policies={view.policies}
-          sampleCalls={view.sampleCalls}
-          onClose={() => setInspected(null)}
-          onOpenPolicy={openPolicyEditor}
-        />
-      )}
+      <CellInspectDrawer
+        cell={inspected}
+        policies={view.policies}
+        sampleCalls={view.sampleCalls}
+        onClose={() => setInspected(null)}
+        onOpenPolicy={openPolicyEditor}
+      />
     </div>
   )
 }

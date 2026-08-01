@@ -112,13 +112,34 @@ export const decodeCascadeFields: Decoder<CascadeFields> = (body: unknown) => {
  *    clicked. Requiring only the first two would move the same `TypeError` from
  *    page load to first interaction, which is a worse bug, not a narrower one.
  *
- * Elements are **not** inspected — only that each collection is a list. That is
- * the same accepted risk `api/capability.ts` documents for its `data as
- * CapabilityMatrix` cast, minus the part this closes: every field these rows
- * are read for is either rendered as an opaque display value or validated at
- * the point of use (`decisionMeta` / `decisionWeight` check membership in the
- * `Decision` union before indexing). What was missing, and what this adds, is
- * any check that the collections are collections.
+ * ## What this checks, and what it leaves open
+ *
+ * Elements are **not** inspected — only that each collection is a list. What
+ * this adds over the `data as CapabilityMatrix` cast in `api/capability.ts` is
+ * exactly one thing: a check that the collections are collections. That closes
+ * the `{}` body, where `agents` was `undefined` and `.filter` threw.
+ *
+ * It does **not** close a malformed *row*. An earlier draft of this comment
+ * claimed every field these rows are read for is "either rendered as an opaque
+ * display value or validated at the point of use". That is false, and was
+ * falsified with `{ agents: [{}], resources: [{}], policies: [{}],
+ * sampleCalls: [{}] }` — all four collections present, so this decoder passes
+ * and the absence guard is skipped, then `populatedCellCount` reads
+ * `agent.caps[resource.id]` and throws `TypeError: Cannot read properties of
+ * undefined (reading 'undefined')`. `caps` is required on the generated
+ * `CapabilityAgent`, so that body is schema-invalid, and the operator gets the
+ * ErrorBoundary rather than an absence. The crash predates AAASM-5369 and is
+ * unchanged by it; what does not predate it is a comment asserting otherwise,
+ * which is why this paragraph exists rather than a quieter edit.
+ *
+ * Row-level validation is **AAASM-5380**, not a line here. Adding
+ * `caps: z.record(z.unknown())` to the agent element does stop that specific
+ * throw — verified — but it trades the crash for a grid of blank rows with
+ * every cell `n/a`, which on a governance surface is the worse of the two:
+ * a visible failure becomes a plausible-looking one. Deciding what a
+ * half-readable matrix should *render* is the design question that ticket
+ * carries; picking the one field that happens to throw today would leave this
+ * docstring overclaiming again for every other field.
  */
 export interface MatrixShape {
   readonly agents: readonly unknown[]
