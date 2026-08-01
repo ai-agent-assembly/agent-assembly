@@ -95,3 +95,58 @@ export const decodeCascadeFields: Decoder<CascadeFields> = (body: unknown) => {
     `The capability matrix came back in a shape this dashboard cannot read (${firstFault(parsed.error)}), so nothing about the policy cascade can be stated — including whether it is empty. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
   )
 }
+
+/**
+ * The four collections the Capability *page* cannot function without.
+ *
+ * Wider than {@link CascadeFields} on purpose, and the departure from
+ * "an absence no wider than the evidence for it" is deliberate — the two
+ * decoders answer different questions:
+ *
+ *  - the cascade decoder answers *"how many policy documents are loaded"*,
+ *    which stays determinable even if some unrelated field is malformed;
+ *  - this one answers *"is this a capability matrix at all"*, and the page's
+ *    honest answer is no unless all four are present. `agents` and `resources`
+ *    are read at render (`applyFilters`, `sortAgents`, the tab counts); the
+ *    other two are `.filter`ed by `CellInspectDrawer` the moment a cell is
+ *    clicked. Requiring only the first two would move the same `TypeError` from
+ *    page load to first interaction, which is a worse bug, not a narrower one.
+ *
+ * Elements are **not** inspected — only that each collection is a list. That is
+ * the same accepted risk `api/capability.ts` documents for its `data as
+ * CapabilityMatrix` cast, minus the part this closes: every field these rows
+ * are read for is either rendered as an opaque display value or validated at
+ * the point of use (`decisionMeta` / `decisionWeight` check membership in the
+ * `Decision` union before indexing). What was missing, and what this adds, is
+ * any check that the collections are collections.
+ */
+export interface MatrixShape {
+  readonly agents: readonly unknown[]
+  readonly resources: readonly unknown[]
+  readonly policies: readonly unknown[]
+  readonly sampleCalls: readonly unknown[]
+}
+
+/** A conforming matrix still carries all four collections under these names. */
+type GeneratedCarriesMatrixShape = CapabilityMatrixResponse extends MatrixShape ? true : never
+export const MATRIX_SHAPE_IS_ON_THE_WIRE: GeneratedCarriesMatrixShape = true
+
+const matrixShapeSchema = z.object({
+  agents: z.array(z.unknown()),
+  resources: z.array(z.unknown()),
+  policies: z.array(z.unknown()),
+  sampleCalls: z.array(z.unknown()),
+}) satisfies z.ZodType<MatrixShape>
+
+/**
+ * Decode the matrix the page renders, or say why it could not be read.
+ *
+ * Total, per the {@link Decoder} contract.
+ */
+export const decodeMatrixShape: Decoder<MatrixShape> = (body: unknown) => {
+  const parsed = matrixShapeSchema.safeParse(body)
+  if (parsed.success) return conforms(parsed.data)
+  return violates(
+    `The capability matrix came back in a shape this dashboard cannot read (${firstFault(parsed.error)}), so the grid cannot be rendered and nothing about any agent's capabilities can be stated. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
+  )
+}

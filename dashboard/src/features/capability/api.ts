@@ -9,9 +9,23 @@ import {
   type Certain,
   type QueryOutcome,
 } from '../../lib/truthfulness'
-import { decodeCascadeFields } from './schema'
+import { decodeCascadeFields, decodeMatrixShape } from './schema'
 import { cascadeEvidenceOf } from './summary'
-import type { CapabilityMatrix } from './types'
+import type { CapabilityAgent, CapabilityMatrix, Policy, Resource, SampleCall } from './types'
+
+/**
+ * The matrix as the page may read it once its collections have been verified.
+ *
+ * Deliberately not `CapabilityMatrix`: that type also claims `cascadeLoaded`,
+ * which this projection does not check — the cascade lane has its own decoder,
+ * and conflating them would make a missing flag blank the whole grid.
+ */
+export interface CapabilityMatrixView {
+  readonly agents: CapabilityAgent[]
+  readonly resources: Resource[]
+  readonly policies: Policy[]
+  readonly sampleCalls: SampleCall[]
+}
 
 /**
  * The live capability matrix backing the Capability page (AAASM-5090).
@@ -75,4 +89,30 @@ export function cascadeEvidenceFromQuery(
   // `unconfigured` even if the projection happened to list a policy row.
   if (!matrix.value.cascadeLoaded) return known({ documentCount: 0 })
   return cascadeEvidenceOf(matrix.value.policies)
+}
+
+/**
+ * The matrix the page renders, or an explicit absence (AAASM-5369).
+ *
+ * The sibling of {@link cascadeEvidenceFromQuery}, and the one that closes the
+ * body the ticket itself names. `{}` never reached that fold: `CapabilityPage`
+ * read `matrix.agents` for `applyFilters` and for its empty-state branch first,
+ * so a body with no `agents` threw `TypeError: Cannot read properties of
+ * undefined (reading 'filter')` during render. The page died into the shell's
+ * `ErrorBoundary` — "Something went wrong" — and the summary's absence, however
+ * correct, was never rendered. A schema-invalid `200` has to reach the operator
+ * as an absence on the page, not as a boundary fallback.
+ *
+ * The cast is the narrow one `decodeMatrixShape` documents: array-ness is now
+ * proven, element contents are not, and every field those rows are read for is
+ * either an opaque display value or validated at the point of use. That is
+ * strictly less unverified than the `data as CapabilityMatrix` it sits above,
+ * and it is stated rather than assumed.
+ */
+export function capabilityMatrixFromQuery(
+  outcome: QueryOutcome<unknown>,
+): Certain<CapabilityMatrixView> {
+  const shape = certainFromShapedQuery(outcome, decodeMatrixShape)
+  if (!isKnown(shape)) return propagateAbsence(shape)
+  return known(shape.value as unknown as CapabilityMatrixView)
 }
