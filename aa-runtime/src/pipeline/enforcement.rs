@@ -307,11 +307,32 @@ impl RuntimeScanner {
         }
     }
 
-    /// Normalize a `bytes` field to UTF-8, then scan and redact it in place.
+    /// Scan a `bytes` field and redact it in place without ever corrupting it
+    /// (AAASM-5346).
     ///
-    /// The original bytes are left untouched when the field is clean; they are
-    /// rewritten (from the normalized, redacted text) only when a finding is
-    /// present.
+    /// Every payload is scanned — an undecodable one is *never* waved through,
+    /// because skipping the write-back must never mean skipping the decision.
+    /// What differs is how a dirty payload is repaired:
+    ///
+    /// * **Valid UTF-8** — finding offsets are byte offsets into `field` itself,
+    ///   so [`ScanResult::redact`] splices exactly the flagged spans and every
+    ///   other byte survives verbatim.
+    /// * **Not valid UTF-8** (binary body, or a multi-byte character cut by a
+    ///   chunk boundary) — the scan runs against a lossy decoding, in which each
+    ///   invalid byte has become a 3-byte U+FFFD. Those offsets do not map back
+    ///   onto `field`, so no faithful splice exists. Writing the decoded text
+    ///   back would replace the caller's bytes with replacement characters —
+    ///   silent corruption, and the bug this method was rewritten to fix.
+    ///
+    ///   ADR 0015 §1 already decides this case ("caller text ≠ scanned text"):
+    ///   redaction degrades to an opaque whole-value replacement rather than
+    ///   passing the original through. Leaving the payload alone would forward a
+    ///   detected secret in the clear — a fail-open — so the field is dropped
+    ///   whole into [`UNDECODABLE_MARKER`] and counted in
+    ///   [`EnforcementOutcome::undecodable_fields`], mirroring the
+    ///   [`OversizedPolicy::RedactWhole`] precedent.
+    ///
+    /// A clean payload is left byte-identical in both branches.
     fn scan_bytes(&self, field: &mut Vec<u8>, outcome: &mut EnforcementOutcome) {
         if field.is_empty() {
             return;
@@ -320,17 +341,38 @@ impl RuntimeScanner {
             self.apply_oversized_bytes(field, outcome);
             return;
         }
-        // Count the payload as it arrived. `from_utf8_lossy` below can expand
-        // it (each invalid byte becomes a 3-byte U+FFFD), and the accounting
-        // must describe the payload, not an artefact of decoding it.
+        // Count the payload as it arrived. Lossy decoding can expand it (each
+        // invalid byte becomes a 3-byte U+FFFD), and the accounting must
+        // describe the payload, not an artefact of decoding it.
         outcome.scanned_bytes += field.len();
-        // Normalize: a `bytes` payload is scanned as lossy UTF-8 text.
-        let text = String::from_utf8_lossy(field);
-        let result = self.scanner.scan(&text);
-        if !result.is_clean() {
-            let redacted = result.redact(&text);
-            *field = redacted.into_bytes();
-            outcome.findings.extend(result.findings);
+
+        // Computed inside the match so the immutable borrow of `field` taken by
+        // the decode ends before the write-back below.
+        let replacement: Option<Vec<u8>> = match std::str::from_utf8(field) {
+            Ok(text) => {
+                let result = self.scanner.scan(text);
+                if result.is_clean() {
+                    None
+                } else {
+                    let redacted = result.redact(text).into_bytes();
+                    outcome.findings.extend(result.findings);
+                    Some(redacted)
+                }
+            }
+            Err(_) => {
+                let text = String::from_utf8_lossy(field);
+                let result = self.scanner.scan(&text);
+                if result.is_clean() {
+                    None
+                } else {
+                    outcome.findings.extend(result.findings);
+                    outcome.undecodable_fields += 1;
+                    Some(UNDECODABLE_MARKER.as_bytes().to_vec())
+                }
+            }
+        };
+        if let Some(bytes) = replacement {
+            *field = bytes;
         }
     }
 
