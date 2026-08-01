@@ -1862,6 +1862,20 @@ mod tests {
     }
 
     #[test]
+    fn detects_mixed_width_credit_card() {
+        // A single full-width digit inside an otherwise ASCII number is the
+        // cheapest form of the evasion and the case where the byte-offset
+        // arithmetic is least uniform — one 3-byte character among 15 1-byte
+        // ones.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("card=4532０15112830366");
+        assert_eq!(
+            result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+            vec![CredentialKind::CreditCardLuhn],
+        );
+    }
+
+    #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("contact: user@example.com for support");
