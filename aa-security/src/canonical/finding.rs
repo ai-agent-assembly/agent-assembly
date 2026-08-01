@@ -56,7 +56,6 @@ impl ByteSpan {
 /// already publishes over `GET /api/v1/scrub/patterns`, lifted into a type so
 /// the canonical model does not introduce a second, divergent scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Severity {
     /// Direct access to a live account, key or regulated identifier.
     Critical,
@@ -98,7 +97,6 @@ impl Severity {
 /// compile. Confidence is evidence about a detection, never an authorisation
 /// input — Agent Assembly owns the decision (ADR 0032 §4 carve-out, ADR 0002).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum ConfidenceBand {
     /// A recognizer that identified the exact thing it found.
     High,
@@ -126,7 +124,6 @@ impl ConfidenceBand {
 /// report: a `deterministic` hit and a `heuristic` hit warrant very different
 /// responses, and today both arrive labelled only with a `CredentialKind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum DetectionMethod {
     /// A literal, structural or checksum match that cannot be wrong about what
     /// it matched.
@@ -160,7 +157,6 @@ impl DetectionMethod {
 /// handle its input records a failure outcome elsewhere and never emits a
 /// finding claiming the input was fine (ADR 0032 §5, validation requirement 8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum FindingStatus {
     /// The recognizer is certain of what it found.
     Confirmed,
@@ -198,7 +194,6 @@ impl FindingStatus {
 /// string-typed identity is a convention, not a boundary. Adding a recognizer —
 /// B-7's locale packs are next — is a source change, which is the point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[non_exhaustive]
 pub enum Recognizer {
     /// The built-in Aho-Corasick scanner in [`crate::scanner`].

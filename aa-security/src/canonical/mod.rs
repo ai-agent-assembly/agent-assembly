@@ -88,6 +88,8 @@ mod category;
 mod finding;
 mod lift;
 mod mapping;
+#[cfg(feature = "serde")]
+mod serde_impls;
 
 pub use category::{CanonicalCategory, CategoryBase, CategoryQualifier};
 pub use finding::{

@@ -14,7 +14,6 @@ use core::fmt;
 /// [`CategoryBase::AccessToken`] must keep matching when a new vendor prefix is
 /// added to the scanner. Anything finer belongs in a [`CategoryQualifier`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum CategoryBase {
     /// A vendor API key that authenticates to a model or SaaS provider.
     ApiKey,
@@ -86,7 +85,6 @@ impl fmt::Display for CategoryBase {
 /// a policy document, or a response from a process that is not this one — can
 /// become a qualifier without a code change (ADR 0032 validation requirement 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum CategoryQualifier {
     /// A jurisdiction-specific instance of the base category, rendered
     /// `<bcp47-tag>/<variant>`.
@@ -122,7 +120,6 @@ impl fmt::Display for CategoryQualifier {
 /// rendered form is the spelling used in events, metric labels and policy, so it
 /// is a contract — see the module documentation for the stability rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct CanonicalCategory {
     base: CategoryBase,
     qualifier: Option<CategoryQualifier>,
