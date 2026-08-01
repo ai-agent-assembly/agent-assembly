@@ -93,6 +93,20 @@
   color: var(--ink-3);
 }
 
+/* The one live region on the page (AAASM-5112, preserved by AAASM-5347). It
+   groups the *fetched* figures so assistive tech hears a measurement or the
+   reason there is not one, and never the static "the API cannot answer this"
+   segments that sit outside it. Rendered as a flex row so grouping them costs
+   no visual change to the strip. */
+.scrub-stats-measured {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  color: var(--ink-3);
+}
+
 /* `.scrub-stats-ok` is gone: its only user was the hardcoded "● 0 leaks (30d)"
    all-clear, and nothing on this strip is entitled to a success colour
    (AAASM-5112). Absence tone now comes from the shared truthfulness palette. */
@@ -129,4 +143,16 @@
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+}
+
+/* Shown in place of the whole surface when `/scrub/patterns` answers with an
+   impossible catalogue — a 200 carrying no detectors. Deliberately not the
+   `ErrorState` retry panel: nothing failed, so there is nothing to retry, and
+   offering a retry button would misdescribe the problem. */
+.scrub-catalogue-absent {
+  padding: 48px 24px;
+  display: flex;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
 }
