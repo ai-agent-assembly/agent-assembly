@@ -160,3 +160,77 @@ impl TryFrom<&CredentialFinding> for CanonicalFinding {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CredentialScanner;
+
+    /// The exact bypass this module's fallibility exists for.
+    ///
+    /// `CredentialFinding` derives `Deserialize` with `end` skipped, so a
+    /// finding rebuilt from JSON has `end == 0`. Before the lift was fallible
+    /// this produced a canonical finding with an inverted span and the built-in
+    /// scanner's provenance, silently. Constructed here through the same public
+    /// API a downstream crate has — `from_regex_match` leaves `end` at the
+    /// caller's value — so the test fails if the check is ever removed.
+    #[test]
+    fn a_finding_with_an_empty_or_inverted_span_is_refused() {
+        // `end == offset`: the shape a `#[serde(skip)]` round-trip produces when
+        // the offset is 0, and the shape a zero-length match would have.
+        let empty = CredentialFinding::from_regex_match(0, 0);
+        assert_eq!(
+            CanonicalFinding::try_from(&empty),
+            Err(LiftError::MalformedSpan { offset: 0, end: 0 })
+        );
+
+        // `end < offset`: what a deserialized finding with a non-zero offset
+        // looks like, because `end` defaults while `offset` survives the wire.
+        let inverted = CredentialFinding::from_regex_match(6, 0);
+        assert_eq!(
+            CanonicalFinding::try_from(&inverted),
+            Err(LiftError::MalformedSpan { offset: 6, end: 0 })
+        );
+
+        // And the honest half: a well-formed span is still accepted, so the
+        // check cannot be satisfied by refusing everything.
+        let ok = CredentialFinding::from_regex_match(6, 26);
+        assert!(CanonicalFinding::try_from(&ok).is_ok());
+    }
+
+    /// The canonical span must reproduce the scanner's own byte range, not just
+    /// its start offset.
+    ///
+    /// This is the only test that exercises the `end` accessor added to
+    /// `scanner.rs`, which is the entire reason that file was touched. The
+    /// integration test cannot do it: `end()` is `pub(crate)`, so ground truth
+    /// is unreachable from outside the crate.
+    #[test]
+    fn the_canonical_span_reproduces_the_scanner_byte_range() {
+        let scanner = CredentialScanner::new();
+        let corpus = [
+            "aws_access_key_id = AKIAIOSFODNN7EXAMPLE",
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAxGZ1bGxvZmVudHJvcHlkYXRh\n-----END RSA PRIVATE KEY-----",
+            "DATABASE_URL=postgres://svc:hunter2@db.internal:5432/app",
+            "contact alice.smith@example.com for access",
+            "card on file 4111111111111111 expires soon",
+        ];
+        let mut checked = 0usize;
+        for text in corpus {
+            for finding in &scanner.scan(text).findings {
+                let canonical = CanonicalFinding::try_from(finding).expect("scanner spans are well formed");
+                assert_eq!(canonical.span.start(), finding.offset, "start moved");
+                assert_eq!(canonical.span.end(), finding.end(), "end moved");
+                // A span that reproduces both bounds must also slice the text.
+                assert!(text.is_char_boundary(canonical.span.start()));
+                assert!(text.is_char_boundary(canonical.span.end()));
+                assert!(!canonical.span.is_empty(), "a finding always covers bytes");
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 5,
+            "corpus produced too few findings to prove anything: {checked}"
+        );
+    }
+}
