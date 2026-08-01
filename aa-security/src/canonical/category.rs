@@ -38,6 +38,24 @@ pub enum CategoryBase {
     /// the identifier's format, checksum and name are properties of the issuing
     /// jurisdiction, not of the category.
     NationalId,
+    /// A registration number identifying a **business** to a tax authority, such
+    /// as Taiwan's 統一編號 or a US EIN.
+    ///
+    /// Separate from [`CategoryBase::NationalId`] rather than folded into it,
+    /// even though both are government-issued and both are locale-qualified.
+    /// `NATIONAL_ID` names a *personal* identifier, and the difference is
+    /// operative: a policy that redacts personal identifiers would otherwise
+    /// also redact the company number that legitimately appears on every invoice
+    /// and contract an agent handles, and an operator reading a report could not
+    /// tell the two apart.
+    TaxIdentifier,
+    /// A telephone number.
+    ///
+    /// A new base because no existing one describes it — it is neither a
+    /// credential nor an identifier a jurisdiction issues to a person, and
+    /// mapping it onto any of the above would make the coarse handle lie about
+    /// what a policy is matching.
+    PhoneNumber,
     /// Unstructured material flagged by an entropy or encoding heuristic rather
     /// than by a recognizer that knows what it found.
     HighEntropySecret,
@@ -62,6 +80,8 @@ impl CategoryBase {
             Self::PaymentCardNumber => "PAYMENT_CARD_NUMBER",
             Self::EmailAddress => "EMAIL_ADDRESS",
             Self::NationalId => "NATIONAL_ID",
+            Self::TaxIdentifier => "TAX_IDENTIFIER",
+            Self::PhoneNumber => "PHONE_NUMBER",
             Self::HighEntropySecret => "HIGH_ENTROPY_SECRET",
             Self::PolicyDefinedMatch => "POLICY_DEFINED_MATCH",
         }

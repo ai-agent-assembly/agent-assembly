@@ -33,6 +33,8 @@
 //! | `PAYMENT_CARD_NUMBER` | payment card number |
 //! | `EMAIL_ADDRESS` | email address |
 //! | `NATIONAL_ID` | government-issued personal identifier |
+//! | `TAX_IDENTIFIER` | registration number identifying a business to a tax authority |
+//! | `PHONE_NUMBER` | telephone number |
 //! | `HIGH_ENTROPY_SECRET` | entropy/encoding heuristic hit of unknown kind |
 //! | `POLICY_DEFINED_MATCH` | match from an operator-authored policy pattern |
 //!
