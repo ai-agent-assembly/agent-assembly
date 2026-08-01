@@ -103,7 +103,15 @@ impl EnforcementConfig {
 /// Carries only finding metadata (kind + offset + redacted label) — never a
 /// raw secret. Consumed by the metrics layer (AAASM-2585) and the verification
 /// suite (AAASM-2587).
+///
+/// `#[non_exhaustive]` because this struct records *what enforcement did*, and
+/// that vocabulary keeps growing — `undecodable_fields` (AAASM-5346) is the
+/// latest, and the ADR 0032 `sensitive_data_disposition` work will add more.
+/// Without it every such addition is a semver break for any out-of-crate struct
+/// literal. Construct it with [`Default`] and functional-update syntax
+/// (`..Default::default()`); field *reads* are unaffected (AAASM-5346).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EnforcementOutcome {
     /// Every credential finding across all scanned fields of the event.
     pub findings: Vec<CredentialFinding>,
