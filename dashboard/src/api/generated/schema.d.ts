@@ -262,8 +262,62 @@ export interface paths {
          *     `metadata["mode"]`) is written durably and a `GovernanceMutation` audit is
          *     emitted with the **verified** actor + tenant from the authenticated caller —
          *     never the request body.
+         *
+         *     **Cascade (AAASM-5340).** When the request carries a `cascade`
+         *     confirmation, the toggle applies to the whole subtree rooted at `{id}` (root
+         *     included) rather than the single agent. The direction, Admin gate, reason,
+         *     and expiry window are validated **once** for the set; then the mode is
+         *     persisted to every affected agent, each with its **own** actor-attributed
+         *     `GovernanceMutation` audit. The caller must echo back the exact affected-id
+         *     set + count it was shown by `/enforcement-mode/preview`:
+         *     - the recomputed subtree (compared as an order-independent **set**, plus the
+         *       count) differing from the echo-back → **`409` Conflict** (the tree changed
+         *       since preview — re-preview), chosen over `422` because the request is
+         *       well-formed but *stale* against current state, exactly the semantics of a
+         *       version conflict;
+         *     - a recomputed set larger than `MAX_CASCADE_AGENTS` → **`422`** (an
+         *       unprocessable over-limit request, never truncated);
+         *     - a subtree agent outside the caller's tenant → **`403`** (never dropped).
+         *
+         *     Without a `cascade` field the behaviour is byte-identical to AAASM-5338.
          */
         post: operations["set_enforcement_mode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{id}/enforcement-mode/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/agents/{id}/enforcement-mode/preview` — dry-run the cascade.
+         * @description Compute the explicit affected-agent set for a cascade rooted at `{id}`.
+         *
+         *     Returns the affected agent ids (the subtree rooted at `{id}`, **including the
+         *     root**) and their count without mutating any agent — a preview the UI shows
+         *     before an operator commits a subtree-wide enforcement-mode change
+         *     (AAASM-5340, ADR 0021 Option B). The order is deterministic: the root first,
+         *     then its descendants in BFS order. A subsequent cascade apply must echo this
+         *     exact set + count back (the TOCTOU / mis-click guard).
+         *
+         *     It shares the whole authorization contract of the apply path: the root is
+         *     tenant-authorized (403/404), every descendant is tenant-confined (a node
+         *     outside the caller's tenant is a `403`, never dropped), and a set larger than
+         *     `MAX_CASCADE_AGENTS` (50) is rejected `422` — matching apply so the UI can
+         *     surface the over-limit rejection before the operator commits. The `Write`
+         *     floor authenticates the caller; the preview is direction-agnostic (it takes
+         *     no body) so it needs no Admin gate — the weakening Admin check happens on the
+         *     apply path.
+         */
+        post: operations["preview_enforcement_mode_cascade"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3676,6 +3730,28 @@ export interface components {
             updated: components["schemas"]["CapabilityAgent"][];
         };
         /**
+         * @description Echo-back confirmation a cascade apply must carry (AAASM-5340).
+         *
+         *     The `/enforcement-mode/preview` dry-run returns the explicit affected-id set
+         *     and count; a subsequent cascade apply echoes them back here. The handler
+         *     recomputes the current subtree and compares as an **order-independent set**
+         *     (plus the count): if the tree changed between preview and apply — an agent
+         *     spawned or deregistered, a mis-click on a stale UI — the apply is rejected
+         *     `409` so the operator re-previews rather than acting on a stale picture.
+         */
+        CascadeConfirmation: {
+            /**
+             * @description The affected-agent count the caller was shown by the preview. Must equal
+             *     the recomputed subtree size.
+             */
+            expected_count: number;
+            /**
+             * @description The hex-encoded affected agent ids the caller was shown by the preview.
+             *     Compared as a set (order-independent) against the recomputed subtree.
+             */
+            expected_ids: string[];
+        };
+        /**
          * @description Classifier for what a proposed-vs-current decision change represents.
          * @enum {string}
          */
@@ -4021,6 +4097,52 @@ export interface components {
             ts: number;
         };
         /**
+         * @description The body of a successful `POST /api/v1/agents/{id}/enforcement-mode`
+         *     response (AAASM-5340). Untagged so the wire shape is exactly the inner
+         *     variant: a single-agent toggle (no `cascade` field) serializes as an
+         *     [`EnforcementModeResponse`] — byte-identical to AAASM-5338 — while a cascade
+         *     serializes as an [`EnforcementModeCascadeResponse`]. Discriminated by the
+         *     presence of `affected_ids`.
+         */
+        EnforcementModeApplyResponse: components["schemas"]["EnforcementModeResponse"] | components["schemas"]["EnforcementModeCascadeResponse"];
+        /**
+         * @description Response from `POST /api/v1/agents/{id}/enforcement-mode/preview`
+         *     (AAASM-5340).
+         *
+         *     The explicit affected-agent set for a cascade rooted at `{id}`, computed
+         *     without mutating anything. The order is deterministic: the root first, then
+         *     its descendants in the BFS order [`AgentRegistry::descendants_of`] returns.
+         *     The set is what a subsequent cascade apply must echo back verbatim.
+         */
+        EnforcementModeCascadePreviewResponse: {
+            /** @description Hex-encoded affected agent ids: root first, then descendants in BFS order. */
+            affected_ids: string[];
+            /** @description The number of affected agents (`affected_ids.len()`, i.e. root + descendants). */
+            count: number;
+        };
+        /**
+         * @description Response from a cascade `POST /api/v1/agents/{id}/enforcement-mode`
+         *     (AAASM-5340) — returned only when the request carried a `cascade`
+         *     confirmation. Reports the full affected set the mode was applied to.
+         */
+        EnforcementModeCascadeResponse: {
+            /**
+             * @description Hex-encoded affected agent ids the mode was applied to: root first, then
+             *     descendants in BFS order.
+             */
+            affected_ids: string[];
+            /** @description The number of affected agents the mode was applied to. */
+            count: number;
+            /**
+             * Format: date-time
+             * @description The shadow-window deadline, echoed on a weakening cascade; `null` on a
+             *     strengthening cascade (the expiry is cleared).
+             */
+            expires_at?: string | null;
+            /** @description The enforcement mode now in force across the whole affected set. */
+            new_mode: components["schemas"]["EnforcementModeLabel"];
+        };
+        /**
          * @description Wire vocabulary for [`AgentConfigResponse::enforcement_mode`].
          *
          *     AAASM-5098 / ADR-0022 — the agent's registered enforcement-mode override,
@@ -4033,6 +4155,7 @@ export interface components {
         EnforcementModeLabel: "enforce" | "observe" | "disabled";
         /** @description Request body for `POST /api/v1/agents/:id/enforcement-mode` (AAASM-5097). */
         EnforcementModeRequest: {
+            cascade?: null | components["schemas"]["CascadeConfirmation"];
             /**
              * Format: date-time
              * @description When the shadow window ends. **Required on a weakening (`observe`)
@@ -7005,7 +7128,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EnforcementModeResponse"];
+                    "application/json": components["schemas"]["EnforcementModeApplyResponse"];
                 };
             };
             /** @description Invalid agent ID format */
@@ -7022,7 +7145,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller lacks the scope required for the requested direction */
+            /** @description Caller lacks the scope required for the requested direction, or a subtree agent is out of tenant */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7036,7 +7159,72 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Weakening request missing/invalid reason or expires_at */
+            /** @description Cascade echo-back set/count differs from the current subtree (re-preview) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Weakening request missing/invalid reason or expires_at, or cascade exceeds the maximum agent count */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_enforcement_mode_cascade: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Hex-encoded root agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Affected agent set for the cascade */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnforcementModeCascadePreviewResponse"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks access to the root or a subtree agent */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Root agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cascade exceeds the maximum affected-agent count */
             422: {
                 headers: {
                     [name: string]: unknown;

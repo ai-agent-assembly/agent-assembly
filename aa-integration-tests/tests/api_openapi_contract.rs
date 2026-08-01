@@ -100,10 +100,13 @@ fn openapi_spec_loads_without_errors() {
     // bringing it to 91. AAASM-5097 added
     // /api/v1/agents/{id}/enforcement-mode (the ADR 0021 direction-asymmetric
     // enforcement-mode toggle — Write to strengthen, Admin + reason + bounded
-    // expiry to weaken to shadow), bringing it to 92.
+    // expiry to weaken to shadow), bringing it to 92. AAASM-5340 added
+    // /api/v1/agents/{id}/enforcement-mode/preview (the cascade dry-run — the
+    // affected subtree, root + descendants, for a subtree-wide enforcement-mode
+    // change; the apply path echoes this set back), bringing it to 93.
     assert_eq!(
-        path_count, 92,
-        "openapi/v1.yaml must declare exactly 92 paths, found {path_count}"
+        path_count, 93,
+        "openapi/v1.yaml must declare exactly 93 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -160,6 +163,8 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/agents/{id}/edges",
         // AAASM-5097 — ADR 0021 direction-asymmetric enforcement-mode toggle.
         "/api/v1/agents/{id}/enforcement-mode",
+        // AAASM-5340 — cascade dry-run: the affected subtree for a subtree-wide toggle.
+        "/api/v1/agents/{id}/enforcement-mode/preview",
         "/api/v1/agents/{id}/graph",
         "/api/v1/agents/{id}/resume",
         "/api/v1/agents/{id}/subtree-burn",
