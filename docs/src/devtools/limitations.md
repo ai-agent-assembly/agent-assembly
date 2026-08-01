@@ -265,7 +265,7 @@ unrecognised — a bespoke internal token, a secret with no distinguishing prefi
 a value split across fields. There is no claim of complete detection, and the
 Spike explicitly does not license one.
 
-Two knock-on limits worth stating:
+Three knock-on limits worth stating:
 
 * **An undetected secret is not absent from audit records.** If the scanner never
   classified a value as a secret, it was never redacted, and it may appear in a
