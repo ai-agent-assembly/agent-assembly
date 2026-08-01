@@ -211,7 +211,13 @@ export function ScrubPage() {
         </div>
       </header>
 
-      <div className="scrub-stats" aria-label="scrubbing posture">
+      {/*
+        `role="group"` is load-bearing, not decoration: name-from-author is not
+        supported on a generic container, so most assistive tech drops the
+        `aria-label` on a bare `<div>` and the strip is announced as an unnamed
+        run of text. The role is what makes "scrubbing posture" audible.
+      */}
+      <div className="scrub-stats" role="group" aria-label="scrubbing posture">
         {/*
           The page's only live region, and it holds only fetched figures. The
           segments after it are statements about what the API cannot answer;
