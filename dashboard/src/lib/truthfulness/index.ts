@@ -37,3 +37,12 @@ export {
 } from './verdict'
 
 export { certainFromQuery, type CertainFromQueryOptions, type QueryOutcome } from './query'
+
+export {
+  certainFromShapedQuery,
+  conforms,
+  violates,
+  type DecodeResult,
+  type Decoder,
+  type ShapedQueryOptions,
+} from './shape'
