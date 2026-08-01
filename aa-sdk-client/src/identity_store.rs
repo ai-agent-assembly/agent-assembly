@@ -654,3 +654,374 @@ fn parse_key_record(path: &Path, contents: &str) -> Result<KeyRecord, IdentitySt
         seed: Zeroizing::new(seed),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signature, VerifyingKey};
+
+    /// Assert that a store operation refused, and hand back its reason.
+    ///
+    /// `AgentKeypair` has no `Debug` — deliberately, since it holds a signing
+    /// key and a derived `Debug` is how key material ends up in a test log — so
+    /// `expect_err` cannot be used on these results. This says the same thing
+    /// without asking the success type to be printable.
+    fn expect_refusal(result: Result<AgentKeypair, IdentityStoreError>, what: &str) -> IdentityStoreError {
+        match result {
+            Ok(_) => panic!("{what} must be refused, but a usable key was returned"),
+            Err(e) => e,
+        }
+    }
+
+    /// A store in a directory unique to this test, so no case can pass by
+    /// reading a key another case wrote.
+    fn store(label: &str) -> IdentityStore {
+        let root = std::env::temp_dir().join(format!(
+            "aa-identity-store-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        IdentityStore::at(root)
+    }
+
+    // ── the key is random, not derived ────────────────────────────────────
+
+    /// The defect, stated as a test. Two independent enrolments of the *same*
+    /// agent id must produce different keys — if the identifier still determined
+    /// the key, an attacker who read the identifier would hold the key.
+    #[test]
+    fn enrolling_one_identifier_twice_in_two_stores_yields_two_different_keys() {
+        let first = store("random-a").enroll("ops-laptop").expect("enrolment");
+        let second = store("random-b").enroll("ops-laptop").expect("enrolment");
+
+        assert_ne!(
+            first.public_key_hex(),
+            second.public_key_hex(),
+            "the same identifier produced the same key, so the private half is a function of \
+             public data and the possession proof proves nothing"
+        );
+    }
+
+    /// The specific value the old implementation produced must not come back.
+    /// A regression that reintroduced `SHA-256(agent_id)` seeding would still
+    /// pass the test above if it were the only guard, because both stores would
+    /// merely agree — this names the forbidden value directly.
+    #[test]
+    fn an_enrolled_key_is_never_the_sha256_of_the_identifier() {
+        let agent_id = "ops-laptop";
+        let enrolled = store("not-sha").enroll(agent_id).expect("enrolment");
+
+        assert_ne!(
+            enrolled.public_key_hex(),
+            AgentKeypair::derive_transport_key(agent_id).public_key_hex(),
+            "the identity key is the pre-AAASM-5332 derived key; anyone who knows `{agent_id}` \
+             holds it"
+        );
+    }
+
+    // ── the key is durable ────────────────────────────────────────────────
+
+    /// Durability is the other half of the contract: the identity that
+    /// registered must be the identity a later launch runs under.
+    #[test]
+    fn a_stored_key_is_read_back_rather_than_regenerated() {
+        let store = store("durable");
+        let enrolled = store.enroll("agent-a").expect("enrolment");
+        let reloaded = store.load("agent-a").expect("load");
+
+        assert_eq!(enrolled.public_key_hex(), reloaded.public_key_hex());
+        assert_eq!(
+            store.load_or_enroll("agent-a").expect("load").public_key_hex(),
+            enrolled.public_key_hex(),
+            "load_or_enroll must load when a key exists, not mint a second identity"
+        );
+    }
+
+    #[test]
+    fn distinct_identifiers_get_distinct_keys_and_distinct_files() {
+        let store = store("distinct");
+        let a = store.enroll("agent-a").expect("enrolment");
+        let b = store.enroll("agent-b").expect("enrolment");
+
+        assert_ne!(a.public_key_hex(), b.public_key_hex());
+        assert_ne!(store.key_path("agent-a"), store.key_path("agent-b"));
+    }
+
+    #[test]
+    fn loading_an_unenrolled_identity_reports_not_enrolled_rather_than_inventing_one() {
+        let err = expect_refusal(store("absent").load("never-seen"), "loading an unenrolled identity");
+        assert!(matches!(err, IdentityStoreError::NotEnrolled { .. }), "got {err:?}");
+    }
+
+    // ── the key is never silently overwritten ─────────────────────────────
+
+    /// Contract item 4. The key file *is* the agent's identity, so a second
+    /// enrolment must fail rather than retire an identity the gateway has
+    /// records for.
+    #[test]
+    fn enrolling_twice_refuses_and_leaves_the_first_key_intact() {
+        let store = store("no-overwrite");
+        let original = store.enroll("agent-a").expect("first enrolment");
+
+        let err = expect_refusal(store.enroll("agent-a"), "a second enrolment");
+        assert!(matches!(err, IdentityStoreError::AlreadyEnrolled { .. }), "got {err:?}");
+
+        assert_eq!(
+            store.load("agent-a").expect("load").public_key_hex(),
+            original.public_key_hex(),
+            "the refused enrolment must not have disturbed the stored key"
+        );
+    }
+
+    // ── the key file is protected ─────────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn an_enrolled_key_file_is_owner_only_and_so_is_its_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let store = store("perms");
+        store.enroll("agent-a").expect("enrolment");
+
+        let file_mode = fs::metadata(store.key_path("agent-a")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600, "key file mode is {file_mode:04o}, not 0600");
+
+        let dir_mode = fs::metadata(store.root()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "key directory mode is {dir_mode:04o}, not 0700");
+    }
+
+    /// A key another principal can read is that principal's key too, so it is
+    /// refused rather than used.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_or_world_accessible_key_file_is_refused_not_used() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for loosened in [0o640, 0o604, 0o660, 0o666, 0o644] {
+            let store = store(&format!("loose-{loosened:o}"));
+            store.enroll("agent-a").expect("enrolment");
+            let path = store.key_path("agent-a");
+            fs::set_permissions(&path, fs::Permissions::from_mode(loosened)).unwrap();
+
+            let err = expect_refusal(store.load("agent-a"), &format!("a key file with mode {loosened:04o}"));
+            assert!(matches!(err, IdentityStoreError::Untrusted { .. }), "got {err:?}");
+            assert!(
+                err.to_string().contains("group or other"),
+                "the refusal must say the mode is the problem: {err}"
+            );
+        }
+    }
+
+    /// A key file owned by somebody else must be refused. Ownership cannot be
+    /// changed without privilege, so the check is exercised through the
+    /// `expected_uid` parameter — which is why it is a parameter.
+    #[cfg(unix)]
+    #[test]
+    fn a_key_file_owned_by_another_user_is_refused() {
+        use std::os::unix::fs::MetadataExt;
+
+        let store = store("foreign-owner");
+        store.enroll("agent-a").expect("enrolment");
+        let path = store.key_path("agent-a");
+        let meta = fs::symlink_metadata(&path).unwrap();
+        let real_uid = meta.uid();
+
+        verify_key_file(&path, &meta, real_uid).expect("our own key file must be accepted");
+
+        let err = verify_key_file(&path, &meta, real_uid.wrapping_add(1))
+            .expect_err("a key file owned by another uid must be refused");
+        assert!(matches!(err, IdentityStoreError::Untrusted { .. }), "got {err:?}");
+        assert!(
+            err.to_string().contains("owned by uid"),
+            "the refusal must say it is an ownership problem: {err}"
+        );
+    }
+
+    /// A symlink is refused rather than followed: the metadata that was vetted
+    /// must be the metadata of the bytes that get read.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_key_file_is_refused_rather_than_followed() {
+        let real = store("symlink-target");
+        let real_key = real.enroll("agent-a").expect("enrolment");
+
+        let attacker = store("symlink-store");
+        let _ = attacker.enroll("bootstrap").expect("create the directory");
+        let link = attacker.key_path("agent-a");
+        std::os::unix::fs::symlink(real.key_path("agent-a"), &link).unwrap();
+
+        let err = expect_refusal(attacker.load("agent-a"), "a symlinked key file");
+        assert!(matches!(err, IdentityStoreError::Untrusted { .. }), "got {err:?}");
+        assert!(err.to_string().contains("symlink"), "{err}");
+
+        // And the guard is not vacuous: the target really was a loadable key.
+        assert!(real.load("agent-a").is_ok());
+        let _ = real_key;
+    }
+
+    // ── malformed records ─────────────────────────────────────────────────
+
+    #[test]
+    fn a_truncated_or_unrecognised_key_file_is_refused_rather_than_guessed_at() {
+        for (label, body) in [
+            ("no-magic", "agent_id_hex=6162\nsecret_seed_hex=00\n"),
+            ("no-seed", "aa-identity-key/1\nagent_id_hex=6162\n"),
+            (
+                "short-seed",
+                "aa-identity-key/1\nagent_id_hex=6162\nsecret_seed_hex=abcd\n",
+            ),
+            (
+                "non-hex-seed",
+                "aa-identity-key/1\nagent_id_hex=6162\nsecret_seed_hex=zz\n",
+            ),
+        ] {
+            let store = store(label);
+            let _ = store.enroll("bootstrap").expect("create the directory");
+            create_exclusive(&store.key_path("ab"), KEY_FILE_MODE, body.as_bytes()).unwrap();
+
+            let err = expect_refusal(store.load("ab"), &format!("a `{label}` key file"));
+            assert!(
+                matches!(err, IdentityStoreError::Malformed { .. }),
+                "`{label}` gave {err:?}"
+            );
+        }
+    }
+
+    /// The filename is a hash, so the file names its own agent. A record for a
+    /// different identity is refused rather than used under the wrong name.
+    #[test]
+    fn a_key_file_recording_a_different_agent_is_refused() {
+        let store = store("mismatch");
+        store.enroll("agent-a").expect("enrolment");
+
+        // Same bytes, filed under another identity's path.
+        let contents = fs::read_to_string(store.key_path("agent-a")).unwrap();
+        create_exclusive(&store.key_path("agent-b"), KEY_FILE_MODE, contents.as_bytes()).unwrap();
+
+        let err = expect_refusal(store.load("agent-b"), "a mis-filed key");
+        assert!(
+            matches!(err, IdentityStoreError::IdentityMismatch { .. }),
+            "got {err:?}"
+        );
+    }
+
+    // ── rotation and revocation ───────────────────────────────────────────
+
+    #[test]
+    fn rotation_replaces_the_identity_and_retains_the_superseded_key() {
+        let store = store("rotate");
+        let before = store.enroll("agent-a").expect("enrolment").did_key();
+
+        let rotation = store.rotate("agent-a").expect("rotation");
+
+        assert_eq!(rotation.previous_did, before);
+        assert_ne!(rotation.current_did, before, "rotation must produce a new identity");
+        assert_eq!(
+            store.load("agent-a").expect("load").did_key(),
+            rotation.current_did,
+            "the store must now serve the rotated key"
+        );
+        assert!(
+            rotation.retired_path.exists(),
+            "the superseded key must be retained, not destroyed"
+        );
+    }
+
+    #[test]
+    fn a_revoked_identity_cannot_be_loaded_or_quietly_re_enrolled() {
+        let store = store("revoke");
+        let did = store.enroll("agent-a").expect("enrolment").did_key();
+
+        let revocation = store.revoke("agent-a", "laptop stolen").expect("revocation");
+        assert_eq!(
+            revocation.revoked_did, did,
+            "the caller must learn which DID to distrust"
+        );
+
+        let load_err = expect_refusal(store.load("agent-a"), "loading a revoked key");
+        assert!(
+            matches!(load_err, IdentityStoreError::Revoked { .. }),
+            "got {load_err:?}"
+        );
+
+        // The important one: revocation must not be undone by simply running the
+        // agent again, which `load_or_enroll` would otherwise do.
+        let reenrol_err = expect_refusal(store.load_or_enroll("agent-a"), "re-enrolling a revoked identity");
+        assert!(
+            matches!(reenrol_err, IdentityStoreError::Revoked { .. }),
+            "got {reenrol_err:?}"
+        );
+    }
+
+    // ── the core acceptance criterion ─────────────────────────────────────
+
+    /// **Knowing the identifier is not enough to forge a possession proof.**
+    ///
+    /// The attacker is given everything public about the victim: the agent id,
+    /// the victim's DID, the victim's `public_key`, and the server nonce. They
+    /// then attempt the forgery for real — reproducing the pre-AAASM-5332
+    /// derivation, which is exactly how the old scheme was broken — and the
+    /// resulting signature is checked against the victim's key the same way
+    /// `verify_possession_proof` checks it.
+    #[test]
+    fn knowing_the_identifier_is_not_enough_to_forge_a_possession_proof() {
+        let agent_id = "ops-laptop";
+        let victim_store = store("forgery-victim");
+        let victim = victim_store.enroll(agent_id).expect("enrolment");
+
+        // Everything the attacker can see: the id is in audit records and on the
+        // dashboard, the DID and public key are in the registry.
+        let victim_did = victim.did_key();
+        let victim_public_key: [u8; 32] = victim.public_key_bytes();
+        let nonce = *b"a-server-issued-challenge-nonce!!";
+
+        // Attempt 1 — the actual old break: derive the key from the identifier.
+        let forged = AgentKeypair::derive_transport_key(agent_id).sign(&nonce);
+
+        // Attempt 2 — derive from the DID instead, since that is public too.
+        let forged_from_did = AgentKeypair::derive_transport_key(&victim_did).sign(&nonce);
+
+        // Attempt 3 — derive from the victim's public key, the most direct guess.
+        let forged_from_pubkey = AgentKeypair::derive_transport_key(&victim.public_key_hex()).sign(&nonce);
+
+        let verifying = VerifyingKey::from_bytes(&victim_public_key).expect("a valid Ed25519 key");
+        for (label, proof) in [
+            ("the agent id", forged),
+            ("the DID", forged_from_did),
+            ("the public key", forged_from_pubkey),
+        ] {
+            assert!(
+                verifying.verify_strict(&nonce, &Signature::from_bytes(&proof)).is_err(),
+                "a proof forged from {label} verified against the victim's key — knowing public \
+                 data is still sufficient to register as this agent"
+            );
+        }
+
+        // The guard is not vacuous: the real holder's proof does verify, so the
+        // failures above are the forgeries failing and not the check being
+        // broken for everyone.
+        assert!(
+            verifying
+                .verify_strict(&nonce, &Signature::from_bytes(&victim.sign(&nonce)))
+                .is_ok(),
+            "the genuine key holder must still be able to prove possession"
+        );
+    }
+
+    /// The attacker cannot get at the key by *reading* it either: an agent's
+    /// key file is not readable through a second store rooted elsewhere, and the
+    /// only thing a foreign store can do with the identifier is enrol a
+    /// different identity — which the gateway sees as a different DID.
+    #[test]
+    fn a_second_installation_cannot_reach_the_first_installations_identity() {
+        let agent_id = "ops-laptop";
+        let genuine = store("two-installs-genuine").enroll(agent_id).expect("enrolment");
+        let attacker = store("two-installs-attacker").enroll(agent_id).expect("enrolment");
+
+        assert_ne!(
+            genuine.did_key(),
+            attacker.did_key(),
+            "a second installation reached the first one's identity from the identifier alone"
+        );
+    }
+}

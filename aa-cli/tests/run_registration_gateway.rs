@@ -240,12 +240,79 @@ async fn replaying_the_clis_own_registration_is_refused() -> anyhow::Result<()> 
     Ok(())
 }
 
+/// **Bypass attempt: knowing the victim's identifier is not enough (AAASM-5332).**
+///
+/// This is the ticket's core acceptance criterion, attempted for real against
+/// the real gateway. The attacker is given every public fact about the victim —
+/// the operator-facing agent id, which appears in audit records, topology views
+/// and on the dashboard, plus the `did:key` it registered under — and tries the
+/// break that worked before AAASM-5332: reconstruct the private key by hashing
+/// the identifier, then present a genuine signature made with it.
+///
+/// It fails at the DID↔key binding, because the victim's DID now names a
+/// randomly generated key rather than `SHA-256(agent_id)`. The registry is
+/// checked afterwards so a refusal cannot be confused with a refusal that still
+/// left a record behind.
+#[tokio::test(flavor = "multi_thread")]
+async fn knowing_the_victims_identifier_does_not_let_an_attacker_register_as_it() -> anyhow::Result<()> {
+    let gateway = TestGateway::start().await?;
+    let _env = GatewayEnv::point_at(gateway.endpoint());
+
+    // The victim registers normally; the attacker observes what is public.
+    let victim = run_registration::register(descriptor("finance-bot", "L2Enforce")).await?;
+    let public_identifier = victim.agent_id.clone();
+    let public_did = victim.registration_did.clone();
+
+    // The pre-AAASM-5332 derivation, applied to the public identifier. This is
+    // precisely the computation that used to yield the victim's private key.
+    let reconstructed = AgentKeypair::derive_transport_key(&public_identifier);
+    assert_ne!(
+        reconstructed.did_key(),
+        public_did,
+        "the identifier still derives the victim's DID, so the key behind it is still public"
+    );
+
+    // A challenge for the attacker's own derived identity — the gateway issues
+    // it, because the attacker does hold that key. The nonce is then aimed at
+    // the victim's DID, which is the attack.
+    let attacker_config = sdk_config("attacker-5332");
+    let nonce = fresh_nonce(gateway.endpoint(), &attacker_config).await;
+
+    let forged = RegisterRequest {
+        agent_id: Some(ProtoAgentId {
+            org_id: String::new(),
+            team_id: TEAM.to_string(),
+            agent_id: public_did.clone(),
+        }),
+        name: "claude_code".to_string(),
+        framework: "aasm-run".to_string(),
+        version: "2.1.999".to_string(),
+        public_key: reconstructed.public_key_hex(),
+        possession_proof: reconstructed.sign(&nonce).to_vec(),
+        registration_nonce: nonce,
+        ..Default::default()
+    };
+
+    let status = submit(gateway.endpoint(), forged)
+        .await
+        .expect_err("an identity reconstructed from the public agent id must be refused");
+    assert_eq!(status.code(), tonic::Code::Unauthenticated, "{status:?}");
+
+    // Exactly one record — the victim's own. The attacker created nothing.
+    let records = gateway.registry().list();
+    assert_eq!(
+        records.len(),
+        1,
+        "the forged registration must not have produced a record"
+    );
+    Ok(())
+}
+
 /// **Bypass attempt: use the CLI's identity with an attacker's key.**
 ///
-/// Presents the victim's `did:key` — the one the CLI registers under, and which
-/// anyone can derive from a public identifier — paired with the attacker's own
-/// public key and a *valid* proof under that key. Only the DID↔key binding
-/// stands between this and a squatted identity (AAASM-4787).
+/// Presents the victim's `did:key` paired with the attacker's own public key and
+/// a *valid* proof under that key. Only the DID↔key binding stands between this
+/// and a squatted identity (AAASM-4787).
 #[tokio::test(flavor = "multi_thread")]
 async fn registering_the_clis_did_under_a_foreign_key_is_refused() -> anyhow::Result<()> {
     let gateway = TestGateway::start().await?;
