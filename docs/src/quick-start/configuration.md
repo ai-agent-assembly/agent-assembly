@@ -101,7 +101,7 @@ value, the precedence is noted.
 | `AASM_API_KEY` | every `aasm` command (global `--api-key`) | The flag wins when both are set — but **prefer the env var**. See the warning below |
 | `AASM_DASHBOARD_PORT` | `aasm dashboard` | Highest — beats `--port` and `dashboard.port` in config |
 | `AASM_VERSION` / `AASM_INSTALL_DIR` | the [install script](installation.md) | Installer only |
-| `AA_POLICY` | `aasm gateway start` | Default policy path; overridden by `--policy` |
+| `AA_POLICY` | `aasm gateway start`, `aasm run` | Default policy path; overridden by `--policy`. `aasm run` refuses to launch when neither this nor any other source resolves — see [Policy YAML Reference](../policy-reference.md#where-a-governed-launch-finds-this-file) |
 | `AA_DATA_DIR` | gateway / proxy / dashboard | Directory for PID files and managed-process state |
 | `AA_PROXY_ADDR` | `aasm proxy start` | Proxy listen address (default `127.0.0.1:8899`) |
 | `AA_PROXY_GATEWAY_ENDPOINT` | `aasm proxy start` | Upstream gateway endpoint the proxy reports to (e.g. `http://127.0.0.1:50051`) |

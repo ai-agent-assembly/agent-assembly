@@ -97,7 +97,45 @@ STORAGE
 > The fleet starts empty (`agents: 0`) — nothing is governed until you launch a
 > tool under `aasm run` in the next step.
 
-## Step 3 — Launch the tool under governance
+## Step 3 — Write the policy the session runs under
+
+Note the `policies: 0` in the status above. A running gateway is a decision
+engine with nothing to decide from, and `aasm run` refuses to launch a tool in
+that state: an absent policy is not permission. Write one first.
+
+```console
+$ cat > ~/.aasm/policy.yaml << 'EOF'
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: research-team
+spec:
+  tools:
+    "*":
+      allow: false
+    read_file:
+      allow: true
+  network:
+    allowlist:
+      - api.anthropic.com
+EOF
+$ aasm policy validate ~/.aasm/policy.yaml
+Policy is valid: /Users/you/.aasm/policy.yaml
+```
+
+`~/.aasm/policy.yaml` is one of the locations `aasm run` searches, along with
+`--policy <FILE>` and `$AA_POLICY` — the same order `aasm gateway start` uses.
+The full order and the four states a resolution can land in (two of which
+refuse) are in [Policy YAML Reference → Where a governed launch finds this
+file](../policy-reference.md#where-a-governed-launch-finds-this-file).
+
+> **Applying a policy to the gateway is a different action.**
+> `aasm policy apply` uploads a document to the gateway's version history; it
+> writes nothing to the locations `aasm run` searches. Run both if you want the
+> same document in both places — a policy can be live on the gateway and still
+> leave the next `aasm run` unconfigured.
+
+## Step 4 — Launch the tool under governance
 
 `aasm run <tool>` is the heart of this scenario. It assigns the session an
 **agent identity**, a **team**, and a **trace id** for lineage tracking, wires
@@ -107,10 +145,16 @@ launched:
 
 ```console
 $ aasm run claude --team-id research --agent-id research-bot-01 --dry-run
+policy=enforced — 2 rule(s) from /Users/you/.aasm/policy.yaml
 --- aasm run dry-run ---
 agent_id:    research-bot-01
 trace_id:    dry-run-daa9d73a-f2fc-4977-9d00-50f4c4025fa9
 session_id:  dry-run-0d7a0c16-25b2-456b-84e8-b7907fa963d1
+
+--- policy ---
+state:  enforced
+source: /Users/you/.aasm/policy.yaml
+detail: enforced — 2 rule(s) from /Users/you/.aasm/policy.yaml
 
 --- managed settings ---
 <dry-run: managed settings not generated>
@@ -133,8 +177,14 @@ SLACK_BOT_TOKEN=***MASKED***
 ...
 ```
 
-Notice two things that are doing real work:
+Notice three things that are doing real work:
 
+- The `--- policy ---` receipt names which of the four effective-policy states
+  this launch resolved to, and from which file. It is printed for all four,
+  including the two that refuse: a preview whose whole job is to say what a live
+  run would do has to show you `state: unconfigured` rather than omit the
+  section and let "no policy at all" look like a formatting quirk. On a state
+  that would refuse, the preview warns and still completes.
 - The `AA_*` environment variables (`AA_AGENT_ID`, `AA_TEAM_ID`, `AA_TRACE_ID`,
   `AA_REGISTRATION_ID`, `AA_SESSION_ID`) are injected so the launched tool's
   events carry identity and lineage back to the gateway.
@@ -151,14 +201,17 @@ starts. Useful flags:
 | `--governance-level <level>` | Override the level Agent Assembly applies. |
 | `--enforcement-mode observe` (or `--observe`) | Compute and audit policy decisions but never block — a shadow run. |
 | `--enforcement-mode enforce` | Default — deny blocks, redact strips. |
+| `--policy <FILE>` | Use this policy for the session. When given it is the entire search — no fallback to `$AA_POLICY` or the well-known locations. |
 | `--no-proxy` | Skip proxy injection (not recommended for governed environments). |
 | `--root-agent <id>` | Record a parent for multi-agent lineage. |
 
 The `--enforcement-mode` distinction matters when rolling governance out: start
 with `--observe` to see what *would* be blocked without breaking the agent, then
-switch to `enforce` once the policy is right.
+switch to `enforce` once the policy is right. Neither mode waives the policy
+requirement: `--observe` chooses what happens to a decision, and an unconfigured
+launch has nothing to decide from, so it is refused either way.
 
-## Step 4 — Observe the governed agent
+## Step 5 — Observe the governed agent
 
 Once the tool is running under `aasm run`, the registered agent appears in the
 fleet and its actions flow into the audit log. You inspect it with:
@@ -178,7 +231,7 @@ and watch its decisions live via the dashboard — see
 You now have a real AI tool running with a stable governed identity, its
 tool-calls and outbound requests *routed* to the gateway for an allow/deny
 decision, secrets scrubbed from the recorded environment, and an audit trail
-keyed to the agent, team, and trace you assigned in Step 3.
+keyed to the agent, team, and trace you assigned in Step 4.
 
 **Routing is not proof.** Everything above describes configuration that was
 applied, which is not evidence that anything inspected the traffic — and a tool

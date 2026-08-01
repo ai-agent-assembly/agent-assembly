@@ -250,6 +250,12 @@ neither the proxy nor `NODE_EXTRA_CA_CERTS` and is **not** protected — this is
 measured bypass, not a theoretical one, and `status` says so rather than
 implying otherwise.
 
+An install is not a policy, and `aasm run` will not launch without one: a
+successful `install` wires up interception, but nothing in the lifecycle decides
+what the agent may do. Write a policy to `~/.aasm/policy.yaml` or pass
+`--policy <FILE>`, or the launch is refused with `policy=unconfigured` — see
+[Onboarding → Step 5](onboarding.md#step-5--write-the-policy-the-session-will-run-under).
+
 ### What is deliberately not offered
 
 * **`ANTHROPIC_BASE_URL` redirection.** Measured in AAASM-5276 delivering a
