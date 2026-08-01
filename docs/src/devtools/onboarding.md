@@ -230,11 +230,21 @@ spec:
     read_file:
       allow: true
     bash:
+      allow: true
       requires_approval_if: "path starts_with \"/etc\""
 EOF
 $ aasm policy validate ~/.aasm/policy.yaml
 Policy is valid: /Users/you/.aasm/policy.yaml
 ```
+
+**Spell `allow:` out on every tool entry.** A tool that omits it is *denied*, not
+allowed — so `bash` above without its `allow: true` would be a flat deny and the
+`requires_approval_if` beside it would never be reached. That default is
+deliberate (AAASM-3134): a half-written rule or a typo'd key must fail closed.
+It does mean a rule can read as an approval gate while behaving as a block —
+`validate` does not warn, and the `--dry-run` receipt reports the policy *state*,
+not its per-tool decisions, so neither will tell you. Being explicit is the only
+check there is.
 
 `~/.aasm/policy.yaml` is one of the locations `aasm run` searches; `--policy
 <FILE>` and `$AA_POLICY` are the others, in the same order
