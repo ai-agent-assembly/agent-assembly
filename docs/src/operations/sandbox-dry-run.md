@@ -53,19 +53,29 @@ spec:
       - "(AKIA|ghp_)[A-Za-z0-9]+"
 EOF
 
-# 2. Apply the policy
+# 2. Apply the policy to the gateway
 aasm policy apply --file coding-team-sandbox.yaml
 
 # 3. Run an agent under observe-mode governance (posture is a runtime flag,
 #    not a policy-document field — see "Policy configuration" below)
-aasm run --observe claude --workspace .
+aasm run --policy coding-team-sandbox.yaml --observe claude --workspace .
 
 # 4. After a few days, review what would have been blocked
 aasm audit list --dry-run-only --since 7d
 
 # 5. Confident the policy is right? Drop --observe to enforce for real.
-aasm run claude --workspace .
+aasm run --policy coding-team-sandbox.yaml claude --workspace .
 ```
+
+> **`--policy` is not optional here, and `--observe` does not make it so.**
+> `aasm run` resolves its own effective policy and refuses the launch when none
+> resolves — an absent policy is not permission, and observe mode only chooses
+> what happens to a decision it does not have. Step 2 does not cover this:
+> `aasm policy apply` uploads the document to the gateway's version history and
+> writes nothing to the locations `aasm run` searches (`--policy` → `$AA_POLICY`
+> → `~/.aasm/policy.yaml` → …). Install the file at `~/.aasm/policy.yaml` if you
+> would rather not pass the flag every time. See
+> [Policy YAML Reference → Where a governed launch finds this file](../policy-reference.md#where-a-governed-launch-finds-this-file).
 
 ---
 
@@ -115,17 +125,23 @@ default — the pre-feature behaviour.
 
 Launches a managed AI dev tool with observe-mode governance for the duration of the session.
 
+Every form below still needs an effective policy — `--policy <FILE>` here, or an
+artifact at one of the searched locations. A posture flag selects what to do with
+a decision; it never substitutes for the rules the decision comes from.
+
 ```bash
 # Boolean shorthand — most common case
-aasm run --observe claude --workspace .
+aasm run --policy ./sandbox.yaml --observe claude --workspace .
 
 # Explicit form — interchangeable with the above
-aasm run --enforcement-mode observe claude --workspace .
+aasm run --policy ./sandbox.yaml --enforcement-mode observe claude --workspace .
 
 # Disabled mode — only valid in hermetic test environments
-aasm run --enforcement-mode disabled codex --workspace .
+aasm run --policy ./sandbox.yaml --enforcement-mode disabled codex --workspace .
 
-# Combine with --dry-run to preview the launch without executing the tool
+# Combine with --dry-run to preview the launch without executing the tool.
+# A preview reports the policy state instead of refusing on it, so this is also
+# how you check what a live run would resolve to.
 aasm run --observe --dry-run claude --workspace .
 ```
 
@@ -226,8 +242,10 @@ A common observe-mode use case: gate every PR on "would my policy change block a
 jobs:
   policy-regression:
     steps:
+      # The policy is checked in alongside the workflow: a CI run has no
+      # ~/.aasm/policy.yaml, so a bare `aasm run` here refuses to launch.
       - name: Run agent under observe-mode governance
-        run: aasm run --observe codex -- codex "refactor src/auth.py"
+        run: aasm run --policy .aasm/policy.yaml --observe codex -- codex "refactor src/auth.py"
 
       - name: Fail the PR on any would-be deny
         run: |
@@ -281,8 +299,8 @@ Once you've reviewed the shadow events and tuned the policy:
 3. **Re-apply and re-run in observe mode** for another short window to confirm the tuned policy behaves as expected.
 4. **Flip to enforce** — drop the observe flag where the agent is launched:
    ```bash
-   # was: aasm run --observe claude --workspace .
-   aasm run claude --workspace .
+   # was: aasm run --policy ./sandbox.yaml --observe claude --workspace .
+   aasm run --policy ./sandbox.yaml claude --workspace .
    ```
 
 The cutover takes effect from the agent's next registration onward — the policy document itself is unchanged. Already-in-flight actions evaluated under the observe session keep their original posture.
