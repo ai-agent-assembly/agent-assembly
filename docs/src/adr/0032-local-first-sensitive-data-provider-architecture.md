@@ -1,8 +1,8 @@
 # ADR 0032: Local-First Sensitive-Data Provider Architecture
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-08
-**Ticket**: [AAASM-5269](https://lightning-dust-mite.atlassian.net/browse/AAASM-5269)
+**Ticket**: [AAASM-5269](https://lightning-dust-mite.atlassian.net/browse/AAASM-5269) (Spike), [AAASM-5343](https://lightning-dust-mite.atlassian.net/browse/AAASM-5343) (acceptance)
 
 This ADR records how Agent Assembly detects sensitive data: a deterministic
 in-process fast path that stays authoritative for every synchronous decision, a
@@ -19,11 +19,12 @@ a local boundary may take. It supersedes nothing.
 Supporting evidence, measurements and the full current-state survey are in
 [the AAASM-5269 Spike report](../research/AAASM-5269-sensitive-data-provider-architecture.md).
 
-> **Two decisions in this ADR are deliberately left open** — §D-1 (whether
-> out-of-process providers are in scope for v1) and §D-2 (how the finer
-> enforcement vocabulary relates to the frozen `RuntimeVerdict`). They are
-> marked **PENDING** below and require product sign-off. Nothing in Phases 0–3
-> depends on either.
+> **Both open decisions were resolved on 2026-08-01** (AAASM-5343). D-1:
+> out-of-process providers are **not in scope for v1**. D-2: `RuntimeVerdict`
+> stays frozen and an additive `sensitive_data_disposition` field carries the
+> finer vocabulary. See §10. Sections 6 and 7 therefore describe **deferred
+> post-v1 specification**, not v1 commitments — they are retained rather than
+> deleted so the follow-up ADR inherits the analysis instead of repeating it.
 
 ---
 
@@ -310,6 +311,7 @@ Two constraints on that fix, both of which this ADR's §9 and the Spike report
 - it must **not weaken** ASCII base64, hex, API-key or private-key detection —
   a secret in those encodings is ASCII by definition, so a script-aware fix
   costs no detection strength.
+
 ---
 
 ## Accepted risks
@@ -463,13 +465,15 @@ A reviewer can confirm this ADR is enforced by checking that:
 | Reference | Relation |
 | --- | --- |
 | [AAASM-5269](https://lightning-dust-mite.atlassian.net/browse/AAASM-5269) | Spike that produced this ADR |
+| [AAASM-5343](https://lightning-dust-mite.atlassian.net/browse/AAASM-5343) | records D-1/D-2/D-3 and moves this ADR to Accepted |
 | [AAASM-5270](https://lightning-dust-mite.atlassian.net/browse/AAASM-5270) | parent Epic |
 | [AAASM-5174](https://lightning-dust-mite.atlassian.net/browse/AAASM-5174) | shipped `/api/v1/scrub/*`; dashboard wiring outstanding |
 | [Spike report](../research/AAASM-5269-sensitive-data-provider-architecture.md) | evidence, measurements, backlog |
 | [ADR 0015](0015-dlp-trust-boundary-and-redaction-semantics.md) | complements; invariants preserved |
-| [ADR 0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) | owns the verdict vocabulary (D-2) |
+| [ADR 0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) | owns the verdict vocabulary; D-2 keeps it frozen |
 | [ADR 0024](0024-empty-cascade-semantics.md) | enum variants are not additive on the wire |
 | [ADR 0030](0030-developer-integration-boundaries-and-trust-model.md) | constrains local transport and adapter loading |
 | [ADR 0002](0002-sdk-security-boundary.md) | detection authority stays in trusted layers |
 | [ADR 0006](0006-limited-self-host-k8s-terraform.md) | self-host scope for §7 |
-| Implementation PRs | none yet — implementation is gated on this ADR |
+| Implementation PRs | tracked as the `B-` series under AAASM-5270 |
+| Fix version for D-3 | `agent-assembly v0.0.1-rc.7` |
