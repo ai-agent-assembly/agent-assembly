@@ -13,6 +13,7 @@ use aa_core::SessionId;
 use aa_gateway::registry::{AgentStatus, OrphanMode};
 
 use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use chrono::{DateTime, Utc};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::models::verdict::RuntimeVerdict;
@@ -352,6 +353,75 @@ pub struct ResumeResponse {
     pub previous_status: String,
     /// Agent status after the resume operation.
     pub new_status: String,
+}
+
+/// Maximum shadow (weakening) window a single `POST
+/// /api/v1/agents/{id}/enforcement-mode` call may request, in hours (ADR 0021
+/// §Decision item 3, `MAX_SHADOW_DURATION`).
+///
+/// A weakening change (`→ Observe`) must carry a mandatory `expires_at` that is
+/// in the future and no further than this bound from now; a request beyond it is
+/// rejected `422` rather than clamped. Bounds the realistic failure the ADR
+/// names — a shadow toggle left on after a 2am incident — so a forgotten window
+/// self-heals when the reconciliation watcher (AAASM-5339, out of scope here)
+/// reverts it.
+const SHADOW_MAX_HOURS: i64 = 72;
+
+/// Target enforcement mode a `POST /api/v1/agents/{id}/enforcement-mode` request
+/// may ask for (AAASM-5097 / ADR 0021).
+///
+/// **`Disabled` is intentionally not a variant.** ADR 0021 §Decision item 2
+/// forbids exposing `Disabled` via the API under any input (its own definition
+/// restricts it to hermetic test environments), so it is unrepresentable here —
+/// a body of `{"mode":"disabled"}` fails deserialization and never reaches the
+/// handler. Serializes the same `snake_case` wire labels as
+/// [`aa_core::EnforcementMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementModeTarget {
+    /// Strengthen governance back to full enforcement (the safe direction).
+    Enforce,
+    /// Weaken to shadow (observe-only) mode — the high-privilege, fail-open
+    /// direction (Admin + reason + bounded expiry required).
+    Observe,
+}
+
+/// Request body for `POST /api/v1/agents/:id/enforcement-mode` (AAASM-5097).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct EnforcementModeRequest {
+    /// Target enforcement mode. `enforce` (strengthen) or `observe` (weaken /
+    /// shadow); `disabled` is not accepted (ADR 0021).
+    pub mode: EnforcementModeTarget,
+    /// Operator justification. **Required and non-empty on a weakening
+    /// (`observe`) change** — the audit record has nothing to say otherwise;
+    /// ignored on a strengthening (`enforce`) change.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// When the shadow window ends. **Required on a weakening (`observe`)
+    /// change**, must be in the future and within [`SHADOW_MAX_HOURS`] of now;
+    /// ignored (and cleared) on a strengthening (`enforce`) change.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Response from `POST /api/v1/agents/:id/enforcement-mode`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct EnforcementModeResponse {
+    /// Hex-encoded agent UUID.
+    pub agent_id: String,
+    /// The agent's enforcement mode before the change (`enforce` / `observe` /
+    /// `disabled`), or `null` when it had no per-agent override (inheriting the
+    /// policy default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_mode: Option<EnforcementModeLabel>,
+    /// The enforcement mode now in force after the change.
+    pub new_mode: EnforcementModeLabel,
+    /// The shadow-window deadline, echoed back on a weakening change; `null` on a
+    /// strengthening change (the expiry is cleared).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// Paginated `GET /api/v1/agents` body (AAASM-4892).
