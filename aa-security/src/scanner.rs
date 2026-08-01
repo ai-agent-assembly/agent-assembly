@@ -2603,6 +2603,27 @@ mod tests {
         assert!(!result.redact(&text).contains(secret));
     }
 
+    /// Detection-strength guard for the hex-run pass. Hex tops out at 4.0
+    /// bits/char, below the gate, so this can only ever be caught by the
+    /// dedicated length rule — an entropy-side regression would be invisible
+    /// here, which is exactly why it needs its own assertion.
+    #[test]
+    fn ascii_hex_secret_is_still_detected() {
+        let scanner = CredentialScanner::new();
+        let secret = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let text = format!("key={secret}");
+        let result = scanner.scan(&text);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "64-char ASCII hex secret must still be flagged: {:?}",
+            result.findings
+        );
+        assert!(!result.redact(&text).contains(secret));
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
