@@ -83,3 +83,73 @@ describe('cascadeEvidenceFromQuery', () => {
     expect(isKnown(evidence) && evidence.value.documentCount).toBe(0)
   })
 })
+
+/**
+ * A schema-invalid `200` must not become a measured zero (AAASM-5369).
+ *
+ * `api/capability.ts` casts the body — `data as CapabilityMatrix` — so the
+ * fold used to read `cascadeLoaded` off whatever arrived. On `{}` that is
+ * `undefined`, `!undefined` is `true`, and the fold returned
+ * `known({ documentCount: 0 })`. `tallyVerdicts` folds a zero document count to
+ * `unconfigured` with the reason "No policy document is loaded", so the
+ * capability summary asserted a fact about the operator's policy cascade on the
+ * strength of a body nothing could parse.
+ *
+ * The distinction these cases pin is `known(0)` versus absent. Both suppress
+ * the counts downstream, which is exactly why the bug survived: the *screen*
+ * looked similar. What differs is the claim — "we looked, nothing is loaded"
+ * against "we could not read the answer" — and only the second is true here.
+ */
+describe('cascadeEvidenceFromQuery, on a schema-invalid success', () => {
+  const UNREADABLE: readonly [string, unknown][] = [
+    ['an empty object', {}],
+    ['a matrix with no policy list', { cascadeLoaded: true }],
+    ['a non-array policy list', { cascadeLoaded: true, policies: { count: 3 } }],
+    ['a stringly-typed cascade flag', { cascadeLoaded: 'false', policies: [] }],
+    ['a bare array', []],
+    ['a scalar', 42],
+  ]
+
+  for (const [description, body] of UNREADABLE) {
+    it(`reports ${description} as unknown, never as zero documents`, () => {
+      const evidence = cascadeEvidenceFromQuery({ data: body, error: null })
+      // The load-bearing assertion: not merely "absent", but specifically not a
+      // known zero. `isKnown(x) && x.value.documentCount === 0` was the bug.
+      expect(isKnown(evidence)).toBe(false)
+      if (!isKnown(evidence)) {
+        // Not `unavailable`: the request succeeded. The operator is told we
+        // could not determine the value, and why.
+        expect(evidence.state).toBe('unknown')
+        expect(evidence.detail).toBeTruthy()
+      }
+    })
+  }
+
+  it('does not throw on any of them', () => {
+    for (const [, body] of UNREADABLE) {
+      expect(() => cascadeEvidenceFromQuery({ data: body, error: null })).not.toThrow()
+    }
+  })
+
+  it('says the matrix was unreadable, not that no policy document is loaded', () => {
+    // The two are rendered by different downstream paths and mean opposite
+    // things to an operator: one is a state of their deployment they should act
+    // on, the other is a fault between the dashboard and the API.
+    const evidence = cascadeEvidenceFromQuery({ data: {}, error: null })
+    expect(isAbsent(evidence)).toBe(true)
+    if (isAbsent(evidence)) {
+      expect(evidence.detail).toContain('capability matrix')
+      expect(evidence.detail).not.toMatch(/no policy document is loaded/i)
+    }
+  })
+
+  it('still reports a real unloaded cascade as the zero it is', () => {
+    // The guard must not swallow the genuine AAASM-5106 signal. A body that
+    // parses and says `cascadeLoaded: false` is a measurement, and stays one.
+    const evidence = cascadeEvidenceFromQuery({
+      data: { ...matrix(2, false) },
+      error: null,
+    })
+    expect(isKnown(evidence) && evidence.value.documentCount).toBe(0)
+  })
+})

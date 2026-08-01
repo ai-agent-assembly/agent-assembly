@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { GrantScopes } from '../auth/GrantScopes'
 import type { Scope } from '../auth/AuthContext'
+import { NO_DATA } from '../lib/truthfulness'
 
 // Shell chrome (AAASM-5021) is data-driven: the rail foot status, the count
 // badges, the breadcrumb and the "last sync" clock only appear once the shell's
@@ -22,8 +23,13 @@ const mockState = vi.hoisted(() => ({
   // (AAASM-5149 for alerts, AAASM-5186 for policies): each badge is derived
   // from the outcome — pending, errored, or resolved — not from `data` alone,
   // so a test can no longer describe a failed query by simply omitting `data`.
+  // `data` is `unknown`, not `{ active: boolean }[]` (AAASM-5369). A `200` is
+  // not a promise the body matches the schema, and the shell used to read
+  // `.filter` off whatever arrived; a mock typed to the happy shape could not
+  // express the body that actually took the application down, so the hazard was
+  // untestable from here by construction.
   policies: { data: undefined, isPending: false, isError: false, error: null } as {
-    data: { active: boolean }[] | undefined
+    data: unknown
     isPending: boolean
     isError: boolean
     error: unknown
@@ -469,5 +475,121 @@ describe('AppShell chrome — Escape closes the mobile nav (AAASM-5021)', () => 
     // Escape closes it.
     fireEvent.keyDown(nav, { key: 'Escape' })
     expect(nav.className).not.toContain('appshell__nav--open')
+  })
+})
+
+/**
+ * A schema-invalid `200` on the policies query must not take the shell with it
+ * (AAASM-5369).
+ *
+ * This is the shell, so the failure mode is not a blank panel. The shell's own
+ * `ErrorBoundary` wraps `<Outlet />` — the page — and nothing wraps the chrome
+ * that computes the badge, so a `TypeError` in that expression escaped every
+ * boundary in the tree and left `<div id="root">` empty, on every route.
+ *
+ * ## Why each test asserts the chrome is present *first*
+ *
+ * "No fabricated number is rendered" is trivially true of an unmounted tree, so
+ * an assertion that only checks for the absence of a digit passes hardest
+ * exactly when the bug is worst. Every case below therefore establishes that
+ * the shell rendered real content — the rail, its links, the topbar, and the
+ * routed page — before saying anything about the badge. Losing the shell would
+ * fail those assertions rather than satisfy them.
+ */
+describe('AppShell chrome — a policies response the shell cannot read (AAASM-5369)', () => {
+  beforeEach(() => {
+    mockState.agents = { data: undefined, isError: false, dataUpdatedAt: 0 }
+    mockState.policies = { data: [], isPending: false, isError: false, error: null }
+    mockState.alerts = { data: [], isPending: false, isError: false, error: null }
+    mockState.policiesEnabled = true
+  })
+
+  // The bodies a proxy, a partial deploy, or a version-skewed API produce.
+  // `usePoliciesQuery` only rejects `!data?.items`, which is a truthiness check
+  // and not an array check, so all of these reached the shell's fold.
+  const UNREADABLE: readonly [string, unknown][] = [
+    ['an object where the policy list should be', {}],
+    ['a string where the policy list should be', 'none'],
+    ['a scalar', 42],
+    ['rows with no `active` key', [{}, {}]],
+  ]
+
+  for (const [description, data] of UNREADABLE) {
+    it(`keeps the whole shell mounted when the body is ${description}`, () => {
+      mockState.policies = { data, isPending: false, isError: false, error: null }
+      renderShellAt('/overview', ADMIN)
+
+      // The shell is present *and* populated. Each of these would be missing
+      // from the unmounted tree the defect produced.
+      expect(screen.getByTestId('appshell')).toBeInTheDocument()
+      expect(screen.getByTestId('appshell-nav')).toBeInTheDocument()
+      expect(screen.getByTestId('appshell-topbar')).toBeInTheDocument()
+      expect(screen.getByTestId('nav-link-policy')).toBeInTheDocument()
+      // The routed page still mounts under the shell, so the operator has not
+      // merely kept the chrome — the application is still usable.
+      expect(screen.getByTestId('page')).toBeInTheDocument()
+    })
+  }
+
+  for (const [description, data] of UNREADABLE) {
+    it(`marks the Policy badge absent rather than counting ${description}`, () => {
+      mockState.policies = { data, isPending: false, isError: false, error: null }
+      renderShellAt('/overview', ADMIN)
+
+      // Guard against a vacuous pass: the badge must exist to be checked. An
+      // absent badge element would make every assertion below pass by default,
+      // and `suppressKnownZero` removes the badge entirely for a *known* zero —
+      // so a fold that fabricated `0` would delete this node, not fail on it.
+      const badge = screen.getByTestId('nav-badge-policy')
+      expect(badge).toBeInTheDocument()
+
+      const marker = screen.getByTestId('nav-badge-absent-policy')
+      // `unknown`, not `unavailable`: the request succeeded, and saying it
+      // failed would send the operator to retry something that is not broken.
+      // The contrast is pinned by "renders an explicit unavailable marker when
+      // the policies query fails" above — asserting `not…'unavailable'` here as
+      // well cannot fail, since the line above already fixes the attribute to a
+      // single value (AAASM-5369 review).
+      expect(marker).toHaveAttribute('data-truth-state', 'unknown')
+
+      // No number is rendered where the count goes. The badge's two variants
+      // are mutually exclusive in the markup — a known count renders the
+      // numeral as the badge's own text, an absence renders the marker — so
+      // asserting the absent variant is what rules the numeral out.
+      //
+      // Deliberately not a `/\d/` sweep over `badge.textContent`: the marker
+      // carries the decoder's operator-facing reason, which legitimately names
+      // an offending row by index ("0.active: expected boolean"). That sweep
+      // fails on a correct fix, which is a worse test than none.
+      expect(badge.className).toContain('appshell__nav-badge--absent')
+      expect(marker.querySelector('.truth-absent__glyph')?.textContent).toBe(NO_DATA)
+    })
+  }
+
+  it('names the fault in the marker so the operator has a next step', () => {
+    mockState.policies = { data: {}, isPending: false, isError: false, error: null }
+    renderShellAt('/overview', ADMIN)
+
+    const marker = screen.getByTestId('nav-badge-absent-policy')
+    // The reason is carried to assistive tech and to the tooltip, per the
+    // AbsenceMarker contract — an absence an operator cannot act on is the
+    // white screen made quieter.
+    expect(marker.getAttribute('title') ?? '').toMatch(/policy list came back in a shape/i)
+    expect(marker.textContent ?? '').toMatch(/policy list came back in a shape/i)
+  })
+
+  it('still shows a real count when the body is readable', () => {
+    // The guard must not swallow the measurement. Without this the whole block
+    // would pass against a fold that reported every response as unreadable.
+    mockState.policies = {
+      data: [{ active: false }, { active: true }, { active: false }],
+      isPending: false,
+      isError: false,
+      error: null,
+    }
+    renderShellAt('/overview', ADMIN)
+
+    expect(screen.getByTestId('nav-badge-policy')).toHaveTextContent('2')
+    expect(screen.queryByTestId('nav-badge-absent-policy')).not.toBeInTheDocument()
   })
 })

@@ -34,14 +34,20 @@
  * ## How far that guarantee actually reaches
  *
  * Only as far as the lanes that call *this*. AAASM-5366 converted the folds in
- * `features/scrub/` — the ticket's scope — so on that surface the guarantee is
- * total. Everywhere else `certainFromQuery` is still called with a
- * `QueryOutcome<T>` whose `T` is an unverified wire claim, and the same defect
- * class is live there: `AppShell` filters the policies list, and
- * `features/capability/api.ts` reads `cascadeLoaded`, both without checking the
- * body first. Those are **AAASM-5369**, not this module's to assert. Do not read
- * "a fold cannot read a field before decoding" as a dashboard-wide property
- * until 5369 has moved the remaining lanes over.
+ * `features/scrub/`; AAASM-5369 converted the two the shell and the capability
+ * surface depend on — the policies badge (`features/policies/policyBadge.ts`),
+ * which threw out of `AppShell` and took the whole application with it, and
+ * `cascadeEvidenceFromQuery`, which reported a body it had not read as a
+ * measured zero policy documents.
+ *
+ * It still is **not** a dashboard-wide property, and the exact remaining extent
+ * is written down rather than left to inference:
+ * `lib/truthfulness/__tests__/foldAudit.test.ts` lists every file still calling
+ * `certainFromQuery` with a `QueryOutcome<T>` whose `T` is an unverified wire
+ * claim, each with its disposition, and fails if that set grows. Most of those
+ * entries are recorded as live defects awaiting their own tickets. Read the
+ * guarantee here as "true of the lanes that call this, and the audit says which
+ * those are" — never as "true of the dashboard".
  *
  * ## What an unreadable body is reported as
  *

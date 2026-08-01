@@ -1,3 +1,58 @@
+// AAASM-5369: the eleven modules still allowed to fold a query outcome without
+// first decoding the body. Every one of them is recorded, with the disposition
+// of each fold and the ticket that carries it, in
+// `src/lib/truthfulness/__tests__/foldAudit.test.ts` — keep the two in step.
+//
+// This list and that test are the two halves of one ratchet, and neither is
+// sufficient alone. The test scans source *text*, so it counts folds per file
+// but an `import { certainFromQuery as fold }` or a `T.certainFromQuery`
+// namespace call walks straight past it (both were demonstrated in review).
+// This rule resolves imports, so aliasing and namespace access are caught for
+// free — but it cannot tell one fold in a file from five. Removing either half
+// re-opens a hole the other does not cover.
+//
+// Adding a file here is a decision to ship an undecoded fold. The alternative
+// is `certainFromShapedQuery`, which cannot be called without a decoder because
+// its parameter is `unknown`.
+//
+// This list is not the only door, and saying it was would be the overclaim this
+// ticket exists to remove: an `// eslint-disable-next-line
+// no-restricted-imports` above an aliased import silences this rule *and* is
+// invisible to the text scan, because the directive is genuinely used (so
+// `--report-unused-disable-directives` stays quiet) and the scan skips `import`
+// lines. That door is closed from the other side — the audit test asserts no
+// source file carries such a directive — so a suppression has to be argued for
+// here, in the open, rather than in the file that wants it.
+const UNDECODED_FOLD_ALLOWLIST = [
+  'src/components/AppShell.tsx',
+  'src/components/agentDetail/agentPosture.ts',
+  'src/features/approvals/ApprovalsBellButton.tsx',
+  'src/features/onboarding/steps/Step2InstallSdk.tsx',
+  'src/features/onboarding/steps/Step5EnrollAgent.tsx',
+  'src/pages/AlertsPage.tsx',
+  'src/pages/CostsPage.tsx',
+  'src/pages/FleetPage.tsx',
+  'src/pages/LiveOpsPage.tsx',
+  'src/pages/OverviewPage.tsx',
+  'src/pages/TeamsPage.tsx',
+]
+
+const NO_UNDECODED_FOLD = {
+  'no-restricted-imports': [
+    'error',
+    {
+      patterns: [
+        {
+          group: ['**/lib/truthfulness', '**/lib/truthfulness/query'],
+          importNames: ['certainFromQuery'],
+          message:
+            'Use `certainFromShapedQuery` with a decoder (see src/lib/truthfulness/shape.ts). `certainFromQuery` takes a `QueryOutcome<T>` whose `T` is an unverified wire claim, so a fold can read a field off a body that never matched the schema - that unmounted AppShell and reported an unread capability matrix as zero policy documents (AAASM-5369). If this module genuinely must fold undecoded, add it to UNDECODED_FOLD_ALLOWLIST in .eslintrc.cjs and record the disposition in src/lib/truthfulness/__tests__/foldAudit.test.ts.',
+        },
+      ],
+    },
+  ],
+}
+
 module.exports = {
   root: true,
   env: { browser: true, es2020: true },
@@ -55,5 +110,22 @@ module.exports = {
           'Lookup tables must be `new Map([...])`, not a Record<> object literal - object literals resolve Object.prototype for wire-supplied keys (AAASM-5109/5190).',
       },
     ],
+    ...NO_UNDECODED_FOLD,
   },
+  overrides: [
+    {
+      // The eleven audited modules. Turning the rule off per-file rather than
+      // exempting a directory keeps the exemption exactly as wide as the audit:
+      // a *sibling* of an allowlisted page gets no exemption from its neighbour.
+      files: UNDECODED_FOLD_ALLOWLIST,
+      rules: { 'no-restricted-imports': 'off' },
+    },
+    {
+      // The vocabulary's own tests exercise `certainFromQuery` directly - that
+      // is their subject, and the fold audit imports it to prove the ratchet
+      // fires. Restricting them would only make the guard untestable.
+      files: ['src/lib/truthfulness/**', 'src/**/*.test.ts', 'src/**/*.test.tsx'],
+      rules: { 'no-restricted-imports': 'off' },
+    },
+  ],
 }
