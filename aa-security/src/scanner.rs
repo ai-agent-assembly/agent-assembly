@@ -2428,6 +2428,20 @@ mod tests {
         assert!(kinds.contains(&&CredentialKind::Custom));
     }
 
+    // --- AAASM-5344: the entropy gate measures ASCII runs, not raw bytes ---
+    //
+    // Every fixture below is synthetic: no real credential, order reference,
+    // phone number or person appears in this section.
+
+    /// Offsets are byte offsets into the slice handed in, since that is what the
+    /// caller adds to the token's own offset to place a finding. Each Han
+    /// character is 3 UTF-8 bytes, so character indices would be silently wrong.
+    #[test]
+    fn ascii_runs_segments_a_token_around_its_non_ascii_bytes() {
+        let runs: Vec<(usize, &str)> = ascii_runs("日誌abc：xy").collect();
+        assert_eq!(runs, vec![(6, "abc"), (12, "xy")]);
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
