@@ -9,9 +9,10 @@
  *  1. none of the removed literals — `0 leaks (30d)`, `covers: http egress ·
  *     gmail · slack`, `policy: P-100 · default-allow with scrub` — renders
  *     anywhere on the page;
- *  2. the page has exactly one `aria-live` region, it holds only the fetched
- *     redaction count, and what it announces is screen-reader-visible text
- *     carrying the honest state — never an all-clear;
+ *  2. the page has exactly one `aria-live` region, everything inside it is a
+ *     fetched measurement — no segment the API cannot answer sits within it —
+ *     and what it announces is screen-reader-visible text carrying the honest
+ *     state, never an all-clear;
  *  3. a failed request renders `Unavailable`, not `0` and not a green posture;
  *  4. an empty `agent-enforcement` response renders `Unknown`, because the route
  *     omits agents with no decision and so cannot mean "zero redactions";
@@ -44,6 +45,20 @@ const FABRICATIONS = [
   'http egress · gmail · slack',
   '192 stripped',
 ]
+
+/**
+ * The strip segments no route can answer, each rendered as an explicit absence.
+ *
+ * Named once because two separate rules bind to the same list: every one of them
+ * must carry its state in the accessibility tree, and none of them may sit inside
+ * the live region.
+ */
+const UNSOURCED_SEGMENTS = [
+  'scrub-stats-posture-value',
+  'scrub-stats-covers-value',
+  'scrub-stats-policy-value',
+  'scrub-stats-running-value',
+] as const
 
 /** Fixture ids AAASM-5156 found had no detector in the shipped scanner. */
 const PHANTOM_DETECTORS = ['AWS_SECRET', 'JWT', 'INTERNAL_URL', 'PHONE']
@@ -137,12 +152,29 @@ test.describe('AAASM-5112 review — the Scrub surface stops fabricating a DLP p
       expect(pageText).not.toContain('undefined')
       expect(pageText).not.toContain('NaN')
 
-      // ── 2. exactly one live region, holding only the fetched figure ──────
+      // ── 2. exactly one live region, and everything inside it is fetched ──
       const live = page.locator('[aria-live]')
       await expect(live).toHaveCount(1)
-      await expect(live.first()).toHaveAttribute('data-testid', 'scrub-stats-stripped')
+      // AAASM-5347 gave the strip a second *measured* figure — leaks
+      // intercepted, from /scrub/posture — so the live region is now the span
+      // wrapping both measurements rather than the redaction count alone.
+      //
+      // The identity check that used to stand in for the rule is replaced by
+      // the rule itself, which is what actually matters and is stronger for
+      // being stated: no segment the API cannot answer may sit inside the
+      // region. Announcing a static statement as a status update is precisely
+      // how the fabricated all-clear reached assistive tech under AAASM-5112,
+      // and a renamed wrapper must not be able to hide that regression.
+      await expect(live.first()).toHaveAttribute('data-testid', 'scrub-stats-measured')
+      for (const testId of UNSOURCED_SEGMENTS) {
+        // Present on the page, and outside the live region. Asserting both stops
+        // the guard passing because a segment was renamed out of existence.
+        await expect(page.getByTestId(testId)).toHaveCount(1)
+        await expect(live.first().getByTestId(testId)).toHaveCount(0)
+      }
       const announced = (await live.first().textContent()) ?? ''
       expect(announced).toContain('redactions / 24h')
+      expect(announced).toContain('leaks intercepted')
       expect(announced).not.toMatch(/\b(safe|healthy|verified|clean|secure|all clear)\b/i)
 
       // ── 5. a populated window renders the real fleet sum ─────────────────
@@ -151,12 +183,7 @@ test.describe('AAASM-5112 review — the Scrub surface stops fabricating a DLP p
       await expect(strippedValue).toHaveText('9')
 
       // ── the unsourceable segments are explicit, screen-reader-visible ────
-      for (const testId of [
-        'scrub-stats-posture-value',
-        'scrub-stats-covers-value',
-        'scrub-stats-policy-value',
-        'scrub-stats-running-value',
-      ]) {
+      for (const testId of UNSOURCED_SEGMENTS) {
         const el = page.getByTestId(testId)
         await expect(el).toHaveAttribute('data-truth-state', 'not-supported')
         // The state is announced, not merely coloured: the sr-only sentence is
