@@ -225,6 +225,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{id}/enforcement-mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/agents/:id/enforcement-mode` — set an agent's enforcement mode.
+         * @description Direction-asymmetric governance mutation (AAASM-5097, ADR 0021 Option B).
+         *     The operation is split by *direction of effect*, because the two directions
+         *     have opposite blast radius:
+         *
+         *     - **Strengthening** (`→ enforce`) turns governance back *on* — it fails safe.
+         *       It needs only tenant-scoped `Write` (via [`authorize_agent_access`]), no
+         *       `reason`, no `expires_at`; the per-agent expiry is cleared so the agent
+         *       returns to permanent enforcement.
+         *     - **Weakening** (`→ observe`, i.e. shadow) turns denials *and credential
+         *       redaction off* for the agent — it fails **open**. It is the high-privilege
+         *       path: it requires `Admin` scope in addition to tenant ownership, a required
+         *       non-empty `reason`, and a required `expires_at` that is in the future and
+         *       within [`SHADOW_MAX_HOURS`] of now. A missing/empty reason or a
+         *       missing/past/too-distant deadline is rejected `422`.
+         *
+         *     `disabled` is not reachable under any input (it is not a variant of
+         *     [`EnforcementModeTarget`], so it fails deserialization — ADR 0021).
+         *
+         *     A single handler gates both directions rather than two extractors: the
+         *     `Write` floor authenticates and denies a read-only caller up front
+         *     (deny-by-default — an unauthenticated caller never reaches the logic), then
+         *     the weakening path additionally requires `Admin` in-handler. On success the
+         *     canonical `enforcement_mode` (the field the enforcement resolver reads, not
+         *     `metadata["mode"]`) is written durably and a `GovernanceMutation` audit is
+         *     emitted with the **verified** actor + tenant from the authenticated caller —
+         *     never the request body.
+         */
+        post: operations["set_enforcement_mode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{id}/graph": {
         parameters: {
             query?: never;
@@ -3986,6 +4031,54 @@ export interface components {
          * @enum {string}
          */
         EnforcementModeLabel: "enforce" | "observe" | "disabled";
+        /** @description Request body for `POST /api/v1/agents/:id/enforcement-mode` (AAASM-5097). */
+        EnforcementModeRequest: {
+            /**
+             * Format: date-time
+             * @description When the shadow window ends. **Required on a weakening (`observe`)
+             *     change**, must be in the future and within [`SHADOW_MAX_HOURS`] of now;
+             *     ignored (and cleared) on a strengthening (`enforce`) change.
+             */
+            expires_at?: string | null;
+            /**
+             * @description Target enforcement mode. `enforce` (strengthen) or `observe` (weaken /
+             *     shadow); `disabled` is not accepted (ADR 0021).
+             */
+            mode: components["schemas"]["EnforcementModeTarget"];
+            /**
+             * @description Operator justification. **Required and non-empty on a weakening
+             *     (`observe`) change** — the audit record has nothing to say otherwise;
+             *     ignored on a strengthening (`enforce`) change.
+             */
+            reason?: string | null;
+        };
+        /** @description Response from `POST /api/v1/agents/:id/enforcement-mode`. */
+        EnforcementModeResponse: {
+            /** @description Hex-encoded agent UUID. */
+            agent_id: string;
+            /**
+             * Format: date-time
+             * @description The shadow-window deadline, echoed back on a weakening change; `null` on a
+             *     strengthening change (the expiry is cleared).
+             */
+            expires_at?: string | null;
+            /** @description The enforcement mode now in force after the change. */
+            new_mode: components["schemas"]["EnforcementModeLabel"];
+            previous_mode?: null | components["schemas"]["EnforcementModeLabel"];
+        };
+        /**
+         * @description Target enforcement mode a `POST /api/v1/agents/{id}/enforcement-mode` request
+         *     may ask for (AAASM-5097 / ADR 0021).
+         *
+         *     **`Disabled` is intentionally not a variant.** ADR 0021 §Decision item 2
+         *     forbids exposing `Disabled` via the API under any input (its own definition
+         *     restricts it to hermetic test environments), so it is unrepresentable here —
+         *     a body of `{"mode":"disabled"}` fails deserialization and never reaches the
+         *     handler. Serializes the same `snake_case` wire labels as
+         *     [`aa_core::EnforcementMode`].
+         * @enum {string}
+         */
+        EnforcementModeTarget: "enforce" | "observe";
         /** @description Response for `GET /api/v1/overview/enforcement-timeline`. */
         EnforcementTimelineResponse: {
             /**
@@ -6887,6 +6980,68 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ProblemDetail"];
                 };
+            };
+        };
+    };
+    set_enforcement_mode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnforcementModeRequest"];
+            };
+        };
+        responses: {
+            /** @description Enforcement mode changed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnforcementModeResponse"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the scope required for the requested direction */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Weakening request missing/invalid reason or expires_at */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
