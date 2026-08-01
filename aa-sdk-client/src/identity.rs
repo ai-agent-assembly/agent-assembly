@@ -42,7 +42,7 @@ pub fn agent_id_to_did_key(identity: &str) -> String {
         return identity.to_string();
     }
 
-    AgentKeypair::derive(identity).did_key()
+    AgentKeypair::derive_transport_key(identity).did_key()
 }
 
 #[cfg(test)]

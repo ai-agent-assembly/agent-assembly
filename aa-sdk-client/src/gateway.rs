@@ -101,7 +101,7 @@ impl GatewayRegistrationClient {
 /// so the `agent_id` + `public_key` the challenge is bound to match the ones the
 /// agent later registers with.
 pub fn build_challenge_request(config: &AssemblyConfig) -> ChallengeRequest {
-    let keypair = AgentKeypair::derive(&config.agent_id);
+    let keypair = AgentKeypair::derive_transport_key(&config.agent_id);
     ChallengeRequest {
         agent_id: Some(ProtoAgentId {
             org_id: String::new(),
@@ -128,7 +128,7 @@ pub fn build_register_request(
     framework: String,
     nonce: &[u8],
 ) -> RegisterRequest {
-    let keypair = AgentKeypair::derive(&config.agent_id);
+    let keypair = AgentKeypair::derive_transport_key(&config.agent_id);
     let registration_did = config.registration_did();
 
     // AAASM-3591 / AAASM-3866: prove possession of the private key by signing the

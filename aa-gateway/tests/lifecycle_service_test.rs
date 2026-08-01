@@ -26,7 +26,7 @@ use tonic::transport::{Channel, Server};
 /// identity matches [`register_with_sdk_derived_did_key_is_accepted`] so both
 /// resolve to the same did:key.
 fn test_keypair() -> aa_sdk_client::AgentKeypair {
-    aa_sdk_client::AgentKeypair::derive("my-agent-001")
+    aa_sdk_client::AgentKeypair::derive_transport_key("my-agent-001")
 }
 
 /// The fixture's hex-encoded Ed25519 public key — the same key its `agent_id`
@@ -652,7 +652,7 @@ async fn register_echoes_parent_agent_id_and_team_id() {
 
     // Register the parent first so the sub-agent can be accepted. Each agent
     // carries its own keypair so its did:key binds to its own public_key.
-    let parent_kp = aa_sdk_client::AgentKeypair::derive("echo-parent");
+    let parent_kp = aa_sdk_client::AgentKeypair::derive_transport_key("echo-parent");
     let parent_id = ProtoAgentId {
         org_id: "org-echo".into(),
         team_id: "team-echo".into(),
@@ -676,7 +676,7 @@ async fn register_echoes_parent_agent_id_and_team_id() {
     .await
     .unwrap();
 
-    let child_kp = aa_sdk_client::AgentKeypair::derive("echo-child");
+    let child_kp = aa_sdk_client::AgentKeypair::derive_transport_key("echo-child");
     let agent_id = ProtoAgentId {
         org_id: "org-echo".into(),
         team_id: "team-echo".into(),
@@ -798,7 +798,7 @@ async fn root_agent_id_chains_3_levels() {
     let team = "chain-team";
 
     // Register A (root). Each agent carries its own keypair (AAASM-4787).
-    let kp_a = aa_sdk_client::AgentKeypair::derive("chain-A");
+    let kp_a = aa_sdk_client::AgentKeypair::derive_transport_key("chain-A");
     let proto_a = ProtoAgentId {
         org_id: org.into(),
         team_id: team.into(),
@@ -824,7 +824,7 @@ async fn root_agent_id_chains_3_levels() {
     .unwrap();
 
     // Register B (parent = A).
-    let kp_b = aa_sdk_client::AgentKeypair::derive("chain-B");
+    let kp_b = aa_sdk_client::AgentKeypair::derive_transport_key("chain-B");
     let proto_b = ProtoAgentId {
         org_id: org.into(),
         team_id: team.into(),
@@ -850,7 +850,7 @@ async fn root_agent_id_chains_3_levels() {
     .unwrap();
 
     // Register C (parent = B). C's root_agent_id must equal A's key.
-    let kp_c = aa_sdk_client::AgentKeypair::derive("chain-C");
+    let kp_c = aa_sdk_client::AgentKeypair::derive_transport_key("chain-C");
     let proto_c = ProtoAgentId {
         org_id: org.into(),
         team_id: team.into(),

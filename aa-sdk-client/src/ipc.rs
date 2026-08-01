@@ -234,17 +234,26 @@ async fn perform_handshake(
 }
 
 /// Build a `HandshakeProof` for `agent_id` over the runtime-issued `nonce`,
-/// using the agent's deterministic Ed25519 keypair (AAASM-3587).
+/// using the agent's deterministic **transport** keypair (AAASM-3587).
 ///
 /// The signature covers `nonce || sdk_version` (AAASM-3666), so the version is
 /// authenticated rather than merely carried: a local tamperer cannot substitute
 /// a current version for a downgraded build's without invalidating the proof.
+///
+/// Deliberately *not* the durable identity key AAASM-5332 introduced. The
+/// runtime verifies this proof by recomputing `SHA-256(agent_id)` itself
+/// (`aa-runtime::ipc::handshake::expected_verifying_key`), so the two ends must
+/// keep agreeing on a value neither of them stores — and that channel's trust
+/// boundary is the socket's `0600` mode plus the peercred UID check, which is
+/// where it has always been (AAASM-3922). Signing this handshake with the
+/// identity key would neither strengthen it nor be verifiable, since the runtime
+/// has no way to learn a randomly-generated public key.
 fn build_handshake_proof(
     agent_id: &str,
     nonce: &[u8],
     sdk_version: &str,
 ) -> aa_proto::assembly::ipc::v1::HandshakeProof {
-    let keypair = crate::keypair::AgentKeypair::derive(agent_id);
+    let keypair = crate::keypair::AgentKeypair::derive_transport_key(agent_id);
     let signed_payload = handshake_signed_payload(nonce, sdk_version);
     aa_proto::assembly::ipc::v1::HandshakeProof {
         agent_did: keypair.did_key(),
@@ -329,7 +338,7 @@ mod tests {
 
         assert_eq!(proof.sdk_version, "1.2.3", "proof must carry the SDK version");
 
-        let vk = crate::keypair::AgentKeypair::derive(TEST_AGENT_ID);
+        let vk = crate::keypair::AgentKeypair::derive_transport_key(TEST_AGENT_ID);
         let pk = ed25519_dalek::VerifyingKey::from_bytes(&vk.public_key_bytes()).unwrap();
         let sig_bytes: [u8; 64] = proof.signature.as_slice().try_into().unwrap();
         let sig = Signature::from_bytes(&sig_bytes);

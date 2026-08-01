@@ -384,7 +384,7 @@ mod tests {
         // The binding is what makes the DID unsquattable, so a mismatched key
         // must be refused by the same check — proving the check is live rather
         // than vacuously satisfied by whatever was passed in.
-        let foreign = AgentKeypair::derive("somebody-else").public_key_hex();
+        let foreign = AgentKeypair::derive_transport_key("somebody-else").public_key_hex();
         assert!(
             assert_did_key_binds_public_key(&proto_id.agent_id, &foreign).is_err(),
             "a DID paired with a foreign key must be refused; if this passes, the binding check \
@@ -462,7 +462,10 @@ mod tests {
             cli.possession_proof, sdk.possession_proof,
             "the two surfaces must present the same proof for the same identity and nonce"
         );
-        assert_eq!(AgentKeypair::derive("parity-check").public_key_hex(), cli.public_key);
+        assert_eq!(
+            AgentKeypair::derive_transport_key("parity-check").public_key_hex(),
+            cli.public_key
+        );
     }
 
     /// The registry id must be the gateway's own key for the registered

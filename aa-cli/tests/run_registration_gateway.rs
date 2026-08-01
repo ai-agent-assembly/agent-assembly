@@ -232,7 +232,7 @@ async fn registering_the_clis_did_under_a_foreign_key_is_refused() -> anyhow::Re
     let _env = GatewayEnv::point_at(gateway.endpoint());
 
     let victim_did = run_registration::registration_did("ops-laptop");
-    let attacker = AgentKeypair::derive("attacker");
+    let attacker = AgentKeypair::derive_transport_key("attacker");
 
     // A challenge for the attacker's *own* identity, which the gateway will
     // issue: the attacker holds that key. The nonce is then redirected at the
