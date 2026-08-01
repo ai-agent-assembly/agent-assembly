@@ -28,6 +28,43 @@ pub struct StartArgs {
     /// File to redirect proxy stdout/stderr to (background mode only).
     #[arg(long)]
     pub log_file: Option<PathBuf>,
+    /// State that a non-loopback `--listen` address is intended. Still refused
+    /// until the proxy can protect such a listener — see [`checked_listen`].
+    #[arg(long)]
+    pub allow_remote_clients: bool,
+}
+
+/// Whether a proxy may be started on `listen`, or the message to print instead.
+///
+/// AAASM-5348. Before this check, `aasm proxy start --listen 0.0.0.0:PORT`
+/// succeeded and `aasm proxy status` reported a healthy proxy, while every
+/// `aasm run` refused to route a governed tool at it — [`trust::verify_endpoint`]
+/// requires a loopback literal. The operator was left holding a proxy that
+/// worked for everything except the one job it exists to do, with nothing
+/// explaining the contradiction. Applying the same loopback rule here is what
+/// removes that split: an address `aasm run` will never trust is one
+/// `aasm proxy start` never produces.
+///
+/// Refusing rather than teaching `aasm run` to accept a remote endpoint is the
+/// deliberate direction. `aasm run` refuses because the endpoint is reachable
+/// off-host, and reachability is not authorization: `aa-proxy` has no listener
+/// TLS and no client authentication ([`aa_proxy::config::REMOTE_PROTECTIONS`]),
+/// so a routable listener is an interception endpoint that reads traffic under
+/// a CA this machine trusts and spends the operator's provider keys for anyone
+/// who connects. Until it can tell clients apart, the honest answer at start
+/// time is no.
+///
+/// Separate from [`dispatch`] so the decision is testable without spawning a
+/// process, and called from its first statement so a refusal happens before any
+/// socket is bound and before any state file is written.
+fn checked_listen(listen: &str, allow_remote_clients: bool) -> Result<(), String> {
+    // Parsed here rather than left to the child: the loopback question cannot be
+    // asked of a string, and a `--listen` the proxy could not parse already
+    // failed — just later, as an opaque "did not bind within 5s".
+    let addr: SocketAddr = listen
+        .parse()
+        .map_err(|_| format!("invalid --listen {listen:?}: it is not an `ip:port` literal"))?;
+    aa_proxy::config::check_bind_addr(addr, allow_remote_clients).map_err(|refusal| refusal.to_string())
 }
 
 fn default_log_path() -> PathBuf {
@@ -148,6 +185,14 @@ fn canonical_binary(binary: PathBuf) -> PathBuf {
 }
 
 pub fn dispatch(args: StartArgs) -> ExitCode {
+    // First, before the binary is resolved, before anything is spawned, and
+    // before a state file exists: a refused start must not leave the operator
+    // with a half-started proxy to clean up.
+    if let Err(reason) = checked_listen(&args.listen, args.allow_remote_clients) {
+        eprintln!("error: {reason}");
+        return ExitCode::FAILURE;
+    }
+
     let Some(binary) = resolve_binary() else {
         eprintln!(
             "error: aa-proxy binary not found.\n\
