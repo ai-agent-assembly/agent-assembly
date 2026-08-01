@@ -153,6 +153,7 @@ fn is_yaml_path(path: &Path) -> bool {
 mod tests {
     use super::*;
     use arc_swap::ArcSwap;
+    use notify::event::{DataChange, ModifyKind};
     use std::{io::Write, sync::Arc, time::Duration};
     use tempfile::NamedTempFile;
 
@@ -250,34 +251,57 @@ mod tests {
         );
     }
 
+    /// A content-change `Modify` event for `path`, shaped as the notify
+    /// backends report one.
+    fn modify_event(path: &Path) -> notify::Result<notify::Event> {
+        Ok(notify::Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content))).add_path(path.to_path_buf()))
+    }
+
+    fn write_file(path: &Path, contents: &str) {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .unwrap();
+        write!(f, "{}", contents).unwrap();
+        f.flush().unwrap();
+    }
+
+    /// Drives [`handle_fs_event`] directly rather than through a real watcher
+    /// (AAASM-5367).
+    ///
+    /// This asserts a *negative* — that nothing is swapped in — so waiting a
+    /// fixed second for a notification made it pass for the wrong reason
+    /// whenever the notification simply hadn't arrived yet, which measurement
+    /// showed is the common case. Feeding the handler the event removes the
+    /// notification path from the test entirely: the ignore-invalid-content
+    /// decision is exercised on every run, deterministically and instantly.
+    ///
+    /// The valid-content half is the control that keeps the negative honest —
+    /// it proves this event actually reaches the parse step, so the first
+    /// assertion cannot pass merely because the handler discarded the event.
     #[test]
     fn invalid_yaml_keeps_previous_policy() {
-        let mut tmp = NamedTempFile::new().unwrap();
-        write!(tmp, "{}", ALLOW_YAML).unwrap();
-        tmp.flush().unwrap();
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
 
         let initial_doc = parse_doc(ALLOW_YAML);
         let slot = Arc::new(ArcSwap::new(Arc::new(initial_doc.clone())));
 
-        let _watcher = start_watcher(tmp.path(), slot.clone()).unwrap();
-
-        // Overwrite file with invalid YAML.
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(tmp.path())
-            .unwrap();
-        write!(f, "invalid: yaml: [[[").unwrap();
-        f.flush().unwrap();
-        drop(f);
-
-        std::thread::sleep(Duration::from_secs(1));
-
-        let loaded = slot.load();
-        let current_doc: &PolicyDocument = &loaded;
+        write_file(path, "invalid: yaml: [[[");
+        handle_fs_event(modify_event(path), path, &slot);
         assert_eq!(
-            current_doc, &initial_doc,
+            *slot.load_full(),
+            initial_doc,
             "slot should still hold the original policy after an invalid parse"
+        );
+
+        write_file(path, DENY_YAML);
+        handle_fs_event(modify_event(path), path, &slot);
+        assert!(
+            !slot.load_full().tools["search"].allow,
+            "control: the same event over valid YAML must reach the parse step \
+             and swap, otherwise the assertion above proves nothing"
         );
     }
 }
