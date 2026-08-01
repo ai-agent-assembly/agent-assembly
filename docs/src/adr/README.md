@@ -41,4 +41,4 @@ An ADR records **only** durable product or system decisions — product and busi
 | [0029](0029-capability-over-permission-derivation.md) | Capability Over-Permission Derivation | Proposed |
 | [0030](0030-developer-integration-boundaries-and-trust-model.md) | Developer Integration Boundaries, Capability Model & Local Trust Model | Proposed |
 | [0031](0031-oss-native-account-authentication.md) | OSS Native Account Authentication | Accepted |
-| [0032](0032-local-first-sensitive-data-provider-architecture.md) | Local-First Sensitive-Data Provider Architecture | Proposed |
+| [0032](0032-local-first-sensitive-data-provider-architecture.md) | Local-First Sensitive-Data Provider Architecture | Accepted |
