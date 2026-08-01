@@ -661,7 +661,7 @@ fn finding(text: &str, category: CanonicalCategory, start: usize, end: usize) ->
 /// output is unchanged by this module. A caller that wants both runs both.
 ///
 /// Spans are byte offsets into `text` and always fall on character boundaries,
-/// so a caller can splice the original bytes at them.
+/// so [`redact_findings`](crate::canonical::redact_findings) can splice them.
 ///
 /// Detection is best-effort within the constraints documented on this module:
 /// the checksums admit a stated fraction of random strings, phone numbers have

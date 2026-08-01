@@ -121,6 +121,7 @@ mod category;
 mod finding;
 mod lift;
 mod mapping;
+mod redact;
 #[cfg(feature = "serde")]
 mod serde_impls;
 
@@ -130,3 +131,4 @@ pub use finding::{
 };
 pub use lift::{LiftError, POLICY_REGEX_PROVENANCE, SCANNER_PROVENANCE};
 pub use mapping::ParseCategoryError;
+pub use redact::redact_findings;
