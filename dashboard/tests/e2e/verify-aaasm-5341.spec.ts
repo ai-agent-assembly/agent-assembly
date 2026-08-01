@@ -82,9 +82,9 @@ async function bootstrap(page: Page, theme: Theme, opts: BootstrapOpts) {
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`))
 
   await page.addInitScript(
-    (init: { themeKey: string; theme: string; token: string }) => {
-      sessionStorage.setItem('aa_token', init.token)
-      localStorage.setItem(init.themeKey, init.theme)
+    (opts: { themeKey: string; theme: string; token: string }) => {
+      sessionStorage.setItem('aa_token', opts.token)
+      localStorage.setItem(opts.themeKey, opts.theme)
     },
     { themeKey: THEME_KEY, theme, token: fakeJwt(opts.scopes) },
   )
