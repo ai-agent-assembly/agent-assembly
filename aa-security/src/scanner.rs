@@ -1848,6 +1848,20 @@ mod tests {
     }
 
     #[test]
+    fn detects_fullwidth_ssn_as_the_same_kind_as_ascii() {
+        // The SSN detector matches an exact `DDD-DD-DDDD` shape, so it is the
+        // detector most likely to be broken by normalisation changing the
+        // string's length — assert it survives in full-width form.
+        let scanner = CredentialScanner::new();
+        let ascii = scanner.scan("ssn=123-45-6789");
+        let fullwidth = scanner.scan("ssn=１２３-４５-６７８９");
+
+        let kinds = |r: &ScanResult| r.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&ascii), vec![CredentialKind::SsnPattern]);
+        assert_eq!(kinds(&fullwidth), kinds(&ascii));
+    }
+
+    #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("contact: user@example.com for support");
