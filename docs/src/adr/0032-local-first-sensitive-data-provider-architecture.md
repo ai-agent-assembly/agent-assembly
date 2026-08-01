@@ -259,12 +259,33 @@ The evidence that made this the low-cost answer: Phases 0–3 of §8 contain no
 provider at all and deliver the locale correctness fix, the canonical model and
 the entire event/analytics layer without touching any accepted ADR.
 
-- **D-2 — how does the finer enforcement vocabulary relate to `RuntimeVerdict`?**
-  Recommended: keep ADR 0018's five-way enum frozen and carry
-  `mask`/`tokenize`/`approval_*`/`shadow_only` in a separate additive
-  `sensitive_data_disposition` field, since ADR 0024 establishes that adding an
-  enum variant is not additive on the wire.
+#### D-2 — `RuntimeVerdict` stays frozen; disposition is a separate additive field
 
+ADR 0018's five-way `RuntimeVerdict` (`Allow` / `Narrow` / `Scrub` / `Pending` /
+`Deny`) is **not** extended, renamed or reordered. ADR 0024 establishes that
+adding an enum variant is not additive on the wire, so extending it would be a
+breaking change to a deliberately frozen contract.
+
+The finer vocabulary lives in a **new, additive, optional** field —
+conceptually `sensitive_data_disposition` — carrying:
+
+`redact` · `mask` · `tokenize` · `require_approval` · `approval_granted` ·
+`approval_denied` · `shadow_only` · `none`
+
+Binding rules for its implementation:
+
+- It is **additive and optional**. Absent or `none` must mean exactly what
+  today's absence of the field means, so every existing consumer keeps working
+  unchanged.
+- `RuntimeVerdict::Scrub` remains the verdict for **every** transforming
+  disposition; the new field distinguishes *which* transformation beneath it. A
+  reader that only understands `RuntimeVerdict` must still reach a correct, if
+  coarser, conclusion.
+- The Rust and wire representations must be designed together and must satisfy
+  ADR 0018 and ADR 0024. Public API and wire compatibility are preserved; any
+  breaking representation requires a separately approved ticket.
+- The field is a **disposition**, not a decision: it records what was done to the
+  payload, never why it was authorised.
 ---
 
 ## Accepted risks
