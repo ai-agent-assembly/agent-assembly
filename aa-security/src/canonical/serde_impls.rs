@@ -16,6 +16,22 @@
 //!
 //! There is deliberately **no `Deserialize`**. See the module documentation for
 //! why nothing here reconstructs a finding from bytes.
+//!
+//! # Tier
+//!
+//! **This serialization is audit-tier only.** [`CanonicalFinding`]'s derived
+//! `Serialize` emits its [`ByteSpan`](super::ByteSpan) unconditionally, and ADR
+//! 0032 §9 permits offsets and lengths *only* in the tamper-evident audit tier —
+//! a length plus a category can identify a value in a small domain. Forbidden
+//! design #12 puts offsets out of bounds for metric labels, traces and API
+//! responses outright.
+//!
+//! So a consumer that is not the audit sink must **project a span-free subset**
+//! rather than forward this output. That obligation lands on AAASM-5355's event
+//! and metric paths; it is recorded here because the shape is defined here, and
+//! because `scanner.rs` keeps its `end()` accessor `pub(crate)` for the same
+//! reason — it would be incoherent to guard the offset in Rust and then publish
+//! it in JSON to anything that asks.
 
 use serde::{Serialize, Serializer};
 
@@ -71,8 +87,14 @@ mod tests {
     /// Nothing asserted the wire shape before, which is how a derived
     /// `Serialize` emitting `"Critical"` and a nested category object shipped
     /// while the documentation promised `"critical"` and
-    /// `ACCESS_TOKEN[github:personal_access]`. B-9 reads this format, so it is a
-    /// contract and belongs in a golden rather than in prose.
+    /// `ACCESS_TOKEN[github:personal_access]`.
+    ///
+    /// **This golden is the audit-tier shape, not "the format B-9 reads".** It
+    /// carries `span`, and ADR 0032 §9 confines offsets to the tamper-evident
+    /// audit tier; B-9's metric and projection paths must emit a span-free
+    /// subset. Pinning it here fixes the vocabulary — the spelling of every
+    /// category, severity, method and status — which is the part every tier
+    /// shares.
     #[test]
     fn a_canonical_finding_serializes_to_its_documented_spelling() {
         let scanner = CredentialScanner::new();
