@@ -733,6 +733,37 @@ mod tests {
         );
     }
 
+    // ── where the store resolves to ───────────────────────────────────────
+
+    /// The production resolution path. `nextest` runs each test in its own
+    /// process, so mutating the environment here cannot disturb a sibling —
+    /// which is also why `config.rs`'s existing env tests do it unguarded.
+    #[test]
+    fn default_location_prefers_the_state_dir_then_home_then_refuses() {
+        std::env::set_var("AASM_STATE_DIR", "/tmp/explicit-state");
+        assert_eq!(
+            IdentityStore::default_location().expect("resolves").root(),
+            Path::new("/tmp/explicit-state/identity"),
+            "AASM_STATE_DIR must win, so one variable relocates all installation state"
+        );
+
+        // Empty is treated as absent rather than resolving to `/identity`.
+        std::env::set_var("AASM_STATE_DIR", "");
+        std::env::set_var("HOME", "/tmp/fake-home");
+        assert_eq!(
+            IdentityStore::default_location().expect("resolves").root(),
+            Path::new("/tmp/fake-home/.aasm/identity")
+        );
+
+        // Nowhere durable to put a key is a refusal, not a guess.
+        std::env::remove_var("AASM_STATE_DIR");
+        std::env::remove_var("HOME");
+        let err = IdentityStore::default_location()
+            .err()
+            .expect("with no state dir and no home there is nowhere to keep a key");
+        assert!(matches!(err, IdentityStoreError::NoStateDirectory), "got {err:?}");
+    }
+
     // ── the key is durable ────────────────────────────────────────────────
 
     /// Durability is the other half of the contract: the identity that
