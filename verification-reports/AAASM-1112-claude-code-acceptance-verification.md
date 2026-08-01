@@ -12,10 +12,12 @@ not-measured scenario with its reason, and gives a per-AC verdict.
 | # | Date | Commit | Outcome |
 |---|---|---|---|
 | 1 | 2026-07-31 | `2e543884` | **AC4 FAILED.** 4 of 5 AC satisfied. §1–§8 below. |
-| 2 | 2026-08-01 | `14de683b` | **All 5 AC satisfied.** Re-derived from scratch on merged `main`. [§9](#9-re-verification-2026-08-01--merged-main-14de683b). |
+| 2 | 2026-08-01 | `14de683b` | **All 5 AC satisfied.** Re-derived from scratch on merged `main`. One composition gap recorded as a follow-up. [§9](#9-re-verification-2026-08-01--merged-main-14de683b). |
+| 3 | 2026-08-01 | `bdd30a24` | **Run 2's composition gap closed.** AC4 is now measured directly rather than composed. [§10](#10-closing-the-ac4-composition-gap--2026-08-01-bdd30a24). |
 
 > **Current verdict — run 2, 2026-08-01: AAASM-1112 can be signed off and
 > AAASM-201 can be closed.** See [§9.9 Sign-off](#99-sign-off-re-derived).
+> Run 3 strengthens the AC4 evidence; it does not change that verdict.
 >
 > **Run 1's AC4 failure was correct when written and is retained in full.** Every
 > section from §1 to §8 records the state of the tree at `2e543884` and has *not*
@@ -902,7 +904,16 @@ bound-then-released port, and asserts non-zero exit, the message
 is the assertion run 1 added as an "honest floor"; on this commit it survives as
 a genuine guard rather than as a pin on the 405 defect.
 
-#### The one thing not measured, stated precisely
+#### The one thing not measured on run 2 — since closed, see §10
+
+> **Amendment, 2026-08-01 (run 3, `bdd30a24`).** This subsection is retained as
+> written, because the analysis of *why* the gap mattered is what motivated
+> closing it. The gap itself is closed: a scenario now launches the real `claude`
+> through the real `aasm run` and asserts on what reached the provider. See
+> [§10](#10-closing-the-ac4-composition-gap--2026-08-01-bdd30a24) for the
+> measurement and for the mutation that proves it load-bearing. The
+> **"Closing it"** paragraph below is what was done, and the composition
+> described here is no longer the load-bearing evidence for AC4.
 
 **No test launches the real `claude` binary through `aasm run` and observes its
 traffic arriving at the proxy.** Every `aasm run` test uses a POSIX shell stub
@@ -968,6 +979,10 @@ provably carries the identity, the verified proxy URL and the CA path; and a rea
 
 > **AC4 verdict: SATISFIED.** Measured, not inferred. The composition gap in
 > §9.5 is recorded as a follow-up, not as a defect and not as a blocker.
+>
+> *(Amended 2026-08-01, run 3: the composition gap is closed —
+> [§10](#10-closing-the-ac4-composition-gap--2026-08-01-bdd30a24). AC4 no longer
+> rests on a composition at all.)*
 
 ### AC5 — Unit tests for settings generation and MCP policy application
 
@@ -1008,7 +1023,7 @@ A skipped scenario proves nothing. The complete list:
 | conformance | — | `require_claude()` / `require_macos()` | **Not triggered.** Host is macOS and `which claude` found `/opt/homebrew/bin/claude` | — |
 | conformance | — | `NOT MEASURED` empty-capture guard | **Not triggered.** The real binary produced 3 requests | — |
 | `cli_run_claude_governed_launch` / `cli_run_claude_launch_env` / `cli_run_trusted_proxy` | `#[cfg(not(unix))]` skip stubs | conditional compilation | **Not triggered.** Host is Unix; all 36 tests executed | — |
-| **AC4** | real `claude` binary driven **through `aasm run`** | no such test exists | The composition gap analysed in §9.5. Real-binary evidence exists but only via the conformance lane, which bypasses `aasm run` | Recorded; does not defeat AC4 (§9.5) |
+| **AC4** | real `claude` binary driven **through `aasm run`** | no such test existed *on run 2* | The composition gap analysed in §9.5. Real-binary evidence existed but only via the conformance lane, which bypasses `aasm run` | Recorded; did not defeat AC4 (§9.5). **Closed on run 3** — §10 |
 | Scope | `cargo nextest run --workspace` | not run | Only the five named crates plus the named integration suites were run — 2 097 tests. The workspace suite was not executed on this commit; unrelated crates (`aa-proxy`, `aa-ebpf*`, `aa-storage*`, `aa-gateway`, `aa-api`) are unverified **by this report**, though CI covers them | None on AAASM-201's AC, all of which live in the crates that were run |
 | Scope | `cargo clippy` | not run | This branch changes Markdown only; no Rust source was touched. `cargo fmt --all -- --check` was run and is clean | None |
 | Real-tool CI lane | re-dispatch | not re-dispatched | Run `30684364750` already targets `headSha 14de683b` — the exact commit under test. Verified with `gh run view`, not assumed | None |
@@ -1035,7 +1050,7 @@ A skipped scenario proves nothing. The complete list:
 | AC1 — detect binary (`which claude`, `~/.claude/`) | **Satisfied** | Yes — 7 unit tests + the CLI path driving `probe_which` for real |
 | AC2 — generate managed `settings.json` from policy | **Satisfied** | Yes — 11 unit/integration tests + settings landing on the `aasm run` path |
 | AC3 — apply MCP allow/deny lists | **Satisfied** | Yes — 8 evidence rows; two integration-reach observations recorded |
-| AC4 — `aa run claude` launches with identity, proxy, monitoring end-to-end | **Satisfied** | Yes — all three components measured on a real child through the real `aasm`, real adapter, real gRPC gateway, real `aa-proxy`; one composition gap named |
+| AC4 — `aa run claude` launches with identity, proxy, monitoring end-to-end | **Satisfied** | Yes — all three components measured on a real child through the real `aasm`, real adapter, real gRPC gateway, real `aa-proxy`; one composition gap named, **and closed on run 3** (§10) |
 | AC5 — unit tests for settings generation and MCP policy application | **Satisfied** | Yes — 134/134 + 25/25 |
 
 **5 of 5 parent acceptance criteria are satisfied.**
@@ -1051,8 +1066,9 @@ A skipped scenario proves nothing. The complete list:
 Three items are recommended as **follow-ups, not blockers** — none of them is an
 unsatisfied AC, and none should hold the sign-off:
 
-1. **Close the AC4 composition gap** — one real-binary scenario through
-   `aasm run`, gated as the conformance lane is (§9.5).
+1. ~~**Close the AC4 composition gap** — one real-binary scenario through
+   `aasm run`, gated as the conformance lane is (§9.5).~~ **Done on run 3,
+   2026-08-01** — [§10](#10-closing-the-ac4-composition-gap--2026-08-01-bdd30a24).
 2. **Wire a real policy into `aasm run`** — `load_policy()` still returns an
    empty rule list, so the managed settings the launcher writes carry no
    permissions and no MCP entries (Observation (3), still open).
@@ -1066,3 +1082,246 @@ Plus the low-severity stale cross-reference in §9.8.
 `main`. Anyone relying on §9.4 should know it is a snapshot taken against
 `14de683b`, not a check that will re-run. What it now guarantees, which it did not
 at run 1, is that a green snapshot means a measurement was actually taken.
+
+---
+
+# 10. Closing the AC4 composition gap — 2026-08-01, `bdd30a24`
+
+**Branch:** `v0.0.1/AAASM-1112/test/reverify_ac4`
+**Base:** `main` at `14de683b` — the same commit run 2 measured.
+**Host:** macOS 25.4.0 (Darwin), `claude 2.1.220` at `/opt/homebrew/bin/claude`.
+
+Run 2 recorded one caveat and recommended it as a follow-up rather than a
+blocker: *no test drives the real `claude` binary through `aasm run`.* This
+section closes it. Nothing about run 1 or run 2 is rewritten — §9.5's analysis is
+retained verbatim and annotated.
+
+## 10.1 Why the caveat was worth closing
+
+Run 2 argued the join was **structural rather than assumed**: both halves call the
+same production `installed_environment()`, so the environment `aasm run` produces
+and the environment the conformance lane applies must agree.
+
+That argument is sound and it is also exactly the argument that held while
+**AAASM-5327** was live. `spawn_and_wait` built the child's environment from
+`child_env` and then discarded everything the adapter had set on the command, so
+`NODE_EXTRA_CA_CERTS` never reached the tool, the MitM handshake failed, and every
+governed launch went out uninspected. `installed_environment()` was correct
+throughout. Both suites were green throughout.
+
+So the premise the composition rests on is precisely the premise that has already
+failed once, silently, for the whole life of a critical defect. That is the
+strongest possible reason to assert it rather than reason about it.
+
+## 10.2 What was added
+
+One scenario:
+`aa-integration-tests/tests/cli_run_claude_governed_launch.rs::real_binary_governed_launch::run_claude_launches_the_real_binary_and_the_secret_never_reaches_the_provider`.
+
+| Component | What the scenario uses |
+|---|---|
+| Launcher | the real `aasm` binary, rebuilt unconditionally (`proxy_trust_support::build_binary`) |
+| Tool | the **real `claude 2.1.220`**, resolved from `PATH` by the production adapter |
+| Install | the production `EngineLifecycle` + `claude_code_registration`, on roots laid out so `ClaudeCodePaths::from_env()` inside the child `aasm` resolves the same files |
+| Gateway | the real `AgentLifecycleServiceImpl` over gRPC on loopback |
+| Proxy | a live process started by `aasm proxy start`, whose record `aasm run` independently verifies |
+| Provider | `spike_support::TlsCapturingUpstream` — records every body the proxy forwards |
+
+The assertion is on **what reached the provider**, not on what the launcher
+intended to set: at least one request observed, the synthetic secret absent from
+every captured body in every encoding `find_secret` checks, and
+`[REDACTED:AnthropicKey]` present in at least one. An environment the child never
+received cannot satisfy that.
+
+Gating matches the conformance real-tool lane exactly — `require_claude()` then
+`require_macos()`, both of which print a visible `SKIP [...]` **and** write
+`skipped` to the AAASM-5326 outcome ledger. Past that pair the scenario has
+committed to measuring: zero captured traffic records `not_measured` and **fails**
+with the launch's own stdout/stderr tails (secret-masked), rather than returning
+`Ok(())` with an explanatory line a runner would count as a pass.
+
+### The one piece of scaffolding, named
+
+`aasm run` will only route at a live process whose recorded executable is named
+`aa-proxy` (AAASM-5323), and the shipped `aa-proxy` will only dial a real
+upstream — `ProxyConfig::upstream_override` and `allow_private_connect_targets`
+are both deliberately unreachable from the environment, so a loopback mock is
+refused. No shipped artefact satisfies both constraints at once.
+
+The scenario therefore starts `aa-integration-tests/examples/proxy_with_mock_upstream.rs`:
+the shipped `aa_proxy::proxy::ProxyServer`, built from the shipped
+`ProxyConfig::from_env()`, with `upstream_override` set — the identical knob
+`conformance_support::RestartableProxy` and `spike_support::proxy_harness` already
+turn in-process. MitM certificate issuance, TLS termination, host classification,
+the credential scanner and the redaction rewrite are all production code. The
+artefact is copied to a file named `aa-proxy` so `aasm proxy start` resolves it.
+
+**Consequence, stated plainly:** the trust check's *identity* constraint is not
+under test in this scenario. It is measured against the genuine binary by
+`cli_run_trusted_proxy.rs` (ten refusal paths, §9.5), and nothing here relaxes it.
+`aa_proxy::run()` is deliberately not called, because it installs the CA into the
+macOS System Keychain, which no fixture in this crate may do.
+
+## 10.3 The measurement, verbatim
+
+```
+$ cargo nextest run -p aa-integration-tests --test cli_run_claude_governed_launch \
+    --retries 0 --no-capture
+
+running 1 test
+MEASURED governed launch: launcher_exit=Some(143) elapsed=508.374208ms
+MEASURED requests reaching the provider: 3
+MEASURED request lines: [("POST", "/v1/messages?beta=true"), ("GET", "/mcp-registry/v0/servers?version=latest&limit=100&visibility=commercial%2Cgsuite%2Centerprise%2Chealth"), ("POST", "/api/event_logging/v2/batch")]
+MEASURED bodies carrying the redaction placeholder: 1 of 3
+OUTCOME [AC4 real-tool governed launch]: measured — 3 request(s) observed from a governed launch, 1 of 3 carried the redaction placeholder
+test real_binary_governed_launch::run_claude_launches_the_real_binary_and_the_secret_never_reaches_the_provider ... ok
+
+     Summary [  74.990s] 4 tests run: 4 passed, 0 skipped
+```
+
+All four tests in the binary — the three that existed plus the new one — pass on
+the same run. `launcher_exit=143` is Claude Code's own exit code on the `SIGTERM`
+the harness sends once evidence is complete; with every host MitM'd onto one mock
+the tool never exits on its own, exactly as the conformance lane documents.
+
+The ledger entry, with `AA_CONFORMANCE_OUTCOME_DIR` set:
+
+```json
+{
+  "detail": "3 request(s) observed from a governed launch, 1 of 3 carried the redaction placeholder",
+  "outcome": "measured",
+  "scenario": "AC4 real-tool governed launch"
+}
+```
+
+## 10.4 The mutation — proof the scenario is load-bearing
+
+A scenario that was never watched failing against the real defect is not evidence.
+The mutation applied is the faithful one: reinstate AAASM-5327 by commenting out
+the loop in `aa-cli/src/commands/run.rs::spawn_and_wait` that applies the
+adapter's environment to the child.
+
+```diff
+-    for (name, value) in cmd.get_envs() {
+-        match value {
+-            Some(value) => tokio_cmd.env(name, value),
+-            None => tokio_cmd.env_remove(name),
+-        };
+-    }
++    // TEMPORARY AAASM-1112 MUTATION — reinstates the AAASM-5327 defect.
++    // for (name, value) in cmd.get_envs() { ... }
+```
+
+### The new scenario fails, with the defect's real symptom
+
+```
+MEASURED governed launch: launcher_exit=Some(1) elapsed=606.533958ms
+MEASURED requests reaching the provider: 0
+MEASURED request lines: []
+OUTCOME [AC4 real-tool governed launch]: not_measured — no upstream traffic from a governed launch (launcher_exit=Some(1), elapsed=20.616446417s)
+NOT MEASURED aasm stdout tail: API Error: Unable to connect to API: SSL certificate verification failed. Check your proxy or corporate SSL certificates
+
+NOT MEASURED aasm stderr tail: tool=claude version=2.1.220 path=/opt/homebrew/bin/claude governance_level=L2Enforce
+
+Error: NOT MEASURED [AC4 real-tool governed launch]: no upstream traffic from a governed launch (launcher_exit=Some(1), elapsed=20.616446417s). This is a gap in the evidence, not a pass — nothing about the governed launch was established.
+test real_binary_governed_launch::run_claude_launches_the_real_binary_and_the_secret_never_reaches_the_provider ... FAILED
+
+     Summary [  73.327s] 1 test run: 0 passed, 1 failed, 3 skipped
+```
+
+`HTTPS_PROXY` still reaches the child — `build_child_env` sets it independently —
+so the tool is still *routed* at the proxy. What it has lost is
+`NODE_EXTRA_CA_CERTS`, so its Node runtime refuses the MitM leaf and no traffic
+ever reaches the provider. That is AAASM-5327's exact failure mode, reproduced.
+
+### Both pre-existing halves stay green under the same mutation
+
+This is the part that settles whether the new scenario adds anything. With the
+defect live, on the same tree:
+
+```
+$ cargo nextest run -p aa-integration-tests --retries 0 \
+    -E 'test(run_claude_launches_the_tool_with_identity_proxy_and_a_monitored_session) or
+        test(the_real_binary_launched_through_the_installed_environment_is_protected)'
+
+        PASS [   0.456s] (1/2) aa-integration-tests::conformance_claude_code the_real_binary_launched_through_the_installed_environment_is_protected
+        PASS [  53.520s] (2/2) aa-integration-tests::cli_run_claude_governed_launch governed_launch::run_claude_launches_the_tool_with_identity_proxy_and_a_monitored_session
+     Summary [  53.521s] 2 tests run: 2 passed, 696 skipped
+```
+
+The conformance lane did not merely skip — it genuinely measured while the defect
+was live:
+
+```
+MEASURED real binary: exit=None stopped_by_harness=true elapsed=411.9665ms
+MEASURED real-binary requests reaching the provider: 3
+MEASURED real-binary bodies carrying the placeholder: 2 of 3
+OUTCOME [real-tool lane]: measured — 3 request(s) observed, 2 of 3 carried the redaction placeholder
+```
+
+So the composition of two *measuring, passing* suites is compatible with every
+governed launch on the host being uninspected. Run 2's caveat was not theoretical.
+
+### Reverted, and re-measured
+
+```
+$ git checkout -- aa-cli/src/commands/run.rs
+$ git status
+* v0.0.1/AAASM-1112/test/reverify_ac4...remote/main [ahead 5]
+clean — nothing to commit
+```
+
+The passing output in §10.3 is the post-revert run. **No product code is modified
+by this branch** — the only product-code change ever made was the temporary
+mutation above, and the tree is clean.
+
+## 10.5 What this changes about the AC4 verdict
+
+AC4 is *"`aa run claude` launches Claude Code with identity, proxy, and monitoring
+— end to end."*
+
+* **Identity** — measured on run 2, unchanged (real gRPC registration, DID derived
+  as the CLI derives it, read off a real registry).
+* **Monitoring** — measured on run 2, unchanged.
+* **Proxy, end to end** — **now measured directly rather than composed.** The real
+  tool named in the AC, launched by the real launcher named in the AC, has its
+  traffic intercepted and its credential redacted before it leaves the host, and
+  the assertion is taken at the provider.
+
+The verdict does not change — it was SATISFIED on run 2 and is SATISFIED now. What
+changes is the *shape* of the evidence: it no longer depends on a premise that has
+historically failed silently, and a regression reinstating that failure now turns
+this scenario red instead of leaving the suite green.
+
+## 10.6 Limits of this run — stated so nobody over-reads it
+
+1. **The proxy process is a stand-in for one reason.** §10.2 names it. The
+   interception path is production; the *binary identity* the launcher trusted is
+   not, and that check is evidenced elsewhere. A reviewer who wants the two
+   together in one process would need `upstream_override` (or an equivalent) to be
+   reachable from the shipped binary — which would be a worse product.
+2. **macOS-only, and not a `main` gate.** The scenario skips visibly on Linux CI
+   (`skipped` in the ledger). Like the conformance real-tool lane, it does not
+   currently gate `main`; wiring it into the `workflow_dispatch` real-tool lane
+   alongside the conformance scenario is the obvious follow-up, and is *not* done
+   here.
+3. **The tool errors on the mock's canned response.** `claude` is stopped by the
+   harness once evidence is captured, and its own exit code is `143`. Nothing in
+   the assertion depends on the tool completing successfully — the evidence is the
+   redacted body at the provider — but the run is not a demonstration that a
+   governed `claude` session *works end to end functionally*, only that it is
+   governed.
+4. **Run 2's other two follow-ups are untouched.** `load_policy()` still returns an
+   empty rule list (Observation (3)); `apply_capability_policy` still has no
+   production caller (Observation (4)); the stale cross-reference in §9.8 is still
+   there. None was in scope here.
+
+## 10.7 Sign-off, restated
+
+Unchanged from §9.9: **5 of 5 parent acceptance criteria satisfied; AAASM-1112 can
+be signed off and AAASM-201 can be closed.**
+
+The one qualification run 2 attached to AC4 is now removed. The recommendation is
+no longer "sign off, with a named composition gap recorded as a follow-up" but
+**"sign off; AC4 is measured on the real tool through the real launcher, and the
+measurement has been shown to fail against the defect it exists to catch."**
