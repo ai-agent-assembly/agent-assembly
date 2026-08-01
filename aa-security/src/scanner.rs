@@ -2693,6 +2693,41 @@ mod tests {
         );
     }
 
+    /// Pins the known residual documented on [`ascii_runs`]: a separator dropped
+    /// into the *middle* of a secret splits it into two sub-20-char runs and
+    /// neither is scored. Asserted as **not detected**, deliberately — a test
+    /// that documents a gap is how the gap stays visible instead of being
+    /// rediscovered by an attacker.
+    ///
+    /// The whitespace rows are the reason this is an accepted trade rather than
+    /// a regression: they are undetected on `main` too, so separator-splitting
+    /// was already fully open and a non-ASCII glyph merely joins the class. The
+    /// undivided row is the control — remove the splitter and detection returns.
+    ///
+    /// AAASM-5368 closes this for every separator class; when it lands, the
+    /// first five rows flip and this test is expected to be rewritten, not
+    /// deleted.
+    #[test]
+    fn separator_split_secret_is_a_known_residual() {
+        let scanner = CredentialScanner::new();
+        // One synthetic 24-char high-entropy secret, split after 15 chars.
+        let (head, tail) = ("Xk9!mQ2*vB7#nR4", "$wT6%zP1&");
+
+        for splitter in ["中", "😀", "д", " ", "\t", "\n"] {
+            let text = format!("log {head}{splitter}{tail} end");
+            assert!(
+                scanner.scan(&text).is_clean(),
+                "residual changed for splitter {splitter:?} — if AAASM-5368 landed, update this test"
+            );
+        }
+
+        let undivided = format!("log {head}{tail} end");
+        assert!(
+            !scanner.scan(&undivided).is_clean(),
+            "control: the same secret undivided must still be detected"
+        );
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
