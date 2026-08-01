@@ -1961,6 +1961,17 @@ mod tests {
     }
 
     #[test]
+    fn does_not_flag_a_short_fullwidth_digit_run() {
+        // An 8-digit run is below the 13-digit card floor and is not SSN-shaped,
+        // so it must stay clean. Full-width digits are ordinary content — order
+        // numbers, dates, quantities — in CJK text, and flagging them would make
+        // the detector unusable in exactly the locales this fix serves.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("qty=１２３４５６７８");
+        assert!(result.is_clean(), "short run must stay clean: {:?}", result.findings);
+    }
+
+    #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("contact: user@example.com for support");
