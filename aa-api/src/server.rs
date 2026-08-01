@@ -292,6 +292,14 @@ pub async fn run_server_with_spa(
         state.alert_store.clone(),
     );
 
+    // Spawn the shadow-expiry reconciler (AAASM-5339): auto-revert agents whose
+    // time-limited Observe (shadow) enforcement window has expired back to
+    // Enforce, emitting a system-attributed GovernanceMutation audit per revert.
+    let _shadow_expiry_handle = crate::reconcile::shadow_expiry_watcher::spawn_shadow_expiry_watcher(
+        state.agent_registry.clone(),
+        state.audit_sender.clone(),
+    );
+
     // Spawn the MVP alert-rule evaluator (AAASM-1386). AAASM-3369 wires the
     // real `BudgetMetricSource` (global daily spend vs. limit) so budget rules
     // fire against live spend; anomaly / approval-age / policy-violation metrics
