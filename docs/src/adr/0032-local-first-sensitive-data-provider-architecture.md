@@ -39,7 +39,7 @@ Four facts from the survey shape the answer, and each is a measurement rather
 than a preference.
 
 **The fast path is genuinely fast, and the transport tax is not.** The built-in
-scanner costs 6.0 µs p50 on a ~450-byte tool call. Moving that same payload to an
+scanner costs 6.1 µs p50 on a ~450-byte tool call. Moving that same payload to an
 out-of-process provider that performs *no detection at all* costs 14.1 µs over
 loopback TCP — 2.3× the entire current scan — and 43.3 µs if the connection is
 not reused. At 32 KB the same tax is 9%, and at 1 MB it is 4%. Out-of-process

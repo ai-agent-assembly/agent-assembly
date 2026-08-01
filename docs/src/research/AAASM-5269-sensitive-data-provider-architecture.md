@@ -30,7 +30,7 @@ the survey and benchmarks establish:
 
 2. **External providers are disqualified from the synchronous path by physics,
    not by preference.** Presidio costs **12.28 ms** on a 592-byte tool call
-   against the Rust scanner's **6.0 µs** — a ~2 000× ratio (§3.2) — and the
+   against the Rust scanner's **6.1 µs** — a ~2 000× ratio (§3.2) — and the
    out-of-process transport tax alone, with a provider that does no work at all,
    is 2.3× the entire current scan for that payload class (§3.3). The same
    providers are, however, entirely reasonable for large or high-risk payloads
@@ -345,26 +345,31 @@ nothing.
 
 | payload | bytes | findings | p50 | p95 | p99 |
 |---|---:|---:|---:|---:|---:|
-| small tool call, 1 finding | 449 | 1 | **6.00 µs** | 7.33 µs | 7.92 µs |
-| small tool call, clean | 410 | 0 | **4.96 µs** | 5.71 µs | 6.42 µs |
-| medium prompt, 32 KB | 32 954 | 4 | **381 µs** | 419 µs | 442 µs |
-| medium prompt, 32 KB, clean | 32 800 | 0 | 379 µs | 412 µs | 435 µs |
-| large document, 1 MB | 1 049 034 | 6 | **12.25 ms** | 12.75 ms | 12.95 ms |
-| mixed zh-TW, 32 KB | 32 953 | **91** | 393 µs | 423 µs | 466 µs |
-| mixed zh-TW, 32 KB, *clean* | 32 799 | **87** ← see §4.1 | 395 µs | 433 µs | 454 µs |
-| high density, 500 findings | 58 200 | 600 | **962 µs** | 1.04 ms | 1.08 ms |
+| small tool call, 1 finding | 449 | 1 | **6.13 µs** | 6.29 µs | 7.50 µs |
+| small tool call, clean | 410 | 0 | **5.00 µs** | 5.13 µs | 5.92 µs |
+| medium prompt, 32 KB | 32 954 | 4 | **394 µs** | 416 µs | 433 µs |
+| medium prompt, 32 KB, clean | 32 800 | 0 | 434 µs | 468 µs | 508 µs |
+| large document, 1 MB | 1 049 045 | 6 | **12.47 ms** | 13.67 ms | 14.47 ms |
+| mixed zh-TW, 32 KB | 32 953 | **91** | 407 µs | 420 µs | 443 µs |
+| mixed zh-TW, 32 KB, *clean* | 32 799 | **87** ← see §4.1 | 396 µs | 417 µs | 439 µs |
+| high density, 500 findings | 59 300 | 600 | **956 µs** | 1.11 ms | 1.12 ms |
 
-`CredentialScanner::new()` costs 135 µs p50 — a per-process fixed cost, not a
+`CredentialScanner::new()` costs 132 µs p50 — a per-process fixed cost, not a
 per-request one.
+
+Run-to-run variance on an unquiesced laptop is roughly ±10% at the p50 and
+larger at the max (background load produces occasional millisecond outliers, as
+the `max` column shows). The conclusions below depend on ratios spanning two to
+three orders of magnitude, so none of them is sensitive to that.
 
 Three conclusions:
 
 - Throughput is a near-constant **~80 MiB/s** across three orders of magnitude,
   i.e. cost is linear in bytes. For an Aho-Corasick automaton that is slow; the
   dominant cost is the entropy/digit/email passes, not the AC pass.
-- **Finding count matters more than size.** 500 findings in 32 KB costs 962 µs
-  against 381 µs for the same bytes with 4 findings — a 2.5× penalty driven by
-  the sort and overlap-coalescing tail.
+- **Finding count matters more than size.** 500 findings in ~58 KB costs 956 µs
+  against 394 µs for 32 KB with 4 findings — a penalty driven by the sort and
+  overlap-coalescing tail rather than by input length.
 - Redaction adds ~5% on top of the scan, so the interesting budget is detection.
 
 ### 3.3 Out-of-process transport floor
@@ -383,9 +388,9 @@ Set against §3.2, this is the decisive result of the Spike:
 
 | payload | in-process scan | transport tax alone | tax as % of scan |
 |---|---:|---:|---:|
-| small tool call | 6.0 µs | 14.1 µs (TCP) / 6.6 µs (UDS) | **235%** / 110% |
-| 32 KB | 381 µs | 33.7 µs | 9% |
-| 1 MB | 12.2 ms | 536 µs | 4% |
+| small tool call | 6.1 µs | 14.1 µs (TCP) / 6.6 µs (UDS) | **230%** / 108% |
+| 32 KB | 394 µs | 33.7 µs | 9% |
+| 1 MB | 12.5 ms | 536 µs | 4% |
 
 **Transport overhead dominates precisely where the synchronous enforcement path
 lives, and is negligible precisely where deep inspection is actually wanted.**
@@ -413,9 +418,9 @@ Latency, same payload classes:
 
 | payload | Rust in-process p50 | Presidio p50 | ratio |
 |---|---:|---:|---:|
-| small tool call (~592 B) | 6.0 µs | **12.28 ms** | **~2 000×** |
-| medium prompt 32 KB | 381 µs | **613 ms** | **~1 600×** |
-| large document 1 MB | 12.2 ms | **HTTP 500** | — |
+| small tool call (~592 B) | 6.1 µs | **12.28 ms** | **~2 000×** |
+| medium prompt 32 KB | 394 µs | **613 ms** | **~1 600×** |
+| large document 1 MB | 12.5 ms | **HTTP 500** | — |
 
 Scaling is superlinear and then hits a wall:
 
@@ -625,7 +630,7 @@ than new `CredentialKind` variants, so policies need no per-locale rewrite and
 | Governance | us | **`data-privacy-stack`, community-run — no longer Microsoft** | zricethezav/gitleaks | us |
 | Invocation | in-process library | HTTP service | CLI, file-oriented | our choice |
 | Small-call latency | **6 µs** | **12.3 ms** | process spawn (unmeasured) | transport floor 6.6–14 µs |
-| Large payload | 12.2 ms @ 1 MB | **fails ≥ 524 KB** | file-oriented, fine | n/a |
+| Large payload | 12.5 ms @ 1 MB | **fails ≥ 524 KB** | file-oriented, fine | n/a |
 | Idle RSS | ~0 (shared automaton) | **746 MiB** | ~0 between invocations | provider-defined |
 | Offline / egress-deny | native | **verified working**, models baked in | native | by construction |
 | zh-TW | none today; **buildable** | **none, and fails closed-clean** | n/a (secrets only) | by construction |
