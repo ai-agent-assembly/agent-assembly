@@ -177,8 +177,11 @@ by status code; both map to `provider_error`, not to a clean result.
 
 > **Deferred post-v1 (D-1).** No out-of-process provider exists in v1, so this
 > section binds nothing that v1 ships. It is retained as the specification a
-> future provider ADR starts from. The raw-content and no-SaaS rules in its
-> first paragraph are *not* deferred — they hold unconditionally.
+> future provider ADR starts from. Three rules in it are *not* deferred and hold
+> unconditionally: the raw-content rule and the no-third-party-SaaS rule in the
+> first paragraph, and the **no-silent-host-modification** rule in the second
+> ("never installs Docker, obtains root, or runs `pip install`"), which forbidden
+> design #13 restates unconditionally.
 
 Providers run locally or on an operator-controlled private network. Raw content
 never goes to a third-party SaaS service. Provider workloads are egress
@@ -273,18 +276,25 @@ this implementation cycle.
 
 Consequences that bind implementation:
 
-- **§6 (transport, lifecycle, egress) and §7 (deployment placement) are deferred
+- **§4 (provider capability model), §5 (provider failure semantics), §6
+  (transport, lifecycle, egress) and §7 (deployment placement) are deferred
   post-v1 specification.** They are retained, not deleted, so a future ADR
   inherits the analysis and the measurements rather than re-deriving them. No v1
-  ticket may cite them as a requirement.
+  ticket may cite them as a requirement — except the invariants their section
+  markers explicitly carve out, which bind any detection source and therefore
+  bind v1.
 - The **provider port and its in-tree test double remain in v1** — not as a new
   permission this ADR grants itself, but because they are Phase 2 of the
   migration in the [Spike report §8](../research/AAASM-5269-sensitive-data-provider-architecture.md),
   and the option the product owner adopted is that report's option A,
   "in-process, in-tree adapters only (v1)". The v1 line falls between Phase 3 and
-  Phase 4. Two constraints on that seam: it **must not be reachable from a
-  synchronous enforcement path** (forbidden design #1), and **no adapter that
-  leaves the process may ship**.
+  Phase 4. The constraint is on *what the port may route to*, not on where the
+  port sits: the port **may** wrap the in-process deterministic scanner on the
+  synchronous path — that is exactly what `B-8` formalises at
+  `aa-gateway/src/engine/mod.rs:1443`, which is inside the synchronous
+  `EngineInner::evaluate` — but **no out-of-process or third-party provider
+  implementation may be reachable from a synchronous enforcement path**
+  (forbidden design #1), and **no adapter that leaves the process may ship**.
 - The v1 threat model **shrinks**: provider compromise, provider egress and
   provider supply-chain are not v1 threats, since no provider exists. The
   corresponding entries in §5.5 of the Spike report remain valid for the deferred
@@ -317,7 +327,7 @@ Binding rules for its implementation:
 - It is **additive and optional**. Absent or `none` must mean exactly what
   today's absence of the field means, so every existing consumer keeps working
   unchanged.
-- Every disposition maps onto an existing `RuntimeVerdict`, so a reader that
+- Every disposition other than `none` maps onto an existing `RuntimeVerdict`, so a reader that
   understands only `RuntimeVerdict` still reaches a correct, if coarser,
   conclusion. The mapping is part of the contract and is not left to the
   implementer:
@@ -363,7 +373,7 @@ requires an explicit bypass test.
 The supporting constraints already in this ADR are §2 (the `CredentialKind`
 variants and labels are frozen and pinned by 26 conformance vectors), forbidden
 design #9 (never edit a committed golden vector to make a change pass) and
-validation requirements 2–3.
+validation requirements 1–2.
 
 ---
 
@@ -500,16 +510,25 @@ that:
    an event from counting as prevented.
 7. A benchmark shows the fast path has not regressed against the numbers in the
    Spike report.
-8. The provider port, if introduced, is not reachable from a synchronous
-   enforcement path — a compile-time or type-level boundary, not a convention.
+8. A detection source that cannot handle an input — unsupported locale, exceeded
+   size ceiling, internal error — produces a recorded outcome distinguishable
+   from "clean", and never a clean result. This is the v1-scoped form of the
+   §4/§5 invariants and binds the in-process scanner today.
+9. No detection source returns raw secret material to its caller; findings carry
+   kind, span and label only.
+10. No out-of-process or third-party provider implementation is reachable from a
+    synchronous enforcement path — a compile-time or type-level boundary, not a
+    convention. The port itself wrapping the in-process deterministic scanner is
+    permitted and expected (see D-1).
 
 **Deferred with §4–§7 (D-1)** — these cannot be satisfied in v1 because the thing
 they validate does not exist. They become required when the follow-up provider
 ADR is accepted:
 
 - A negative egress test proves provider workloads cannot reach the internet.
-- A capability miss and a timeout each produce a distinct recorded outcome, and
-  neither produces a clean result.
+- A **provider** capability miss and a **provider** timeout each produce a
+  distinct recorded outcome, and neither produces a clean result (the
+  in-process form of this is v1 item 8).
 - An adapter test asserts no raw secret material appears in any adapter output.
 
 ---
