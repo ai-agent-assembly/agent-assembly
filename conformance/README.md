@@ -20,7 +20,7 @@ conformance/
 │   ├── message_serialization/  # 10 vectors: one per proto message golden
 │   ├── proto/                  # *.bin golden files (prost encode_to_vec output)
 │   ├── policy_query/           # 10 vectors: ALLOW, DENY, PENDING, REDACT decisions
-│   ├── credential_detection/   # 23 vectors: API keys, auth tokens, DB URLs, PII, entropy
+│   ├── credential_detection/   # 34 vectors: API keys, auth tokens, DB URLs, PII, entropy
 │   └── session_lifecycle/      # 10 vectors: Register, Heartbeat, Deregister, ControlCommand
 └── runner/
     ├── requirements.txt        # Python runner dependencies (colorama)
