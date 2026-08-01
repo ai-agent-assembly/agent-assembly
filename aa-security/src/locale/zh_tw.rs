@@ -21,6 +21,8 @@
 //! | 國民身分證 / 2021 居留證 | letter + 9 digits, weighted mod-10, `d₁ ∈ {1,2,8,9}` | ~4% of random letter+9-digit strings |
 //! | Legacy 居留證 | 2 letters (2nd ∈ A–D) + 8 digits, weighted mod-10 | ~10% of random strings of that shape |
 //! | 統一編號 | 8 whole digits, weighted digit-sum mod 5 | **~20% of random 8-digit strings** |
+//! | 行動電話 | `09` + exactly 8 more digits | no checksum exists |
+//! | 市內電話 | area-code gazetteer + separator + that area's local length | no checksum exists; **unseparated landlines are not detected** |
 //!
 //! The 統一編號 row is the one that matters. Roughly one 8-digit numeric literal
 //! in five passes, so a bare `YYYYMMDD` date, a build number or an order
@@ -88,12 +90,16 @@ const BUSINESS_ID: CanonicalCategory = CanonicalCategory::with_locale(Base::TaxI
 /// and with a checksum that admits one string in five, that class of match would
 /// dominate the output on any payload carrying floating-point data.
 ///
+/// `+` is here so the digits of `+886…` cannot be re-read as a bare identifier
+/// once the phone recognizer has declined them — the country code is part of
+/// one number, not a prefix in front of another.
+///
 /// A Han character is deliberately **not** a fragment neighbour. That is the
 /// whole point: `統編12345675` is how the identifier is written, and treating
 /// Han as a word character — which every `\b`-based implementation does — makes
 /// this recognizer miss the common case.
 fn is_fragment_neighbour(c: char) -> bool {
-    c.is_ascii_alphanumeric() || ascii_digit_of(c).is_some() || matches!(c, '.' | ',')
+    c.is_ascii_alphanumeric() || ascii_digit_of(c).is_some() || matches!(c, '.' | ',' | '+')
 }
 
 /// Whether the character immediately before byte offset `start` permits a
@@ -365,6 +371,161 @@ fn scan_business_id(text: &str, start: usize) -> Option<(CanonicalCategory, usiz
 }
 
 // ---------------------------------------------------------------------------
+// Telephone numbers
+// ---------------------------------------------------------------------------
+
+/// 行動電話 — a mobile number.
+const MOBILE: CanonicalCategory = CanonicalCategory::with_locale(Base::PhoneNumber, "zh-TW", "mobile");
+/// 市內電話 — a landline.
+const LANDLINE: CanonicalCategory = CanonicalCategory::with_locale(Base::PhoneNumber, "zh-TW", "landline");
+
+/// Landline area codes, written **without** the trunk `0`, paired with the
+/// subscriber-number lengths that area uses.
+///
+/// A gazetteer rather than "any digit then seven or eight more", because a
+/// phone number has no checksum: the closed set of area codes and the fixed
+/// local length per area are the only structure available, and without them
+/// this recognizer would flag most 9- and 10-digit numbers.
+///
+/// Longest match wins, which is what disambiguates `3` from `37` and `8` from
+/// `82` / `826` / `89`. Taichung and Changhua share `4` with different lengths,
+/// so an area code maps to a set.
+const LANDLINE_AREA_CODES: &[(&str, &[usize])] = &[
+    ("826", &[5]),
+    ("836", &[5]),
+    ("37", &[6]),
+    ("49", &[7]),
+    ("82", &[6]),
+    ("89", &[6]),
+    ("2", &[8]),
+    ("3", &[7]),
+    ("4", &[7, 8]),
+    ("5", &[7]),
+    ("6", &[7]),
+    ("7", &[7]),
+    ("8", &[7]),
+];
+
+/// The longest national significant number Taiwan issues: a mobile is nine
+/// digits after the trunk `0`, and no landline is longer.
+///
+/// Also the read budget, which is what stops a longer digit run being truncated
+/// into a match: the reader stops at nine, the tenth digit then fails the right
+/// boundary test, and the candidate is rejected rather than reported as a
+/// prefix of something else.
+const MAX_NATIONAL_SIGNIFICANT_DIGITS: usize = 9;
+
+/// Reads digits from `start`, allowing a single `-`, space or `)` **between**
+/// digits, and stopping at `max_digits`.
+///
+/// Returns the byte offset just past the last digit, the ASCII-normalised
+/// digits, and how many separators were consumed. A trailing separator is never
+/// swallowed — the span must end on the number, or redaction would rewrite a
+/// character that is not part of it.
+fn read_grouped_digits(text: &str, start: usize, max_digits: usize) -> (usize, String, usize) {
+    let mut digits = String::new();
+    let mut separators = 0usize;
+    let mut end = start;
+
+    while let Some(c) = text[end..].chars().next() {
+        if let Some(d) = ascii_digit_of(c) {
+            if digits.len() == max_digits {
+                break;
+            }
+            digits.push(d);
+            end += c.len_utf8();
+            continue;
+        }
+
+        let is_separator = matches!(c, '-' | ' ' | ')');
+        let followed_by_digit = text[end + c.len_utf8()..]
+            .chars()
+            .next()
+            .and_then(ascii_digit_of)
+            .is_some();
+        if is_separator && !digits.is_empty() && followed_by_digit && digits.len() < max_digits {
+            separators += 1;
+            end += c.len_utf8();
+            continue;
+        }
+
+        break;
+    }
+
+    (end, digits, separators)
+}
+
+/// Classify a national significant number — the digits after the trunk `0` or
+/// after `+886`.
+fn classify_national_number(digits: &str, separated: bool) -> Option<CanonicalCategory> {
+    // Mobile: `9` plus eight more, which is `09` plus eight in national form.
+    if digits.len() == MAX_NATIONAL_SIGNIFICANT_DIGITS && digits.starts_with('9') {
+        return Some(MOBILE);
+    }
+
+    // A landline must be written with a separator, `(0x)` parentheses or the
+    // `+886` prefix. Unseparated landlines are a **known miss**, and a
+    // deliberate one: `0212345678` is indistinguishable in shape from a
+    // ten-digit account or reference number beginning with a zero, and with no
+    // checksum to appeal to, accepting it would report a large class of
+    // ordinary numbers as personal data.
+    if !separated {
+        return None;
+    }
+    LANDLINE_AREA_CODES
+        .iter()
+        .find(|(area, lengths)| digits.starts_with(*area) && lengths.contains(&(digits.len() - area.len())))
+        .map(|_| LANDLINE)
+}
+
+/// Try to read a Taiwanese telephone number at `start`.
+///
+/// Three written forms, all reduced to the same national significant number
+/// before classification: `0…` with the trunk prefix, `(0x)…` with the area
+/// code parenthesised, and `+886…` with the trunk `0` dropped — the leading-zero
+/// drop being the part an implementation tends to get wrong, since the
+/// international form of `0912345678` is `+886912345678` and not
+/// `+8860912345678`.
+fn scan_phone_number(text: &str, start: usize) -> Option<(CanonicalCategory, usize)> {
+    let rest = &text[start..];
+    let (mut pos, international) = match rest.strip_prefix("+886") {
+        Some(_) => (start + "+886".len(), true),
+        None => (start, false),
+    };
+
+    if international {
+        // An optional separator, then an optional trunk `0` some writers keep
+        // even though the international form drops it.
+        if matches!(text[pos..].chars().next(), Some('-' | ' ')) {
+            pos += 1;
+        }
+        if text[pos..].starts_with('0') {
+            pos += 1;
+        }
+    } else {
+        // `(0x)` — consume the opening paren; the closing one is read as a
+        // separator by `read_grouped_digits`.
+        let parenthesised = text[pos..].starts_with('(');
+        if parenthesised {
+            pos += 1;
+        }
+        // The trunk prefix. Normalised, so a full-width `０` counts.
+        let trunk = text[pos..].chars().next().and_then(ascii_digit_of)?;
+        if trunk != '0' {
+            return None;
+        }
+        pos += text[pos..].chars().next()?.len_utf8();
+    }
+
+    let (end, digits, separators) = read_grouped_digits(text, pos, MAX_NATIONAL_SIGNIFICANT_DIGITS);
+    if !right_boundary_ok(text, end) {
+        return None;
+    }
+    let category = classify_national_number(&digits, separators > 0 || international)?;
+    Some((category, end))
+}
+
+// ---------------------------------------------------------------------------
 // Context keywords
 // ---------------------------------------------------------------------------
 
@@ -432,9 +593,13 @@ fn has_context_keyword(text: &str, start: usize) -> bool {
 /// counterparty, and because its checksum is weak enough that ranking it above
 /// an email address would bury real findings under it.
 fn bands(category: CanonicalCategory) -> (Severity, ConfidenceBand) {
-    match category.base() {
-        Base::NationalId => (Severity::Critical, ConfidenceBand::Medium),
-        // 統一編號 and anything a later locale adds under a tax base.
+    match category {
+        NATIONAL_ID | ARC_NEW | ARC_LEGACY => (Severity::Critical, ConfidenceBand::Medium),
+        // A mobile's `09` prefix plus its exact length is real structure; a
+        // landline rests on an area-code gazetteer alone, which is weaker.
+        MOBILE => (Severity::Medium, ConfidenceBand::Medium),
+        LANDLINE => (Severity::Medium, ConfidenceBand::Low),
+        // 統一編號, and anything a later locale adds without its own row.
         _ => (Severity::Low, ConfidenceBand::Low),
     }
 }
@@ -514,10 +679,13 @@ pub fn scan(text: &str) -> Vec<CanonicalFinding> {
             continue;
         }
 
-        // Letter-initial forms and digit-initial forms cannot collide, so the
-        // order between these two is arbitrary; the order *within* the digit
-        // forms is not, and is fixed where they are combined.
-        let hit = scan_identity_number(text, i).or_else(|| scan_business_id(text, i));
+        // Order matters among the digit-initial forms: a phone number is tried
+        // before a 統一編號 so a nine-digit national number is never truncated
+        // into an eight-digit tax number by whichever ran first. Letter-initial
+        // forms cannot collide with either.
+        let hit = scan_identity_number(text, i)
+            .or_else(|| scan_phone_number(text, i))
+            .or_else(|| scan_business_id(text, i));
 
         match hit {
             Some((category, end)) => {
@@ -870,6 +1038,112 @@ mod tests {
         assert_eq!(categories("批次 2026-08-01 已完成"), Vec::<String>::new());
     }
 
+    /// Every written form of the same mobile number must be detected.
+    ///
+    /// All of these are the same synthetic number — an ascending digit run, so
+    /// it is visibly constructed rather than observed — written the several ways
+    /// a person writes it. A phone number has no checksum, so unlike the
+    /// identity fixtures there is nothing to generate it from; the defence
+    /// against writing down a real one is that the digits are sequential.
+    ///
+    /// The `+886` row is the one worth the test: the international form
+    /// **drops the trunk zero**, so it is
+    /// `+886912345678` and not `+8860912345678`, and an implementation that
+    /// strips `+886` and expects a leading `0` misses every internationally
+    /// written number.
+    #[test]
+    fn every_written_form_of_a_mobile_number_is_detected() {
+        for text in [
+            "手機 0912345678",
+            "手機 0912-345-678",
+            "手機 0912 345 678",
+            "手機 +886912345678",
+            "手機 +886-912-345-678",
+        ] {
+            assert_eq!(categories(text), ["PHONE_NUMBER[zh-TW/mobile]"], "{text}");
+        }
+    }
+
+    /// A landline is recognised from the area-code gazetteer and that area's
+    /// local-number length, in each written form.
+    #[test]
+    fn landline_forms_across_the_area_code_gazetteer_are_detected() {
+        for text in [
+            "電話 02-23456789",  // Taipei: area 2, 8 local digits
+            "電話 (02)23456789", // parenthesised area code
+            "電話 03-4567890",   // Taoyuan: area 3, 7 local digits
+            "電話 037-456789",   // Miaoli: area 37, 6 local digits — longest match wins
+            "電話 049-4567890",  // Nantou: area 49, 7 local digits
+            "電話 089-456789",   // Taitung: area 89, 6 local digits
+            "電話 0826-45678",   // Wuqiu: area 826, 5 local digits
+            "電話 +886-2-23456789",
+        ] {
+            assert_eq!(categories(text), ["PHONE_NUMBER[zh-TW/landline]"], "{text}");
+        }
+    }
+
+    /// The gazetteer is the whole constraint, so it has to reject: an area code
+    /// that is not issued, and a local number of the wrong length for an area
+    /// code that is.
+    #[test]
+    fn a_wrong_area_code_or_local_length_is_not_a_landline() {
+        for text in [
+            "電話 01-23456789", // `1` is not an area code
+            "電話 09-2345678",  // `9` is mobile-only, not a landline area
+            "電話 02-2345678",  // area 2 takes 8 local digits, not 7
+            "電話 03-45678901", // area 3 takes 7, not 8
+            "電話 037-4567890", // area 37 takes 6, not 7
+        ] {
+            assert_eq!(categories(text), Vec::<String>::new(), "{text}");
+        }
+    }
+
+    /// An unseparated landline is a documented miss, not an accident.
+    ///
+    /// `0212345678` has the shape of a Taipei number and equally the shape of a
+    /// ten-digit account or reference number. With no checksum to appeal to,
+    /// accepting it would report a large class of ordinary numbers as personal
+    /// data. Recorded so a future change to that trade-off is deliberate.
+    #[test]
+    fn an_unseparated_landline_is_a_known_miss() {
+        assert_eq!(categories("電話 0223456789"), Vec::<String>::new());
+        // The same digits with a separator are detected, so this is the
+        // separator rule and not a broken area-code table.
+        assert_eq!(categories("電話 02-23456789"), ["PHONE_NUMBER[zh-TW/landline]"]);
+    }
+
+    /// A phone number must be tried before the 統一編號, or the tax recognizer
+    /// truncates a nine-digit national number into an eight-digit match.
+    #[test]
+    fn a_phone_number_is_not_reported_as_a_business_id() {
+        let found = scan("手機 0912345678");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].category().to_string(), "PHONE_NUMBER[zh-TW/mobile]");
+        assert_eq!(
+            &"手機 0912345678"[found[0].span().start()..found[0].span().end()],
+            "0912345678"
+        );
+    }
+
+    /// A number glued to more digits is a fragment, in either direction.
+    #[test]
+    fn a_phone_number_inside_a_longer_digit_run_is_not_reported() {
+        for text in ["手機 09123456789", "手機 10912345678", "手機 0912-345-6789"] {
+            assert_eq!(categories(text), Vec::<String>::new(), "{text}");
+        }
+    }
+
+    /// Phone confidence bands, and that a keyword raises them.
+    #[test]
+    fn phone_confidence_reflects_how_much_structure_there_is() {
+        // A mobile's `09` prefix plus exact length is real structure.
+        assert_eq!(scan("（0912345678）")[0].confidence(), ConfidenceBand::Medium);
+        assert_eq!(scan("手機：0912345678")[0].confidence(), ConfidenceBand::High);
+        // A landline rests on a gazetteer alone, which is weaker.
+        assert_eq!(scan("（02-23456789）")[0].confidence(), ConfidenceBand::Low);
+        assert_eq!(scan("電話：02-23456789")[0].confidence(), ConfidenceBand::Medium);
+    }
+
     /// Every category this pack emits must parse back in the same build.
     ///
     /// The failure it guards is silent: a category missing from
@@ -884,6 +1158,8 @@ mod tests {
             format!("居留證 {}", synthetic_id('A', "80000000")),
             format!("居留證 {}", synthetic_legacy_arc('A', 'B', "0000000")),
             format!("統一編號 {LEGACY_ERA_ID}"),
+            "手機 0912345678".to_string(),
+            "電話 02-23456789".to_string(),
         ];
         let mut seen = 0usize;
         for text in &corpus {
