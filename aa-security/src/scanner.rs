@@ -1908,6 +1908,16 @@ mod tests {
     }
 
     #[test]
+    fn redacts_a_mixed_width_credit_card_to_exact_bytes() {
+        let scanner = CredentialScanner::new();
+        let text = "card=4532０15112830366";
+        let redacted = scanner.scan(text).redact(text);
+
+        assert_eq!(redacted, "card=[REDACTED:CreditCardLuhn]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("contact: user@example.com for support");
