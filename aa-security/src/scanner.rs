@@ -830,47 +830,140 @@ fn luhn_valid(digits: &str) -> bool {
     sum % 10 == 0
 }
 
+/// Maximum number of characters consumed into one digit segment.
+///
+/// Bounds the per-segment work just above the longest value either detector
+/// recognises. The binding case is **not** the bare 19-digit card number: it is
+/// a 19-digit card written in separator-delimited groups of four, which is 19
+/// digits plus 4 separators — 23 characters. An 11-character SSN is well under
+/// that. Do not "tidy" this down to 20: doing so truncates a grouped card
+/// mid-number, and, worse, a budget that lands on a Luhn-valid prefix of a
+/// longer digit run reports a card that is not there (see
+/// `digit_run_longer_than_the_segment_budget_stays_clean_in_both_widths`).
+///
+/// The budget counts **characters, not bytes**, so it does not shrink on
+/// multi-byte input — a byte budget would truncate a segment written in
+/// multi-byte digits partway through the number and lose the match.
+const DIGIT_SEGMENT_MAX_CHARS: usize = 24;
+
+/// The ASCII digit equivalent of `c` — `c` itself for `'0'..='9'`, and the
+/// corresponding ASCII digit for the full-width forms `'０'..='９'`
+/// (U+FF10–U+FF19). `None` for anything else.
+///
+/// AAASM-5345: full-width digits render near-identically to ASCII in most
+/// fonts, are one keystroke away on any CJK input method, and round-trip
+/// through JSON unchanged — so a card number or SSN typed in full-width form
+/// was a working evasion of both PII detectors, which compared raw ASCII bytes.
+///
+/// Normalisation is for **matching only**. A full-width digit occupies three
+/// UTF-8 bytes against ASCII's one, so callers must keep every reported offset
+/// in terms of the original text; normalising the text and matching on the
+/// result would yield offsets that index the wrong bytes.
+fn ascii_digit_of(c: char) -> Option<char> {
+    match c {
+        '0'..='9' => Some(c),
+        '\u{FF10}'..='\u{FF19}' => char::from_u32(c as u32 - 0xFF10 + u32::from(b'0')),
+        _ => None,
+    }
+}
+
+/// Result of walking one digit segment (see [`digit_segment`]).
+struct DigitSegment {
+    /// Byte offset just past the segment — where the outer scan resumes, and
+    /// the `end` of any finding the segment produces.
+    end: usize,
+    /// The segment's digits — normalised to ASCII by [`ascii_digit_of`] — and
+    /// the separators between them, in order. Matched against the
+    /// `DDD-DD-DDDD` SSN shape by [`is_ssn`].
+    normalised: String,
+    /// The segment's normalised digits only, without separators — what
+    /// [`luhn_valid`] computes the checksum over.
+    digits: String,
+}
+
+/// Walk the digit segment beginning at byte offset `start` (which must be the
+/// boundary of a digit character).
+///
+/// The walk advances one whole character at a time, so [`DigitSegment::end`] is
+/// always a valid UTF-8 char boundary of `text`. That is a correctness
+/// requirement rather than a nicety: [`ScanResult::redact`] splices the original
+/// bytes at a finding's offsets, and a bound landing mid-character would make it
+/// fail closed and replace the entire payload with an opaque label.
+fn digit_segment(text: &str, start: usize) -> DigitSegment {
+    let mut normalised = String::new();
+    let mut digits = String::new();
+    let mut chars = 0usize;
+    let mut end = start;
+
+    while chars < DIGIT_SEGMENT_MAX_CHARS {
+        let Some(c) = text[end..].chars().next() else { break };
+
+        if let Some(d) = ascii_digit_of(c) {
+            normalised.push(d);
+            digits.push(d);
+            // Advance by the *original* character's width, never the ASCII
+            // equivalent's, so `end` stays an offset into `text`.
+            end += c.len_utf8();
+            chars += 1;
+            continue;
+        }
+
+        // Only consume a separator that sits *between* digits. A trailing
+        // separator must not be swallowed into the segment, or an SSN like
+        // "123-45-6789 " would become 12 bytes and fail the exact-11-byte
+        // `is_ssn` check, letting the PII through unredacted (AAASM-4820).
+        if matches!(c, ' ' | '-')
+            && !digits.is_empty()
+            && chars + 1 < DIGIT_SEGMENT_MAX_CHARS
+            && text[end + c.len_utf8()..]
+                .chars()
+                .next()
+                .and_then(ascii_digit_of)
+                .is_some()
+        {
+            normalised.push(c);
+            end += c.len_utf8();
+            chars += 1;
+            continue;
+        }
+
+        break;
+    }
+
+    DigitSegment {
+        end,
+        normalised,
+        digits,
+    }
+}
+
 /// Scans `text` for credit card numbers (Luhn-validated) and SSN patterns (`DDD-DD-DDDD`).
+///
+/// Digits are normalised by [`ascii_digit_of`], so a value written in full-width
+/// digits is detected as the same kind as its ASCII equivalent (AAASM-5345).
+/// Findings still span the **original** text: normalisation never reaches the
+/// offsets, only the strings the two checks are run against.
 fn scan_digit_sequences(text: &str, findings: &mut Vec<CredentialFinding>) {
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if !bytes[i].is_ascii_digit() {
-            i += 1;
+    let mut i = 0usize;
+    while i < text.len() {
+        // `i` is always on a char boundary: it advances either by one whole
+        // character or to a segment's `end`, which is itself a boundary.
+        let Some(c) = text[i..].chars().next() else { break };
+        if ascii_digit_of(c).is_none() {
+            i += c.len_utf8();
             continue;
         }
 
         let start = i;
-        let mut digits = String::new();
-        let mut j = i;
-        let limit = (start + 24).min(bytes.len());
+        let segment = digit_segment(text, start);
+        let end = segment.end;
 
-        while j < limit {
-            match bytes[j] {
-                b if b.is_ascii_digit() => {
-                    digits.push(b as char);
-                    j += 1;
-                }
-                // Only consume a separator that sits *between* digits. A trailing
-                // separator must not be swallowed into the segment, or an SSN like
-                // "123-45-6789 " would become 12 bytes and fail the exact-11-byte
-                // `is_ssn` check, letting the PII through unredacted (AAASM-4820).
-                b' ' | b'-' if !digits.is_empty() && j + 1 < limit && bytes[j + 1].is_ascii_digit() => {
-                    j += 1;
-                }
-                _ => break,
-            }
-        }
-
-        let end = j;
-        let segment = &text[start..end];
-
-        if is_ssn(segment) {
+        if is_ssn(&segment.normalised) {
             findings.push(CredentialFinding::new(CredentialKind::SsnPattern, start, end));
-        } else if digits.len() >= 13 && digits.len() <= 19 && luhn_valid(&digits) {
+        } else if segment.digits.len() >= 13 && segment.digits.len() <= 19 && luhn_valid(&segment.digits) {
             findings.push(CredentialFinding::new(CredentialKind::CreditCardLuhn, start, end));
         }
-        i = end.max(i + 1);
+        i = end.max(start + c.len_utf8());
     }
 }
 
@@ -1742,6 +1835,195 @@ mod tests {
         let redacted = result.redact(text);
         assert!(!redacted.contains("123-45-6789"));
         assert!(redacted.contains("[REDACTED:SsnPattern]"));
+    }
+
+    // --- AAASM-5345: full-width digits (U+FF10–U+FF19) must not evade the
+    //     credit-card and SSN detectors. All fixtures are synthetic. ---
+
+    #[test]
+    fn detects_fullwidth_credit_card_as_the_same_kind_as_ascii() {
+        // The same synthetic Visa test number in both digit widths must be
+        // classified identically — switching input mode must not change the
+        // verdict.
+        let scanner = CredentialScanner::new();
+        let ascii = scanner.scan("card=4532015112830366");
+        let fullwidth = scanner.scan("card=４５３２０１５１１２８３０３６６");
+
+        let kinds = |r: &ScanResult| r.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&ascii), vec![CredentialKind::CreditCardLuhn]);
+        assert_eq!(kinds(&fullwidth), kinds(&ascii));
+    }
+
+    #[test]
+    fn detects_fullwidth_ssn_as_the_same_kind_as_ascii() {
+        // The SSN detector matches an exact `DDD-DD-DDDD` shape, so it is the
+        // detector most likely to be broken by normalisation changing the
+        // string's length — assert it survives in full-width form.
+        let scanner = CredentialScanner::new();
+        let ascii = scanner.scan("ssn=123-45-6789");
+        let fullwidth = scanner.scan("ssn=１２３-４５-６７８９");
+
+        let kinds = |r: &ScanResult| r.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&ascii), vec![CredentialKind::SsnPattern]);
+        assert_eq!(kinds(&fullwidth), kinds(&ascii));
+    }
+
+    #[test]
+    fn detects_mixed_width_credit_card() {
+        // A single full-width digit inside an otherwise ASCII number is the
+        // cheapest form of the evasion and the case where the byte-offset
+        // arithmetic is least uniform — one 3-byte character among 15 1-byte
+        // ones.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("card=4532０15112830366");
+        assert_eq!(
+            result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+            vec![CredentialKind::CreditCardLuhn],
+        );
+    }
+
+    /// Every digit character a redacted payload must never still contain —
+    /// both widths, so a partial splice cannot hide behind the assertion.
+    fn contains_no_digit(s: &str) -> bool {
+        !s.chars().any(|c| c.is_ascii_digit() || matches!(c, '０'..='９'))
+    }
+
+    #[test]
+    fn redacts_a_fullwidth_credit_card_to_exact_bytes() {
+        // Counting findings is not enough: the failure mode this fix risks is a
+        // span that is off by a byte or two, which still yields one finding but
+        // splices the wrong region and leaves digits in the clear. Assert the
+        // exact output bytes.
+        let scanner = CredentialScanner::new();
+        let text = "card=４５３２０１５１１２８３０３６６";
+        let redacted = scanner.scan(text).redact(text);
+
+        assert_eq!(redacted, "card=[REDACTED:CreditCardLuhn]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
+    fn redacts_a_fullwidth_ssn_to_exact_bytes() {
+        // The SSN span mixes 3-byte digits with 1-byte separators, so its end
+        // offset is the one least likely to survive a width assumption.
+        let scanner = CredentialScanner::new();
+        let text = "ssn=１２３-４５-６７８９";
+        let redacted = scanner.scan(text).redact(text);
+
+        assert_eq!(redacted, "ssn=[REDACTED:SsnPattern]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
+    fn redacts_a_mixed_width_credit_card_to_exact_bytes() {
+        let scanner = CredentialScanner::new();
+        let text = "card=4532０15112830366";
+        let redacted = scanner.scan(text).redact(text);
+
+        assert_eq!(redacted, "card=[REDACTED:CreditCardLuhn]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
+    fn fullwidth_finding_spans_are_char_boundaries_of_the_original_text() {
+        // The span contract `redact` depends on, asserted directly rather than
+        // inferred from redaction output: offsets index the *original* text and
+        // land on character boundaries. A span that satisfies this can always be
+        // spliced; one that does not sends `redact` down its fail-closed path.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "card=４５３２０１５１１２８３０３６６",
+            "ssn=１２３-４５-６７８９",
+            "card=4532０15112830366",
+        ] {
+            let result = scanner.scan(text);
+            assert!(!result.findings.is_empty(), "no finding for {text:?}");
+            for f in &result.findings {
+                assert!(
+                    text.is_char_boundary(f.offset),
+                    "offset {} splits a character",
+                    f.offset
+                );
+                assert!(text.is_char_boundary(f.end), "end {} splits a character", f.end);
+                // The span must cover the whole value, not a prefix of it.
+                assert!(contains_no_digit(&text[..f.offset]));
+                assert!(contains_no_digit(&text[f.end..]));
+            }
+        }
+    }
+
+    #[test]
+    fn does_not_flag_a_fullwidth_number_that_fails_luhn() {
+        // The point of the fix is to widen what reaches the checksum, not to
+        // weaken the checksum. A full-width number with one digit altered must
+        // be rejected exactly as its ASCII equivalent is
+        // (`does_not_flag_invalid_luhn` above).
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("num=４５３２０１５１１２８３０３６７");
+        assert!(
+            !result.findings.iter().any(|f| f.kind == CredentialKind::CreditCardLuhn),
+            "Luhn gate must reject a full-width number too: {:?}",
+            result.findings,
+        );
+    }
+
+    #[test]
+    fn does_not_flag_a_short_fullwidth_digit_run() {
+        // An 8-digit run is below the 13-digit card floor and is not SSN-shaped,
+        // so it must stay clean. Full-width digits are ordinary content — order
+        // numbers, dates, quantities — in CJK text, and flagging them would make
+        // the detector unusable in exactly the locales this fix serves.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("qty=１２３４５６７８");
+        assert!(result.is_clean(), "short run must stay clean: {:?}", result.findings);
+    }
+
+    #[test]
+    fn redact_fails_closed_on_a_span_inside_a_fullwidth_digit() {
+        // The concrete instance of the fail-closed guard this change puts at
+        // risk. `redact` must never emit the payload with the flagged region
+        // intact, so a span landing inside a full-width digit's three bytes has
+        // to collapse the whole value to an opaque label rather than splice.
+        // Exercised rather than assumed, because the guard is the only thing
+        // standing between a mis-computed span and a leak.
+        let text = "card=４５３２０１５１１２８３０３６６";
+        // `card=` is five bytes; the first full-width digit occupies bytes 5..8,
+        // so byte 6 is mid-character.
+        let result = ScanResult {
+            findings: vec![CredentialFinding::new(CredentialKind::CreditCardLuhn, 5, 6)],
+        };
+
+        let redacted = result.redact(text);
+        assert_eq!(redacted, "[REDACTED]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
+    fn digit_run_longer_than_the_segment_budget_stays_clean_in_both_widths() {
+        // Pins `DIGIT_SEGMENT_MAX_CHARS`, the refactor's riskiest invariant.
+        //
+        // The budget decides how much of a long digit run one segment swallows,
+        // and shrinking it fails in the *false positive* direction: a 30-digit
+        // run is not a card number, but its first 19 digits here are
+        // Luhn-valid, so a budget of 19 would truncate the segment exactly onto
+        // that prefix and report a card that is not there. On the enforce path
+        // that means redacting a legitimate payload — worse than the missed
+        // detection a too-large budget would cause.
+        //
+        // The synthetic 19-digit prefix is Luhn-valid by construction; the
+        // trailing zeros only push the run past the budget.
+        let scanner = CredentialScanner::new();
+        let ascii = "num=004532015112830366500000000000";
+        let fullwidth = "num=００４５３２０１５１１２８３０３６６５００００００００００００";
+
+        for text in [ascii, fullwidth] {
+            let result = scanner.scan(text);
+            assert!(
+                !result.findings.iter().any(|f| f.kind == CredentialKind::CreditCardLuhn),
+                "over-long digit run must not yield a card finding: {:?}",
+                result.findings,
+            );
+        }
     }
 
     #[test]
