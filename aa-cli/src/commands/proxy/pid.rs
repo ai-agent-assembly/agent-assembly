@@ -181,7 +181,7 @@ mod tests {
         ProxyState {
             pid: std::process::id(),
             listen_addr: "127.0.0.1:8899".into(),
-            start_token: "linux-starttime:123456".into(),
+            start_token: "linux-pidfs:123456.789".into(),
             exe_path: PathBuf::from("/usr/local/bin/aa-proxy"),
         }
     }
@@ -261,9 +261,9 @@ mod tests {
     #[test]
     fn parse_state_rejects_empty_fields() {
         for content in [
-            "4242\n\nlinux-starttime:1\n/usr/local/bin/aa-proxy\n",
+            "4242\n\nlinux-pidfs:1.2\n/usr/local/bin/aa-proxy\n",
             "4242\n127.0.0.1:8899\n\n/usr/local/bin/aa-proxy\n",
-            "4242\n127.0.0.1:8899\nlinux-starttime:1\n\n",
+            "4242\n127.0.0.1:8899\nlinux-pidfs:1.2\n\n",
         ] {
             assert!(
                 parse_state(content).is_none(),

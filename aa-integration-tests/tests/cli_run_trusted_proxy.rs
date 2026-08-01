@@ -33,7 +33,7 @@ mod proxy_trust_support;
 
 #[cfg(unix)]
 mod refusals {
-    use super::proxy_trust_support::{aasm_binary, prefixed_path, TrustedProxy};
+    use super::proxy_trust_support::{aasm_binary, foreign_incarnation_token, prefixed_path, TrustedProxy};
     use std::path::{Path, PathBuf};
 
     /// A host whose `claude`, home and state roots are all inside a temp dir, so
@@ -261,11 +261,18 @@ exit 0
     /// running proxy, its PID, its executable and its bound socket untouched:
     /// every other check still passes, so a failure here is attributable to the
     /// start-time comparison and to nothing else.
+    ///
+    /// The substitute keeps the writer's own scheme tag ([`foreign_incarnation_token`])
+    /// so that it is the comparison being measured and not the AAASM-5333
+    /// compatibility check, which refuses a foreign scheme before ever getting
+    /// there.
     #[test]
     fn launch_refuses_when_the_recorded_pid_is_a_different_incarnation() -> anyhow::Result<()> {
         let host = Host::create()?;
         let proxy = TrustedProxy::start()?;
-        tamper_line(&proxy.data_dir().join("proxy.pid"), 2, "not-the-recorded-incarnation");
+        let state = proxy.data_dir().join("proxy.pid");
+        let other_incarnation = foreign_incarnation_token(&state)?;
+        tamper_line(&state, 2, &other_incarnation);
 
         let out = host.run(proxy.data_dir())?;
 
