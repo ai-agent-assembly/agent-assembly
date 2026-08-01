@@ -159,12 +159,68 @@ mod tests {
     const ALLOW_YAML: &str = "version: \"1\"\ntools:\n  search:\n    allow: true\n";
     const DENY_YAML: &str = "version: \"1\"\ntools:\n  search:\n    allow: false\n";
 
+    /// Overall bound on observing a hot-reload, and *not* a latency assertion
+    /// (AAASM-5367).
+    ///
+    /// Filesystem notification delivery is a property of the platform backend,
+    /// not of this watcher. Measured on macOS/FSEvents, the same unchanged
+    /// watcher swapped anywhere between ~50 ms and ~6 s on an idle machine, and
+    /// a small fraction of writes produced no notification at all within 20 s.
+    /// Any fixed deadline short enough to be interesting is therefore a coin
+    /// flip — the old one-second sleep lost that flip on ~2 runs in 3 here.
+    /// This bound exists only so a watcher that has genuinely stopped working
+    /// fails instead of hanging; it is far above every observed success.
+    const WATCH_LIVENESS_BOUND: Duration = Duration::from_secs(30);
+
+    /// How long to wait for one application of the stimulus before re-applying
+    /// it. Chosen to comfortably exceed the common-case delivery latency so
+    /// re-writing is the exception, not the norm.
+    const STIMULUS_ROUND: Duration = Duration::from_millis(500);
+
     fn parse_doc(yaml: &str) -> PolicyDocument {
         PolicyValidator::from_yaml(yaml).unwrap().document
     }
 
+    /// Drive `stimulus` until `slot` holds something other than `previous`,
+    /// returning whatever was swapped in.
+    ///
+    /// Two things make this deterministic where a fixed sleep was not. It polls
+    /// instead of sleeping a fixed interval, so it returns as soon as the
+    /// watcher has acted — typically a few hundred milliseconds, i.e. *faster*
+    /// than the one-second sleep it replaces. And it re-applies the stimulus
+    /// each round, because a single write is not guaranteed to yield a
+    /// notification: with one write, 5 of 80 runs here saw nothing within 20 s;
+    /// re-writing rescued 80 of 80 (worst case 19 rounds).
+    ///
+    /// This does not weaken the property under test. The caller still asserts
+    /// what landed in the slot; only "how promptly the OS reported the write"
+    /// stops being part of the assertion.
+    fn wait_for_swap(
+        slot: &ArcSwap<PolicyDocument>,
+        previous: &PolicyDocument,
+        mut stimulus: impl FnMut(),
+    ) -> Arc<PolicyDocument> {
+        let start = std::time::Instant::now();
+        while start.elapsed() < WATCH_LIVENESS_BOUND {
+            stimulus();
+            let round = std::time::Instant::now();
+            while round.elapsed() < STIMULUS_ROUND {
+                let current = slot.load_full();
+                if *current != *previous {
+                    return current;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        panic!(
+            "watcher never swapped the policy slot within {WATCH_LIVENESS_BOUND:?} \
+             despite the policy file being rewritten every {STIMULUS_ROUND:?} — \
+             hot-reload is broken"
+        );
+    }
+
     #[test]
-    fn hot_reload_reflects_new_policy_within_one_second() {
+    fn hot_reload_swaps_in_the_new_policy() {
         let mut tmp = NamedTempFile::new().unwrap();
         write!(tmp, "{}", ALLOW_YAML).unwrap();
         tmp.flush().unwrap();
@@ -174,24 +230,20 @@ mod tests {
 
         let _watcher = start_watcher(tmp.path(), slot.clone()).unwrap();
 
-        // Overwrite file with DENY policy.
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(tmp.path())
-            .unwrap();
-        write!(f, "{}", DENY_YAML).unwrap();
-        f.flush().unwrap();
-        drop(f);
+        // Overwrite the file with the DENY policy until the watcher reports it.
+        let path = tmp.path().to_path_buf();
+        let current_doc = wait_for_swap(&slot, &initial_doc, || {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .unwrap();
+            write!(f, "{}", DENY_YAML).unwrap();
+            f.flush().unwrap();
+        });
 
-        std::thread::sleep(Duration::from_secs(1));
-
-        let loaded = slot.load();
-        let current_doc: &PolicyDocument = &loaded;
-        assert_ne!(
-            current_doc, &initial_doc,
-            "slot should have been swapped to the new policy"
-        );
+        // Assert on *what* was swapped in: a swap to the wrong document fails
+        // here immediately rather than being waited out.
         assert!(
             !current_doc.tools["search"].allow,
             "search.allow should be false after hot-reload"
