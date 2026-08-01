@@ -293,7 +293,17 @@ Codex, GitHub Copilot and Windsurf Cascade are carried by `LegacyAdapterShim`
 plan steps name no destination file, so the service **refuses to apply** rather
 than reporting a success that performed nothing. Their per-capability tiers in
 the [capability matrix](../governance/capability-matrix.md) come from their
-adapters' declarations, not from a measured Spike.
+adapters' declarations, not from a measured Spike. Superseded per-tool detail for
+each — predating the consolidated matrix — is kept at
+[Governance Limits by Tool](governance-limits/claude-code.md) (also covering
+[Codex](governance-limits/codex.md), [Copilot](governance-limits/copilot.md) and
+[Windsurf](governance-limits/windsurf.md)).
+
+This page is scoped to locally-running tools. If the tool in question is a
+SaaS-hosted coding agent (Claude.ai, ChatGPT, Cursor cloud), see
+[SaaS Coding-Agent Governance Limits](governance-limits.md) instead — those
+adapters are capped at `L1Observe` for a structural reason (no local process to
+intercept), not a maturity gap like the tools above.
 
 ## Timing and freshness
 
@@ -373,6 +383,8 @@ Stated positively so it can be quoted:
 * [Product Capability Brief](product-brief.md) §8 (guarantees and their limits),
   §10.3 (non-goals)
 * [L0–L3 Capability Matrix](../governance/capability-matrix.md)
+* [SaaS Coding-Agent Governance Limits](governance-limits.md) — the equivalent
+  honest-boundaries page for Claude.ai, ChatGPT and Cursor cloud
 * [ADR 0030 — Developer Integration boundaries and trust model](../adr/0030-developer-integration-boundaries-and-trust-model.md)
 * `verification-reports/AAASM-5276-claude-code-mechanism-matrix.md` — the measured
   evidence this page is derived from (in-repo; not part of the published book)

@@ -33,3 +33,21 @@ For capabilities marked ❌ Unsupported, operators should consider:
   webhook audit events and operator-applied configuration overlays.
 - **MCP allowlist (ChatGPT, Cursor)**: use network-layer controls to restrict
   which MCP servers the agent host can reach.
+
+## References
+
+* [Limitations and Known Bypasses](limitations.md) — the equivalent honest-boundaries
+  discussion for the locally-running CLI/extension adapters.
+* [L0-L3 Capability Matrix](../governance/capability-matrix.md) — the maintained matrix
+  for the CLI/extension dev-tool adapters (Codex, GitHub Copilot, Windsurf Cascade,
+  Claude Code). Its own SaaS Coding-Agent row is a separate placeholder pending
+  `AAASM-918`; this page is the current source for what the shipped `aa-devtool-saas`
+  overlays actually do.
+* Legacy per-tool capability detail (superseded by the matrix above):
+  [Claude Code](governance-limits/claude-code.md),
+  [Codex CLI](governance-limits/codex.md),
+  [GitHub Copilot](governance-limits/copilot.md),
+  [Windsurf Cascade](governance-limits/windsurf.md).
+* `aa-devtool-saas` crate — `overlay::ClaudeAiOverlay`, `overlay::ChatGptOverlay`,
+  and the per-provider webhook signature verification this page's Cursor-cloud row
+  describes.
