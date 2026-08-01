@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router'
 import { capabilityClient } from '../api/capability'
 import {
   CAPABILITY_MATRIX_KEY,
+  capabilityMatrixFromQuery,
   cascadeEvidenceFromQuery,
   useCapabilityMatrixQuery,
 } from '../features/capability/api'
@@ -12,6 +13,13 @@ import { ErrorState } from '../components/ErrorState'
 import { LoadingState } from '../components/LoadingState'
 import { useToast } from '../components/Toast'
 import { StatusState } from '../components/truthfulness'
+import {
+  cascadeIsEmpty,
+  isKnown,
+  type CascadeEvidence,
+  type Certain,
+  type TruthState,
+} from '../lib/truthfulness'
 import { BulkActionBar } from '../features/capability/BulkActionBar'
 import { CapabilityMatrixGrid, type CellSelection } from '../features/capability/CapabilityMatrixGrid'
 import { CapabilityFilterBar } from '../features/capability/CapabilityFilterBar'
@@ -29,6 +37,65 @@ import './CapabilityPage.css'
 
 type Tab = 'matrix' | 'resource' | 'agent'
 
+interface CascadeBanner {
+  readonly state: TruthState
+  readonly title: string
+  readonly description: ReactNode
+  readonly detail?: string
+}
+
+/**
+ * What the matrix-level banner may claim about the grid below it (AAASM-5369).
+ *
+ * Three outcomes, and the middle one is the reason this is a function rather
+ * than the `!matrix.cascadeLoaded` expression it replaced:
+ *
+ *  - **Cascade loaded** — `null`. The grid is a measurement; no banner.
+ *  - **Cascade absent** — we could not obtain the flag: the request failed, is
+ *    in flight, or answered with a body that is not a capability matrix. The
+ *    grid is untrustworthy for a reason we cannot name as a deployment state,
+ *    so the banner says that and carries the reason verbatim. Saying "no policy
+ *    cascade is loaded" here — which is what reading `!undefined` produced —
+ *    tells an operator to go and load a policy on the strength of a body nobody
+ *    parsed, and is exactly the fabricated-measurement class AAASM-5112 exists
+ *    to prevent.
+ *  - **Cascade loaded but empty** — the genuine AAASM-5106 condition, unchanged.
+ *
+ * The banner is not suppressed in the middle case. The grid still paints
+ * whatever cells it has, and an unqualified wall of ALLOW reads as a clean bill
+ * of health; withholding the warning to avoid an inaccurate reason would trade
+ * one untruth for a larger one.
+ */
+function bannerForCascade(cascade: Certain<CascadeEvidence>): CascadeBanner | null {
+  if (!isKnown(cascade)) {
+    return {
+      state: cascade.state,
+      title: 'Capability matrix could not be read',
+      description: (
+        <>
+          These cells are not a measurement of what each agent can do, and whether a policy
+          cascade is loaded at all could not be determined. Enforcement is unaffected and still
+          applies the active policy.
+        </>
+      ),
+      detail: cascade.detail,
+    }
+  }
+  if (!cascadeIsEmpty(cascade.value)) return null
+  return {
+    state: 'unconfigured',
+    title: 'Capability matrix not evaluated',
+    description: (
+      <>
+        No policy cascade is loaded, so these cells are not a measurement of what each agent can
+        do — an unconstrained cell reads as <code>allow</code> by default. Enforcement is
+        unaffected and still applies the active policy; this page cannot resolve it until the
+        cascade is loaded.
+      </>
+    ),
+  }
+}
+
 export function CapabilityPage() {
   const [tab, setTab] = useState<Tab>('matrix')
   // `null` means "the operator has not chosen a verb yet", which is a different
@@ -41,10 +108,18 @@ export function CapabilityPage() {
   // Derived from the *fetched* matrix, not the optimistic shadow: an override
   // that records `na` would otherwise be able to shift the landing verb of an
   // operator who never chose one.
-  const landingVerb = useMemo(
-    () => defaultVerb(data?.agents ?? [], data?.resources ?? []),
-    [data],
-  )
+  // AAASM-5369: derived from the *decoded* matrix. `data?.agents ?? []` was in
+  // this fix's blast radius and is not a `?? []` of the fail-open kind — it
+  // picks a landing verb rather than asserting a fact, and an empty list simply
+  // yields the default verb. It is decoded anyway: leaving one raw read of the
+  // same body beside four guarded ones is how the next reader concludes the
+  // body is safe to read.
+  const landingVerb = useMemo(() => {
+    const decoded = capabilityMatrixFromQuery({ data })
+    return isKnown(decoded)
+      ? defaultVerb(decoded.value.agents, decoded.value.resources)
+      : defaultVerb([], [])
+  }, [data])
   const verb = chosenVerb ?? landingVerb
   // The bulk-override bar edits the grid optimistically. That edit lives in its
   // own state and shadows the fetched matrix, so the fetched value never has to
@@ -60,6 +135,26 @@ export function CapabilityPage() {
   // healthy query — rather than being coerced to `undefined`. Normalising it
   // here would hide whether the helper actually accepts the library's shape.
   const cascadeEvidence = cascadeEvidenceFromQuery({
+    isPending,
+    error: loadError,
+    data: matrix,
+  })
+  // What the page may render at all (AAASM-5369). Separate from the cascade
+  // evidence above because the two answer different questions — see
+  // `decodeMatrixShape`.
+  //
+  // Every `matrix.agents` / `.resources` / `.policies` / `.sampleCalls` read in
+  // the render below goes through this. Two things it does *not* cover, both
+  // stated because an earlier draft of this comment claimed "no path from an
+  // unverified body to a field read" and neither of these is one:
+  //
+  //  - `handleBulkApply` hands the raw `matrix` to `applyOverrideLocal`. Safe
+  //    at runtime — the button that calls it only exists past the guard, so the
+  //    body decoded — but it is a raw read, not a decoded one.
+  //  - element *contents* are unverified. A row that is an empty object passes
+  //    the decoder and then throws in `populatedCellCount`; see
+  //    `decodeMatrixShape` and AAASM-5380.
+  const matrixView = capabilityMatrixFromQuery({
     isPending,
     error: loadError,
     data: matrix,
@@ -153,9 +248,10 @@ export function CapabilityPage() {
     void refetch()
   }
 
-  const visibleAgents = matrix
-    ? sortAgents(applyFilters(matrix.agents, filters), matrix.resources, verb, sort)
-    : []
+  // What the matrix-level banner is entitled to say (AAASM-5369). `null` means
+  // the cascade is loaded and the grid is a measurement, so there is nothing to
+  // warn about.
+  const cascadeBanner = bannerForCascade(cascadeEvidence)
 
   if (loadError) {
     return (
@@ -173,7 +269,43 @@ export function CapabilityPage() {
     )
   }
 
-  if (matrix.agents.length === 0) {
+  if (!isKnown(matrixView)) {
+    // AAASM-5369. Not `EmptyState`, which says "no agents are registered" — a
+    // measured claim about the fleet — and not `ErrorState`, whose retry
+    // affordance re-requests a well-formed request that will return the same
+    // unreadable body. An explicit absence, carrying the decoder's reason.
+    return (
+      <div className="capability-page" data-testid="capability-page">
+        <StatusState
+          state={matrixView.state}
+          title="Capability matrix could not be read"
+          description={
+            <>
+              The gateway answered, but not with a capability matrix this dashboard can
+              interpret, so no agent's capabilities can be shown. Enforcement is unaffected and
+              still applies the active policy.
+            </>
+          }
+          detail={matrixView.detail}
+          testId="capability-unreadable-state"
+        />
+      </div>
+    )
+  }
+
+  // Bound after the guard, not before it: every read below is then a field on a
+  // value the decoder returned, and TypeScript — not a reviewer — is what says
+  // so. A binding hoisted above the guard would need a `?? []` or a `!` at each
+  // use, which is how the raw reads got here in the first place.
+  const view = matrixView.value
+  const visibleAgents = sortAgents(
+    applyFilters(view.agents, filters),
+    view.resources,
+    verb,
+    sort,
+  )
+
+  if (view.agents.length === 0) {
     return (
       <div className="capability-page" data-testid="capability-page">
         <EmptyState
@@ -222,7 +354,7 @@ export function CapabilityPage() {
         >
           Matrix{' '}
           <span className="capability-tab-count">
-            {visibleAgents.length} × {matrix.resources.length}
+            {visibleAgents.length} × {view.resources.length}
           </span>
         </button>
         <button
@@ -265,20 +397,25 @@ export function CapabilityPage() {
           matrix-level "not evaluated" banner that tells the operator the grid
           cannot be trusted, rather than letting a uniform wall of ALLOW read as
           a clean bill of health. This is the interim honesty fix; per-cell
-          rendering is a scoped follow-up. */}
-      {tab === 'matrix' && matrix && !matrix.cascadeLoaded && (
+          rendering is a scoped follow-up.
+
+          AAASM-5369 — driven off `cascadeEvidence` rather than off
+          `matrix.cascadeLoaded` directly. The raw read was the same defect as
+          the fold beside it and louder: on a body that carries no
+          `cascadeLoaded` key, `!undefined` is `true`, so this banner asserted
+          "No policy cascade is loaded" — a specific, actionable claim about the
+          operator's deployment — for a matrix the dashboard had not read. It
+          still renders when the matrix is unreadable, because the grid below is
+          equally untrustworthy either way and silence there would leave a wall
+          of ALLOW with no caveat at all; what changes is that it now says which
+          of the two situations it is in. */}
+      {tab === 'matrix' && cascadeBanner && (
         <div className="capability-cascade-banner" data-testid="capability-cascade-unloaded">
           <StatusState
-            state="unconfigured"
-            title="Capability matrix not evaluated"
-            description={
-              <>
-                No policy cascade is loaded, so these cells are not a measurement of what each
-                agent can do — an unconstrained cell reads as <code>allow</code> by default.
-                Enforcement is unaffected and still applies the active policy; this page cannot
-                resolve it until the cascade is loaded.
-              </>
-            }
+            state={cascadeBanner.state}
+            title={cascadeBanner.title}
+            description={cascadeBanner.description}
+            detail={cascadeBanner.detail}
             testId="capability-cascade-unloaded-state"
           />
         </div>
@@ -288,16 +425,16 @@ export function CapabilityPage() {
         <CapabilityFilterBar
           filters={filters}
           onChange={setFilters}
-          totalAgents={matrix.agents.length}
+          totalAgents={view.agents.length}
           visibleAgents={visibleAgents.length}
-          agents={matrix.agents}
+          agents={view.agents}
         />
       )}
 
       {tab === 'matrix' && matrix && (
         <BulkActionBar
           count={selected.size}
-          resources={matrix.resources}
+          resources={view.resources}
           verb={verb}
           onApply={handleBulkApply}
           onClear={() => setSelected(new Set())}
@@ -308,7 +445,7 @@ export function CapabilityPage() {
         {tab === 'matrix' && matrix && (
           <CapabilityMatrixGrid
             agents={visibleAgents}
-            resources={matrix.resources}
+            resources={view.resources}
             verb={verb}
             sort={sort}
             onSortChange={(rid) => setSort((prev) => nextSortState(prev, rid))}
@@ -322,40 +459,38 @@ export function CapabilityPage() {
         {tab === 'matrix' && matrix && (
           <CapabilitySummary
             agents={visibleAgents}
-            resources={matrix.resources}
+            resources={view.resources}
             verb={verb}
             cascade={cascadeEvidence}
           />
         )}
         {tab === 'resource' && matrix && (
           <PerResourceTab
-            resources={matrix.resources}
+            resources={view.resources}
             agents={visibleAgents}
             verb={verb}
-            selectedResourceId={perResourceId ?? matrix.resources[0]?.id ?? ''}
+            selectedResourceId={perResourceId ?? view.resources[0]?.id ?? ''}
             onSelectResource={setPerResourceId}
             onCellClick={setInspected}
           />
         )}
-        {tab === 'agent' && matrix && (
+        {tab === 'agent' && (
           <PerAgentTab
             agents={visibleAgents}
-            resources={matrix.resources}
+            resources={view.resources}
             selectedAgentId={perAgentId ?? visibleAgents[0]?.id ?? ''}
             onSelectAgent={setPerAgentId}
             onCellClick={setInspected}
           />
         )}
       </section>
-      {matrix && (
-        <CellInspectDrawer
-          cell={inspected}
-          policies={matrix.policies}
-          sampleCalls={matrix.sampleCalls}
-          onClose={() => setInspected(null)}
-          onOpenPolicy={openPolicyEditor}
-        />
-      )}
+      <CellInspectDrawer
+        cell={inspected}
+        policies={view.policies}
+        sampleCalls={view.sampleCalls}
+        onClose={() => setInspected(null)}
+        onOpenPolicy={openPolicyEditor}
+      />
     </div>
   )
 }
