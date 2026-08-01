@@ -286,6 +286,22 @@ Binding rules for its implementation:
   breaking representation requires a separately approved ticket.
 - The field is a **disposition**, not a decision: it records what was done to the
   payload, never why it was authorised.
+
+#### D-3 — the `zh-TW` false-positive defect ships in `v0.0.1-rc.7`
+
+Recorded here for traceability; the fix is carried by its own Bug ticket rather
+than by this ADR. It is treated as an urgent production defect **ahead of** the
+architecture migration, because under `credential_action: Block` an agent
+communicating in Chinese is denied outright today.
+
+Two constraints on that fix, both of which this ADR's §9 and the Spike report
+§4.1 already imply:
+
+- it must ship with **CJK/script-aware conformance coverage**, since the absence
+  of any CJK vector is precisely why the defect survived;
+- it must **not weaken** ASCII base64, hex, API-key or private-key detection —
+  a secret in those encodings is ASCII by definition, so a script-aware fix
+  costs no detection strength.
 ---
 
 ## Accepted risks
