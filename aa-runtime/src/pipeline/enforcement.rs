@@ -109,6 +109,17 @@ pub struct EnforcementOutcome {
     pub findings: Vec<CredentialFinding>,
     /// Number of fields that hit the size cap and were redacted whole.
     pub oversized_fields: usize,
+    /// Number of `bytes` fields that carried a finding but could not be decoded
+    /// as UTF-8, and so were redacted whole rather than spliced (AAASM-5346).
+    ///
+    /// Records the payload as *inspected but not precisely transformable*. It is
+    /// a counter on this internal outcome, **not** a verdict: decision D-2
+    /// (ADR 0032 §10) freezes [`RuntimeVerdict`], and the finer disposition
+    /// vocabulary belongs to the future additive `sensitive_data_disposition`
+    /// field, which this counter is intended to feed.
+    ///
+    /// [`RuntimeVerdict`]: https://github.com/ai-agent-assembly/agent-assembly/blob/main/docs/src/adr/0018-canonical-runtime-verdict-and-enriched-decision-record.md
+    pub undecodable_fields: usize,
     /// Total **input** bytes inspected across all fields.
     ///
     /// Counted from the field as it arrived, never from a decoded form of it:
@@ -135,8 +146,18 @@ impl EnforcementOutcome {
     }
 
     /// Total number of redactions applied (findings + oversized fields).
+    ///
+    /// `undecodable_fields` is deliberately **not** added: such a field is only
+    /// counted when it produced at least one finding, so it is already included
+    /// via `findings.len()`. Adding it here would double-count (AAASM-5346).
     pub fn redaction_count(&self) -> usize {
         self.findings.len() + self.oversized_fields
+    }
+
+    /// `true` when at least one field was scanned dirty but could not be decoded
+    /// well enough to splice, and was therefore dropped whole.
+    pub fn has_undecodable_fields(&self) -> bool {
+        self.undecodable_fields > 0
     }
 
     /// `true` when at least one forged SDK trust-marker label was stripped.
