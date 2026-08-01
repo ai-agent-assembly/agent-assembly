@@ -83,16 +83,28 @@ class RedactByteOffsetTests(unittest.TestCase):
             "一=[REDACTED:SyntheticKey]、二=[REDACTED:SyntheticToken]",
         )
 
-    def test_span_inside_a_character_is_skipped_not_mangled(self) -> None:
+    def test_span_inside_a_character_is_skipped_pending_fail_closed(self) -> None:
         # A span that starts mid-character cannot be spliced without producing
-        # invalid UTF-8. It must be dropped, never emitted as mojibake and never
-        # raise — the Rust reference rejects the same spans via is_char_boundary.
+        # invalid UTF-8, so the runner drops it — never mojibake, never a raise.
+        #
+        # This pins CURRENT HARNESS BEHAVIOUR, NOT DESIRED BEHAVIOUR. The Rust
+        # reference rejects the same span and then fails *closed*: it returns
+        # "[REDACTED]" for the entire text rather than hand back text it cannot
+        # prove is clean (aa-security/src/scanner.rs:454-458 — "never return the
+        # raw text with a secret intact"). The runner fails open here.
+        #
+        # Closing that gap is AAASM-5373. Whoever does it must change this
+        # assertion — it is a marker for the divergence, not an endorsement of it.
         text = "番号=1234"
         findings = [{"kind": "SyntheticNumber", "offset": 1, "end": 6}]
 
         self.assertEqual(_redact(text, findings), text)
 
-    def test_out_of_range_span_is_skipped(self) -> None:
+    def test_out_of_range_span_is_skipped_pending_fail_closed(self) -> None:
+        # Same divergence as above for an out-of-range span: the runner skips it,
+        # Rust returns "[REDACTED]" for the whole text
+        # (aa-security/src/scanner.rs:447-458). Pins current behaviour; see
+        # AAASM-5373.
         text = "番号=1234"
         findings = [{"kind": "SyntheticNumber", "offset": 3, "end": 999}]
 
