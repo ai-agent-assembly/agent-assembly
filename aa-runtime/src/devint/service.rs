@@ -52,6 +52,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use aa_core::dev_tool::{DevToolKind, GovernanceLevel};
+use aa_core::integration::policy_posture::{PolicyPosture, PolicyState};
 use aa_core::integration::{
     now_unix_secs, ApplyContext, DevToolIntegration, DriftKind, DriftReport, EngineError, FilesystemExecutor,
     IntegrationCapability, IntegrationEngine, IntegrationPlan, IntegrationReceipt, IntegrationRequest,
@@ -396,6 +397,49 @@ fn engine_error(e: EngineError) -> LifecycleError {
     }
 }
 
+/// Resolve the policy a governed launch on this host would run under.
+///
+/// The service is the single place this happens (ADR 0030 forbidden design 10):
+/// adapters govern one tool each while the effective policy is a property of the
+/// host, and a client that resolved it for itself would be reporting a claim it
+/// manufactured. `status` and `verify` therefore both read this, and `aasm run`
+/// reaches the same answer because it calls the same resolver.
+///
+/// A failure to resolve is reported as [`PolicyPosture::Unknown`], never as
+/// `Unconfigured`: the latter is a governance finding about the operator's
+/// setup, and an error reading the disk is not.
+pub(crate) fn resolve_host_policy() -> PolicyPosture {
+    use aa_policy::resolve::{PolicyResolution, Unconfigured};
+
+    match aa_policy::resolve::resolve(None) {
+        PolicyResolution::Enforced { source, document } => PolicyPosture::Resolved {
+            state: PolicyState::Enforced,
+            source: Some(source.display().to_string()),
+            detail: format!("{} rule(s)", document.rules.len()),
+        },
+        PolicyResolution::Permissive { source, .. } => PolicyPosture::Resolved {
+            state: PolicyState::Permissive,
+            source: Some(source.display().to_string()),
+            detail: "explicit allow-all artifact; nothing is restricted".to_string(),
+        },
+        PolicyResolution::Unconfigured(Unconfigured::NoSource { searched }) => PolicyPosture::Resolved {
+            state: PolicyState::Unconfigured,
+            source: None,
+            detail: format!("no policy artifact found; searched {}", searched.join(", ")),
+        },
+        PolicyResolution::Unconfigured(Unconfigured::EmptyDocument { source }) => PolicyPosture::Resolved {
+            state: PolicyState::Unconfigured,
+            source: Some(source.display().to_string()),
+            detail: "parsed cleanly but declares no tool rule".to_string(),
+        },
+        PolicyResolution::LoadFailed { source, detail } => PolicyPosture::Resolved {
+            state: PolicyState::LoadFailed,
+            source: Some(source.display().to_string()),
+            detail,
+        },
+    }
+}
+
 #[async_trait]
 impl IntegrationLifecycle for EngineLifecycle {
     async fn list_tools(&self) -> Result<Vec<ToolDescriptor>, LifecycleError> {
@@ -507,6 +551,10 @@ impl IntegrationLifecycle for EngineLifecycle {
             let report = self.drift(registered, scope, &status.compatibility);
             Self::apply_drift(&mut status, &report);
         }
+        // The adapter reported `Unknown` by construction — it governs one tool
+        // and cannot speak for the host. Overwriting here is what makes the
+        // service the single resolver rather than one of several.
+        status.policy = resolve_host_policy();
         Ok(status)
     }
 

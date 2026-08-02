@@ -387,6 +387,26 @@ message NextLevelView {
   string blocked_because = 2;
 }
 
+// Which policy a governed launch would run under, as the service resolved it
+// (AAASM-5349).
+//
+// Carried as a MESSAGE rather than a bare string so its absence is explicit: a
+// runtime that predates DI-API 3 simply does not send it, and a client can say
+// "this peer cannot tell me" instead of reading an empty string as a policy
+// finding. `unconfigured` is itself a refusal, so conflating the two would turn
+// a version mismatch into a governance claim.
+message PolicyView {
+  // "enforced" | "permissive" | "unconfigured" | "load_failed" | "unknown".
+  // The same tokens `aasm run` prints and exports as `AA_POLICY_STATE`.
+  string state = 1;
+  // The artifact the state came from. Empty when nothing was found — there is
+  // no file to name, and naming a searched location would imply one exists.
+  string source = 2;
+  // Operator-facing detail: the rule count, why it failed to load, or why it
+  // counts as permissive. For `unknown`, why no state could be established.
+  string detail = 3;
+}
+
 message StatusView {
   string tool_id = 1;
   // `LifecyclePhase`, snake_case.
@@ -407,6 +427,8 @@ message StatusView {
   // Why the state is overriding, and which side to fix.
   string state_reason = 12;
   string state_remediation = 13;
+  // Added at DI-API 3. Absent from an older runtime.
+  PolicyView policy = 14;
 }
 
 message VerificationView {
@@ -418,6 +440,8 @@ message VerificationView {
   // Why, for `failed` and `unverifiable`.
   string reason = 4;
   repeated EvidenceView evidence = 5;
+  // Added at DI-API 3. Absent from an older runtime.
+  PolicyView policy = 6;
 }
 
 message RepairView {

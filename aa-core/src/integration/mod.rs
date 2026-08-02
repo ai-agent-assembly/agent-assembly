@@ -48,6 +48,7 @@ pub mod engine;
 pub mod fingerprint;
 pub mod journal;
 pub mod plan;
+pub mod policy_posture;
 pub mod receipt;
 pub mod shim;
 pub mod state;

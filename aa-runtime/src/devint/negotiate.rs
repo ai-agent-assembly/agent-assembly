@@ -39,7 +39,26 @@ use super::verb::DiVerb;
 pub const DI_API_MIN_SUPPORTED: u32 = 1;
 
 /// The newest DI-API version this runtime speaks.
-pub const DI_API_MAX_SUPPORTED: u32 = 2;
+///
+/// **v3 adds no verbs.** It records that `status` and `verify` carry a
+/// [`PolicyView`](aa_proto::assembly::devint::v1::PolicyView) — which policy a
+/// governed launch would run under (AAASM-5349). A v2 peer is therefore *not*
+/// [`Negotiation::Degraded`]: it has every verb, and `unavailable_verbs` stays
+/// empty, because nothing became unavailable.
+///
+/// The version exists for what a client can *say* rather than what it can call.
+/// Protobuf message presence already makes the field's absence unambiguous, so
+/// behaviour is correct without consulting the version at all; knowing the peer
+/// speaks 2 lets the client name the reason — "this runtime speaks DI-API 2;
+/// policy posture arrived in 3" — instead of the vaguer "the field is missing".
+pub const DI_API_MAX_SUPPORTED: u32 = 3;
+
+/// The first DI-API version whose `status` and `verify` carry a policy posture.
+///
+/// Below this, absence of the field means the peer cannot answer — never that
+/// the policy is unconfigured. `unconfigured` is itself a refusal, so reading
+/// one as the other would turn a version mismatch into a governance finding.
+pub const DI_API_POLICY_POSTURE_SINCE: u32 = 3;
 
 /// Verbs that did not exist at DI-API v1.
 ///
@@ -53,6 +72,20 @@ pub fn verb_available_at(verb: DiVerb, version: u32) -> bool {
         return true;
     }
     !VERBS_ADDED_IN_V2.contains(&verb)
+}
+
+/// The lowest DI-API version at which `verb` exists.
+///
+/// Remediation names this rather than [`DI_API_MAX_SUPPORTED`]: they were the
+/// same number until v3, so "reconnect at the maximum" read as precise advice
+/// while only accidentally being so. Telling a v1 client to reach v3 when v2
+/// carries the verb asks for an upgrade the gate does not require.
+pub fn verb_available_since(verb: DiVerb) -> u32 {
+    if VERBS_ADDED_IN_V2.contains(&verb) {
+        2
+    } else {
+        DI_API_MIN_SUPPORTED
+    }
 }
 
 /// Why a `Hello` could not be honoured.
@@ -286,8 +319,13 @@ mod tests {
 
     #[test]
     fn the_highest_shared_version_wins() {
+        // Highest *shared*, not this runtime's maximum. The two were the same
+        // number until v3 added the policy posture, and asserting the maximum
+        // silently asserted the wrong thing: a client offering only [1, 2] must
+        // negotiate 2, or it would be told it speaks a version it does not.
+        assert_eq!(negotiate(&hello(&[1, 2])), Negotiation::Supported { version: 2 });
         assert_eq!(
-            negotiate(&hello(&[1, 2])),
+            negotiate(&hello(&[1, 2, 3])),
             Negotiation::Supported {
                 version: DI_API_MAX_SUPPORTED
             }
@@ -378,7 +416,10 @@ mod tests {
     fn the_supported_ack_names_the_core_and_the_window() {
         let ack = to_wire(&negotiate(&hello(&[2]))).expect("supported");
         assert_eq!(ack.outcome, wire::NegotiationOutcome::Supported as i32);
-        assert_eq!(ack.di_api_version, DI_API_MAX_SUPPORTED);
+        // The negotiated version is what the client can actually speak; the
+        // window it is told about is this runtime's. Conflating them hid the
+        // difference while the two numbers happened to be equal.
+        assert_eq!(ack.di_api_version, 2);
         assert_eq!(ack.min_supported, DI_API_MIN_SUPPORTED);
         assert_eq!(ack.max_supported, DI_API_MAX_SUPPORTED);
         assert_eq!(ack.lifecycle_schema_version, LIFECYCLE_SCHEMA_VERSION);
