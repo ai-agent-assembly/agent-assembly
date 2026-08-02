@@ -1,6 +1,6 @@
 //! Validated, strongly-typed policy document types for aa-gateway.
 
-use crate::policy::scope::PolicyScope;
+use crate::scope::PolicyScope;
 
 /// Validated network egress policy.
 #[derive(Debug, Clone, PartialEq)]

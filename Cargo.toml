@@ -17,6 +17,7 @@ members = [
     "aa-sdk-client",
     "aa-wasm",
     "aa-sandbox",
+    "aa-policy",
     "aa-gateway",
     "aa-api",
     "aa-cli",
