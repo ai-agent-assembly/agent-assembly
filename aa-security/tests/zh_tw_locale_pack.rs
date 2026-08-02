@@ -19,6 +19,21 @@ use aa_security::CredentialScanner;
 /// text could not reach the code they were meant to exercise. The assertions
 /// below therefore check the corpus is numerically dense *before* checking it is
 /// clean.
+///
+/// # It is not all naturally-written prose, and that is on purpose
+///
+/// One block of the fixture is written as Chinese clauses separated by ASCII
+/// spaces — a form real zh-TW writing does not use, since Chinese does not
+/// delimit words with spaces. Those 35 lines supply **63 of the 75** tokens that
+/// land in the pre-AAASM-5344 entropy window; the 67 naturally-written lines
+/// supply 12, which is below the bar
+/// `the_corpus_reaches_the_entropy_window_that_caused_the_defect` sets.
+///
+/// The engineered block therefore makes the cleanliness assertion *harder*, not
+/// easier: every one of those tokens is an additional chance for the entropy
+/// gate to misfire, and the corpus must survive all of them. But it does mean
+/// the window coverage is manufactured rather than observed, and a reader should
+/// know that before treating the 75 as a property of ordinary Chinese text.
 const CLEAN_ZH_TW_PROSE: &str = include_str!("fixtures/zh_tw_clean_prose.txt");
 
 /// The byte-level Shannon entropy of an ASCII-or-not slice.

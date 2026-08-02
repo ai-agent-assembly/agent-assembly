@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353, added after delta review: an unlabelled 8-digit run in Latin-script prose is deliberately NOT reported (the checksum is wrong 22% of the time and 'build 12345675 passed' is indistinguishable from a real identifier), so recall in English text rests entirely on the romanised labels. This vector pins that they work. The trailing full stop also exercises the sentence-terminator rule: '.' only continues a number when a digit follows it, so an identifier ending a Latin sentence is not treated as a fragment.",
+  "input_text": "The tax id is 12345675.",
+  "expected_findings": [
+    {
+      "category": "TAX_IDENTIFIER[zh-TW/business_id]",
+      "offset": 14,
+      "end": 22,
+      "confidence": "medium"
+    }
+  ],
+  "expected_redacted": "The tax id is [REDACTED]."
+}
