@@ -48,12 +48,24 @@ use super::guard::{check_shape, FieldRejection, MAX_LABEL_BYTES};
 /// is `aa-security` beside the catalogue, named so it says it is doing
 /// something weaker — not here, and not before there is a caller.
 ///
-/// # Unknown labels survive
+/// # Unknown labels survive, but only well-shaped ones
 ///
-/// Deserialization accepts any well-shaped label, including one this build
-/// cannot resolve. An audit record read by an older build must round-trip
-/// intact; dropping a field because the reader is behind the writer loses data
-/// permanently, and the record is the evidence.
+/// Deserialization accepts any label that passes [`CategoryLabel::new`]'s shape
+/// check, including one this build cannot resolve. An audit record read by an
+/// older build must round-trip intact; dropping a field because the reader is
+/// behind the writer loses data permanently, and the record is the evidence.
+///
+/// It is **not** closed over the catalogue, and cannot be: closing it would
+/// break exactly that round-trip. So a `CategoryLabel` is bounded in *shape*
+/// and unbounded in *value*, and any consumer that needs a bounded value —
+/// a metric label, above all — must resolve it rather than render it. That is
+/// why [`SensitiveDataMetricLabels`](super::SensitiveDataMetricLabels) holds a
+/// resolved [`CanonicalCategory`] and not one of these.
+///
+/// The shape check on the read path is deliberate rather than incidental: the
+/// derived `Deserialize` this once had ran no validation at all, so a stored
+/// record could carry any string here — including one long enough or noisy
+/// enough to be a payload fragment.
 ///
 /// # Wire format
 ///
@@ -63,11 +75,28 @@ use super::guard::{check_shape, FieldRejection, MAX_LABEL_BYTES};
 /// "ACCESS_TOKEN[github:personal_access]"
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(transparent))]
 pub struct CategoryLabel(String);
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for CategoryLabel {
+    /// Runs the same shape check as [`CategoryLabel::new`].
+    ///
+    /// Hand-written rather than derived for the reason
+    /// [`RuntimeVerdictLabel`](super::RuntimeVerdictLabel) is: a derived
+    /// `Deserialize` on a `serde(transparent)` newtype validates nothing, so
+    /// the guard on the write path would simply not exist on the read path.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let label = String::deserialize(deserializer)?;
+        // The rejection is reported by Display, which never quotes the input —
+        // a label that failed the check is exactly the thing not to log.
+        Self::new(label).map_err(D::Error::custom)
+    }
+}
 
 impl CategoryLabel {
     /// Accept a label read from storage, or say why not.
@@ -176,6 +205,35 @@ mod tests {
             "a legible base must still not be handed back as a partial category"
         );
         assert_eq!(label.as_str(), rendered, "the full rendering survives for display");
+    }
+
+    /// The same rule, over a base that is in the catalogue **unqualified**.
+    ///
+    /// This case exists because the previous test is not enough on its own, and
+    /// the gap is subtle. `NationalId` appears in
+    /// [`CanonicalCategory::ALL`] only as `with_locale(…, "en-US", "ssn")`, so a
+    /// naive base-level fallback written as
+    /// `self.0.split('[').next()?.parse().ok()` finds nothing for
+    /// `NATIONAL_ID` and returns `None` anyway — passing the test it was
+    /// supposed to fail, for the wrong reason.
+    ///
+    /// `EMAIL_ADDRESS` *is* in the catalogue unqualified, so that same naive
+    /// fallback resolves `EMAIL_ADDRESS[xx-ZZ/…]` to
+    /// `unqualified(EmailAddress)` and this assertion catches it. Between the
+    /// two, both the faithful and the naive form of the fallback fail.
+    #[test]
+    fn a_qualified_form_of_a_catalogue_base_still_resolves_to_none() {
+        let label = CategoryLabel::new("EMAIL_ADDRESS[xx-ZZ/synthetic_for_test]").unwrap();
+
+        assert!(
+            CategoryLabel::new("EMAIL_ADDRESS").unwrap().resolve().is_some(),
+            "precondition: the bare base is in the catalogue, which is what makes this case bite"
+        );
+        assert_eq!(
+            label.resolve(),
+            None,
+            "a qualified category was degraded to the catalogue entry for its bare base"
+        );
     }
 
     /// The label is displayable whatever it holds — the property that makes a
