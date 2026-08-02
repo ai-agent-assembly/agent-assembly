@@ -28,4 +28,8 @@ chrono-tz    = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio    = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `time` is not optional: history/fs_store.rs's tests sleep between writes to
+# force distinct mtimes. Without it this crate's tests compile only when built
+# alongside a crate that happens to enable the feature — which is how they
+# passed here before anyone built aa-policy on its own.
+tokio    = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
