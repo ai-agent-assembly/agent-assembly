@@ -41,10 +41,22 @@
 //! `aa-security`'s compiled-in catalogue — none of which can hold bytes the
 //! scanner read. The strings a caller supplies are the whole remaining surface
 //! through which a raw sensitive value could reach a record, so they are
-//! screened rather than trusted: see [`FieldPath`], [`Endpoint`] and
-//! [`FieldRejection`]. There is no constructor that takes an unscreened string.
-//! [`FieldRejection`]'s documentation states plainly what that does and does
-//! not prove.
+//! guarded rather than trusted: see [`FieldPath`], [`Endpoint`] and
+//! [`FieldRejection`].
+//!
+//! No constructor takes an **unguarded** string, but there are **two strengths
+//! of guard** and the difference matters. [`FieldPath`] and [`Endpoint`]
+//! identifiers are derived from the inspected request and get a credential
+//! scan; [`AuditLabel`] and [`CategoryLabel`] hold system-minted values and get
+//! a shape check only, because the scanner flags a ULID and screening ids would
+//! reject well-formed events. [`FieldRejection`]'s documentation states which
+//! is which, and what neither proves.
+//!
+//! Deserialization is the deliberate gap in both: a stored record must
+//! round-trip, so the read path re-checks shape but never re-screens. Any
+//! consumer needing a *bounded* value — a metric label above all — must
+//! therefore resolve rather than trust, which is what
+//! [`SensitiveDataMetricLabels`] does.
 //!
 //! # Counting rules that are not negotiable
 //!
