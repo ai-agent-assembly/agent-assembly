@@ -12,20 +12,32 @@
 //! share the base `NATIONAL_ID`.
 //!
 //! That last sentence describes the design, **not a mechanism that exists
-//! today**, and the distinction is worth stating plainly because an earlier
-//! draft of this paragraph did not. No policy code matches on
-//! [`CategoryBase`](crate::canonical::CategoryBase); nothing outside
-//! `crate::canonical` calls
-//! [`CanonicalCategory::base`](crate::canonical::CanonicalCategory::base); and
-//! `"NATIONAL_ID".parse::<CanonicalCategory>()` **fails**, because the parse
-//! domain is the catalogue of whole categories and a bare base is not one of
-//! them (deliberately — see
-//! [`ParseCategoryError`](crate::canonical::ParseCategoryError), which explains
-//! why degrading to a partial category is how a confident-looking wrong answer
-//! gets made). Base-level matching is AAASM-5355's to build.
+//! today**. Two things are true of this workspace as it stands:
 //!
-//! What this pack does provide today is the categories, correctly qualified, so
-//! that when that matching arrives it does not require a taxonomy change.
+//! - **No policy code matches on
+//!   [`CategoryBase`](crate::canonical::CategoryBase).** Nothing routes,
+//!   allows or denies on the coarse handle; the base is carried and rendered,
+//!   not acted on.
+//! - **`"NATIONAL_ID".parse::<CanonicalCategory>()` fails**, because the parse
+//!   domain is the catalogue of whole categories and a bare base is
+//!   deliberately not one of them — see
+//!   [`ParseCategoryError`](crate::canonical::ParseCategoryError) for why
+//!   degrading to a partial category is how a confident-looking wrong answer
+//!   gets made.
+//!
+//! An earlier draft of this paragraph also claimed nothing outside
+//! `crate::canonical` calls
+//! [`CanonicalCategory::base`](crate::canonical::CanonicalCategory::base). That
+//! was false when it was written — [`zh_tw`]'s own tests call it — and it is
+//! recorded here rather than quietly deleted, because it was a claim about the
+//! code inserted *into* a commit correcting two other such claims. The narrow
+//! statement above is the one that holds; "nobody calls this accessor" was never
+//! the property that mattered.
+//!
+//! AAASM-5355 has since merged and did **not** add base-level matching, so it
+//! remains unbuilt and unowned. What this pack provides today is the categories,
+//! correctly qualified, so that whenever that matching is built it will not
+//! require a taxonomy change.
 //!
 //! The consequence to keep in mind is that these findings have **no
 //! `CredentialKind` and no `[REDACTED:<kind>]` label**. They redact to the
