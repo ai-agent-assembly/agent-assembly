@@ -678,6 +678,21 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // no identity is an ungoverned process wearing a governed launch's name.
     let registration = register_with_gateway(&info, args).await?;
     let handle = RegistrationHandle::of(&registration);
+
+    // Recorded now, not at exit: an audit trail that only learns about a session
+    // when it ends loses every session still running and every one that does not
+    // end cleanly. Reachable only for a policy that permitted the launch — the
+    // two refusing states are refused above, before any registration exists, so
+    // they cannot reach the trail at all (see `run_audit`'s module docs).
+    run_registration::report_launch(
+        &registration,
+        &handle.trace_id,
+        &handle.session_id,
+        &args.tool,
+        &args.tool_args,
+        &resolution.posture(),
+    )
+    .await;
     let mut child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
     resolution.annotate_env(&mut child_env);
 

@@ -52,7 +52,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use aa_core::dev_tool::{DevToolKind, GovernanceLevel};
-use aa_core::integration::policy_posture::{PolicyPosture, PolicyState};
+use aa_core::integration::policy_posture::PolicyPosture;
 use aa_core::integration::{
     now_unix_secs, ApplyContext, DevToolIntegration, DriftKind, DriftReport, EngineError, FilesystemExecutor,
     IntegrationCapability, IntegrationEngine, IntegrationPlan, IntegrationReceipt, IntegrationRequest,
@@ -409,35 +409,10 @@ fn engine_error(e: EngineError) -> LifecycleError {
 /// `Unconfigured`: the latter is a governance finding about the operator's
 /// setup, and an error reading the disk is not.
 pub(crate) fn resolve_host_policy() -> PolicyPosture {
-    use aa_policy::resolve::{PolicyResolution, Unconfigured};
-
-    match aa_policy::resolve::resolve(None) {
-        PolicyResolution::Enforced { source, document } => PolicyPosture::Resolved {
-            state: PolicyState::Enforced,
-            source: Some(source.display().to_string()),
-            detail: format!("{} rule(s)", document.rules.len()),
-        },
-        PolicyResolution::Permissive { source, .. } => PolicyPosture::Resolved {
-            state: PolicyState::Permissive,
-            source: Some(source.display().to_string()),
-            detail: "explicit allow-all artifact; nothing is restricted".to_string(),
-        },
-        PolicyResolution::Unconfigured(Unconfigured::NoSource { searched }) => PolicyPosture::Resolved {
-            state: PolicyState::Unconfigured,
-            source: None,
-            detail: format!("no policy artifact found; searched {}", searched.join(", ")),
-        },
-        PolicyResolution::Unconfigured(Unconfigured::EmptyDocument { source }) => PolicyPosture::Resolved {
-            state: PolicyState::Unconfigured,
-            source: Some(source.display().to_string()),
-            detail: "parsed cleanly but declares no tool rule".to_string(),
-        },
-        PolicyResolution::LoadFailed { source, detail } => PolicyPosture::Resolved {
-            state: PolicyState::LoadFailed,
-            source: Some(source.display().to_string()),
-            detail,
-        },
-    }
+    // The mapping lives in `aa-policy` beside the resolution it describes, so
+    // `status`, `verify` and the audit record `aasm run` emits cannot drift
+    // into three descriptions of the same four states (AAASM-5349).
+    aa_policy::resolve::resolve(None).posture()
 }
 
 #[async_trait]

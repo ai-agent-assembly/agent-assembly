@@ -383,6 +383,54 @@ pub async fn register(desc: SessionDescriptor<'_>) -> Result<GovernedRegistratio
 ///
 /// Best-effort by design: the session is already over, and a gateway that has
 /// gone away or has already swept the agent leaves nothing for the caller to do.
+/// Report this governed launch to the gateway's audit trail.
+///
+/// Lives here rather than in [`crate::commands::run_audit`] because the
+/// credential token is private to this module by design — the module docs
+/// explain why — and an accessor would widen it for one caller.
+///
+/// Best-effort: a launch that governed correctly is not aborted because the
+/// audit upload failed. The failure is printed rather than swallowed, because an
+/// audit record that silently did not happen is worse than one that visibly did
+/// not (AAASM-5349).
+///
+/// Only reachable for a launch that registered, which means the policy permitted
+/// it — `enforced` or `permissive`. The two refusing states never get here; see
+/// [`crate::commands::run_audit`] for why that gap exists and what owns closing
+/// it.
+pub async fn report_launch(
+    registration: &GovernedRegistration,
+    trace_id: &str,
+    session_id: &str,
+    command: &str,
+    args: &[String],
+    posture: &aa_core::integration::policy_posture::PolicyPosture,
+) {
+    let agent_id = ProtoAgentId {
+        org_id: String::new(),
+        team_id: registration.team_id.clone().unwrap_or_default(),
+        agent_id: registration.registration_did.clone(),
+    };
+    let record = crate::commands::run_audit::GovernedLaunchRecord {
+        endpoint: &registration.endpoint,
+        credential_token: &registration.credential_token,
+        agent_id,
+        event_id: uuid::Uuid::now_v7().to_string(),
+        trace_id: trace_id.to_string(),
+        session_id: session_id.to_string(),
+        command,
+        args,
+        posture,
+        occurred_at_unix_secs: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    };
+    if let Err(e) = crate::commands::run_audit::report_governed_launch(record).await {
+        eprintln!("warning: this launch was not recorded in the audit trail: {e}");
+    }
+}
+
 pub async fn deregister(registration: &GovernedRegistration, reason: &str) {
     let Ok(mut client) = GatewayRegistrationClient::connect(registration.endpoint.clone()).await else {
         return;
