@@ -33,6 +33,7 @@
 //! built only from those. That is the whole no-sensitive-data argument, and it
 //! is a property of the shape rather than of a redaction pass.
 
+use aa_runtime::devint::negotiate::DI_API_POLICY_POSTURE_SINCE;
 use serde::Serialize;
 
 use aa_proto::assembly::devint::v1 as wire;
@@ -338,6 +339,68 @@ pub struct LevelRow {
     pub limitation: String,
 }
 
+/// The policy a governed launch would run under, as this reading could
+/// establish it.
+///
+/// Built from the service's `PolicyView` and the negotiated DI-API version,
+/// because those answer two different questions and only both together are
+/// honest: *what did the service say*, and *could it have said anything*.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PolicyRow {
+    /// `enforced` | `permissive` | `unconfigured` | `load_failed` | `unknown`.
+    pub state: String,
+    /// The artifact the state came from, when there is one to name.
+    pub source: Option<String>,
+    /// Operator-facing detail; for `unknown`, why nothing could be established.
+    pub detail: String,
+    /// Whether a governed launch would be refused. `None` for `unknown` — an
+    /// unanswerable question is not a "no", and rendering it as one would show
+    /// a refusal nobody measured.
+    pub refuses_launch: Option<bool>,
+}
+
+impl PolicyRow {
+    /// Derive the row from what the service sent and what it was able to send.
+    ///
+    /// An absent view is **never** read as `unconfigured`. That token is itself
+    /// a refusal, so treating "this peer predates the field" as "your policy is
+    /// missing" would manufacture a governance finding out of a version
+    /// mismatch — the precise confusion AAASM-5349 exists to remove.
+    fn from_view(policy: Option<&wire::PolicyView>, di_api_version: u32) -> Self {
+        match policy {
+            Some(view) => Self {
+                state: view.state.clone(),
+                source: (!view.source.is_empty()).then(|| view.source.clone()),
+                detail: view.detail.clone(),
+                refuses_launch: match view.state.as_str() {
+                    "unconfigured" | "load_failed" => Some(true),
+                    "enforced" | "permissive" => Some(false),
+                    // Includes `unknown`, and any token a newer runtime adds
+                    // that this build does not recognise. Guessing either way
+                    // would be a claim this client is not entitled to make.
+                    _ => None,
+                },
+            },
+            None => Self {
+                state: "unknown".to_string(),
+                source: None,
+                detail: if di_api_version < DI_API_POLICY_POSTURE_SINCE {
+                    format!(
+                        "this runtime speaks DI-API {di_api_version}; the policy posture arrived in \
+                         {DI_API_POLICY_POSTURE_SINCE}"
+                    )
+                } else {
+                    format!(
+                        "the runtime negotiated DI-API {di_api_version} but sent no policy view; \
+                         treat this as a defect rather than as a policy state"
+                    )
+                },
+                refuses_launch: None,
+            },
+        }
+    }
+}
+
 /// The `status` report.
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusReport {
@@ -383,6 +446,8 @@ pub struct StatusReport {
     pub levels: Vec<LevelRow>,
     /// Mechanisms the adapter cannot substantiate.
     pub unsupported: Vec<UnsupportedRow>,
+    /// Which policy a governed launch would run under (AAASM-5349).
+    pub policy: PolicyRow,
 }
 
 impl StatusReport {
@@ -449,6 +514,10 @@ impl StatusReport {
             absent_evidence,
             last_verified_at_unix_secs: last_verified,
             unsupported,
+            // Read before `runtime` is moved: struct-literal fields evaluate in
+            // written order, and the version is what turns an absent view into
+            // a nameable reason rather than a shrug.
+            policy: PolicyRow::from_view(view.policy.as_ref(), runtime.di_api_version),
             runtime,
         }
     }
@@ -695,6 +764,82 @@ fn non_empty(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// An absent view means the peer could not answer. It must never render as
+    /// `unconfigured`: that token is itself a refusal, so reading a version
+    /// mismatch as one would manufacture a governance finding out of an old
+    /// runtime (AAASM-5349).
+    #[test]
+    fn an_absent_policy_view_is_unknown_not_unconfigured() {
+        let row = PolicyRow::from_view(None, 2);
+        assert_eq!(row.state, "unknown");
+        assert_ne!(row.state, "unconfigured");
+        assert_eq!(row.refuses_launch, None, "an unanswerable question is not a refusal");
+    }
+
+    /// The negotiated version is what turns "missing" into a nameable cause.
+    #[test]
+    fn an_old_peer_is_named_as_the_reason() {
+        let row = PolicyRow::from_view(None, 2);
+        assert!(
+            row.detail.contains("DI-API 2"),
+            "must name the peer's version: {}",
+            row.detail
+        );
+        assert!(
+            row.detail.contains(&DI_API_POLICY_POSTURE_SINCE.to_string()),
+            "must name the version that introduced it: {}",
+            row.detail
+        );
+    }
+
+    /// A current peer that sends nothing is a defect, not a policy state, and
+    /// must not be described in the same words as an old one.
+    #[test]
+    fn a_current_peer_sending_nothing_is_called_a_defect() {
+        let row = PolicyRow::from_view(None, DI_API_POLICY_POSTURE_SINCE);
+        assert_eq!(row.state, "unknown");
+        assert!(row.detail.contains("defect"), "got: {}", row.detail);
+    }
+
+    /// Only the two refusing states refuse, and only the two permitting states
+    /// permit. Everything else — including a token a newer runtime might add —
+    /// is left unanswered rather than guessed.
+    #[test]
+    fn refusal_is_derived_only_for_tokens_this_build_knows() {
+        for (token, expected) in [
+            ("enforced", Some(false)),
+            ("permissive", Some(false)),
+            ("unconfigured", Some(true)),
+            ("load_failed", Some(true)),
+            ("unknown", None),
+            ("some_future_state", None),
+        ] {
+            let view = wire::PolicyView {
+                state: token.to_string(),
+                source: String::new(),
+                detail: String::new(),
+            };
+            assert_eq!(
+                PolicyRow::from_view(Some(&view), DI_API_POLICY_POSTURE_SINCE).refuses_launch,
+                expected,
+                "token {token}"
+            );
+        }
+    }
+
+    /// An empty `source` on the wire means "there is no artifact to name", not
+    /// "the artifact is called empty string".
+    #[test]
+    fn an_empty_source_becomes_none_rather_than_an_empty_name() {
+        let view = wire::PolicyView {
+            state: "unconfigured".to_string(),
+            source: String::new(),
+            detail: "nothing found".to_string(),
+        };
+        assert_eq!(PolicyRow::from_view(Some(&view), 3).source, None);
+    }
+
     use super::*;
 
     fn runtime() -> RuntimeInfo {
@@ -722,6 +867,10 @@ mod tests {
             verified_at_unix_secs: 1_700_000_000,
             outcome: outcome.to_string(),
             missing: Vec::new(),
+            // These fixtures are about the ladder and its evidence; a `None`
+            // policy also exercises the older-peer path, which is the one that
+            // must never be read as `unconfigured`.
+            policy: None,
             reason: String::new(),
             evidence: evidence_views,
         }
@@ -783,6 +932,7 @@ mod tests {
             drift_mismatched: Vec::new(),
             state_reason: String::new(),
             state_remediation: String::new(),
+            policy: None,
         }
     }
 

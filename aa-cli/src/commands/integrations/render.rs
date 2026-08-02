@@ -237,6 +237,26 @@ impl Report for StatusReport {
             out.push_str("  last verification: never\n");
         }
 
+        // Rendered as its own block, not folded into the ladder above. The
+        // protection level and the policy are independent: an integration can
+        // be `Gateway Protected` while a governed launch would be refused for
+        // want of a policy, and a reader who saw one number would assume the
+        // other.
+        out.push_str("\nPolicy for the next governed launch:\n");
+        out.push_str(&format!("  state:  {}\n", self.policy.state));
+        match self.policy.refuses_launch {
+            Some(true) => out.push_str("  launch: REFUSED — `aasm run` will not start a tool in this state\n"),
+            Some(false) => out.push_str("  launch: permitted\n"),
+            // Never rendered as "permitted". An unanswerable question is not a
+            // yes, and printing one would be the over-claim this whole command
+            // is written to avoid.
+            None => out.push_str("  launch: not established by this reading\n"),
+        }
+        if let Some(source) = &self.policy.source {
+            out.push_str(&format!("  source: {source}\n"));
+        }
+        out.push_str(&format!("  detail: {}\n", self.policy.detail));
+
         out.push_str("\nProtection levels:\n");
         for level in &self.levels {
             let mark = match (level.achieved, level.available) {
