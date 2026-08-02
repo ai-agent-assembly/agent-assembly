@@ -5,6 +5,7 @@
 
 mod category_label;
 mod counts;
+mod event;
 mod evidence;
 mod finding_record;
 mod guard;
@@ -14,6 +15,11 @@ mod vocab;
 
 pub use category_label::CategoryLabel;
 pub use counts::{CategoryCount, CountsError, FindingCounts};
+pub use event::{
+    AgentLineage, CorrelationIds, Endpoint, EndpointKind, FindingClassification, InspectedAction, InspectionLatency,
+    OperationKind, PolicyAttribution, PolicyReasonCode, RequestDirection, SensitiveDataDecisionEvent,
+    SensitiveDataDecisionEventBuilder, Tenancy, TrustZone,
+};
 pub use evidence::{EnforcementPoint, ExecutionEvidence, InspectionFailurePath, TransmissionEvidence};
 pub use finding_record::{AggregateKey, DetectionProvenance, SensitiveDataFindingRecord};
 pub use guard::{AuditLabel, FieldPath, FieldRejection, MAX_FIELD_PATH_BYTES, MAX_LABEL_BYTES};
