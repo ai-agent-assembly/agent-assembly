@@ -126,15 +126,36 @@ impl core::fmt::Display for AggregateKey {
 ///
 /// # What it can carry
 ///
-/// The only caller-supplied string is the [`FieldPath`], which is screened. The
-/// redaction label is *derived* from the category rather than accepted, so a
-/// caller cannot pass arbitrary text through it. Everything else comes from
+/// Three of its fields hold caller-supplied strings, at three strengths, and
+/// it is worth being exact about which is which:
+///
+/// | Field | Guard on the way in |
+/// |---|---|
+/// | [`field_path`](Self::field_path) | credential scan **and** shape check |
+/// | [`event_id`](Self::event_id), [`provenance.version`](DetectionProvenance::version) | shape check only ([`AuditLabel`]) |
+/// | [`category`](Self::category), [`redaction_label`](Self::redaction_label) | shape check only; *derived* by [`from_finding`](Self::from_finding), but see below |
+///
+/// [`from_finding`](Self::from_finding) derives the category and the redaction
+/// label from the finding and offers no parameter for either, so **that path**
+/// cannot be handed arbitrary text. Everything else it writes comes from
 /// `aa-security`'s compiled-in vocabularies.
 ///
+/// # What that does not mean
+///
 /// The same honesty `aa-security` applies to its own model applies here: this
-/// is a property of the construction paths, not an unrepresentable state.
-/// Deserialization reconstructs a record from bytes without re-running the
-/// guard, deliberately — see [`FieldPath`].
+/// is a property of the construction paths, **not an unrepresentable state**.
+/// Two ways around it, both deliberate:
+///
+/// - the fields are `pub`, so a caller can assign one after construction; and
+/// - `Deserialize` rebuilds a record from bytes, re-checking shape but never
+///   re-screening, because a stored record has to round-trip even if a later
+///   build tightens the rules.
+///
+/// So a record in hand is **not** evidence that its category is one this build
+/// knows or that its labels are bounded. A consumer that needs either must
+/// check — which is exactly why
+/// [`SensitiveDataMetricLabels::from_finding`](super::SensitiveDataMetricLabels::from_finding)
+/// resolves the category and returns `None` rather than trusting this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -142,6 +163,17 @@ impl core::fmt::Display for AggregateKey {
 pub struct SensitiveDataFindingRecord {
     /// Schema this row was written against.
     pub schema_version: SchemaVersion,
+    /// The [`SensitiveDataDecisionEvent`](super::SensitiveDataDecisionEvent)
+    /// this finding belongs to.
+    ///
+    /// Without it "child row" would be a name rather than a relationship: the
+    /// event holds no `Vec<SensitiveDataFindingRecord>` — [`FindingCounts::tally`](super::FindingCounts::tally)
+    /// consumes the rows and keeps only the tallies — so this is the *only*
+    /// thing tying a finding to the action it came from. Aggregating without it
+    /// leaves `finding_counts.by_category` as the sole answer to the Epic's
+    /// motivating question, which drops severity, confidence, method, status,
+    /// field path and provenance.
+    pub event_id: AuditLabel,
     /// What was found, in provider-neutral terms.
     pub category: CategoryLabel,
     /// How damaging its exposure would be.
@@ -176,6 +208,9 @@ pub struct SensitiveDataFindingRecord {
 impl SensitiveDataFindingRecord {
     /// Project a canonical finding into a storable row, dropping the span.
     ///
+    /// `event_id` is required rather than optional: a finding row that cannot
+    /// name its parent event is not a child row.
+    ///
     /// The redaction label is derived from the finding's category — there is no
     /// parameter for it, so a caller cannot substitute text of its own.
     ///
@@ -184,10 +219,15 @@ impl SensitiveDataFindingRecord {
     /// [`FieldRejection`] if the derived redaction label or the recognizer
     /// version fails the shape check. The `field_path` was screened when it was
     /// built.
-    pub fn from_finding(finding: &CanonicalFinding, field_path: FieldPath) -> Result<Self, FieldRejection> {
+    pub fn from_finding(
+        event_id: AuditLabel,
+        finding: &CanonicalFinding,
+        field_path: FieldPath,
+    ) -> Result<Self, FieldRejection> {
         let category = finding.category();
         Ok(Self {
             schema_version: SENSITIVE_DATA_SCHEMA_VERSION,
+            event_id,
             category: CategoryLabel::from(category),
             severity: finding.severity(),
             confidence: finding.confidence(),
@@ -238,6 +278,7 @@ mod tests {
 
     fn a_record() -> SensitiveDataFindingRecord {
         SensitiveDataFindingRecord::from_finding(
+            AuditLabel::new("01HZX9V8ABCDEFGHJKMNPQRSTV").unwrap(),
             &synthetic_finding(
                 CanonicalCategory::with_scheme(CategoryBase::AccessToken, "github", "personal_access"),
                 Severity::Critical,
@@ -276,6 +317,7 @@ mod tests {
     #[test]
     fn an_unmappable_category_redacts_to_the_opaque_label() {
         let record = SensitiveDataFindingRecord::from_finding(
+            AuditLabel::new("01HZX9V8ABCDEFGHJKMNPQRSTV").unwrap(),
             &synthetic_finding(
                 CanonicalCategory::with_locale(CategoryBase::NationalId, "xx-ZZ", "synthetic_for_test"),
                 Severity::Medium,
@@ -299,9 +341,13 @@ mod tests {
 
         let key_of = |result: &aa_security::ScanResult| {
             let finding = CanonicalFinding::try_from(&result.findings[0]).unwrap();
-            SensitiveDataFindingRecord::from_finding(&finding, path.clone())
-                .unwrap()
-                .aggregate_key()
+            SensitiveDataFindingRecord::from_finding(
+                AuditLabel::new("01HZX9V8ABCDEFGHJKMNPQRSTV").unwrap(),
+                &finding,
+                path.clone(),
+            )
+            .unwrap()
+            .aggregate_key()
         };
 
         assert_eq!(
@@ -317,6 +363,7 @@ mod tests {
     fn the_aggregate_key_separates_field_and_category() {
         let base = a_record();
         let other_field = SensitiveDataFindingRecord::from_finding(
+            AuditLabel::new("01HZX9V8ABCDEFGHJKMNPQRSTV").unwrap(),
             &synthetic_finding(
                 CanonicalCategory::with_scheme(CategoryBase::AccessToken, "github", "personal_access"),
                 Severity::Critical,
@@ -325,6 +372,7 @@ mod tests {
         )
         .unwrap();
         let other_category = SensitiveDataFindingRecord::from_finding(
+            AuditLabel::new("01HZX9V8ABCDEFGHJKMNPQRSTV").unwrap(),
             &synthetic_finding(
                 CanonicalCategory::unqualified(CategoryBase::EmailAddress),
                 Severity::Medium,
@@ -344,10 +392,18 @@ mod tests {
     fn the_aggregate_key_ignores_severity() {
         let path = FieldPath::parse("body.token").unwrap();
         let category = CanonicalCategory::unqualified(CategoryBase::EmailAddress);
-        let critical =
-            SensitiveDataFindingRecord::from_finding(&synthetic_finding(category, Severity::Critical), path.clone())
-                .unwrap();
-        let low = SensitiveDataFindingRecord::from_finding(&synthetic_finding(category, Severity::Low), path).unwrap();
+        let critical = SensitiveDataFindingRecord::from_finding(
+            AuditLabel::new("01HZX9V8ABCDEFGHJKMNPQRSTV").unwrap(),
+            &synthetic_finding(category, Severity::Critical),
+            path.clone(),
+        )
+        .unwrap();
+        let low = SensitiveDataFindingRecord::from_finding(
+            AuditLabel::new("01HZX9V8ABCDEFGHJKMNPQRSTV").unwrap(),
+            &synthetic_finding(category, Severity::Low),
+            path,
+        )
+        .unwrap();
         assert_eq!(critical.aggregate_key(), low.aggregate_key());
     }
 }
@@ -369,8 +425,12 @@ mod serde_tests {
             FindingStatus::Confirmed,
         )
         .unwrap();
-        SensitiveDataFindingRecord::from_finding(&finding, FieldPath::parse("body.headers.authorization").unwrap())
-            .unwrap()
+        SensitiveDataFindingRecord::from_finding(
+            AuditLabel::new("01HZX9V8ABCDEFGHJKMNPQRSTV").unwrap(),
+            &finding,
+            FieldPath::parse("body.headers.authorization").unwrap(),
+        )
+        .unwrap()
     }
 
     /// **The span-free-subset test.** ADR 0032 §9 confines offsets and lengths
@@ -411,6 +471,7 @@ mod serde_tests {
             serde_json::to_string(&a_record()).unwrap(),
             concat!(
                 r#"{"schema_version":{"major":1,"minor":0},"#,
+                r#""event_id":"01HZX9V8ABCDEFGHJKMNPQRSTV","#,
                 r#""category":"ACCESS_TOKEN[github:personal_access]","severity":"critical","#,
                 r#""confidence":"high","method":"deterministic","status":"confirmed","#,
                 r#""provenance":{"recognizer":"aa-security::scanner","version":"0.0.0-test"},"#,
