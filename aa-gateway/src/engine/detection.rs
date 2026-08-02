@@ -88,7 +88,7 @@ mod sealed {
 /// compiler rule rather than a comment. An implementation attempted from
 /// anywhere else fails to satisfy the private supertrait bound:
 ///
-/// ```compile_fail,E0277
+/// ```compile_fail
 /// use aa_gateway::engine::detection::{DetectedFinding, DetectionError, DetectionPass};
 /// use aa_security::canonical::Recognizer;
 ///
@@ -104,6 +104,48 @@ mod sealed {
 ///     }
 /// }
 /// ```
+///
+/// ## What that case does and does not prove
+///
+/// It proves the code above **does not compile**. It does *not* pin `E0277`:
+/// rustdoc accepts an error-code annotation on a `compile_fail` block and then
+/// does not enforce it — a block annotated `E0277` that actually fails with
+/// `E0425` still passes. Any earlier claim here that the code was pinned was
+/// wrong, and is corrected rather than deleted because it is the kind of claim
+/// that reads as evidence while providing none.
+///
+/// So a compile error for the *wrong* reason — a renamed item, a changed method
+/// signature — would keep it green while the seal was gone. The block below is
+/// the positive control against exactly that: it imports the same names and
+/// calls the same methods with the same signatures, and it must **compile and
+/// pass**. If anything the `compile_fail` case relies on stops resolving, this
+/// one goes red.
+///
+/// ```
+/// use aa_gateway::engine::detection::{
+///     self, BuiltinScannerPass, DetectedFinding, DetectionError, DetectionPass,
+/// };
+/// use aa_security::canonical::Recognizer;
+/// use aa_security::CredentialScanner;
+///
+/// let scanner = CredentialScanner::new();
+/// let pass = BuiltinScannerPass::new(&scanner);
+///
+/// // Same trait, same two methods, same signatures the case above writes out.
+/// assert_eq!(pass.recognizer(), Recognizer::BuiltinScanner);
+/// let mut out: Vec<DetectedFinding> = Vec::new();
+/// let outcome: Result<(), DetectionError> = pass.detect("nothing sensitive here", &mut out);
+/// assert!(outcome.is_ok());
+/// assert!(out.is_empty());
+///
+/// // And the trait is object-safe through the port's entry point.
+/// let merged = detection::run("nothing sensitive here", &[&pass as &dyn DetectionPass]).unwrap();
+/// assert!(merged.findings().is_empty());
+/// ```
+///
+/// Pinning the exact diagnostic needs a `trybuild` UI test. `trybuild` is not a
+/// dependency of this workspace, and adding one is not mine to decide — it is
+/// flagged in the PR for the owner rather than taken.
 pub trait DetectionPass: sealed::InProcess {
     /// Which recognizer this pass attributes its findings to.
     ///
@@ -113,8 +155,16 @@ pub trait DetectionPass: sealed::InProcess {
 
     /// Append this pass's findings for `text` onto `out`, in offset order.
     ///
-    /// Appends rather than returns a `Vec` so a multi-pass run allocates once,
-    /// which matters because this is on the synchronous enforcement path.
+    /// Appends into a shared buffer rather than returning a `Vec` per pass, so
+    /// the number of allocations does not scale with the number of passes.
+    ///
+    /// It is **not** allocation-free overall, and an earlier draft of this line
+    /// said "allocates once", which was wrong: [`DetectionOutcome::into_parts`]
+    /// allocates the two output vectors, and on the with-findings path this is a
+    /// small regression against the pre-port code, which moved
+    /// `ScanResult::findings` straight through. The clean path — no findings,
+    /// which is what the hot-path perf gate measures — allocates one empty
+    /// `Vec` that never grows.
     ///
     /// # Errors
     ///
@@ -133,6 +183,17 @@ pub trait DetectionPass: sealed::InProcess {
 #[non_exhaustive]
 pub enum DetectionError {
     /// `data.locale_packs` named a pack this build does not contain.
+    ///
+    /// # Constraint on future variants
+    ///
+    /// This enum is `#[non_exhaustive]`, and its `Display` output is formatted
+    /// into a **user-visible deny reason** by
+    /// `PolicyEngine::detection_unavailable_deny`. Today's only variant carries
+    /// a policy-authored tag, which is operator configuration and safe to echo.
+    /// A future variant must carry only operator-authored or compiled-in values
+    /// for the same reason — nothing derived from the scanned payload may reach
+    /// this type, because a deny reason is not an audit-tier projection
+    /// (ADR 0032 §9).
     ///
     /// This is the **only** place an unrecognised tag is caught. `aa-policy` is
     /// a leaf crate and cannot see this catalogue, so `PolicyValidator` carries
@@ -342,6 +403,10 @@ pub fn run(text: &str, passes: &[&dyn DetectionPass]) -> Result<DetectionOutcome
     // propagates from. With two, a mutation that swallowed the loop's error
     // left the double's `?` intact and no test noticed — which is how the
     // fail-closed assertions passed while the property was broken.
+    //
+    // The `effective` vector this builds is a `#[cfg(test)]` allocation that no
+    // production build performs: outside `cfg(test)` the three statements below
+    // vanish and `passes` stays the caller's borrowed slice.
     #[cfg(test)]
     let double = test_double::installed();
     #[cfg(test)]

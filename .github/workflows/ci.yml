@@ -497,6 +497,20 @@ jobs:
         # (run 30686659787) against 13.2s truncated — so the worst case is ~3
         # extra minutes, paid only on runs that are already failing.
         run: cargo nextest run --workspace --no-tests=pass --exclude aa-ebpf --no-fail-fast
+      - name: Run aa-gateway doctests
+        # AAASM-5354: nextest does not execute doctests, and nothing else in
+        # this workflow ran `cargo test --doc`, so every doctest in the
+        # workspace has always been dead weight in CI. That matters here
+        # specifically: `engine::detection::DetectionPass` carries the
+        # `compile_fail` case that is the evidence for ADR 0032 validation
+        # requirement 10 — the out-of-process provider boundary — and it was
+        # never being executed.
+        #
+        # Scoped to aa-gateway on purpose. Workspace-wide doctests have never
+        # run, so enabling them all at once would surface unrelated pre-existing
+        # breakage in a PR that has nothing to do with it. Widening this is
+        # worth its own ticket.
+        run: cargo test --doc -p aa-gateway
 
   coverage:
     name: Coverage
