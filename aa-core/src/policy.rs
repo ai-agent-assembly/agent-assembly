@@ -71,6 +71,12 @@ pub enum PolicyDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+// Schema-described because `ExecutionEvidence` embeds the mode: whether
+// enforcement was applied or merely computed is condition 4 of ADR 0032 §8's
+// prevention test, so a consumer reading the schema of a sensitive-data event
+// has to see it. Additive and feature-gated — no other type in this module is
+// schema-described, and none needs to be.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EnforcementMode {
     /// Default: deny blocks, redact strips, pending halts execution.
     #[default]
