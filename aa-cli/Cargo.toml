@@ -68,6 +68,12 @@ aa-proxy             = { path = "../aa-proxy", version = "0.0.1-rc.6" }
 # `.ci/strip-for-publish.sh` along with `run.rs` and `run_registration.rs`, its
 # only consumers.
 aa-sdk-client        = { path = "../aa-sdk-client", version = "0.0.1-rc.6" }
+# AAASM-5349: `aasm run` reports its governed launch to the gateway's
+# `AuditService` over the same gRPC transport, authenticated with the credential
+# token registration returned. In this region because `run_audit.rs` is stripped
+# with the rest of the `aasm run` surface — a dependency left behind with no
+# consumer would enlarge the published crate for nothing.
+tonic                = { workspace = true }
 # strip-for-publish:end sdkclient
 aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-rc.6" }
 aa-storage           = { path = "../aa-storage", version = "0.0.1-rc.6" }

@@ -30,6 +30,7 @@ pub mod policy;
 pub mod proxy;
 // strip-for-publish:begin devtool
 pub mod run;
+pub mod run_audit;
 pub mod run_registration;
 // strip-for-publish:end devtool
 pub mod sandbox;
