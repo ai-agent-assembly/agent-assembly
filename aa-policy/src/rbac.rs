@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::policy::scope::PolicyScope;
+use crate::scope::PolicyScope;
 
 /// Discriminant of [`PolicyScope`] used as the table key.
 ///

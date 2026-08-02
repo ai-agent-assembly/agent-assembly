@@ -188,11 +188,60 @@ echo "  ✓ every internal aa-* pin matches the workspace version"
 # ---------------------------------------------------------------------------
 step "3/6 cargo package (--no-verify, see header for why verify cannot run)"
 
+# One invocation naming every publishable crate, rather than one invocation per
+# crate (AAASM-5432).
+#
+# Packaging strips the `path` from an internal dependency and leaves the version,
+# so a crate packaged ALONE has its siblings resolved through the crates.io
+# index. For a sibling already published that silently resolves to the PREVIOUS
+# release; for a sibling this branch INTRODUCES there is nothing to resolve, and
+# every dependent fails:
+#
+#     no matching package named `aa-policy` found
+#     location searched: crates.io index
+#     required by package `aa-gateway v0.0.1-rc.6`
+#
+# That made it impossible to add an internal crate in the same PR that adds it —
+# the gate reported a defect in the change rather than a gap in its own method.
+# `release.yml` never had the problem because it publishes in dependency order.
+#
+# Naming them together makes cargo resolve inter-dependencies *within the set
+# being packaged*, which is the same thing a topological publish achieves. It is
+# also strictly closer to what ships: the gate now reasons about this tree's
+# crates rather than partly about the last release's.
+#
+# `[patch.crates-io]` is NOT an alternative here — cargo ignores it when it
+# validates a packaged manifest against the index, and reports the entries as
+# `patch ... was not used in the crate graph`.
+pkg_args=()
 while IFS= read -r pkg; do
     [ -n "$pkg" ] || continue
-    ( cd "$TREE" && cargo package -p "$pkg" --no-verify --allow-dirty ) >/dev/null 2>&1 \
-        || { err "cargo package -p $pkg failed"; continue; }
-    echo "  ✓ packaged $pkg"
+    pkg_args+=(-p "$pkg")
+done <<EOF
+$PUBLISHABLE
+EOF
+
+if ! ( cd "$TREE" && cargo package "${pkg_args[@]}" --no-verify --allow-dirty ) >"$WORK/package.log" 2>&1; then
+    # The reason, not just the fact: this step used to discard both streams, so a
+    # failure said only "cargo package -p X failed" and every diagnosis began by
+    # reproducing the gate by hand.
+    # Show the `error:`/`Caused by:` block, not the tail. Cargo's tail is
+    # progress output — the packaging lines for crates that succeeded before the
+    # failure — so a naive tail buries the one thing the reader needs.
+    reason="$( awk '/^error(\[|:)/{f=1} f' "$WORK/package.log" | head -25 )"
+    [ -n "$reason" ] || reason="$( tail -25 "$WORK/package.log" )"
+    err "cargo package failed:"$'\n'"$( printf '%s' "$reason" | sed 's/^/      /' )"
+fi
+
+# Assert the artifact exists per crate rather than trusting the exit status —
+# a tarball missing from the set is exactly what steps 4-6 would then misread.
+while IFS= read -r pkg; do
+    [ -n "$pkg" ] || continue
+    if [ -f "$CARGO_TARGET_DIR/package/$pkg-$WS_VERSION.crate" ]; then
+        echo "  ✓ packaged $pkg"
+    else
+        err "no tarball produced for $pkg ($pkg-$WS_VERSION.crate)"
+    fi
 done <<EOF
 $PUBLISHABLE
 EOF

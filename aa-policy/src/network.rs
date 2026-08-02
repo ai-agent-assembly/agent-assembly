@@ -8,7 +8,7 @@
 //! be allowed by the current policy?" without re-implementing the glob
 //! semantics.
 
-use crate::policy::NetworkPolicy;
+use crate::NetworkPolicy;
 
 /// Outcome of evaluating a host against a [`NetworkPolicy`]'s egress
 /// allowlist.

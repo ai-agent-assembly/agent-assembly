@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::policy::{
+use crate::{
     document::{
         ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, NetworkPolicy,
         PolicyDocument, SchedulePolicy, ToolPolicy,
@@ -131,7 +131,7 @@ impl PolicyValidator {
     /// from the envelope wrapper.
     fn parse_yaml(
         yaml_str: &str,
-    ) -> Result<(RawPolicyDocument, Option<crate::policy::raw::RawMetadata>), Vec<ValidationError>> {
+    ) -> Result<(RawPolicyDocument, Option<crate::raw::RawMetadata>), Vec<ValidationError>> {
         let make_parse_error = |e: serde_yaml::Error| {
             let line = e.location().map(|l| l.line() as u32);
             let mut err = ValidationError::new("(document)", format!("YAML parse error: {}", e));
@@ -157,7 +157,7 @@ impl PolicyValidator {
     // ── Section validators ──────────────────────────────────────────────────
 
     fn validate_network(
-        raw: Option<crate::policy::raw::RawNetworkPolicy>,
+        raw: Option<crate::raw::RawNetworkPolicy>,
         errors: &mut Vec<ValidationError>,
     ) -> Option<NetworkPolicy> {
         let raw = raw?;
@@ -178,7 +178,7 @@ impl PolicyValidator {
     }
 
     fn validate_schedule(
-        raw: Option<crate::policy::raw::RawSchedulePolicy>,
+        raw: Option<crate::raw::RawSchedulePolicy>,
         errors: &mut Vec<ValidationError>,
     ) -> Option<SchedulePolicy> {
         let raw = raw?;
@@ -191,7 +191,7 @@ impl PolicyValidator {
     }
 
     fn validate_active_hours(
-        raw: crate::policy::raw::RawActiveHours,
+        raw: crate::raw::RawActiveHours,
         errors: &mut Vec<ValidationError>,
     ) -> Option<ActiveHours> {
         reject_unknown_keys("schedule.active_hours", &raw.unknown, errors);
@@ -271,7 +271,7 @@ impl PolicyValidator {
     }
 
     fn validate_budget(
-        raw: Option<crate::policy::raw::RawBudgetPolicy>,
+        raw: Option<crate::raw::RawBudgetPolicy>,
         errors: &mut Vec<ValidationError>,
     ) -> Option<BudgetPolicy> {
         let raw = raw?;
@@ -365,10 +365,7 @@ impl PolicyValidator {
         })
     }
 
-    fn validate_data(
-        raw: Option<crate::policy::raw::RawDataPolicy>,
-        errors: &mut Vec<ValidationError>,
-    ) -> Option<DataPolicy> {
+    fn validate_data(raw: Option<crate::raw::RawDataPolicy>, errors: &mut Vec<ValidationError>) -> Option<DataPolicy> {
         let raw = raw?;
 
         reject_unknown_keys("data", &raw.unknown, errors);
@@ -432,7 +429,7 @@ impl PolicyValidator {
     }
 
     fn validate_capabilities(
-        raw: Option<crate::policy::raw::RawCapabilitySet>,
+        raw: Option<crate::raw::RawCapabilitySet>,
         errors: &mut Vec<ValidationError>,
         warnings: &mut Vec<ValidationWarning>,
     ) -> Option<aa_core::CapabilitySet> {
@@ -488,7 +485,7 @@ impl PolicyValidator {
     }
 
     fn validate_tools(
-        raw: Option<HashMap<String, crate::policy::raw::RawToolPolicy>>,
+        raw: Option<HashMap<String, crate::raw::RawToolPolicy>>,
         errors: &mut Vec<ValidationError>,
     ) -> HashMap<String, ToolPolicy> {
         let raw = match raw {
@@ -538,7 +535,7 @@ impl PolicyValidator {
     }
 
     fn validate_approval_policy(
-        raw: Option<crate::policy::raw::RawApprovalPolicy>,
+        raw: Option<crate::raw::RawApprovalPolicy>,
         errors: &mut Vec<ValidationError>,
     ) -> Option<ApprovalPolicy> {
         let raw = raw?;

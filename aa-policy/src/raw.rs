@@ -81,7 +81,7 @@ pub struct RawDataPolicy {
     pub sensitive_patterns: Option<Vec<String>>,
     /// Action taken on a finding: `"block"`, `"redact_only"` (default),
     /// `"alert_only"`, or `"alert_and_redact"`. Validated into a
-    /// [`crate::policy::document::CredentialAction`].
+    /// [`crate::document::CredentialAction`].
     pub credential_action: Option<String>,
     /// BCP-47 tags of the deterministic locale recognizer packs to run
     /// (AAASM-5354), e.g. `["zh-TW"]`. Absent or empty means none — see
@@ -157,9 +157,9 @@ pub struct RawPolicyDocument {
     /// Version tag from the YAML front-matter.
     pub version: Option<String>,
     /// Optional hierarchical scope this policy applies to. When absent the
-    /// validator defaults to [`crate::policy::scope::PolicyScope::Global`] so
+    /// validator defaults to [`crate::scope::PolicyScope::Global`] so
     /// pre-F92 policy files keep their existing semantics.
-    pub scope: Option<crate::policy::scope::PolicyScope>,
+    pub scope: Option<crate::scope::PolicyScope>,
     /// Network egress policy.
     pub network: Option<RawNetworkPolicy>,
     /// Schedule / active-hours policy.

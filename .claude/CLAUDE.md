@@ -103,7 +103,15 @@ cargo doc --workspace --no-deps        # checked on push by hooks
   (`ai-agent-assembly/agent-assembly`) — it is the native `components` field, not
   `customfield_10041` (which is null; per the `.github` registry `jira` section /
   ADR 0014); Team (`customfield_10001`) = Pioneer.
-  Epic → Story → Subtask (one Subtask ≈ one commit) + a `Verify …` subtask per Story.
+  For **feature work**: Epic → Story → Subtask (one Subtask ≈ one commit) + a `Verify …` subtask per Story.
+  For a **dedicated QA / verification Epic** (e.g. AAASM-4522 *user-smoke*, AAASM-5020
+  *design-QA*): **one verification item = one Story directly under the Epic**
+  (the `[Journey NN]` style) — no middle "checklist" Task, no Subtasks. Each such
+  Story is verified by **operating the live product as a real user** (real running
+  server, live API, real browser through the real login flow); CI / unit tests /
+  mocked e2e (`page.route`, injected tokens) **never** substitute for real-user
+  verification, even when they already cover the case. File a Bug only after
+  reproducing through the genuine end-to-end path.
 - **Self-hosted deployment is out of scope** product-wide — don't propose
   Helm/Terraform/air-gapped/migration work even if the spec mentions it.
 - **The Protocol Specification stays in this monorepo** — do not move spec work to a

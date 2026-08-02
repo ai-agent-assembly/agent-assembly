@@ -36,7 +36,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::policy::document::{
+use crate::document::{
     ActionOnExceed, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, NetworkPolicy, PolicyDocument,
     SchedulePolicy, ToolPolicy,
 };
@@ -253,8 +253,8 @@ mod tests {
     use aa_core::CapabilitySet;
 
     use super::*;
-    use crate::policy::document::ToolPolicy;
-    use crate::policy::scope::PolicyScope;
+    use crate::document::ToolPolicy;
+    use crate::scope::PolicyScope;
 
     fn base_doc() -> PolicyDocument {
         PolicyDocument {
