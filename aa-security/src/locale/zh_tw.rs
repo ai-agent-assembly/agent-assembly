@@ -99,7 +99,32 @@ const BUSINESS_ID: CanonicalCategory = CanonicalCategory::with_locale(Base::TaxI
 /// Han as a word character — which every `\b`-based implementation does — makes
 /// this recognizer miss the common case.
 fn is_fragment_neighbour(c: char) -> bool {
-    c.is_ascii_alphanumeric() || ascii_digit_of(c).is_some() || matches!(c, '.' | ',' | '+')
+    c.is_ascii_alphanumeric()
+        || ascii_digit_of(c).is_some()
+        || ascii_uppercase_of(c).is_some()
+        || matches!(c, '.' | ',' | '+')
+}
+
+/// The ASCII uppercase equivalent of `c` — `c` itself for `'A'..='Z'`, and the
+/// corresponding ASCII letter for the full-width forms `'Ａ'..='Ｚ'`
+/// (U+FF21–U+FF3A). `None` for anything else.
+///
+/// The companion to `ascii_digit_of`, and needed for the same reason. A
+/// Taiwanese identity number is one letter and nine digits; on a CJK input
+/// method the whole value is typed in one mode, so the letter arrives full-width
+/// exactly as often as the digits do. Normalising only the digits would leave a
+/// one-character evasion of every identity recognizer here — press one key
+/// differently and `Ａ200000003` is invisible.
+///
+/// As with digits, this is for **matching only**: a full-width letter is three
+/// UTF-8 bytes against ASCII's one, so callers advance offsets by the original
+/// character's width.
+fn ascii_uppercase_of(c: char) -> Option<char> {
+    match c {
+        'A'..='Z' => Some(c),
+        '\u{FF21}'..='\u{FF3A}' => char::from_u32(c as u32 - 0xFF21 + u32::from(b'A')),
+        _ => None,
+    }
 }
 
 /// Whether the character immediately before byte offset `start` permits a
@@ -263,15 +288,15 @@ fn arc_legacy_checksum_ok(first: char, second: char, digits: &str) -> bool {
 /// grammar applies.
 fn scan_identity_number(text: &str, start: usize) -> Option<(CanonicalCategory, usize)> {
     let mut chars = text[start..].chars();
-    let first = chars.next()?;
-    if !first.is_ascii_uppercase() {
-        return None;
-    }
-    let after_first = start + first.len_utf8();
-    let second = chars.next()?;
+    // Normalised for matching; offsets still advance by the *original*
+    // character's width, which is three bytes for a full-width letter.
+    let first_raw = chars.next()?;
+    let first = ascii_uppercase_of(first_raw)?;
+    let after_first = start + first_raw.len_utf8();
+    let second_raw = chars.next()?;
 
-    if second.is_ascii_uppercase() {
-        let (end, digits) = read_digits(text, after_first + second.len_utf8(), 8)?;
+    if let Some(second) = ascii_uppercase_of(second_raw) {
+        let (end, digits) = read_digits(text, after_first + second_raw.len_utf8(), 8)?;
         if !right_boundary_ok(text, end) || !arc_legacy_checksum_ok(first, second, &digits) {
             return None;
         }
@@ -868,21 +893,47 @@ mod tests {
         }
     }
 
-    /// Full-width digits must normalise, and the span must still index the
-    /// original bytes — three per digit, not one.
+    /// Widen every character of `s` that has a full-width form.
+    fn widen(s: &str) -> String {
+        s.chars()
+            .map(|c| match c {
+                '0'..='9' => char::from_u32(c as u32 - u32::from(b'0') + 0xFF10).unwrap_or(c),
+                'A'..='Z' => char::from_u32(c as u32 - u32::from(b'A') + 0xFF21).unwrap_or(c),
+                _ => c,
+            })
+            .collect()
+    }
+
+    /// Full-width forms must normalise, and the span must still index the
+    /// original bytes — three per character, not one.
+    ///
+    /// Both the digits **and the letter** are widened. Widening only the digits
+    /// is what a first implementation does, and it leaves a one-keystroke
+    /// evasion: on a CJK input method the whole value is typed in one mode, so
+    /// the letter arrives full-width exactly as often as the digits do, and a
+    /// recognizer insisting on an ASCII letter never sees the identifier at all.
+    /// The mixed rows are here because a real payload is often half and half.
     #[test]
     fn a_full_width_identifier_is_detected_and_spans_the_original_bytes() {
         let id = synthetic_id('A', "20000000");
-        let wide: String = id
-            .chars()
-            .map(|c| c.to_digit(10).and_then(|d| char::from_u32(0xFF10 + d)).unwrap_or(c))
-            .collect();
-        let text = format!("身分證 {wide} 已建檔");
-        let found = scan(&text);
-        assert_eq!(found.len(), 1, "full-width identifier missed");
-        let span = found[0].span();
-        assert_eq!(&text[span.start()..span.end()], wide);
-        assert!(text.is_char_boundary(span.start()) && text.is_char_boundary(span.end()));
+        let legacy = synthetic_legacy_arc('A', 'B', "0000000");
+        let cases = [
+            (widen(&id), "NATIONAL_ID[zh-TW/national_id]"),
+            // Full-width letter, ASCII digits.
+            (format!("Ａ{}", &id[1..]), "NATIONAL_ID[zh-TW/national_id]"),
+            // ASCII letter, full-width digits.
+            (format!("A{}", widen(&id[1..])), "NATIONAL_ID[zh-TW/national_id]"),
+            (widen(&legacy), "NATIONAL_ID[zh-TW/arc_legacy]"),
+        ];
+        for (wide, expected) in cases {
+            let text = format!("身分證 {wide} 已建檔");
+            let found = scan(&text);
+            assert_eq!(found.len(), 1, "{wide} was missed");
+            assert_eq!(found[0].category().to_string(), expected, "{wide}");
+            let span = found[0].span();
+            assert_eq!(&text[span.start()..span.end()], wide);
+            assert!(text.is_char_boundary(span.start()) && text.is_char_boundary(span.end()));
+        }
     }
 
     /// A context keyword raises confidence; its absence must not suppress the
