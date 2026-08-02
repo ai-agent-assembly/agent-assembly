@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353: 2021-form 居留證 (residence certificate). Uses the IDENTICAL checksum to the national ID and differs only in the leading digit, so a validator filtering d1 in {1,2} passes every national-ID vector and misses every foreign resident. Synthetic: A -> 1; body 80000000 contributes 8*8 = 64; check digit 5 gives 70.",
+  "input_text": "居留證統一證號 A800000005 於系統中建檔。",
+  "expected_findings": [
+    {
+      "category": "NATIONAL_ID[zh-TW/arc_new]",
+      "offset": 22,
+      "end": 32,
+      "confidence": "high"
+    }
+  ],
+  "expected_redacted": "居留證統一證號 [REDACTED] 於系統中建檔。"
+}
