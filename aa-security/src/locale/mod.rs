@@ -7,8 +7,25 @@
 //! variant would grow it without bound while forcing a rewrite of any policy
 //! that names detectors individually. A locale pack therefore produces
 //! [`CanonicalFinding`](crate::canonical::CanonicalFinding)s directly, carrying
-//! a locale-qualified category under a base a policy already names —
-//! `NATIONAL_ID[zh-TW/arc_new]` is matched by a rule that says `NATIONAL_ID`.
+//! a locale-qualified category whose **base** is the coarse handle a policy is
+//! intended to name: `NATIONAL_ID[zh-TW/arc_new]` and `NATIONAL_ID[en-US/ssn]`
+//! share the base `NATIONAL_ID`.
+//!
+//! That last sentence describes the design, **not a mechanism that exists
+//! today**, and the distinction is worth stating plainly because an earlier
+//! draft of this paragraph did not. No policy code matches on
+//! [`CategoryBase`](crate::canonical::CategoryBase); nothing outside
+//! `crate::canonical` calls
+//! [`CanonicalCategory::base`](crate::canonical::CanonicalCategory::base); and
+//! `"NATIONAL_ID".parse::<CanonicalCategory>()` **fails**, because the parse
+//! domain is the catalogue of whole categories and a bare base is not one of
+//! them (deliberately — see
+//! [`ParseCategoryError`](crate::canonical::ParseCategoryError), which explains
+//! why degrading to a partial category is how a confident-looking wrong answer
+//! gets made). Base-level matching is AAASM-5355's to build.
+//!
+//! What this pack does provide today is the categories, correctly qualified, so
+//! that when that matching arrives it does not require a taxonomy change.
 //!
 //! The consequence to keep in mind is that these findings have **no
 //! `CredentialKind` and no `[REDACTED:<kind>]` label**. They redact to the
