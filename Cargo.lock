@@ -321,6 +321,7 @@ version = "0.0.1-rc.6"
 dependencies = [
  "aa-auth",
  "aa-core",
+ "aa-policy",
  "aa-proto",
  "aa-runtime",
  "aa-sdk-client",
@@ -442,6 +443,32 @@ dependencies = [
  "tonic",
  "uuid",
  "wat",
+]
+
+[[package]]
+name = "aa-policy"
+version = "0.0.1-rc.6"
+dependencies = [
+ "aa-core",
+ "aa-security",
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "dirs",
+ "hex",
+ "humantime",
+ "regex",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.11.0",
+ "similar 3.1.1",
+ "strsim",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

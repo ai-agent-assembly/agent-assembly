@@ -18,7 +18,7 @@ use aa_security::policy::{
     PolicyDocument as CanonPolicyDocument, ToolRule as CanonToolRule,
 };
 
-use crate::policy::document::PolicyDocument;
+use crate::document::PolicyDocument;
 
 /// Map an `aa_core::Capability` onto the canonical `aa_security` capability.
 ///
@@ -96,8 +96,8 @@ mod tests {
     use aa_core::CapabilitySet;
 
     use super::*;
-    use crate::policy::document::ToolPolicy;
-    use crate::policy::scope::PolicyScope;
+    use crate::document::ToolPolicy;
+    use crate::scope::PolicyScope;
 
     fn base_doc() -> PolicyDocument {
         PolicyDocument {
@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn projects_network_and_sorted_tools() {
         let mut doc = base_doc();
-        doc.network = Some(crate::policy::document::NetworkPolicy {
+        doc.network = Some(crate::document::NetworkPolicy {
             allowlist: vec!["api.openai.com".to_string()],
         });
         doc.tools.insert(

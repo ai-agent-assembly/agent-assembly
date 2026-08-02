@@ -33,6 +33,7 @@ include = [
 
 [dependencies]
 aa-core      = { path = "../aa-core", version = "0.0.1-rc.6", features = ["serde"] }
+aa-policy    = { path = "../aa-policy", version = "0.0.1-rc.6" }
 # AAASM-3907: the shared HTTP auth framework (AuthConfig / ApiKeyStore /
 # JwtVerifier / RateLimiter / RequireAdmin) extracted to a leaf crate by
 # AAASM-3899. aa-gateway IS in the crates.io publish set, so this path-dep MUST

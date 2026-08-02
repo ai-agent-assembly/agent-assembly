@@ -15,7 +15,7 @@ use aa_core::identity::AgentId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
-use crate::policy::error::PolicyParseError;
+use crate::error::PolicyParseError;
 
 /// String identifier for an organisation. May be promoted to a newtype later.
 pub type OrgId = String;
@@ -66,7 +66,7 @@ pub type TeamId = String;
 /// ```
 ///
 /// Malformed inputs surface as
-/// [`PolicyParseError::InvalidScope`](crate::policy::error::PolicyParseError::InvalidScope):
+/// [`PolicyParseError::InvalidScope`](crate::error::PolicyParseError::InvalidScope):
 ///
 /// ```
 /// use aa_gateway::policy::scope::PolicyScope;
@@ -154,7 +154,7 @@ impl<'de> Deserialize<'de> for PolicyScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::error::PolicyParseError;
+    use crate::error::PolicyParseError;
 
     const AGENT_UUID: &str = "01234567-89ab-cdef-0123-456789abcdef";
     const AGENT_BYTES: [u8; 16] = [

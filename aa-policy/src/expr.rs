@@ -53,7 +53,7 @@
 
 use aa_core::{GovernanceAction, GovernanceLevel};
 
-use crate::policy::context::{ContextError, PolicyContext};
+use crate::context::{ContextError, PolicyContext};
 
 use strsim;
 
@@ -63,7 +63,7 @@ use strsim;
 /// evaluated.  Any identifier in a `requires_approval_if` expression that is
 /// not in this list and is not a combinator, operator, governance-level literal,
 /// or numeric literal will be rejected with
-/// [`PolicyParseError::UnknownVariable`](crate::policy::error::PolicyParseError::UnknownVariable).
+/// [`PolicyParseError::UnknownVariable`](crate::error::PolicyParseError::UnknownVariable).
 pub(crate) const KNOWN_VARIABLES: &[&str] = &[
     "tool",
     "path",
@@ -1281,7 +1281,7 @@ fn suggest_variable(name: &str) -> Option<&'static str> {
 /// Returns [`PolicyParseError::UnknownVariable`] on the first unknown name
 /// found, with a typo suggestion when the Levenshtein distance to the closest
 /// known variable is ≤ 2.
-pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::policy::error::PolicyParseError> {
+pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::error::PolicyParseError> {
     for name in extract_field_names(expr) {
         // Dynamic structural identifiers (args.*, tool_result, tool_result.*)
         // have no static key list — defer their null-safety to the runtime.
@@ -1291,7 +1291,7 @@ pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::policy::error:
         if !KNOWN_VARIABLES.contains(&name.as_str()) {
             let suggestion = suggest_variable(&name).map(str::to_owned);
             let available = KNOWN_VARIABLES.iter().map(|s| s.to_string()).collect();
-            return Err(crate::policy::error::PolicyParseError::UnknownVariable {
+            return Err(crate::error::PolicyParseError::UnknownVariable {
                 name,
                 suggestion,
                 available,
@@ -1445,7 +1445,7 @@ pub fn evaluate_clause(
 /// Action-derived fields (`tool`, `path`, `url`, `method`, `command`,
 /// `governance_level`, `args.*`, `tool_result*`, `source.*`, `target.*`) are
 /// already captured by the cache key and are NOT treated as live context.
-pub(crate) fn references_live_context(expr: &str) -> bool {
+pub fn references_live_context(expr: &str) -> bool {
     let Some(tokens) = tokenize(expr) else {
         return false;
     };
@@ -1640,8 +1640,8 @@ mod tests {
         }
     }
 
-    fn fake_ctx(depth: Option<u32>) -> crate::policy::context::FakePolicyContext {
-        crate::policy::context::FakePolicyContext {
+    fn fake_ctx(depth: Option<u32>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
             depth,
             ..Default::default()
         }
@@ -1665,8 +1665,8 @@ mod tests {
         assert!(evaluate("agent.depth == 0", &tool("any"), None, Some(&ctx)));
     }
 
-    fn fake_team_ctx(active: Option<u64>) -> crate::policy::context::FakePolicyContext {
-        crate::policy::context::FakePolicyContext {
+    fn fake_team_ctx(active: Option<u64>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
             team_active: active,
             ..Default::default()
         }
@@ -1684,8 +1684,8 @@ mod tests {
         assert!(!evaluate("team.active_agents > 5", &tool("any"), None, Some(&ctx)));
     }
 
-    fn fake_budget_ctx(remaining: Option<f64>) -> crate::policy::context::FakePolicyContext {
-        crate::policy::context::FakePolicyContext {
+    fn fake_budget_ctx(remaining: Option<f64>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
             team_budget: remaining,
             ..Default::default()
         }
@@ -1703,8 +1703,8 @@ mod tests {
         assert!(!evaluate("team.budget_remaining < 100", &tool("any"), None, Some(&ctx)));
     }
 
-    fn fake_child_ctx(tools: Vec<&str>) -> crate::policy::context::FakePolicyContext {
-        crate::policy::context::FakePolicyContext {
+    fn fake_child_ctx(tools: Vec<&str>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
             child_tools: tools.into_iter().map(String::from).collect(),
             ..Default::default()
         }
@@ -1733,7 +1733,7 @@ mod tests {
         // AAASM-3995(b): team_active = None (unresolvable in this approval
         // context) must FAIL CLOSED — the guard fires (require approval) rather
         // than silently letting the action run unguarded.
-        let ctx = crate::policy::context::FakePolicyContext::default();
+        let ctx = crate::context::FakePolicyContext::default();
         assert!(evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
     }
 
@@ -1770,8 +1770,8 @@ mod tests {
     fn fake_tier_ctx(
         agent: Option<aa_core::RiskTier>,
         parent: Option<aa_core::RiskTier>,
-    ) -> crate::policy::context::FakePolicyContext {
-        crate::policy::context::FakePolicyContext {
+    ) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
             agent_risk_tier: agent,
             parent_risk_tier: parent,
             ..Default::default()
@@ -1816,8 +1816,8 @@ mod tests {
 
     // ── child.risk_tier tests ────────────────────────────────────────────────
 
-    fn fake_child_tier_ctx(child: Option<aa_core::RiskTier>) -> crate::policy::context::FakePolicyContext {
-        crate::policy::context::FakePolicyContext {
+    fn fake_child_tier_ctx(child: Option<aa_core::RiskTier>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
             child_risk_tier: child,
             ..Default::default()
         }
@@ -1878,7 +1878,7 @@ mod tests {
     fn validate_variables_suggests_typo_correction() {
         let err = validate_variables("agent.depht > 0").unwrap_err();
         match err {
-            crate::policy::error::PolicyParseError::UnknownVariable { name, suggestion, .. } => {
+            crate::error::PolicyParseError::UnknownVariable { name, suggestion, .. } => {
                 assert_eq!(name, "agent.depht");
                 assert_eq!(suggestion.as_deref(), Some("agent.depth"));
             }
@@ -1890,7 +1890,7 @@ mod tests {
     fn validate_variables_no_suggestion_when_too_different() {
         let err = validate_variables("completely_unknown > 0").unwrap_err();
         match err {
-            crate::policy::error::PolicyParseError::UnknownVariable { suggestion, .. } => {
+            crate::error::PolicyParseError::UnknownVariable { suggestion, .. } => {
                 assert!(
                     suggestion.is_none(),
                     "should not suggest a match for a very different name"
@@ -1902,8 +1902,8 @@ mod tests {
 
     // ── agent.age and team.parallel_agents tests ─────────────────────────────
 
-    fn fake_age_ctx(age_secs: Option<u64>) -> crate::policy::context::FakePolicyContext {
-        crate::policy::context::FakePolicyContext {
+    fn fake_age_ctx(age_secs: Option<u64>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
             agent_age_secs: age_secs,
             ..Default::default()
         }
@@ -1925,7 +1925,7 @@ mod tests {
 
     #[test]
     fn team_parallel_agents_gt_matches() {
-        let ctx = crate::policy::context::FakePolicyContext {
+        let ctx = crate::context::FakePolicyContext {
             team_active: Some(8),
             ..Default::default()
         };
@@ -2070,7 +2070,7 @@ mod tests {
     fn validate_variables_suggests_source_team_id_for_typo() {
         let err = validate_variables(r#"source.team_d == "team-alpha""#).unwrap_err();
         match err {
-            crate::policy::error::PolicyParseError::UnknownVariable { name, suggestion, .. } => {
+            crate::error::PolicyParseError::UnknownVariable { name, suggestion, .. } => {
                 assert_eq!(name, "source.team_d");
                 assert_eq!(suggestion.as_deref(), Some("source.team_id"));
             }
@@ -2103,8 +2103,8 @@ mod tests {
         parent_id: Option<&str>,
         team_id: Option<&str>,
         children_count: Option<u32>,
-    ) -> crate::policy::context::FakePolicyContext {
-        crate::policy::context::FakePolicyContext {
+    ) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
             agent_parent_id: parent_id.map(String::from),
             agent_team_id: team_id.map(String::from),
             agent_children_count: children_count,
@@ -2198,8 +2198,8 @@ mod tests {
 
     // ── agent.is_root, agent.is_leaf tests ───────────────────────────────────
 
-    fn fake_depth_children_ctx(depth: Option<u32>, children: Option<u32>) -> crate::policy::context::FakePolicyContext {
-        crate::policy::context::FakePolicyContext {
+    fn fake_depth_children_ctx(depth: Option<u32>, children: Option<u32>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
             depth,
             agent_children_count: children,
             ..Default::default()
@@ -2256,8 +2256,8 @@ mod tests {
     // agent.depth and team.budget_remaining with AND — testing the same
     // compound-condition path.
 
-    fn fake_depth_budget_ctx(depth: Option<u32>, budget: Option<f64>) -> crate::policy::context::FakePolicyContext {
-        crate::policy::context::FakePolicyContext {
+    fn fake_depth_budget_ctx(depth: Option<u32>, budget: Option<f64>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
             depth,
             team_budget: budget,
             ..Default::default()
