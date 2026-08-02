@@ -46,6 +46,7 @@ aa-security          = { path = "../aa-security", version = "0.0.1-rc.6", featur
 aa-devtool           = { path = "../aa-devtool", version = "0.0.1-rc.6" }
 # strip-for-publish:end devtool
 aa-gateway           = { path = "../aa-gateway", version = "0.0.1-rc.6" }
+aa-policy            = { path = "../aa-policy", version = "0.0.1-rc.6" }
 # AAASM-5280: `aasm integrations` is a Developer Integration API client. The
 # reference client, the socket convention and the local enrolment file all live
 # in aa-runtime, and reimplementing any of them here would be the second

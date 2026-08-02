@@ -36,7 +36,7 @@ use aa_core::{PolicyDecision, PolicyDocument, PolicyRule};
 /// other dimension. There is no dedicated `permissive: true` switch, because a
 /// switch is easy to set without reading what it turns off — writing the
 /// wildcard out is the smallest thing that is unambiguously deliberate, and it
-/// validates through the same [`aa_gateway::policy::PolicyValidator`] as every
+/// validates through the same [`crate::PolicyValidator`] as every
 /// other policy rather than through a bypass.
 pub const ALLOW_ALL_TEMPLATE: &str = r#"apiVersion: agent-assembly/v1
 kind: Policy
@@ -342,7 +342,7 @@ pub fn load(source: &Path) -> PolicyResolution {
 ///
 /// Split out from [`load`] so classification is testable without a filesystem.
 pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
-    let validated = match aa_gateway::policy::PolicyValidator::from_yaml(yaml) {
+    let validated = match crate::PolicyValidator::from_yaml(yaml) {
         Ok(output) => output.document,
         Err(errors) => {
             return PolicyResolution::LoadFailed {
@@ -377,7 +377,7 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
 /// enforced — and labelling it permissive would understate the governance in
 /// place. The check is therefore conservative in the safe direction: it says
 /// "permissive" only when there is genuinely nothing left to enforce.
-fn is_explicit_allow_all(doc: &aa_gateway::policy::PolicyDocument) -> bool {
+fn is_explicit_allow_all(doc: &crate::PolicyDocument) -> bool {
     let tools_are_wildcard_allow = doc.tools.len() == 1
         && doc
             .tools
@@ -400,7 +400,7 @@ fn is_explicit_allow_all(doc: &aa_gateway::policy::PolicyDocument) -> bool {
 /// cap or an egress allowlist — those are enforced by the gateway and the proxy.
 /// Rules are sorted so the rendered settings are byte-stable across runs; the
 /// source is a `HashMap` and would otherwise reorder on every launch.
-fn project_rules(doc: &aa_gateway::policy::PolicyDocument) -> PolicyDocument {
+fn project_rules(doc: &crate::PolicyDocument) -> PolicyDocument {
     let mut rules: Vec<PolicyRule> = doc
         .tools
         .iter()

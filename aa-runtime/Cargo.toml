@@ -20,6 +20,7 @@ integration-test = []
 
 [dependencies]
 aa-core                     = { path = "../aa-core", version = "0.0.1-rc.6", features = ["serde"] }
+aa-policy                   = { path = "../aa-policy", version = "0.0.1-rc.6" }
 # strip-for-publish:begin devtool
 # AAASM-5280: the DI-API lifecycle service registers the built-in dev-tool
 # adapters (ADR 0030 §6.1 — explicit construction into an in-memory registry at

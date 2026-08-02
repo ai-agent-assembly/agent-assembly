@@ -99,6 +99,7 @@ dependencies = [
  "aa-core",
  "aa-devtool",
  "aa-gateway",
+ "aa-policy",
  "aa-proto",
  "aa-proxy",
  "aa-runtime",
@@ -451,6 +452,7 @@ version = "0.0.1-rc.6"
 dependencies = [
  "aa-core",
  "aa-security",
+ "anyhow",
  "async-trait",
  "chrono",
  "chrono-tz",
@@ -523,6 +525,7 @@ dependencies = [
  "aa-devtool-claude-code",
  "aa-ebpf",
  "aa-ebpf-common",
+ "aa-policy",
  "aa-proto",
  "aa-security",
  "aa-storage-sqlite-buffer",
