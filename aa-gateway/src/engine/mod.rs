@@ -2834,6 +2834,215 @@ mod tests {
         assert!(!redacted.contains("A800000005"), "the identifier survived: {redacted}");
     }
 
+    // ── AAASM-5354: the cascade path is a second enforcement path ────────────
+    //
+    // `PolicyEngine::evaluate` has two Stage 6 implementations, not one: it
+    // delegates to `evaluate_primary` while the scope index is empty and to
+    // `evaluate_with_cascade` once any scoped document is registered. Both are
+    // production enforcement paths. A test that only exercised the first would
+    // pass with the second still running an un-ported detector — which is the
+    // shape of wrong-reason pass this Epic keeps producing — so every property
+    // proved of the primary path above is proved again here.
+
+    /// A cascade engine: registering a scoped document makes `evaluate` route
+    /// through `evaluate_with_cascade` rather than `evaluate_primary`.
+    fn make_cascade_engine(docs: Vec<PolicyDocument>) -> PolicyEngine {
+        let mut engine = make_engine(empty_doc());
+        for doc in docs {
+            engine.load_policy(doc);
+        }
+        engine
+    }
+
+    fn scoped(scope: crate::policy::scope::PolicyScope, data: Option<DataPolicy>) -> PolicyDocument {
+        let mut doc = empty_doc();
+        doc.scope = scope;
+        doc.data = data;
+        doc
+    }
+
+    /// Guards every cascade test below: if `evaluate` ever stopped routing to
+    /// `evaluate_with_cascade` for a scope-indexed engine, those tests would be
+    /// re-proving the primary path and silently testing nothing new.
+    #[test]
+    fn a_scope_indexed_engine_really_routes_through_the_cascade_path() {
+        use crate::policy::scope::PolicyScope;
+        // `policy_doc_id` is attributed only by the cascade path; the primary
+        // path documents that it returns `None` because no cascade document
+        // decided.
+        let engine = make_cascade_engine(vec![scoped(PolicyScope::Global, None)]);
+        let result = engine.evaluate(&make_ctx(), &tool_call("any", "harmless"));
+        assert!(
+            result.policy_doc_id.is_some(),
+            "this engine did not take the cascade path, so the cascade tests below prove nothing"
+        );
+        assert!(make_engine(empty_doc())
+            .evaluate(&make_ctx(), &tool_call("any", "harmless"))
+            .policy_doc_id
+            .is_none());
+    }
+
+    /// **The cascade production-path test.** Falsification: reverting
+    /// `evaluate_with_cascade`'s Stage 6 to the pre-port
+    /// `collect_cascade_custom_findings` merge makes this fail while every
+    /// primary-path test stays green.
+    #[test]
+    fn evaluate_with_cascade_invokes_the_detection_port_on_the_production_path() {
+        use crate::policy::scope::PolicyScope;
+        let engine = make_cascade_engine(vec![scoped(PolicyScope::Global, None)]);
+        let action = tool_call("any", "the payload contains SENTINEL somewhere");
+
+        let result = test_double::with(FixedPass::reporting("SENTINEL"), || {
+            engine.evaluate(&make_ctx(), &action)
+        });
+
+        let recognizers: Vec<_> = result
+            .canonical_findings
+            .iter()
+            .map(|f| (f.provenance().recognizer, f.provenance().version))
+            .collect();
+        assert!(
+            recognizers.contains(&(aa_security::canonical::Recognizer::ZhTwLocalePack, "test-double")),
+            "the cascade path did not run the installed pass — its seam is disconnected. got {recognizers:?}"
+        );
+    }
+
+    /// Fail-closed on the cascade path too.
+    #[test]
+    fn a_failing_detection_pass_denies_on_the_cascade_path() {
+        use crate::policy::scope::PolicyScope;
+        let engine = make_cascade_engine(vec![scoped(PolicyScope::Global, None)]);
+        let action = tool_call("any", "anything at all");
+        assert_eq!(engine.evaluate(&make_ctx(), &action).decision, PolicyResult::Allow);
+
+        let result = test_double::with(
+            FixedPass::failing(detection::DetectionError::UnknownLocalePack { tag: "ja-JP".into() }),
+            || engine.evaluate(&make_ctx(), &action),
+        );
+        match result.decision {
+            PolicyResult::Deny { ref reason } => assert!(reason.contains("ja-JP"), "{reason}"),
+            other => panic!("the cascade path must deny on a failed pass, got {other:?}"),
+        }
+    }
+
+    /// Behaviour identity for the cascade path, whose pass 2 spans every
+    /// document in the resolved cascade rather than only the Global one.
+    /// Compared against a transcription of `collect_cascade_custom_findings`
+    /// as it stood at 3e8cb4955.
+    #[test]
+    fn the_cascade_merge_is_identical_to_the_pre_port_cascade_merge() {
+        use crate::policy::scope::PolicyScope;
+        let agent = aa_core::identity::AgentId::from_bytes([1u8; 16]);
+        let global_pattern = r"api_key=[A-Za-z0-9]+";
+        let agent_pattern = r"secret-\w+";
+
+        let engine = make_cascade_engine(vec![
+            scoped(
+                PolicyScope::Global,
+                Some(DataPolicy {
+                    sensitive_patterns: vec![global_pattern.to_string()],
+                    credential_action: CredentialAction::default(),
+                    locale_packs: vec![],
+                }),
+            ),
+            scoped(
+                PolicyScope::Agent(agent),
+                Some(DataPolicy {
+                    sensitive_patterns: vec![agent_pattern.to_string()],
+                    credential_action: CredentialAction::default(),
+                    locale_packs: vec![],
+                }),
+            ),
+        ]);
+
+        let text = "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 api_key=abc123 secret-zzz";
+        let result = engine.evaluate(&make_ctx(), &tool_call("any", text));
+
+        // The pre-port merge: built-in scan, then every cascade doc's patterns
+        // in cascade order, then a stable sort by offset.
+        let scanner = aa_security::CredentialScanner::new();
+        let mut expected = scanner.scan(text).findings;
+        for pattern in [global_pattern, agent_pattern] {
+            let re = regex::Regex::new(pattern).unwrap();
+            for m in re.find_iter(text) {
+                expected.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
+            }
+        }
+        expected.sort_by_key(|f| f.offset);
+
+        assert_eq!(result.credential_findings, expected, "cascade merge differs");
+        assert_eq!(
+            result.redacted_payload,
+            Some(
+                aa_security::ScanResult {
+                    findings: expected.clone()
+                }
+                .redact(text)
+            ),
+            "cascade redaction differs"
+        );
+        // Guard: both passes and both documents must actually have contributed,
+        // or the equality above is between two short lists that agree trivially.
+        assert!(
+            expected.len() >= 3
+                && expected
+                    .iter()
+                    .filter(|f| f.kind == aa_security::CredentialKind::Custom)
+                    .count()
+                    == 2,
+            "the cascade fixture stopped exercising both documents' patterns: {expected:?}"
+        );
+    }
+
+    /// A locale pack named by *any* document in the cascade runs, so a
+    /// narrow-scoped policy asking for a detector is not cancelled by a broader
+    /// one that is silent about it.
+    #[test]
+    fn a_locale_pack_named_by_one_cascade_document_runs_for_that_agent() {
+        use crate::policy::scope::PolicyScope;
+        let agent = aa_core::identity::AgentId::from_bytes([1u8; 16]);
+        let engine = make_cascade_engine(vec![
+            scoped(PolicyScope::Global, None),
+            scoped(
+                PolicyScope::Agent(agent),
+                Some(DataPolicy {
+                    sensitive_patterns: vec![],
+                    credential_action: CredentialAction::default(),
+                    locale_packs: vec!["zh-TW".to_string()],
+                }),
+            ),
+        ]);
+
+        let result = engine.evaluate(&make_ctx(), &tool_call("any", ZH_TW_ARC_TEXT));
+        assert_eq!(
+            result.canonical_findings.len(),
+            1,
+            "the cascade path did not run the pack the agent-scoped document asked for: {:?}",
+            result.canonical_findings
+        );
+        assert_eq!(
+            result.canonical_findings[0].provenance().recognizer,
+            aa_security::canonical::Recognizer::ZhTwLocalePack
+        );
+        let redacted = result.redacted_payload.expect("a finding must redact");
+        assert!(!redacted.contains("A800000005"), "the identifier survived: {redacted}");
+    }
+
+    /// And the same default: a cascade in which no document names a pack does
+    /// not run one.
+    #[test]
+    fn the_cascade_path_runs_no_locale_pack_unless_a_document_names_one() {
+        use crate::policy::scope::PolicyScope;
+        let engine = make_cascade_engine(vec![scoped(PolicyScope::Global, None)]);
+        let result = engine.evaluate(&make_ctx(), &tool_call("any", ZH_TW_ARC_TEXT));
+        assert!(
+            result.canonical_findings.is_empty(),
+            "the cascade path ran the zh-TW pack unasked: {:?}",
+            result.canonical_findings
+        );
+        assert!(result.redacted_payload.is_none());
+    }
+
     // ── AAASM-5354: behaviour identity of the ungated merge ──────────────────
 
     /// The pre-port Stage 6 merge, transcribed from `engine/mod.rs` at
