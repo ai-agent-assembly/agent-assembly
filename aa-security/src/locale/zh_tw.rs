@@ -41,8 +41,39 @@
 //! What that 22% *is* narrowed by is the boundary rule: a bare 統一編號 must sit
 //! in prose or be labelled, so the machine-delimited shapes that dominate agent
 //! traffic — `{"order_id":12345675}`, `?id=12345675&`, `/logs/20260801/`,
-//! `ORDER_ID=12345675` — are not candidates at all. See
-//! `is_tax_id_prose_boundary` for why that is an allow-list.
+//! `ORDER_ID=12345675`, and their full-width equivalents `訂單編號：12345675`,
+//! `值＝12345675`, `３．12345675` — are not candidates at all. See
+//! `is_tax_id_prose_boundary` for why that is an allow-list, and
+//! `is_fullwidth_ascii_punctuation` for why `：＝，．` count as machine
+//! punctuation while `（）` and `「」` do not.
+//!
+//! Two shapes deliberately remain inside it, pinned by
+//! `han_labelled_whitespace_and_cjk_quotes_remain_accepted_residuals`: a Han
+//! word followed by whitespace (`統計\t12345675` in a TSV is the same shape as
+//! `批次 20260801` in a sentence, and the acceptance criteria forbid requiring a
+//! keyword), and a value in CJK quotation marks.
+//!
+//! ## What the prose rule costs outside CJK script
+//!
+//! A label is never required in **CJK-script** prose. It is effectively required
+//! in **Latin-script** prose, because the rule looks for a non-ASCII character
+//! to the left: `The tax id is 12345675.` is found only via its label, and
+//! `build 12345675 passed` is not found at all.
+//!
+//! That is a decision, not an oversight. Latin-script text is where
+//! `build 12345675 passed`, `order 12345675 shipped` and
+//! `run 12345675 completed` live — shapes an unlabelled recognizer cannot
+//! distinguish from a real identifier, in the highest-volume part of agent
+//! traffic. This Epic exists because a detector firing on ordinary content got a
+//! Chinese-speaking agent denied outright under `credential_action: Block`; a
+//! rule reporting one in five of every English sentence's 8-digit numbers would
+//! be switched off, and a detector that is off has no recall at all.
+//!
+//! The recall is recoverable and cheap: `TAX_KEYWORDS` carries romanised labels
+//! (`tax id`, `tax number`, `business number`, `uniform invoice`, `vat`) beside
+//! the Chinese ones, so a labelled value is found in any script and any format.
+//! What is given up is only the unlabelled Latin case, where the sole evidence
+//! is a checksum that is wrong 22% of the time.
 //!
 //! ## A known collision, not a residual
 //!
@@ -121,11 +152,43 @@ const BUSINESS_ID: CanonicalCategory = CanonicalCategory::with_locale(Base::TaxI
 /// whole point: `統編12345675` is how the identifier is written, and treating
 /// Han as a word character — which every `\b`-based implementation does — makes
 /// this recognizer miss the common case.
+///
+/// The **full-width** forms `．` and `，` play the same decimal-point and
+/// separator roles and are not listed here, which looks like an omission and is
+/// not. Adding them would reject `A200000003，` — an identity number followed by
+/// ordinary Chinese punctuation, which is prose, not a fragment. The digit-run
+/// case they actually threaten (`３．12345675`) belongs to 統一編號, whose
+/// boundary rule is an allow-list that already excludes every full-width
+/// punctuation character; see `is_tax_id_prose_boundary`. The distinction is
+/// which recognizer is weak enough to need the stricter rule, not which code
+/// point is involved.
 fn is_fragment_neighbour(c: char) -> bool {
     c.is_ascii_alphanumeric()
         || ascii_digit_of(c).is_some()
         || ascii_uppercase_of(c).is_some()
         || matches!(c, '.' | ',' | '+')
+}
+
+/// Whether `c` is the full-width rendering of an ASCII punctuation character.
+///
+/// U+FF01–FF5E map one-to-one onto ASCII 0x21–0x7E, so `：＝，．；／＿－＃＆？`
+/// are the *same characters* as `:=,.;/_-#&?` — they are what a CJK input method
+/// produces, and they play exactly the same delimiter roles in zh-TW logs, form
+/// dumps and TSV exports.
+///
+/// The digit and letter blocks (FF10–FF19, FF21–FF3A, FF41–FF5A) are excluded
+/// from these ranges because they are values, not punctuation, and are handled
+/// by `ascii_digit_of` / `ascii_uppercase_of`.
+///
+/// **The full-width parentheses are deliberately not punctuation here.** `（）`
+/// enclose a value in running Chinese prose the way `「」` do — `（10000004）`
+/// is how a number is parenthesised in a sentence, not how a machine delimits a
+/// field. The distinction this function draws is *separating* punctuation versus
+/// *enclosing* punctuation, not ASCII versus non-ASCII.
+fn is_fullwidth_ascii_punctuation(c: char) -> bool {
+    matches!(c,
+        '\u{FF01}'..='\u{FF0F}' | '\u{FF1A}'..='\u{FF20}' | '\u{FF3B}'..='\u{FF40}' | '\u{FF5B}'..='\u{FF65}')
+        && !matches!(c, '\u{FF08}' | '\u{FF09}')
 }
 
 /// The ASCII uppercase equivalent of `c` — `c` itself for `'A'..='Z'`, and the
@@ -162,10 +225,27 @@ fn left_boundary_ok(text: &str, start: usize) -> bool {
 }
 
 /// Whether the character at byte offset `end` permits a candidate to end there.
+///
+/// A full stop gets a second look. `.` is a fragment neighbour because it is the
+/// decimal point, but that only holds when a digit follows it: `12345675.5` is
+/// one number, while `12345675.` is a value at the end of a sentence. Treating
+/// the two alike made every identifier that ends a Latin-script sentence
+/// invisible — including a labelled one, so no keyword could recover it.
+///
+/// The same relaxation is deliberately **not** extended to `,`: a bare number
+/// followed by a comma is a CSV or argument-list field far more often than it is
+/// a sentence clause, and that is the higher-volume shape in agent traffic.
 fn right_boundary_ok(text: &str, end: usize) -> bool {
-    match text[end..].chars().next() {
-        Some(c) => !is_fragment_neighbour(c),
+    let mut following = text[end..].chars();
+    match following.next() {
         None => true,
+        Some('.') => match following.next() {
+            // `12345675.5` — the run continues, so the candidate is a fragment.
+            // `12345675.log` likewise: a dot glued to a word is a filename.
+            Some(next) => ascii_digit_of(next).is_none() && !next.is_ascii_alphanumeric(),
+            None => true,
+        },
+        Some(c) => !is_fragment_neighbour(c),
     }
 }
 
@@ -443,7 +523,11 @@ fn is_tax_id_prose_boundary(c: Option<char>) -> bool {
     match c {
         None => true,
         Some(c) => {
-            c.is_whitespace() || (!c.is_ascii() && ascii_digit_of(c).is_none() && ascii_uppercase_of(c).is_none())
+            c.is_whitespace()
+                || (!c.is_ascii()
+                    && !is_fullwidth_ascii_punctuation(c)
+                    && ascii_digit_of(c).is_none()
+                    && ascii_uppercase_of(c).is_none())
         }
     }
 }
@@ -458,10 +542,32 @@ fn is_tax_id_prose_boundary(c: Option<char>) -> bool {
 ///
 /// The prose-or-labelled rule is the second half, and it is why this recognizer
 /// does not share the module's boundary test — see `is_tax_id_prose_boundary`.
-/// The context keyword is still never *required*: an unlabelled identifier in
-/// prose is reported, which is what the acceptance criteria ask for. What the
-/// keyword buys is the ability to appear inside a machine-delimited structure,
-/// where an unlabelled 8-digit run is far more likely to be an order number.
+///
+/// # What "in prose" costs, stated exactly
+///
+/// A label is never required **in CJK-script prose**: `統編12345675`,
+/// `統一編號 10000004`, `（10000004）` and a bare `12345675` are all reported
+/// unlabelled, which is what the acceptance criteria ask for.
+///
+/// It **is** effectively required in Latin-script prose, because the rule looks
+/// for a non-ASCII character to the left. `The tax id is 12345675.` is found
+/// only via its label; `build 12345675 passed` is not found at all.
+///
+/// That is a deliberate trade, not an oversight. The checksum admits 22% of all
+/// 8-digit strings, and Latin-script text is where `build 12345675 passed`,
+/// `order 12345675 shipped` and `run 12345675 completed` live — shapes an
+/// unlabelled recognizer cannot tell from a real identifier, in the highest
+/// volume part of agent traffic. This Epic exists because a detector that fires
+/// on ordinary content got a Chinese-speaking agent denied outright under
+/// `credential_action: Block`; a rule that reports one in five of every English
+/// sentence's 8-digit numbers would be switched off, and a detector that is off
+/// has no recall at all.
+///
+/// The recall is recoverable and cheap: [`TAX_KEYWORDS`] carries romanised
+/// labels (`tax id`, `tax number`, `business number`, `uniform invoice`, `vat`)
+/// alongside the Chinese ones, so a labelled value is found in **any** script
+/// and **any** format. What is given up is only the unlabelled Latin case, where
+/// there is no evidence beyond a 22%-accurate checksum.
 fn scan_business_id(text: &str, start: usize) -> Option<(CanonicalCategory, usize)> {
     let (end, digits) = read_digits(text, start, 8)?;
     if !right_boundary_ok(text, end) {
@@ -477,7 +583,7 @@ fn scan_business_id(text: &str, start: usize) -> Option<(CanonicalCategory, usiz
     let in_prose = is_tax_id_prose_boundary(text[..start].chars().next_back())
         && is_tax_id_prose_boundary(text[end..].chars().next())
         && is_tax_id_prose_boundary(text[..start].chars().rev().find(|c| !c.is_whitespace()));
-    if !in_prose && !has_context_keyword(text, start) {
+    if !in_prose && !has_context_keyword(text, start, BUSINESS_ID) {
         return None;
     }
     business_id_era(&digits).map(|_| (BUSINESS_ID, end))
@@ -645,23 +751,51 @@ fn scan_phone_number(text: &str, start: usize) -> Option<(CanonicalCategory, usi
 /// Labels that, immediately before a candidate, make it far likelier to be the
 /// identifier its shape suggests.
 ///
+/// **Split per category rather than pooled.** Consulting the union let a *phone*
+/// label exempt and corroborate a *tax number*: `電話 0912345678 order_id=12345675`
+/// — an ordinary zh-TW contact record — emitted a spurious `TAX_IDENTIFIER`,
+/// because 電話 sat inside the tax candidate's window. A label is evidence about
+/// the thing it names and about nothing else, in both of the roles a keyword
+/// plays here (exempting a value from the prose rule, and raising its
+/// confidence band).
+///
 /// Both spellings of 身分證/身份證 are present: the second is a common
 /// misspelling that appears constantly in real form data, and omitting it would
-/// silently drop the confidence signal on a large share of genuine hits.
-const CONTEXT_KEYWORDS: &[&str] = &[
-    "身分證",
-    "身份證",
-    "居留證",
-    "統一證號",
+/// silently drop the signal on a large share of genuine hits.
+const IDENTITY_KEYWORDS: &[&str] = &["身分證", "身份證", "居留證", "統一證號"];
+
+/// Labels for 統一編號.
+///
+/// The ASCII entries exist because a Taiwanese business identifier is routinely
+/// written in English-language text — invoices, contracts and agent payloads
+/// describing a Taiwanese counterparty. Since an *unlabelled* 8-digit run in
+/// Latin-script prose is not recognised (see `scan_business_id`), these labels
+/// are what recall in that setting rests on, and they cost nothing in precision:
+/// a label is exactly the evidence the checksum lacks.
+const TAX_KEYWORDS: &[&str] = &[
     "統一編號",
     "統編",
     "營業人",
-    "電話",
-    "手機",
-    "行動電話",
-    "市話",
-    "傳真",
+    "營利事業",
+    "tax id",
+    "tax no",
+    "tax number",
+    "business number",
+    "uniform invoice",
+    "vat",
 ];
+
+/// Labels for telephone numbers.
+const PHONE_KEYWORDS: &[&str] = &["電話", "手機", "行動電話", "市話", "傳真"];
+
+/// The keyword set that is evidence about `category`.
+fn keywords_for(category: CanonicalCategory) -> &'static [&'static str] {
+    match category.base() {
+        Base::NationalId => IDENTITY_KEYWORDS,
+        Base::PhoneNumber => PHONE_KEYWORDS,
+        _ => TAX_KEYWORDS,
+    }
+}
 
 /// How many bytes before a candidate are searched for a context keyword.
 ///
@@ -672,12 +806,37 @@ const CONTEXT_KEYWORDS: &[&str] = &[
 /// the previous sentence.
 const CONTEXT_WINDOW_BYTES: usize = 32;
 
-/// Whether a context keyword labels the candidate starting at `start`.
+/// Whether `window` contains `keyword` as a label rather than as a substring of
+/// something else.
 ///
-/// Confidence only — never a precondition. A checksum-valid identifier is
-/// reported whether or not it is labelled, because the label is a convention and
-/// the checksum is the evidence.
-fn has_context_keyword(text: &str, start: usize) -> bool {
+/// A CJK keyword is matched plainly: Han has no word boundaries to respect, and
+/// `統編` inside a longer Chinese word still concerns the same subject. An ASCII
+/// keyword must not be glued to other ASCII alphanumerics, or `vat` matches
+/// inside `private` and every English document exempts its 8-digit numbers.
+fn window_labels_with(window: &str, keyword: &str) -> bool {
+    if !keyword.is_ascii() {
+        return window.contains(keyword);
+    }
+    window.match_indices(keyword).any(|(i, _)| {
+        let before_ok = match window[..i].chars().next_back() {
+            Some(c) => !c.is_ascii_alphanumeric(),
+            None => true,
+        };
+        let after_ok = match window[i + keyword.len()..].chars().next() {
+            Some(c) => !c.is_ascii_alphanumeric(),
+            None => true,
+        };
+        before_ok && after_ok
+    })
+}
+
+/// Whether a label for `category` precedes the candidate starting at `start`.
+///
+/// Confidence only for the identity and phone recognizers — never a
+/// precondition, because a checksum-valid identifier is reported whether or not
+/// it is labelled. For 統一編號 it additionally exempts a value from the prose
+/// boundary rule; see `scan_business_id`.
+fn has_context_keyword(text: &str, start: usize, category: CanonicalCategory) -> bool {
     let window_start = text[..start]
         .char_indices()
         .rev()
@@ -685,8 +844,10 @@ fn has_context_keyword(text: &str, start: usize) -> bool {
         .map(|(i, _)| i)
         .last()
         .unwrap_or(start);
-    let window = &text[window_start..start];
-    CONTEXT_KEYWORDS.iter().any(|k| window.contains(k))
+    // Lower-cased once so the ASCII labels match regardless of how they are
+    // written; `to_lowercase` leaves Han untouched.
+    let window = text[window_start..start].to_lowercase();
+    keywords_for(category).iter().any(|k| window_labels_with(&window, k))
 }
 
 // ---------------------------------------------------------------------------
@@ -739,7 +900,7 @@ const fn corroborated(band: ConfidenceBand) -> ConfidenceBand {
 /// on a caller's payload.
 fn finding(text: &str, category: CanonicalCategory, start: usize, end: usize) -> Option<CanonicalFinding> {
     let (severity, base_band) = bands(category);
-    let confidence = if has_context_keyword(text, start) {
+    let confidence = if has_context_keyword(text, start, category) {
         corroborated(base_band)
     } else {
         base_band
@@ -1385,9 +1546,99 @@ mod tests {
             "[12345675]",
             "<12345675>",
             "12345675,",
+            // Full-width delimiters, which review found re-opened the identical
+            // defect in the one locale this pack exists for. `：＝，．` are what
+            // a CJK input method produces and are *the* delimiters in zh-TW
+            // logs, form dumps and TSV exports — the first version of this rule
+            // admitted any non-ASCII character as "prose", so all of these fired
+            // at 22%.
+            "日期：20260801",
+            "訂單編號：12345675",
+            "值＝12345675",
+            "狀態，12345675",
+            "３．12345675",
+            "２，12345675",
+            "編號；12345675",
+            "路徑／12345675",
+            "欄位＿12345675",
         ] {
             assert_eq!(categories(text), Vec::<String>::new(), "{text}");
         }
+    }
+
+    /// Two shapes that still fire, recorded as decisions rather than oversights.
+    ///
+    /// A Han word plus whitespace is exactly the shape of labelled prose
+    /// (`批次 20260801`), so a TSV whose column header is Chinese cannot be told
+    /// from a sentence — and the acceptance criteria forbid requiring a keyword.
+    /// CJK quotation marks *enclose* a value in running text rather than
+    /// separating fields, which is the same reason `（10000004）` is accepted.
+    #[test]
+    fn han_labelled_whitespace_and_cjk_quotes_remain_accepted_residuals() {
+        for text in ["統計\t12345675", "「12345675」", "統計 12345675"] {
+            assert_eq!(
+                categories(text),
+                ["TAX_IDENTIFIER[zh-TW/business_id]"],
+                "{text}: if this stops firing the residual has been narrowed — update the module docs"
+            );
+        }
+    }
+
+    /// A label is evidence about the thing it names and nothing else.
+    ///
+    /// Pooling the keyword sets let a *phone* label exempt a *tax number* from
+    /// the prose boundary rule, so an ordinary zh-TW contact record emitted a
+    /// spurious `TAX_IDENTIFIER` beside a correct `PHONE_NUMBER`.
+    #[test]
+    fn a_label_only_corroborates_its_own_category() {
+        assert_eq!(
+            categories("電話 0912345678 order_id=12345675"),
+            ["PHONE_NUMBER[zh-TW/mobile]"],
+            "a phone label must not exempt a machine-delimited 8-digit run"
+        );
+
+        // The converse: a tax label does not raise an identity number's band.
+        let id = synthetic_id('A', "20000000");
+        let labelled_wrong = scan(&format!("統一編號 {id}"));
+        assert_eq!(labelled_wrong.len(), 1);
+        assert_eq!(
+            labelled_wrong[0].confidence(),
+            ConfidenceBand::Medium,
+            "a tax label is not evidence about an identity number"
+        );
+    }
+
+    /// What the prose rule costs outside CJK script — decided, and pinned.
+    ///
+    /// An unlabelled 8-digit run in Latin-script prose is **not** reported. A
+    /// deliberate trade: the checksum admits 22% of all 8-digit strings, and
+    /// `build 12345675 passed` is indistinguishable from a real identifier in
+    /// the highest-volume part of agent traffic. Recall is recovered by the
+    /// romanised labels, which work in any script and any format.
+    #[test]
+    fn latin_script_prose_needs_a_label_and_the_labels_work() {
+        for text in [
+            "build 12345675 passed",
+            "order 12345675 shipped",
+            "run 12345675 completed",
+        ] {
+            assert_eq!(categories(text), Vec::<String>::new(), "{text}");
+        }
+        for text in [
+            "The tax id is 12345675.",
+            "VAT 12345675 applies",
+            "Tax Number 12345675 on file",
+            "uniform invoice 12345675",
+        ] {
+            assert_eq!(
+                categories(text),
+                ["TAX_IDENTIFIER[zh-TW/business_id]"],
+                "{text}: the romanised label is what recall in Latin prose rests on"
+            );
+        }
+        // An ASCII label must not match inside a longer word, or every English
+        // document exempts its 8-digit numbers.
+        assert_eq!(categories("private 12345675 field"), Vec::<String>::new());
     }
 
     /// The other half: prose and explicit labels still work, so the rule above
@@ -1464,13 +1715,13 @@ mod tests {
             "（０２）２３４５６７８９",
             "０９１２－３４５－６７８",
         ] {
-            let phone_findings: Vec<String> = scan(text)
-                .iter()
-                .filter(|f| f.category().base() == Base::PhoneNumber)
-                .map(|f| f.category().to_string())
-                .collect();
+            // The whole result, not just the phone findings. Filtering to
+            // `PhoneNumber` could not see a *cross-category* false positive —
+            // `（０２）２３４５６７８９` is quiet only because its local digits
+            // happen to fail the 統一編號 checksum, and a filtered assertion
+            // would have hidden a hit that did not.
             assert_eq!(
-                phone_findings,
+                categories(text),
                 Vec::<String>::new(),
                 "{text} is currently a known miss; if this now passes, update the docs \
                  and AAASM-5364 rather than deleting the test"
