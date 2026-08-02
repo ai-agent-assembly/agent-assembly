@@ -102,6 +102,29 @@ pub struct DataPolicy {
     /// [`CredentialAction::RedactOnly`] so policies that omit the field
     /// keep the historical behaviour.
     pub credential_action: CredentialAction,
+    /// AAASM-5354 — BCP-47 tags of the deterministic locale recognizer packs
+    /// this policy asks the gateway to run.
+    ///
+    /// Carried verbatim. This crate is a leaf and does not know which packs a
+    /// build contains; `aa_gateway::engine::detection::resolve_locale_packs`
+    /// owns the catalogue and fails closed on a tag it does not recognise,
+    /// rather than treating it as "no pack configured".
+    ///
+    /// **Empty by default, and that default is load-bearing.** Stage 6 runs on
+    /// the synchronous pre-action path, where `credential_action: block` denies
+    /// an agent's action before any byte leaves. AAASM-5353 measured the
+    /// 統一編號 (business-registration) checksum in the `zh-TW` pack at a
+    /// **22.0000%** residual: roughly one random eight-digit string in five
+    /// satisfies it. Enabling that by default would put a one-in-five-wrong
+    /// detector on the block path — which is this Epic's founding defect, a
+    /// detector firing on ordinary content and denying a Chinese-speaking
+    /// agent, aimed at a new population.
+    ///
+    /// So a pack is production-wired and genuinely reachable, but only when an
+    /// operator names it here, having accepted that residual for their
+    /// deployment. With the list empty the merged findings are byte-identical
+    /// to the pre-AAASM-5354 two-pass scan.
+    pub locale_packs: Vec<String>,
 }
 
 /// Per-policy approval escalation overrides.

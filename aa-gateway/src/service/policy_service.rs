@@ -1028,7 +1028,12 @@ impl PolicyServiceImpl {
         // scan passes `Redaction::default()`, which contributes zero bytes and so
         // hashes exactly as `new_with_lineage` did; a policy_doc_id of `None`
         // likewise contributes nothing. Only a *present* digest changes the hash.
-        let redaction = if eval.credential_findings.is_empty() {
+        // AAASM-5354: either tier counts. A locale-pack finding carries no
+        // `CredentialKind` and so leaves `credential_findings` empty, but the
+        // engine still produced a redacted payload — reading only that list
+        // recorded neither the finding nor the redaction, so the audit trail
+        // said the action was clean when it was not.
+        let redaction = if eval.credential_findings.is_empty() && eval.canonical_findings.is_empty() {
             Redaction::default()
         } else {
             Redaction {
@@ -1240,6 +1245,20 @@ impl PolicyServiceImpl {
     /// carries only kind tags and counts — never any byte of the original
     /// secret. Failure to send (no receivers) is logged at trace level
     /// and does not propagate (AAASM-1545).
+    ///
+    /// # Known gap (AAASM-5354)
+    ///
+    /// A locale-pack finding does **not** raise an alert. [`SecretAlert`] names
+    /// what it found with a [`CredentialKind`], and `primary_kind()` falls back
+    /// to `CredentialKind::Custom` when the list is empty — so emitting one for
+    /// a zh-TW national ID would publish it through `aa-api`'s
+    /// `detected_pattern_type` as an operator-authored regex match, which is a
+    /// confidently wrong answer rather than a missing one.
+    ///
+    /// Widening that vocabulary changes a published `aa-api` contract and is out
+    /// of this ticket's crate scope, so the gap is left open and recorded here
+    /// rather than papered over. Enforcement and the audit trail are *not*
+    /// affected — both act on either tier; this is the alerting side-channel only.
     fn maybe_emit_secret_alert(&self, req: &CheckActionRequest, eval: &EvaluationResult) {
         if eval.credential_findings.is_empty() {
             return;
@@ -1421,11 +1440,20 @@ impl PolicyServiceImpl {
         if let aa_core::GovernanceAction::ToolCall { name, args } = &action {
             hook.detector.record_tool_call(agent_id, name, args, now_ms);
         }
-        for _ in 0..eval.credential_findings.len() {
+        // AAASM-5354: a locale-pack finding is sensitive data the agent tried to
+        // send, so it feeds the behavioural baseline like any other. Counted from
+        // the canonical tier only for findings with no enforcement-tier
+        // counterpart, so a lifted finding is not counted twice.
+        let canonical_only = eval
+            .canonical_findings
+            .iter()
+            .filter(|f| f.category().to_credential_kind().is_none())
+            .count();
+        for _ in 0..(eval.credential_findings.len() + canonical_only) {
             hook.detector.record_credential_finding(agent_id);
         }
 
-        let has_pii = !eval.credential_findings.is_empty();
+        let has_pii = !eval.credential_findings.is_empty() || canonical_only > 0;
         let allowlist = self.engine.network_allowlist();
         let event = hook.detector.detect(agent_id, &action, has_pii, &allowlist, None)?;
         AnomalyResponder::respond(&event);

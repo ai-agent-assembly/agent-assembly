@@ -289,6 +289,7 @@ fn eval_result_with_credential_findings_returns_redact() {
         decision: PolicyResult::Allow,
         redacted_payload: Some("redacted text".into()),
         credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 10)],
+        canonical_findings: vec![],
         deny_action: None,
         policy_doc_id: None,
         narrowed: false,

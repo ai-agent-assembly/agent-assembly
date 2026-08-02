@@ -155,6 +155,14 @@ pub fn request_to_core(req: &CheckActionRequest) -> Result<(AgentContext, Govern
 ///   `Decision::Allow` (covers `credential_action: alert_only`, where the
 ///   payload is forwarded unmodified; the alert side-effect is wired
 ///   separately).
+///
+/// **"Findings" means either tier** (AAASM-5354). A locale-pack finding has no
+/// [`CredentialKind`](aa_security::CredentialKind) and so never appears in
+/// `credential_findings`; reading only that list told the caller "allow, nothing
+/// to redact" while the engine had already detected and redacted, and the caller
+/// then proceeded with the original payload. That is the detected-but-not-acted-on
+/// degradation ADR 0032 §5 forbids, on the pre-action path — so the gate is on
+/// the union.
 /// * everything else falls through to the underlying `PolicyResult`.
 pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_rule: &str) -> CheckActionResponse {
     // Deny short-circuits everything, including the findings-driven Redact path,
@@ -170,9 +178,9 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
         };
     }
 
-    // Findings + redacted payload → Redact instructions.
-    if !eval.credential_findings.is_empty() && eval.redacted_payload.is_some() {
-        let rules: Vec<RedactRule> = eval
+    // Findings in either tier + redacted payload → Redact instructions.
+    if !(eval.credential_findings.is_empty() && eval.canonical_findings.is_empty()) && eval.redacted_payload.is_some() {
+        let mut rules: Vec<RedactRule> = eval
             .credential_findings
             .iter()
             .map(|f| RedactRule {
@@ -180,6 +188,21 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
                 replacement: "[REDACTED]".into(),
             })
             .collect();
+        // Findings with no `CredentialKind` can only be named canonically, so
+        // the category's rendered form is the rule's field. The filter is the
+        // enforcement-tier test itself rather than a recognizer allow-list: a
+        // canonical finding that *does* map back to a kind was lifted from a
+        // `CredentialFinding` and is already in `rules` above, so emitting it
+        // again would duplicate the rule.
+        rules.extend(
+            eval.canonical_findings
+                .iter()
+                .filter(|f| f.category().to_credential_kind().is_none())
+                .map(|f| RedactRule {
+                    field_path: format!("$.{}", f.category()),
+                    replacement: "[REDACTED]".into(),
+                }),
+        );
         return CheckActionResponse {
             decision: Decision::Redact as i32,
             reason: "sensitive data detected".into(),
@@ -259,6 +282,7 @@ pub fn result_to_response(result: &PolicyResult, latency_us: i64, policy_rule: &
         decision: result.clone(),
         redacted_payload: None,
         credential_findings: Vec::new(),
+        canonical_findings: vec![],
         deny_action: None,
         policy_doc_id: None,
         narrowed: false,
@@ -438,6 +462,113 @@ mod tests {
         assert_eq!(proto.routing_status, "no_team_id");
     }
 
+    // ── AAASM-5354: the boundary must act on either finding tier ────────────
+
+    /// A locale-pack finding, as `PolicyEngine::evaluate` produces it: canonical
+    /// only, because it has no `CredentialKind` to put in `credential_findings`.
+    fn locale_only_eval() -> EvaluationResult {
+        let category: aa_security::canonical::CanonicalCategory =
+            "NATIONAL_ID[zh-TW/arc_new]".parse().expect("a catalogue category");
+        let finding = aa_security::canonical::CanonicalFinding::new(
+            category,
+            aa_security::canonical::Severity::High,
+            aa_security::canonical::ConfidenceBand::High,
+            aa_security::canonical::ByteSpan::new(8, 18),
+            aa_security::canonical::DetectionMethod::Deterministic,
+            aa_security::canonical::Provenance::new(aa_security::canonical::Recognizer::ZhTwLocalePack, "test"),
+            aa_security::canonical::FindingStatus::Confirmed,
+        )
+        .expect("a well-formed span");
+        EvaluationResult {
+            decision: PolicyResult::Allow,
+            redacted_payload: Some("居留證統一證號 [REDACTED] 已建檔。".to_string()),
+            credential_findings: vec![],
+            canonical_findings: vec![finding],
+            deny_action: None,
+            policy_doc_id: None,
+            narrowed: false,
+        }
+    }
+
+    /// **The enforcement test.** The engine detected and redacted; the caller
+    /// must be told to redact.
+    ///
+    /// Before AAASM-5354 wired the canonical arm this returned
+    /// `Decision::Allow` with `redact: None` — the caller was told "allow,
+    /// nothing to redact" and proceeded with the original payload containing the
+    /// national ID. Severing the `|| !canonical_findings.is_empty()` arm
+    /// reproduces exactly that and fails this test.
+    #[test]
+    fn a_locale_only_finding_still_instructs_the_caller_to_redact() {
+        let eval = locale_only_eval();
+        let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
+
+        assert_eq!(
+            resp.decision,
+            Decision::Redact as i32,
+            "the boundary told the caller to proceed with the unredacted payload"
+        );
+        let redact = resp.redact.expect("Redact must carry instructions");
+        assert_eq!(redact.rules.len(), 1, "{:?}", redact.rules);
+        assert_eq!(redact.rules[0].field_path, "$.NATIONAL_ID[zh-TW/arc_new]");
+        assert_eq!(redact.rules[0].replacement, "[REDACTED]");
+    }
+
+    /// A locale finding under `credential_action: block` already denied before
+    /// this change; pin it so the union gate did not weaken the Deny path.
+    #[test]
+    fn a_locale_only_finding_under_block_still_denies() {
+        let mut eval = locale_only_eval();
+        eval.decision = PolicyResult::Deny {
+            reason: "credential detected".into(),
+        };
+        eval.redacted_payload = None;
+        let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
+        assert_eq!(resp.decision, Decision::Deny as i32);
+        assert!(resp.redact.is_none());
+    }
+
+    /// The union must not double-count. A scanner finding contributes one rule
+    /// from `credential_findings` and its canonical projection must not add a
+    /// second — the projection maps back to a `CredentialKind`, so it is
+    /// filtered out.
+    #[test]
+    fn a_lifted_canonical_projection_does_not_duplicate_its_rule() {
+        let credential = aa_security::CredentialFinding::from_regex_match(0, 4);
+        let canonical =
+            aa_security::canonical::CanonicalFinding::try_from(&credential).expect("a well-formed span lifts");
+        let eval = EvaluationResult {
+            decision: PolicyResult::Allow,
+            redacted_payload: Some("[REDACTED:Custom]".to_string()),
+            credential_findings: vec![credential],
+            canonical_findings: vec![canonical],
+            deny_action: None,
+            policy_doc_id: None,
+            narrowed: false,
+        };
+        let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
+        let redact = resp.redact.expect("Redact must carry instructions");
+        assert_eq!(redact.rules.len(), 1, "duplicated rule: {:?}", redact.rules);
+        assert_eq!(redact.rules[0].field_path, "$.Custom");
+    }
+
+    /// Clean stays clean: an empty result must not become a Redact.
+    #[test]
+    fn no_findings_in_either_tier_is_not_a_redact() {
+        let eval = EvaluationResult {
+            decision: PolicyResult::Allow,
+            redacted_payload: None,
+            credential_findings: vec![],
+            canonical_findings: vec![],
+            deny_action: None,
+            policy_doc_id: None,
+            narrowed: false,
+        };
+        let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
+        assert_eq!(resp.decision, Decision::Allow as i32);
+        assert!(resp.redact.is_none());
+    }
+
     #[test]
     fn eval_with_deny_and_findings_maps_to_decision_deny() {
         // credential_action: block → engine returns Deny *and* findings populated.
@@ -448,6 +579,7 @@ mod tests {
             },
             redacted_payload: None,
             credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 4)],
+            canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
             narrowed: false,
@@ -467,6 +599,7 @@ mod tests {
             decision: PolicyResult::Allow,
             redacted_payload: None,
             credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 4)],
+            canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
             narrowed: false,

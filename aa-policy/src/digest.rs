@@ -154,6 +154,35 @@ fn hash_data(hasher: &mut Sha256, data: Option<&DataPolicy>) {
                 CredentialAction::AlertOnly => 2u8,
                 CredentialAction::AlertAndRedact => 3u8,
             }]);
+            // AAASM-5354: which detectors ran is part of what a policy decides,
+            // so two documents differing only in `locale_packs` must not share
+            // a digest — the audit trail attributes a decision by it, and
+            // `policy_hits` is keyed by it.
+            //
+            // Emitted **only when non-empty**, which is what keeps this from
+            // silently re-keying the world. `content_digest` is the
+            // `policy_doc_id` on every audit entry and the key `hits_24h` counts
+            // by; hashing an unconditional length prefix would change the digest
+            // of every document that has ever existed, resetting every policy's
+            // hit count and shifting audit attribution across the upgrade
+            // boundary. A document with no `locale_packs` therefore hashes to
+            // exactly the bytes it hashed to before this field existed —
+            // `legacy_documents_keep_their_pre_locale_packs_digest` pins that
+            // against a digest captured from the parent commit.
+            //
+            // The `0xFF` marker keeps the encoding unambiguous despite the
+            // omission. Without it, the 8-byte length prefix of a non-empty list
+            // would sit where a legacy document's `approval_timeout_secs` starts.
+            // That field is a big-endian `u32`, so its leading byte is `0xFF`
+            // only for a timeout above 4.28e9 seconds (136 years); no reachable
+            // configuration collides.
+            if !dp.locale_packs.is_empty() {
+                hasher.update([0xFFu8]);
+                hasher.update((dp.locale_packs.len() as u64).to_be_bytes());
+                for tag in &dp.locale_packs {
+                    hash_str(hasher, tag);
+                }
+            }
         }
     }
 }
@@ -248,6 +277,55 @@ mod tests {
     use super::*;
     use crate::document::ToolPolicy;
     use crate::scope::PolicyScope;
+
+    /// AAASM-5354 — adding `data.locale_packs` must not re-key documents that
+    /// do not use it.
+    ///
+    /// `content_digest` is the `policy_doc_id` stamped on every audit entry and
+    /// the key `policy_hits` counts by, so a digest change is not cosmetic: it
+    /// resets every policy's `hits_24h` and shifts audit attribution across the
+    /// upgrade boundary. The expected value below was **captured by running
+    /// `content_digest` on this fixture at commit `b7e853b09`**, the parent
+    /// `main` that has no `locale_packs` field at all — so this pins the real
+    /// legacy encoding, not this build's idea of it.
+    ///
+    /// If this fails, `hash_data` started emitting bytes for an empty
+    /// `locale_packs`. That is a migration event, not a refactor.
+    #[test]
+    fn legacy_documents_keep_their_pre_locale_packs_digest() {
+        let mut doc = base_doc();
+        doc.data = Some(crate::document::DataPolicy {
+            sensitive_patterns: vec!["sk-[a-z]+".to_string()],
+            credential_action: crate::document::CredentialAction::RedactOnly,
+            locale_packs: vec![],
+        });
+        assert_eq!(
+            doc.content_digest(),
+            "sha256:c4664a0acb0bd210dc52b02942ec99c70b23919c57ff04edd47d07556e0582da",
+            "adding locale_packs re-keyed a document that does not use it"
+        );
+    }
+
+    /// The other half: a document that *does* name a pack must not share a
+    /// digest with one that does not, or the audit trail could not tell which
+    /// detectors ran.
+    #[test]
+    fn naming_a_locale_pack_changes_the_digest() {
+        let mut without = base_doc();
+        without.data = Some(crate::document::DataPolicy {
+            sensitive_patterns: vec!["sk-[a-z]+".to_string()],
+            credential_action: crate::document::CredentialAction::RedactOnly,
+            locale_packs: vec![],
+        });
+        let mut with = without.clone();
+        with.data.as_mut().unwrap().locale_packs = vec!["zh-TW".to_string()];
+        assert_ne!(without.content_digest(), with.content_digest());
+
+        // And two different packs are two different documents.
+        let mut other = with.clone();
+        other.data.as_mut().unwrap().locale_packs = vec!["ja-JP".to_string()];
+        assert_ne!(with.content_digest(), other.content_digest());
+    }
 
     fn base_doc() -> PolicyDocument {
         PolicyDocument {

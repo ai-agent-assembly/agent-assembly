@@ -4,6 +4,7 @@
 
 pub mod cache;
 pub mod decision;
+pub mod detection;
 pub(crate) mod rate_limit;
 pub mod scope_index;
 pub(crate) mod watcher;
@@ -56,6 +57,53 @@ pub struct EvaluationResult {
     /// All credential and PII findings detected during the scanner pass.
     /// Empty when the payload was clean.
     pub credential_findings: Vec<aa_security::CredentialFinding>,
+    /// AAASM-5354 — the same Stage 6 findings described in the canonical,
+    /// provider-neutral vocabulary of ADR 0032 §2, sorted by span.
+    ///
+    /// A parallel projection, not a replacement: `credential_findings` remains
+    /// the enforcement-tier list every existing consumer reads, and it is
+    /// byte-identical to what the pre-port code produced. This list is what a
+    /// reporting consumer should read, because it is the only one that can
+    /// describe a finding from a detector with no
+    /// [`CredentialKind`](aa_security::CredentialKind) — every
+    /// [`detection::LocalePack`] hit.
+    ///
+    /// The two lists are not in bijection, and both directions occur:
+    ///
+    /// - A locale-pack finding appears here and **not** in
+    ///   `credential_findings`, because fabricating a `CredentialKind` for it
+    ///   would extend a catalogue ADR 0032 §2 freezes.
+    /// - A zero-width operator-regex match appears in `credential_findings` and
+    ///   **not** here, because a canonical finding covers at least one byte.
+    ///
+    /// # Who reads this, exactly
+    ///
+    /// Stated precisely because an earlier draft of this doc claimed the field
+    /// "feeds the audit write", which was false when written — nothing read it
+    /// at all. Three consumers read it today, and all three read it as a
+    /// **presence test**, not as content:
+    ///
+    /// - [`service::convert::eval_result_to_response`](crate::service::convert::eval_result_to_response)
+    ///   — a finding here makes the wire decision `Redact` and contributes a
+    ///   [`RedactRule`] naming the canonical category. Without this the caller
+    ///   was told "allow, nothing to redact" and forwarded the original payload.
+    /// - `PolicyService`'s audit write — a finding here attaches the
+    ///   [`Redaction`](aa_security::Redaction), so the sanitised payload reaches
+    ///   the audit entry instead of nothing.
+    /// - The anomaly detector — a finding here counts toward the behavioural
+    ///   baseline and sets `has_pii`.
+    ///
+    /// The findings themselves are **not** serialised into the audit entry;
+    /// that projection is AAASM-5357's work. `maybe_emit_secret_alert` also does
+    /// not read this field — see its docs for why alerting a kindless finding
+    /// through `aa-api`'s `detected_pattern_type` would publish a wrong answer.
+    ///
+    /// Spans are audit-tier only (ADR 0032 §9). This field carries them for the
+    /// same reason `credential_findings` already does, and must not be projected
+    /// into a metric label, a log line or an API response without going through
+    /// [`SensitiveDataFindingRecord`](aa_core::types::sensitive_data::SensitiveDataFindingRecord),
+    /// which drops the span by construction.
+    pub canonical_findings: Vec<aa_security::canonical::CanonicalFinding>,
     /// Optional side-effect action for the service layer when the decision is `Deny`.
     /// `None` means no side-effect beyond denying the request.
     pub deny_action: Option<DenyAction>,
@@ -89,6 +137,7 @@ impl EvaluationResult {
             decision: aa_core::PolicyResult::Deny { reason: reason.into() },
             redacted_payload: None,
             credential_findings: vec![],
+            canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
             narrowed: false,
@@ -102,12 +151,14 @@ impl EvaluationResult {
         reason: impl Into<String>,
         redacted_payload: Option<String>,
         credential_findings: Vec<aa_security::CredentialFinding>,
+        canonical_findings: Vec<aa_security::canonical::CanonicalFinding>,
         deny_action: Option<DenyAction>,
     ) -> Self {
         Self {
             decision: aa_core::PolicyResult::Deny { reason: reason.into() },
             redacted_payload,
             credential_findings,
+            canonical_findings,
             deny_action,
             policy_doc_id: None,
             narrowed: false,
@@ -187,6 +238,7 @@ pub fn transform_for_observe_mode(
         decision: aa_core::PolicyResult::Allow,
         redacted_payload: None,
         credential_findings: result.credential_findings,
+        canonical_findings: vec![],
         deny_action: None,
         // AAASM-5107 — observe mode rewrites the verdict to Allow but the policy
         // document still fired; preserve its attribution so the dry-run audit
@@ -303,8 +355,13 @@ enum CredentialScanOutcome {
     /// `credential_action: block` with at least one finding — deny outright,
     /// the payload never reaches the LLM in any form.
     Block(EvaluationResult),
-    /// Continue evaluation with this (redacted_payload, findings) pair.
-    Continue(Option<String>, Vec<aa_security::CredentialFinding>),
+    /// Continue evaluation with this (redacted_payload, enforcement-tier
+    /// findings, canonical findings) triple.
+    Continue(
+        Option<String>,
+        Vec<aa_security::CredentialFinding>,
+        Vec<aa_security::canonical::CanonicalFinding>,
+    ),
 }
 
 /// Parsed result of reading a cascade directory, before a budget tracker is
@@ -1205,6 +1262,7 @@ impl PolicyEngine {
                 },
                 redacted_payload: None,
                 credential_findings: vec![],
+                canonical_findings: vec![],
                 deny_action: None,
                 policy_doc_id: None,
                 narrowed: false,
@@ -1334,20 +1392,59 @@ impl PolicyEngine {
         bucket.try_consume_with_limit(limit)
     }
 
-    /// Apply the shared Stage 6 credential decision over already-collected
-    /// `all_findings` for `text` under the resolved `credential_action`.
+    /// Apply the shared Stage 6 credential decision over the findings the
+    /// detection port produced for `text`, under the resolved
+    /// `credential_action`.
     ///
     /// Identical for the single-policy and cascade paths: `block` + findings →
     /// deny; `alert_only` forwards the unredacted payload (the only path that
     /// leaks the raw secret, AAASM-3137); every other mode redacts in-memory.
     /// Findings are sorted by offset for deterministic output.
+    ///
+    /// # What the decision is, and is not, taken on
+    ///
+    /// Only on **whether a finding exists** (ADR 0002; ADR 0032 §4). Nothing
+    /// here reads a finding's
+    /// [`ConfidenceBand`](aa_security::canonical::ConfidenceBand),
+    /// [`Severity`](aa_security::canonical::Severity) or
+    /// [`Recognizer`](aa_security::canonical::Recognizer) — Agent Assembly owns
+    /// the decision and a detector's own opinion of itself is evidence carried
+    /// beside it, never an authorisation input.
+    ///
+    /// # Which redaction primitive applies
+    ///
+    /// With no canonical-only finding — the default, ungated case — the merged
+    /// list is exactly what the pre-port code produced and
+    /// [`ScanResult::redact`](aa_security::ScanResult) still owns redaction,
+    /// byte for byte. A locale-pack finding has no
+    /// [`CredentialKind`](aa_security::CredentialKind) for that primitive to
+    /// splice, so its presence switches the whole payload to
+    /// [`redact_findings`](aa_security::canonical::redact_findings) over the
+    /// canonical union — one pass, because two passes over shifting offsets
+    /// cannot be made correct.
+    ///
+    /// The two primitives agree on every label except one case: when findings
+    /// of different categories overlap, `ScanResult::redact` keeps the
+    /// higher-priority kind's label while `redact_findings` emits the opaque
+    /// `[REDACTED]` rather than picking a winner. Only the gated path can reach
+    /// that difference, and losing label precision on an overlap does not leave
+    /// bytes behind either way.
     fn apply_credential_scan(
         text: &str,
         mut all_findings: Vec<aa_security::CredentialFinding>,
+        canonical_findings: Vec<aa_security::canonical::CanonicalFinding>,
+        canonical_only_present: bool,
         credential_action: CredentialAction,
     ) -> CredentialScanOutcome {
+        // A finding in either tier is a finding. Reading only `all_findings`
+        // here would let a locale-pack hit — which by construction has no
+        // enforcement-tier counterpart — pass `credential_action: block`
+        // silently, which is the "detected but not acted on" degrade ADR 0032
+        // §5 forbids.
+        let clean = all_findings.is_empty() && canonical_findings.is_empty();
+
         // Hard-block path: short-circuit every downstream stage.
-        if credential_action == CredentialAction::Block && !all_findings.is_empty() {
+        if credential_action == CredentialAction::Block && !clean {
             all_findings.sort_by_key(|f| f.offset);
             return CredentialScanOutcome::Block(EvaluationResult {
                 decision: aa_core::PolicyResult::Deny {
@@ -1355,14 +1452,15 @@ impl PolicyEngine {
                 },
                 redacted_payload: None,
                 credential_findings: all_findings,
+                canonical_findings,
                 deny_action: None,
                 policy_doc_id: None,
                 narrowed: false,
             });
         }
 
-        if all_findings.is_empty() {
-            return CredentialScanOutcome::Continue(None, vec![]);
+        if clean {
+            return CredentialScanOutcome::Continue(None, vec![], vec![]);
         }
 
         // Sort by offset for deterministic redaction order.
@@ -1388,13 +1486,66 @@ impl PolicyEngine {
                 finding_count = all_findings.len(),
                 "credential_action=alert_only: forwarding UNREDACTED payload (alert emission pending AAASM-1545)"
             );
-            return CredentialScanOutcome::Continue(None, all_findings);
+            return CredentialScanOutcome::Continue(None, all_findings, canonical_findings);
         }
-        let merged = aa_security::ScanResult {
-            findings: all_findings.clone(),
+        let redacted = if canonical_only_present {
+            aa_security::canonical::redact_findings(text, &canonical_findings)
+        } else {
+            aa_security::ScanResult {
+                findings: all_findings.clone(),
+            }
+            .redact(text)
         };
-        let redacted = merged.redact(text);
-        CredentialScanOutcome::Continue(Some(redacted), all_findings)
+        CredentialScanOutcome::Continue(Some(redacted), all_findings, canonical_findings)
+    }
+
+    /// Fail closed when a configured detection pass could not run.
+    ///
+    /// A detection source that cannot answer is not a source that answered
+    /// "clean" (ADR 0032 §5). Because this is the synchronous **pre-action**
+    /// path, continuing with no findings would forward a payload nothing
+    /// inspected, so the action is denied instead.
+    ///
+    /// The reason names the pack tag from the policy document — operator-
+    /// authored configuration, never bytes read from the scanned payload — so
+    /// no scanned content reaches a deny reason, a log line or an audit record.
+    fn detection_unavailable_deny(err: &detection::DetectionError) -> EvaluationResult {
+        tracing::error!(error = %err, "stage 6 detection pass could not run; failing closed");
+        EvaluationResult::deny(format!("sensitive-data detection unavailable: {err}"))
+    }
+
+    /// Resolve the locale packs a single policy document asks for.
+    fn document_locale_packs(
+        data: Option<&crate::policy::document::DataPolicy>,
+    ) -> Result<Vec<detection::LocalePack>, detection::DetectionError> {
+        match data {
+            // The overwhelmingly common case, and the one the hot-path perf
+            // gate measures: no packs configured, no allocation, no pass.
+            None => Ok(Vec::new()),
+            Some(dp) => detection::resolve_locale_packs(&dp.locale_packs),
+        }
+    }
+
+    /// Run `passes` and split the outcome into the two lists Stage 6 consumes.
+    ///
+    /// Exists so both evaluation paths agree on the port's contract rather than
+    /// each interpreting it — the drift that let the two open-coded Stage 6
+    /// implementations diverge in the first place.
+    fn run_detection(
+        text: &str,
+        passes: &[&dyn detection::DetectionPass],
+    ) -> Result<
+        (
+            Vec<aa_security::CredentialFinding>,
+            Vec<aa_security::canonical::CanonicalFinding>,
+            bool,
+        ),
+        detection::DetectionError,
+    > {
+        let outcome = detection::run(text, passes)?;
+        let canonical_only_present = outcome.has_canonical_only();
+        let (credential, canonical) = outcome.into_parts();
+        Ok((credential, canonical, canonical_only_present))
     }
 
     /// Single-policy evaluation path: used when no scoped policies are registered.
@@ -1434,36 +1585,67 @@ impl PolicyEngine {
 
         // Stage 6 — Credential scan + custom pattern scan: redact in-memory, never deny.
         //
-        // Pass 1: Aho-Corasick built-in scan (18+ patterns via aa-core::CredentialScanner).
-        // Pass 2: Policy-defined regex patterns from data.sensitive_patterns.
-        // Both passes contribute to the same findings list. The merged ScanResult is used
-        // to redact the payload once; the redacted text propagates — the original is dropped.
+        // Every pass runs through the canonical detection port (AAASM-5354,
+        // `engine::detection`), which is sealed so nothing out of process can be
+        // reached from this synchronous pre-action path (ADR 0032 D-1):
+        //
+        //   Pass 1  the built-in Aho-Corasick scan — 27 detector kinds in
+        //           `aa_security::CredentialKind::ALL`, 28 counting `Custom` —
+        //           via `aa_security::CredentialScanner` (not `aa-core`).
+        //   Pass 2  the operator's `data.sensitive_patterns` regexes,
+        //           pre-compiled into the cascade state.
+        //   Pass 3  any `data.locale_packs` the policy names — off unless
+        //           configured, so the two-pass merge above is unchanged.
+        //
+        // All passes contribute to one merged findings list, used to redact the
+        // payload once; the redacted text propagates — the original is dropped.
         let text = action_scan_text(action);
 
-        let scan = self.scanner.scan(text);
-        let mut all_findings = scan.findings;
-
-        // Pass 2: policy-defined regex patterns.
+        let packs = match Self::document_locale_packs(policy.data.as_ref()) {
+            Ok(packs) => packs,
+            Err(e) => return Self::detection_unavailable_deny(&e),
+        };
         let cascade_state = self.cascade.load();
-        for re in &cascade_state.compiled_patterns {
-            for m in re.find_iter(text) {
-                all_findings.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
-            }
-        }
+        let scanner_pass = detection::BuiltinScannerPass::new(&self.scanner);
+        let regex_pass = detection::CompiledRegexPass::new(&cascade_state.compiled_patterns);
+        let pack_passes: Vec<detection::LocalePackPass> =
+            packs.into_iter().map(detection::LocalePackPass::new).collect();
+
+        let detected = if pack_passes.is_empty() {
+            // The pass list on the default path is a stack array, so configuring
+            // no locale pack costs no heap allocation *here*. (Under `cfg(test)`
+            // `detection::run` still builds a vector to splice in a test double;
+            // that allocation does not exist in a production build.)
+            Self::run_detection(text, &[&scanner_pass as &dyn detection::DetectionPass, &regex_pass])
+        } else {
+            let mut passes: Vec<&dyn detection::DetectionPass> = vec![&scanner_pass, &regex_pass];
+            passes.extend(pack_passes.iter().map(|p| p as &dyn detection::DetectionPass));
+            Self::run_detection(text, &passes)
+        };
+        let (all_findings, canonical, canonical_only) = match detected {
+            Ok(parts) => parts,
+            Err(e) => return Self::detection_unavailable_deny(&e),
+        };
 
         let credential_action = policy.data.as_ref().map(|d| d.credential_action).unwrap_or_default();
 
-        let (redacted_payload, credential_findings) =
-            match Self::apply_credential_scan(text, all_findings, credential_action) {
+        let (redacted_payload, credential_findings, canonical_findings) =
+            match Self::apply_credential_scan(text, all_findings, canonical, canonical_only, credential_action) {
                 CredentialScanOutcome::Block(result) => return result,
-                CredentialScanOutcome::Continue(payload, findings) => (payload, findings),
+                CredentialScanOutcome::Continue(payload, findings, canonical) => (payload, findings, canonical),
             };
 
         // Stage 7 — Budget check (monthly first, then daily).
         if let Some(bp) = &policy.budget {
             let deny_action = Self::budget_deny_action(bp);
             if let Some(reason) = self.budget_exceeded_reason(bp, &ctx.agent_id) {
-                return EvaluationResult::deny_with(reason, redacted_payload, credential_findings, deny_action);
+                return EvaluationResult::deny_with(
+                    reason,
+                    redacted_payload,
+                    credential_findings,
+                    canonical_findings,
+                    deny_action,
+                );
             }
         }
 
@@ -1478,6 +1660,7 @@ impl PolicyEngine {
             decision: aa_core::PolicyResult::Allow,
             redacted_payload,
             credential_findings,
+            canonical_findings,
             deny_action: None,
             policy_doc_id: None,
             narrowed,
@@ -1607,6 +1790,32 @@ impl PolicyEngine {
             .unwrap_or_default()
     }
 
+    /// The union of every locale pack any document in the cascade names.
+    ///
+    /// A union rather than an intersection, for the same reason
+    /// [`Self::cascade_credential_action`] takes the *most* restrictive action:
+    /// a narrower-scoped document that asks for a detector must not have that
+    /// request cancelled by a broader one that is silent about it.
+    ///
+    /// # Errors
+    ///
+    /// [`detection::DetectionError::UnknownLocalePack`] if any document names a
+    /// pack this build does not contain — failing closed rather than quietly
+    /// dropping a detector an operator asked for.
+    fn cascade_locale_packs(
+        cascade: &[Arc<PolicyDocument>],
+    ) -> Result<Vec<detection::LocalePack>, detection::DetectionError> {
+        let mut packs: Vec<detection::LocalePack> = Vec::new();
+        for doc in cascade {
+            for pack in Self::document_locale_packs(doc.data.as_ref())? {
+                if !packs.contains(&pack) {
+                    packs.push(pack);
+                }
+            }
+        }
+        Ok(packs)
+    }
+
     /// Check budget constraints across the cascade, returning an early deny if exceeded.
     fn check_cascade_budget(
         &self,
@@ -1614,6 +1823,7 @@ impl PolicyEngine {
         agent_id: &aa_core::identity::AgentId,
         redacted_payload: Option<String>,
         credential_findings: Vec<aa_security::CredentialFinding>,
+        canonical_findings: Vec<aa_security::canonical::CanonicalFinding>,
     ) -> Option<EvaluationResult> {
         for doc in cascade {
             if let Some(bp) = &doc.budget {
@@ -1623,6 +1833,7 @@ impl PolicyEngine {
                         reason,
                         redacted_payload,
                         credential_findings,
+                        canonical_findings,
                         da,
                     ));
                 }
@@ -1675,6 +1886,7 @@ impl PolicyEngine {
                 decision: aa_core::PolicyResult::Deny { reason },
                 redacted_payload: None,
                 credential_findings: vec![],
+                canonical_findings: vec![],
                 deny_action: None,
                 policy_doc_id: None,
                 narrowed: false,
@@ -1704,6 +1916,7 @@ impl PolicyEngine {
                 decision: aa_core::PolicyResult::Deny { reason },
                 redacted_payload: None,
                 credential_findings: vec![],
+                canonical_findings: vec![],
                 deny_action: None,
                 policy_doc_id,
                 narrowed: false,
@@ -1720,17 +1933,37 @@ impl PolicyEngine {
             return result;
         }
 
-        // Stage 6 — Credential scan.
+        // Stage 6 — Credential scan, through the same canonical detection port
+        // the single-policy path uses (AAASM-5354). Pass 2 here spans every
+        // document in the resolved cascade, not just the Global one.
         let text = action_scan_text(action);
-        let scan = self.scanner.scan(text);
-        let mut all_findings = scan.findings;
-        collect_cascade_custom_findings(&cascade, text, &mut all_findings);
+
+        let packs = match Self::cascade_locale_packs(&cascade) {
+            Ok(packs) => packs,
+            Err(e) => return Self::detection_unavailable_deny(&e),
+        };
+        let scanner_pass = detection::BuiltinScannerPass::new(&self.scanner);
+        let regex_pass = detection::CascadeRegexPass::new(&cascade);
+        let pack_passes: Vec<detection::LocalePackPass> =
+            packs.into_iter().map(detection::LocalePackPass::new).collect();
+
+        let detected = if pack_passes.is_empty() {
+            Self::run_detection(text, &[&scanner_pass as &dyn detection::DetectionPass, &regex_pass])
+        } else {
+            let mut passes: Vec<&dyn detection::DetectionPass> = vec![&scanner_pass, &regex_pass];
+            passes.extend(pack_passes.iter().map(|p| p as &dyn detection::DetectionPass));
+            Self::run_detection(text, &passes)
+        };
+        let (all_findings, canonical, canonical_only) = match detected {
+            Ok(parts) => parts,
+            Err(e) => return Self::detection_unavailable_deny(&e),
+        };
 
         let credential_action = Self::cascade_credential_action(&cascade);
-        let (redacted_payload, credential_findings) =
-            match Self::apply_credential_scan(text, all_findings, credential_action) {
+        let (redacted_payload, credential_findings, canonical_findings) =
+            match Self::apply_credential_scan(text, all_findings, canonical, canonical_only, credential_action) {
                 CredentialScanOutcome::Block(result) => return result,
-                CredentialScanOutcome::Continue(payload, findings) => (payload, findings),
+                CredentialScanOutcome::Continue(payload, findings, canonical) => (payload, findings, canonical),
             };
 
         // Stage 7 — Budget check.
@@ -1739,6 +1972,7 @@ impl PolicyEngine {
             &ctx.agent_id,
             redacted_payload.clone(),
             credential_findings.clone(),
+            canonical_findings.clone(),
         ) {
             return result;
         }
@@ -1761,6 +1995,7 @@ impl PolicyEngine {
             decision,
             redacted_payload,
             credential_findings,
+            canonical_findings,
             deny_action,
             policy_doc_id,
             narrowed,
@@ -2204,27 +2439,6 @@ fn action_scan_text(action: &aa_core::GovernanceAction) -> &str {
     }
 }
 
-/// Append findings from each cascade doc's `data.sensitive_patterns` regexes
-/// (matched against `text`) onto `all_findings`. Unparseable patterns are
-/// skipped silently — the same lenient behaviour as the inline scan it replaces.
-fn collect_cascade_custom_findings(
-    cascade: &[Arc<PolicyDocument>],
-    text: &str,
-    all_findings: &mut Vec<aa_security::CredentialFinding>,
-) {
-    for doc in cascade {
-        if let Some(dp) = &doc.data {
-            for pattern in &dp.sensitive_patterns {
-                if let Ok(re) = regex::Regex::new(pattern) {
-                    for m in re.find_iter(text) {
-                        all_findings.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Implement the `aa_core::PolicyEvaluator` trait so `PolicyEngine` can be used
 /// as `dyn PolicyEvaluator` wherever a pluggable evaluation backend is expected.
 ///
@@ -2362,6 +2576,646 @@ mod tests {
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────
+
+    // ── AAASM-5354: the canonical detection port on the production path ──────
+
+    use crate::engine::detection::test_double::{self, FixedPass};
+
+    /// A doc whose `data` section carries only the given locale-pack tags.
+    fn doc_with_locale_packs(tags: &[&str]) -> PolicyDocument {
+        let mut doc = empty_doc();
+        doc.data = Some(DataPolicy {
+            sensitive_patterns: vec![],
+            credential_action: CredentialAction::default(),
+            locale_packs: tags.iter().map(|t| t.to_string()).collect(),
+        });
+        doc
+    }
+
+    /// A 2021-form 居留證 built by AAASM-5353's own fixture generator (see
+    /// `conformance/vectors/zh_tw_detection/id_arc_2021.json`): synthetic, and
+    /// checksum-valid so the recognizer that exists is the one under test.
+    const ZH_TW_ARC_TEXT: &str = "居留證統一證號 A800000005 於系統中建檔。";
+
+    /// **The production-path test.** The real engine's `evaluate` must reach the
+    /// port — not a unit-test adapter calling `detection::run` directly.
+    ///
+    /// Falsification: this fails if the seam is disconnected. Removing the
+    /// `Self::run_detection` call from `evaluate_primary` (or reverting Stage 6
+    /// to the pre-port open-coded loops) leaves the installed pass unrun and
+    /// `canonical_findings` empty, and the assertion below fires. Confirmed by
+    /// making that edit and watching this test fail before it was committed.
+    #[test]
+    fn evaluate_invokes_the_detection_port_on_the_production_path() {
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let action = tool_call("any", "the payload contains SENTINEL somewhere");
+
+        let result = test_double::with(FixedPass::reporting("SENTINEL"), || engine.evaluate(&ctx, &action));
+
+        let recognizers: Vec<_> = result
+            .canonical_findings
+            .iter()
+            .map(|f| (f.provenance().recognizer, f.provenance().version))
+            .collect();
+        assert!(
+            recognizers.contains(&(aa_security::canonical::Recognizer::ZhTwLocalePack, "test-double")),
+            "the engine did not run the installed pass — the seam is disconnected. got {recognizers:?}"
+        );
+    }
+
+    /// The same seam, seen from the enforcement tier: a pass that produces a
+    /// `CredentialFinding` must have it reach `credential_findings` and the
+    /// redaction, not merely the canonical projection.
+    #[test]
+    fn a_port_finding_reaches_the_enforcement_tier_and_the_redaction() {
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let action = tool_call("any", "value=SENTINEL trailing");
+
+        let result = test_double::with(FixedPass::enforceable("SENTINEL"), || engine.evaluate(&ctx, &action));
+
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert_eq!(
+            result.credential_findings.len(),
+            1,
+            "the port's enforcement-tier finding did not reach credential_findings"
+        );
+        let redacted = result.redacted_payload.expect("a finding must produce a redaction");
+        assert!(!redacted.contains("SENTINEL"), "the flagged span survived: {redacted}");
+    }
+
+    /// Fail closed. A pass that cannot run must deny, never continue with an
+    /// empty findings list — this is the synchronous pre-action path, so
+    /// "no findings" would forward a payload nothing inspected.
+    #[test]
+    fn a_failing_detection_pass_denies_instead_of_allowing_with_no_findings() {
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let action = tool_call("any", "anything at all");
+
+        // Control: without the failure the same action is allowed, so the deny
+        // below is caused by the failure and not by the fixture.
+        assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+
+        let result = test_double::with(
+            FixedPass::failing(detection::DetectionError::UnknownLocalePack { tag: "ja-JP".into() }),
+            || engine.evaluate(&ctx, &action),
+        );
+
+        match result.decision {
+            PolicyResult::Deny { ref reason } => {
+                assert!(reason.contains("detection unavailable"), "unexpected reason: {reason}");
+                assert!(
+                    reason.contains("ja-JP"),
+                    "the reason must name the failing pack: {reason}"
+                );
+            }
+            other => panic!("a failed detection pass must deny, got {other:?}"),
+        }
+        assert!(result.redacted_payload.is_none());
+    }
+
+    /// A policy naming a pack this build lacks denies rather than running with
+    /// that detector silently absent. Reached by constructing the document
+    /// directly, which is how `aa-api`, the simulation surface and tests build
+    /// one; `PolicyValidator` rejects the same tag at load time.
+    #[test]
+    fn an_unknown_locale_pack_denies_rather_than_scanning_without_it() {
+        let engine = make_engine(doc_with_locale_packs(&["ja-JP"]));
+        let ctx = make_ctx();
+        let result = engine.evaluate(&ctx, &tool_call("any", "harmless text"));
+        match result.decision {
+            PolicyResult::Deny { ref reason } => assert!(reason.contains("ja-JP"), "{reason}"),
+            other => panic!("an unknown pack must deny, got {other:?}"),
+        }
+    }
+
+    /// Confidence is evidence, never an authorisation input (ADR 0002; ADR 0032
+    /// §4). Two runs differing *only* in the band a pass reports must produce
+    /// the same decision, the same redaction and the same finding count.
+    #[test]
+    fn a_findings_confidence_band_does_not_move_the_decision() {
+        use aa_security::canonical::ConfidenceBand;
+        let mut doc = empty_doc();
+        doc.data = Some(DataPolicy {
+            sensitive_patterns: vec![],
+            credential_action: CredentialAction::Block,
+            locale_packs: vec![],
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "carrying SENTINEL here");
+
+        let high = test_double::with(
+            FixedPass::reporting("SENTINEL").with_confidence(ConfidenceBand::High),
+            || engine.evaluate(&ctx, &action),
+        );
+        let low = test_double::with(
+            FixedPass::reporting("SENTINEL").with_confidence(ConfidenceBand::Low),
+            || engine.evaluate(&ctx, &action),
+        );
+
+        // Guard against the comparison passing because neither fired.
+        assert!(matches!(high.decision, PolicyResult::Deny { .. }), "fixture must block");
+        assert_eq!(high.decision, low.decision);
+        assert_eq!(high.redacted_payload, low.redacted_payload);
+        assert_eq!(high.canonical_findings.len(), low.canonical_findings.len());
+        assert_ne!(
+            high.canonical_findings[0].confidence(),
+            low.canonical_findings[0].confidence(),
+            "the two runs must actually differ in the band, or this test compares identical inputs"
+        );
+    }
+
+    // ── AAASM-5354: the zh-TW gate, off by default ──────────────────────────
+
+    /// Default off. The pack is compiled in and reachable, and a policy that
+    /// does not ask for it gets exactly the pre-port behaviour.
+    #[test]
+    fn zh_tw_findings_do_not_appear_unless_the_policy_asks_for_the_pack() {
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let result = engine.evaluate(&ctx, &tool_call("any", ZH_TW_ARC_TEXT));
+
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert!(result.credential_findings.is_empty());
+        assert!(
+            result.canonical_findings.is_empty(),
+            "the zh-TW pack ran without being configured: {:?}",
+            result.canonical_findings
+        );
+        assert!(result.redacted_payload.is_none());
+    }
+
+    /// With the gate on the same input is detected and the identifier removed.
+    #[test]
+    fn the_zh_tw_gate_detects_and_redacts_when_enabled() {
+        let engine = make_engine(doc_with_locale_packs(&["zh-TW"]));
+        let ctx = make_ctx();
+        let result = engine.evaluate(&ctx, &tool_call("any", ZH_TW_ARC_TEXT));
+
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert_eq!(result.canonical_findings.len(), 1, "{:?}", result.canonical_findings);
+        let finding = result.canonical_findings[0];
+        assert_eq!(
+            finding.provenance().recognizer,
+            aa_security::canonical::Recognizer::ZhTwLocalePack
+        );
+        assert_eq!(finding.category().to_string(), "NATIONAL_ID[zh-TW/arc_new]");
+        assert!(
+            result.credential_findings.is_empty(),
+            "a locale finding must not fabricate a CredentialKind"
+        );
+        let redacted = result.redacted_payload.expect("a finding must redact");
+        assert!(!redacted.contains("A800000005"), "the identifier survived: {redacted}");
+        assert_eq!(redacted, "居留證統一證號 [REDACTED] 於系統中建檔。");
+    }
+
+    /// A locale finding has no enforcement-tier counterpart, so a `block`
+    /// policy that only consulted `credential_findings` would forward it. It
+    /// must deny.
+    #[test]
+    fn the_zh_tw_gate_blocks_under_credential_action_block() {
+        let mut doc = doc_with_locale_packs(&["zh-TW"]);
+        doc.data.as_mut().unwrap().credential_action = CredentialAction::Block;
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let result = engine.evaluate(&ctx, &tool_call("any", ZH_TW_ARC_TEXT));
+
+        assert!(
+            matches!(result.decision, PolicyResult::Deny { .. }),
+            "a locale finding must reach the block path, got {:?}",
+            result.decision
+        );
+        assert!(result.redacted_payload.is_none(), "a blocked payload is not forwarded");
+    }
+
+    /// The false-positive side, which is the defect this Epic exists to fix:
+    /// ordinary numerically-dense Traditional-Chinese prose must produce
+    /// nothing even with the pack running. Corpus taken from AAASM-5353's
+    /// `clean_prose_negative` vector.
+    #[test]
+    fn the_zh_tw_gate_is_silent_on_ordinary_numeric_prose() {
+        let engine = make_engine(doc_with_locale_packs(&["zh-TW"]));
+        let ctx = make_ctx();
+        let text = "本文件對應版本 v0.0.1-rc.7，最後更新於 2026-08-01。閘道器預設監聽 50051 埠，\
+                    儀表板使用 3000 埠。第一季共處理 1,250,000 次決策請求，其中 3,412 次被拒絕。\
+                    稽核事件保留 365 天，每批最多 5000 筆。會議記錄編號 20260715，與會者 12 人。";
+        let result = engine.evaluate(&ctx, &tool_call("any", text));
+
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert!(
+            result.canonical_findings.is_empty(),
+            "clean prose produced findings: {:?}",
+            result.canonical_findings
+        );
+        assert!(result.redacted_payload.is_none(), "clean prose must not be rewritten");
+    }
+
+    /// A checksum near-miss: one digit off a valid identity number. The
+    /// recognizer is arithmetic, so this must not fire.
+    #[test]
+    fn the_zh_tw_gate_rejects_a_checksum_near_miss() {
+        let engine = make_engine(doc_with_locale_packs(&["zh-TW"]));
+        let ctx = make_ctx();
+        // A800000005 is valid; A800000004 differs only in the check digit.
+        let result = engine.evaluate(&ctx, &tool_call("any", "居留證統一證號 A800000004 於系統中建檔。"));
+
+        assert!(
+            result.canonical_findings.is_empty(),
+            "a checksum-invalid identifier fired: {:?}",
+            result.canonical_findings
+        );
+    }
+
+    /// Mixed-language payload: the built-in scanner and the locale pack must
+    /// both fire, and both spans must be removed from one redaction.
+    #[test]
+    fn the_zh_tw_gate_composes_with_the_built_in_scanner_on_mixed_text() {
+        let engine = make_engine(doc_with_locale_packs(&["zh-TW"]));
+        let ctx = make_ctx();
+        let raw_key = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+        let text = format!("token={raw_key}，居留證統一證號 A800000005 已建檔。");
+        let result = engine.evaluate(&ctx, &tool_call("any", &text));
+
+        let recognizers: Vec<_> = result
+            .canonical_findings
+            .iter()
+            .map(|f| f.provenance().recognizer)
+            .collect();
+        assert!(
+            recognizers.contains(&aa_security::canonical::Recognizer::BuiltinScanner),
+            "the built-in scanner did not fire on mixed text: {recognizers:?}"
+        );
+        assert!(
+            recognizers.contains(&aa_security::canonical::Recognizer::ZhTwLocalePack),
+            "the locale pack did not fire on mixed text: {recognizers:?}"
+        );
+        let redacted = result.redacted_payload.expect("both findings must redact");
+        assert!(!redacted.contains(raw_key), "the token survived: {redacted}");
+        assert!(!redacted.contains("A800000005"), "the identifier survived: {redacted}");
+    }
+
+    // ── AAASM-5354: the cascade path is a second enforcement path ────────────
+    //
+    // `PolicyEngine::evaluate` has two Stage 6 implementations, not one: it
+    // delegates to `evaluate_primary` while the scope index is empty and to
+    // `evaluate_with_cascade` once any scoped document is registered. Both are
+    // production enforcement paths. A test that only exercised the first would
+    // pass with the second still running an un-ported detector — which is the
+    // shape of wrong-reason pass this Epic keeps producing — so every property
+    // proved of the primary path above is proved again here.
+
+    /// A cascade engine: registering a scoped document makes `evaluate` route
+    /// through `evaluate_with_cascade` rather than `evaluate_primary`.
+    fn make_cascade_engine(docs: Vec<PolicyDocument>) -> PolicyEngine {
+        let mut engine = make_engine(empty_doc());
+        for doc in docs {
+            engine.load_policy(doc);
+        }
+        engine
+    }
+
+    fn scoped(scope: crate::policy::scope::PolicyScope, data: Option<DataPolicy>) -> PolicyDocument {
+        let mut doc = empty_doc();
+        doc.scope = scope;
+        doc.data = data;
+        doc
+    }
+
+    /// Guards every cascade test below: if `evaluate` ever stopped routing to
+    /// `evaluate_with_cascade` for a scope-indexed engine, those tests would be
+    /// re-proving the primary path and silently testing nothing new.
+    #[test]
+    fn a_scope_indexed_engine_really_routes_through_the_cascade_path() {
+        use crate::policy::scope::PolicyScope;
+        // `policy_doc_id` is attributed only by the cascade path; the primary
+        // path documents that it returns `None` because no cascade document
+        // decided.
+        let engine = make_cascade_engine(vec![scoped(PolicyScope::Global, None)]);
+        let result = engine.evaluate(&make_ctx(), &tool_call("any", "harmless"));
+        assert!(
+            result.policy_doc_id.is_some(),
+            "this engine did not take the cascade path, so the cascade tests below prove nothing"
+        );
+        assert!(make_engine(empty_doc())
+            .evaluate(&make_ctx(), &tool_call("any", "harmless"))
+            .policy_doc_id
+            .is_none());
+    }
+
+    /// **The cascade production-path test.** Falsification: reverting
+    /// `evaluate_with_cascade`'s Stage 6 to the pre-port
+    /// `collect_cascade_custom_findings` merge makes this fail while every
+    /// primary-path test stays green.
+    #[test]
+    fn evaluate_with_cascade_invokes_the_detection_port_on_the_production_path() {
+        use crate::policy::scope::PolicyScope;
+        let engine = make_cascade_engine(vec![scoped(PolicyScope::Global, None)]);
+        let action = tool_call("any", "the payload contains SENTINEL somewhere");
+
+        let result = test_double::with(FixedPass::reporting("SENTINEL"), || {
+            engine.evaluate(&make_ctx(), &action)
+        });
+
+        let recognizers: Vec<_> = result
+            .canonical_findings
+            .iter()
+            .map(|f| (f.provenance().recognizer, f.provenance().version))
+            .collect();
+        assert!(
+            recognizers.contains(&(aa_security::canonical::Recognizer::ZhTwLocalePack, "test-double")),
+            "the cascade path did not run the installed pass — its seam is disconnected. got {recognizers:?}"
+        );
+    }
+
+    /// Fail-closed on the cascade path too.
+    #[test]
+    fn a_failing_detection_pass_denies_on_the_cascade_path() {
+        use crate::policy::scope::PolicyScope;
+        let engine = make_cascade_engine(vec![scoped(PolicyScope::Global, None)]);
+        let action = tool_call("any", "anything at all");
+        assert_eq!(engine.evaluate(&make_ctx(), &action).decision, PolicyResult::Allow);
+
+        let result = test_double::with(
+            FixedPass::failing(detection::DetectionError::UnknownLocalePack { tag: "ja-JP".into() }),
+            || engine.evaluate(&make_ctx(), &action),
+        );
+        match result.decision {
+            PolicyResult::Deny { ref reason } => assert!(reason.contains("ja-JP"), "{reason}"),
+            other => panic!("the cascade path must deny on a failed pass, got {other:?}"),
+        }
+    }
+
+    /// Behaviour identity for the cascade path, whose pass 2 spans every
+    /// document in the resolved cascade rather than only the Global one.
+    /// Compared against a transcription of `collect_cascade_custom_findings`
+    /// as it stood at 3e8cb4955.
+    #[test]
+    fn the_cascade_merge_is_identical_to_the_pre_port_cascade_merge() {
+        use crate::policy::scope::PolicyScope;
+        let agent = aa_core::identity::AgentId::from_bytes([1u8; 16]);
+        let global_pattern = r"api_key=[A-Za-z0-9]+";
+        let agent_pattern = r"secret-\w+";
+
+        let engine = make_cascade_engine(vec![
+            scoped(
+                PolicyScope::Global,
+                Some(DataPolicy {
+                    sensitive_patterns: vec![global_pattern.to_string()],
+                    credential_action: CredentialAction::default(),
+                    locale_packs: vec![],
+                }),
+            ),
+            scoped(
+                PolicyScope::Agent(agent),
+                Some(DataPolicy {
+                    sensitive_patterns: vec![agent_pattern.to_string()],
+                    credential_action: CredentialAction::default(),
+                    locale_packs: vec![],
+                }),
+            ),
+        ]);
+
+        let text = "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 api_key=abc123 secret-zzz";
+        let result = engine.evaluate(&make_ctx(), &tool_call("any", text));
+
+        // The pre-port merge: built-in scan, then every cascade doc's patterns
+        // in cascade order, then a stable sort by offset.
+        let scanner = aa_security::CredentialScanner::new();
+        let mut expected = scanner.scan(text).findings;
+        for pattern in [global_pattern, agent_pattern] {
+            let re = regex::Regex::new(pattern).unwrap();
+            for m in re.find_iter(text) {
+                expected.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
+            }
+        }
+        expected.sort_by_key(|f| f.offset);
+
+        assert_eq!(result.credential_findings, expected, "cascade merge differs");
+        assert_eq!(
+            result.redacted_payload,
+            Some(
+                aa_security::ScanResult {
+                    findings: expected.clone()
+                }
+                .redact(text)
+            ),
+            "cascade redaction differs"
+        );
+        // Guard: both passes and both documents must actually have contributed,
+        // or the equality above is between two short lists that agree trivially.
+        assert!(
+            expected.len() >= 3
+                && expected
+                    .iter()
+                    .filter(|f| f.kind == aa_security::CredentialKind::Custom)
+                    .count()
+                    == 2,
+            "the cascade fixture stopped exercising both documents' patterns: {expected:?}"
+        );
+    }
+
+    /// A locale pack named by *any* document in the cascade runs, so a
+    /// narrow-scoped policy asking for a detector is not cancelled by a broader
+    /// one that is silent about it.
+    #[test]
+    fn a_locale_pack_named_by_one_cascade_document_runs_for_that_agent() {
+        use crate::policy::scope::PolicyScope;
+        let agent = aa_core::identity::AgentId::from_bytes([1u8; 16]);
+        let engine = make_cascade_engine(vec![
+            scoped(PolicyScope::Global, None),
+            scoped(
+                PolicyScope::Agent(agent),
+                Some(DataPolicy {
+                    sensitive_patterns: vec![],
+                    credential_action: CredentialAction::default(),
+                    locale_packs: vec!["zh-TW".to_string()],
+                }),
+            ),
+        ]);
+
+        let result = engine.evaluate(&make_ctx(), &tool_call("any", ZH_TW_ARC_TEXT));
+        assert_eq!(
+            result.canonical_findings.len(),
+            1,
+            "the cascade path did not run the pack the agent-scoped document asked for: {:?}",
+            result.canonical_findings
+        );
+        assert_eq!(
+            result.canonical_findings[0].provenance().recognizer,
+            aa_security::canonical::Recognizer::ZhTwLocalePack
+        );
+        let redacted = result.redacted_payload.expect("a finding must redact");
+        assert!(!redacted.contains("A800000005"), "the identifier survived: {redacted}");
+    }
+
+    /// And the same default: a cascade in which no document names a pack does
+    /// not run one.
+    #[test]
+    fn the_cascade_path_runs_no_locale_pack_unless_a_document_names_one() {
+        use crate::policy::scope::PolicyScope;
+        let engine = make_cascade_engine(vec![scoped(PolicyScope::Global, None)]);
+        let result = engine.evaluate(&make_ctx(), &tool_call("any", ZH_TW_ARC_TEXT));
+        assert!(
+            result.canonical_findings.is_empty(),
+            "the cascade path ran the zh-TW pack unasked: {:?}",
+            result.canonical_findings
+        );
+        assert!(result.redacted_payload.is_none());
+    }
+
+    // ── AAASM-5354: behaviour identity of the ungated merge ──────────────────
+
+    /// The pre-port Stage 6 merge, transcribed from `engine/mod.rs` at
+    /// `3e8cb4955`. The "before" side of the identity comparison below.
+    fn pre_port_stage6(patterns: &[regex::Regex], text: &str) -> Vec<aa_security::CredentialFinding> {
+        let scanner = aa_security::CredentialScanner::new();
+        let mut all_findings = scanner.scan(text).findings;
+        for re in patterns {
+            for m in re.find_iter(text) {
+                all_findings.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
+            }
+        }
+        all_findings.sort_by_key(|f| f.offset);
+        all_findings
+    }
+
+    /// End-to-end behaviour identity: for every fixture, the findings the real
+    /// engine reports and the payload it redacts are exactly what the pre-port
+    /// code produced — identical lists, not merely both non-empty.
+    ///
+    /// The counters at the end guard the guard: without them this whole loop
+    /// would pass on a corpus that had stopped producing findings.
+    #[test]
+    fn the_ungated_engine_merge_is_identical_to_the_pre_port_merge() {
+        let fixtures: Vec<(&str, Vec<&str>)> = vec![
+            ("list files in /home/user", vec![]),
+            ("token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", vec![]),
+            ("config: api_key=supersecret123", vec![r"api_key=[A-Za-z0-9]+"]),
+            (
+                "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 and api_key=supersecret123",
+                vec![r"api_key=[A-Za-z0-9]+"],
+            ),
+            (
+                "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+                vec![r"ghp_[A-Za-z0-9]+", r"ghp_[A-Z]{4}"],
+            ),
+            ("aaaa-bbbb-cccc", vec![r"a+-b+", r"b+-c+"]),
+            ("使用者的 api_key=秘密 已外洩", vec![r"api_key=\S+"]),
+            ("abc", vec![r"x*"]),
+            (ZH_TW_ARC_TEXT, vec![]),
+            ("AKIAIOSFODNN7EXAMPLE and postgres://u:p@h/db", vec![]),
+        ];
+
+        let ctx = make_ctx();
+        let mut fixtures_with_findings = 0usize;
+        let mut total_findings = 0usize;
+        let mut fixtures_redacted = 0usize;
+
+        for (text, patterns) in fixtures {
+            let mut doc = empty_doc();
+            doc.data = Some(DataPolicy {
+                sensitive_patterns: patterns.iter().map(|p| p.to_string()).collect(),
+                credential_action: CredentialAction::default(),
+                locale_packs: vec![],
+            });
+            let engine = make_engine(doc);
+            let result = engine.evaluate(&ctx, &tool_call("any", text));
+
+            let compiled: Vec<regex::Regex> = patterns.iter().map(|p| regex::Regex::new(p).unwrap()).collect();
+            let expected = pre_port_stage6(&compiled, text);
+
+            assert_eq!(
+                result.credential_findings, expected,
+                "merged findings differ for fixture {text:?}"
+            );
+
+            let expected_redaction = if expected.is_empty() {
+                None
+            } else {
+                Some(
+                    aa_security::ScanResult {
+                        findings: expected.clone(),
+                    }
+                    .redact(text),
+                )
+            };
+            assert_eq!(
+                result.redacted_payload, expected_redaction,
+                "redaction differs for fixture {text:?}"
+            );
+
+            total_findings += expected.len();
+            if !expected.is_empty() {
+                fixtures_with_findings += 1;
+            }
+            if expected_redaction.is_some() {
+                fixtures_redacted += 1;
+            }
+        }
+
+        assert!(
+            fixtures_with_findings >= 7 && total_findings >= 12 && fixtures_redacted >= 7,
+            "the identity corpus stopped exercising the merge: {fixtures_with_findings} fixtures with \
+             findings, {total_findings} findings, {fixtures_redacted} redactions"
+        );
+    }
+
+    /// Every AAASM-5353 conformance vector, replayed through the real engine
+    /// with the gate on. Reuses the committed fixtures rather than restating
+    /// the detection logic.
+    #[test]
+    fn the_zh_tw_conformance_vectors_replay_through_the_engine() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../conformance/vectors/zh_tw_detection");
+        let engine = make_engine(doc_with_locale_packs(&["zh-TW"]));
+        let ctx = make_ctx();
+
+        let mut checked = 0usize;
+        let mut positive = 0usize;
+        for entry in std::fs::read_dir(&dir).expect("the AAASM-5353 vector directory must exist") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let vector: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let text = vector["input_text"].as_str().unwrap();
+            let expected: Vec<String> = vector["expected_findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["category"].as_str().unwrap().to_string())
+                .collect();
+
+            let result = engine.evaluate(&ctx, &tool_call("any", text));
+            let actual: Vec<String> = result
+                .canonical_findings
+                .iter()
+                .filter(|f| f.provenance().recognizer == aa_security::canonical::Recognizer::ZhTwLocalePack)
+                .map(|f| f.category().to_string())
+                .collect();
+
+            assert_eq!(
+                actual,
+                expected,
+                "vector {} replayed differently through the engine",
+                path.display()
+            );
+            checked += 1;
+            if !expected.is_empty() {
+                positive += 1;
+            }
+        }
+
+        // Without this the test passes on an empty directory, and passes on a
+        // pack that detects nothing at all (every vector's expectation would
+        // then be the empty list only for the negatives).
+        assert!(
+            checked >= 19 && positive >= 8,
+            "expected the full AAASM-5353 vector set: {checked} replayed, {positive} with findings"
+        );
+    }
 
     #[test]
     fn evaluate_allows_when_no_policy_sections() {
@@ -3087,6 +3941,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"password=\w+".to_string()],
             credential_action: CredentialAction::default(),
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -3107,6 +3962,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"password=\w+".to_string()],
             credential_action: CredentialAction::Block,
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -3129,6 +3985,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"password=\w+".to_string()],
             credential_action: CredentialAction::AlertOnly,
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -3148,6 +4005,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"password=\w+".to_string()],
             credential_action: CredentialAction::AlertAndRedact,
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -3528,6 +4386,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![".*".to_string()],
             credential_action: CredentialAction::default(),
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -3714,6 +4573,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"api_key=[A-Za-z0-9]+".to_string()],
             credential_action: CredentialAction::default(),
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -4687,6 +5547,7 @@ mod tests {
             decision: PolicyResult::Allow,
             redacted_payload: None,
             credential_findings: vec![],
+            canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
             narrowed: false,
@@ -4711,6 +5572,7 @@ mod tests {
             },
             redacted_payload: None,
             credential_findings: vec![],
+            canonical_findings: vec![],
             deny_action: Some(DenyAction::Block),
             policy_doc_id: None,
             narrowed: false,
@@ -4739,6 +5601,7 @@ mod tests {
             decision: PolicyResult::RequiresApproval { timeout_secs: 600 },
             redacted_payload: None,
             credential_findings: vec![],
+            canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
             narrowed: false,

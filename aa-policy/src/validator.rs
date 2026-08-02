@@ -398,9 +398,22 @@ impl PolicyValidator {
             }
         };
 
+        // AAASM-5354. The tags are carried through verbatim and **not**
+        // checked against a catalogue here, deliberately: which recognizer
+        // packs a build contains is a property of the detection layer, and
+        // this crate is a leaf that does not — and must not — depend on it.
+        //
+        // An unrecognised tag is therefore rejected where the catalogue lives,
+        // by `aa_gateway::engine::detection::resolve_locale_packs`, which fails
+        // closed: the action is denied, naming the tag. That is louder than a
+        // load-time rejection would be, and the alternative is worse — a
+        // detector an operator asked for silently not running.
+        let locale_packs = raw.locale_packs.unwrap_or_default();
+
         Some(DataPolicy {
             sensitive_patterns: patterns,
             credential_action,
+            locale_packs,
         })
     }
 
@@ -761,6 +774,42 @@ mod tests {
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         let dp = out.document.data.unwrap();
         assert_eq!(dp.sensitive_patterns.len(), 1);
+    }
+
+    // ── Data locale_packs validation (AAASM-5354) ──────────────────────────
+
+    /// The default a policy that says nothing gets. Asserted explicitly because
+    /// it is a security default, not an implementation detail: an empty list is
+    /// what keeps the 22%-residual 統一編號 recognizer off the pre-action block
+    /// path unless an operator asks for it.
+    #[test]
+    fn data_locale_packs_defaults_to_empty() {
+        let yaml = "data:\n  sensitive_patterns:\n    - \"sk-[a-zA-Z0-9]{48}\"\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(out.document.data.unwrap().locale_packs.is_empty());
+    }
+
+    #[test]
+    fn data_locale_packs_round_trip() {
+        let yaml = "data:\n  locale_packs:\n    - \"zh-TW\"\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert_eq!(out.document.data.unwrap().locale_packs, vec!["zh-TW".to_string()]);
+    }
+
+    /// A tag this build has no pack for still *parses*. This crate carries the
+    /// operator's request verbatim; it does not know the catalogue, so it must
+    /// not decide the tag is wrong.
+    ///
+    /// Rejecting it is the detection layer's job, and it does — see
+    /// `aa_gateway::engine::tests::an_unknown_locale_pack_denies_rather_than_scanning_without_it`,
+    /// which asserts the action is denied rather than scanned without the pack.
+    /// This test exists so that pairing is visible from here; without it, a
+    /// reader of this file would reasonably conclude nothing checks the tag.
+    #[test]
+    fn an_unrecognised_locale_pack_tag_is_carried_through_not_rejected_here() {
+        let yaml = "data:\n  locale_packs:\n    - \"ja-JP\"\n";
+        let out = PolicyValidator::from_yaml(yaml).expect("the policy grammar is satisfied");
+        assert_eq!(out.document.data.unwrap().locale_packs, vec!["ja-JP".to_string()]);
     }
 
     #[test]
