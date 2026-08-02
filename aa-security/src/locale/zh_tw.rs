@@ -1448,6 +1448,40 @@ mod tests {
         assert_eq!(categories(&format!("統一發票號碼 {safe}")), Vec::<String>::new());
     }
 
+    /// Full-width phone punctuation is a **known miss**, pinned rather than left
+    /// undiscovered.
+    ///
+    /// The identity recognizers normalise full-width letters and digits, but the
+    /// phone recognizers key off ASCII `+`, `(`, `)` and `-`, so a number typed
+    /// entirely on a CJK input method is not detected. AAASM-5364 owns
+    /// full-width separators across the whole scanner and is the right place to
+    /// fix it; what is not acceptable is that it be undocumented, since a miss
+    /// is a leak.
+    #[test]
+    fn full_width_phone_punctuation_is_a_known_miss() {
+        for text in [
+            "＋８８６９１２３４５６７８",
+            "（０２）２３４５６７８９",
+            "０９１２－３４５－６７８",
+        ] {
+            let phone_findings: Vec<String> = scan(text)
+                .iter()
+                .filter(|f| f.category().base() == Base::PhoneNumber)
+                .map(|f| f.category().to_string())
+                .collect();
+            assert_eq!(
+                phone_findings,
+                Vec::<String>::new(),
+                "{text} is currently a known miss; if this now passes, update the docs \
+                 and AAASM-5364 rather than deleting the test"
+            );
+        }
+        // The ASCII forms of the same numbers are detected, so the gap is
+        // specifically the punctuation and not the recognizer.
+        assert_eq!(categories("+886912345678"), ["PHONE_NUMBER[zh-TW/mobile]"]);
+        assert_eq!(categories("(02)23456789"), ["PHONE_NUMBER[zh-TW/landline]"]);
+    }
+
     /// Every category this pack emits must parse back in the same build.
     ///
     /// The failure it guards is silent: a category missing from
