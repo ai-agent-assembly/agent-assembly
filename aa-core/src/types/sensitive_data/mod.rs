@@ -4,6 +4,7 @@
 //! Types only — nothing here writes, stores or serves anything.
 
 mod category_label;
+mod counts;
 mod evidence;
 mod finding_record;
 mod guard;
@@ -12,6 +13,7 @@ mod verdict;
 mod vocab;
 
 pub use category_label::CategoryLabel;
+pub use counts::{CategoryCount, CountsError, FindingCounts};
 pub use evidence::{EnforcementPoint, ExecutionEvidence, InspectionFailurePath, TransmissionEvidence};
 pub use finding_record::{AggregateKey, DetectionProvenance, SensitiveDataFindingRecord};
 pub use guard::{AuditLabel, FieldPath, FieldRejection, MAX_FIELD_PATH_BYTES, MAX_LABEL_BYTES};
