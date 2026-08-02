@@ -63,19 +63,21 @@ impl RuntimeVerdictLabel {
     /// Five, permanently. A sixth entry here would be a breaking wire change
     /// under ADR 0024 and a violation of ADR 0032 D-2.
     ///
-    /// # This list is a mirror, and nothing yet enforces the reflection
+    /// # This list is a mirror, and `aa-api` enforces the reflection
     ///
     /// `aa_api::models::verdict::RuntimeVerdict` is the authority; these are its
-    /// wire labels, maintained by hand. **No test currently ties the two**, so a
-    /// rename or reorder in `aa-api` would break every stored
-    /// [`SensitiveDataDecisionEvent`](super::SensitiveDataDecisionEvent) and go
-    /// unnoticed — not even a whole-workspace build would object, since this
-    /// type is referenced by no crate but its own.
+    /// wire labels, maintained by hand. The two are tied together by
+    /// `aa_api::models::verdict::aa_core_label_contract`, which asserts that
+    /// each variant serializes to exactly the entry of this list at the same
+    /// index (AAASM-5384). A rename, reorder, addition or removal on either
+    /// side now fails that test instead of silently breaking every stored
+    /// [`SensitiveDataDecisionEvent`](super::SensitiveDataDecisionEvent).
     ///
-    /// The contract test belongs in `aa-api`, the only crate that can see both
-    /// types, and is tracked as **AAASM-5384**. It is not here because
-    /// `aa-core` cannot import `aa-api` — that dependency runs the other way,
-    /// deliberately (ADR 0018).
+    /// The test lives in `aa-api` — the only crate that can see both types —
+    /// rather than here, because `aa-core` cannot import `aa-api`: that
+    /// dependency runs the other way, deliberately (ADR 0018). So editing this
+    /// list alone still builds and tests clean *within this crate*; it is
+    /// `cargo nextest run -p aa-api` that objects.
     pub const ALL: &'static [Self] = &[Self::ALLOW, Self::NARROW, Self::SCRUB, Self::PENDING, Self::DENY];
 
     /// Read a verdict back from its wire label.
