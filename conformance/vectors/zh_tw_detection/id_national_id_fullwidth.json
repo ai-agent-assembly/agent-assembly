@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353 / AAASM-5345: the same synthetic national ID written in full-width digits, one keystroke away on any CJK input method and unchanged through JSON. Offsets are in bytes of the ORIGINAL text, so each full-width digit occupies three bytes, not one - a span computed over normalised digits would index the wrong bytes and make redaction fail closed.",
+  "input_text": "身分證字號 Ａ２０００００００３ 已建檔。",
+  "expected_findings": [
+    {
+      "category": "NATIONAL_ID[zh-TW/national_id]",
+      "offset": 16,
+      "end": 46,
+      "confidence": "high"
+    }
+  ],
+  "expected_redacted": "身分證字號 [REDACTED] 已建檔。"
+}

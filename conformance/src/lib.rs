@@ -54,6 +54,41 @@ pub struct FindingSpec {
     pub offset: usize,
 }
 
+/// A single locale-pack detection test vector (AAASM-5353).
+///
+/// A separate type from [`ScanVector`], and a separate vector directory, because
+/// the two describe different things. A `ScanVector` names a
+/// [`CredentialKind`](aa_security::CredentialKind); a locale-pack finding has
+/// none by design — ADR 0032 §2 freezes `CredentialKind::ALL` — and is
+/// identified by its rendered [`CanonicalCategory`](aa_security::canonical::CanonicalCategory)
+/// instead. Widening `ScanVector` with optional fields would have made every one
+/// of the 34 committed credential vectors describe a schema they do not use, and
+/// would have pulled them into a runner the Python SDK harness cannot drive.
+#[derive(Debug, serde::Deserialize)]
+pub struct LocaleScanVector {
+    pub description: String,
+    pub input_text: String,
+    pub expected_findings: Vec<LocaleFindingSpec>,
+    pub expected_redacted: String,
+}
+
+/// One expected finding within a [`LocaleScanVector`].
+///
+/// `end` is present where `FindingSpec` has only `offset`, because a locale
+/// recognizer's whole job is to decide where the identifier *stops* — the
+/// boundary rule is the load-bearing part against CJK, and a vector that pinned
+/// only the start offset would not notice a span that swallowed the Han
+/// character after it.
+#[derive(Debug, serde::Deserialize)]
+pub struct LocaleFindingSpec {
+    /// Rendered canonical category, e.g. `NATIONAL_ID[zh-TW/arc_new]`.
+    pub category: String,
+    pub offset: usize,
+    pub end: usize,
+    /// Published confidence spelling: `high`, `medium` or `low`.
+    pub confidence: String,
+}
+
 /// A single session lifecycle test vector.
 ///
 /// `message_type` names the proto message under test (e.g. `"RegisterRequest"`).

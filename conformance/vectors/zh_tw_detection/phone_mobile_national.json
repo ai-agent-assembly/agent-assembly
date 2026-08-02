@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353: 行動電話 in national form - 09 plus exactly eight more digits. Synthetic: an ascending digit run, so it is visibly constructed. A phone number has no checksum, so the recognizer rests on the 09 prefix plus the exact length; the 手機 label corroborates it to high.",
+  "input_text": "手機 0912345678 可以聯絡到我。",
+  "expected_findings": [
+    {
+      "category": "PHONE_NUMBER[zh-TW/mobile]",
+      "offset": 7,
+      "end": 17,
+      "confidence": "high"
+    }
+  ],
+  "expected_redacted": "手機 [REDACTED] 可以聯絡到我。"
+}

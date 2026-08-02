@@ -1,0 +1,19 @@
+{
+  "description": "AAASM-5353: 市內電話. The area code comes from a closed gazetteer paired with that area's local-number length - 02 takes eight local digits, 037 takes six, and longest match is what keeps 037 from being read as area 3. With no checksum to appeal to, the gazetteer plus a required separator is the whole constraint.",
+  "input_text": "電話 02-23456789 或 037-456789 皆可。",
+  "expected_findings": [
+    {
+      "category": "PHONE_NUMBER[zh-TW/landline]",
+      "offset": 7,
+      "end": 18,
+      "confidence": "medium"
+    },
+    {
+      "category": "PHONE_NUMBER[zh-TW/landline]",
+      "offset": 23,
+      "end": 33,
+      "confidence": "medium"
+    }
+  ],
+  "expected_redacted": "電話 [REDACTED] 或 [REDACTED] 皆可。"
+}
