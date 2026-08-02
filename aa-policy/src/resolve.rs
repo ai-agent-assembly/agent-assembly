@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use aa_core::integration::policy_posture::{PolicyPosture, PolicyState};
 use aa_core::{PolicyDecision, PolicyDocument, PolicyRule};
 
 /// A minimal policy artifact that permits everything.
@@ -129,6 +130,49 @@ pub enum Unconfigured {
         /// The artifact that turned out to be empty.
         source: PathBuf,
     },
+}
+
+impl PolicyResolution {
+    /// The reportable posture for this resolution.
+    ///
+    /// One mapping, used by every surface that reports policy state: the
+    /// developer-integration service for `status` and `verify`, and `aasm run`
+    /// for the audit record it emits after registration. A second mapping would
+    /// be a second definition of what each state means, which is the defect
+    /// AAASM-5349 exists to remove rather than one to introduce.
+    ///
+    /// Always `Resolved` — a resolution, by construction, resolved something.
+    /// [`PolicyPosture::Unknown`] is for callers that could not resolve at all,
+    /// which is a fact about the caller and not about any policy.
+    pub fn posture(&self) -> PolicyPosture {
+        match self {
+            Self::Enforced { source, document } => PolicyPosture::Resolved {
+                state: PolicyState::Enforced,
+                source: Some(source.display().to_string()),
+                detail: format!("{} rule(s)", document.rules.len()),
+            },
+            Self::Permissive { source, .. } => PolicyPosture::Resolved {
+                state: PolicyState::Permissive,
+                source: Some(source.display().to_string()),
+                detail: "explicit allow-all artifact; nothing is restricted".to_string(),
+            },
+            Self::Unconfigured(Unconfigured::NoSource { searched }) => PolicyPosture::Resolved {
+                state: PolicyState::Unconfigured,
+                source: None,
+                detail: format!("no policy artifact found; searched {}", searched.join(", ")),
+            },
+            Self::Unconfigured(Unconfigured::EmptyDocument { source }) => PolicyPosture::Resolved {
+                state: PolicyState::Unconfigured,
+                source: Some(source.display().to_string()),
+                detail: "parsed cleanly but declares no tool rule".to_string(),
+            },
+            Self::LoadFailed { source, detail } => PolicyPosture::Resolved {
+                state: PolicyState::LoadFailed,
+                source: Some(source.display().to_string()),
+                detail: detail.clone(),
+            },
+        }
+    }
 }
 
 impl PolicyResolution {
