@@ -4,6 +4,7 @@
 
 pub mod cache;
 pub mod decision;
+pub mod detection;
 pub(crate) mod rate_limit;
 pub mod scope_index;
 pub(crate) mod watcher;
