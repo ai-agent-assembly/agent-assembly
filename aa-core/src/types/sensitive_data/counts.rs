@@ -124,6 +124,23 @@ impl FindingCounts {
         let summed: u64 = self.by_category.iter().map(|entry| u64::from(entry.count)).sum();
         summed == u64::from(self.total)
     }
+
+    /// Whether `transformed + blocked` is within `total`.
+    ///
+    /// The read-path counterpart of the check
+    /// [`tally`](Self::tally) enforces at construction. It exists because
+    /// `tally` is not the only way to get a `FindingCounts`: deserializing one
+    /// runs no invariant at all, so a stored row can say `blocked: 99` against
+    /// `total: 1` — which is precisely the "prevention dashboard reporting more
+    /// blocked findings than there were findings" that
+    /// [`CountsError::DispositionCountsExceedTotal`] exists to prevent, arriving
+    /// at exactly the layer that reads.
+    ///
+    /// Always true for a tallied set; ask it of anything that came from storage,
+    /// as with [`breakdown_is_complete`](Self::breakdown_is_complete).
+    pub fn disposition_counts_are_consistent(&self) -> bool {
+        u64::from(self.transformed) + u64::from(self.blocked) <= u64::from(self.total)
+    }
 }
 
 #[cfg(test)]
@@ -134,7 +151,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::types::sensitive_data::FieldPath;
+    use crate::types::sensitive_data::{AuditLabel, FieldPath};
 
     fn record(category: CanonicalCategory, path: &str) -> SensitiveDataFindingRecord {
         let finding = CanonicalFinding::new(
@@ -147,7 +164,12 @@ mod tests {
             FindingStatus::Confirmed,
         )
         .unwrap();
-        SensitiveDataFindingRecord::from_finding(&finding, FieldPath::parse(path).unwrap()).unwrap()
+        SensitiveDataFindingRecord::from_finding(
+            AuditLabel::new("01HZX9V8ABCDEFGHJKMNPQRSTV").unwrap(),
+            &finding,
+            FieldPath::parse(path).unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -209,6 +231,38 @@ mod tests {
         let mut counts = FindingCounts::tally(&[], 0, 0).unwrap();
         counts.total = 5;
         assert!(!counts.breakdown_is_complete());
+    }
+
+    /// The disposition invariant is checkable on a value `tally` never saw.
+    ///
+    /// `tally` refuses to build this, but deserialization will happily produce
+    /// it, and a dashboard reads deserialized rows — so a constructor-only
+    /// check protects the one path that was never in danger.
+    #[test]
+    fn inconsistent_disposition_counts_are_detectable_after_the_fact() {
+        let mut counts = FindingCounts::tally(&[], 0, 0).unwrap();
+        assert!(
+            counts.disposition_counts_are_consistent(),
+            "an empty tally is consistent"
+        );
+
+        counts.total = 1;
+        counts.blocked = 99;
+        assert!(
+            !counts.disposition_counts_are_consistent(),
+            "99 blocked findings out of 1 read as consistent"
+        );
+
+        counts.blocked = 1;
+        assert!(counts.disposition_counts_are_consistent());
+
+        // The boundary: transformed + blocked == total is fine, one more is not.
+        counts.total = 4;
+        counts.transformed = 2;
+        counts.blocked = 2;
+        assert!(counts.disposition_counts_are_consistent());
+        counts.blocked = 3;
+        assert!(!counts.disposition_counts_are_consistent());
     }
 }
 
