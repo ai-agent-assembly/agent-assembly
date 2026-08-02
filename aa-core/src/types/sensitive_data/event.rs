@@ -639,7 +639,12 @@ pub(super) mod fixtures {
             FindingStatus::Confirmed,
         )
         .expect("well-formed span");
-        SensitiveDataFindingRecord::from_finding(&finding, FieldPath::parse(path).unwrap()).unwrap()
+        SensitiveDataFindingRecord::from_finding(
+            AuditLabel::new("01HZX9V8ABCDEFGHJKMNPQRSTV").unwrap(),
+            &finding,
+            FieldPath::parse(path).unwrap(),
+        )
+        .unwrap()
     }
 
     pub(in crate::types::sensitive_data) fn tenancy() -> Tenancy {
