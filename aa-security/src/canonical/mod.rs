@@ -33,6 +33,8 @@
 //! | `PAYMENT_CARD_NUMBER` | payment card number |
 //! | `EMAIL_ADDRESS` | email address |
 //! | `NATIONAL_ID` | government-issued personal identifier |
+//! | `TAX_IDENTIFIER` | registration number identifying a business to a tax authority |
+//! | `PHONE_NUMBER` | telephone number |
 //! | `HIGH_ENTROPY_SECRET` | entropy/encoding heuristic hit of unknown kind |
 //! | `POLICY_DEFINED_MATCH` | match from an operator-authored policy pattern |
 //!
@@ -119,6 +121,7 @@ mod category;
 mod finding;
 mod lift;
 mod mapping;
+mod redact;
 #[cfg(feature = "serde")]
 mod serde_impls;
 
@@ -128,3 +131,4 @@ pub use finding::{
 };
 pub use lift::{LiftError, POLICY_REGEX_PROVENANCE, SCANNER_PROVENANCE};
 pub use mapping::ParseCategoryError;
+pub use redact::redact_findings;

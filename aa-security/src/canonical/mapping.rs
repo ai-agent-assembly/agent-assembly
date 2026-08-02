@@ -36,10 +36,14 @@ impl CanonicalCategory {
     /// locale packs AAASM-5353 adds have no kind by design, yet a live
     /// recognizer will emit them and something downstream must parse them back.
     ///
-    /// AAASM-5353 extends this list. `every_credential_kind_category_is_in_all`
-    /// keeps it honest in the direction the compiler cannot: the forward mapping
-    /// is exhaustiveness-checked, but nothing would otherwise notice a category
-    /// that exists and is unparseable.
+    /// AAASM-5353 extends this list with the six zh-TW locale categories at the
+    /// end. `every_credential_kind_category_is_in_all` keeps the first 28 honest
+    /// in the direction the compiler cannot; `every_zh_tw_category_is_in_all`
+    /// does the same for the six, which need it more — they have no
+    /// `CredentialKind` and therefore no exhaustiveness-checked forward mapping
+    /// at all, so a category that exists, renders fine, is emitted by a live
+    /// recognizer and then fails to parse in the same build is exactly the
+    /// silent failure this list prevents.
     pub const ALL: &'static [CanonicalCategory] = &[
         Self::with_scheme(Base::ApiKey, "anthropic", "key"),
         Self::with_scheme(Base::ApiKey, "openai", "key"),
@@ -69,6 +73,16 @@ impl CanonicalCategory {
         Self::with_locale(Base::NationalId, "en-US", "ssn"),
         Self::unqualified(Base::HighEntropySecret),
         Self::unqualified(Base::PolicyDefinedMatch),
+        // AAASM-5353 — the zh-TW deterministic pack. No `CredentialKind`, by
+        // design: ADR 0032 §2 freezes `CredentialKind::ALL`, so these reach the
+        // model only through `crate::locale::zh_tw`, and `to_credential_kind`
+        // correctly answers `None` for every one of them.
+        Self::with_locale(Base::NationalId, "zh-TW", "national_id"),
+        Self::with_locale(Base::NationalId, "zh-TW", "arc_new"),
+        Self::with_locale(Base::NationalId, "zh-TW", "arc_legacy"),
+        Self::with_locale(Base::TaxIdentifier, "zh-TW", "business_id"),
+        Self::with_locale(Base::PhoneNumber, "zh-TW", "mobile"),
+        Self::with_locale(Base::PhoneNumber, "zh-TW", "landline"),
     ];
 
     /// The canonical category for a scanner detector kind.
@@ -603,21 +617,68 @@ mod tests {
         }
         assert_eq!(
             CanonicalCategory::ALL.len(),
-            28,
-            "catalogue should hold exactly this build's 28 categories"
+            34,
+            "catalogue should hold exactly this build's 28 scanner categories \
+             plus AAASM-5353's 6 zh-TW locale categories"
         );
+    }
+
+    /// The zh-TW locale categories, pinned by their rendered form.
+    ///
+    /// These have no `CredentialKind`, so none of the guards above touch them:
+    /// the forward mapping is exhaustiveness-checked over kinds and there is no
+    /// kind here to check. Without this test a locale category could be dropped
+    /// from, renamed in, or never added to `ALL` and the whole suite would still
+    /// pass — while a live recognizer emitted a category that failed to parse in
+    /// the same build. That is the exact failure `an_unknown_rendering_is_refused`
+    /// predicted before this ticket landed.
+    #[test]
+    fn every_zh_tw_category_is_in_all_and_maps_back_to_no_credential_kind() {
+        const EXPECTED: &[&str] = &[
+            "NATIONAL_ID[zh-TW/national_id]",
+            "NATIONAL_ID[zh-TW/arc_new]",
+            "NATIONAL_ID[zh-TW/arc_legacy]",
+            "TAX_IDENTIFIER[zh-TW/business_id]",
+            "PHONE_NUMBER[zh-TW/mobile]",
+            "PHONE_NUMBER[zh-TW/landline]",
+        ];
+
+        let rendered: Vec<String> = CanonicalCategory::ALL
+            .iter()
+            .filter(|c| matches!(c.qualifier(), Some(CategoryQualifier::Locale { tag: "zh-TW", .. })))
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(rendered, EXPECTED);
+
+        for spelling in EXPECTED {
+            let parsed = spelling
+                .parse::<CanonicalCategory>()
+                .unwrap_or_else(|_| panic!("{spelling} is in ALL but does not parse"));
+            assert_eq!(
+                parsed.to_credential_kind(),
+                None,
+                "{spelling} must have no CredentialKind — ADR 0032 §2 freezes CredentialKind::ALL"
+            );
+            // And therefore the opaque label, never a fabricated pattern name.
+            assert_eq!(parsed.redaction_label(), "[REDACTED]");
+        }
     }
 
     /// A category this build does not know is refused, not fabricated.
     ///
-    /// This is the case a reader older than a B-7 locale pack will actually hit.
+    /// This is the case a reader older than a locale pack will actually hit.
+    /// AAASM-5352 used `NATIONAL_ID[zh-TW/arc_new]` as the example; AAASM-5353
+    /// added that recognizer and its `ALL` entry, so it now parses and the
+    /// example moved to a jurisdiction this build genuinely has no pack for.
     #[test]
     fn an_unknown_rendering_is_refused() {
         for input in [
             // Constructible in this build via `with_locale`, but not in the
-            // catalogue because no recognizer here produces it. AAASM-5353 adds
-            // both the recognizer and the `ALL` entry, and then it parses.
-            "NATIONAL_ID[zh-TW/arc_new]",
+            // catalogue because no recognizer here produces it.
+            "NATIONAL_ID[ja-JP/my_number]",
+            // A locale pack this build *does* have, with a variant it does not:
+            // the qualifier is what discriminates, not the base plus the tag.
+            "NATIONAL_ID[zh-TW/no_such_variant]",
             "NOT_A_BASE",
             "ACCESS_TOKEN[github:no_such_variant]",
             "ACCESS_TOKEN[github:personal_access]extra",

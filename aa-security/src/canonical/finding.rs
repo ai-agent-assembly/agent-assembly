@@ -210,6 +210,18 @@ pub enum Recognizer {
     /// which `aa-gateway` calls from `engine/mod.rs`. Attributing them to the
     /// built-in scanner would name a detector that never ran.
     PolicyRegex,
+    /// The zh-TW deterministic locale pack in [`crate::locale::zh_tw`]
+    /// (AAASM-5353).
+    ///
+    /// Its own identity rather than [`Recognizer::BuiltinScanner`], for the same
+    /// reason [`Recognizer::PolicyRegex`] has one: it is a different detector,
+    /// running from a different entry point, over a different alphabet, with a
+    /// different residual false-positive profile. An operator reading a
+    /// false-positive report needs to know a hit came from a checksum over
+    /// Taiwanese identifiers and not from the Aho-Corasick literal scan, because
+    /// the two warrant different responses — and because these findings carry no
+    /// `CredentialKind`, the recognizer is the only axis that says so.
+    ZhTwLocalePack,
 }
 
 impl Recognizer {
@@ -218,6 +230,7 @@ impl Recognizer {
         match self {
             Self::BuiltinScanner => "aa-security::scanner",
             Self::PolicyRegex => "aa-gateway::policy_regex",
+            Self::ZhTwLocalePack => "aa-security::locale::zh_tw",
         }
     }
 }

@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353: the acceptance criteria's own example. No separator, flush against Han on the left. Han is a word character, so \\b\\d{8}\\b does not match this - which is exactly how the identifier is written in practice. Weighted digit-sum 39; the seventh digit is 7, arming the historical exception, so 39+1 = 40 satisfies both era rules.",
+  "input_text": "統編12345675",
+  "expected_findings": [
+    {
+      "category": "TAX_IDENTIFIER[zh-TW/business_id]",
+      "offset": 6,
+      "end": 14,
+      "confidence": "medium"
+    }
+  ],
+  "expected_redacted": "統編[REDACTED]"
+}

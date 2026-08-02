@@ -871,7 +871,14 @@ const DIGIT_SEGMENT_MAX_CHARS: usize = 24;
 /// UTF-8 bytes against ASCII's one, so callers must keep every reported offset
 /// in terms of the original text; normalising the text and matching on the
 /// result would yield offsets that index the wrong bytes.
-fn ascii_digit_of(c: char) -> Option<char> {
+///
+/// `pub(crate)` rather than private so [`crate::locale`] shares this exact
+/// mapping instead of copying it. A locale pack that matched raw ASCII bytes
+/// would reintroduce AAASM-5345's evasion one recognizer at a time, and a second
+/// copy of the table would be free to drift from this one — the digits a
+/// Taiwanese identifier is written in are the same digits a card number is
+/// written in, so there is one correct answer and it should have one definition.
+pub(crate) fn ascii_digit_of(c: char) -> Option<char> {
     match c {
         '0'..='9' => Some(c),
         '\u{FF10}'..='\u{FF19}' => char::from_u32(c as u32 - 0xFF10 + u32::from(b'0')),

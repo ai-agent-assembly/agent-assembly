@@ -18,6 +18,7 @@
 #![warn(missing_docs)]
 
 pub mod canonical;
+pub mod locale;
 pub mod policy;
 pub mod redaction;
 pub mod scanner;
