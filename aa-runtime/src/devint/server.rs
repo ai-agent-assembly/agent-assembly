@@ -402,7 +402,10 @@ impl Connection {
                 request_id,
                 wire::DenyCode::UnavailableAtVersion,
                 "this operation does not exist at the negotiated DI-API version",
-                &format!("reconnect negotiating DI-API v{}", negotiate::DI_API_MAX_SUPPORTED),
+                &format!(
+                    "reconnect negotiating DI-API v{} or newer",
+                    negotiate::verb_available_since(verb)
+                ),
             );
         }
 
@@ -462,7 +465,10 @@ impl Connection {
             }
             DiVerb::Verify => {
                 let result = lifecycle.verify(&tool).await?;
-                response.verification = Some(project::verification_view(&result));
+                response.verification = Some(project::verification_view(
+                    &result,
+                    &crate::devint::service::resolve_host_policy(),
+                ));
             }
             DiVerb::Repair => {
                 let (report, status) = lifecycle.repair(&tool).await?;

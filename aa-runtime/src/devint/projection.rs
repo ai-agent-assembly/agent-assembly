@@ -37,6 +37,7 @@
 //! `UnknownTool` if it does not.
 
 use aa_core::dev_tool::{DevToolKind, GovernanceLevel};
+use aa_core::integration::policy_posture::PolicyPosture;
 use aa_core::integration::{
     ArtifactOperation, CapabilityResolution, DevToolCapabilities, EvidenceKind, ExerciseOutcome, IntegrationCapability,
     IntegrationPlan, IntegrationReceipt, IntegrationStatus, IntegrationStep, LifecyclePhase, PolicyProfileRef,
@@ -486,6 +487,28 @@ pub fn evidence_view(evidence: &ProtectionEvidence) -> wire::EvidenceView {
     }
 }
 
+/// Project a policy posture onto the wire.
+///
+/// `Unknown` crosses as a `PolicyView` whose state token is `unknown` rather
+/// than as an absent field: the service *did* answer, and what it answered is
+/// "I could not establish one". An absent field means something different — a
+/// peer that predates DI-API 3 and cannot be asked at all — and a reader has to
+/// be able to tell those apart.
+fn policy_view(posture: &PolicyPosture) -> wire::PolicyView {
+    match posture {
+        PolicyPosture::Resolved { state, source, detail } => wire::PolicyView {
+            state: state.token().to_string(),
+            source: source.clone().unwrap_or_default(),
+            detail: detail.clone(),
+        },
+        PolicyPosture::Unknown { reason } => wire::PolicyView {
+            state: "unknown".to_string(),
+            source: String::new(),
+            detail: reason.clone(),
+        },
+    }
+}
+
 /// Project an integration status.
 pub fn status_view(status: &IntegrationStatus) -> wire::StatusView {
     let (state, drift_mismatched, reason, remediation) = match &status.state {
@@ -514,11 +537,12 @@ pub fn status_view(status: &IntegrationStatus) -> wire::StatusView {
         drift_mismatched,
         state_reason: reason,
         state_remediation: remediation,
+        policy: Some(policy_view(&status.policy)),
     }
 }
 
 /// Project a verification result.
-pub fn verification_view(result: &VerificationResult) -> wire::VerificationView {
+pub fn verification_view(result: &VerificationResult, policy: &PolicyPosture) -> wire::VerificationView {
     let (outcome, missing, reason) = match &result.outcome {
         VerificationOutcome::Passed => ("passed", Vec::new(), String::new()),
         VerificationOutcome::PartiallyPassed { missing } => ("partially_passed", missing.clone(), String::new()),
@@ -535,6 +559,11 @@ pub fn verification_view(result: &VerificationResult) -> wire::VerificationView 
         missing,
         reason,
         evidence: result.evidence.iter().map(evidence_view).collect(),
+        // `VerificationResult` carries no policy of its own: adapters construct
+        // it and an adapter governs one tool, while the effective policy is a
+        // property of the host. The service supplies it here so both verbs
+        // report the one resolution rather than two.
+        policy: Some(policy_view(policy)),
     }
 }
 
@@ -578,6 +607,90 @@ pub const fn artifact_operation_name(operation: ArtifactOperation) -> &'static s
 
 #[cfg(test)]
 mod tests {
+    use aa_core::integration::policy_posture::PolicyState;
+
+    /// The four states must cross the wire as the tokens every other surface
+    /// uses. A rename here would desynchronise `status` from `AA_POLICY_STATE`
+    /// and the `policy=` banner, which are supposed to agree by construction.
+    #[test]
+    fn policy_view_carries_the_shared_state_tokens() {
+        for (state, token) in [
+            (PolicyState::Enforced, "enforced"),
+            (PolicyState::Permissive, "permissive"),
+            (PolicyState::Unconfigured, "unconfigured"),
+            (PolicyState::LoadFailed, "load_failed"),
+        ] {
+            let view = policy_view(&PolicyPosture::Resolved {
+                state,
+                source: Some("/etc/aasm/policy.yaml".into()),
+                detail: "d".into(),
+            });
+            assert_eq!(view.state, token);
+        }
+    }
+
+    /// `Unknown` must cross as a present view saying `unknown`, never as an
+    /// absent field. The service answered; the answer is "I cannot establish
+    /// one". An absent field means a peer too old to ask — a different fact.
+    #[test]
+    fn an_unknown_posture_is_sent_rather_than_omitted() {
+        let view = policy_view(&PolicyPosture::Unknown {
+            reason: "adapter does not resolve policy".into(),
+        });
+        assert_eq!(view.state, "unknown");
+        assert_eq!(view.detail, "adapter does not resolve policy");
+        assert!(view.source.is_empty(), "there is no artifact to name");
+    }
+
+    /// `unknown` must never collide with a real state token: a reader has to be
+    /// able to tell "nobody could say" from "nothing is configured", and the
+    /// second is a refusal.
+    #[test]
+    fn the_unknown_token_is_not_a_policy_state() {
+        for state in [
+            PolicyState::Enforced,
+            PolicyState::Permissive,
+            PolicyState::Unconfigured,
+            PolicyState::LoadFailed,
+        ] {
+            assert_ne!(state.token(), "unknown");
+        }
+    }
+
+    /// Absence is the wire's way of saying "this peer predates DI-API 3". A v3
+    /// runtime must therefore always send the field, whatever the posture — if
+    /// a projection omitted it for, say, `Unknown`, a reader could not tell an
+    /// old runtime from a current one that could not resolve.
+    #[test]
+    fn a_v3_projection_always_sends_the_field() {
+        let mut status = crate::devint::testkit::fake_status_for_tests();
+        for posture in [
+            PolicyPosture::Unknown {
+                reason: "no service".into(),
+            },
+            PolicyPosture::Resolved {
+                state: PolicyState::Enforced,
+                source: Some("/p.yaml".into()),
+                detail: "3 rule(s)".into(),
+            },
+        ] {
+            status.policy = posture;
+            assert!(
+                status_view(&status).policy.is_some(),
+                "absence is reserved for a peer that predates the field"
+            );
+            assert!(
+                verification_view(
+                    &VerificationResult::unverifiable(0, "fixture".to_string()),
+                    &status.policy,
+                )
+                .policy
+                .is_some(),
+                "verify must carry it for the same reason status does"
+            );
+        }
+    }
+
     use super::*;
     use aa_core::integration::{
         CapabilitySupport, EnvValue, IntegrationRequest, SettingsMerge, ToolVersion, TrustMaterialKind,
@@ -859,7 +972,12 @@ mod tests {
     #[test]
     fn an_unverifiable_result_is_never_rendered_as_passed() {
         let result = VerificationResult::unverifiable(1_700_000_000, "no probe descriptor");
-        let view = verification_view(&result);
+        let view = verification_view(
+            &result,
+            &PolicyPosture::Unknown {
+                reason: "not resolved in this projection test".to_string(),
+            },
+        );
         assert_eq!(view.outcome, "unverifiable");
         assert_eq!(view.reason, "no probe descriptor");
     }
