@@ -103,8 +103,12 @@ pub struct DataPolicy {
     /// keep the historical behaviour.
     pub credential_action: CredentialAction,
     /// AAASM-5354 — BCP-47 tags of the deterministic locale recognizer packs
-    /// this policy asks the gateway to run, resolved by
-    /// [`resolve_locale_packs`](crate::engine::detection::resolve_locale_packs).
+    /// this policy asks the gateway to run.
+    ///
+    /// Carried verbatim. This crate is a leaf and does not know which packs a
+    /// build contains; `aa_gateway::engine::detection::resolve_locale_packs`
+    /// owns the catalogue and fails closed on a tag it does not recognise,
+    /// rather than treating it as "no pack configured".
     ///
     /// **Empty by default, and that default is load-bearing.** Stage 6 runs on
     /// the synchronous pre-action path, where `credential_action: block` denies

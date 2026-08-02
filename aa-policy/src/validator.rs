@@ -398,28 +398,17 @@ impl PolicyValidator {
             }
         };
 
-        // Reject an unknown pack tag at load time rather than at evaluate
-        // time. The engine also fails closed on one (a `PolicyDocument` can be
-        // built without passing through here), but a typo an operator can see
-        // when they apply the policy beats one that surfaces as a blanket deny
-        // on the next action.
+        // AAASM-5354. The tags are carried through verbatim and **not**
+        // checked against a catalogue here, deliberately: which recognizer
+        // packs a build contains is a property of the detection layer, and
+        // this crate is a leaf that does not — and must not — depend on it.
+        //
+        // An unrecognised tag is therefore rejected where the catalogue lives,
+        // by `aa_gateway::engine::detection::resolve_locale_packs`, which fails
+        // closed: the action is denied, naming the tag. That is louder than a
+        // load-time rejection would be, and the alternative is worse — a
+        // detector an operator asked for silently not running.
         let locale_packs = raw.locale_packs.unwrap_or_default();
-        for (i, tag) in locale_packs.iter().enumerate() {
-            if crate::engine::detection::LocalePack::from_tag(tag).is_none() {
-                let known: Vec<&str> = crate::engine::detection::LocalePack::ALL
-                    .iter()
-                    .map(|p| p.tag())
-                    .collect();
-                errors.push(ValidationError::new(
-                    format!("data.locale_packs[{}]", i),
-                    format!(
-                        "unknown locale pack '{}'; this build contains: {}",
-                        tag,
-                        known.join(", ")
-                    ),
-                ));
-            }
-        }
 
         Some(DataPolicy {
             sensitive_patterns: patterns,
@@ -807,25 +796,20 @@ mod tests {
         assert_eq!(out.document.data.unwrap().locale_packs, vec!["zh-TW".to_string()]);
     }
 
+    /// A tag this build has no pack for still *parses*. This crate carries the
+    /// operator's request verbatim; it does not know the catalogue, so it must
+    /// not decide the tag is wrong.
+    ///
+    /// Rejecting it is the detection layer's job, and it does — see
+    /// `aa_gateway::engine::tests::an_unknown_locale_pack_denies_rather_than_scanning_without_it`,
+    /// which asserts the action is denied rather than scanned without the pack.
+    /// This test exists so that pairing is visible from here; without it, a
+    /// reader of this file would reasonably conclude nothing checks the tag.
     #[test]
-    fn data_unknown_locale_pack_is_an_error() {
-        let yaml = "data:\n  locale_packs:\n    - \"zh-TW\"\n    - \"ja-JP\"\n";
-        let result = PolicyValidator::from_yaml(yaml);
-        let errs = result.expect_err("an unknown pack tag must not load");
-        let err = errs
-            .iter()
-            .find(|e| e.field == "data.locale_packs[1]")
-            .expect("the offending index must be named");
-        assert!(
-            err.message.contains("ja-JP"),
-            "message must name the tag: {}",
-            err.message
-        );
-        assert!(
-            err.message.contains("zh-TW"),
-            "message must list what this build does contain: {}",
-            err.message
-        );
+    fn an_unrecognised_locale_pack_tag_is_carried_through_not_rejected_here() {
+        let yaml = "data:\n  locale_packs:\n    - \"ja-JP\"\n";
+        let out = PolicyValidator::from_yaml(yaml).expect("the policy grammar is satisfied");
+        assert_eq!(out.document.data.unwrap().locale_packs, vec!["ja-JP".to_string()]);
     }
 
     #[test]

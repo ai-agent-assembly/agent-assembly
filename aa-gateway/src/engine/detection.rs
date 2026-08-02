@@ -134,13 +134,17 @@ pub trait DetectionPass: sealed::InProcess {
 pub enum DetectionError {
     /// `data.locale_packs` named a pack this build does not contain.
     ///
-    /// [`PolicyValidator`](crate::policy::PolicyValidator) rejects an unknown
-    /// tag at load time, so a policy that reached the engine through YAML
-    /// cannot carry one. This branch covers every other way a
-    /// [`PolicyDocument`] reaches the engine — it is constructed directly by
-    /// `aa-api`, by the simulation surface and by tests — and it fails closed
-    /// rather than treating an unrecognised pack as "no pack configured",
-    /// which would silently disable a detector an operator asked for.
+    /// This is the **only** place an unrecognised tag is caught. `aa-policy` is
+    /// a leaf crate and cannot see this catalogue, so `PolicyValidator` carries
+    /// the operator's tags through verbatim rather than deciding they are wrong
+    /// (AAASM-5349 extracted it; before that extraction the check lived at load
+    /// time, and moving it here is the layering the extraction forces).
+    ///
+    /// The consequence is deliberate and worth stating plainly: a typo in
+    /// `data.locale_packs` loads successfully and then denies every action,
+    /// naming the tag. That is blunt. It is still the right side to fail on —
+    /// the alternative is a detector an operator explicitly asked for silently
+    /// not running, which is the degrade ADR 0032 §5 exists to forbid.
     UnknownLocalePack {
         /// The tag as written in the policy document.
         tag: String,
