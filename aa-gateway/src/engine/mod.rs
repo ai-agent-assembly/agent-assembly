@@ -57,6 +57,32 @@ pub struct EvaluationResult {
     /// All credential and PII findings detected during the scanner pass.
     /// Empty when the payload was clean.
     pub credential_findings: Vec<aa_security::CredentialFinding>,
+    /// AAASM-5354 — the same Stage 6 findings described in the canonical,
+    /// provider-neutral vocabulary of ADR 0032 §2, sorted by span.
+    ///
+    /// A parallel projection, not a replacement: `credential_findings` remains
+    /// the enforcement-tier list every existing consumer reads, and it is
+    /// byte-identical to what the pre-port code produced. This list is what a
+    /// reporting consumer should read, because it is the only one that can
+    /// describe a finding from a detector with no
+    /// [`CredentialKind`](aa_security::CredentialKind) — every
+    /// [`detection::LocalePack`] hit.
+    ///
+    /// The two lists are not in bijection, and both directions occur:
+    ///
+    /// - A locale-pack finding appears here and **not** in
+    ///   `credential_findings`, because fabricating a `CredentialKind` for it
+    ///   would extend a catalogue ADR 0032 §2 freezes.
+    /// - A zero-width operator-regex match appears in `credential_findings` and
+    ///   **not** here, because a canonical finding covers at least one byte.
+    ///
+    /// Spans are audit-tier only (ADR 0032 §9). This field carries them for the
+    /// same reason `credential_findings` already does — it feeds the audit
+    /// write — and must not be projected into a metric label, a log line or an
+    /// API response without going through
+    /// [`SensitiveDataFindingRecord`](aa_core::types::sensitive_data::SensitiveDataFindingRecord),
+    /// which drops the span by construction.
+    pub canonical_findings: Vec<aa_security::canonical::CanonicalFinding>,
     /// Optional side-effect action for the service layer when the decision is `Deny`.
     /// `None` means no side-effect beyond denying the request.
     pub deny_action: Option<DenyAction>,
@@ -90,6 +116,7 @@ impl EvaluationResult {
             decision: aa_core::PolicyResult::Deny { reason: reason.into() },
             redacted_payload: None,
             credential_findings: vec![],
+            canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
             narrowed: false,
@@ -103,12 +130,14 @@ impl EvaluationResult {
         reason: impl Into<String>,
         redacted_payload: Option<String>,
         credential_findings: Vec<aa_security::CredentialFinding>,
+        canonical_findings: Vec<aa_security::canonical::CanonicalFinding>,
         deny_action: Option<DenyAction>,
     ) -> Self {
         Self {
             decision: aa_core::PolicyResult::Deny { reason: reason.into() },
             redacted_payload,
             credential_findings,
+            canonical_findings,
             deny_action,
             policy_doc_id: None,
             narrowed: false,
@@ -188,6 +217,7 @@ pub fn transform_for_observe_mode(
         decision: aa_core::PolicyResult::Allow,
         redacted_payload: None,
         credential_findings: result.credential_findings,
+        canonical_findings: vec![],
         deny_action: None,
         // AAASM-5107 — observe mode rewrites the verdict to Allow but the policy
         // document still fired; preserve its attribution so the dry-run audit
@@ -1206,6 +1236,7 @@ impl PolicyEngine {
                 },
                 redacted_payload: None,
                 credential_findings: vec![],
+                canonical_findings: vec![],
                 deny_action: None,
                 policy_doc_id: None,
                 narrowed: false,
@@ -1356,6 +1387,7 @@ impl PolicyEngine {
                 },
                 redacted_payload: None,
                 credential_findings: all_findings,
+                canonical_findings: vec![],
                 deny_action: None,
                 policy_doc_id: None,
                 narrowed: false,
@@ -1464,7 +1496,7 @@ impl PolicyEngine {
         if let Some(bp) = &policy.budget {
             let deny_action = Self::budget_deny_action(bp);
             if let Some(reason) = self.budget_exceeded_reason(bp, &ctx.agent_id) {
-                return EvaluationResult::deny_with(reason, redacted_payload, credential_findings, deny_action);
+                return EvaluationResult::deny_with(reason, redacted_payload, credential_findings, vec![], deny_action);
             }
         }
 
@@ -1479,6 +1511,7 @@ impl PolicyEngine {
             decision: aa_core::PolicyResult::Allow,
             redacted_payload,
             credential_findings,
+            canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
             narrowed,
@@ -1615,6 +1648,7 @@ impl PolicyEngine {
         agent_id: &aa_core::identity::AgentId,
         redacted_payload: Option<String>,
         credential_findings: Vec<aa_security::CredentialFinding>,
+        canonical_findings: Vec<aa_security::canonical::CanonicalFinding>,
     ) -> Option<EvaluationResult> {
         for doc in cascade {
             if let Some(bp) = &doc.budget {
@@ -1624,6 +1658,7 @@ impl PolicyEngine {
                         reason,
                         redacted_payload,
                         credential_findings,
+                        canonical_findings,
                         da,
                     ));
                 }
@@ -1676,6 +1711,7 @@ impl PolicyEngine {
                 decision: aa_core::PolicyResult::Deny { reason },
                 redacted_payload: None,
                 credential_findings: vec![],
+                canonical_findings: vec![],
                 deny_action: None,
                 policy_doc_id: None,
                 narrowed: false,
@@ -1705,6 +1741,7 @@ impl PolicyEngine {
                 decision: aa_core::PolicyResult::Deny { reason },
                 redacted_payload: None,
                 credential_findings: vec![],
+                canonical_findings: vec![],
                 deny_action: None,
                 policy_doc_id,
                 narrowed: false,
@@ -1740,6 +1777,7 @@ impl PolicyEngine {
             &ctx.agent_id,
             redacted_payload.clone(),
             credential_findings.clone(),
+            vec![],
         ) {
             return result;
         }
@@ -1762,6 +1800,7 @@ impl PolicyEngine {
             decision,
             redacted_payload,
             credential_findings,
+            canonical_findings: vec![],
             deny_action,
             policy_doc_id,
             narrowed,
@@ -4688,6 +4727,7 @@ mod tests {
             decision: PolicyResult::Allow,
             redacted_payload: None,
             credential_findings: vec![],
+            canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
             narrowed: false,
@@ -4712,6 +4752,7 @@ mod tests {
             },
             redacted_payload: None,
             credential_findings: vec![],
+            canonical_findings: vec![],
             deny_action: Some(DenyAction::Block),
             policy_doc_id: None,
             narrowed: false,
@@ -4740,6 +4781,7 @@ mod tests {
             decision: PolicyResult::RequiresApproval { timeout_secs: 600 },
             redacted_payload: None,
             credential_findings: vec![],
+            canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
             narrowed: false,
