@@ -2554,6 +2554,437 @@ mod tests {
 
     // ── Tests ─────────────────────────────────────────────────────────────────
 
+    // ── AAASM-5354: the canonical detection port on the production path ──────
+
+    use crate::engine::detection::test_double::{self, FixedPass};
+
+    /// A doc whose `data` section carries only the given locale-pack tags.
+    fn doc_with_locale_packs(tags: &[&str]) -> PolicyDocument {
+        let mut doc = empty_doc();
+        doc.data = Some(DataPolicy {
+            sensitive_patterns: vec![],
+            credential_action: CredentialAction::default(),
+            locale_packs: tags.iter().map(|t| t.to_string()).collect(),
+        });
+        doc
+    }
+
+    /// A 2021-form 居留證 built by AAASM-5353's own fixture generator (see
+    /// `conformance/vectors/zh_tw_detection/id_arc_2021.json`): synthetic, and
+    /// checksum-valid so the recognizer that exists is the one under test.
+    const ZH_TW_ARC_TEXT: &str = "居留證統一證號 A800000005 於系統中建檔。";
+
+    /// **The production-path test.** The real engine's `evaluate` must reach the
+    /// port — not a unit-test adapter calling `detection::run` directly.
+    ///
+    /// Falsification: this fails if the seam is disconnected. Removing the
+    /// `Self::run_detection` call from `evaluate_primary` (or reverting Stage 6
+    /// to the pre-port open-coded loops) leaves the installed pass unrun and
+    /// `canonical_findings` empty, and the assertion below fires. Confirmed by
+    /// making that edit and watching this test fail before it was committed.
+    #[test]
+    fn evaluate_invokes_the_detection_port_on_the_production_path() {
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let action = tool_call("any", "the payload contains SENTINEL somewhere");
+
+        let result = test_double::with(FixedPass::reporting("SENTINEL"), || engine.evaluate(&ctx, &action));
+
+        let recognizers: Vec<_> = result
+            .canonical_findings
+            .iter()
+            .map(|f| (f.provenance().recognizer, f.provenance().version))
+            .collect();
+        assert!(
+            recognizers.contains(&(aa_security::canonical::Recognizer::ZhTwLocalePack, "test-double")),
+            "the engine did not run the installed pass — the seam is disconnected. got {recognizers:?}"
+        );
+    }
+
+    /// The same seam, seen from the enforcement tier: a pass that produces a
+    /// `CredentialFinding` must have it reach `credential_findings` and the
+    /// redaction, not merely the canonical projection.
+    #[test]
+    fn a_port_finding_reaches_the_enforcement_tier_and_the_redaction() {
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let action = tool_call("any", "value=SENTINEL trailing");
+
+        let result = test_double::with(FixedPass::enforceable("SENTINEL"), || engine.evaluate(&ctx, &action));
+
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert_eq!(
+            result.credential_findings.len(),
+            1,
+            "the port's enforcement-tier finding did not reach credential_findings"
+        );
+        let redacted = result.redacted_payload.expect("a finding must produce a redaction");
+        assert!(!redacted.contains("SENTINEL"), "the flagged span survived: {redacted}");
+    }
+
+    /// Fail closed. A pass that cannot run must deny, never continue with an
+    /// empty findings list — this is the synchronous pre-action path, so
+    /// "no findings" would forward a payload nothing inspected.
+    #[test]
+    fn a_failing_detection_pass_denies_instead_of_allowing_with_no_findings() {
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let action = tool_call("any", "anything at all");
+
+        // Control: without the failure the same action is allowed, so the deny
+        // below is caused by the failure and not by the fixture.
+        assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+
+        let result = test_double::with(
+            FixedPass::failing(detection::DetectionError::UnknownLocalePack { tag: "ja-JP".into() }),
+            || engine.evaluate(&ctx, &action),
+        );
+
+        match result.decision {
+            PolicyResult::Deny { ref reason } => {
+                assert!(reason.contains("detection unavailable"), "unexpected reason: {reason}");
+                assert!(
+                    reason.contains("ja-JP"),
+                    "the reason must name the failing pack: {reason}"
+                );
+            }
+            other => panic!("a failed detection pass must deny, got {other:?}"),
+        }
+        assert!(result.redacted_payload.is_none());
+    }
+
+    /// A policy naming a pack this build lacks denies rather than running with
+    /// that detector silently absent. Reached by constructing the document
+    /// directly, which is how `aa-api`, the simulation surface and tests build
+    /// one; `PolicyValidator` rejects the same tag at load time.
+    #[test]
+    fn an_unknown_locale_pack_denies_rather_than_scanning_without_it() {
+        let engine = make_engine(doc_with_locale_packs(&["ja-JP"]));
+        let ctx = make_ctx();
+        let result = engine.evaluate(&ctx, &tool_call("any", "harmless text"));
+        match result.decision {
+            PolicyResult::Deny { ref reason } => assert!(reason.contains("ja-JP"), "{reason}"),
+            other => panic!("an unknown pack must deny, got {other:?}"),
+        }
+    }
+
+    /// Confidence is evidence, never an authorisation input (ADR 0002; ADR 0032
+    /// §4). Two runs differing *only* in the band a pass reports must produce
+    /// the same decision, the same redaction and the same finding count.
+    #[test]
+    fn a_findings_confidence_band_does_not_move_the_decision() {
+        use aa_security::canonical::ConfidenceBand;
+        let mut doc = empty_doc();
+        doc.data = Some(DataPolicy {
+            sensitive_patterns: vec![],
+            credential_action: CredentialAction::Block,
+            locale_packs: vec![],
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "carrying SENTINEL here");
+
+        let high = test_double::with(
+            FixedPass::reporting("SENTINEL").with_confidence(ConfidenceBand::High),
+            || engine.evaluate(&ctx, &action),
+        );
+        let low = test_double::with(
+            FixedPass::reporting("SENTINEL").with_confidence(ConfidenceBand::Low),
+            || engine.evaluate(&ctx, &action),
+        );
+
+        // Guard against the comparison passing because neither fired.
+        assert!(matches!(high.decision, PolicyResult::Deny { .. }), "fixture must block");
+        assert_eq!(high.decision, low.decision);
+        assert_eq!(high.redacted_payload, low.redacted_payload);
+        assert_eq!(high.canonical_findings.len(), low.canonical_findings.len());
+        assert_ne!(
+            high.canonical_findings[0].confidence(),
+            low.canonical_findings[0].confidence(),
+            "the two runs must actually differ in the band, or this test compares identical inputs"
+        );
+    }
+
+    // ── AAASM-5354: the zh-TW gate, off by default ──────────────────────────
+
+    /// Default off. The pack is compiled in and reachable, and a policy that
+    /// does not ask for it gets exactly the pre-port behaviour.
+    #[test]
+    fn zh_tw_findings_do_not_appear_unless_the_policy_asks_for_the_pack() {
+        let engine = make_engine(empty_doc());
+        let ctx = make_ctx();
+        let result = engine.evaluate(&ctx, &tool_call("any", ZH_TW_ARC_TEXT));
+
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert!(result.credential_findings.is_empty());
+        assert!(
+            result.canonical_findings.is_empty(),
+            "the zh-TW pack ran without being configured: {:?}",
+            result.canonical_findings
+        );
+        assert!(result.redacted_payload.is_none());
+    }
+
+    /// With the gate on the same input is detected and the identifier removed.
+    #[test]
+    fn the_zh_tw_gate_detects_and_redacts_when_enabled() {
+        let engine = make_engine(doc_with_locale_packs(&["zh-TW"]));
+        let ctx = make_ctx();
+        let result = engine.evaluate(&ctx, &tool_call("any", ZH_TW_ARC_TEXT));
+
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert_eq!(result.canonical_findings.len(), 1, "{:?}", result.canonical_findings);
+        let finding = result.canonical_findings[0];
+        assert_eq!(
+            finding.provenance().recognizer,
+            aa_security::canonical::Recognizer::ZhTwLocalePack
+        );
+        assert_eq!(finding.category().to_string(), "NATIONAL_ID[zh-TW/arc_new]");
+        assert!(
+            result.credential_findings.is_empty(),
+            "a locale finding must not fabricate a CredentialKind"
+        );
+        let redacted = result.redacted_payload.expect("a finding must redact");
+        assert!(!redacted.contains("A800000005"), "the identifier survived: {redacted}");
+        assert_eq!(redacted, "居留證統一證號 [REDACTED] 於系統中建檔。");
+    }
+
+    /// A locale finding has no enforcement-tier counterpart, so a `block`
+    /// policy that only consulted `credential_findings` would forward it. It
+    /// must deny.
+    #[test]
+    fn the_zh_tw_gate_blocks_under_credential_action_block() {
+        let mut doc = doc_with_locale_packs(&["zh-TW"]);
+        doc.data.as_mut().unwrap().credential_action = CredentialAction::Block;
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let result = engine.evaluate(&ctx, &tool_call("any", ZH_TW_ARC_TEXT));
+
+        assert!(
+            matches!(result.decision, PolicyResult::Deny { .. }),
+            "a locale finding must reach the block path, got {:?}",
+            result.decision
+        );
+        assert!(result.redacted_payload.is_none(), "a blocked payload is not forwarded");
+    }
+
+    /// The false-positive side, which is the defect this Epic exists to fix:
+    /// ordinary numerically-dense Traditional-Chinese prose must produce
+    /// nothing even with the pack running. Corpus taken from AAASM-5353's
+    /// `clean_prose_negative` vector.
+    #[test]
+    fn the_zh_tw_gate_is_silent_on_ordinary_numeric_prose() {
+        let engine = make_engine(doc_with_locale_packs(&["zh-TW"]));
+        let ctx = make_ctx();
+        let text = "本文件對應版本 v0.0.1-rc.7，最後更新於 2026-08-01。閘道器預設監聽 50051 埠，\
+                    儀表板使用 3000 埠。第一季共處理 1,250,000 次決策請求，其中 3,412 次被拒絕。\
+                    稽核事件保留 365 天，每批最多 5000 筆。會議記錄編號 20260715，與會者 12 人。";
+        let result = engine.evaluate(&ctx, &tool_call("any", text));
+
+        assert_eq!(result.decision, PolicyResult::Allow);
+        assert!(
+            result.canonical_findings.is_empty(),
+            "clean prose produced findings: {:?}",
+            result.canonical_findings
+        );
+        assert!(result.redacted_payload.is_none(), "clean prose must not be rewritten");
+    }
+
+    /// A checksum near-miss: one digit off a valid identity number. The
+    /// recognizer is arithmetic, so this must not fire.
+    #[test]
+    fn the_zh_tw_gate_rejects_a_checksum_near_miss() {
+        let engine = make_engine(doc_with_locale_packs(&["zh-TW"]));
+        let ctx = make_ctx();
+        // A800000005 is valid; A800000004 differs only in the check digit.
+        let result = engine.evaluate(&ctx, &tool_call("any", "居留證統一證號 A800000004 於系統中建檔。"));
+
+        assert!(
+            result.canonical_findings.is_empty(),
+            "a checksum-invalid identifier fired: {:?}",
+            result.canonical_findings
+        );
+    }
+
+    /// Mixed-language payload: the built-in scanner and the locale pack must
+    /// both fire, and both spans must be removed from one redaction.
+    #[test]
+    fn the_zh_tw_gate_composes_with_the_built_in_scanner_on_mixed_text() {
+        let engine = make_engine(doc_with_locale_packs(&["zh-TW"]));
+        let ctx = make_ctx();
+        let raw_key = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+        let text = format!("token={raw_key}，居留證統一證號 A800000005 已建檔。");
+        let result = engine.evaluate(&ctx, &tool_call("any", &text));
+
+        let recognizers: Vec<_> = result
+            .canonical_findings
+            .iter()
+            .map(|f| f.provenance().recognizer)
+            .collect();
+        assert!(
+            recognizers.contains(&aa_security::canonical::Recognizer::BuiltinScanner),
+            "the built-in scanner did not fire on mixed text: {recognizers:?}"
+        );
+        assert!(
+            recognizers.contains(&aa_security::canonical::Recognizer::ZhTwLocalePack),
+            "the locale pack did not fire on mixed text: {recognizers:?}"
+        );
+        let redacted = result.redacted_payload.expect("both findings must redact");
+        assert!(!redacted.contains(raw_key), "the token survived: {redacted}");
+        assert!(!redacted.contains("A800000005"), "the identifier survived: {redacted}");
+    }
+
+    // ── AAASM-5354: behaviour identity of the ungated merge ──────────────────
+
+    /// The pre-port Stage 6 merge, transcribed from `engine/mod.rs` at
+    /// `3e8cb4955`. The "before" side of the identity comparison below.
+    fn pre_port_stage6(patterns: &[regex::Regex], text: &str) -> Vec<aa_security::CredentialFinding> {
+        let scanner = aa_security::CredentialScanner::new();
+        let mut all_findings = scanner.scan(text).findings;
+        for re in patterns {
+            for m in re.find_iter(text) {
+                all_findings.push(aa_security::CredentialFinding::from_regex_match(m.start(), m.end()));
+            }
+        }
+        all_findings.sort_by_key(|f| f.offset);
+        all_findings
+    }
+
+    /// End-to-end behaviour identity: for every fixture, the findings the real
+    /// engine reports and the payload it redacts are exactly what the pre-port
+    /// code produced — identical lists, not merely both non-empty.
+    ///
+    /// The counters at the end guard the guard: without them this whole loop
+    /// would pass on a corpus that had stopped producing findings.
+    #[test]
+    fn the_ungated_engine_merge_is_identical_to_the_pre_port_merge() {
+        let fixtures: Vec<(&str, Vec<&str>)> = vec![
+            ("list files in /home/user", vec![]),
+            ("token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", vec![]),
+            ("config: api_key=supersecret123", vec![r"api_key=[A-Za-z0-9]+"]),
+            (
+                "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 and api_key=supersecret123",
+                vec![r"api_key=[A-Za-z0-9]+"],
+            ),
+            (
+                "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+                vec![r"ghp_[A-Za-z0-9]+", r"ghp_[A-Z]{4}"],
+            ),
+            ("aaaa-bbbb-cccc", vec![r"a+-b+", r"b+-c+"]),
+            ("使用者的 api_key=秘密 已外洩", vec![r"api_key=\S+"]),
+            ("abc", vec![r"x*"]),
+            (ZH_TW_ARC_TEXT, vec![]),
+            ("AKIAIOSFODNN7EXAMPLE and postgres://u:p@h/db", vec![]),
+        ];
+
+        let ctx = make_ctx();
+        let mut fixtures_with_findings = 0usize;
+        let mut total_findings = 0usize;
+        let mut fixtures_redacted = 0usize;
+
+        for (text, patterns) in fixtures {
+            let mut doc = empty_doc();
+            doc.data = Some(DataPolicy {
+                sensitive_patterns: patterns.iter().map(|p| p.to_string()).collect(),
+                credential_action: CredentialAction::default(),
+                locale_packs: vec![],
+            });
+            let engine = make_engine(doc);
+            let result = engine.evaluate(&ctx, &tool_call("any", text));
+
+            let compiled: Vec<regex::Regex> = patterns.iter().map(|p| regex::Regex::new(p).unwrap()).collect();
+            let expected = pre_port_stage6(&compiled, text);
+
+            assert_eq!(
+                result.credential_findings, expected,
+                "merged findings differ for fixture {text:?}"
+            );
+
+            let expected_redaction = if expected.is_empty() {
+                None
+            } else {
+                Some(
+                    aa_security::ScanResult {
+                        findings: expected.clone(),
+                    }
+                    .redact(text),
+                )
+            };
+            assert_eq!(
+                result.redacted_payload, expected_redaction,
+                "redaction differs for fixture {text:?}"
+            );
+
+            total_findings += expected.len();
+            if !expected.is_empty() {
+                fixtures_with_findings += 1;
+            }
+            if expected_redaction.is_some() {
+                fixtures_redacted += 1;
+            }
+        }
+
+        assert!(
+            fixtures_with_findings >= 7 && total_findings >= 12 && fixtures_redacted >= 7,
+            "the identity corpus stopped exercising the merge: {fixtures_with_findings} fixtures with \
+             findings, {total_findings} findings, {fixtures_redacted} redactions"
+        );
+    }
+
+    /// Every AAASM-5353 conformance vector, replayed through the real engine
+    /// with the gate on. Reuses the committed fixtures rather than restating
+    /// the detection logic.
+    #[test]
+    fn the_zh_tw_conformance_vectors_replay_through_the_engine() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../conformance/vectors/zh_tw_detection");
+        let engine = make_engine(doc_with_locale_packs(&["zh-TW"]));
+        let ctx = make_ctx();
+
+        let mut checked = 0usize;
+        let mut positive = 0usize;
+        for entry in std::fs::read_dir(&dir).expect("the AAASM-5353 vector directory must exist") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let vector: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let text = vector["input_text"].as_str().unwrap();
+            let expected: Vec<String> = vector["expected_findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["category"].as_str().unwrap().to_string())
+                .collect();
+
+            let result = engine.evaluate(&ctx, &tool_call("any", text));
+            let actual: Vec<String> = result
+                .canonical_findings
+                .iter()
+                .filter(|f| f.provenance().recognizer == aa_security::canonical::Recognizer::ZhTwLocalePack)
+                .map(|f| f.category().to_string())
+                .collect();
+
+            assert_eq!(
+                actual,
+                expected,
+                "vector {} replayed differently through the engine",
+                path.display()
+            );
+            checked += 1;
+            if !expected.is_empty() {
+                positive += 1;
+            }
+        }
+
+        // Without this the test passes on an empty directory, and passes on a
+        // pack that detects nothing at all (every vector's expectation would
+        // then be the empty list only for the negatives).
+        assert!(
+            checked >= 19 && positive >= 8,
+            "expected the full AAASM-5353 vector set: {checked} replayed, {positive} with findings"
+        );
+    }
+
     #[test]
     fn evaluate_allows_when_no_policy_sections() {
         let engine = make_engine(empty_doc());

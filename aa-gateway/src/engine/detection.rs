@@ -333,13 +333,25 @@ impl DetectionOutcome {
 /// one to the caller, and a detection run that did not finish must not be able
 /// to look like one that found nothing (ADR 0032 §5).
 pub fn run(text: &str, passes: &[&dyn DetectionPass]) -> Result<DetectionOutcome, DetectionError> {
+    // An installed test double joins the pass list rather than being invoked
+    // after the loop, so this function has exactly **one** place a pass error
+    // propagates from. With two, a mutation that swallowed the loop's error
+    // left the double's `?` intact and no test noticed — which is how the
+    // fail-closed assertions passed while the property was broken.
+    #[cfg(test)]
+    let double = test_double::installed();
+    #[cfg(test)]
+    let effective: Vec<&dyn DetectionPass> = passes
+        .iter()
+        .copied()
+        .chain(double.iter().map(|d| d as &dyn DetectionPass))
+        .collect();
+    #[cfg(test)]
+    let passes: &[&dyn DetectionPass] = &effective;
+
     let mut findings = Vec::new();
     for pass in passes {
         pass.detect(text, &mut findings)?;
-    }
-    #[cfg(test)]
-    if let Some(double) = test_double::installed() {
-        double.detect(text, &mut findings)?;
     }
     Ok(DetectionOutcome { findings })
 }
@@ -565,6 +577,23 @@ pub(crate) mod test_double {
                 enforceable: false,
                 confidence: ConfidenceBand::High,
             }
+        }
+
+        /// Also emit the enforcement-tier counterpart, so a test can prove the
+        /// port carries findings into `credential_findings` and redaction, not
+        /// only into the canonical projection.
+        pub(crate) fn enforceable(needle: &str) -> Self {
+            Self {
+                enforceable: true,
+                ..Self::reporting(needle)
+            }
+        }
+
+        /// Vary only the confidence band, so a test can prove the decision does
+        /// not move with it (ADR 0032 §4).
+        pub(crate) fn with_confidence(mut self, confidence: ConfidenceBand) -> Self {
+            self.confidence = confidence;
+            self
         }
 
         pub(crate) fn failing(error: DetectionError) -> Self {
