@@ -1,11 +1,12 @@
 //! The bounded label set a sensitive-data metric may carry.
 
-use aa_security::canonical::{ConfidenceBand, DetectionMethod, Recognizer, Severity};
+use alloc::string::{String, ToString};
+
+use aa_security::canonical::{CanonicalCategory, ConfidenceBand, DetectionMethod, Recognizer, Severity};
 
 use super::finding_record::SensitiveDataFindingRecord;
 use super::verdict::RuntimeVerdictLabel;
 use super::vocab;
-use super::CategoryLabel;
 
 /// The six labels ADR 0032 §9 permits on a sensitive-data metric.
 ///
@@ -28,12 +29,47 @@ use super::CategoryLabel;
 ///
 /// # Bounded cardinality, by construction
 ///
-/// Every field is drawn from a compile-time catalogue: five closed
-/// `aa-security` vocabularies plus [`CanonicalCategory::ALL`](aa_security::canonical::CanonicalCategory::ALL).
-/// There is no constructor that takes a string. That is what keeps a metric
-/// series count finite, and it is why validation requirement 4's forbidden
-/// labels — `agent_id`, `destination`, `session_id`, and any fingerprint — are
-/// not merely absent but unrepresentable here.
+/// ADR 0032 §9 bounds metric **series**, and a series is a name *and* a value.
+/// Fixing the six names is only half of it; each value has to come from a
+/// finite domain too.
+///
+/// So every field is drawn from a compile-time catalogue: five closed
+/// `aa-security` vocabularies plus
+/// [`CanonicalCategory::ALL`](aa_security::canonical::CanonicalCategory::ALL).
+/// The category is held as a **resolved [`CanonicalCategory`]**, not as a
+/// [`CategoryLabel`](super::CategoryLabel), and
+/// [`from_finding`](Self::from_finding) returns `None` when the record's label
+/// does not resolve. An unresolvable category is by definition not a member of
+/// a bounded set, so it must not become a bounded label.
+///
+/// That refusal is the load-bearing part. A `CategoryLabel` is bounded in shape
+/// and unbounded in value — it deliberately round-trips categories a newer
+/// build produced — so rendering one straight into a metric would put an
+/// arbitrary string in a series name. Worse, a `SensitiveDataFindingRecord`
+/// deserialized from storage can carry any well-shaped label at all, which is
+/// how a raw credential reached a metric label value in an earlier revision of
+/// this type.
+///
+/// # What this does and does not guarantee
+///
+/// Stated as a property of the construction paths, not as a claim about the
+/// type system, because the distinction has been got wrong here before.
+///
+/// **Guaranteed by construction:** the only way to build one of these is
+/// [`from_finding`](Self::from_finding); the fields are private and the struct
+/// is `#[non_exhaustive]`, so there is no struct literal and no post-hoc field
+/// assignment; and every value it can hold is a member of a compile-time
+/// catalogue. Validation requirement 4's forbidden labels — `agent_id`,
+/// `destination`, `session_id`, and any fingerprint — have no way in.
+///
+/// **Not guaranteed:** this is `Serialize`-only and has no `Deserialize`, so
+/// nothing reconstructs one from bytes; but a `ByteSpan` field added here would
+/// still compile, because the absence of `Deserialize` is what makes a span a
+/// type error over in [`SensitiveDataFindingRecord`](super::SensitiveDataFindingRecord).
+/// Here only
+/// [`the_metric_projection_serializes_only_the_six_permitted_labels`](#) stands
+/// between an offset and a metric, and an assertion is something a future
+/// change can delete.
 ///
 /// # No tenant label, deliberately
 ///
@@ -53,23 +89,28 @@ use super::CategoryLabel;
 /// nothing here needs to round-trip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
 pub struct SensitiveDataMetricLabels {
-    /// The finding's canonical category, rendered. Bounded by the catalogue.
-    pub category: CategoryLabel,
-    /// How damaging exposure would be.
+    /// The resolved category. Serialized through `rendered_category`.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    category: CanonicalCategory,
+    /// `category`'s rendering, derived from it at construction.
+    ///
+    /// Held rather than recomputed so [`as_pairs`](Self::as_pairs) can hand out
+    /// a borrow without allocating on a metrics hot path. It cannot diverge
+    /// from `category`: both are private, set together in the one constructor,
+    /// and there is no `Deserialize` to reach around them.
+    #[cfg_attr(feature = "serde", serde(rename = "category"))]
+    rendered_category: String,
     #[cfg_attr(feature = "serde", serde(with = "vocab::severity"))]
-    pub severity: Severity,
-    /// How much the recognizer trusted the finding.
+    severity: Severity,
     #[cfg_attr(feature = "serde", serde(with = "vocab::confidence"))]
-    pub confidence_band: ConfidenceBand,
-    /// The enforcement outcome, as ADR 0018's frozen verdict label.
-    pub outcome: RuntimeVerdictLabel,
-    /// The technique that produced the finding.
+    confidence_band: ConfidenceBand,
+    outcome: RuntimeVerdictLabel,
     #[cfg_attr(feature = "serde", serde(with = "vocab::method"))]
-    pub detection_method: DetectionMethod,
-    /// Which recognizer produced it. `provider_id` in §9's spelling.
+    detection_method: DetectionMethod,
     #[cfg_attr(feature = "serde", serde(with = "vocab::recognizer"))]
-    pub provider_id: Recognizer,
+    provider_id: Recognizer,
 }
 
 impl SensitiveDataMetricLabels {
@@ -87,23 +128,64 @@ impl SensitiveDataMetricLabels {
     /// Project a finding row and the action's verdict into metric labels.
     ///
     /// The only constructor. It takes a record and a verdict — never a string —
-    /// so a caller cannot introduce a label of its own, which is what makes the
-    /// cardinality argument hold rather than merely be intended.
-    pub fn from_finding(record: &SensitiveDataFindingRecord, outcome: RuntimeVerdictLabel) -> Self {
-        Self {
-            category: record.category.clone(),
+    /// so a caller cannot introduce a label value of its own.
+    ///
+    /// Returns `None` when the record's category does not resolve against this
+    /// build's catalogue. That is not a failure to handle away: a category this
+    /// build cannot name is not a bounded label, and emitting it would put an
+    /// arbitrary string into a metric series. A caller should count the event
+    /// under a separate "unresolvable category" series — a constant, and
+    /// therefore bounded — rather than reach for the rendered form.
+    pub fn from_finding(record: &SensitiveDataFindingRecord, outcome: RuntimeVerdictLabel) -> Option<Self> {
+        let category = record.category.resolve()?;
+        Some(Self {
+            // Rendered from the *resolved* category, never from the record's
+            // stored label, so the value is provably a member of the catalogue's
+            // rendering set even when the record came from storage.
+            rendered_category: category.to_string(),
+            category,
             severity: record.severity,
             confidence_band: record.confidence,
             outcome,
             detection_method: record.method,
             provider_id: record.provenance.recognizer,
-        }
+        })
+    }
+
+    /// The resolved category these labels describe.
+    pub const fn category(&self) -> CanonicalCategory {
+        self.category
+    }
+
+    /// How damaging exposure would be.
+    pub const fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    /// How much the recognizer trusted the finding.
+    pub const fn confidence_band(&self) -> ConfidenceBand {
+        self.confidence_band
+    }
+
+    /// The enforcement outcome, as ADR 0018's frozen verdict label.
+    pub const fn outcome(&self) -> RuntimeVerdictLabel {
+        self.outcome
+    }
+
+    /// The technique that produced the finding.
+    pub const fn detection_method(&self) -> DetectionMethod {
+        self.detection_method
+    }
+
+    /// Which recognizer produced it. `provider_id` in §9's spelling.
+    pub const fn provider_id(&self) -> Recognizer {
+        self.provider_id
     }
 
     /// The labels as name/value pairs, ready for a metrics exporter.
     pub fn as_pairs(&self) -> [(&'static str, &str); 6] {
         [
-            ("category", self.category.as_str()),
+            ("category", self.rendered_category.as_str()),
             ("severity", self.severity.as_str()),
             ("confidence_band", self.confidence_band.as_str()),
             ("outcome", self.outcome.as_str()),
@@ -126,6 +208,7 @@ mod tests {
             "headers.authorization",
         );
         SensitiveDataMetricLabels::from_finding(&record, RuntimeVerdictLabel::DENY)
+            .expect("a catalogue category resolves")
     }
 
     /// **ADR 0032 validation requirement 4.** The label names are exactly §9's
@@ -175,10 +258,11 @@ mod tests {
     fn every_category_in_the_catalogue_produces_a_bounded_label() {
         for category in CanonicalCategory::ALL {
             let record = finding(*category, "body.field");
-            let labels = SensitiveDataMetricLabels::from_finding(&record, RuntimeVerdictLabel::SCRUB);
+            let labels = SensitiveDataMetricLabels::from_finding(&record, RuntimeVerdictLabel::SCRUB)
+                .expect("a catalogue category resolves");
             assert_eq!(
-                labels.category.resolve(),
-                Some(*category),
+                labels.category(),
+                *category,
                 "a metric label escaped the catalogue it is supposed to be bounded by"
             );
         }
@@ -217,11 +301,9 @@ mod serde_tests {
             CanonicalCategory::with_scheme(CategoryBase::AccessToken, "github", "personal_access"),
             "headers.authorization",
         );
-        let json = serde_json::to_value(SensitiveDataMetricLabels::from_finding(
-            &record,
-            RuntimeVerdictLabel::DENY,
-        ))
-        .unwrap();
+        let labels = SensitiveDataMetricLabels::from_finding(&record, RuntimeVerdictLabel::DENY)
+            .expect("a catalogue category resolves");
+        let json = serde_json::to_value(labels).unwrap();
 
         let object = json.as_object().expect("labels serialize as an object");
         let mut keys: alloc::vec::Vec<&str> = object.keys().map(alloc::string::String::as_str).collect();
