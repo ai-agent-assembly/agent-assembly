@@ -20,19 +20,42 @@
 //! |---|---|---|
 //! | 國民身分證 / 2021 居留證 | letter + 9 digits, weighted mod-10, `d₁ ∈ {1,2,8,9}` | ~4% of random letter+9-digit strings |
 //! | Legacy 居留證 | 2 letters (2nd ∈ A–D) + 8 digits, weighted mod-10 | ~10% of random strings of that shape |
-//! | 統一編號 | 8 whole digits, weighted digit-sum mod 5 | **~20% of random 8-digit strings** |
+//! | 統一編號 | 8 whole digits **in prose or labelled**, weighted digit-sum mod 5 | **22.0000% of random 8-digit strings** |
 //! | 行動電話 | `09` + exactly 8 more digits | no checksum exists |
 //! | 市內電話 | area-code gazetteer + separator + that area's local length | no checksum exists; **unseparated landlines are not detected** |
 //!
-//! The 統一編號 row is the one that matters. Roughly one 8-digit numeric literal
-//! in five passes, so a bare `YYYYMMDD` date, a build number or an order
-//! reference will sometimes be reported —
-//! `a_bare_eight_digit_date_is_a_known_business_id_residual` pins that rather
-//! than leaving a reviewer to discover it. It is reported at
-//! `ConfidenceBand::Low` without a context keyword for exactly this reason, and
-//! `Severity::Low`, so it sorts below findings that carry real harm. Narrowing
-//! it further would mean *requiring* a context keyword, which the identifier
-//! does not always carry and which the acceptance criteria rule out.
+//! The 統一編號 row is the one that matters, and the figure is exact rather than
+//! estimated: enumerating all 10^8 eight-digit strings, **22,000,000** satisfy
+//! the current rule. Between one in five and one in four. The seventh-digit-7
+//! exception is precisely what takes it from 20% to 22% — without that branch it
+//! is exactly 20%, and the pre-2023 mod-10 rule alone is exactly 11%.
+//!
+//! So a bare `YYYYMMDD` date, a build number or an order reference will
+//! sometimes be reported. `a_bare_eight_digit_date_is_a_known_business_id_residual`
+//! pins that rather than leaving a reviewer to discover it, and the finding
+//! carries `ConfidenceBand::Low` and `Severity::Low` so it sorts below anything
+//! that grants access or names a person. Narrowing it further would mean
+//! *requiring* a context keyword, which the identifier does not always carry and
+//! which the acceptance criteria rule out.
+//!
+//! What that 22% *is* narrowed by is the boundary rule: a bare 統一編號 must sit
+//! in prose or be labelled, so the machine-delimited shapes that dominate agent
+//! traffic — `{"order_id":12345675}`, `?id=12345675&`, `/logs/20260801/`,
+//! `ORDER_ID=12345675` — are not candidates at all. See
+//! `is_tax_id_prose_boundary` for why that is an allow-list.
+//!
+//! ## A known collision, not a residual
+//!
+//! Taiwan's uniform invoice number (統一發票號碼) is two letters and eight
+//! digits — the **same shape as the legacy 居留證**. Roughly **1.5%** of them
+//! (P(second letter ∈ A–D) × P(checksum) = 4/26 × 1/10) are reported as
+//! `NATIONAL_ID[zh-TW/arc_legacy]` at `Severity::Critical`. There is no
+//! published rule that separates the two shapes, so this is not fixable here;
+//! it is recorded because invoices are exactly the documents this pack's own
+//! context keywords (`營業人`, `統一編號`) mark as interesting, and an operator
+//! seeing a `Critical` personal-identifier finding on an invoice deserves to
+//! know why. `an_invoice_shaped_value_can_collide_with_the_legacy_certificate`
+//! pins it.
 //!
 //! # What this pack does not recognise
 //!
@@ -87,8 +110,8 @@ const BUSINESS_ID: CanonicalCategory = CanonicalCategory::with_locale(Base::TaxI
 /// obvious reason. `.` and `,` do too, and that is the non-obvious half: they
 /// are the decimal point and the thousands separator, so the eight digits after
 /// the point in `3.14159265` are a fragment of one number and not a 統一編號 —
-/// and with a checksum that admits one string in five, that class of match would
-/// dominate the output on any payload carrying floating-point data.
+/// and with a checksum that admits 22% of all 8-digit strings, that class of
+/// match would dominate the output on any payload carrying floating-point data.
 ///
 /// `+` is here so the digits of `+886…` cannot be re-read as a bare identifier
 /// once the phone recognizer has declined them — the country code is part of
@@ -382,14 +405,79 @@ fn business_id_era(digits: &str) -> Option<BusinessIdEra> {
     }
 }
 
-/// Try to read a 統一編號 at `start`: exactly eight digits, whole.
+/// Whether `c` can *bound* a 統一編號 written in running text.
+///
+/// An **allow-list**, where `is_fragment_neighbour` is a deny-list, and the
+/// difference is a real defect rather than a stylistic choice. Review of the
+/// first version of this pack found that the deny-list — ASCII alphanumerics,
+/// `.`, `,`, `+` — left every *other* delimiter free to bound an 8-digit run, so
+/// at a 22% checksum pass rate all of these were reported as tax identifiers:
+///
+/// ```text
+/// /var/log/app/20260801/trace.log      report_20260801_final.pdf
+/// ORDER_ID=12345675                    ?id=12345675&page=2
+/// {"order_id":12345675}                WHERE id = 12345675;
+/// s3://bucket/2026/08/12345675/…       pod-12345675-abcde
+/// ```
+///
+/// JSON, YAML, URLs, filesystem paths, environment variables and SQL are the
+/// dominant shapes of agent traffic, so that is not a tail case — it is the
+/// Epic's founding defect (ordinary content reported as sensitive) reappearing
+/// through a different mechanism.
+///
+/// So a bare 統一編號 must sit in *prose*: at a text edge, against whitespace, or
+/// against a non-ASCII character that is not itself a digit or letter — Han,
+/// full-width punctuation, CJK brackets. A value labelled by a context keyword
+/// is exempt (see `scan_business_id`), which is what keeps `{"統一編號":"…"}`
+/// working.
+///
+/// Whitespace on its own is not sufficient evidence of prose, which is why
+/// `scan_business_id` also looks past it: `order_id: 12345675` puts a space
+/// before the number exactly as `統一編號 10000004` does.
+///
+/// Deliberately applied to **this recognizer only**. The identity numbers carry
+/// a letter and nine digits at a ~4% residual, and the phone recognizers require
+/// a `09` prefix or an area-code gazetteer plus a separator; none of them is
+/// weak enough to need it, and applying it there would cost real recall.
+fn is_tax_id_prose_boundary(c: Option<char>) -> bool {
+    match c {
+        None => true,
+        Some(c) => {
+            c.is_whitespace() || (!c.is_ascii() && ascii_digit_of(c).is_none() && ascii_uppercase_of(c).is_none())
+        }
+    }
+}
+
+/// Try to read a 統一編號 at `start`: exactly eight digits, whole, and either in
+/// prose or explicitly labelled.
 ///
 /// "Whole" is doing real work. The checksum admits roughly one 8-digit string in
-/// five, so without the boundary tests every eight-digit window of every longer
-/// number would be a candidate and the output would be dominated by fragments.
+/// four to five, so without the boundary tests every eight-digit window of every
+/// longer number would be a candidate and the output would be dominated by
+/// fragments.
+///
+/// The prose-or-labelled rule is the second half, and it is why this recognizer
+/// does not share the module's boundary test — see `is_tax_id_prose_boundary`.
+/// The context keyword is still never *required*: an unlabelled identifier in
+/// prose is reported, which is what the acceptance criteria ask for. What the
+/// keyword buys is the ability to appear inside a machine-delimited structure,
+/// where an unlabelled 8-digit run is far more likely to be an order number.
 fn scan_business_id(text: &str, start: usize) -> Option<(CanonicalCategory, usize)> {
     let (end, digits) = read_digits(text, start, 8)?;
     if !right_boundary_ok(text, end) {
+        return None;
+    }
+    // Both immediate neighbours must be prose, *and* the nearest non-whitespace
+    // character to the left must not be ASCII. The second half exists because
+    // whitespace alone does not separate prose from a key/value pair:
+    // `order_id: 12345675` has a space before the number exactly as
+    // `統一編號 10000004` does, and only the token before that space tells them
+    // apart. Looking left rather than right because a label precedes its value
+    // in Chinese prose and in every machine format alike.
+    let in_prose = is_tax_id_prose_boundary(text[..start].chars().next_back())
+        && is_tax_id_prose_boundary(text[end..].chars().next())
+        && is_tax_id_prose_boundary(text[..start].chars().rev().find(|c| !c.is_whitespace()));
+    if !in_prose && !has_context_keyword(text, start) {
         return None;
     }
     business_id_era(&digits).map(|_| (BUSINESS_ID, end))
@@ -1267,6 +1355,97 @@ mod tests {
         // A landline rests on a gazetteer alone, which is weaker.
         assert_eq!(scan("（02-23456789）")[0].confidence(), ConfidenceBand::Low);
         assert_eq!(scan("電話：02-23456789")[0].confidence(), ConfidenceBand::Medium);
+    }
+
+    /// **The regression this pack shipped and review caught.** Machine
+    /// delimiters must not bound a bare 統一編號.
+    ///
+    /// The first version's boundary rule was a deny-list — ASCII alphanumerics,
+    /// `.`, `,`, `+` — so every other delimiter bounded an 8-digit run, and at a
+    /// 22% checksum pass rate all of these were reported as tax identifiers.
+    /// JSON, YAML, URLs, paths, environment variables and SQL are the dominant
+    /// shapes of agent traffic, so this was the Epic's founding defect
+    /// (ordinary content reported as sensitive) reappearing by another route.
+    #[test]
+    fn machine_delimiters_do_not_bound_a_bare_business_id() {
+        for text in [
+            "/var/log/app/20260801/trace.log",
+            "report_20260801_final.pdf",
+            "ORDER_ID=12345675",
+            "?id=12345675&page=2",
+            "https://example.com/orders/12345675",
+            "s3://bucket/2026/08/12345675/part.parquet",
+            "pod-12345675-abcde",
+            "WHERE id = 12345675;",
+            "#12345675",
+            "'12345675'",
+            "{\"order_id\":12345675}",
+            "order_id: 12345675",
+            "v1|12345675|ok",
+            "[12345675]",
+            "<12345675>",
+            "12345675,",
+        ] {
+            assert_eq!(categories(text), Vec::<String>::new(), "{text}");
+        }
+    }
+
+    /// The other half: prose and explicit labels still work, so the rule above
+    /// is not simply switching the recognizer off.
+    ///
+    /// The keyword exemption is what keeps a *labelled* identifier reachable
+    /// inside a machine-delimited structure — which is where a real 統一編號
+    /// actually appears in an API payload.
+    #[test]
+    fn a_business_id_in_prose_or_carrying_a_label_is_still_found() {
+        for text in [
+            // Prose: Han, whitespace, full-width punctuation, text edges.
+            "統編12345675",
+            "統一編號 10000004",
+            "統一編號：10000004",
+            "（10000004）",
+            "12345675",
+            "批次 20260801 已完成",
+            // Machine-delimited but explicitly labelled.
+            "{\"統一編號\":\"12345675\"}",
+            "統一編號=12345675",
+            "company.統一編號/12345675",
+        ] {
+            assert_eq!(
+                categories(text),
+                ["TAX_IDENTIFIER[zh-TW/business_id]"],
+                "{text} should still be found"
+            );
+        }
+    }
+
+    /// A documented collision, not a residual: Taiwan's uniform invoice number
+    /// is two letters and eight digits, the same shape as the legacy 居留證.
+    ///
+    /// About 1.5% of invoice numbers (P(2nd letter ∈ A–D) × P(checksum) =
+    /// 4/26 × 1/10) are reported as a residence certificate, at
+    /// `Severity::Critical`. No published rule separates the two shapes, so this
+    /// is not fixable here — it is pinned so it is visible, because invoices are
+    /// exactly the documents this pack's own context keywords mark as
+    /// interesting.
+    #[test]
+    fn an_invoice_shaped_value_can_collide_with_the_legacy_certificate() {
+        // Built by the legacy generator, so it is checksum-valid by construction
+        // — and equally a well-formed invoice number.
+        let collides = synthetic_legacy_arc('A', 'B', "0000000");
+        let found = scan(&format!("統一發票號碼 {collides}"));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].category().to_string(), "NATIONAL_ID[zh-TW/arc_legacy]");
+        assert_eq!(
+            found[0].severity(),
+            Severity::Critical,
+            "the collision is reported at the certificate's severity — that is the cost"
+        );
+
+        // The 24 letters outside A–D do not collide, which is what holds the
+        // rate near 4/26 rather than making every invoice number a finding.
+        let safe = synthetic_legacy_arc('A', 'E', "0000000");
+        assert_eq!(categories(&format!("統一發票號碼 {safe}")), Vec::<String>::new());
     }
 
     /// Every category this pack emits must parse back in the same build.
