@@ -154,6 +154,13 @@ fn hash_data(hasher: &mut Sha256, data: Option<&DataPolicy>) {
                 CredentialAction::AlertOnly => 2u8,
                 CredentialAction::AlertAndRedact => 3u8,
             }]);
+            // AAASM-5354: which detectors ran is part of what a policy decides,
+            // so two documents differing only in `locale_packs` must not share
+            // a digest — the audit trail attributes a decision by it.
+            hasher.update((dp.locale_packs.len() as u64).to_be_bytes());
+            for tag in &dp.locale_packs {
+                hash_str(hasher, tag);
+            }
         }
     }
 }

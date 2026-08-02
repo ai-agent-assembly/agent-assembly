@@ -83,6 +83,11 @@ pub struct RawDataPolicy {
     /// `"alert_only"`, or `"alert_and_redact"`. Validated into a
     /// [`crate::policy::document::CredentialAction`].
     pub credential_action: Option<String>,
+    /// BCP-47 tags of the deterministic locale recognizer packs to run
+    /// (AAASM-5354), e.g. `["zh-TW"]`. Absent or empty means none — see
+    /// [`crate::policy::document::DataPolicy::locale_packs`] for why that is
+    /// the default.
+    pub locale_packs: Option<Vec<String>>,
     /// Stray keys captured so the validator can reject them (AAASM-4330
     /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]

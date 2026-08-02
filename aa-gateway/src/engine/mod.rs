@@ -3127,6 +3127,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"password=\w+".to_string()],
             credential_action: CredentialAction::default(),
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -3147,6 +3148,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"password=\w+".to_string()],
             credential_action: CredentialAction::Block,
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -3169,6 +3171,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"password=\w+".to_string()],
             credential_action: CredentialAction::AlertOnly,
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -3188,6 +3191,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"password=\w+".to_string()],
             credential_action: CredentialAction::AlertAndRedact,
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -3568,6 +3572,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![".*".to_string()],
             credential_action: CredentialAction::default(),
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
@@ -3754,6 +3759,7 @@ mod tests {
         doc.data = Some(DataPolicy {
             sensitive_patterns: vec![r"api_key=[A-Za-z0-9]+".to_string()],
             credential_action: CredentialAction::default(),
+            locale_packs: vec![],
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();

@@ -401,9 +401,33 @@ impl PolicyValidator {
             }
         };
 
+        // Reject an unknown pack tag at load time rather than at evaluate
+        // time. The engine also fails closed on one (a `PolicyDocument` can be
+        // built without passing through here), but a typo an operator can see
+        // when they apply the policy beats one that surfaces as a blanket deny
+        // on the next action.
+        let locale_packs = raw.locale_packs.unwrap_or_default();
+        for (i, tag) in locale_packs.iter().enumerate() {
+            if crate::engine::detection::LocalePack::from_tag(tag).is_none() {
+                let known: Vec<&str> = crate::engine::detection::LocalePack::ALL
+                    .iter()
+                    .map(|p| p.tag())
+                    .collect();
+                errors.push(ValidationError::new(
+                    format!("data.locale_packs[{}]", i),
+                    format!(
+                        "unknown locale pack '{}'; this build contains: {}",
+                        tag,
+                        known.join(", ")
+                    ),
+                ));
+            }
+        }
+
         Some(DataPolicy {
             sensitive_patterns: patterns,
             credential_action,
+            locale_packs,
         })
     }
 
@@ -764,6 +788,47 @@ mod tests {
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         let dp = out.document.data.unwrap();
         assert_eq!(dp.sensitive_patterns.len(), 1);
+    }
+
+    // ── Data locale_packs validation (AAASM-5354) ──────────────────────────
+
+    /// The default a policy that says nothing gets. Asserted explicitly because
+    /// it is a security default, not an implementation detail: an empty list is
+    /// what keeps the 22%-residual 統一編號 recognizer off the pre-action block
+    /// path unless an operator asks for it.
+    #[test]
+    fn data_locale_packs_defaults_to_empty() {
+        let yaml = "data:\n  sensitive_patterns:\n    - \"sk-[a-zA-Z0-9]{48}\"\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert!(out.document.data.unwrap().locale_packs.is_empty());
+    }
+
+    #[test]
+    fn data_locale_packs_round_trip() {
+        let yaml = "data:\n  locale_packs:\n    - \"zh-TW\"\n";
+        let out = PolicyValidator::from_yaml(yaml).unwrap();
+        assert_eq!(out.document.data.unwrap().locale_packs, vec!["zh-TW".to_string()]);
+    }
+
+    #[test]
+    fn data_unknown_locale_pack_is_an_error() {
+        let yaml = "data:\n  locale_packs:\n    - \"zh-TW\"\n    - \"ja-JP\"\n";
+        let result = PolicyValidator::from_yaml(yaml);
+        let errs = result.expect_err("an unknown pack tag must not load");
+        let err = errs
+            .iter()
+            .find(|e| e.field == "data.locale_packs[1]")
+            .expect("the offending index must be named");
+        assert!(
+            err.message.contains("ja-JP"),
+            "message must name the tag: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("zh-TW"),
+            "message must list what this build does contain: {}",
+            err.message
+        );
     }
 
     #[test]
