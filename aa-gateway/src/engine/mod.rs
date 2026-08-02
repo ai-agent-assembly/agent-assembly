@@ -76,10 +76,31 @@ pub struct EvaluationResult {
     /// - A zero-width operator-regex match appears in `credential_findings` and
     ///   **not** here, because a canonical finding covers at least one byte.
     ///
+    /// # Who reads this, exactly
+    ///
+    /// Stated precisely because an earlier draft of this doc claimed the field
+    /// "feeds the audit write", which was false when written — nothing read it
+    /// at all. Three consumers read it today, and all three read it as a
+    /// **presence test**, not as content:
+    ///
+    /// - [`service::convert::eval_result_to_response`](crate::service::convert::eval_result_to_response)
+    ///   — a finding here makes the wire decision `Redact` and contributes a
+    ///   [`RedactRule`] naming the canonical category. Without this the caller
+    ///   was told "allow, nothing to redact" and forwarded the original payload.
+    /// - `PolicyService`'s audit write — a finding here attaches the
+    ///   [`Redaction`](aa_security::Redaction), so the sanitised payload reaches
+    ///   the audit entry instead of nothing.
+    /// - The anomaly detector — a finding here counts toward the behavioural
+    ///   baseline and sets `has_pii`.
+    ///
+    /// The findings themselves are **not** serialised into the audit entry;
+    /// that projection is AAASM-5357's work. `maybe_emit_secret_alert` also does
+    /// not read this field — see its docs for why alerting a kindless finding
+    /// through `aa-api`'s `detected_pattern_type` would publish a wrong answer.
+    ///
     /// Spans are audit-tier only (ADR 0032 §9). This field carries them for the
-    /// same reason `credential_findings` already does — it feeds the audit
-    /// write — and must not be projected into a metric label, a log line or an
-    /// API response without going through
+    /// same reason `credential_findings` already does, and must not be projected
+    /// into a metric label, a log line or an API response without going through
     /// [`SensitiveDataFindingRecord`](aa_core::types::sensitive_data::SensitiveDataFindingRecord),
     /// which drops the span by construction.
     pub canonical_findings: Vec<aa_security::canonical::CanonicalFinding>,
@@ -1591,8 +1612,10 @@ impl PolicyEngine {
             packs.into_iter().map(detection::LocalePackPass::new).collect();
 
         let detected = if pack_passes.is_empty() {
-            // Stack-allocated slice on the default path: configuring no locale
-            // pack must not cost the hot path a heap allocation.
+            // The pass list on the default path is a stack array, so configuring
+            // no locale pack costs no heap allocation *here*. (Under `cfg(test)`
+            // `detection::run` still builds a vector to splice in a test double;
+            // that allocation does not exist in a production build.)
             Self::run_detection(text, &[&scanner_pass as &dyn detection::DetectionPass, &regex_pass])
         } else {
             let mut passes: Vec<&dyn detection::DetectionPass> = vec![&scanner_pass, &regex_pass];
