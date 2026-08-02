@@ -834,8 +834,82 @@ mod tests {
         }
     }
 
+    /// The legacy generator and validator must agree, and the check digit must
+    /// **matter**.
+    ///
+    /// This test exists because its absence was a real hole, found by review
+    /// after the first version of this PR: defeating `arc_legacy_checksum_ok`'s
+    /// arithmetic outright — while leaving the A–D letter-class check intact —
+    /// passed the entire suite. The legacy near-miss was credited to
+    /// `a_legacy_certificate_with_an_unissued_second_letter_is_rejected`, but
+    /// that test varies the *letter*, never the digits, so the
+    /// `(second_code % 10) * 8` term and the 7..=1 weighting were completely
+    /// unprotected. An arithmetic error there means **missed** residence
+    /// certificates, which is the asymmetric direction: a miss is a leak.
+    ///
+    /// The national-ID path had this from the start
+    /// (`the_fixture_generator_produces_values_the_validator_accepts`); the
+    /// legacy path did not, and the two are separate weightings.
+    #[test]
+    fn the_legacy_fixture_generator_produces_values_the_validator_accepts() {
+        let mut built = 0usize;
+        for first in 'A'..='Z' {
+            for second in ['A', 'B', 'C', 'D'] {
+                for body in ["0000000", "1234567", "9876543"] {
+                    let id = synthetic_legacy_arc(first, second, body);
+                    assert!(
+                        arc_legacy_checksum_ok(first, second, &id[2..]),
+                        "generated {id} but the validator rejects it"
+                    );
+                    // Not vacuous: every *other* check digit must be refused, so
+                    // a validator that ignores the arithmetic cannot pass.
+                    let correct = id.as_bytes()[9] - b'0';
+                    for delta in 1..10u8 {
+                        let wrong = format!("{}{}", &id[..9], (correct + delta) % 10);
+                        assert!(
+                            !arc_legacy_checksum_ok(first, second, &wrong[2..]),
+                            "{wrong} validates, but only {id} should"
+                        );
+                    }
+                    built += 1;
+                }
+            }
+        }
+        assert_eq!(built, 26 * 4 * 3);
+    }
+
+    /// The same, end to end through `scan`: a legacy certificate whose check
+    /// digit is wrong is not reported.
+    #[test]
+    fn a_legacy_certificate_with_a_wrong_check_digit_is_rejected() {
+        for second in ['A', 'B', 'C', 'D'] {
+            let id = synthetic_legacy_arc('A', second, "1234567");
+            let correct = id.as_bytes()[9] - b'0';
+            for delta in 1..10u8 {
+                let wrong = format!("{}{}", &id[..9], (correct + delta) % 10);
+                assert_eq!(
+                    categories(&format!("舊式居留證 {wrong}")),
+                    Vec::<String>::new(),
+                    "{wrong} was reported but only {id} is checksum-valid"
+                );
+            }
+            // The correct one is still found, so the loop above is not passing
+            // because the recognizer stopped working.
+            assert_eq!(
+                categories(&format!("舊式居留證 {id}")),
+                ["NATIONAL_ID[zh-TW/arc_legacy]"],
+                "{id}"
+            );
+        }
+    }
+
     /// A second letter outside A–D is not issued, so the shape alone must not be
     /// enough — otherwise every `XY` + 8 digits string gets a 10% pass rate.
+    ///
+    /// This is a **letter-class** test, not a checksum test. Defeating the
+    /// checksum arithmetic leaves it passing; that is what
+    /// `the_legacy_fixture_generator_produces_values_the_validator_accepts` and
+    /// `a_legacy_certificate_with_a_wrong_check_digit_is_rejected` are for.
     #[test]
     fn a_legacy_certificate_with_an_unissued_second_letter_is_rejected() {
         // Generated with `E`'s own units digit, so the weighted sum balances and
