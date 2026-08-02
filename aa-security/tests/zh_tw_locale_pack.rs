@@ -19,27 +19,80 @@ use aa_security::CredentialScanner;
 /// text could not reach the code they were meant to exercise. The assertions
 /// below therefore check the corpus is numerically dense *before* checking it is
 /// clean.
-const CLEAN_ZH_TW_PROSE: &str = "\
-代理程式在執行工具前，必須先向政策引擎詢問決策。若政策拒絕，該次呼叫不會發生，稽核記錄仍會保留完整原因。
-本文件對應版本 v0.0.1-rc.7，最後更新於 2026-08-01，前一版是 2026-07-24 發布的 rc.6。
-閘道器預設監聽 50051 埠，儀表板使用 3000 埠，代理程式的側車代理則使用 8080 埠。
-第一季共處理 1,250,000 次決策請求，其中 3,412 次被拒絕，佔比約 0.27%，較上一季下降 12 個百分點。
-政策評估的第 95 百分位延遲為 1.8 毫秒，第 99 百分位為 4.6 毫秒，皆低於 10 毫秒的服務水準目標。
-稽核事件的保留期限為 365 天，超過後由背景工作批次清除，每次批次最多處理 5000 筆。
-系統於 2026-08-01T09:15:30Z 完成一次滾動升級，共重啟 24 個執行個體，耗時 7 分 42 秒。
-團隊每月預算上限為 500 美元，目前已使用 312.75 美元，剩餘額度會在下個月 1 日重置。
-共有 18 條規則生效，其中 6 條屬於網路出口限制，9 條屬於工具呼叫限制，3 條屬於資料外洩防護。
-若需要調整設定，請參閱第 4 章第 2 節，該節說明了三層攔截模型的部署順序與各層的延遲成本。
-核心程式庫以 Rust 1.75 以上版本編譯，語言軟體開發套件分別支援 Python 3.12、Node 22 與 Go 1.23。
-本次審查共發現 7 項待辦事項，預計於 2026 年第三季完成，屆時會再安排一次完整的回歸測試。
-訂單編號 2026070912 已於 2026-07-09 出貨，物流單號為 9527001234，預計 3 個工作天內送達。
-會議記錄編號 20260715，與會者 12 人，議程共 5 項，會議自 14:30 進行至 16:05 結束。
-資料庫連線集區大小設為 10，逾時時間 30 秒，重試次數 3 次，退避間隔為 250 毫秒起算。
-發票金額合計 48,300 元，含稅 5%，折讓 1,200 元，實收 47,100 元，付款期限為 30 日內。
-本季共新增 47 個代理程式、9 個團隊與 214 條稽核規則，其中 128 條沿用自上一季的設定。
-效能測試在 4 核心 16 GB 記憶體的機器上執行，並行度為 64，總共送出 100000 次請求。
-文件第 7 版於 2026-06-30 定稿，第 8 版預計 2026-09-15 發布，兩版之間差異約 320 行。
-錯誤代碼 4001 表示政策不存在，4003 表示權限不足，5002 表示後端逾時，請依代碼分別處理。";
+const CLEAN_ZH_TW_PROSE: &str = include_str!("fixtures/zh_tw_clean_prose.txt");
+
+/// The byte-level Shannon entropy of an ASCII-or-not slice.
+///
+/// Deliberately scored over **bytes**, because that is the calculation that
+/// produced this Epic's founding defect: the entropy gate is calibrated in bits
+/// per character on English prose, and Han characters spread their UTF-8 bytes
+/// widely enough to land at 4.6–4.9 bits/byte. Reproduced here so
+/// `the_corpus_reaches_the_entropy_window_that_caused_the_defect` can prove the
+/// corpus is capable of triggering it, rather than asserting cleanliness over
+/// text that could never have failed.
+fn byte_entropy(s: &str) -> f64 {
+    if s.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0usize; 256];
+    for b in s.as_bytes() {
+        counts[*b as usize] += 1;
+    }
+    let len = s.len() as f64;
+    counts
+        .iter()
+        .filter(|c| **c > 0)
+        .map(|c| {
+            let p = *c as f64 / len;
+            -p * p.log2()
+        })
+        .sum()
+}
+
+/// Whitespace tokens of the corpus that sit inside the 20–64 byte window with
+/// byte-entropy above the 4.5 bits gate — i.e. the exact shape that was reported
+/// as a leaked secret before AAASM-5344.
+fn tokens_in_the_pre_5344_danger_window(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|t| (20..=64).contains(&t.len()) && byte_entropy(t) > 4.5)
+        .count()
+}
+
+/// Substrings of `text` that the zh-TW pack must look at and decline: a letter
+/// followed by nine digits, a standalone run of exactly eight digits, and a run
+/// of nine or ten digits beginning with a zero.
+///
+/// Counted with a hand-rolled scan rather than by asking the pack, because the
+/// point is to establish — independently of the code under test — that the
+/// corpus actually contains candidates. `zh_tw::scan` returning zero over a
+/// corpus with no candidates in it proves nothing at all.
+fn candidate_shape_counts(text: &str) -> (usize, usize, usize) {
+    let b: Vec<char> = text.chars().collect();
+    let digit = |i: usize| b.get(i).is_some_and(char::is_ascii_digit);
+    let alnum = |i: usize| b.get(i).is_some_and(char::is_ascii_alphanumeric);
+    let (mut letter9, mut eight, mut zero_led) = (0, 0, 0);
+
+    for (i, c) in b.iter().enumerate() {
+        let starts_token = i == 0 || !alnum(i - 1);
+        // A letter followed by exactly nine digits, not glued to more.
+        if c.is_ascii_uppercase() && starts_token && (1..=9).all(|k| digit(i + k)) && !alnum(i + 10) {
+            letter9 += 1;
+        }
+        if c.is_ascii_digit() && starts_token {
+            let mut n = 0;
+            while digit(i + n) {
+                n += 1;
+            }
+            if n == 8 && !alnum(i + 8) {
+                eight += 1;
+            }
+            if (9..=10).contains(&n) && *c == '0' {
+                zero_led += 1;
+            }
+        }
+    }
+    (letter9, eight, zero_led)
+}
 
 /// A high-entropy ASCII secret used to prove the locale pack did not weaken the
 /// existing detectors. Not a real credential — a fixed alphanumeric run.
@@ -54,16 +107,14 @@ const ASCII_SECRET: &str = "ghp_0123456789abcdefABCDEF0123456789abcd";
 /// to reintroduce it from the other direction.
 #[test]
 fn clean_zh_tw_prose_produces_no_findings_from_either_scanner() {
-    // Non-vacuity first. A corpus that cannot reach the recognizers would make
-    // the assertions below pass for the wrong reason.
     let digits = CLEAN_ZH_TW_PROSE.chars().filter(char::is_ascii_digit).count();
     assert!(
-        CLEAN_ZH_TW_PROSE.len() > 2000,
+        CLEAN_ZH_TW_PROSE.len() > 8000,
         "corpus is too small to be evidence: {} bytes",
         CLEAN_ZH_TW_PROSE.len()
     );
     assert!(
-        digits > 150,
+        digits > 400,
         "corpus has too few digits to exercise the digit recognizers: {digits}"
     );
 
@@ -91,6 +142,57 @@ fn clean_zh_tw_prose_produces_no_findings_from_either_scanner() {
 
     // And redaction over an empty finding set returns the text, not a blank.
     assert_eq!(redact_findings(CLEAN_ZH_TW_PROSE, &locale_findings), CLEAN_ZH_TW_PROSE);
+}
+
+/// The corpus must be able to trigger the **entropy** defect, or its
+/// cleanliness says nothing about the scanner.
+///
+/// Before AAASM-5344 the entropy pass scored a whole whitespace token's UTF-8
+/// bytes against a gate calibrated in bits per *character* on English. Chinese
+/// does not delimit words with spaces, so a clause is one token; land that token
+/// in the 20–64 byte window and Han's byte distribution puts it over 4.5 bits,
+/// and ordinary prose is reported as a leaked secret. That is where the 87
+/// findings came from.
+///
+/// A corpus whose tokens are all *longer* than 64 bytes would sail past that
+/// window and stay clean no matter how broken the gate was — which is exactly
+/// the failure mode this programme has already shipped: clean-prose vectors
+/// whose text overflowed the window, so a mutation failed zero of them. This
+/// asserts the corpus lands inside the window many times over.
+#[test]
+fn the_corpus_reaches_the_entropy_window_that_caused_the_defect() {
+    let in_window = tokens_in_the_pre_5344_danger_window(CLEAN_ZH_TW_PROSE);
+    assert!(
+        in_window >= 30,
+        "only {in_window} tokens land in the 20–64 byte window above 4.5 bits/byte; \
+         this corpus could not have failed before AAASM-5344, so its cleanliness \
+         is not evidence that the fix holds"
+    );
+}
+
+/// And the corpus must be able to trigger the **locale pack**, which is a
+/// different question with a different answer.
+///
+/// The entropy check above exercises `CredentialScanner`. It says nothing about
+/// whether the text ever reaches `zh_tw::scan`'s recognizers — a corpus with no
+/// identifier-shaped token in it would yield zero locale findings however
+/// permissive the checksums were. Counted independently of the pack, so the
+/// evidence does not come from the code under test.
+#[test]
+fn the_corpus_contains_candidates_the_locale_pack_must_decline() {
+    let (letter9, eight, zero_led) = candidate_shape_counts(CLEAN_ZH_TW_PROSE);
+    assert!(
+        letter9 >= 4,
+        "only {letter9} letter+9-digit tokens: the identity recognizers are never exercised"
+    );
+    assert!(
+        eight >= 6,
+        "only {eight} standalone 8-digit runs: the 統一編號 recognizer is barely exercised"
+    );
+    assert!(
+        zero_led >= 2,
+        "only {zero_led} zero-led 9–10 digit runs: the phone recognizers are never exercised"
+    );
 }
 
 /// The standing D-3 constraint: nothing in this ticket may weaken detection of
