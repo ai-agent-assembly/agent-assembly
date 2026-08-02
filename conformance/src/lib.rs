@@ -10,8 +10,9 @@
 //! 2. `message_serial`  — proto message wire-format golden bytes
 //! 3. `policy_query`    — CheckActionRequest / CheckActionResponse round-trips
 //! 4. `cred_detection`  — CredentialScanner::scan() + ScanResult::redact()
-//! 5. `session_lifecycle` — agent Register → Heartbeat → Deregister → ControlStream
-//! 6. `integration_surface_contract` — the SDK-relied-on network surface is
+//! 5. `zh_tw_detection` — locale::zh_tw::scan() + canonical::redact_findings()
+//! 6. `session_lifecycle` — agent Register → Heartbeat → Deregister → ControlStream
+//! 7. `integration_surface_contract` — the SDK-relied-on network surface is
 //!    actually present on the server(s) the CLI starts (AAASM-4454)
 
 /// Source-introspection helpers for the integration-surface contract tests.
@@ -58,9 +59,9 @@ pub struct FindingSpec {
 ///
 /// A separate type from [`ScanVector`], and a separate vector directory, because
 /// the two describe different things. A `ScanVector` names a
-/// [`CredentialKind`](aa_security::CredentialKind); a locale-pack finding has
+/// `CredentialKind`; a locale-pack finding has
 /// none by design — ADR 0032 §2 freezes `CredentialKind::ALL` — and is
-/// identified by its rendered [`CanonicalCategory`](aa_security::canonical::CanonicalCategory)
+/// identified by its rendered `CanonicalCategory`
 /// instead. Widening `ScanVector` with optional fields would have made every one
 /// of the 34 committed credential vectors describe a schema they do not use, and
 /// would have pulled them into a runner the Python SDK harness cannot drive.
