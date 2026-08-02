@@ -285,6 +285,9 @@ impl DevToolIntegration for FixtureIntegration {
                 },
             }),
             observed_at_unix_secs: now,
+            policy: aa_core::integration::policy_posture::PolicyPosture::Unknown {
+                reason: "test fixture; no policy resolved".to_string(),
+            },
         })
     }
 

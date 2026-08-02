@@ -42,6 +42,7 @@ use crate::policy::PolicyDocument;
 
 use super::capability::{DevToolCapabilities, IntegrationCapability};
 use super::plan::{IntegrationPlan, IntegrationRequest, RemovalPlan};
+use super::policy_posture::PolicyPosture;
 use super::receipt::IntegrationReceipt;
 use super::state::{
     EvidenceKind, ProtectionEvidence, ProtectionLevel, ProtectionState, StateDerivation, DEFAULT_FRESHNESS_WINDOW_SECS,
@@ -265,6 +266,13 @@ impl<A: DevToolAdapter> DevToolIntegration for LegacyAdapterShim<A> {
             compatibility,
             next_level,
             observed_at_unix_secs: now,
+            // A legacy adapter has no lifecycle service behind it to resolve a
+            // policy, so this shim cannot answer the question — and must not
+            // borrow an answer. `Unconfigured` would read as a finding about
+            // the operator's policy rather than about this adapter's age.
+            policy: PolicyPosture::Unknown {
+                reason: format!("{LEGACY_UNSUPPORTED_REASON}; it resolves no policy of its own"),
+            },
         })
     }
 

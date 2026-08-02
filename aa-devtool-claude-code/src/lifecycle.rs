@@ -70,10 +70,11 @@ use aa_devtool_contract::{
     now_unix_secs, sha256_hex, AdapterError, ArtifactObservation, ArtifactOperation, CapabilitySupport,
     DevToolCapabilities, DevToolInfo, DevToolIntegration, DevToolKind, EnvValue, EvidenceKind, GovernanceLevel,
     IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus, IntegrationStep,
-    LaunchSpec, LaunchableTool, LifecyclePhase, McpGovernedTool, McpServerInfo, NextLevel, ProbeDescriptor,
-    ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan, SettingsMerge, SettingsScope,
-    StateDerivation, StepAction, StepExecutor, StepReceipt, SupportedToolVersions, ToolVersion, VerificationOutcome,
-    VerificationResult, VersionCompatibility, VersionSupport, DEFAULT_FRESHNESS_WINDOW_SECS, LIFECYCLE_SCHEMA_VERSION,
+    LaunchSpec, LaunchableTool, LifecyclePhase, McpGovernedTool, McpServerInfo, NextLevel, PolicyPosture,
+    ProbeDescriptor, ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan,
+    SettingsMerge, SettingsScope, StateDerivation, StepAction, StepExecutor, StepReceipt, SupportedToolVersions,
+    ToolVersion, VerificationOutcome, VerificationResult, VersionCompatibility, VersionSupport,
+    DEFAULT_FRESHNESS_WINDOW_SECS, LIFECYCLE_SCHEMA_VERSION,
 };
 use async_trait::async_trait;
 
@@ -1127,6 +1128,14 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             compatibility,
             next_level,
             observed_at_unix_secs: now,
+            // An adapter governs one tool; the effective policy is a property of
+            // the host and is the same for all of them. Resolving it here would
+            // put one resolution per adapter behind a contract that says there
+            // is one — so the adapter declares it unanswered and the lifecycle
+            // service, which resolves once, fills it in (AAASM-5349).
+            policy: PolicyPosture::Unknown {
+                reason: "not resolved by the adapter".to_string(),
+            },
         })
     }
 

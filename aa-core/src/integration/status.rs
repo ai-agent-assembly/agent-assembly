@@ -95,6 +95,14 @@ pub struct IntegrationStatus {
     /// read without its timestamp over-reads the claim: it is "verified at T",
     /// not "true now".
     pub observed_at_unix_secs: u64,
+    /// Which policy a governed launch would run under, as resolved at
+    /// `observed_at_unix_secs` (AAASM-5349).
+    ///
+    /// This is a statement about *now*, not about the last launch: an
+    /// integration can be installed and working while the policy that would
+    /// govern its next launch is absent, and an operator asking `status` is
+    /// asking what happens if they run something.
+    pub policy: super::policy_posture::PolicyPosture,
 }
 
 impl IntegrationStatus {
@@ -266,6 +274,11 @@ mod tests {
             },
             next_level: None,
             observed_at_unix_secs: NOW,
+            // These tests are about the ladder and its evidence; a fixed posture
+            // keeps the policy dimension from silently influencing them.
+            policy: crate::integration::policy_posture::PolicyPosture::Unknown {
+                reason: "not resolved in this fixture".to_string(),
+            },
         }
     }
 

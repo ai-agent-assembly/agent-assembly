@@ -23,6 +23,7 @@
 
 use std::path::PathBuf;
 
+use aa_devtool_contract::PolicyPosture;
 use aa_devtool_contract::{
     capability_conformance, AdapterError, ArtifactOperation, DevToolCapabilities, DevToolInfo, DevToolIntegration,
     DevToolKind, EnvValue, EvidenceKind, ExerciseOutcome, GovernanceLevel, HookableTool, IntegrationCapability,
@@ -67,6 +68,9 @@ fn empty_status(tool: DevToolKind, phase: LifecyclePhase, state: ProtectionState
         },
         next_level: None,
         observed_at_unix_secs: NOW,
+        policy: PolicyPosture::Unknown {
+            reason: "not resolved in this fixture".to_string(),
+        },
     }
 }
 
@@ -241,6 +245,9 @@ impl DevToolIntegration for CliTool {
             compatibility,
             next_level: None,
             observed_at_unix_secs: NOW,
+            policy: PolicyPosture::Unknown {
+                reason: "not resolved in this fixture".to_string(),
+            },
         })
     }
 

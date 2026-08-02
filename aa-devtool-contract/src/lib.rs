@@ -106,6 +106,7 @@ pub use aa_core::integration::{IntegrationReceipt, ReceiptError, StepReceipt};
 
 // Status and verification results, including the exercised-vs-read-back
 // distinction that keeps `GatewayProtected` honest.
+pub use aa_core::integration::policy_posture::{PolicyPosture, PolicyState};
 pub use aa_core::integration::{IntegrationStatus, LifecyclePhase, NextLevel, VerificationOutcome, VerificationResult};
 
 // Protection state and the evidence it is derived from. `StateDerivation` is

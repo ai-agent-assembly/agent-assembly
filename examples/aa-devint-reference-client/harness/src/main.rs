@@ -42,6 +42,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use aa_core::dev_tool::{DevToolKind, GovernanceLevel};
+use aa_core::integration::policy_posture::{PolicyPosture, PolicyState};
 use aa_core::integration::{
     now_unix_secs, DevToolCapabilities, EnvValue, EvidenceKind, ExerciseOutcome, IntegrationCapability,
     IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus, IntegrationStep, LifecyclePhase,
@@ -169,6 +170,16 @@ fn fake_status(tool: &DevToolKind) -> IntegrationStatus {
             blocked_because: "no core-side probe observation in the freshness window".to_string(),
         }),
         observed_at_unix_secs: 1_700_000_200,
+        // A second deliberate mismatch, for the same reason as the one above:
+        // the ladder says Integrated while the policy says a governed launch
+        // would be refused. The two dimensions are independent — an integration
+        // can be installed and working with no policy to run anything under —
+        // and a client that collapsed them would report one as the other.
+        policy: PolicyPosture::Resolved {
+            state: PolicyState::Unconfigured,
+            source: None,
+            detail: "no policy artifact found; a governed launch is refused".to_string(),
+        },
     }
 }
 

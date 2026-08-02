@@ -143,6 +143,11 @@ pub fn poisoned_plan(tool: &DevToolKind) -> IntegrationPlan {
     plan
 }
 
+/// A status fixture for tests in sibling modules.
+pub fn fake_status_for_tests() -> IntegrationStatus {
+    fake_status(&DevToolKind::ClaudeCode)
+}
+
 fn fake_status(tool: &DevToolKind) -> IntegrationStatus {
     IntegrationStatus {
         tool: tool.clone(),
@@ -156,6 +161,9 @@ fn fake_status(tool: &DevToolKind) -> IntegrationStatus {
         },
         next_level: None,
         observed_at_unix_secs: 1_700_000_000,
+        policy: aa_core::integration::policy_posture::PolicyPosture::Unknown {
+            reason: "test fixture; no policy resolved".to_string(),
+        },
     }
 }
 

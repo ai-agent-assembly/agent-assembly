@@ -406,6 +406,9 @@ mod tests {
                 },
                 next_level: None,
                 observed_at_unix_secs: 0,
+                policy: crate::integration::policy_posture::PolicyPosture::Unknown {
+                    reason: "stub adapter".to_string(),
+                },
             })
         }
 
