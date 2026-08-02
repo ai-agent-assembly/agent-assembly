@@ -13,6 +13,10 @@ serde        = { workspace = true }
 serde_json   = { workspace = true }
 serde_yaml   = { workspace = true }
 rust_decimal = { workspace = true, features = ["serde-str"] }
+# The resolver's refusal text is composed for an operator to read and is
+# returned as one error; a typed enum per refusal would be the better library
+# shape and is a follow-up, not part of relocating the code unchanged.
+anyhow       = { workspace = true }
 thiserror    = { workspace = true }
 async-trait  = { workspace = true }
 sha2         = { workspace = true }

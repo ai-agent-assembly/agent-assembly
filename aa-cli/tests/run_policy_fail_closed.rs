@@ -197,7 +197,7 @@ async fn the_refusal_names_the_remedy() {
 async fn an_explicit_allow_all_artifact_launches() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("allow-all.yaml");
-    std::fs::write(&path, aa_cli::commands::run_policy::ALLOW_ALL_TEMPLATE).unwrap();
+    std::fs::write(&path, aa_policy::resolve::ALLOW_ALL_TEMPLATE).unwrap();
 
     let (result, launched, rules_seen) = run_with(path).await;
 

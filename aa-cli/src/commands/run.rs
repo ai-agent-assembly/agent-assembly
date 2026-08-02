@@ -12,11 +12,13 @@ use tokio::signal::unix::SignalKind;
 
 use aa_core::{DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel};
 
-use crate::commands::run_policy;
+// AAASM-5349: resolution is shared with the devint service, so it lives in
+// `aa-policy` rather than here. Aliased so the call sites read unchanged.
 use crate::commands::run_registration::{self, GovernedRegistration};
 use crate::commands::status::models::redact_database_url;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use aa_policy::resolve as run_policy;
 
 /// Arguments for the `aasm run <tool> [args...]` subcommand.
 #[derive(Debug, Args)]

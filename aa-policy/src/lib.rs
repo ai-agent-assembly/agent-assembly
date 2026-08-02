@@ -39,7 +39,11 @@ pub mod history;
 pub mod network;
 pub mod raw;
 pub mod rbac;
+pub mod resolve;
 pub mod scope;
+
+#[cfg(test)]
+mod test_support;
 pub mod validator;
 
 pub use context::{ContextError, PolicyContext};
