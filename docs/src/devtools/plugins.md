@@ -289,6 +289,24 @@ the practical form of that coupling. When a breaking change lands on
 `AdapterError` and `IntegrationCapability` are `#[non_exhaustive]` — adding
 variants is not a breaking change, so do not match exhaustively on either.
 
+### If this contract breaks
+
+The older `DevToolAdapter` trait still exists, and `LegacyAdapterShim` adapts
+any implementation of it to `DevToolIntegration`. If `DevToolAdapter` is ever
+removed, [ADR 0030 §7.2](../adr/0030-developer-integration-boundaries-and-trust-model.md#72-if-a-break-becomes-unavoidable)
+binds that removal to three conditions:
+
+1. it happens only in a **major `aa-core` bump**;
+2. `LegacyAdapterShim` is retained for **at least one minor release** after the
+   last in-tree consumer migrates;
+3. a migration section is added **here**, before the removal ships.
+
+No such removal is scheduled. This section states the commitment rather than
+the migration steps deliberately: the steps depend on what `DevToolIntegration`
+looks like at that time, and writing them against a break that has not happened
+would produce guidance that is wrong by the time anyone needs it. What you can
+rely on now is the notice period and that the guidance will be here.
+
 ---
 
 ## What is and is not in scope

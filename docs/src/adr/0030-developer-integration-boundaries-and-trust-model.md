@@ -4,6 +4,22 @@
 **Date**: 2026-07
 **Ticket**: [AAASM-5275](https://lightning-dust-mite.atlassian.net/browse/AAASM-5275)
 
+---
+
+> **Amendment (AAASM-5325, 2026-08)** — **citations only; no decision changes.**
+> This ADR quoted `docs/src/devtools/plugins.md` in two places, and
+> [AAASM-5322](https://lightning-dust-mite.atlassian.net/browse/AAASM-5322)
+> rewrote that file afterwards, so both quotations named text their cited source
+> no longer contained. One was load-bearing: §7.2's backward-compatibility
+> argument rested on a pinning rule scoped to `aa-core`, which the rewrite
+> withdrew *because it was wrong* — adapters depend on `aa-devtool-contract` and
+> never on `aa-core` directly. The guarantee always held in substance; only the
+> citation was broken, and it now quotes the rule that exists. §7.2's deferral of
+> the migration section ("owned by a parallel branch") has also expired — that
+> commitment now lives in `plugins.md` itself.
+>
+> Every decision, forbidden design and consequence below is unchanged.
+
 This ADR fixes the architectural boundaries and the trust model for **Developer
 Integrations** — the machinery by which AASM installs, verifies, repairs and removes
 governance for a developer's AI coding tool (Claude Code, Codex, Copilot, Windsurf, a
@@ -102,15 +118,23 @@ problems follow directly from that shape:
 
 ### The registration model is build-time linking, and that is not an accident
 
-`docs/src/devtools/plugins.md` is explicit:
+[`docs/src/devtools/plugins.md` §"How adapters get loaded — build-time linking, by
+decision"](../devtools/plugins.md#how-adapters-get-loaded--build-time-linking-by-decision)
+is explicit:
 
-> Right now Agent Assembly uses **build-time linking**… There is **no**
-> `inventory::submit!`-style runtime registration in `aa-core` today, and there is no
-> dynamic shared-library loading. Both were proposed in early designs but neither has
-> been implemented; do not write code that assumes either exists.
+> Agent Assembly links adapters **at build time**. An adapter is loaded by linking
+> its crate into a binary that constructs it explicitly and registers it in an
+> in-memory registry at startup.
+>
+> There is **no** `inventory::submit!`-style runtime registration and **no**
+> dynamic shared-library loading.
 
-This ADR turns that observation into a decision: build-time linking is the *chosen*
-model, not a temporary gap (see Decision 6).
+This ADR is what makes that a decision rather than an observation: build-time linking
+is the *chosen* model, and dynamic loading is forbidden rather than merely absent (see
+Decision 6). The wording above already reflects that — when this ADR was written the
+same file described dynamic loading as an unimplemented gap, and it was rewritten by
+[AAASM-5322](https://lightning-dust-mite.atlassian.net/browse/AAASM-5322) once this
+ADR settled the question.
 
 ### Known current-state divergence (not fixed here)
 
@@ -736,11 +760,25 @@ lifecycle. No third-party adapter breaks.
 
 `DevToolAdapter` is removed only in a **major `aa-core` bump**, with `LegacyAdapterShim`
 retained for at least one minor release after the last in-tree consumer migrates, and a
-migration section added to `docs/src/devtools/plugins.md` — a file this ADR deliberately does
-not edit (it is owned by a parallel branch); updating it is a follow-up on the
-implementing ticket. `docs/src/devtools/plugins.md` already states the pinning rule that makes
-this safe for third parties: *"Adapters are tightly coupled to the `aa-core` major version
-they were built against. Pin `aa-core` exactly."*
+migration section added to [`docs/src/devtools/plugins.md`](../devtools/plugins.md#if-this-contract-breaks),
+which now carries that commitment in the file third parties actually read rather than only
+here.
+
+What makes this safe for third parties is the coupling rule that file states under
+[§Versioning](../devtools/plugins.md#versioning) — scoped to **`aa-devtool-contract`**, not
+to `aa-core`:
+
+> An adapter is coupled to the `aa-devtool-contract` / `aa-core` version it was
+> built against, and the core distributes as **one versioned unit** (runtime +
+> gateway + the linked adapters), so a git or path dependency pinned to a tag is
+> the practical form of that coupling.
+
+The distinction is not cosmetic. Adapters depend on `aa-devtool-contract` and never on
+`aa-core` directly — that facade is the security boundary Decision 4 establishes — so an
+argument resting on third parties pinning `aa-core` would be resting on a dependency they
+are forbidden to have. The guarantee holds either way, but only the `aa-devtool-contract`
+form is one an adapter author can act on. Every adapter crate is also `publish = false`,
+so the pin is a git or path dependency on a tag, not a crates.io version requirement.
 
 #### 7.3 Sequencing
 
