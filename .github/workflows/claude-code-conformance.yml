@@ -22,7 +22,11 @@ permissions:
 #    scanner, receipt store and provider are all in-process. Required.
 # 2. `macos`              — the same suite on the platform the integration
 #    targets, where file modes, temp paths and TLS differ. Required.
-# 3. `real-tool`          — `workflow_dispatch` only. Installs the real
+# 3. `native-cli`         — `aa-cli`'s native Claude Code suite, every case of
+#    which gates on the real binary. It cannot measure anything on a hosted
+#    runner and does not pretend to: it exists to *report* that, rather than
+#    let the same five green ticks stand for five measurements. Not required.
+# 4. `real-tool`          — `workflow_dispatch` only. Installs the real
 #    `claude` binary and points `AA_SPIKE_CLAUDE_BIN` at it, so the one
 #    assertion a mock cannot make (does Claude Code's embedded Node runtime
 #    accept the Agent Assembly certificate authority through
@@ -44,8 +48,24 @@ permissions:
 # renders the resulting ledger into the job summary, and why the real-tool lane
 # asserts its scenario recorded `measured`.
 #
-# Where the tolerance lives
-# -------------------------
+# AAASM-5465 makes that arithmetic explicit rather than per-lane. Every lane runs
+# under nextest's `evidence` profile, which emits a JUnit report, and hands both
+# the report and the ledger to `.ci/test-evidence-summary.sh`. That step prints
+# how many of the lane's passing cases were *substantive* (ran and asserted)
+# versus declined, splitting the declines into "unsupported platform" and "tool
+# binary absent" because those need different fixes — and it fails, rather than
+# merely reporting, when a lane that exists to measure measured nothing.
+#
+# The `native-cli` lane below is the extreme case the ticket was raised for: all
+# five of its cases gate on the real binary, so on a runner without one it is a
+# green result carrying zero evidence. It is `continue-on-error` at the job level
+# — the absence is honest, not a regression — but the summary states NO EVIDENCE
+# PRODUCED on the run's front page instead of letting five green ticks speak for
+# it. The `real-tool` lane runs the same suite with the binary installed and
+# `--require-evidence`, so *there* a decline is a failure.
+#
+# Where the tolerance lives (the `real-tool` lane)
+# ------------------------------------------------
 # This lane used to carry a job-level `continue-on-error`, on the grounds that a
 # third-party npm package this repository does not control must not read as a
 # product regression. That tolerance was far too wide: it also swallowed a
@@ -62,6 +82,13 @@ on:
       - "aa-integration-tests/tests/conformance_claude_code.rs"
       - "aa-integration-tests/tests/conformance_support/**"
       - "aa-integration-tests/tests/spike_support/**"
+      # AAASM-5465: the shared evidence ledger, the suite whose emptiness the
+      # `native-cli` lane exists to report, and the two files that decide how
+      # that report is produced.
+      - "aa-integration-tests/tests/evidence/**"
+      - "aa-cli/tests/integrations_claude_code.rs"
+      - ".ci/test-evidence-summary.sh"
+      - ".config/nextest.toml"
       - "aa-devtool-claude-code/**"
       - "aa-devtool-contract/**"
       - "aa-core/src/integration/**"
@@ -78,6 +105,13 @@ on:
       - "aa-integration-tests/tests/conformance_claude_code.rs"
       - "aa-integration-tests/tests/conformance_support/**"
       - "aa-integration-tests/tests/spike_support/**"
+      # AAASM-5465: the shared evidence ledger, the suite whose emptiness the
+      # `native-cli` lane exists to report, and the two files that decide how
+      # that report is produced.
+      - "aa-integration-tests/tests/evidence/**"
+      - "aa-cli/tests/integrations_claude_code.rs"
+      - ".ci/test-evidence-summary.sh"
+      - ".config/nextest.toml"
       - "aa-devtool-claude-code/**"
       - "aa-devtool-contract/**"
       - "aa-core/src/integration/**"
@@ -135,25 +169,77 @@ jobs:
       - name: Run the conformance suite
         # --no-capture so a `SKIP [...]` line is visible in the log. Without it
         # a skipped scenario reads exactly like a passing one.
-        run: cargo nextest run -p aa-integration-tests --test conformance_claude_code --no-capture
+        #
+        # `--profile evidence` adds the JUnit report the summary step needs for
+        # the denominator: the ledger says which cases declined, and only the
+        # runner knows how many there were.
+        run: |
+          cargo nextest run --profile evidence -p aa-integration-tests \
+            --test conformance_claude_code --no-capture
 
       - name: Report what this lane measured
         # `always()`: a lane that failed still has an outcome worth reading, and
         # the ledger is most useful exactly when something went wrong.
+        #
+        # `--require-evidence`: this lane is required for a merge and its 25
+        # hermetic scenarios need nothing external, so every one of them
+        # declining would mean the suite had stopped measuring the product
+        # rather than that the runner lacked something.
         if: always()
         env:
           LANE: ${{ matrix.lane }}
         run: |
-          set -uo pipefail
-          {
-            echo "### Conformance (${LANE})"
-            echo
-            if compgen -G "${AA_CONFORMANCE_OUTCOME_DIR}/*.json" > /dev/null; then
-              jq -r '"- `\(.scenario)` — **\(.outcome)** — \(.detail)"' "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json
-            else
-              echo "- no scenario recorded an outcome"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          .ci/test-evidence-summary.sh \
+            --lane "conformance (${LANE})" \
+            --junit target/nextest/evidence/junit.xml \
+            --evidence-dir "${AA_CONFORMANCE_OUTCOME_DIR}" \
+            --require-evidence
+
+  native-cli:
+    name: Native CLI suite (evidence report)
+    # The lane AAASM-5465 was raised for. `aa-cli/tests/integrations_claude_code.rs`
+    # gates every one of its five cases on the real `claude` binary, which no
+    # GitHub-hosted runner has, so it reports five green tests having asserted
+    # nothing. That is not a regression to fail on — the binary genuinely is not
+    # there — but it must not read as five measurements either.
+    #
+    # `continue-on-error` at the job level, and no `--require-evidence`: the
+    # summary step states NO EVIDENCE PRODUCED, emits a warning annotation, and
+    # lists which five cases declined and why. The lane that *can* measure them
+    # is `real-tool` below, which provisions the binary and does require
+    # evidence.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 25
+    env:
+      AA_CONFORMANCE_OUTCOME_DIR: ${{ github.workspace }}/.conformance-outcomes
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: claude-code-conformance-native-cli
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+
+      - name: Run the native CLI suite
+        run: cargo nextest run --profile evidence -p aa-cli --test integrations_claude_code --no-capture
+
+      - name: Report what this lane measured
+        if: always()
+        run: |
+          .ci/test-evidence-summary.sh \
+            --lane "native CLI suite" \
+            --junit target/nextest/evidence/junit.xml \
+            --evidence-dir "${AA_CONFORMANCE_OUTCOME_DIR}"
 
   real-tool:
     name: Conformance (real Claude Code)
@@ -213,21 +299,25 @@ jobs:
         run: |
           set -euo pipefail
           AA_SPIKE_CLAUDE_BIN="$(command -v claude)" \
-            cargo nextest run -p aa-integration-tests --test conformance_claude_code --no-capture
+            cargo nextest run --profile evidence -p aa-integration-tests \
+              --test conformance_claude_code --no-capture
+
+      - name: Run the native CLI suite against the real binary
+        # The suite that is entirely gated on the tool. Here — and only here —
+        # the binary exists, so this is the one lane in which those five cases
+        # can produce evidence at all. `--require-evidence` on the summary below
+        # covers both suites' records.
+        if: steps.install_tool.outcome == 'success'
+        run: cargo nextest run --profile evidence -p aa-cli --test integrations_claude_code --no-capture
 
       - name: Report what this lane measured
         if: always() && steps.install_tool.outcome == 'success'
         run: |
-          set -uo pipefail
-          {
-            echo "### Conformance (real Claude Code)"
-            echo
-            if compgen -G "${AA_CONFORMANCE_OUTCOME_DIR}/*.json" > /dev/null; then
-              jq -r '"- `\(.scenario)` — **\(.outcome)** — \(.detail)"' "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json
-            else
-              echo "- no scenario recorded an outcome"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          .ci/test-evidence-summary.sh \
+            --lane "conformance (real Claude Code)" \
+            --junit target/nextest/evidence/junit.xml \
+            --evidence-dir "${AA_CONFORMANCE_OUTCOME_DIR}" \
+            --require-evidence
 
       - name: Assert the lane actually measured the real binary
         # The suite's own zero-traffic failure covers a scenario that ran and
