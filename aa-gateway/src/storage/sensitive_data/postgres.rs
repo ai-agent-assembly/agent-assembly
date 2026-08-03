@@ -453,12 +453,24 @@ impl SensitiveDataProjection for PostgresBackend {
     async fn sensitive_data_projection_columns(&self) -> StorageResult<Vec<(String, String)>> {
         // `information_schema` reports what the cluster actually has, for the
         // same reason SQLite's impl reads `PRAGMA table_info`.
-        // Schema-qualified. Without `table_schema` this reports columns from
-        // *any* schema on the search path — and `information_schema.columns`
-        // additionally hides columns the connecting role has no privilege on,
-        // so an unqualified read both over- and under-reports. This query is
-        // the mechanism the whole "no offset column" claim rests on, so it has
-        // to describe exactly the tables this backend created.
+        // `table_schema = current_schema()` closes the **over**-reporting half:
+        // without it, a same-named table in any other schema on the search path
+        // is reported as if it were ours, and the contract test's exact-set
+        // assertion would fail — or, worse, pass while describing the wrong
+        // table. `the_projection_contract_holds_on_postgres` plants a decoy
+        // schema carrying a `span_start` column to prove that filter is load-
+        // bearing.
+        //
+        // The **under**-reporting half stays open and is worth naming, because
+        // this query is the mechanism the whole "no offset column" claim rests
+        // on: `information_schema.columns` is a privilege-filtered view, so a
+        // role without privilege on a column simply does not see it. A caller
+        // reading this catalogue with a restricted role would be told a column
+        // does not exist when it does. The claim is therefore "no offset column
+        // is visible to the role that created these tables" — which is the role
+        // the migration runs as, and the one the tests use. A stronger
+        // guarantee needs `pg_catalog.pg_attribute`, which is not
+        // privilege-filtered.
         let rows = sqlx::query(
             "SELECT table_name, column_name FROM information_schema.columns \
              WHERE table_schema = current_schema() \

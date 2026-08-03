@@ -20,7 +20,7 @@ use super::store::{CategoryFindingAggregate, SensitiveDataEventFilter, Sensitive
 /// Every statement is `IF NOT EXISTS`, so the slice is safe against a fresh
 /// file or an already-migrated one. There is no offset, length, start, end or
 /// payload column in either table — ADR 0032 §9 confines those to the
-/// tamper-evident tier, and `tests/sensitive_data_projection_test.rs` asserts
+/// tamper-evident tier, and `tests/sensitive_data_contract/` asserts
 /// the column sets from outside this module so the omission cannot be undone
 /// quietly.
 const PROJECTION_SCHEMA: &[&str] = &[
@@ -279,11 +279,22 @@ impl SensitiveDataProjection for SqliteBackend {
             .await
             .map_err(|e| StorageError::QueryFailed(format!("begin: {e}")))?;
 
-        // `OR IGNORE` is the idempotency rule: a replayed event is a no-op, so
-        // a retried publish cannot double-count. First write wins.
+        // `ON CONFLICT(event_id) DO NOTHING` is the idempotency rule: a
+        // replayed event is a no-op, so a retried publish cannot double-count.
+        // First write wins.
+        //
+        // Targeted, not `INSERT OR IGNORE`, and the difference matters now that
+        // the child inserts are gated on `rows_affected()`. `OR IGNORE` skips
+        // on *any* constraint violation, so a NOT NULL or CHECK failure would
+        // become a successful-looking no-op that also silently skipped every
+        // child row — while PostgreSQL's targeted `DO NOTHING` raises. Backends
+        // whose failure semantics diverge is how a divergence gets found in
+        // production rather than in CI. (AAASM-5447 carries the matching
+        // primary-key change; this is the conflict-clause alignment only.)
         let placeholders = vec!["?"; 41].join(", ");
         let inserted = sqlx::query(&format!(
-            "INSERT OR IGNORE INTO sensitive_data_events ({EVENT_COLUMNS}) VALUES ({placeholders})"
+            "INSERT INTO sensitive_data_events ({EVENT_COLUMNS}) VALUES ({placeholders}) \
+             ON CONFLICT(event_id) DO NOTHING"
         ))
         .bind(i64::from(event.schema_version_major))
         .bind(i64::from(event.schema_version_minor))
@@ -331,7 +342,8 @@ impl SensitiveDataProjection for SqliteBackend {
         .map_err(|e| StorageError::QueryFailed(format!("insert event: {e}")))?;
 
         // First-write-wins has to cover the children, not just the parent.
-        // `OR IGNORE` on the child rows alone is *additive*: a replay carrying
+        // A conflict-ignoring insert on the child rows alone is *additive*: a
+        // replay carrying
         // more findings than the stored event would insert the new ordinals
         // while the parent's `finding_count` stayed frozen, leaving the tally
         // disagreeing with the rows it describes — and the per-category
@@ -351,8 +363,9 @@ impl SensitiveDataProjection for SqliteBackend {
         let finding_placeholders = vec!["?"; 18].join(", ");
         for finding in findings {
             sqlx::query(&format!(
-                "INSERT OR IGNORE INTO sensitive_data_findings ({FINDING_COLUMNS}) \
-                 VALUES ({finding_placeholders})"
+                "INSERT INTO sensitive_data_findings ({FINDING_COLUMNS}) \
+                 VALUES ({finding_placeholders}) \
+                 ON CONFLICT(event_id, finding_ordinal) DO NOTHING"
             ))
             .bind(i64::from(finding.schema_version_major))
             .bind(i64::from(finding.schema_version_minor))

@@ -31,12 +31,26 @@ pub struct SensitiveDataEventFilter {
     /// "blocked findings by category" read returned every finding under a
     /// "denied" label.
     pub verdict: Option<String>,
-    /// Maximum rows to return — groups, for
+    /// Maximum rows to return from the two **list** reads
+    /// ([`query_sensitive_data_events`](SensitiveDataProjection::query_sensitive_data_events),
+    /// [`query_sensitive_data_findings`](SensitiveDataProjection::query_sensitive_data_findings))
+    /// and the maximum **groups** from
     /// [`aggregate_sensitive_data_by_category`](SensitiveDataProjection::aggregate_sensitive_data_by_category).
     ///
-    /// Applies to every read. On the aggregate it is the cap on how many
-    /// distinct categories a caller can be handed, which is the one bound
-    /// available against a category vocabulary that is not closed.
+    /// **Not applied to the two count reads**, which always report the true
+    /// total for the filter. That is deliberate — a count that stopped at the
+    /// cap would answer "how many did you show me?", which the caller already
+    /// knows — but it does mean a UI pairing a capped list with its count is
+    /// pairing 1 row with a count of 3 by design, and must label the count as
+    /// the total rather than as the list's length. An earlier draft of this doc
+    /// said "applies to every read", which was false for exactly those two.
+    ///
+    /// On the aggregate the cap is the one bound available against a category
+    /// vocabulary that is not closed. Note it interacts with the fixed
+    /// `ORDER BY category ASC`: the groups returned are the alphabetically
+    /// first N, **not** the top N by count. A "top categories" consumer needs
+    /// to sort client-side over an uncapped read, or wait for a ranking
+    /// parameter this filter does not yet have.
     pub limit: Option<u32>,
 }
 
@@ -231,7 +245,7 @@ pub trait SensitiveDataProjection: Send + Sync + 'static {
     /// Exists so the tiering obligation can be *checked* rather than asserted:
     /// ADR 0032 §9's ban on offsets and lengths is a property of what is
     /// durably stored, and reading the DDL constant back would only prove the
-    /// test and the constant agree. `tests/sensitive_data_projection_test.rs`
+    /// test and the constant agree. `tests/sensitive_data_contract/`
     /// pins the exact set from outside this module, which is the only vantage
     /// point from which "there is no offset column" is a real claim.
     ///

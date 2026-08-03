@@ -29,7 +29,7 @@
 //!    `CanonicalFinding` and discards the
 //!    [`ByteSpan`](aa_security::canonical::ByteSpan); and
 //! 2. neither [`SensitiveDataEventRow`] nor [`SensitiveDataFindingRow`] has a
-//!    field to put one in, and `tests/sensitive_data_projection_test.rs`
+//!    field to put one in, and `tests/sensitive_data_contract/`
 //!    asserts the exact serialized key set and the exact SQL column set of
 //!    both from *outside* this module's privacy.
 //!

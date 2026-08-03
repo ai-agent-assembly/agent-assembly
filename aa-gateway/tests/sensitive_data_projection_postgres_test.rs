@@ -63,6 +63,7 @@ async fn the_projection_contract_holds_on_postgres() {
         .expect("re-migrating must be a no-op");
 
     contract::columns_are_exactly_the_reviewed_set(&store).await;
+    a_same_named_table_in_another_schema_is_not_reported(&store, &url).await;
     contract::a_byte_span_reaches_no_part_of_the_projection(&store).await;
     contract::every_projected_value_round_trips(&store).await;
     contract::one_blocked_action_with_three_findings_stays_one_event(&store).await;
@@ -98,6 +99,49 @@ async fn the_projection_contract_holds_on_postgres() {
         .migrate_sensitive_data_projection()
         .await
         .expect("re-applying after a rollback must work");
+}
+
+/// A same-named table in another schema must not be reported as ours.
+///
+/// `sensitive_data_projection_columns` is the mechanism the entire "no offset
+/// column" claim rests on, and on PostgreSQL it reads a catalogue view rather
+/// than a per-table pragma. Without `table_schema = current_schema()` that view
+/// answers for every schema on the search path, so a `decoy.sensitive_data_findings`
+/// carrying a `span_start` column would be reported under the projection's own
+/// name — the exact-set assertion would then either fail for the wrong reason
+/// or, if the decoy happened to match, pass while describing the wrong table.
+///
+/// The decoy is planted and removed here so the filter is proved load-bearing
+/// rather than assumed. This closes the over-reporting half only; the
+/// under-reporting half — `information_schema` hides columns the connecting
+/// role lacks privilege on — is named in the implementation and stays open.
+async fn a_same_named_table_in_another_schema_is_not_reported(store: &Arc<PostgresBackend>, url: &str) {
+    let pool = sqlx::PgPool::connect(url).await.expect("second connection");
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS decoy")
+        .execute(&pool)
+        .await
+        .expect("create decoy schema");
+    sqlx::query("CREATE TABLE IF NOT EXISTS decoy.sensitive_data_findings (span_start INTEGER NOT NULL)")
+        .execute(&pool)
+        .await
+        .expect("create decoy table");
+
+    let columns = store
+        .sensitive_data_projection_columns()
+        .await
+        .expect("read information_schema");
+    assert!(
+        !columns.iter().any(|(_, name)| name == "span_start"),
+        "a same-named table in another schema was reported as the projection's own; \
+         ADR 0032 §9 evidence must describe the tables this backend created"
+    );
+    // And the reviewed set is still exactly right with the decoy in place.
+    contract::columns_are_exactly_the_reviewed_set(store).await;
+
+    sqlx::query("DROP SCHEMA decoy CASCADE")
+        .execute(&pool)
+        .await
+        .expect("drop decoy schema");
 }
 
 /// The PostgreSQL decoder refuses a foreign schema major, as the SQLite one

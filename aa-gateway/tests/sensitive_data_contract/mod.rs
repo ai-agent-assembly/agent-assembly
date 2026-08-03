@@ -430,7 +430,14 @@ pub async fn every_projected_value_round_trips<S: SensitiveDataProjection>(store
     assert_eq!(first.recognizer, "aa-security::scanner");
     assert_eq!(first.recognizer_version, "0.0.0-test");
     assert_eq!(first.field_path, "body.customer.email");
-    assert_eq!(first.redaction_label, email().redaction_label());
+    // Pinned as a literal, not as `email().redaction_label()` — both sides of
+    // that comparison resolve through the same function, so it would hold
+    // however wrong the function was. Worth doing: the literal caught an
+    // assumption that `EmailAddress` had no `CredentialKind` and so redacted to
+    // the opaque `[REDACTED]` sentinel. It does have one, so the writing build
+    // emits the qualified form, and this is the value a reader will actually
+    // see in the column.
+    assert_eq!(first.redaction_label, "[REDACTED:EmailAddress]");
     assert_eq!(
         first.aggregate_key,
         format!(
@@ -825,6 +832,27 @@ pub async fn the_filters_narrowings_are_honoured_on_every_read<S: SensitiveDataP
         1,
         "the aggregate must honour the limit — it is the only bound available against a \
          category vocabulary that is not closed"
+    );
+
+    // The two counts deliberately ignore the cap and report the true total.
+    // Asserted rather than left to the docstring, because the pairing a UI
+    // will actually build — a capped list beside its count — then shows 1 row
+    // against a count of 3, and that has to be a documented, tested choice
+    // rather than a surprise. An earlier docstring claimed `limit` applied to
+    // every read, which was false for exactly these two.
+    let capped_filter = filter(tenant).with_limit(1);
+    assert_eq!(
+        store.count_sensitive_data_events(&capped_filter).await.expect("count"),
+        3,
+        "a count reports the total for the filter, not the length of a capped page"
+    );
+    assert_eq!(
+        store
+            .count_sensitive_data_findings(&capped_filter)
+            .await
+            .expect("count"),
+        5,
+        "a count reports the total for the filter, not the length of a capped page"
     );
 }
 

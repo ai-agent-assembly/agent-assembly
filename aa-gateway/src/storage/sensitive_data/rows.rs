@@ -1,11 +1,17 @@
 //! The persisted shapes of the sensitive-data projection.
 //!
 //! Gateway-owned value types, per the storage layer's standing rule that the
-//! schema does not move whenever a runtime type grows a field. They are
-//! projected *from* `aa-core`'s
-//! [`SensitiveDataDecisionEvent`] and [`SensitiveDataFindingRecord`]; nothing
-//! constructs them from anything else, which is what makes the span-freedom
-//! argument in the module doc hold end to end.
+//! schema does not move whenever a runtime type grows a field. The *writer*
+//! projects them from `aa-core`'s [`SensitiveDataDecisionEvent`] and
+//! [`SensitiveDataFindingRecord`].
+//!
+//! That is a statement about the writer and not about the types: `Deserialize`
+//! rebuilds either row from arbitrary bytes, and the `pub` fields let a row
+//! that was legitimately read be mutated and written back. Both routes reach
+//! [`append_sensitive_data_decision`](super::SensitiveDataProjection::append_sensitive_data_decision),
+//! and an earlier draft of this paragraph claimed otherwise while the type doc
+//! 400 lines below said the opposite. See
+//! [`SensitiveDataFindingRow`] for the version that holds.
 
 use aa_core::policy::EnforcementMode;
 use aa_core::time::Timestamp;
@@ -199,8 +205,16 @@ pub struct CategoryTally {
 /// `#[non_exhaustive]` so a downstream crate cannot mint one by struct literal
 /// and hand it to
 /// [`append_sensitive_data_decision`](super::SensitiveDataProjection::append_sensitive_data_decision),
-/// which is a `pub` trait method taking rows directly. That closes the door the
-/// writer's type signature alone does not.
+/// which is a `pub` trait method taking rows directly.
+///
+/// That narrows one door, it does not close the room — the same caveat
+/// [`SensitiveDataFindingRow`] carries applies here and for the same reasons.
+/// `Deserialize` rebuilds this row from arbitrary bytes, and its fields are
+/// `pub`, so a row read from storage can be mutated and written back.
+/// `destination_id` and `inspected_field_paths` are free-form strings and are
+/// exactly as capable of holding an offset as `field_path` is. What is
+/// structural is the absence of an offset *column*; everything else is a
+/// property of the writer.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct SensitiveDataEventRow {
