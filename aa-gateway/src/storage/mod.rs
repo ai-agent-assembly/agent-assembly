@@ -40,6 +40,7 @@ pub mod retention;
 pub mod retention_boot;
 pub mod retention_config;
 pub mod retention_engine;
+pub mod sensitive_data;
 pub mod sqlite;
 pub mod timescale;
 
@@ -61,5 +62,10 @@ pub use retention::{ColdAction, RetentionPolicy, RetentionStats};
 pub use retention_boot::spawn_retention_engine;
 pub use retention_config::{RetentionConfig, RetentionConfigError};
 pub use retention_engine::RetentionEngine;
+pub use sensitive_data::{
+    CategoryFindingAggregate, CategoryTally, ProjectionError, SensitiveDataEventFilter, SensitiveDataEventRow,
+    SensitiveDataFindingRow, SensitiveDataProjection, SensitiveDataProjectionConfig, SensitiveDataProjectionWriter,
+    TenantScope, WriteOutcome,
+};
 pub use sqlite::{SqliteBackend, SqliteConfig};
 pub use timescale::TimescaleStats;
