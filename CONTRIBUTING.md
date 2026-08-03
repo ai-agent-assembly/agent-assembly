@@ -103,14 +103,26 @@ Examples:
 "Bisectable" above is a hard requirement, not an aspiration: **every commit that
 lands on `main` must compile on its own**. The `Every commit in the range builds`
 CI job enforces it on each PR by walking `git rev-list HEAD^1..HEAD` over the
-merge result and running `cargo check --workspace --all-targets --exclude
-aa-ebpf` at each commit. It names the first commit that fails.
+merge result and running `cargo check --workspace --all-targets --all-features
+--exclude aa-ebpf` at each commit. It names the first commit that fails.
 
-Run it yourself before pushing — it is the same script CI runs:
+Precisely what that does and does not assert: it checks that each commit
+**compiles**, not that its tests pass, that it is lint-clean, or that it is
+formatted — the tip is separately held to all of those. `aa-ebpf` is excluded
+and covered by `ebpf-build`.
+
+Run it yourself before pushing:
 
 ```bash
 .ci/verify-range-builds.sh <base> <head>     # e.g. remote/main HEAD
 ```
+
+Same script, but **a weaker guarantee than CI's**, and the difference is the
+one this gate was built for. `remote/main..HEAD` contains no merge commit, so
+locally you are checking only your own commits. CI runs it over
+`refs/pull/N/merge`, whose range ends in the synthetic merge commit — so the
+**merge result** is checked only by CI. A clean-but-broken merge (below) is
+invisible locally by construction.
 
 Two things break this in practice, and neither is exotic:
 
@@ -160,7 +172,12 @@ exactly when they are needed.
 not build. Adding an entry is one line — a full 40-character SHA and a reason.
 An unbuildable commit that is *not* on the list is still skipped rather than
 scored "bad", and reported loudly so the list can be extended. The list should
-stop growing now that the CI gate prevents new entries.
+rarely need new entries now that the CI gate runs on every PR that triggers CI.
+One residual gap: `ci.yml`'s `on.pull_request.paths` is evaluated against a PR's
+*net* diff, so a PR whose net diff touches no listed path never starts CI at
+all — and its intermediate commits go unchecked even if they break the build.
+Closing that would mean dropping path-based CI gating repo-wide, which is a
+separate cost decision; until then, a new entry here is possible.
 
 ## Adding a new crate
 
