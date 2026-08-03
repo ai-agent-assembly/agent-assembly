@@ -28,6 +28,7 @@ pub mod probe_adjudication;
 pub mod proxy;
 pub mod ssrf;
 pub mod tls;
+pub mod transmission_evidence;
 
 pub use config::ProxyConfig;
 pub use error::ProxyError;
