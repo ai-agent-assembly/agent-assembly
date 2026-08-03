@@ -23,11 +23,18 @@ use super::store::{CategoryFindingAggregate, SensitiveDataEventFilter, Sensitive
 
 /// The projection's DDL. Mirrors the SQLite shape column for column so a row
 /// written by one backend means the same thing when read from the other.
+///
+/// That mirroring extends to the primary key and to every `ON CONFLICT` target:
+/// see the SQLite module's schema documentation for why the key carries
+/// `(org_id, tenant_id, event_id)` rather than `event_id` alone (AAASM-5447),
+/// and for the migration position. The two backends must be changed together —
+/// a key that matches on one and not the other reintroduces the defect on
+/// whichever deployment uses the unfixed one.
 const PROJECTION_SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sensitive_data_events (
         schema_version_major      INTEGER     NOT NULL,
         schema_version_minor      INTEGER     NOT NULL,
-        event_id                  TEXT        NOT NULL PRIMARY KEY,
+        event_id                  TEXT        NOT NULL,
         occurred_at_ns            BIGINT      NOT NULL,
         ingested_at_ns            BIGINT      NOT NULL,
         org_id                    TEXT        NOT NULL,
@@ -65,7 +72,8 @@ const PROJECTION_SCHEMA: &[&str] = &[
         blocked_finding_count     INTEGER     NOT NULL,
         transformed_finding_count INTEGER     NOT NULL,
         finding_count_by_category TEXT        NOT NULL,
-        reason_codes              TEXT        NOT NULL
+        reason_codes              TEXT        NOT NULL,
+        PRIMARY KEY (org_id, tenant_id, event_id)
     )",
     "CREATE INDEX IF NOT EXISTS idx_sd_events_scope_ts
         ON sensitive_data_events(org_id, tenant_id, occurred_at_ns)",
@@ -90,7 +98,7 @@ const PROJECTION_SCHEMA: &[&str] = &[
         field_path           TEXT    NOT NULL,
         redaction_label      TEXT    NOT NULL,
         aggregate_key        TEXT    NOT NULL,
-        PRIMARY KEY (event_id, finding_ordinal)
+        PRIMARY KEY (org_id, tenant_id, event_id, finding_ordinal)
     )",
     "CREATE INDEX IF NOT EXISTS idx_sd_findings_scope_category
         ON sensitive_data_findings(org_id, tenant_id, verdict, category)",
@@ -295,7 +303,7 @@ impl SensitiveDataProjection for PostgresBackend {
         let event_placeholders = placeholders(41);
         let inserted = sqlx::query(&format!(
             "INSERT INTO sensitive_data_events ({EVENT_COLUMNS}) VALUES ({event_placeholders}) \
-             ON CONFLICT (event_id) DO NOTHING"
+             ON CONFLICT (org_id, tenant_id, event_id) DO NOTHING"
         ))
         .bind(i32::from(event.schema_version_major))
         .bind(i32::from(event.schema_version_minor))
@@ -360,7 +368,7 @@ impl SensitiveDataProjection for PostgresBackend {
         for finding in findings {
             sqlx::query(&format!(
                 "INSERT INTO sensitive_data_findings ({FINDING_COLUMNS}) VALUES ({finding_placeholders}) \
-                 ON CONFLICT (event_id, finding_ordinal) DO NOTHING"
+                 ON CONFLICT (org_id, tenant_id, event_id, finding_ordinal) DO NOTHING"
             ))
             .bind(i32::from(finding.schema_version_major))
             .bind(i32::from(finding.schema_version_minor))
