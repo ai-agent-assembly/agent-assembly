@@ -25,6 +25,23 @@ use aa_api::models::disposition::SensitiveDataDisposition;
 use aa_api::routes::agents::{AgentDecisionResponse, DecisionLabel};
 use serde_json::Value;
 
+/// ADR 0032 §10 D-2's eight wire spellings, written out rather than derived
+/// from the enum so a respelling is a failure and not a silent rename.
+const WIRE_SPELLINGS: [&str; 8] = [
+    "redact",
+    "mask",
+    "tokenize",
+    "require_approval",
+    "approval_granted",
+    "approval_denied",
+    "shadow_only",
+    "none",
+];
+
+/// OpenAPI 3.1 operation keys. Every other child of a path item (`parameters`,
+/// `summary`, `description`, `servers`, `$ref`) is not an operation.
+const HTTP_METHODS: [&str; 8] = ["get", "put", "post", "delete", "options", "head", "patch", "trace"];
+
 /// Exactly what `GET /api/v1/agents/{id}/decisions` emitted for this row before
 /// `sensitiveDataDisposition` existed.
 ///
@@ -220,32 +237,53 @@ fn the_disposition_is_never_a_request_input() {
     );
 
     let mut request_shapes_scanned = 0usize;
+    let mut check_input = |origin: &str, input_kind: &str, input: &Value| {
+        request_shapes_scanned += 1;
+
+        let mut refs = Vec::new();
+        referenced_schema_names(input, &mut refs);
+        for reference in &refs {
+            assert!(
+                !tainted.iter().any(|t| t == reference),
+                "{origin} accepts {reference} as a {input_kind}, which reaches \
+                 SensitiveDataDisposition — the disposition must never be an input \
+                 (ADR 0032 §10 D-2)",
+            );
+        }
+
+        // An inlined enum would have no `$ref` to catch. Counting spellings
+        // rather than looking for one: an inlined *subset* — say just the three
+        // transformations — would evade a single-needle grep, and a subset is
+        // still the vocabulary appearing on an input.
+        let inlined = WIRE_SPELLINGS.iter().filter(|s| contains_string(input, s)).count();
+        assert!(
+            inlined < 2,
+            "{origin} inlines {inlined} of the disposition's spellings into a {input_kind}",
+        );
+    };
+
     for (path, item) in spec["paths"].as_object().expect("the spec has paths") {
-        for (method, operation) in item.as_object().expect("a path item is a map") {
+        let item = item.as_object().expect("a path item is a map");
+
+        // A path item may carry `parameters` as a sibling of its methods,
+        // applying to every operation under it. Iterating only the method
+        // children would skip that shape entirely — zero occurrences today,
+        // which is exactly why it would go unnoticed if one were added.
+        if let Some(shared) = item.get("parameters") {
+            check_input(&format!("{path} (path-level)"), "parameters", shared);
+        }
+
+        for (method, operation) in item {
+            // Skip the path item's non-operation children (`parameters`,
+            // handled above; `summary`, `description`, `servers`, `$ref`), so
+            // the scan reads operations and nothing else.
+            if !HTTP_METHODS.contains(&method.as_str()) {
+                continue;
+            }
             for input_kind in ["requestBody", "parameters"] {
-                let Some(input) = operation.get(input_kind) else {
-                    continue;
-                };
-                request_shapes_scanned += 1;
-
-                let mut refs = Vec::new();
-                referenced_schema_names(input, &mut refs);
-                for reference in &refs {
-                    assert!(
-                        !tainted.iter().any(|t| t == reference),
-                        "{method} {path} accepts {reference} as a {input_kind}, which reaches \
-                         SensitiveDataDisposition — the disposition must never be an input \
-                         (ADR 0032 §10 D-2)",
-                    );
+                if let Some(input) = operation.get(input_kind) {
+                    check_input(&format!("{method} {path}"), input_kind, input);
                 }
-
-                // An inlined enum would have no $ref to catch. `require_approval`
-                // is unique to this vocabulary, so its presence in a request
-                // shape means the disposition was inlined into one.
-                assert!(
-                    !contains_string(input, "require_approval"),
-                    "{method} {path} inlines the disposition vocabulary into a {input_kind}",
-                );
             }
         }
     }
@@ -271,24 +309,36 @@ fn the_published_schema_is_optional_and_carries_the_eight_spellings() {
         .iter()
         .map(|v| v.as_str().expect("a string enum value"))
         .collect();
-    assert_eq!(
-        published,
-        [
-            "redact",
-            "mask",
-            "tokenize",
-            "require_approval",
-            "approval_granted",
-            "approval_denied",
-            "shadow_only",
-            "none",
-        ],
-    );
+    assert_eq!(published, WIRE_SPELLINGS);
 
     let decision_row = &spec["components"]["schemas"]["AgentDecisionResponse"];
+    let property = &decision_row["properties"]["sensitiveDataDisposition"];
     assert!(
-        decision_row["properties"].get("sensitiveDataDisposition").is_some(),
+        !property.is_null(),
         "AgentDecisionResponse does not publish sensitiveDataDisposition",
+    );
+
+    // Not merely "a property with that name exists" — it must resolve to the
+    // disposition schema. A property retyped to a bare `string` would keep the
+    // name and lose the closed vocabulary.
+    let mut refs = Vec::new();
+    referenced_schema_names(property, &mut refs);
+    assert!(
+        refs.iter().any(|r| r == "SensitiveDataDisposition"),
+        "sensitiveDataDisposition no longer resolves to the disposition schema: {property:?}",
+    );
+
+    // The published property is `oneOf: [null, $ref]` — utoipa's rendering of
+    // `Option<T>`. Recorded rather than glossed over, because it means the
+    // *contract* tolerates an explicit `null` that the *server* never sends:
+    // `skip_serializing_if` omits the key entirely, which
+    // `a_row_without_a_disposition_is_byte_identical_to_the_pre_change_response`
+    // proves at the byte level. Both readings are safe — absent and null both
+    // mean "no disposition" — but the stronger guarantee lives in the server,
+    // not in the artifact, and a reader of this file should know that.
+    assert!(
+        property.get("oneOf").is_some(),
+        "the disposition property is no longer nullable-optional in the spec: {property:?}",
     );
 
     // Optional: an existing client that does not send or expect it stays valid.

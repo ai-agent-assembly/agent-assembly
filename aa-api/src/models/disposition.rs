@@ -187,6 +187,18 @@ impl SensitiveDataDisposition {
     /// `allow`-implying values) are ordered by declaration. The tie-break is
     /// arbitrary *and harmless*: either winner yields the same verdict, so no
     /// coarse reader can tell which was picked.
+    ///
+    /// # `require_approval` outranking `approval_granted`
+    ///
+    /// Taken on its own that pair looks like the mistake this module avoids
+    /// elsewhere: reporting `pending` for an action that completed is as wrong
+    /// as mapping `none` to `allow`. It is defused by the two values being
+    /// mutually exclusive on one record rather than by the ranking — a record
+    /// says the action was *held awaiting* a decision or that a human *made*
+    /// one, never both, because the second supersedes the first on the same
+    /// action. If a caller ever does hold both, the ordering here is the
+    /// deliberate one: `pending` over-reports restrictiveness, and
+    /// over-reporting is the safe direction for a reporting field.
     fn precedence(self) -> u8 {
         match self {
             // Adds nothing, so it loses to everything that does.
@@ -289,9 +301,23 @@ mod tests {
         }
     }
 
-    /// How restrictive a coarse verdict is, on ADR 0018's own
-    /// least-to-most-restrictive ordering, with "no verdict at all" below
+    /// How restrictive a coarse verdict is, with "no verdict at all" below
     /// `allow`.
+    ///
+    /// # This ranking is AAASM-5356's, not ADR 0018's
+    ///
+    /// ADR 0018 *lists* the five variants and calls them ordered
+    /// least-to-most restrictive, but it states no ranking this test could
+    /// inherit, and its declaration order carries no serialized meaning. The
+    /// numbers below are a judgment made here, and the debatable one is
+    /// `pending` (4) above `scrub` (3): a held action has not happened yet,
+    /// whereas a scrubbed one was carried out with a transformed payload, so
+    /// `pending` is treated as the more restrictive outcome.
+    ///
+    /// Nothing outside this test depends on it. It exists to check that
+    /// [`precedence`](SensitiveDataDisposition::precedence) is monotone in
+    /// restrictiveness — if the ranking here were wrong, the failure mode is a
+    /// property test that is too strict or too lax, never a wrong wire value.
     ///
     /// Wildcard-free on purpose: this is a second place a sixth `RuntimeVerdict`
     /// variant would stop the build, which matters because the disposition
@@ -358,12 +384,22 @@ mod tests {
         }
     }
 
-    /// An unrecognised spelling is refused rather than defaulted.
+    /// `Deserialize` refuses an unrecognised spelling rather than defaulting to
+    /// `none` — a fallback would turn a read error into a record that looks
+    /// like it had nothing to report.
     ///
-    /// A disposition that fell back to `none` on an unknown label would turn a
-    /// read error into a record that looks like it had nothing to report.
+    /// # What this does *not* say about the shipped read path
+    ///
+    /// This is a property of the impl, not of every caller. The audit-log
+    /// reader in `routes::agents::entry_to_decision_row` deliberately swallows
+    /// the error with `.ok()` and records the disposition as **absent**, so
+    /// after AAASM-5356 "absent" means *nothing was recorded* **or** *this
+    /// build could not parse what was*. That cost is bounded — the verdict is
+    /// parsed independently and stays authoritative — and it is pinned by
+    /// `an_unparseable_disposition_reads_as_absent_rather_than_failing_the_row`
+    /// rather than left to this test to imply.
     #[test]
-    fn an_unknown_spelling_is_refused() {
+    fn an_unknown_spelling_is_refused_by_deserialize() {
         assert!(serde_json::from_str::<SensitiveDataDisposition>(r#""quarantine""#).is_err());
         assert!(serde_json::from_str::<SensitiveDataDisposition>(r#""Redact""#).is_err());
         assert!(serde_json::from_str::<SensitiveDataDisposition>(r#""requireApproval""#).is_err());
