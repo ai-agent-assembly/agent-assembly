@@ -321,6 +321,41 @@ impl From<&wire::EvidenceView> for EvidenceRow {
     }
 }
 
+/// What a status read established about a rung's *reachability*.
+///
+/// Three states, deliberately not two. Collapsing them is how AAASM-5454
+/// happened: "the adapter says this host cannot" and "nobody told us anything"
+/// were both rendered as a platform limitation, so the CLI asserted a fact
+/// about macOS that it had never established and that was false.
+///
+/// There is no `Unavailable` variant, and that absence is the point. A claim
+/// that a *platform* cannot do something belongs to the adapter, which is the
+/// only party that looked; this client can report that claim (it arrives as
+/// [`Self::Unsupported`] with the adapter's own sentence) but must never
+/// manufacture one.
+///
+/// Reachability is also not achievement. [`Self::Available`] says a path
+/// exists, never that anything was installed, exercised or measured — that is
+/// what [`LevelRow::achieved`] is for, and the two must stay separate for the
+/// same reason `verify` refuses a vacuous pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LevelAvailability {
+    /// The adapter declares the mechanism supported on this host.
+    Available,
+    /// The adapter declares it unsupported, and said why.
+    Unsupported,
+    /// Nothing was declared, so nothing is established — in either direction.
+    Unmeasured,
+}
+
+impl LevelAvailability {
+    /// Whether a path to this rung exists on this host.
+    pub fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
 /// One rung of the protection ladder, with what it does not cover.
 ///
 /// Every rung is listed on every status read, including the ones that are not
@@ -333,10 +368,35 @@ pub struct LevelRow {
     pub level: String,
     /// Whether the evidence currently supports it.
     pub achieved: bool,
-    /// Whether this host can reach it at all.
+    /// Whether this host can reach it at all. Kept as a boolean for scripts
+    /// that already branch on it, and derived from [`Self::availability`] in
+    /// [`LevelRow::new`] so the two cannot disagree.
     pub available: bool,
-    /// What it does not protect, or why it is unavailable.
+    /// What the reading established about reachability, at full resolution.
+    pub availability: LevelAvailability,
+    /// What it does not protect, or why it is not active.
     pub limitation: String,
+}
+
+impl LevelRow {
+    /// Build a rung, deriving `available` from `availability`.
+    ///
+    /// The only constructor, so a caller cannot set a boolean that contradicts
+    /// the state next to it.
+    fn new(
+        level: impl Into<String>,
+        achieved: bool,
+        availability: LevelAvailability,
+        limitation: impl Into<String>,
+    ) -> Self {
+        Self {
+            level: level.into(),
+            achieved,
+            available: availability.is_available(),
+            availability,
+            limitation: limitation.into(),
+        }
+    }
 }
 
 /// The policy a governed launch would run under, as this reading could
@@ -502,11 +562,17 @@ impl StatusReport {
             state_remediation: non_empty(&view.state_remediation),
             repair_available: !view.drift_mismatched.is_empty(),
             drift_mismatched: view.drift_mismatched.clone(),
-            next_level: view.next_level.as_ref().map(|n| LevelRow {
-                achieved: false,
-                available: !n.blocked_because.to_ascii_lowercase().contains("unavailable"),
-                level: n.level.clone(),
-                limitation: n.blocked_because.clone(),
+            next_level: view.next_level.as_ref().map(|n| {
+                LevelRow::new(
+                    n.level.clone(),
+                    false,
+                    if n.blocked_because.to_ascii_lowercase().contains("unavailable") {
+                        LevelAvailability::Unsupported
+                    } else {
+                        LevelAvailability::Available
+                    },
+                    n.blocked_because.clone(),
+                )
             }),
             levels: ladder(&view.achieved_level, &unsupported),
             exercised_evidence,
@@ -553,28 +619,26 @@ fn ladder(achieved: &str, unsupported: &[UnsupportedRow]) -> Vec<LevelRow> {
         .unwrap_or_else(|| "unavailable on this platform".to_string());
 
     vec![
-        LevelRow {
-            level: "integrated".to_string(),
-            achieved: reached("integrated"),
-            available: true,
-            limitation: "constrains the tool's startup posture; claims nothing about traffic \
-                         and nothing about host-level bypass"
-                .to_string(),
-        },
-        LevelRow {
-            level: "gateway_protected".to_string(),
-            achieved: reached("gateway_protected"),
-            available: true,
-            limitation: "protects the paths it sees; an unmanaged launch, a hardcoded endpoint \
-                         or a pinned client is outside its scope"
-                .to_string(),
-        },
-        LevelRow {
-            level: "host_enforced".to_string(),
-            achieved: reached("host_enforced"),
-            available: false,
-            limitation: host_reason,
-        },
+        LevelRow::new(
+            "integrated",
+            reached("integrated"),
+            LevelAvailability::Available,
+            "constrains the tool's startup posture; claims nothing about traffic \
+             and nothing about host-level bypass",
+        ),
+        LevelRow::new(
+            "gateway_protected",
+            reached("gateway_protected"),
+            LevelAvailability::Available,
+            "protects the paths it sees; an unmanaged launch, a hardcoded endpoint \
+             or a pinned client is outside its scope",
+        ),
+        LevelRow::new(
+            "host_enforced",
+            reached("host_enforced"),
+            LevelAvailability::Unsupported,
+            host_reason,
+        ),
     ]
 }
 
