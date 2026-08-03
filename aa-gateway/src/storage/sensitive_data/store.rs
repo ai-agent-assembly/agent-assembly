@@ -199,6 +199,21 @@ pub trait SensitiveDataProjection: Send + Sync + 'static {
         &self,
         filter: &SensitiveDataEventFilter,
     ) -> StorageResult<Vec<CategoryFindingAggregate>>;
+
+    /// `(table, column)` pairs for the projection's tables, read from the live
+    /// database catalogue.
+    ///
+    /// Exists so the tiering obligation can be *checked* rather than asserted:
+    /// ADR 0032 §9's ban on offsets and lengths is a property of what is
+    /// durably stored, and reading the DDL constant back would only prove the
+    /// test and the constant agree. `tests/sensitive_data_projection_test.rs`
+    /// pins the exact set from outside this module, which is the only vantage
+    /// point from which "there is no offset column" is a real claim.
+    ///
+    /// # Errors
+    ///
+    /// `StorageError::QueryFailed` when the catalogue cannot be read.
+    async fn sensitive_data_projection_columns(&self) -> StorageResult<Vec<(String, String)>>;
 }
 
 /// Whether the projection is written at all.

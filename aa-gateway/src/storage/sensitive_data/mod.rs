@@ -77,6 +77,7 @@
 //! disappearing, which is not.
 
 mod rows;
+mod sqlite;
 mod store;
 
 pub use rows::{CategoryTally, ProjectionError, SensitiveDataEventRow, SensitiveDataFindingRow, TenantScope};
