@@ -20,8 +20,8 @@ use serde::Serialize;
 use crate::output::OutputFormat;
 
 use super::model::{
-    EvidenceRow, InstallReport, PlanReport, RemoveReport, RepairReport, StatusReport, StepRow, ToolListReport,
-    VerifyReport,
+    EvidenceRow, InstallReport, LevelAvailability, PlanReport, RemoveReport, RepairReport, StatusReport, StepRow,
+    ToolListReport, VerifyReport,
 };
 
 /// A command result that can be rendered for a person and for a script, from
@@ -259,10 +259,18 @@ impl Report for StatusReport {
 
         out.push_str("\nProtection levels:\n");
         for level in &self.levels {
-            let mark = match (level.achieved, level.available) {
+            // Three marks for three states, and none of them is a sentence
+            // this client made up about the host. "The adapter says this
+            // platform cannot" and "nobody said anything" used to share the
+            // mark `unavailable on this platform`, which is how a supported
+            // mechanism came to be reported as impossible (AAASM-5454). A
+            // platform claim, when there is one, is the adapter's and arrives
+            // on the limitation line below.
+            let mark = match (level.achieved, level.availability) {
                 (true, _) => "active",
-                (false, true) => "not active",
-                (false, false) => "unavailable on this platform",
+                (false, LevelAvailability::Available) => "not active",
+                (false, LevelAvailability::Unsupported) => "unsupported by this integration",
+                (false, LevelAvailability::Unmeasured) => "not established by this reading",
             };
             out.push_str(&format!("  {:<20} {}\n", level.level, mark));
             out.push_str(&format!("  {:<20}   {}\n", "", level.limitation));

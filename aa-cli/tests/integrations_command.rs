@@ -311,8 +311,12 @@ fn verify_emits_machine_readable_assertions() {
 
 // ── status: evidence, and the rung this host cannot reach ────────────────────
 
+/// The rung is named on every read, and what is said about it is the
+/// **adapter's** answer — product brief §7.3 for the naming, AAASM-5454 for the
+/// answer. An adapter that declares the mechanism unsupported gets its own
+/// sentence printed; nothing here substitutes a platform claim of the CLI's own.
 #[test]
-fn status_reports_host_enforced_as_unavailable_rather_than_omitting_it() {
+fn status_reports_an_unsupported_host_enforcement_with_the_adapters_own_reason() {
     let h = Harness::start(|f| f);
     assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
 
@@ -320,8 +324,16 @@ fn status_reports_host_enforced_as_unavailable_rather_than_omitting_it() {
     assert_eq!(code(&output), exit::SUCCESS, "{}", combined(&output));
     let rendered = stdout(&output);
     assert!(
-        rendered.contains("host_enforced") && rendered.contains("unavailable on this platform"),
-        "the ladder hid the rung this host cannot reach:\n{rendered}"
+        rendered.contains("host_enforced"),
+        "the ladder hid a rung instead of naming it:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("unsupported by this integration"),
+        "an unsupported rung was not marked as unsupported:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("host enforcement is not available on this platform"),
+        "the adapter's own reason was replaced by wording of the CLI's own:\n{rendered}"
     );
     assert!(
         rendered.contains("Exercised evidence") && rendered.contains("Read-back evidence"),
@@ -332,6 +344,53 @@ fn status_reports_host_enforced_as_unavailable_rather_than_omitting_it() {
         rendered.contains("Runtime:"),
         "status did not report runtime connectivity"
     );
+}
+
+/// The defect this ticket was filed for, in the shape a macOS user meets it:
+/// the adapter declares host enforcement **supported**, nothing has reached it
+/// yet, and `status` used to answer "unavailable on this platform" — a claim
+/// about the host that nobody established and that is false on the only
+/// platform where the mechanism works.
+#[test]
+fn status_reports_a_supported_host_enforcement_as_reachable_never_as_unavailable() {
+    let h = Harness::start(|f| f.supporting_host_enforcement());
+    assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
+
+    let output = h.aasm(&["status", "claude-code"]);
+    assert_eq!(code(&output), exit::SUCCESS, "{}", combined(&output));
+    let rendered = stdout(&output);
+    assert!(
+        rendered.contains("host_enforced"),
+        "the ladder hid the rung entirely:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("unavailable on this platform"),
+        "a supported mechanism was reported as impossible on this host:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("--install-managed-settings"),
+        "a reachable rung did not name the command that reaches it:\n{rendered}"
+    );
+    // Reachable is not reached. The rung must not read as protection that
+    // exists — nothing has attested an endpoint-managed policy here.
+    assert_eq!(
+        ladder_mark(&rendered, "host_enforced"),
+        "not active",
+        "an available rung was rendered as though it had been measured:\n{rendered}"
+    );
+}
+
+/// The mark `status` printed beside one ladder rung.
+///
+/// Read off the rendered table rather than the JSON, because the mark is the
+/// thing a human actually reads and the thing AAASM-5454 got wrong.
+fn ladder_mark(rendered: &str, level: &str) -> String {
+    rendered
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix(level))
+        .unwrap_or_else(|| panic!("the ladder never named {level}:\n{rendered}"))
+        .trim()
+        .to_string()
 }
 
 #[test]
