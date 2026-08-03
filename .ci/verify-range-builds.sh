@@ -117,9 +117,23 @@ commit_count=0
 while IFS= read -r line; do
     commits[commit_count]=$line
     commit_count=$((commit_count + 1))
-done < <(git rev-list --reverse "${base}..${head}")
+# `--topo-order` so "the first commit that fails" is the first in ANCESTRY, not
+# the earliest by commit date. Without it rev-list orders by date, and a branch
+# rebased or cherry-picked out of chronological order — or a merge bringing in
+# older commits — would be walked in an order that does not match how the
+# history reads, making the reported "first failure" arbitrary among several.
+done < <(git rev-list --reverse --topo-order "${base}..${head}")
 
 if [[ $commit_count -eq 0 ]]; then
+    # An empty range is a legitimate no-op in CI (a PR with nothing new), but
+    # for an explicitly-passed range it is much more often the arguments the
+    # wrong way round — which would otherwise exit 0 and read as "verified".
+    if [[ $# -eq 2 ]] && [[ -n "$(git rev-list -1 "${head}..${base}")" ]]; then
+        echo "error: no commits in ${base:0:9}..${head:0:9}, but ${head:0:9}..${base:0:9}" >&2
+        echo "       is non-empty — the arguments look reversed. Expected" >&2
+        echo "       <base> <head>, e.g. '$0 remote/main HEAD'." >&2
+        exit 2
+    fi
     echo "No commits in ${base:0:9}..${head:0:9} — nothing to verify."
     exit 0
 fi
