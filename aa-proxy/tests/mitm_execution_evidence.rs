@@ -18,12 +18,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, ServerConfig, SignatureScheme};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
-use tokio_rustls::TlsConnector;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use aa_proxy::audit_jsonl::{ProxyAuditDecision, ProxyAuditEntry};
 use aa_proxy::config::{CredentialAction, ProxyConfig};
@@ -99,6 +99,50 @@ async fn refusing_upstream() -> SocketAddr {
     tokio::spawn(async move {
         while let Ok((sock, _)) = listener.accept().await {
             drop(sock);
+        }
+    });
+    addr
+}
+
+/// A TLS upstream that completes the handshake and answers 200.
+///
+/// The counterpart to [`refusing_upstream`], and the one the round-2 fix was
+/// missing: every call site of [`assert_one_forwarding_record`] used a failing
+/// dial, so "one record per forwarded request" was only ever asserted for
+/// requests where **no bytes went**. A false record emitted *after* a
+/// successful dial sat outside that window entirely.
+async fn live_tls_upstream() -> SocketAddr {
+    // The upstream builds a rustls `ServerConfig`, which needs the process
+    // crypto provider. It is called before `start_proxy`, which is the other
+    // place that installs it.
+    install_crypto();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Self-signed leaf; the proxy dials with `skip_upstream_tls_verify`.
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut chunk = [0u8; 8192];
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), tls.read(&mut chunk)).await;
+                let _ = tls
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                    .await;
+                let _ = tls.shutdown().await;
+            });
         }
     });
     addr
@@ -545,8 +589,10 @@ async fn the_transparent_tunnel_relays_and_records_no_decision_event() {
     tokio::spawn(async move {
         let (mut sock, _) = upstream.accept().await.unwrap();
         let mut buf = [0u8; 1024];
-        let n = sock.read(&mut buf).await.unwrap_or(0);
-        assert!(n > 0, "the tunnel relayed nothing upstream");
+        // No assertion here: this task's handle is never awaited, so a failure
+        // inside it could not fail the test. The `pong` round-trip below is
+        // what proves the relay worked.
+        let _ = sock.read(&mut buf).await;
         let _ = sock.write_all(b"pong").await;
         let _ = sock.shutdown().await;
     });
@@ -584,4 +630,56 @@ async fn the_transparent_tunnel_relays_and_records_no_decision_event() {
         audit.try_recv().is_err(),
         "the transparent tunnel took no decision, so it must invent no decision event"
     );
+}
+
+/// The case the round-2 fix could not reach: a **successful** MitM forward with
+/// a live sink, counted.
+///
+/// Every other `assert_one_forwarding_record` call site uses
+/// [`refusing_upstream`], so the one-record property was only ever asserted
+/// where the dial failed — leaving a false record emitted *after*
+/// `dial_upstream_tls` outside the assertion window. Nothing in the repo drove
+/// a successful MitM forward with an audit sink attached.
+#[tokio::test]
+async fn a_successful_llm_mitm_forward_writes_exactly_one_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = live_tls_upstream().await;
+    let (proxy, mut audit) = start_proxy(CredentialAction::RedactOnly, Some(upstream), Vec::new(), dir.path()).await;
+
+    let response = mitm_roundtrip(proxy, LLM_HOST, &post(LLM_HOST, &scrubbable_body())).await;
+    // Non-vacuity: the bytes genuinely went and the upstream genuinely answered.
+    assert!(
+        response.contains("200 OK"),
+        "the request must have reached a live upstream, got: {response:?}"
+    );
+
+    let entry = assert_one_forwarding_record(&mut audit).await;
+    assert_eq!(entry.decision, ProxyAuditDecision::ForwardedRedacted);
+    assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
+    assert!(entry.execution.transmission.proves_transmission());
+}
+
+/// The same, on the non-LLM MitM handler.
+#[tokio::test]
+async fn a_successful_non_llm_mitm_forward_writes_exactly_one_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = live_tls_upstream().await;
+    let (proxy, mut audit) = start_proxy(
+        CredentialAction::AlertOnly,
+        Some(upstream),
+        vec![MITM_HOST.to_string()],
+        dir.path(),
+    )
+    .await;
+
+    let response = mitm_roundtrip(proxy, MITM_HOST, &post(MITM_HOST, &scrubbable_body())).await;
+    assert!(
+        response.contains("200 OK"),
+        "the request must have reached a live upstream, got: {response:?}"
+    );
+
+    let entry = assert_one_forwarding_record(&mut audit).await;
+    assert_eq!(entry.decision, ProxyAuditDecision::Forwarded);
+    assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
+    assert_eq!(entry.execution.mode, aa_core::policy::EnforcementMode::Observe);
 }

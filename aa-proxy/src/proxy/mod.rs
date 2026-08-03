@@ -2480,6 +2480,35 @@ mod tests {
         format!("{{\"token\":\"{EVIDENCE_TEST_SECRET}\"}}")
     }
 
+    /// Take the one decision record a forwarded request must leave, asserting
+    /// there is exactly one.
+    ///
+    /// `try_recv` on its own reads only the *first* entry, so a false
+    /// `NotForwarded` line emitted alongside the true record — the additive
+    /// drift, and the one that corrupts the metric because consumers count
+    /// lines rather than first-lines — passed unnoticed. These tests run
+    /// against a live upstream, so the count is asserted where the bytes
+    /// genuinely went.
+    async fn take_single_forwarding_record(rx: &mut mpsc::Receiver<ProxyAuditEntry>) -> ProxyAuditEntry {
+        let first = rx.try_recv().expect("the forward persisted a decision record");
+        // Let any additional emission land before concluding there is none.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let mut extra = Vec::new();
+        while let Ok(entry) = rx.try_recv() {
+            extra.push(entry);
+        }
+        assert!(
+            extra.is_empty(),
+            "a forwarded request wrote {} extra record(s): {extra:#?}",
+            extra.len()
+        );
+        assert!(
+            !first.execution.establishes_non_transmission(),
+            "a forwarded request left a record claiming the payload was withheld: {first:#?}"
+        );
+        first
+    }
+
     fn credential_post(target: &str, host: &str) -> String {
         credential_post_with(target, host, &unscrubbable_body())
     }
@@ -2557,7 +2586,7 @@ mod tests {
         .await;
         let _ = upstream_task.await;
 
-        let entry = audit_rx.try_recv().expect("the redaction persisted a decision record");
+        let entry = take_single_forwarding_record(&mut audit_rx).await;
         assert_eq!(entry.decision, ProxyAuditDecision::ForwardedRedacted);
         assert!(
             !entry.credential_findings.is_empty(),
@@ -2748,9 +2777,7 @@ mod tests {
         .await;
         let _ = upstream_task.await;
 
-        let entry = audit_rx
-            .try_recv()
-            .expect("an alert-mode detection that was forwarded must still be recorded");
+        let entry = take_single_forwarding_record(&mut audit_rx).await;
         assert_eq!(entry.decision, ProxyAuditDecision::Forwarded);
         assert!(
             !entry.credential_findings.is_empty(),
@@ -2790,7 +2817,7 @@ mod tests {
         .await;
         let _ = upstream_task.await;
 
-        let entry = audit_rx.try_recv().expect("the redaction persisted a decision record");
+        let entry = take_single_forwarding_record(&mut audit_rx).await;
         // Non-vacuity: this is the dirty branch, and the record has content.
         assert_eq!(
             entry.execution.transmission.as_str(),
@@ -2828,7 +2855,7 @@ mod tests {
         .await;
         let _ = upstream_task.await;
 
-        let entry = audit_rx.try_recv().expect("the redaction persisted a decision record");
+        let entry = take_single_forwarding_record(&mut audit_rx).await;
         assert_eq!(entry.execution.transmission.as_str(), "forwarded_clean");
         let body = entry.redacted_body.expect("a clean scrub is persisted");
         assert!(body.contains("[REDACTED:"), "got {body}");
