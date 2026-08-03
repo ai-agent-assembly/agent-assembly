@@ -250,7 +250,10 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     env:
-      AA_CONFORMANCE_OUTCOME_DIR: ${{ github.workspace }}/.conformance-outcomes
+      # The conformance suite's ledger, and the job default. The native-CLI run
+      # below overrides it so each suite's declines are counted against its own
+      # case count rather than the other's.
+      AA_CONFORMANCE_OUTCOME_DIR: ${{ github.workspace }}/.outcomes-conformance
 
     steps:
       - name: Checkout
@@ -295,28 +298,53 @@ jobs:
         run: claude --version
 
       - name: Run the conformance suite against the real binary
+        # The JUnit report is copied aside straight away: the `evidence` profile
+        # writes one fixed path, and the native-CLI run below would otherwise
+        # overwrite it — leaving the summary to divide this suite's declines by
+        # that suite's case count.
         if: steps.install_tool.outcome == 'success'
         run: |
           set -euo pipefail
           AA_SPIKE_CLAUDE_BIN="$(command -v claude)" \
             cargo nextest run --profile evidence -p aa-integration-tests \
               --test conformance_claude_code --no-capture
+          cp target/nextest/evidence/junit.xml junit-conformance.xml
 
       - name: Run the native CLI suite against the real binary
         # The suite that is entirely gated on the tool. Here — and only here —
         # the binary exists, so this is the one lane in which those five cases
-        # can produce evidence at all. `--require-evidence` on the summary below
-        # covers both suites' records.
+        # can produce evidence at all.
+        #
+        # Separate ledger directory from the run above so each summary divides
+        # the right declines by the right denominator.
         if: steps.install_tool.outcome == 'success'
-        run: cargo nextest run --profile evidence -p aa-cli --test integrations_claude_code --no-capture
+        env:
+          AA_CONFORMANCE_OUTCOME_DIR: ${{ github.workspace }}/.outcomes-native-cli
+        run: |
+          set -euo pipefail
+          cargo nextest run --profile evidence -p aa-cli --test integrations_claude_code --no-capture
+          cp target/nextest/evidence/junit.xml junit-native-cli.xml
 
-      - name: Report what this lane measured
+      - name: Report what the conformance suite measured
         if: always() && steps.install_tool.outcome == 'success'
         run: |
           .ci/test-evidence-summary.sh \
             --lane "conformance (real Claude Code)" \
-            --junit target/nextest/evidence/junit.xml \
-            --evidence-dir "${AA_CONFORMANCE_OUTCOME_DIR}" \
+            --junit junit-conformance.xml \
+            --evidence-dir "${{ github.workspace }}/.outcomes-conformance" \
+            --require-evidence
+
+      - name: Report what the native CLI suite measured
+        # `--require-evidence` here is the whole point of provisioning the
+        # binary: on a hosted runner without it these five cases decline and the
+        # `native-cli` lane merely reports that. Here the binary exists, so a
+        # decline means the lane failed to point the suite at what it installed.
+        if: always() && steps.install_tool.outcome == 'success'
+        run: |
+          .ci/test-evidence-summary.sh \
+            --lane "native CLI suite (real Claude Code)" \
+            --junit junit-native-cli.xml \
+            --evidence-dir "${{ github.workspace }}/.outcomes-native-cli" \
             --require-evidence
 
       - name: Assert the lane actually measured the real binary
