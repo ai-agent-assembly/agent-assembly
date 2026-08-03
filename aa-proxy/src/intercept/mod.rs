@@ -32,7 +32,7 @@ use crate::proxy::http::decompress_content_encoding;
 ///
 /// Returned by [`Interceptor::intercept_request`]; the data path branches on
 /// `decision` and uses `redacted_body` when applicable.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerdictDecision {
     /// No findings — forward the original body unmodified.
     Forward,
