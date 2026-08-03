@@ -98,6 +98,87 @@ Examples:
 - `🐛 (aa-gateway): Fix policy evaluation order for overlapping rules`
 - `🔧 (ci): Add matrix build for MSRV check`
 
+### Every commit must build (enforced)
+
+"Bisectable" above is a hard requirement, not an aspiration: **every commit that
+lands on `main` must compile on its own**. The `Every commit in the range builds`
+CI job enforces it on each PR by walking `git rev-list HEAD^1..HEAD` over the
+merge result and running `cargo check --workspace --all-targets --all-features
+--exclude aa-ebpf` at each commit. It names the first commit that fails.
+
+Precisely what that does and does not assert: it checks that each commit
+**compiles**, not that its tests pass, that it is lint-clean, or that it is
+formatted — the tip is separately held to all of those. `aa-ebpf` is excluded
+and covered by `ebpf-build`.
+
+Run it yourself before pushing:
+
+```bash
+.ci/verify-range-builds.sh <base> <head>     # e.g. remote/main HEAD
+```
+
+Same script, but **a weaker guarantee than CI's**, and the difference is the
+one this gate was built for. `remote/main..HEAD` contains no merge commit, so
+locally you are checking only your own commits. CI runs it over
+`refs/pull/N/merge`, whose range ends in the synthetic merge commit — so the
+**merge result** is checked only by CI. A clean-but-broken merge (below) is
+invisible locally by construction.
+
+Two things break this in practice, and neither is exotic:
+
+- **Partial staging.** `git add` of one file while others stay modified records
+  an index nobody built. The pre-commit hook cannot catch this: `cargo` reads
+  the *working tree*, `git commit` records the *index*, and when they differ the
+  hook validates a tree that is never committed. This is why `lefthook.toml`
+  is not the place to fix it, and is deliberately left alone.
+- **A clean-but-broken merge.** `git merge` exiting 0 means "no textual
+  conflict" — not "the result compiles". Rename detection and independent edits
+  to the same file both produce merges that build on neither side's terms while
+  reporting success. `c596246a2` on `main` is a recorded instance: both parents
+  build, the merge does not, and it entered `main` because the very next commit
+  repaired it, so every tree CI ever built was green.
+
+If the job names one of your commits, fix it **in that commit** — an interactive
+rebase, or redoing the merge — rather than appending a repair. A follow-up fix
+leaves the broken commit in history, which is the whole problem.
+
+### Bisecting across known-broken history
+
+`git bisect run` scores a commit by exit status: 0 good, 1 bad, 125 skip. A
+commit that does not *compile* can answer neither good nor bad — the test never
+ran — and a naive `build && test` script exits non-zero there, which bisect
+scores "bad" and returns a confident wrong answer.
+
+Use the supplied predicate, which returns 125 for such commits:
+
+```bash
+cp .ci/bisect-run.sh /tmp/aa-bisect-run.sh        # see below — must be copied out
+git bisect start <bad> <good>
+AA_BISECT_TEST='cargo test -p aa-gateway locale' git bisect run /tmp/aa-bisect-run.sh
+```
+
+With no `AA_BISECT_TEST`, the predicate is simply "does this commit build".
+
+**Copy the script out of the working tree first.** `git bisect` rewrites the
+tree at every step, so a script at `.ci/bisect-run.sh` is replaced by whatever
+that path held at the commit under test — and for commits older than this gate,
+by nothing at all, at which point bisect aborts. For the same reason the script
+reads `.ci/bisect-skip.txt` via `git show <ref>:...` rather than from disk:
+reading the list from the checked-out tree would consult the version that
+existed at the commit under test, so the entries that matter would be invisible
+exactly when they are needed.
+
+`.ci/bisect-skip.txt` is the auditable list of commits already on `main` that do
+not build. Adding an entry is one line — a full 40-character SHA and a reason.
+An unbuildable commit that is *not* on the list is still skipped rather than
+scored "bad", and reported loudly so the list can be extended. The list should
+rarely need new entries now that the CI gate runs on every PR that triggers CI.
+One residual gap: `ci.yml`'s `on.pull_request.paths` is evaluated against a PR's
+*net* diff, so a PR whose net diff touches no listed path never starts CI at
+all — and its intermediate commits go unchecked even if they break the build.
+Closing that would mean dropping path-based CI gating repo-wide, which is a
+separate cost decision; until then, a new entry here is possible.
+
 ## Adding a new crate
 
 To add a new crate to the workspace:

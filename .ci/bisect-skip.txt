@@ -1,0 +1,36 @@
+# Commits on `main` that are known not to build.
+#
+# AAASM-5385. Consumed by `.ci/bisect-run.sh`, which returns 125 ("skip") to
+# `git bisect run` for any commit listed here.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# `git bisect run` has three useful answers per commit: good (0), bad (1) and
+# skip (125). A commit that does not COMPILE can answer none of them honestly —
+# the test it was asked to run never executed. Left to a naive build-and-test
+# script, such a commit reports non-zero and is scored "bad", which moves the
+# bisect's lower bound past the real first-bad commit and returns a confident,
+# wrong answer. Scoring it "good" is equally wrong in the other direction.
+# Returning 125 is the only answer that preserves correctness: it tells bisect
+# to pick a neighbouring commit instead of drawing a conclusion.
+#
+# `.ci/verify-range-builds.sh` is what stops new entries being needed, on every
+# PR that triggers CI. It is not airtight: `ci.yml`'s `on.pull_request.paths` is
+# evaluated against a PR's NET diff, so a PR whose net diff touches no listed
+# path never starts CI, and its intermediate commits go unchecked. This file
+# should therefore grow rarely — not never — and every entry that does appear
+# is worth asking how it got past the gate.
+#
+# FORMAT
+# ------
+# One entry per line: a full 40-character SHA, whitespace, then a reason.
+# Blank lines and `#` comments are ignored. Full SHAs only — an abbreviated one
+# is ambiguous against a repository that keeps growing, and this list is
+# consulted long after the commit was written.
+#
+# Adding an entry is one line; the reason field is what makes the list
+# auditable, so state what fails to build and what repaired it.
+
+c596246a2100e706d20fcaf6e61d88f3cb77e840  Clean-but-semantic merge on the AAASM-5354 branch: rename detection carried a validator into aa-policy referencing crate::engine::detection::LocalePack, which exists only in aa-gateway. `cargo check --workspace --all-targets` exits 101 with E0433. Both parents build. Repaired by the next commit, 8cbe2c1d7. Disclosed rather than rebased away (AAASM-5385, out of scope: rewriting history).
+
+72b67f44f0a84e56effd82fa962db80f146a29a1  Partial staging on the AAASM-5355 branch (PR #1894): aa-core/src/types/sensitive_data/finding_record.rs changed `SensitiveDataFindingRecord::from_finding` to take 3 arguments, but the two call sites in counts.rs:150 and event.rs:642 were left at 2 and committed separately. `cargo check --workspace --all-targets` exits 101 with two E0061. Visible only under --all-targets — the failing unit is `aa-core (lib test)`, so a lib-only build passes. This is the reproduction AAASM-5385 was raised from; disclosed rather than rebased away.
