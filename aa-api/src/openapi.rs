@@ -197,6 +197,7 @@ use crate::routes::{
         agents::PermissionSourceResponse,
         agents::EffectivePermissionsResponse,
         crate::models::verdict::RuntimeVerdict,
+        crate::models::disposition::SensitiveDataDisposition,
         agents::DecisionLabel,
         agents::AgentDecisionResponse,
         agents::AgentDecisionsResponse,

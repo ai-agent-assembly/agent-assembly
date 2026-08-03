@@ -15,6 +15,7 @@ use aa_gateway::registry::{AgentStatus, OrphanMode};
 use crate::auth::scope::{RequireRead, RequireWrite, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
+use crate::models::disposition::SensitiveDataDisposition;
 use crate::models::verdict::RuntimeVerdict;
 use crate::pagination::PaginationParams;
 use crate::state::AppState;
@@ -1716,6 +1717,34 @@ pub struct AgentDecisionResponse {
     /// fabricated. Wired through so the column lands the day a latency source is
     /// added, without another contract change.
     pub latency_ms: Option<u64>,
+    /// What the sensitive-data pipeline did to this action's payload and to the
+    /// approval of the action (AAASM-5356, ADR 0032 §10 D-2) — a finer
+    /// vocabulary than `verdict`, which stays the authoritative outcome and is
+    /// frozen at five values.
+    ///
+    /// **Additive and optional.** The key is *omitted entirely* when there is no
+    /// disposition to report, so a response for an action that has none is
+    /// byte-for-byte what this endpoint returned before the field existed. An
+    /// absent key and an explicit `"none"` say the same thing: this field adds
+    /// nothing and `verdict` carries the whole meaning. A client that has never
+    /// heard of the field reads exactly the object it read before.
+    ///
+    /// Declared last, so a response that *does* carry a disposition is a pure
+    /// suffix append to the object as it was.
+    ///
+    /// **Absent on every row today**: no writer populates the audit payload's
+    /// `sensitive_data_disposition` yet — that is AAASM-5357's projection. The
+    /// read is wired through now so the day it lands there is no second contract
+    /// change, which is the pattern `verdict` followed.
+    ///
+    /// **Reporting only.** Nothing consults this to decide whether an action is
+    /// permitted — `verdict` remains the authoritative outcome. It is a field of
+    /// this response like any other, so it inherits the endpoint's tenant
+    /// scoping unchanged: `authorize_agent_access` gates the whole row, so the
+    /// `approval_*` values it can carry are visible to exactly the callers
+    /// already entitled to the decision record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sensitive_data_disposition: Option<SensitiveDataDisposition>,
 }
 
 /// Recent per-agent decision stream (AAASM-5058).
@@ -1838,6 +1867,21 @@ fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
     // the audit write path. Absent on legacy rows, which stay `null`.
     let latency_ms = payload.get("latency_ms").and_then(serde_json::Value::as_u64);
 
+    // AAASM-5356 / ADR 0032 §10 D-2 — the additive finer disposition. No writer
+    // emits this key yet (AAASM-5357 owns the projection), so it is absent on
+    // every row today and the field is omitted from the response entirely.
+    //
+    // An unrecognised spelling degrades to absent rather than failing the row.
+    // That can only under-report the *optional* field: `verdict` above is parsed
+    // independently and remains the authoritative outcome, so a reader falling
+    // back to it is never misled about whether the action was permitted.
+    let sensitive_data_disposition = payload
+        .get("sensitive_data_disposition")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| {
+            serde_json::from_value::<SensitiveDataDisposition>(serde_json::Value::String(s.to_string())).ok()
+        });
+
     Some(AgentDecisionResponse {
         timestamp,
         session_id: hex::encode(entry.session_id().as_bytes()),
@@ -1853,6 +1897,7 @@ fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
         // separate Phase 2 ticket. The audit write records no per-decision trace
         // id, so this stays null.
         trace_id: None,
+        sensitive_data_disposition,
     })
 }
 
@@ -2348,6 +2393,118 @@ mod tests {
         assert_eq!(row.trace_id, None);
         assert_eq!(row.seq, 7);
         assert_eq!(row.session_id, "ee".repeat(16));
+    }
+
+    // ── AAASM-5356: the sensitive-data disposition read path ──────────────
+    //
+    // `entry_to_decision_row` is the *only* code that ever populates
+    // `sensitive_data_disposition`. Without the four tests below the field
+    // could be permanently unpopulatable and nothing would notice: the wire
+    // contract tests assert the published *shape*, and the OpenAPI drift gate
+    // derives the spec from the struct rather than from this reader, so both
+    // stay green against a read path gutted to `let x = None;`.
+
+    /// A payload carrying a disposition surfaces it on the row.
+    ///
+    /// The case the writer AAASM-5357 will produce. Asserted against the real
+    /// audit-payload key (`sensitive_data_disposition`, snake_case like every
+    /// other payload key) rather than the camelCase wire name, because this is
+    /// the read side of the audit log, not the response.
+    #[test]
+    fn a_payload_carrying_a_disposition_surfaces_it_on_the_row() {
+        let entry = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":4,"verdict":"scrub","sensitive_data_disposition":"redact","detail":{"kind":"tool_call","tool_name":"gmail.send"}}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("redact carries a decision");
+
+        assert_eq!(row.sensitive_data_disposition, Some(SensitiveDataDisposition::Redact));
+        // The coarse verdict a disposition-blind reader falls back to agrees
+        // with the finer field, which is the whole point of the mapping.
+        assert_eq!(row.verdict, Some(RuntimeVerdict::Scrub));
+        assert_eq!(
+            row.sensitive_data_disposition
+                .and_then(SensitiveDataDisposition::implied_verdict),
+            row.verdict,
+        );
+    }
+
+    /// Every one of the eight spellings survives the read path.
+    ///
+    /// A loop, but not a vacuous one: the expectations come from the wire
+    /// spellings the audit log would carry, and each is fed through
+    /// `entry_to_decision_row` rather than through `Deserialize` directly, so
+    /// this fails if the reader looks up the wrong payload key or parses the
+    /// wrong way.
+    #[test]
+    fn every_disposition_spelling_survives_the_read_path() {
+        use SensitiveDataDisposition as D;
+        let cases = [
+            ("redact", D::Redact),
+            ("mask", D::Mask),
+            ("tokenize", D::Tokenize),
+            ("require_approval", D::RequireApproval),
+            ("approval_granted", D::ApprovalGranted),
+            ("approval_denied", D::ApprovalDenied),
+            ("shadow_only", D::ShadowOnly),
+            ("none", D::None),
+        ];
+        assert_eq!(cases.len(), 8, "ADR 0032 §10 D-2 fixes eight dispositions");
+
+        for (spelling, expected) in cases {
+            let entry = decision_entry(&format!(
+                r#"{{"action_type":"TOOL_CALL","decision":1,"sensitive_data_disposition":"{spelling}"}}"#
+            ));
+            let row = entry_to_decision_row(&entry).expect("the payload carries a decision");
+            assert_eq!(
+                row.sensitive_data_disposition,
+                Some(expected),
+                "the read path lost {spelling:?}",
+            );
+        }
+    }
+
+    /// A payload omitting the key reads as absent — the legacy-row case, which
+    /// is every row today.
+    ///
+    /// This is ADR 0032 §10 D-2's first binding rule at the read boundary: an
+    /// absent key must not become a default that claims something happened.
+    #[test]
+    fn a_payload_omitting_the_disposition_reads_as_absent() {
+        let entry = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":1,"detail":{"kind":"tool_call","tool_name":"pg.users"}}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("tool_call carries a decision");
+
+        assert_eq!(row.sensitive_data_disposition, None);
+        // And absence is invisible on the wire, not a null.
+        let json = serde_json::to_string(&row).unwrap();
+        assert!(
+            !json.contains("sensitiveDataDisposition"),
+            "an absent disposition leaked onto the wire: {json}",
+        );
+    }
+
+    /// An unparseable spelling reads as **absent**, not as an error and not as
+    /// a defaulted value.
+    ///
+    /// Pinned because it is a real semantic cost, not an accident: after this
+    /// change "absent" means *no disposition recorded* **or** *a disposition
+    /// this build could not parse*. It is bounded — `verdict` is parsed
+    /// independently on the line above and stays the authoritative outcome, so
+    /// a fallback reader is never misled about whether the action was permitted
+    /// — and it mirrors how the `verdict` read itself already degrades. The
+    /// alternative, failing the whole row, would hide a decision from the
+    /// operator over an optional reporting field.
+    #[test]
+    fn an_unparseable_disposition_reads_as_absent_rather_than_failing_the_row() {
+        let entry = decision_entry(
+            r#"{"action_type":"TOOL_CALL","decision":2,"verdict":"deny","sensitive_data_disposition":"quarantine"}"#,
+        );
+        let row = entry_to_decision_row(&entry).expect("the row survives an unknown disposition");
+
+        assert_eq!(row.sensitive_data_disposition, None);
+        // The bound on the cost: the authoritative outcome is untouched.
+        assert_eq!(row.verdict, Some(RuntimeVerdict::Deny));
     }
 
     #[test]
