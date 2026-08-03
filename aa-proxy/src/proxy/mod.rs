@@ -508,25 +508,24 @@ impl ProxyServer {
     /// integration tests to redirect the dial to a local mock without
     /// hijacking DNS or modifying the client's CONNECT line.
     ///
-    /// `_authorized` is the AAASM-5358 invariant, not a parameter this function
-    /// reads: a [`ForwardAuthorized`] can only be obtained from
-    /// [`transmission_evidence::forwarded`], which issues it together with
-    /// evidence that the bytes went. A branch that recorded non-transmission
-    /// has no way to produce one, so the ordering "evidence first, wire second"
-    /// is a property of the call graph rather than of where a line happens to
-    /// sit.
+    /// `authorized` is the AAASM-5358 invariant rather than an input: it is
+    /// passed straight down to [`Self::connect_revalidated`], which is the
+    /// shared bottom of every route to the wire. A [`ForwardAuthorized`] can
+    /// only come from [`ForwardObservation::persist`], so reaching this
+    /// function at all means the observation it was minted with has already
+    /// been recorded.
     async fn dial_upstream_tls(
         self: &Arc<Self>,
         host: &str,
         target: &str,
-        _authorized: ForwardAuthorized,
+        authorized: ForwardAuthorized,
     ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, ProxyError> {
         let upstream_tcp = match self.config.upstream_override {
             // Integration-test path: the dial is redirected to a trusted local
             // mock, so the SSRF re-validation below would (correctly) reject it.
             // Skip it here; the override is never set in production.
             Some(addr) => TcpStream::connect(addr).await?,
-            None => self.connect_revalidated(target, _authorized).await?,
+            None => self.connect_revalidated(target, authorized).await?,
         };
         let client_config = if self.config.skip_upstream_tls_verify {
             // Integration-test-only path: skip certificate verification so tests
@@ -566,11 +565,11 @@ impl ProxyServer {
     async fn dial_upstream_plain(
         &self,
         upstream_addr: &str,
-        _authorized: ForwardAuthorized,
+        authorized: ForwardAuthorized,
     ) -> Result<TcpStream, ProxyError> {
         match self.config.upstream_override {
             Some(addr) => Ok(TcpStream::connect(addr).await?),
-            None => self.connect_revalidated(upstream_addr, _authorized).await,
+            None => self.connect_revalidated(upstream_addr, authorized).await,
         }
     }
 
