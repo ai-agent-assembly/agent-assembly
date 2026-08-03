@@ -1,6 +1,6 @@
 //! `aasm run` — launch an AI dev tool with governance wiring.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -551,6 +551,43 @@ async fn deregister_with_gateway(registration: &GovernedRegistration) {
     run_registration::deregister(registration, "aasm run session ended").await;
 }
 
+/// The environment a child launched with `cmd` will actually receive, and the
+/// names the adapter wants *removed* from it.
+///
+/// Returned rather than applied so that `--dry-run` can show the same answer the
+/// live launch acts on. A preview that recomputes this independently is a second
+/// implementation of the merge, and the two would disagree the moment either
+/// changed — which is the defect AAASM-5329 exists to fix.
+///
+/// `get_envs` yields `None` for a variable the adapter wants removed, which is
+/// not the same request as setting it empty: an adapter that unsets a variable
+/// to disable a tool behaviour must not have that turned into an
+/// empty-but-present variable the tool then honours. Those names come back
+/// separately because "absent" cannot be expressed as an entry in the map.
+///
+/// The adapter is applied **last and therefore wins** on a collision — it is the
+/// layer that knows what the launched tool actually needs.
+fn effective_child_env(
+    cmd: &std::process::Command,
+    child_env: &HashMap<String, String>,
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut env: BTreeMap<String, String> = child_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut removed = Vec::new();
+    for (name, value) in cmd.get_envs() {
+        let key = name.to_string_lossy().into_owned();
+        match value {
+            Some(value) => {
+                env.insert(key, value.to_string_lossy().into_owned());
+            }
+            None => {
+                env.remove(&key);
+                removed.push(key);
+            }
+        }
+    }
+    (env, removed)
+}
+
 /// Spawn `cmd` as a tokio child process, forward SIGTERM/SIGINT on Unix,
 /// and wait for the child to exit. Returns the child's exit code.
 ///
@@ -565,18 +602,13 @@ async fn deregister_with_gateway(registration: &GovernedRegistration) {
 /// accepts (AAASM-5324). Dropping the adapter's environment, as this function
 /// did before AAASM-5327, silently defeated both.
 async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, String>) -> Result<i32> {
+    let (effective, removed) = effective_child_env(&cmd, child_env);
+
     let mut tokio_cmd = tokio::process::Command::new(cmd.get_program());
     tokio_cmd.args(cmd.get_args());
-    tokio_cmd.envs(child_env);
-    // `get_envs` yields `None` for a variable the adapter wants *removed* from
-    // the child, which is not the same request as setting it empty — an adapter
-    // that unsets a variable to disable a tool behaviour must not have that
-    // turned into an empty-but-present variable the tool then honours.
-    for (name, value) in cmd.get_envs() {
-        match value {
-            Some(value) => tokio_cmd.env(name, value),
-            None => tokio_cmd.env_remove(name),
-        };
+    tokio_cmd.envs(&effective);
+    for name in &removed {
+        tokio_cmd.env_remove(name);
     }
 
     let mut child = tokio_cmd.spawn()?;
