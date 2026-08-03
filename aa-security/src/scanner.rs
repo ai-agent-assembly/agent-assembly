@@ -3973,6 +3973,56 @@ mod tests {
             at.log2() > ENTROPY_BITS_GATE,
             "the fast path is looser than it needs to be at {MIN_DISTINCT_BYTES_FOR_GATE}",
         );
+        // The arithmetic above is independent of the code, so on its own it
+        // cannot fail when the comparison is wrong: mutating `>=` to `>` survived
+        // the entire suite while changing a verdict. This pair joins to exactly
+        // MIN_DISTINCT_BYTES_FOR_GATE distinct bytes and scores 4.5236 bits, just
+        // over the gate — so it is found iff the boundary is inclusive.
+        let scanner = CredentialScanner::new();
+        let text = "log aB3dEf7hJk9m Np2qRs5tUvW end";
+        let joined = "aB3dEf7hJk9mNp2qRs5tUvW";
+        assert_eq!(
+            u32::try_from(joined.bytes().collect::<std::collections::BTreeSet<_>>().len()).unwrap(),
+            MIN_DISTINCT_BYTES_FOR_GATE,
+            "fixture no longer sits exactly on the boundary"
+        );
+        assert!(
+            shannon_entropy(joined) > ENTROPY_BITS_GATE,
+            "fixture must clear the gate, or it pins nothing"
+        );
+        let result = scanner.scan(text);
+        assert_eq!(
+            result.findings.len(),
+            2,
+            "a pair with exactly {MIN_DISTINCT_BYTES_FOR_GATE} distinct bytes must be found: {:?}",
+            result.findings
+        );
+    }
+
+    #[test]
+    fn a_long_hyphenated_identifier_beside_a_word_is_a_known_false_positive() {
+        // The one false positive this pass adds, pinned rather than left silent.
+        //
+        // Measured across 25.4 MB of this repository's prose, code and
+        // configuration, this is the only genuine one: a release sign-off document
+        // in which `CONTRIBUTING/PR-template/DCO` (28 characters) sits beside
+        // `wording`, joining to 35 characters with 26 distinct bytes and 4.615
+        // bits. It appeared when admission stopped being a length comparison, and
+        // it is the price of that: without admitting runs of 23 and over, 99.8% of
+        // 23+17 secret splits were missed entirely.
+        //
+        // No cheap property separates it from a secret cut in two — a 23-character
+        // secret fragment scores about the same — so closing it means a new gate
+        // with its own calibration, not a constant nudged. Asserted as **detected**
+        // so the rate is tracked; if it is ever fixed, this test should fail.
+        let scanner = CredentialScanner::new();
+        let text = "internal doc-link check, CONTRIBUTING/PR-template/DCO wording, and release-process updates.";
+        let result = scanner.scan(text);
+        assert!(
+            !result.is_clean(),
+            "the known false positive stopped firing — if this pass was tightened, \
+             re-measure the corpus and update the rate quoted on it"
+        );
     }
 
     #[test]
