@@ -726,6 +726,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         &args.tool,
         &args.tool_args,
         &resolution.posture(),
+        args.no_proxy,
     )
     .await;
     let mut child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);

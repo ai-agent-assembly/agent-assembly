@@ -405,6 +405,7 @@ pub async fn report_launch(
     command: &str,
     args: &[String],
     posture: &aa_core::integration::policy_posture::PolicyPosture,
+    no_proxy: bool,
 ) {
     let agent_id = ProtoAgentId {
         org_id: String::new(),
@@ -421,6 +422,7 @@ pub async fn report_launch(
         command,
         args,
         posture,
+        no_proxy,
         occurred_at_unix_secs: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
