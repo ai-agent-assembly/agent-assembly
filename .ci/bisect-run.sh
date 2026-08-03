@@ -80,7 +80,12 @@ resolve_list_ref() {
         fi
         return 1
     fi
-    for candidate in remote/main origin/main main HEAD; do
+    # NOT `HEAD`. During `git bisect run`, HEAD *is* the commit under test, so
+    # falling back to it would read the list as it existed at that commit —
+    # a different, older list at every step, which is exactly the hazard the
+    # `git show <ref>:` approach exists to avoid (see the header). Aborting
+    # loudly is the correct outcome when no stable ref can be found.
+    for candidate in remote/main origin/main main; do
         if git rev-parse --verify --quiet "${candidate}:${SKIP_LIST_PATH}" >/dev/null; then
             printf '%s' "$candidate"
             return 0
@@ -91,7 +96,7 @@ resolve_list_ref() {
 
 if ! list_ref=$(resolve_list_ref); then
     echo "bisect-run: cannot read ${SKIP_LIST_PATH} from any of" >&2
-    echo "  \${AA_BISECT_LIST_REF}, remote/main, origin/main, main, HEAD" >&2
+    echo "  \${AA_BISECT_LIST_REF}, remote/main, origin/main, main" >&2
     echo "Refusing to run: without the skip list every unbuildable commit would" >&2
     echo "be scored 'bad' and the bisect would return a wrong answer." >&2
     echo "Fetch the default branch, or set AA_BISECT_LIST_REF to a ref that has it." >&2
