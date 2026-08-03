@@ -242,6 +242,17 @@ impl Interceptor {
     /// decided to redact but produced bytes still carrying a credential must not
     /// read as protection. The ordinary data path has no need to re-scan what it
     /// just produced.
+    /// Whether this interceptor has a scanner at all.
+    ///
+    /// Exists so a caller can tell "scanned and found nothing" from "nothing
+    /// scanned it" — [`VerdictDecision::Forward`] with no findings is emitted
+    /// for both, and only the first may be reported as a clean payload
+    /// (AAASM-5358). The cheap answer to a question a second full scan would
+    /// otherwise have to be run on the hot path to answer.
+    pub fn inspects(&self) -> bool {
+        self.scanner.is_some()
+    }
+
     pub fn forwarded_payload_is_clean(&self, bytes: &[u8]) -> Option<bool> {
         let scanner = self.scanner.as_ref()?;
         Some(scanner.scan(&String::from_utf8_lossy(bytes)).is_clean())
@@ -976,6 +987,18 @@ mod tests {
     }
 
     // ── forwarded_payload_is_clean (AAASM-5300 probe reply) ─────────────────
+
+    /// A clean verdict and a disabled scanner both surface as
+    /// [`VerdictDecision::Forward`] with no findings, so the *only* thing that
+    /// separates "scanned and clean" from "nothing scanned it" is this
+    /// predicate. If it ever answered `true` unconditionally, an uninspected
+    /// payload would start being recorded as clean (AAASM-5358).
+    #[test]
+    fn inspects_distinguishes_a_configured_scanner_from_a_disabled_one() {
+        let (tx, _rx) = broadcast::channel(4);
+        assert!(Interceptor::new(tx.clone()).inspects());
+        assert!(!Interceptor::with_scanner(tx, None).inspects());
+    }
 
     #[test]
     fn forwarded_payload_is_clean_reports_a_credential_bearing_payload() {
