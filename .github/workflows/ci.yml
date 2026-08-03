@@ -29,10 +29,13 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"
-      # AAASM-5385: the Rust jobs' own shell implementations (the commit-range
-      # gate, the compat-matrix check). Without this, editing a gate's script
-      # does not re-run the gate that the script IS.
-      - ".ci/*.sh"
+      # AAASM-5385: the Rust jobs' own shell implementations, by exact filename.
+      # Without these, editing a gate's script does not re-run the gate that the
+      # script IS. Named individually rather than `.ci/*.sh` because the other
+      # four scripts in `.ci/` belong to docs.yml, release.yml and
+      # sdk-sha-drift.yml, and have no business triggering the Rust matrix.
+      - ".ci/verify-range-builds.sh"
+      - ".ci/check-compatibility-matrix.sh"
       - "openapi/v1.yaml"
       - "schemas/**/*.json"
       - "schemas/**/*.yaml"
@@ -88,10 +91,13 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"
-      # AAASM-5385: the Rust jobs' own shell implementations (the commit-range
-      # gate, the compat-matrix check). Without this, editing a gate's script
-      # does not re-run the gate that the script IS.
-      - ".ci/*.sh"
+      # AAASM-5385: the Rust jobs' own shell implementations, by exact filename.
+      # Without these, editing a gate's script does not re-run the gate that the
+      # script IS. Named individually rather than `.ci/*.sh` because the other
+      # four scripts in `.ci/` belong to docs.yml, release.yml and
+      # sdk-sha-drift.yml, and have no business triggering the Rust matrix.
+      - ".ci/verify-range-builds.sh"
+      - ".ci/check-compatibility-matrix.sh"
       - "openapi/v1.yaml"
       - "schemas/**/*.json"
       - "schemas/**/*.yaml"
@@ -182,7 +188,8 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'deny.toml'
-              - '.ci/*.sh'
+              - '.ci/verify-range-builds.sh'
+              - '.ci/check-compatibility-matrix.sh'
               - 'openapi/v1.yaml'
               - '.spectral.yaml'
               - '.github/workflows/ci.yml'
