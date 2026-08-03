@@ -110,6 +110,17 @@ count_outcome() {
     { grep -l "\"outcome\": \"$1\"" "${evidence_dir}"/*.json 2>/dev/null || true; } | wc -l | tr -dc '0-9'
 }
 
+# An empty ledger has two very different causes: nothing declined, or the
+# writer was never switched on (`AA_CONFORMANCE_OUTCOME_DIR` unset on the test
+# step, a `#[path]` include dropped, the suite rebuilt without the guard). The
+# second silently inflates "substantive" back to the runner's raw pass count —
+# exactly the reading this script exists to prevent — so it is called out rather
+# than left to look like the first.
+ledger_empty=0
+if ! compgen -G "${evidence_dir}/*.json" > /dev/null 2>&1; then
+    ledger_empty=1
+fi
+
 unsupported="$(count_outcome unsupported_platform)"
 tool_absent="$(count_outcome tool_absent)"
 not_measured="$(count_outcome not_measured)"
@@ -144,6 +155,13 @@ summary_file="${GITHUB_STEP_SUMMARY:-/dev/null}"
     echo "| committed to measure and produced nothing | ${not_measured} |"
     echo "| explicitly recorded a measurement | ${declared_measured} |"
     echo
+    if [ "${ledger_empty}" -eq 1 ]; then
+        echo "> ⚠️ No scenario wrote a record. Either nothing declined, or the ledger was"
+        echo "> never enabled for this run — in which case the substantive figure above is"
+        echo "> just the runner's pass count and means nothing. Check that the test step"
+        echo "> sets \`AA_CONFORMANCE_OUTCOME_DIR=${evidence_dir}\`."
+        echo
+    fi
     if [ "${declined}" -gt 0 ] || [ "${not_measured}" -gt 0 ] || [ "${declared_measured}" -gt 0 ]; then
         echo "<details><summary>Per-scenario records</summary>"
         echo
