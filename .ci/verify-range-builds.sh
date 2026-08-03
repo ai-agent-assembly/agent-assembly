@@ -64,6 +64,14 @@
 # `--exclude aa-ebpf` matches the `build` and `clippy` jobs: aya-build shells
 # out to a nightly toolchain, and `ebpf-build` covers that crate separately.
 #
+# WHAT THIS DOES NOT CHECK
+# ------------------------
+# Only that each commit COMPILES. It does not run tests, lint, or rustfmt at
+# intermediate commits — `git bisect` needs a commit to build so that a test can
+# be run against it, and the tip is separately held to all three by the
+# `build`/`clippy`/`test`/`fmt` jobs. `aa-ebpf` is excluded, so a commit that
+# breaks only that crate passes here and is caught by `ebpf-build`.
+#
 # USAGE
 # -----
 #   .ci/verify-range-builds.sh                 # infer range from HEAD (a merge)
@@ -73,7 +81,13 @@
 
 set -euo pipefail
 
-CARGO_CHECK_ARGS=(check --workspace --all-targets --exclude aa-ebpf)
+# `--all-features` matches the `clippy` job (ci.yml). Without it the gate would
+# enforce "compiles on its own" for DEFAULT features only, so a commit could
+# break a feature-gated path, pass here, and still fail the tip's clippy job —
+# two different meanings of "builds" for the same history. Measured at parity
+# with default features once the target dir is warm (~33s either way), so there
+# is no cost argument for the weaker guarantee.
+CARGO_CHECK_ARGS=(check --workspace --all-targets --all-features --exclude aa-ebpf)
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
