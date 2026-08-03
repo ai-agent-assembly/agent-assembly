@@ -103,6 +103,14 @@ short=${commit:0:9}
 
 # Match on full SHAs only. An abbreviated SHA in the list would risk a prefix
 # collision and silently skip an unrelated commit.
+# `matched` is tracked separately from `skip_reason` on purpose. Keying the
+# decision off the reason text would make an entry that is a bare SHA with no
+# reason — which passes the 40-char check above — yield an empty reason and so
+# be silently ignored, building the commit instead of skipping it. That is a
+# missing-data bug reported as a clean "good", the failure mode this whole
+# script exists to avoid; the reason is for the human reading the output, and
+# must not be load-bearing for the verdict.
+matched=0
 skip_reason=""
 while IFS= read -r line; do
     case "$line" in
@@ -114,12 +122,14 @@ while IFS= read -r line; do
         exit $EXIT_ABORT
     fi
     if [[ "$entry_sha" == "$commit" ]]; then
+        matched=1
         skip_reason=${line#"$entry_sha"}
         break
     fi
 done < <(git show "${list_ref}:${SKIP_LIST_PATH}")
 
-if [[ -n "$skip_reason" ]]; then
+if [[ $matched -eq 1 ]]; then
+    [[ -n "$skip_reason" ]] || skip_reason=" (no reason recorded — please add one)"
     echo "bisect-run: SKIP ${short} — known-unbuildable (${SKIP_LIST_PATH}@${list_ref})"
     echo "bisect-run: reason:${skip_reason}"
     exit $EXIT_SKIP
