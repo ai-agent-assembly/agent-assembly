@@ -477,6 +477,7 @@ fn mask_value(key: &str, value: &str) -> String {
 fn format_dry_run_output(
     handle: &RegistrationHandle,
     policy: &run_policy::PolicyResolution,
+    no_proxy: bool,
     settings: &str,
     cmd: &std::process::Command,
     env: &HashMap<String, String>,
@@ -505,11 +506,18 @@ fn format_dry_run_output(
         .collect();
 
     format!(
-        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
+        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
         handle.agent_id,
         handle.registration_did,
         handle.trace_id,
         handle.session_id,
+        crate::commands::run_audit::protection_label(no_proxy),
+        if no_proxy {
+            "--no-proxy: nothing is intercepted, no egress policy applies, and nothing is inspected"
+        } else {
+            "a trusted proxy endpoint was resolved and injected; whether interception works is \
+             adjudicated later, not asserted here"
+        },
         policy.state_token(),
         policy.source().map_or("<none>".to_string(), |p| p.display().to_string()),
         policy.summary(),
@@ -668,7 +676,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         cmd.envs(&child_env);
         print!(
             "{}",
-            format_dry_run_output(&handle, &resolution, &settings, &cmd, &child_env)
+            format_dry_run_output(&handle, &resolution, args.no_proxy, &settings, &cmd, &child_env)
         );
         return Ok(0);
     }
@@ -1602,7 +1610,7 @@ mod tests {
         env.insert("MY_API_KEY".into(), "secret123".into());
         env.insert("NORMAL_VAR".into(), "hello".into());
 
-        let output = format_dry_run_output(&handle, &stub_resolution(), settings, &cmd, &env);
+        let output = format_dry_run_output(&handle, &stub_resolution(), false, settings, &cmd, &env);
 
         assert!(output.contains("agent_id:"), "missing identity section: {output}");
         assert!(output.contains("agent-xyz"), "missing agent_id value: {output}");
@@ -1688,7 +1696,7 @@ mod tests {
         let sections: Vec<String> = states
             .iter()
             .map(|state| {
-                let output = format_dry_run_output(&handle, state, "{}", &cmd, &env);
+                let output = format_dry_run_output(&handle, state, false, "{}", &cmd, &env);
                 let start = output
                     .find("--- policy ---")
                     .expect("receipt must carry a policy section");
@@ -1735,7 +1743,7 @@ mod tests {
         env.insert("AA_JWT_SECRET".into(), "super-secret-signing-key".into());
         env.insert("DATABASE_URL".into(), "postgresql://aasm:hunter2@db:5432/aasm".into());
 
-        let output = format_dry_run_output(&handle, &stub_resolution(), "{}", &cmd, &env);
+        let output = format_dry_run_output(&handle, &stub_resolution(), false, "{}", &cmd, &env);
 
         assert!(
             !output.contains("super-secret-signing-key"),
@@ -1774,7 +1782,7 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("MONGODB_URI".into(), "mongodb://user:p4ss@host:27017/db".into());
 
-        let output = format_dry_run_output(&handle, &stub_resolution(), "{}", &cmd, &env);
+        let output = format_dry_run_output(&handle, &stub_resolution(), false, "{}", &cmd, &env);
 
         assert!(
             !output.contains("p4ss"),
@@ -1807,6 +1815,32 @@ mod tests {
         assert_eq!(
             mask_value("ENDPOINT", "https://api.example.com/v1"),
             "https://api.example.com/v1"
+        );
+    }
+
+    /// AAASM-5350 AC 2, receipt surface: a preview of an unprotected launch has
+    /// to *say* it is unprotected. Before this the reader had to notice that
+    /// `HTTPS_PROXY` was absent from the environment listing and infer the rest
+    /// — an inference, made by the person least placed to make it.
+    #[test]
+    fn the_dry_run_receipt_states_the_protection_it_previews() {
+        let handle = stub_handle(None);
+        let cmd = std::process::Command::new("claude");
+        let env = HashMap::new();
+
+        let unprotected = format_dry_run_output(&handle, &stub_resolution(), true, "{}", &cmd, &env);
+        assert!(unprotected.contains("--- protection ---"), "{unprotected}");
+        assert!(unprotected.contains("unprotected"), "{unprotected}");
+        assert!(
+            unprotected.contains("nothing is intercepted"),
+            "the consequence, not just the flag: {unprotected}"
+        );
+
+        let proxied = format_dry_run_output(&handle, &stub_resolution(), false, "{}", &cmd, &env);
+        assert!(proxied.contains("proxy_configured"), "{proxied}");
+        assert!(
+            !proxied.contains("gateway_protected") && !proxied.contains("host_enforced"),
+            "a preview must not claim an adjudicated rung: {proxied}"
         );
     }
 }
