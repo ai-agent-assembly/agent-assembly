@@ -50,7 +50,12 @@ pkg_of() {
 #                             security tests run against the real boundary
 #                             rather than a mock. Test-only, never shipped
 #                             (AAASM-5282).
-UNRELEASED_BINARIES="generate_openapi generate_policy_rbac_doc generate_golden aa-ebpf-loaderd aa-devint-harness"
+# `aa-api-server-pg-qa` is a QA-only entrypoint (AAASM-5444). Its own module
+# docs say so: "This is NOT a shipped binary — it exists so QA can exercise the
+# Postgres happy-path that the SQLite `aa-api-server` intentionally degrades."
+# It needs a live `AAASM_DATABASE_URL`, so shipping it would hand users a binary
+# that cannot start.
+UNRELEASED_BINARIES="generate_openapi generate_policy_rbac_doc generate_golden aa-ebpf-loaderd aa-devint-harness aa-api-server-pg-qa"
 
 fail=0
 err() { echo "::error::$*" >&2; fail=1; }
