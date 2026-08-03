@@ -229,3 +229,285 @@ impl SensitiveDataDisposition {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every disposition ADR 0032 §10 D-2 defines, in the order it lists them.
+    ///
+    /// Spelled out because Rust has no variant reflection. On its own this array
+    /// is exactly the trap AAASM-5384 documented — a ninth variant would simply
+    /// not be *mentioned* here, the list would still be eight long, and every
+    /// assertion below would still pass. [`variant_index`] is what stops that.
+    const DISPOSITIONS_IN_ADR_0032_ORDER: [SensitiveDataDisposition; 8] = [
+        SensitiveDataDisposition::Redact,
+        SensitiveDataDisposition::Mask,
+        SensitiveDataDisposition::Tokenize,
+        SensitiveDataDisposition::RequireApproval,
+        SensitiveDataDisposition::ApprovalGranted,
+        SensitiveDataDisposition::ApprovalDenied,
+        SensitiveDataDisposition::ShadowOnly,
+        SensitiveDataDisposition::None,
+    ];
+
+    /// The wire spellings ADR 0032 §10 D-2 fixes, positionally aligned with
+    /// [`DISPOSITIONS_IN_ADR_0032_ORDER`].
+    ///
+    /// Written as literals rather than derived from the enum, so a `rename_all`
+    /// change or a variant rename is a test failure and not a silent respelling
+    /// of a published contract.
+    const WIRE_SPELLINGS_IN_ADR_0032_ORDER: [&str; 8] = [
+        "redact",
+        "mask",
+        "tokenize",
+        "require_approval",
+        "approval_granted",
+        "approval_denied",
+        "shadow_only",
+        "none",
+    ];
+
+    /// The position ADR 0032 §10 D-2 assigns each disposition.
+    ///
+    /// This exists for its `match`, not its return value. The arms are
+    /// exhaustive with no `_` fallback, so **adding** a variant stops this file
+    /// compiling, and **removing** one leaves both this match and
+    /// [`DISPOSITIONS_IN_ADR_0032_ORDER`] naming a variant that no longer
+    /// exists. It is the same mechanism `aa_core_label_contract` uses to keep
+    /// `RuntimeVerdict` honest, for the same reason.
+    fn variant_index(disposition: SensitiveDataDisposition) -> usize {
+        match disposition {
+            SensitiveDataDisposition::Redact => 0,
+            SensitiveDataDisposition::Mask => 1,
+            SensitiveDataDisposition::Tokenize => 2,
+            SensitiveDataDisposition::RequireApproval => 3,
+            SensitiveDataDisposition::ApprovalGranted => 4,
+            SensitiveDataDisposition::ApprovalDenied => 5,
+            SensitiveDataDisposition::ShadowOnly => 6,
+            SensitiveDataDisposition::None => 7,
+        }
+    }
+
+    /// How restrictive a coarse verdict is, on ADR 0018's own
+    /// least-to-most-restrictive ordering, with "no verdict at all" below
+    /// `allow`.
+    ///
+    /// Wildcard-free on purpose: this is a second place a sixth `RuntimeVerdict`
+    /// variant would stop the build, which matters because the disposition
+    /// mapping is only sound if every verdict has a known restrictiveness.
+    fn restrictiveness(verdict: Option<RuntimeVerdict>) -> u8 {
+        match verdict {
+            Option::None => 0,
+            Some(RuntimeVerdict::Allow) => 1,
+            Some(RuntimeVerdict::Narrow) => 2,
+            Some(RuntimeVerdict::Scrub) => 3,
+            Some(RuntimeVerdict::Pending) => 4,
+            Some(RuntimeVerdict::Deny) => 5,
+        }
+    }
+
+    /// The vocabulary is exactly ADR 0032 §10 D-2's eight values, with exactly
+    /// those spellings, in that order.
+    ///
+    /// Catches a removed value (the arrays stop being eight long, and the
+    /// removed variant stops existing), a renamed value (the literal no longer
+    /// matches what serde emits), and a reordered one (the comparison is
+    /// positional).
+    #[test]
+    fn the_vocabulary_is_exactly_adr_0032s_eight_values() {
+        assert_eq!(
+            DISPOSITIONS_IN_ADR_0032_ORDER.len(),
+            8,
+            "ADR 0032 §10 D-2 fixes eight dispositions",
+        );
+        // Checked before zipping, because `zip` truncates to the shorter side
+        // and would turn a dropped spelling into a pass.
+        assert_eq!(
+            DISPOSITIONS_IN_ADR_0032_ORDER.len(),
+            WIRE_SPELLINGS_IN_ADR_0032_ORDER.len(),
+        );
+
+        for (position, (disposition, expected)) in DISPOSITIONS_IN_ADR_0032_ORDER
+            .iter()
+            .zip(WIRE_SPELLINGS_IN_ADR_0032_ORDER)
+            .enumerate()
+        {
+            assert_eq!(
+                variant_index(*disposition),
+                position,
+                "DISPOSITIONS_IN_ADR_0032_ORDER is itself out of order at index {position}",
+            );
+
+            let json = serde_json::to_string(disposition).unwrap();
+            assert_eq!(
+                json,
+                format!("\"{expected}\""),
+                "{disposition:?} serializes as {json} but ADR 0032 §10 D-2 spells it {expected:?}",
+            );
+        }
+    }
+
+    /// Each spelling reads back as the value that wrote it.
+    #[test]
+    fn every_disposition_round_trips_through_its_wire_spelling() {
+        for disposition in DISPOSITIONS_IN_ADR_0032_ORDER {
+            let json = serde_json::to_string(&disposition).unwrap();
+            let restored: SensitiveDataDisposition = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored, disposition);
+        }
+    }
+
+    /// An unrecognised spelling is refused rather than defaulted.
+    ///
+    /// A disposition that fell back to `none` on an unknown label would turn a
+    /// read error into a record that looks like it had nothing to report.
+    #[test]
+    fn an_unknown_spelling_is_refused() {
+        assert!(serde_json::from_str::<SensitiveDataDisposition>(r#""quarantine""#).is_err());
+        assert!(serde_json::from_str::<SensitiveDataDisposition>(r#""Redact""#).is_err());
+        assert!(serde_json::from_str::<SensitiveDataDisposition>(r#""requireApproval""#).is_err());
+        assert!(serde_json::from_str::<SensitiveDataDisposition>(r#""""#).is_err());
+    }
+
+    /// ADR 0032 §10 D-2's mapping table, value by value.
+    ///
+    /// Written as eight explicit expectations rather than a loop over
+    /// [`implied_verdict`](SensitiveDataDisposition::implied_verdict), so that
+    /// changing one arm of that match fails here — a loop that re-derived the
+    /// expectation from the same match would pass whatever it was changed to.
+    #[test]
+    fn the_mapping_is_exactly_adr_0032s_table() {
+        use RuntimeVerdict::{Allow, Deny, Pending, Scrub};
+        use SensitiveDataDisposition as D;
+
+        assert_eq!(D::Redact.implied_verdict(), Some(Scrub));
+        assert_eq!(D::Mask.implied_verdict(), Some(Scrub));
+        assert_eq!(D::Tokenize.implied_verdict(), Some(Scrub));
+        assert_eq!(D::RequireApproval.implied_verdict(), Some(Pending));
+        assert_eq!(D::ApprovalGranted.implied_verdict(), Some(Allow));
+        assert_eq!(D::ApprovalDenied.implied_verdict(), Some(Deny));
+        assert_eq!(D::ShadowOnly.implied_verdict(), Some(Allow));
+        // Not `Allow`: `none` adds nothing and must not contradict the record's
+        // own verdict.
+        assert_eq!(D::None.implied_verdict(), Option::None);
+    }
+
+    /// Every disposition except `none` maps onto a verdict, so a coarse reader
+    /// always reaches a conclusion.
+    ///
+    /// The exhaustive `match` in [`variant_index`] is what keeps this from being
+    /// vacuous against a ninth value.
+    #[test]
+    fn only_none_declines_to_imply_a_verdict() {
+        for disposition in DISPOSITIONS_IN_ADR_0032_ORDER {
+            let implied = disposition.implied_verdict();
+            if disposition == SensitiveDataDisposition::None {
+                assert_eq!(implied, Option::None);
+            } else {
+                assert!(implied.is_some(), "{disposition:?} implies no verdict");
+            }
+        }
+    }
+
+    /// Precedence never lets the surviving disposition imply a *less*
+    /// restrictive verdict than one it displaced.
+    ///
+    /// This is the property that makes a single-valued field safe: collapsing
+    /// several true dispositions into one cannot under-report to a
+    /// `RuntimeVerdict`-only reader. Checked over all 64 ordered pairs rather
+    /// than by reading the rank literals.
+    #[test]
+    fn precedence_never_under_reports_the_verdict() {
+        for higher in DISPOSITIONS_IN_ADR_0032_ORDER {
+            for lower in DISPOSITIONS_IN_ADR_0032_ORDER {
+                if higher.precedence() <= lower.precedence() {
+                    continue;
+                }
+                assert!(
+                    restrictiveness(higher.implied_verdict()) >= restrictiveness(lower.implied_verdict()),
+                    "{higher:?} outranks {lower:?} but implies the less restrictive verdict \
+                     {:?} < {:?}",
+                    higher.implied_verdict(),
+                    lower.implied_verdict(),
+                );
+            }
+        }
+    }
+
+    /// No two dispositions share a rank, so [`SensitiveDataDisposition::reported`]
+    /// is deterministic regardless of the order the candidates arrive in.
+    #[test]
+    fn precedence_is_a_total_order() {
+        for (position, disposition) in DISPOSITIONS_IN_ADR_0032_ORDER.iter().enumerate() {
+            for other in &DISPOSITIONS_IN_ADR_0032_ORDER[position + 1..] {
+                assert_ne!(
+                    disposition.precedence(),
+                    other.precedence(),
+                    "{disposition:?} and {other:?} share a precedence rank",
+                );
+            }
+        }
+    }
+
+    /// The case ADR 0032 §10 names: an action that was both redacted and
+    /// approval-granted reports `redact`, so the verdict stays `scrub` instead
+    /// of under-reporting as `allow`.
+    #[test]
+    fn a_transformation_outranks_an_approval_grant() {
+        use SensitiveDataDisposition as D;
+
+        assert_eq!(D::reported([D::ApprovalGranted, D::Redact]), D::Redact);
+        // Order of arrival must not change the answer.
+        assert_eq!(D::reported([D::Redact, D::ApprovalGranted]), D::Redact);
+        assert_eq!(
+            D::reported([D::ApprovalGranted, D::Redact]).implied_verdict(),
+            Some(RuntimeVerdict::Scrub),
+        );
+    }
+
+    /// A refusal outranks a transformation: an action that was blocked did not
+    /// happen, whatever was done to its payload first.
+    #[test]
+    fn a_refusal_outranks_a_transformation() {
+        use SensitiveDataDisposition as D;
+
+        assert_eq!(D::reported([D::Redact, D::ApprovalDenied]), D::ApprovalDenied);
+        assert_eq!(
+            D::reported([D::Redact, D::ApprovalDenied]).implied_verdict(),
+            Some(RuntimeVerdict::Deny),
+        );
+    }
+
+    /// `none` loses to every other value, and an empty set of dispositions
+    /// resolves to `none` — the same statement as the field being absent.
+    #[test]
+    fn none_is_the_identity_of_the_precedence_fold() {
+        use SensitiveDataDisposition as D;
+
+        assert_eq!(D::reported([]), D::None);
+        assert_eq!(D::reported([D::None]), D::None);
+        for disposition in DISPOSITIONS_IN_ADR_0032_ORDER {
+            assert_eq!(
+                D::reported([D::None, disposition]),
+                disposition,
+                "`none` displaced {disposition:?}",
+            );
+        }
+    }
+
+    /// `shadow_only` carries no would-be verdict, which is what keeps it from
+    /// becoming a second representation of the audit event's `shadow_decision`.
+    ///
+    /// A unit variant has nowhere to put one. This test is the statement of that
+    /// ownership split in executable form: if someone ever gives `ShadowOnly` a
+    /// payload, the pattern below stops compiling.
+    #[test]
+    fn shadow_only_is_a_unit_variant_and_holds_no_shadow_decision() {
+        let disposition = SensitiveDataDisposition::ShadowOnly;
+        assert!(matches!(disposition, SensitiveDataDisposition::ShadowOnly));
+        // It reports only that inspection was observe-only; what the policy
+        // *would* have decided stays in the audit event's `shadow_decision`.
+        assert_eq!(disposition.implied_verdict(), Some(RuntimeVerdict::Allow));
+    }
+}
