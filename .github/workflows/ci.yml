@@ -360,6 +360,13 @@ jobs:
     env:
       # AAASM-2581: select mold for host-target links only.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      # Must sit inside the workspace: `Swatinem/rust-cache` caches
+      # `$GITHUB_WORKSPACE/target` and nothing else. The script otherwise
+      # defaults this to a temp dir it deletes on exit, which leaves the cache
+      # unpopulated and re-pays the cold dependency build on EVERY run, forever.
+      # Measured on the first run of this job: 5m03s for the first commit vs
+      # ~33s for each subsequent one — that 5m03s is the part being cached.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
