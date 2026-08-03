@@ -4409,6 +4409,37 @@ components:
             The action's primary target derived from the audit `detail` (tool name,
             file path, network host, process command, or LLM model). The design's
             `resource` column. `null` when the detail carries no resolvable target.
+        sensitiveDataDisposition:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/SensitiveDataDisposition'
+            description: |-
+              What the sensitive-data pipeline did to this action's payload and to the
+              approval of the action (AAASM-5356, ADR 0032 §10 D-2) — a finer
+              vocabulary than `verdict`, which stays the authoritative outcome and is
+              frozen at five values.
+
+              **Additive and optional.** The key is *omitted entirely* when there is no
+              disposition to report, so a response for an action that has none is
+              byte-for-byte what this endpoint returned before the field existed. An
+              absent key and an explicit `"none"` say the same thing: this field adds
+              nothing and `verdict` carries the whole meaning. A client that has never
+              heard of the field reads exactly the object it read before.
+
+              Declared last, so a response that *does* carry a disposition is a pure
+              suffix append to the object as it was.
+
+              **Absent on every row today**: no writer populates the audit payload's
+              `sensitive_data_disposition` yet — that is AAASM-5357's projection. The
+              read is wired through now so the day it lands there is no second contract
+              change, which is the pattern `verdict` followed.
+
+              **Reporting only.** Nothing consults this to decide whether an action is
+              permitted — `verdict` remains the authoritative outcome. It is a field of
+              this response like any other, so it inherits the endpoint's tenant
+              scoping unchanged: `authorize_agent_access` gates the whole row, so the
+              `approval_*` values it can carry are visible to exactly the callers
+              already entitled to the decision record.
         seq:
           type: integer
           format: int64
@@ -9097,6 +9128,34 @@ components:
         severity:
           type: string
           description: 'Fixed leak severity: `critical` | `high` | `medium` | `low`.'
+    SensitiveDataDisposition:
+      type: string
+      description: |-
+        What the sensitive-data pipeline did to an action's payload and to the
+        approval of the action, at a granularity the 5-way runtime verdict
+        deliberately does not carry (ADR 0032 §10 D-2).
+
+        A **record of** a decision the gateway already made, never an input to one:
+        the runtime verdict remains the authoritative outcome, and every disposition
+        but `none` maps onto one, so a client that reads only the verdict still
+        reaches a correct if coarser conclusion.
+
+        These eight values are a closed vocabulary. Adding a ninth is the same
+        category of breaking wire change ADR 0024 forbids for the runtime verdict.
+
+        This doc comment is published as the schema description in `openapi/v1.yaml`;
+        the implementation rationale — including how "never an authorisation input"
+        is enforced rather than promised — is in the module documentation, which is
+        not.
+      enum:
+      - redact
+      - mask
+      - tokenize
+      - require_approval
+      - approval_granted
+      - approval_denied
+      - shadow_only
+      - none
     SeriesPoint:
       type: object
       description: 'A single time-series point: `t` is epoch milliseconds, `value` the count.'

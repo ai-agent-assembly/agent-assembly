@@ -2727,6 +2727,7 @@ export interface components {
              *     `resource` column. `null` when the detail carries no resolvable target.
              */
             resource?: string | null;
+            sensitiveDataDisposition?: null | components["schemas"]["SensitiveDataDisposition"];
             /**
              * Format: int64
              * @description Per-session monotonic sequence of the audit entry. Combined with
@@ -5785,6 +5786,26 @@ export interface components {
             /** @description Fixed leak severity: `critical` | `high` | `medium` | `low`. */
             severity: string;
         };
+        /**
+         * @description What the sensitive-data pipeline did to an action's payload and to the
+         *     approval of the action, at a granularity the 5-way runtime verdict
+         *     deliberately does not carry (ADR 0032 §10 D-2).
+         *
+         *     A **record of** a decision the gateway already made, never an input to one:
+         *     the runtime verdict remains the authoritative outcome, and every disposition
+         *     but `none` maps onto one, so a client that reads only the verdict still
+         *     reaches a correct if coarser conclusion.
+         *
+         *     These eight values are a closed vocabulary. Adding a ninth is the same
+         *     category of breaking wire change ADR 0024 forbids for the runtime verdict.
+         *
+         *     This doc comment is published as the schema description in `openapi/v1.yaml`;
+         *     the implementation rationale — including how "never an authorisation input"
+         *     is enforced rather than promised — is in the module documentation, which is
+         *     not.
+         * @enum {string}
+         */
+        SensitiveDataDisposition: "redact" | "mask" | "tokenize" | "require_approval" | "approval_granted" | "approval_denied" | "shadow_only" | "none";
         /** @description A single time-series point: `t` is epoch milliseconds, `value` the count. */
         SeriesPoint: {
             /**

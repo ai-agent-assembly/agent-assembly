@@ -15,6 +15,7 @@ use aa_gateway::registry::{AgentStatus, OrphanMode};
 use crate::auth::scope::{RequireRead, RequireWrite, Scope};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
+use crate::models::disposition::SensitiveDataDisposition;
 use crate::models::verdict::RuntimeVerdict;
 use crate::pagination::PaginationParams;
 use crate::state::AppState;
@@ -1716,6 +1717,34 @@ pub struct AgentDecisionResponse {
     /// fabricated. Wired through so the column lands the day a latency source is
     /// added, without another contract change.
     pub latency_ms: Option<u64>,
+    /// What the sensitive-data pipeline did to this action's payload and to the
+    /// approval of the action (AAASM-5356, ADR 0032 §10 D-2) — a finer
+    /// vocabulary than `verdict`, which stays the authoritative outcome and is
+    /// frozen at five values.
+    ///
+    /// **Additive and optional.** The key is *omitted entirely* when there is no
+    /// disposition to report, so a response for an action that has none is
+    /// byte-for-byte what this endpoint returned before the field existed. An
+    /// absent key and an explicit `"none"` say the same thing: this field adds
+    /// nothing and `verdict` carries the whole meaning. A client that has never
+    /// heard of the field reads exactly the object it read before.
+    ///
+    /// Declared last, so a response that *does* carry a disposition is a pure
+    /// suffix append to the object as it was.
+    ///
+    /// **Absent on every row today**: no writer populates the audit payload's
+    /// `sensitive_data_disposition` yet — that is AAASM-5357's projection. The
+    /// read is wired through now so the day it lands there is no second contract
+    /// change, which is the pattern `verdict` followed.
+    ///
+    /// **Reporting only.** Nothing consults this to decide whether an action is
+    /// permitted — `verdict` remains the authoritative outcome. It is a field of
+    /// this response like any other, so it inherits the endpoint's tenant
+    /// scoping unchanged: `authorize_agent_access` gates the whole row, so the
+    /// `approval_*` values it can carry are visible to exactly the callers
+    /// already entitled to the decision record.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sensitive_data_disposition: Option<SensitiveDataDisposition>,
 }
 
 /// Recent per-agent decision stream (AAASM-5058).
@@ -1838,6 +1867,21 @@ fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
     // the audit write path. Absent on legacy rows, which stay `null`.
     let latency_ms = payload.get("latency_ms").and_then(serde_json::Value::as_u64);
 
+    // AAASM-5356 / ADR 0032 §10 D-2 — the additive finer disposition. No writer
+    // emits this key yet (AAASM-5357 owns the projection), so it is absent on
+    // every row today and the field is omitted from the response entirely.
+    //
+    // An unrecognised spelling degrades to absent rather than failing the row.
+    // That can only under-report the *optional* field: `verdict` above is parsed
+    // independently and remains the authoritative outcome, so a reader falling
+    // back to it is never misled about whether the action was permitted.
+    let sensitive_data_disposition = payload
+        .get("sensitive_data_disposition")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| {
+            serde_json::from_value::<SensitiveDataDisposition>(serde_json::Value::String(s.to_string())).ok()
+        });
+
     Some(AgentDecisionResponse {
         timestamp,
         session_id: hex::encode(entry.session_id().as_bytes()),
@@ -1853,6 +1897,7 @@ fn entry_to_decision_row(entry: &AuditEntry) -> Option<AgentDecisionResponse> {
         // separate Phase 2 ticket. The audit write records no per-decision trace
         // id, so this stays null.
         trace_id: None,
+        sensitive_data_disposition,
     })
 }
 
