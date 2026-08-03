@@ -249,9 +249,10 @@ fn the_split_band_recall_stays_above_the_accepted_floor() {
     let mut detected = 0usize;
     for _ in 0..RECALL_SAMPLE {
         let secret: String = (0..40).map(|_| *rng.pick(&alphabet)).collect();
-        // 23 + 17, the band the ticket names.
-        let split = format!("{} {}", &secret[..23], &secret[23..]);
-        let payload = format!("config value: {split} end");
+        // 23 + 17, the band the ticket names, and **nothing else**. See
+        // `wrapper_prose_can_raise_a_candidate_over_the_gate` for why no
+        // surrounding words appear here.
+        let payload = format!("{} {}", &secret[..23], &secret[23..]);
         if !scanner.scan(&payload).findings.is_empty() {
             detected += 1;
         }
@@ -267,4 +268,43 @@ fn the_split_band_recall_stays_above_the_accepted_floor() {
     );
 
     println!("split-band recall: {percent}% ({detected}/{RECALL_SAMPLE})");
+}
+
+/// Why the recall measurement wraps its candidates in nothing at all.
+///
+/// AAASM-5502: the first version of the recall fixture presented each secret as
+/// `config value: {secret} end`. Those two ordinary English words changed the
+/// result. `scan_separated_base64_runs` joins a base64 run to a neighbour across
+/// a single separator, and the *pair* clears [`ENTROPY_BITS_GATE`] even when the
+/// secret alone does not — so a value genuinely below the gate was counted as
+/// detected, and the measured recall was a property of the wrapper text rather
+/// than of the detector.
+///
+/// This test pins that behaviour so the distortion cannot return unnoticed. It
+/// asserts the difference is real: the same value is undetected alone and
+/// detected beside prose.
+///
+/// It is deliberately **not** an assertion that the joining is wrong. Joining
+/// across one separator is exactly what AAASM-5368 built, and a secret really can
+/// sit next to a word. What is wrong is *measuring recall* through a fixture that
+/// supplies the neighbour, which is why the recall test now supplies none.
+#[test]
+fn wrapper_prose_can_raise_a_candidate_over_the_gate() {
+    let scanner = CredentialScanner::new();
+
+    // A 40-character value whose own Shannon entropy sits just under the 4.5-bit
+    // gate — the population AAASM-5502 is about. Repetition is what holds it
+    // down; it is synthetic and is not a credential.
+    let below_gate = "aAbBcCdDeEfFgGhHiIjJkKaAbBcCdDeEfFgGhHiI";
+
+    assert!(
+        scanner.scan(below_gate).findings.is_empty(),
+        "fixture no longer sits below the gate; pick a value that does, or this          test proves nothing about contamination"
+    );
+
+    let wrapped = format!("config value: {below_gate} end");
+    assert!(
+        !scanner.scan(&wrapped).findings.is_empty(),
+        "wrapper prose no longer lifts a below-gate candidate over the gate. If          that is an intended change to pass 5, update this test deliberately —          but the recall fixture must still present candidates in isolation,          because a fixture that supplies a neighbour measures the fixture."
+    );
 }
