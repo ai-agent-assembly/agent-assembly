@@ -341,6 +341,30 @@ fn build_child_env(
 /// outcome is either a vouched-for endpoint or a refusal: there is no path from
 /// "the proxy could not be verified" to "launch anyway", because that path is a
 /// direct, uninspected connection made by a session presenting as governed.
+/// The authoritative refusal, if any, for a `--no-proxy` launch of `tool`.
+///
+/// Reads both sources AC 1 names and lets
+/// [`crate::commands::run_no_proxy_guard::refusal_for`] decide, so the decision lives in one
+/// tested place rather than being spelled out at the call site.
+///
+/// A receipt that cannot be read is treated as **no receipt** rather than as a
+/// refusal: an unreadable receipt is not evidence that someone required managed
+/// operation, and refusing on it would turn a corrupt file into a policy. The
+/// managed-settings source is unaffected and still refuses on its own.
+fn no_proxy_refusal(tool: &str) -> Option<crate::commands::run_no_proxy_guard::RefusalSource> {
+    let kind = aa_devtool::registry::kind_for(tool)?;
+    let scope = aa_core::integration::step::SettingsScope::User;
+
+    let receipt_profile = aa_core::integration::ReceiptStore::default_location()
+        .ok()
+        .and_then(|store| store.load_receipt(&kind, scope).ok().flatten())
+        .map(|receipt| receipt.profile);
+
+    let managed = aa_devtool_claude_code::managed_settings::managed_installation_evidence().ok();
+
+    crate::commands::run_no_proxy_guard::refusal_for(&kind, scope, receipt_profile, managed)
+}
+
 fn resolve_launch_proxy(no_proxy: bool) -> Result<Option<String>> {
     if no_proxy {
         eprintln!(
@@ -453,6 +477,7 @@ fn mask_value(key: &str, value: &str) -> String {
 fn format_dry_run_output(
     handle: &RegistrationHandle,
     policy: &run_policy::PolicyResolution,
+    no_proxy: bool,
     settings: &str,
     cmd: &std::process::Command,
     env: &HashMap<String, String>,
@@ -481,11 +506,18 @@ fn format_dry_run_output(
         .collect();
 
     format!(
-        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
+        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
         handle.agent_id,
         handle.registration_did,
         handle.trace_id,
         handle.session_id,
+        crate::commands::run_audit::protection_label(no_proxy),
+        if no_proxy {
+            "--no-proxy: nothing is intercepted, no egress policy applies, and nothing is inspected"
+        } else {
+            "a trusted proxy endpoint was resolved and injected; whether interception works is \
+             adjudicated later, not asserted here"
+        },
         policy.state_token(),
         policy.source().map_or("<none>".to_string(), |p| p.display().to_string()),
         policy.summary(),
@@ -644,7 +676,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         cmd.envs(&child_env);
         print!(
             "{}",
-            format_dry_run_output(&handle, &resolution, &settings, &cmd, &child_env)
+            format_dry_run_output(&handle, &resolution, args.no_proxy, &settings, &cmd, &child_env)
         );
         return Ok(0);
     }
@@ -664,6 +696,17 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // Resolved before registration on purpose: a launch that is going to be
     // refused should not first create a gateway registration it then abandons.
     let proxy = resolve_launch_proxy(args.no_proxy)?;
+
+    // AAASM-5350 AC 1: `--no-proxy` is refused where a party other than the
+    // invoking user has already decided this host runs managed. Checked here,
+    // before the policy resolves and before anything is registered or started,
+    // for the same reason the policy refusal is: refusing after a launch has
+    // begun is not refusing.
+    if args.no_proxy {
+        if let Some(refusal) = no_proxy_refusal(&args.tool) {
+            anyhow::bail!("{refusal}");
+        }
+    }
 
     // Same reason, and the same ordering rule: a session with no effective
     // policy is refused here, before any registration exists, because a
@@ -691,6 +734,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         &args.tool,
         &args.tool_args,
         &resolution.posture(),
+        args.no_proxy,
     )
     .await;
     let mut child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
@@ -1566,7 +1610,7 @@ mod tests {
         env.insert("MY_API_KEY".into(), "secret123".into());
         env.insert("NORMAL_VAR".into(), "hello".into());
 
-        let output = format_dry_run_output(&handle, &stub_resolution(), settings, &cmd, &env);
+        let output = format_dry_run_output(&handle, &stub_resolution(), false, settings, &cmd, &env);
 
         assert!(output.contains("agent_id:"), "missing identity section: {output}");
         assert!(output.contains("agent-xyz"), "missing agent_id value: {output}");
@@ -1652,7 +1696,7 @@ mod tests {
         let sections: Vec<String> = states
             .iter()
             .map(|state| {
-                let output = format_dry_run_output(&handle, state, "{}", &cmd, &env);
+                let output = format_dry_run_output(&handle, state, false, "{}", &cmd, &env);
                 let start = output
                     .find("--- policy ---")
                     .expect("receipt must carry a policy section");
@@ -1699,7 +1743,7 @@ mod tests {
         env.insert("AA_JWT_SECRET".into(), "super-secret-signing-key".into());
         env.insert("DATABASE_URL".into(), "postgresql://aasm:hunter2@db:5432/aasm".into());
 
-        let output = format_dry_run_output(&handle, &stub_resolution(), "{}", &cmd, &env);
+        let output = format_dry_run_output(&handle, &stub_resolution(), false, "{}", &cmd, &env);
 
         assert!(
             !output.contains("super-secret-signing-key"),
@@ -1738,7 +1782,7 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("MONGODB_URI".into(), "mongodb://user:p4ss@host:27017/db".into());
 
-        let output = format_dry_run_output(&handle, &stub_resolution(), "{}", &cmd, &env);
+        let output = format_dry_run_output(&handle, &stub_resolution(), false, "{}", &cmd, &env);
 
         assert!(
             !output.contains("p4ss"),
@@ -1772,5 +1816,69 @@ mod tests {
             mask_value("ENDPOINT", "https://api.example.com/v1"),
             "https://api.example.com/v1"
         );
+    }
+
+    /// AAASM-5350 AC 2, receipt surface: a preview of an unprotected launch has
+    /// to *say* it is unprotected. Before this the reader had to notice that
+    /// `HTTPS_PROXY` was absent from the environment listing and infer the rest
+    /// — an inference, made by the person least placed to make it.
+    #[test]
+    fn the_dry_run_receipt_states_the_protection_it_previews() {
+        let handle = stub_handle(None);
+        let cmd = std::process::Command::new("claude");
+        let env = HashMap::new();
+
+        let unprotected = format_dry_run_output(&handle, &stub_resolution(), true, "{}", &cmd, &env);
+        assert!(unprotected.contains("--- protection ---"), "{unprotected}");
+        assert!(unprotected.contains("unprotected"), "{unprotected}");
+        assert!(
+            unprotected.contains("nothing is intercepted"),
+            "the consequence, not just the flag: {unprotected}"
+        );
+
+        let proxied = format_dry_run_output(&handle, &stub_resolution(), false, "{}", &cmd, &env);
+        assert!(proxied.contains("proxy_configured"), "{proxied}");
+        assert!(
+            !proxied.contains("gateway_protected") && !proxied.contains("host_enforced"),
+            "a preview must not claim an adjudicated rung: {proxied}"
+        );
+    }
+
+    /// AAASM-5350 AC 4: an operator-supplied `HTTPS_PROXY` is not AASM
+    /// interception, and no surface may report it as though it were.
+    ///
+    /// The property was documented on `build_child_env` and enforced there, but
+    /// never asserted — so nothing would have caught a later change that read
+    /// the ambient value back out as evidence of protection. The protection
+    /// label derives from what `aasm` resolved, so an ambient proxy cannot
+    /// produce `proxy_configured`.
+    #[test]
+    fn an_ambient_proxy_is_never_reported_as_aasm_interception() {
+        let _guard = crate::test_support::env_guard();
+        let prior = std::env::var("HTTPS_PROXY").ok();
+        std::env::set_var("HTTPS_PROXY", "http://corporate.example:3128");
+
+        // A `--no-proxy` launch with an ambient proxy set is still unprotected:
+        // the operator's own route is left alone, and it governs nothing.
+        assert_eq!(
+            crate::commands::run_audit::protection_label(true),
+            "unprotected",
+            "an ambient HTTPS_PROXY must not upgrade an unprotected launch"
+        );
+
+        // And the child keeps the operator's route rather than having it
+        // removed or overwritten — the documented opt-out behaviour.
+        let handle = stub_handle(None);
+        let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
+        assert_eq!(
+            env.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://corporate.example:3128"),
+            "--no-proxy leaves the operator's own proxy configuration alone"
+        );
+
+        match prior {
+            Some(v) => std::env::set_var("HTTPS_PROXY", v),
+            None => std::env::remove_var("HTTPS_PROXY"),
+        }
     }
 }

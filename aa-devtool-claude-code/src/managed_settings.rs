@@ -1703,3 +1703,292 @@ mod tests {
         }
     }
 }
+
+/// Why an endpoint managed-settings file does not count as evidence that an
+/// administrator required managed operation.
+///
+/// Each variant is a *refusal to treat the file as authoritative*, never a
+/// refusal to launch — the caller decides what to do with the answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedEvidenceRejection {
+    /// Nothing is installed at the canonical path. The ordinary case on an
+    /// unmanaged host, and not a fault.
+    NotInstalled,
+    /// The path exists but is a symlink, or resolving it left the canonical
+    /// location. A file an unprivileged user can re-point is not evidence of
+    /// anything an administrator did.
+    NotARegularFile,
+    /// Owned by someone other than `root`. A file the invoking user owns is a
+    /// file the invoking user wrote.
+    NotRootOwned {
+        /// The uid that actually owns it.
+        uid: u32,
+    },
+    /// Writable by group or other, so an account other than the owner can
+    /// rewrite it between one launch and the next.
+    WritableByOthers {
+        /// The mode as found.
+        mode: u32,
+    },
+    /// Present, root-owned and correctly permissioned, but not a valid managed
+    /// document. An administrator did not install *this*.
+    InvalidContent {
+        /// What the validator objected to.
+        detail: String,
+    },
+    /// The file could not be read at all.
+    Unreadable {
+        /// The underlying error.
+        detail: String,
+    },
+}
+
+impl fmt::Display for ManagedEvidenceRejection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotInstalled => write!(f, "no endpoint managed-settings file is installed"),
+            Self::NotARegularFile => write!(
+                f,
+                "the path is not a regular file (a symlink or directory), so it is not evidence of a \
+                 privileged installation"
+            ),
+            Self::NotRootOwned { uid } => write!(
+                f,
+                "it is owned by uid {uid}, not root; a file the invoking user owns is a file the \
+                 invoking user wrote"
+            ),
+            Self::WritableByOthers { mode } => write!(
+                f,
+                "its mode is {mode:04o}, which lets an account other than the owner rewrite it"
+            ),
+            Self::InvalidContent { detail } => write!(f, "it is not a valid managed document: {detail}"),
+            Self::Unreadable { detail } => write!(f, "it could not be read: {detail}"),
+        }
+    }
+}
+
+/// Whether a valid endpoint managed-settings file is installed, meaning an
+/// administrator required managed operation on this host (AAASM-5350 AC 1b).
+///
+/// # Why this does not reuse [`ManagedSettingsInstaller::verify_read_back`]
+///
+/// That function answers "does the file still match what *this integration*
+/// installed", and reads the path twice — once for content, once for metadata.
+/// Two lookups of a path are two chances to resolve to different files, which is
+/// tolerable when the question is drift and **not** tolerable when the answer
+/// decides whether a launch may proceed unprotected.
+///
+/// Here the file is opened **once** and every subsequent question is asked of
+/// that descriptor: the metadata comes from the open handle, and the bytes come
+/// from the same handle. A file swapped after the open is not the file this
+/// answer describes.
+///
+/// # What it deliberately does not claim
+///
+/// `O_NOFOLLOW` refuses a symlink at the **final** path component only. A
+/// symlinked *parent* directory is not detected here; on macOS the canonical
+/// parent lives under `/Library/Application Support/`, which an unprivileged
+/// user cannot re-point, so the residual case needs root to set up and root can
+/// simply write the file instead. Stated rather than implied, because a reader
+/// should not infer full path-resolution hardening from this check.
+///
+/// Non-Unix targets always return [`ManagedEvidenceRejection::NotInstalled`]:
+/// the ownership and permission questions this rests on have no equivalent, and
+/// answering "installed" without them would be the over-claim.
+pub fn managed_installation_evidence() -> Result<PathBuf, ManagedEvidenceRejection> {
+    managed_installation_evidence_at(Path::new(MANAGED_SETTINGS_PATH), 0)
+}
+
+/// [`managed_installation_evidence`] against an explicit path and expected
+/// owner, so tests can exercise every rejection without being root.
+///
+/// Not public: production must never be able to name a path other than
+/// [`MANAGED_SETTINGS_PATH`], because "the canonical system path only" is half
+/// of what makes the answer mean anything.
+#[cfg(unix)]
+pub(crate) fn managed_installation_evidence_at(
+    path: &Path,
+    expected_uid: u32,
+) -> Result<PathBuf, ManagedEvidenceRejection> {
+    use std::io::Read as _;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        // Refuses a symlink at the final component *atomically* — checking with
+        // `symlink_metadata` and then opening would be the check/use split this
+        // whole function exists to avoid.
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ManagedEvidenceRejection::NotInstalled),
+        // ELOOP is what `O_NOFOLLOW` returns for a symlink.
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(ManagedEvidenceRejection::NotARegularFile),
+        Err(e) => return Err(ManagedEvidenceRejection::Unreadable { detail: e.to_string() }),
+    };
+
+    // Every question below is asked of the open descriptor, never of the path.
+    let metadata = file
+        .metadata()
+        .map_err(|e| ManagedEvidenceRejection::Unreadable { detail: e.to_string() })?;
+    if !metadata.is_file() {
+        return Err(ManagedEvidenceRejection::NotARegularFile);
+    }
+    if metadata.uid() != expected_uid {
+        return Err(ManagedEvidenceRejection::NotRootOwned { uid: metadata.uid() });
+    }
+    let mode = metadata.mode() & 0o7777;
+    if mode & 0o022 != 0 {
+        return Err(ManagedEvidenceRejection::WritableByOthers { mode });
+    }
+
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)
+        .map_err(|e| ManagedEvidenceRejection::Unreadable { detail: e.to_string() })?;
+    validate_managed_document(&raw).map_err(|e| ManagedEvidenceRejection::InvalidContent { detail: e.to_string() })?;
+
+    Ok(path.to_path_buf())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn managed_installation_evidence_at(
+    _path: &Path,
+    _expected_uid: u32,
+) -> Result<PathBuf, ManagedEvidenceRejection> {
+    Err(ManagedEvidenceRejection::NotInstalled)
+}
+
+#[cfg(all(test, unix))]
+mod managed_evidence_tests {
+    use super::*;
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// A document that passes `validate_managed_document`, so these tests fail
+    /// on the property under test rather than on the content.
+    fn valid_doc() -> String {
+        managed_settings_document(ProtectionProfile::Strict).expect("strict document")
+    }
+
+    fn write(dir: &std::path::Path, name: &str, body: &str, mode: u32) -> PathBuf {
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(body.as_bytes()).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        path
+    }
+
+    fn me() -> u32 {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(std::env::current_exe().expect("exe"))
+            .expect("meta")
+            .uid()
+    }
+
+    /// The permitting case, so the rejections below are known to be rejecting
+    /// something that would otherwise be accepted.
+    #[test]
+    fn a_valid_root_owned_document_is_evidence() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = write(dir.path(), "managed-settings.json", &valid_doc(), 0o644);
+        assert_eq!(managed_installation_evidence_at(&path, me()), Ok(path));
+    }
+
+    /// The ordinary unmanaged host. Not a fault, and must not be reported as one.
+    #[test]
+    fn an_absent_file_is_not_installed() {
+        let dir = tempfile::tempdir().expect("tmp");
+        assert_eq!(
+            managed_installation_evidence_at(&dir.path().join("nope.json"), me()),
+            Err(ManagedEvidenceRejection::NotInstalled)
+        );
+    }
+
+    /// A user pointing the canonical path at their own file is the whole reason
+    /// this check exists: it would otherwise let an unprivileged account
+    /// manufacture "an administrator required this".
+    #[test]
+    fn a_symlink_is_refused_even_when_its_target_is_valid() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let real = write(dir.path(), "real.json", &valid_doc(), 0o644);
+        let link = dir.path().join("managed-settings.json");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        assert_eq!(
+            managed_installation_evidence_at(&link, me()),
+            Err(ManagedEvidenceRejection::NotARegularFile),
+            "a symlink must never be evidence, however valid its target"
+        );
+    }
+
+    /// A file the invoking user owns is a file the invoking user wrote.
+    #[test]
+    fn a_file_owned_by_someone_else_is_refused() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = write(dir.path(), "managed-settings.json", &valid_doc(), 0o644);
+        // Expect an owner this file cannot have, standing in for "expected root,
+        // found the user" without needing to be root to arrange it.
+        let wrong = me().wrapping_add(1);
+        assert!(matches!(
+            managed_installation_evidence_at(&path, wrong),
+            Err(ManagedEvidenceRejection::NotRootOwned { .. })
+        ));
+    }
+
+    /// Root-owned but group/world writable is not a privileged artifact: another
+    /// account can rewrite it between one launch and the next.
+    #[test]
+    fn a_world_writable_file_is_refused() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = write(dir.path(), "managed-settings.json", &valid_doc(), 0o666);
+        assert!(matches!(
+            managed_installation_evidence_at(&path, me()),
+            Err(ManagedEvidenceRejection::WritableByOthers { .. })
+        ));
+    }
+
+    /// Correct ownership and permissions do not make arbitrary content a managed
+    /// installation. An administrator did not install *this*.
+    #[test]
+    fn a_correctly_owned_file_with_wrong_content_is_refused() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = write(dir.path(), "managed-settings.json", "{\"unrelated\": true}", 0o644);
+        assert!(matches!(
+            managed_installation_evidence_at(&path, me()),
+            Err(ManagedEvidenceRejection::InvalidContent { .. })
+        ));
+    }
+
+    /// Unparseable content is refused for the same reason, and is reported as
+    /// invalid content rather than as absence.
+    #[test]
+    fn malformed_json_is_invalid_content_not_absence() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = write(dir.path(), "managed-settings.json", "{not json", 0o644);
+        assert!(matches!(
+            managed_installation_evidence_at(&path, me()),
+            Err(ManagedEvidenceRejection::InvalidContent { .. })
+        ));
+    }
+
+    /// A directory at the path is not a regular file, and must not read as one.
+    #[test]
+    fn a_directory_is_refused() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("managed-settings.json");
+        std::fs::create_dir(&path).expect("mkdir");
+        assert!(matches!(
+            managed_installation_evidence_at(&path, me()),
+            Err(ManagedEvidenceRejection::NotARegularFile) | Err(ManagedEvidenceRejection::Unreadable { .. })
+        ));
+    }
+
+    /// Production must not be able to name any path but the canonical one.
+    #[test]
+    fn the_public_entry_point_uses_only_the_canonical_path() {
+        // Not an assertion about the host: on a developer machine the file is
+        // absent, which is exactly `NotInstalled`. The point is that the public
+        // function takes no path argument at all.
+        let _: Result<PathBuf, ManagedEvidenceRejection> = managed_installation_evidence();
+    }
+}

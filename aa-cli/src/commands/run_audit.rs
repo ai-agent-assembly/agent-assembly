@@ -51,6 +51,10 @@ pub const LABEL_POLICY_SOURCE: &str = "aasm.policy_source";
 /// Label marking this exec as a governed launch rather than an arbitrary
 /// subprocess, so a query can separate the two.
 pub const LABEL_LAUNCH: &str = "aasm.launch";
+/// Label carrying whether this launch had interception configured at all
+/// (AAASM-5350). Separate from [`LABEL_LAUNCH`], which classifies the *event*,
+/// and from the policy labels, which describe a different dimension entirely.
+pub const LABEL_PROTECTION: &str = "aasm.protection";
 
 /// Build the labels describing the policy a launch ran under.
 ///
@@ -68,6 +72,32 @@ pub fn policy_labels(posture: &PolicyPosture) -> HashMap<String, String> {
         }
     }
     labels
+}
+
+/// What this launch can honestly say about interception, at the moment it
+/// starts (AAASM-5350 AC 2 / AC 3).
+///
+/// Two values, and deliberately **neither** of them is a ladder rung:
+///
+/// * `unprotected` — `--no-proxy`; nothing is intercepted, no egress policy
+///   applies, and no later reading may upgrade this session.
+/// * `proxy_configured` — a trusted proxy endpoint was resolved and injected.
+///
+/// It is **not** `gateway_protected`. That rung requires probe traffic to have
+/// been produced and adjudicated, and at launch time no traffic exists yet.
+/// Writing the rung here would be a claim about behaviour made before any
+/// behaviour occurred — the exact over-claim AC 3 forbids, and the reason this
+/// label names a *configuration* fact rather than a protection level.
+///
+/// An operator-supplied `HTTPS_PROXY` never produces `proxy_configured`: the
+/// value is derived from what `aasm` resolved and injected, not from the
+/// environment it inherited (AC 4).
+pub fn protection_label(no_proxy: bool) -> &'static str {
+    if no_proxy {
+        "unprotected"
+    } else {
+        "proxy_configured"
+    }
 }
 
 /// Whether a posture is one this module is able to record.
@@ -110,6 +140,10 @@ pub struct GovernedLaunchRecord<'a> {
     pub args: &'a [String],
     /// The policy the launch resolved, from the one shared mapping.
     pub posture: &'a PolicyPosture,
+    /// Whether the launch ran unprotected (`--no-proxy`). Carried explicitly
+    /// rather than inferred, so the audit record cannot disagree with what the
+    /// launch actually did.
+    pub no_proxy: bool,
     /// When the launch happened.
     pub occurred_at_unix_secs: u64,
 }
@@ -131,6 +165,7 @@ pub async fn report_governed_launch(record: GovernedLaunchRecord<'_>) -> Result<
         command,
         args,
         posture,
+        no_proxy,
         occurred_at_unix_secs,
     } = record;
     let event = AuditEvent {
@@ -145,7 +180,11 @@ pub async fn report_governed_launch(record: GovernedLaunchRecord<'_>) -> Result<
         decision: Decision::Allow as i32,
         trace_id,
         session_id,
-        labels: policy_labels(posture),
+        labels: {
+            let mut labels = policy_labels(posture);
+            labels.insert(LABEL_PROTECTION.to_string(), protection_label(no_proxy).to_string());
+            labels
+        },
         detail: Some(audit_event::Detail::Process(ProcessExecDetail {
             command: command.to_string(),
             args: args.to_vec(),
@@ -240,5 +279,35 @@ mod tests {
         });
         assert!(!labels.contains_key(LABEL_POLICY_STATE));
         assert_eq!(labels.get(LABEL_LAUNCH).map(String::as_str), Some("governed"));
+    }
+
+    /// AC 2: a `--no-proxy` session is recorded as unprotected. Without this
+    /// the audit trail says `governed` for a launch nothing intercepted.
+    #[test]
+    fn a_no_proxy_launch_is_labelled_unprotected() {
+        assert_eq!(protection_label(true), "unprotected");
+    }
+
+    /// AC 3: no launch-time label may name a ladder rung. `gateway_protected`
+    /// requires adjudicated traffic, and at launch no traffic exists — writing
+    /// it here would claim behaviour before any behaviour happened.
+    #[test]
+    fn no_protection_label_claims_a_ladder_rung() {
+        for no_proxy in [true, false] {
+            let label = protection_label(no_proxy);
+            assert_ne!(label, "gateway_protected");
+            assert_ne!(label, "host_enforced");
+            assert!(
+                !label.contains("protected") || label == "unprotected",
+                "a launch-time label must not imply a protection level: {label}"
+            );
+        }
+    }
+
+    /// A protected launch says only what is true at launch: the proxy was
+    /// configured. Whether it worked is a later, adjudicated question.
+    #[test]
+    fn a_proxied_launch_claims_configuration_not_adjudication() {
+        assert_eq!(protection_label(false), "proxy_configured");
     }
 }

@@ -8,6 +8,11 @@ repository.workspace = true
 description = "DevToolAdapter implementation for Anthropic Claude Code CLI"
 
 [dependencies]
+# AAASM-5350: `O_NOFOLLOW` when opening the managed-settings file. Refusing a
+# symlink atomically at open time is what avoids a check/use split; there is no
+# std equivalent that both rejects the symlink and hands back the descriptor.
+libc = { workspace = true }
+
 aa-devtool-contract = { path = "../aa-devtool-contract" }
 async-trait = { workspace = true }
 serde = { workspace = true }
