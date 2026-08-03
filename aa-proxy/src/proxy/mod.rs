@@ -2626,7 +2626,12 @@ mod tests {
         .await;
         let _ = upstream_task.await;
 
-        let entry = audit_rx.try_recv().expect("the redaction persisted a decision record");
+        // A redaction *forwards* the scrubbed bytes, so this is a forwarding
+        // case and the count belongs here too. Reading the first entry would
+        // leave a false `NotForwarded` on this path invisible to it — and
+        // "the count is covered by four siblings on the same path" is exactly
+        // the reasoning that has already failed on this PR.
+        let entry = take_single_forwarding_record(&mut audit_rx).await;
         assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
         assert_eq!(
             entry.execution.transmission.as_str(),
