@@ -1,6 +1,6 @@
 //! `aasm run` — launch an AI dev tool with governance wiring.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -467,6 +467,72 @@ fn mask_value(key: &str, value: &str) -> String {
     redact_database_url(value)
 }
 
+/// How faithfully a preview reflects the launch it describes.
+///
+/// A preview that quietly drops adapter state is worse than no preview: the
+/// operator ran it to check whether the session will be protected, and the
+/// adapter contributes exactly the variables that decide that. So the shortfall
+/// is a value carried into the output, not a log line — it prints whether or not
+/// anyone is reading stderr.
+enum PreviewFidelity {
+    /// The command came from the adapter, as the live launch would build it.
+    FromAdapter,
+    /// The adapter could not supply one; the preview is missing whatever it sets.
+    Degraded(String),
+}
+
+/// Ask the adapter for the command this launch would run, for preview purposes.
+///
+/// **`--dry-run` deliberately still works when the tool is not installed**
+/// (AAASM-5329 AC 3). Requiring installation would be the tidier contract, but it
+/// would break previewing a launch from CI or from a machine being set up — the
+/// case the flag is most useful for — and `--dry-run` has been safe to run
+/// anywhere since it was introduced. What is *not* acceptable is the old
+/// behaviour of silently printing a preview missing the adapter's contribution,
+/// so an un-derivable command is reported in the output as degraded.
+///
+/// Nothing here starts, writes or applies anything: `detect()` inspects the host
+/// and `build_launch_command` constructs a `Command` without running it.
+fn dry_run_launch_command(
+    adapter: &dyn DevToolAdapter,
+    args: &RunArgs,
+    handle: &RegistrationHandle,
+    proxy: Option<&str>,
+) -> (std::process::Command, PreviewFidelity) {
+    let fallback = || {
+        let mut cmd = std::process::Command::new(&args.tool);
+        cmd.args(&args.tool_args);
+        cmd
+    };
+
+    if adapter.detect().is_none() {
+        return (
+            fallback(),
+            PreviewFidelity::Degraded(format!(
+                "{} is not installed on this host, so the adapter could not be asked what it \
+                 would run. The command and environment below omit everything the adapter \
+                 contributes — including NODE_EXTRA_CA_CERTS and the normalised proxy URL, \
+                 whose absence is what makes a session ungoverned. Install the tool and \
+                 re-run to preview the real launch.",
+                args.tool
+            )),
+        );
+    }
+
+    match adapter.build_launch_command(&args.tool_args, &handle.agent_id, handle.team_id.as_deref(), proxy) {
+        Ok(cmd) => (cmd, PreviewFidelity::FromAdapter),
+        Err(e) => (
+            fallback(),
+            PreviewFidelity::Degraded(format!(
+                "the {} adapter could not build a launch command ({e}), so the command and \
+                 environment below omit everything it contributes. A live `aasm run` with \
+                 these flags would fail here.",
+                args.tool
+            )),
+        ),
+    }
+}
+
 /// Build the structured dry-run output string.
 ///
 /// The `--- policy ---` section is the preview's receipt of which of the four
@@ -481,6 +547,7 @@ fn format_dry_run_output(
     settings: &str,
     cmd: &std::process::Command,
     env: &HashMap<String, String>,
+    fidelity: &PreviewFidelity,
 ) -> String {
     const SETTINGS_LIMIT: usize = 1024;
 
@@ -498,19 +565,30 @@ fn format_dry_run_output(
         format!("{} {}", program, args_strs.join(" "))
     };
 
-    let mut sorted_env: Vec<(&String, &String)> = env.iter().collect();
-    sorted_env.sort_by_key(|(k, _)| k.as_str());
-    let env_lines: String = sorted_env
+    // Derived through the same merge `spawn_and_wait` applies, so the preview
+    // cannot claim a variable the launch would not have — including one the
+    // adapter removes, which a naive union of the two sources would still show.
+    let (effective, removed) = effective_child_env(cmd, env);
+    let mut env_lines: String = effective
         .iter()
         .map(|(k, v)| format!("{}={}\n", k, mask_value(k, v)))
         .collect();
+    for name in &removed {
+        env_lines.push_str(&format!("{name}=<removed by adapter>\n"));
+    }
+
+    let fidelity_line = match fidelity {
+        PreviewFidelity::FromAdapter => "derived from the adapter, as the live launch builds it".to_string(),
+        PreviewFidelity::Degraded(why) => format!("DEGRADED — {why}"),
+    };
 
     format!(
-        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
+        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- preview fidelity ---\n{}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
         handle.agent_id,
         handle.registration_did,
         handle.trace_id,
         handle.session_id,
+        fidelity_line,
         crate::commands::run_audit::protection_label(no_proxy),
         if no_proxy {
             "--no-proxy: nothing is intercepted, no egress policy applies, and nothing is inspected"
@@ -551,6 +629,43 @@ async fn deregister_with_gateway(registration: &GovernedRegistration) {
     run_registration::deregister(registration, "aasm run session ended").await;
 }
 
+/// The environment a child launched with `cmd` will actually receive, and the
+/// names the adapter wants *removed* from it.
+///
+/// Returned rather than applied so that `--dry-run` can show the same answer the
+/// live launch acts on. A preview that recomputes this independently is a second
+/// implementation of the merge, and the two would disagree the moment either
+/// changed — which is the defect AAASM-5329 exists to fix.
+///
+/// `get_envs` yields `None` for a variable the adapter wants removed, which is
+/// not the same request as setting it empty: an adapter that unsets a variable
+/// to disable a tool behaviour must not have that turned into an
+/// empty-but-present variable the tool then honours. Those names come back
+/// separately because "absent" cannot be expressed as an entry in the map.
+///
+/// The adapter is applied **last and therefore wins** on a collision — it is the
+/// layer that knows what the launched tool actually needs.
+fn effective_child_env(
+    cmd: &std::process::Command,
+    child_env: &HashMap<String, String>,
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut env: BTreeMap<String, String> = child_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut removed = Vec::new();
+    for (name, value) in cmd.get_envs() {
+        let key = name.to_string_lossy().into_owned();
+        match value {
+            Some(value) => {
+                env.insert(key, value.to_string_lossy().into_owned());
+            }
+            None => {
+                env.remove(&key);
+                removed.push(key);
+            }
+        }
+    }
+    (env, removed)
+}
+
 /// Spawn `cmd` as a tokio child process, forward SIGTERM/SIGINT on Unix,
 /// and wait for the child to exit. Returns the child's exit code.
 ///
@@ -565,18 +680,13 @@ async fn deregister_with_gateway(registration: &GovernedRegistration) {
 /// accepts (AAASM-5324). Dropping the adapter's environment, as this function
 /// did before AAASM-5327, silently defeated both.
 async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, String>) -> Result<i32> {
+    let (effective, removed) = effective_child_env(&cmd, child_env);
+
     let mut tokio_cmd = tokio::process::Command::new(cmd.get_program());
     tokio_cmd.args(cmd.get_args());
-    tokio_cmd.envs(child_env);
-    // `get_envs` yields `None` for a variable the adapter wants *removed* from
-    // the child, which is not the same request as setting it empty — an adapter
-    // that unsets a variable to disable a tool behaviour must not have that
-    // turned into an empty-but-present variable the tool then honours.
-    for (name, value) in cmd.get_envs() {
-        match value {
-            Some(value) => tokio_cmd.env(name, value),
-            None => tokio_cmd.env_remove(name),
-        };
+    tokio_cmd.envs(&effective);
+    for name in &removed {
+        tokio_cmd.env_remove(name);
     }
 
     let mut child = tokio_cmd.spawn()?;
@@ -610,14 +720,71 @@ async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, 
     Ok(status.code().unwrap_or(1))
 }
 
+/// Render the `--dry-run` preview for `args`.
+///
+/// Returns the payload instead of printing it so a test can assert on the whole
+/// thing — including that it came from the adapter. When this was inlined in
+/// `execute_with_adapters`, reverting it to build its own command would have left
+/// every test passing, because nothing could observe what the branch produced.
+///
+/// Nothing here launches, registers, or writes: `resolve_launch_proxy` and
+/// `resolve_policy` report rather than refuse, since the operator ran this to
+/// find out what a live run *would* do — and "it would refuse" is only useful if
+/// they are shown it.
+fn dry_run_preview(adapter: &dyn DevToolAdapter, args: &RunArgs, mode: aa_core::EnforcementMode) -> String {
+    let handle = dry_run_handle(args);
+
+    // A preview launches nothing, so an unresolvable endpoint is reported rather
+    // than fatal — but it *is* reported, because a preview that silently omits
+    // the proxy reads exactly like a governed one.
+    let proxy = match resolve_launch_proxy(args.no_proxy) {
+        Ok(proxy) => proxy,
+        Err(e) => {
+            eprintln!("warning: {e}");
+            eprintln!("warning: a live `aasm run` with these flags would refuse to launch.");
+            None
+        }
+    };
+
+    let resolution = resolve_policy(args);
+    if let Err(e) = resolution.clone().into_enforceable() {
+        eprintln!("warning: {e}");
+        eprintln!("warning: a live `aasm run` with these flags would refuse to launch.");
+    }
+
+    let mut child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
+    resolution.annotate_env(&mut child_env);
+    let settings = "<dry-run: managed settings not generated>".to_string();
+
+    // The whole point of a preview is to answer "will this launch be protected",
+    // and the two variables that decide it — `NODE_EXTRA_CA_CERTS` and the
+    // normalised proxy URL — come from the adapter, not from here. Building our
+    // own command, as this did before AAASM-5329, previewed a launch that was not
+    // the launch (AAASM-5327 fixed the same omission on the live path).
+    let (cmd, fidelity) = dry_run_launch_command(adapter, args, &handle, proxy.as_deref());
+
+    format_dry_run_output(
+        &handle,
+        &resolution,
+        args.no_proxy,
+        &settings,
+        &cmd,
+        &child_env,
+        &fidelity,
+    )
+}
+
 /// Testable core of `execute`: detect, register, apply settings, spawn child.
 ///
 /// Returns the child process exit code, or 0 on `--dry-run`.
 ///
-/// `--dry-run` short-circuits *before* `adapter.detect()` and
-/// `register_with_gateway()` so the planning preview works even when no AI
-/// dev tool is installed and no gateway is reachable (e.g. CI runners). The
-/// printed plan reflects what the live run *would* do with the same flags.
+/// `--dry-run` short-circuits *before* `register_with_gateway()` so the planning
+/// preview works when no gateway is reachable (e.g. CI runners). It does call
+/// `adapter.detect()` and `build_launch_command()` — since AAASM-5329, because a
+/// preview that does not ask the adapter cannot show the two variables whose
+/// absence means the session is ungoverned. Neither call starts or writes
+/// anything. When the tool is not installed the preview still prints, and says
+/// so: it degrades visibly rather than silently.
 /// `ctx` is deliberately absent. It named the `:8080` HTTP/OpenAPI surface, and
 /// registration no longer travels over it — keeping the parameter would suggest
 /// `--api-url` still steers where a session registers, which it does not
@@ -647,37 +814,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     }
 
     if args.dry_run {
-        let handle = dry_run_handle(args);
-        // A preview launches nothing, so an unresolvable endpoint is reported
-        // rather than fatal — but it is reported, because a preview that
-        // silently omits the proxy reads exactly like a governed one.
-        let proxy = match resolve_launch_proxy(args.no_proxy) {
-            Ok(proxy) => proxy,
-            Err(e) => {
-                eprintln!("warning: {e}");
-                eprintln!("warning: a live `aasm run` with these flags would refuse to launch.");
-                None
-            }
-        };
-        // A preview reports the policy state rather than refusing on it, for the
-        // same reason it reports an unresolvable proxy: the operator ran this to
-        // find out what a live run would do, and the answer "it would refuse"
-        // is only useful if they are shown it.
-        let resolution = resolve_policy(args);
-        if let Err(e) = resolution.clone().into_enforceable() {
-            eprintln!("warning: {e}");
-            eprintln!("warning: a live `aasm run` with these flags would refuse to launch.");
-        }
-        let mut child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
-        resolution.annotate_env(&mut child_env);
-        let settings = "<dry-run: managed settings not generated>".to_string();
-        let mut cmd = std::process::Command::new(&args.tool);
-        cmd.args(&args.tool_args);
-        cmd.envs(&child_env);
-        print!(
-            "{}",
-            format_dry_run_output(&handle, &resolution, args.no_proxy, &settings, &cmd, &child_env)
-        );
+        print!("{}", dry_run_preview(adapter.as_ref(), args, mode));
         return Ok(0);
     }
 
@@ -1547,13 +1684,14 @@ mod tests {
 
     // --- dry-run tests ---
 
+    /// `--dry-run` still works on a host where the tool is not installed and no
+    /// gateway is reachable — a CI runner, or a machine being set up.
+    ///
+    /// Since AAASM-5329 it *does* call `detect()`; what it must never do is
+    /// register, generate or apply settings. `StubNotInstalled` panics on all
+    /// three, so reaching any of them fails here rather than silently.
     #[tokio::test]
-    async fn dry_run_short_circuits_before_adapter_detect_and_gateway() {
-        // Adapter whose detect() returns None and whose other methods panic
-        // — proves --dry-run skips detect / generate_managed_settings /
-        // apply_settings / build_launch_command. The dummy ctx points at a
-        // port nothing's listening on; if --dry-run touched the gateway the
-        // POST would fail and the test would too.
+    async fn dry_run_needs_neither_an_installed_tool_nor_a_gateway() {
         let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
         adapters.insert("claude", Box::new(StubNotInstalled));
 
@@ -1563,9 +1701,222 @@ mod tests {
         let result = execute_with_adapters(&args, &adapters).await;
         assert!(
             result.is_ok(),
-            "--dry-run should succeed without detect() or gateway: {result:?}",
+            "--dry-run should succeed without an installed tool or a gateway: {result:?}",
         );
         assert_eq!(result.unwrap(), 0, "--dry-run should exit 0");
+    }
+
+    /// Adapter shaped like the real Claude Code one: it contributes the two
+    /// variables whose absence makes a session ungoverned, and it *removes* one.
+    ///
+    /// The removal is the case a naive union of the two environment sources gets
+    /// wrong — it would show the variable as present in a preview of a launch
+    /// that will not have it.
+    struct StubEnvContributing;
+
+    #[async_trait]
+    impl DevToolAdapter for StubEnvContributing {
+        fn detect(&self) -> Option<DevToolInfo> {
+            Some(DevToolInfo {
+                kind: DevToolKind::ClaudeCode,
+                version: Some("1.2.3".into()),
+                install_path: PathBuf::from("/usr/local/bin/claude"),
+                governance_level: GovernanceLevel::L2Enforce,
+                supports_mcp: true,
+                supports_managed_settings: true,
+            })
+        }
+        async fn generate_managed_settings(&self, _p: &PolicyDocument) -> Result<String, AdapterError> {
+            Ok("{}".into())
+        }
+        async fn apply_settings(&self, _s: &str) -> Result<(), AdapterError> {
+            Ok(())
+        }
+        fn build_launch_command(
+            &self,
+            args: &[String],
+            _agent: &str,
+            _team: Option<&str>,
+            proxy: Option<&str>,
+        ) -> Result<std::process::Command, AdapterError> {
+            let mut cmd = std::process::Command::new("claude-real-binary");
+            cmd.args(args);
+            cmd.env("NODE_EXTRA_CA_CERTS", "/tmp/aasm-ca.pem");
+            if let Some(proxy) = proxy {
+                cmd.env("HTTPS_PROXY", format!("http://{proxy}"));
+            }
+            cmd.env_remove("ANTHROPIC_API_KEY");
+            Ok(cmd)
+        }
+        async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
+            Ok(vec![])
+        }
+        async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> {
+            Ok(())
+        }
+        fn governance_level(&self) -> GovernanceLevel {
+            GovernanceLevel::L2Enforce
+        }
+    }
+
+    /// AC 4, and the load-bearing one: the preview's environment is the launch's
+    /// environment, because both come from `effective_child_env`.
+    ///
+    /// Asserted as an equality against the merge the spawn path uses rather than
+    /// against a hand-written expected set — a hand-written set would keep
+    /// passing if both sides drifted together, which is the failure this guards.
+    #[test]
+    fn the_preview_environment_is_the_launch_environment() {
+        let adapter = StubEnvContributing;
+        let mut child_env: HashMap<String, String> = HashMap::new();
+        child_env.insert("AA_AGENT_ID".into(), "agent-1".into());
+        child_env.insert("HTTPS_PROXY".into(), "127.0.0.1:8080".into());
+        child_env.insert("ANTHROPIC_API_KEY".into(), "sk-should-be-removed".into());
+
+        let cmd = adapter
+            .build_launch_command(&[], "agent-1", None, Some("127.0.0.1:8080"))
+            .expect("command");
+        let (effective, removed) = effective_child_env(&cmd, &child_env);
+
+        assert_eq!(
+            effective.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
+            Some("/tmp/aasm-ca.pem"),
+            "the adapter's CA path must reach the child"
+        );
+        assert_eq!(
+            effective.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://127.0.0.1:8080"),
+            "the adapter's normalised URL must win over the bare host:port"
+        );
+        assert!(
+            !effective.contains_key("ANTHROPIC_API_KEY"),
+            "a variable the adapter removes must not be present: {effective:?}"
+        );
+        assert_eq!(removed, vec!["ANTHROPIC_API_KEY".to_string()]);
+    }
+
+    /// AC 2: the two variables that decide whether a session is protected are
+    /// visible in the printed preview, not merely present in a struct.
+    #[test]
+    fn the_preview_shows_the_ca_and_the_normalised_proxy_url() {
+        let adapter = StubEnvContributing;
+        let handle = stub_handle(None);
+        let cmd = adapter
+            .build_launch_command(&[], &handle.agent_id, None, Some("127.0.0.1:8080"))
+            .expect("command");
+        let mut env: HashMap<String, String> = HashMap::new();
+        env.insert("HTTPS_PROXY".into(), "127.0.0.1:8080".into());
+        env.insert("ANTHROPIC_API_KEY".into(), "sk-removed".into());
+
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+        );
+
+        assert!(
+            output.contains("NODE_EXTRA_CA_CERTS=/tmp/aasm-ca.pem"),
+            "preview omits the proxy CA: {output}"
+        );
+        assert!(
+            output.contains("HTTPS_PROXY=http://127.0.0.1:8080"),
+            "preview omits the normalised proxy URL: {output}"
+        );
+        assert!(
+            output.contains("claude-real-binary"),
+            "preview shows its own command, not the adapter's: {output}"
+        );
+        assert!(
+            output.contains("ANTHROPIC_API_KEY=<removed by adapter>"),
+            "a removal must be shown as a removal, not hidden or shown as set: {output}"
+        );
+    }
+
+    /// AC 3: an un-derivable preview degrades **visibly**. Silently printing one
+    /// that omits adapter state is the outcome the AC rules out, and it is also
+    /// the pre-AAASM-5329 behaviour.
+    #[test]
+    fn a_preview_that_could_not_ask_the_adapter_says_so() {
+        let args = {
+            let mut a = run_args("claude");
+            a.dry_run = true;
+            a
+        };
+        let handle = stub_handle(None);
+        let (cmd, fidelity) = dry_run_launch_command(&StubNotInstalled, &args, &handle, None);
+
+        assert!(
+            matches!(fidelity, PreviewFidelity::Degraded(_)),
+            "an uninstalled tool must degrade the preview"
+        );
+        assert_eq!(cmd.get_program().to_string_lossy(), "claude");
+
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &cmd,
+            &HashMap::new(),
+            &fidelity,
+        );
+        assert!(
+            output.contains("DEGRADED"),
+            "the shortfall must be in the output: {output}"
+        );
+        assert!(
+            output.contains("NODE_EXTRA_CA_CERTS"),
+            "it must name what is missing, not just that something is: {output}"
+        );
+    }
+
+    /// The whole preview — not just the helper — is derived from the adapter.
+    ///
+    /// This is the test that fails if the dry-run branch is reverted to building
+    /// its own `Command`. The unit tests above would all still pass in that
+    /// case, because none of them can observe what the branch produced.
+    #[test]
+    fn the_whole_preview_is_derived_from_the_adapter() {
+        let mut args = run_args("claude");
+        args.dry_run = true;
+        args.no_proxy = true; // keeps the preview off any real proxy resolution
+
+        let output = dry_run_preview(&StubEnvContributing, &args, aa_core::EnforcementMode::Enforce);
+
+        assert!(
+            output.contains("claude-real-binary"),
+            "the preview must show the adapter's command, not `aasm run`'s own: {output}"
+        );
+        assert!(
+            output.contains("NODE_EXTRA_CA_CERTS=/tmp/aasm-ca.pem"),
+            "the preview must carry what the adapter contributes: {output}"
+        );
+        assert!(
+            output.contains("--- preview fidelity ---"),
+            "every preview states how faithful it is: {output}"
+        );
+        assert!(
+            !output.contains("DEGRADED"),
+            "an installed tool yields a faithful preview: {output}"
+        );
+    }
+
+    /// A faithful preview must not carry the degraded wording — otherwise the
+    /// warning becomes noise an operator learns to ignore.
+    #[test]
+    fn a_faithful_preview_is_not_labelled_degraded() {
+        let args = {
+            let mut a = run_args("claude");
+            a.dry_run = true;
+            a
+        };
+        let handle = stub_handle(None);
+        let (_, fidelity) = dry_run_launch_command(&StubEnvContributing, &args, &handle, Some("127.0.0.1:8080"));
+        assert!(matches!(fidelity, PreviewFidelity::FromAdapter));
     }
 
     #[tokio::test]
@@ -1610,7 +1961,15 @@ mod tests {
         env.insert("MY_API_KEY".into(), "secret123".into());
         env.insert("NORMAL_VAR".into(), "hello".into());
 
-        let output = format_dry_run_output(&handle, &stub_resolution(), false, settings, &cmd, &env);
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            settings,
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+        );
 
         assert!(output.contains("agent_id:"), "missing identity section: {output}");
         assert!(output.contains("agent-xyz"), "missing agent_id value: {output}");
@@ -1696,7 +2055,8 @@ mod tests {
         let sections: Vec<String> = states
             .iter()
             .map(|state| {
-                let output = format_dry_run_output(&handle, state, false, "{}", &cmd, &env);
+                let output =
+                    format_dry_run_output(&handle, state, false, "{}", &cmd, &env, &PreviewFidelity::FromAdapter);
                 let start = output
                     .find("--- policy ---")
                     .expect("receipt must carry a policy section");
@@ -1743,7 +2103,15 @@ mod tests {
         env.insert("AA_JWT_SECRET".into(), "super-secret-signing-key".into());
         env.insert("DATABASE_URL".into(), "postgresql://aasm:hunter2@db:5432/aasm".into());
 
-        let output = format_dry_run_output(&handle, &stub_resolution(), false, "{}", &cmd, &env);
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+        );
 
         assert!(
             !output.contains("super-secret-signing-key"),
@@ -1782,7 +2150,15 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("MONGODB_URI".into(), "mongodb://user:p4ss@host:27017/db".into());
 
-        let output = format_dry_run_output(&handle, &stub_resolution(), false, "{}", &cmd, &env);
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+        );
 
         assert!(
             !output.contains("p4ss"),
@@ -1828,7 +2204,15 @@ mod tests {
         let cmd = std::process::Command::new("claude");
         let env = HashMap::new();
 
-        let unprotected = format_dry_run_output(&handle, &stub_resolution(), true, "{}", &cmd, &env);
+        let unprotected = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            true,
+            "{}",
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+        );
         assert!(unprotected.contains("--- protection ---"), "{unprotected}");
         assert!(unprotected.contains("unprotected"), "{unprotected}");
         assert!(
@@ -1836,7 +2220,15 @@ mod tests {
             "the consequence, not just the flag: {unprotected}"
         );
 
-        let proxied = format_dry_run_output(&handle, &stub_resolution(), false, "{}", &cmd, &env);
+        let proxied = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+        );
         assert!(proxied.contains("proxy_configured"), "{proxied}");
         assert!(
             !proxied.contains("gateway_protected") && !proxied.contains("host_enforced"),
