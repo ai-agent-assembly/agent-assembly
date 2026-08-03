@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5368 negative: the same secret cut by TWO spaces is deliberately NOT detected, and this vector exists so that residual stays visible rather than being rediscovered by an attacker. The rule joins a pair of runs across a gap of exactly one character, because the evasion is the insertion of a separator into a secret whereas a longer gap — indentation, a paragraph break, sentence spacing — is ordinary text structure. Closing it means joining across arbitrary gaps, which is the clause-swallowing shape that produced the 87 false findings AAASM-5344 fixed, so widening needs its own false-positive measurement rather than a one-line change. If it is ever closed, add a vector rather than editing this one.",
+  "input_text": "authorization: aB3dEf7hJk9mNp2qRs  5tUv8wXy4zC6gLhQ1V trailing",
+  "expected_findings": [],
+  "expected_redacted": "authorization: aB3dEf7hJk9mNp2qRs  5tUv8wXy4zC6gLhQ1V trailing"
+}

@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5368 negative: ordinary English technical prose that a weaker form of the split rule reported as a leaked secret. Both clauses here were measured false positives when the joined candidate was allowed to contain punctuation: a near-all-distinct string of 27 to 35 characters scores about log2(n) bits whatever it says, so mixed-case technical English cleared the 4.5-bit gate on length alone. Restricting the candidate to the base64 alphabet is what excludes them, and it is the only thing that does — the entropy gate cannot separate these from key material at this length. Measured over 1.8 MB of this repository's English and Chinese prose, the pass adds zero findings; these clauses are the ones a weaker rule added.",
+  "input_text": "upgrades, RBAC/NetworkPolicy hardening). Those remain SaaS surface. The value is replaced with a `[REDACTED:<kind>]` placeholder and the request continues",
+  "expected_findings": [],
+  "expected_redacted": "upgrades, RBAC/NetworkPolicy hardening). Those remain SaaS surface. The value is replaced with a `[REDACTED:<kind>]` placeholder and the request continues"
+}
