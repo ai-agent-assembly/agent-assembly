@@ -49,6 +49,18 @@ const CORPUS_SEED: u64 = 0x5456_0BE1_5EED_1234;
 /// expressed over a full 20 MB rather than extrapolated from a sample.
 const CORPUS_MIN_BYTES: usize = 20 * 1024 * 1024;
 
+/// Exact byte length of the corpus this seed produces.
+///
+/// Recorded, not derived at run time: the accepted false-positive rate is quoted
+/// per byte over this corpus, so its size is part of the measurement's identity.
+const CORPUS_BYTES: usize = 20_971_526;
+
+/// Content digest of the corpus this seed produces.
+///
+/// Recorded for the same reason as [`CORPUS_BYTES`], and covering the case that
+/// one cannot: text that changed without changing length.
+const CORPUS_CHECKSUM: u64 = 0x6d5a_4588_7502_e932;
+
 /// The accepted false-positive ceiling: at most one finding per 20 MB.
 ///
 /// This is the **limit**, not the measurement. AAASM-5368 measured roughly one
@@ -197,7 +209,11 @@ fn the_corpus_identity_is_pinned() {
     );
 
     // A corpus that drifted in content but not in length would still change the
-    // measurement, so pin the content too.
+    // measurement, so pin the content too — as an equality against a recorded
+    // value, not merely as a non-degeneracy check. An earlier form of this test
+    // computed the checksum and then asserted only `!= 0`, which every possible
+    // corpus satisfies: it read like a content pin and enforced nothing. Editing
+    // one word of one fragment left it green (AAASM-5502).
     let checksum = text
         .bytes()
         .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
@@ -205,7 +221,20 @@ fn the_corpus_identity_is_pinned() {
         "corpus {CORPUS_NAME} seed {CORPUS_SEED:#x} bytes {} checksum {checksum:#x}",
         text.len()
     );
-    assert_ne!(checksum, 0, "checksum is degenerate");
+
+    assert_eq!(
+        text.len(),
+        CORPUS_BYTES,
+        "{CORPUS_NAME} is {} bytes, not the recorded {CORPUS_BYTES}. The false-positive rate is \
+         quoted per byte over this exact corpus, so a corpus that changed size is a different \
+         measurement. Re-record both constants deliberately, or revert the fragment change.",
+        text.len()
+    );
+    assert_eq!(
+        checksum, CORPUS_CHECKSUM,
+        "{CORPUS_NAME} content drifted: checksum {checksum:#x}, recorded {CORPUS_CHECKSUM:#x}. \
+         Same length, different text, different measurement."
+    );
 }
 
 /// **The accepted ceiling, enforced.**
