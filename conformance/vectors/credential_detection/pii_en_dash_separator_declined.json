@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5364 negative: the same Visa test number grouped by U+2013 EN DASH is deliberately NOT detected. U+2010-U+2015 and U+00A0 were considered and declined when the separator set was widened: no input method emits them for the hyphen or space key, so they buy no coverage against the input-mode evasion the ticket closes, while each admitted separator lengthens the run digit_segment joins and adds an independent chance of a coincidental Luhn pass. The en dash is the standard glyph for a numeric range (1990-2000), i.e. exactly where two unrelated numbers sit adjacent with a dash between them. This vector pins the chosen boundary so the decision is visible rather than implicit; if a payload is ever observed using it, widen ascii_separator_of and add a new vector rather than editing this one.",
+  "input_text": "card=4532–0151–1283–0366",
+  "expected_findings": [],
+  "expected_redacted": "card=4532–0151–1283–0366"
+}
