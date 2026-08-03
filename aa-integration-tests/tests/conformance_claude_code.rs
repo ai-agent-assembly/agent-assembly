@@ -74,6 +74,13 @@
 //! performed, and every scenario ends by asserting the developer's real
 //! `~/.claude/settings.json` is untouched.
 
+/// The evidence ledger (AAASM-5465), declared once per test binary.
+///
+/// The support modules re-export it rather than declaring their own, because a
+/// binary including two of them would otherwise load the same file twice.
+#[path = "evidence/mod.rs"]
+pub mod evidence;
+
 #[allow(dead_code, unused_imports)]
 mod conformance_support;
 #[allow(dead_code, unused_imports)]
