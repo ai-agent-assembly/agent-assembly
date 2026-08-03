@@ -16,24 +16,30 @@
 //! Every route to the wire — [`ProxyServer::dial_upstream_tls`], the plain-HTTP
 //! dial, and the transparent tunnel — takes a [`ForwardAuthorized`] by value.
 //! That token has a private field and is minted in exactly one place:
-//! [`ForwardObservation::persist`], **after** the observation it was created
-//! with has been handed to the sink.
+//! [`ForwardObservation::persist`].
 //!
-//! The binding matters more than the unforgeability. An earlier shape issued
-//! the token alongside the evidence and left the two separable, so a branch
-//! could hold a genuine token, persist some *other* evidence — say a
-//! hand-built `NotForwarded` — and still dial: a manufactured prevented
-//! transmission for bytes that went on the wire, with nothing to catch it.
-//! `persist` closes that by never taking evidence as a parameter. The caller
-//! supplies the identifying fields of the record; the evidence written is the
-//! observation's own. So the record that reaches the sink and the
-//! authorization that reaches the dial necessarily describe the same
-//! observation.
+//! Stated precisely, because an earlier draft of this paragraph bound the
+//! guarantee one step earlier than the code does: **when a decision record is
+//! written for a forwarded request, it carries that observation's own
+//! evidence.** `persist` never takes evidence as a parameter — the caller
+//! supplies the identifying fields and the evidence comes from `self` — so a
+//! branch cannot record one observation and authorize a dial with another.
 //!
-//! What this does **not** claim: it does not stop a branch from writing an
-//! unrelated second record through [`ProxyServer::emit_audit_entry`], which the
-//! refusal branches still need. It guarantees that *the record a dial was
-//! authorized by* says the bytes went.
+//! Three things this deliberately does **not** say:
+//!
+//! * `persist` mints the token even when no record is written
+//!   (`record: None`), and that is the *common* path, not an edge case: a clean
+//!   `Forward` decides nothing, and the transparent tunnel and bodyless
+//!   plain-HTTP requests inspect nothing. Inventing an event for traffic there
+//!   was no decision about would change what the audit trail counts.
+//! * It does not stop a branch writing an *additional* record through
+//!   [`ProxyServer::emit_audit_entry`], which the refusal branches need. That
+//!   gap is covered by tests asserting one record per forwarded request, not by
+//!   the type system.
+//! * The earlier shape it replaces issued the token alongside the evidence and
+//!   left the two separable, so a branch could hold a genuine token, persist a
+//!   hand-built `NotForwarded`, and still dial — a manufactured prevented
+//!   transmission for bytes that went on the wire.
 //!
 //! # Naming rule
 //!
@@ -55,7 +61,7 @@ use aa_core::policy::EnforcementMode;
 use aa_core::types::sensitive_data::{EnforcementPoint, ExecutionEvidence, TransmissionEvidence};
 use aa_security::CredentialFinding;
 
-use crate::audit_jsonl::{record_dropped_entry, ProxyAuditDecision, ProxyAuditEntry};
+use crate::audit_jsonl::{bound_persisted_findings, record_dropped_entry, ProxyAuditDecision, ProxyAuditEntry};
 use crate::config::CredentialAction;
 use crate::intercept::VerdictDecision;
 
@@ -63,10 +69,12 @@ use crate::intercept::VerdictDecision;
 ///
 /// Carries no data: its whole value is that it cannot be constructed outside
 /// this module, and the only place that produces one is
-/// [`ForwardObservation::persist`], after that observation has been handed to
-/// the sink. A branch that observed non-transmission has no way to obtain one,
-/// and a branch that persisted a *different* observation has no way to obtain
-/// one either.
+/// [`ForwardObservation::persist`]. A branch that observed non-transmission has
+/// no way to obtain one, and a branch that writes a record through `persist`
+/// cannot choose evidence other than the observation's own.
+///
+/// It does **not** follow that holding one implies a record exists: `persist`
+/// issues the token whether or not a record accompanies the observation.
 #[must_use = "a dial authorization exists only to be handed to the dial it authorizes"]
 pub struct ForwardAuthorized(());
 
@@ -110,6 +118,10 @@ impl DecisionRecord {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
+        // ADR 0032 §9: byte offsets belong to the tamper-evident tier, which
+        // this sink is not. The projection drops them, and the cap keeps one
+        // pathological body from becoming a line of hundreds of megabytes.
+        let (credential_findings, findings_omitted) = bound_persisted_findings(&self.findings);
         let entry = ProxyAuditEntry {
             ts_ms,
             agent_id: None,
@@ -119,7 +131,8 @@ impl DecisionRecord {
             decision: self.decision,
             execution,
             probe_correlation: self.probe_correlation,
-            credential_findings: self.findings,
+            credential_findings,
+            findings_omitted,
             redacted_body: self.redacted_body,
         };
         if let Err(e) = tx.try_send(entry) {
@@ -297,6 +310,53 @@ pub fn forwarded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::audit_jsonl::dropped_entries;
+
+    fn record(host: &str) -> DecisionRecord {
+        DecisionRecord {
+            host: host.to_owned(),
+            method: "POST".to_owned(),
+            path: "/v1/do".to_owned(),
+            decision: ProxyAuditDecision::ForwardedRedacted,
+            findings: Vec::new(),
+            redacted_body: None,
+            probe_correlation: None,
+        }
+    }
+
+    /// A record lost to a full channel has to be countable, not merely logged —
+    /// a prevention rate computed over a silently lossy window is not
+    /// authoritative. Exercised through a **real** drop rather than by calling
+    /// the counter, so the wiring between `send` and the counter is what is
+    /// under test.
+    #[tokio::test]
+    async fn a_record_lost_to_a_full_channel_increments_the_counter() {
+        let (tx, _rx) = mpsc::channel(1);
+        let evidence = forwarded(VerdictDecision::Forward, CredentialAction::RedactOnly, Some(true));
+
+        let before = dropped_entries();
+        // First fills the single slot and is *not* a drop.
+        record("first.example").send(Some(&tx), evidence.evidence());
+        assert_eq!(
+            dropped_entries(),
+            before,
+            "a record that fit in the channel must not count as dropped"
+        );
+
+        // Second has nowhere to go.
+        record("second.example").send(Some(&tx), evidence.evidence());
+        assert_eq!(dropped_entries(), before + 1, "a dropped record must be counted");
+    }
+
+    /// No sink configured is not a drop: there was never a record to lose.
+    #[test]
+    fn an_unconfigured_sink_is_not_counted_as_loss() {
+        let before = dropped_entries();
+        let evidence = forwarded(VerdictDecision::Forward, CredentialAction::RedactOnly, Some(true));
+        record("nowhere.example").send(None, evidence.evidence());
+        assert_eq!(dropped_entries(), before);
+    }
 
     const DECISIONS: [VerdictDecision; 4] = [
         VerdictDecision::Forward,

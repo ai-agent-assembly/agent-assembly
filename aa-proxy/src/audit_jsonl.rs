@@ -21,7 +21,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 use aa_core::types::sensitive_data::ExecutionEvidence;
-use aa_security::CredentialFinding;
+use aa_security::{CredentialFinding, CredentialKind};
 
 /// Decision recorded for a single intercepted request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,8 +86,19 @@ pub struct ProxyAuditEntry {
     /// lowercase hex characters, which is deliberately too short to be a
     /// content digest.
     pub probe_correlation: Option<String>,
-    /// Per-match scanner output. Empty when no secrets were detected.
-    pub credential_findings: Vec<CredentialFinding>,
+    /// Per-match scanner output, projected for this tier. Empty when no secrets
+    /// were detected.
+    ///
+    /// Capped at [`MAX_PERSISTED_FINDINGS`]; the overflow is counted in
+    /// [`Self::findings_omitted`] rather than dropped silently.
+    pub credential_findings: Vec<PersistedFinding>,
+    /// How many findings the cap dropped from
+    /// [`Self::credential_findings`].
+    ///
+    /// A truncated list that said nothing about being truncated would make the
+    /// finding count on this record quietly wrong, and finding counts are a
+    /// measure ADR 0032 §8 keeps deliberately separate from event counts.
+    pub findings_omitted: u32,
     /// Post-scan body content.
     ///
     /// `None` when the proxy bypassed the scanner, when the caller had no body
@@ -98,6 +109,66 @@ pub struct ProxyAuditEntry {
     /// on disk" guarantee exactly as strong as the scrubber, in the one case
     /// where the proxy knows the scrubber did not hold.
     pub redacted_body: Option<String>,
+}
+
+/// A scanner finding as it may be persisted **outside** the tamper-evident
+/// audit tier.
+///
+/// `aa_security::CredentialFinding` carries a `pub offset` — the byte position
+/// of the match in the original body — and ADR 0032 §9 permits offsets and
+/// lengths **only** in the tamper-evident tier. This module's own header states
+/// it is not that tier, and AAASM-5358 is what first constructs the writer in
+/// production, so this PR is what would first put those offsets on disk.
+///
+/// `aa-security` already drew this line and drew it half-way: `end` is private
+/// and `#[serde(skip)]` citing §9, while `offset` stays public and serializes.
+/// Projecting here rather than widening that skip keeps the decision local to
+/// the tier that has the constraint — the tamper-evident writer still needs the
+/// offset.
+///
+/// File permissions are not a substitute. `0600` is access control; §9 is about
+/// what may exist in the record at all, and an offset paired with a category
+/// can identify a value in a small domain regardless of who can read the file.
+///
+/// `matched` is the redaction **label** (`[REDACTED:AwsAccessKey]`), derived
+/// from `kind` and never the secret. It is kept because it is what a consumer
+/// already reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedFinding {
+    /// Category of the detected credential.
+    pub kind: CredentialKind,
+    /// Redaction label, e.g. `[REDACTED:AwsAccessKey]`.
+    pub matched: String,
+}
+
+impl PersistedFinding {
+    /// Project a scanner finding, discarding the byte offset.
+    pub fn project(finding: &CredentialFinding) -> Self {
+        Self {
+            kind: finding.kind.clone(),
+            matched: finding.matched.clone(),
+        }
+    }
+}
+
+/// Most findings persisted on a single record.
+///
+/// `redacted_body` alone does not bound a line: a 64 MiB body densely packed
+/// with detectable patterns yields on the order of a million findings at ~50-80
+/// serialized bytes each, so an uncapped vector turns one request into a line of
+/// hundreds of megabytes on a sink with no rotation.
+pub const MAX_PERSISTED_FINDINGS: usize = 256;
+
+/// Project and cap a finding list, returning the retained rows and how many
+/// were dropped.
+pub fn bound_persisted_findings(findings: &[CredentialFinding]) -> (Vec<PersistedFinding>, u32) {
+    let kept: Vec<PersistedFinding> = findings
+        .iter()
+        .take(MAX_PERSISTED_FINDINGS)
+        .map(PersistedFinding::project)
+        .collect();
+    let omitted = findings.len().saturating_sub(kept.len()) as u32;
+    (kept, omitted)
 }
 
 /// Longest post-scan body persisted on a single record.
@@ -133,9 +204,15 @@ pub fn bound_persisted_body(body: String) -> String {
 ///
 /// A prevention metric derived from a silently lossy record is not
 /// authoritative. `try_send` is the right call on the data path — a slow writer
-/// must not stall an intercepted request — so the loss is exported instead of
-/// prevented, and a consumer can refuse to publish a rate over a window in
-/// which this moved.
+/// must not stall an intercepted request — so the loss is *counted* rather than
+/// prevented.
+///
+/// Scope, stated because the obvious reading overstates it: today the only
+/// surfacing is the running total on the `warn!` each drop emits. Nothing in
+/// this repo reads [`dropped_entries`] outside its own tests, so a consumer
+/// cannot yet gate a published rate on it. Putting it on the proxy's metrics
+/// output is follow-up work; the counter exists so that work has something to
+/// read, not because the plumbing is finished.
 static DROPPED_ENTRIES: AtomicU64 = AtomicU64::new(0);
 
 /// Record one dropped entry, returning the new running total.
@@ -290,7 +367,8 @@ mod tests {
                 EnforcementMode::Enforce,
             ),
             probe_correlation: None,
-            credential_findings: scan.findings,
+            credential_findings: scan.findings.iter().map(PersistedFinding::project).collect(),
+            findings_omitted: 0,
             redacted_body: Some(redacted),
         };
 
@@ -333,6 +411,7 @@ mod tests {
             execution: ExecutionEvidence::unrecorded(EnforcementMode::Enforce),
             probe_correlation: None,
             credential_findings: vec![],
+            findings_omitted: 0,
             redacted_body: None,
         }
     }
@@ -466,6 +545,7 @@ mod tests {
             ),
             probe_correlation: None,
             credential_findings: vec![],
+            findings_omitted: 0,
             redacted_body: Some("clean body".into()),
         };
         let json = serde_json::to_string(&entry).unwrap();
@@ -476,6 +556,66 @@ mod tests {
         assert_eq!(back.decision, ProxyAuditDecision::ForwardedRedacted);
         assert_eq!(back.redacted_body.as_deref(), Some("clean body"));
         assert_eq!(back.execution, entry.execution);
+    }
+
+    /// ADR 0032 §9 permits byte offsets only in the tamper-evident tier, and
+    /// this sink is not it. AAASM-5358 is what first constructs the writer in
+    /// production, so without the projection this would be the change that put
+    /// them on disk.
+    #[tokio::test]
+    async fn a_persisted_finding_carries_no_byte_offset() {
+        use aa_security::CredentialScanner;
+
+        let body = format!(r#"{{"k":"{FAKE_AWS_ACCESS_KEY}"}}"#);
+        let scan = CredentialScanner::new().scan(&body);
+        assert!(!scan.findings.is_empty(), "scanner fixture invariant");
+        // Non-vacuity: the source finding really does carry an offset, and the
+        // body is long enough that the offset is not coincidentally 0.
+        let source_offset = scan.findings[0].offset;
+        assert!(source_offset > 0, "fixture must produce a non-zero offset");
+
+        let (projected, omitted) = bound_persisted_findings(&scan.findings);
+        assert_eq!(omitted, 0);
+        assert!(!projected.is_empty(), "otherwise the assertions below are vacuous");
+        assert_eq!(projected[0].kind, scan.findings[0].kind);
+        assert_eq!(projected[0].matched, scan.findings[0].matched);
+
+        let entry = ProxyAuditEntry {
+            credential_findings: projected,
+            ..clean_entry("api.example", ProxyAuditDecision::ForwardedRedacted)
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !json.contains("\"offset\""),
+            "ADR 0032 §9: a byte offset must not reach this tier: {json}"
+        );
+        // The category — which §9 does permit — survives, so the record is
+        // still useful.
+        assert!(json.contains("AwsAccessKey"), "the category must survive: {json}");
+    }
+
+    /// `redacted_body` alone does not bound a line: the findings vector does
+    /// too, and a densely-matching 64 MiB body produces on the order of a
+    /// million of them.
+    #[test]
+    fn an_oversized_finding_list_is_capped_and_the_remainder_counted() {
+        use aa_security::CredentialScanner;
+
+        let one = CredentialScanner::new().scan(&format!(r#"{{"k":"{FAKE_AWS_ACCESS_KEY}"}}"#));
+        assert!(!one.findings.is_empty(), "scanner fixture invariant");
+        let many: Vec<_> = std::iter::repeat_with(|| one.findings[0].clone())
+            .take(MAX_PERSISTED_FINDINGS + 37)
+            .collect();
+
+        let (kept, omitted) = bound_persisted_findings(&many);
+        assert_eq!(kept.len(), MAX_PERSISTED_FINDINGS);
+        assert_eq!(omitted, 37, "the remainder must be counted, not silently dropped");
+
+        // Under the cap nothing is omitted, so the counter is not simply
+        // always-positive.
+        let (kept, omitted) = bound_persisted_findings(&many[..3]);
+        assert_eq!(kept.len(), 3);
+        assert_eq!(omitted, 0);
     }
 
     /// The sink is a new durable file holding `CredentialFinding.offset` —

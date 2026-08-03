@@ -83,6 +83,23 @@ impl ServerCertVerifier for NoCertVerifier {
     }
 }
 
+/// Which request a decision record is about.
+///
+/// Bundled rather than passed as three loose `&str`s: the recorders take the
+/// identity, the verdict, the outcome and the evidence, and threading the
+/// probe correlation through pushed every one of them past clippy's argument
+/// limit. It also stops `host`/`method`/`target` being transposed at a call
+/// site, which no test would have caught.
+#[derive(Clone, Copy)]
+struct RequestIdentity<'a> {
+    /// Target host, no port.
+    host: &'a str,
+    /// HTTP method of the intercepted request.
+    method: &'a str,
+    /// Raw request target; redacted before it reaches the record.
+    target: &'a str,
+}
+
 /// The observation shared by every rule that refuses a request before a
 /// credential verdict exists (AAASM-5358).
 ///
@@ -319,14 +336,13 @@ impl ProxyServer {
     /// the only source of a [`ForwardAuthorized`] (AAASM-5358).
     async fn emit_audit_entry(
         self: &Arc<Self>,
-        host: &str,
-        method: &str,
-        target: &str,
+        id: RequestIdentity<'_>,
         verdict: &InterceptVerdict,
         decision: ProxyAuditDecision,
         execution: ExecutionEvidence,
+        probe_correlation: Option<String>,
     ) {
-        self.decision_record(host, method, target, verdict, decision, execution, None)
+        self.decision_record(id, verdict, decision, execution, probe_correlation)
             .send(self.audit_jsonl_tx.as_ref(), execution);
     }
 
@@ -337,12 +353,9 @@ impl ProxyServer {
     /// value on disk" guarantee would otherwise be exactly as strong as the
     /// scrubber, in the one branch where the proxy itself says the scrubber did
     /// not hold.
-    #[allow(clippy::too_many_arguments)]
     fn decision_record(
         &self,
-        host: &str,
-        method: &str,
-        target: &str,
+        id: RequestIdentity<'_>,
         verdict: &InterceptVerdict,
         decision: ProxyAuditDecision,
         execution: ExecutionEvidence,
@@ -357,13 +370,13 @@ impl ProxyServer {
                 .and_then(|b| std::str::from_utf8(b).ok().map(|s| bound_persisted_body(s.to_owned())))
         };
         DecisionRecord {
-            host: host.to_owned(),
-            method: method.to_owned(),
+            host: id.host.to_owned(),
+            method: id.method.to_owned(),
             // The target can carry a secret in its query string (`?key=…`,
             // `?token=…`, a presigned `?X-Amz-Signature=…`), so it is redacted
             // through the same scanner as the body before being persisted — the
             // body-only redaction left target secrets in cleartext (AAASM-4738).
-            path: self.interceptor.redact_target(target),
+            path: self.interceptor.redact_target(id.target),
             decision,
             findings: verdict.findings.clone(),
             redacted_body,
@@ -384,16 +397,38 @@ impl ProxyServer {
     async fn record_forwarding(
         self: &Arc<Self>,
         observation: ForwardObservation,
-        host: &str,
-        method: &str,
-        target: &str,
+        id: RequestIdentity<'_>,
         verdict: &InterceptVerdict,
         decision: Option<ProxyAuditDecision>,
+        probe_correlation: Option<String>,
     ) -> ForwardAuthorized {
-        let record = decision.map(|decision| {
-            self.decision_record(host, method, target, verdict, decision, observation.evidence(), None)
-        });
+        let record = decision
+            .map(|decision| self.decision_record(id, verdict, decision, observation.evidence(), probe_correlation));
         observation.persist(self.audit_jsonl_tx.as_ref(), record)
+    }
+
+    /// The probe correlation id on an in-tunnel request, when it carries a
+    /// well-formed one.
+    ///
+    /// Only `handle_llm_mitm` *adjudicates* a probe, but every handler can
+    /// *receive* one, and the record has to say so wherever it lands: under
+    /// `credential_action=block` a probe's request is refused before any dial
+    /// on the non-LLM MitM and plain-HTTP paths too, producing a record that
+    /// satisfies every ADR 0032 §8 condition. Unmarked, each of those is a
+    /// synthetic prevention indistinguishable from a real one (AAASM-5358).
+    fn probe_correlation(req: &HttpRequest) -> Option<String> {
+        req.header(PROBE_CORRELATION_HEADER)
+            .and_then(ProbeCorrelation::parse)
+            .map(|c| c.as_str().to_owned())
+    }
+
+    /// The plain-HTTP form of [`Self::probe_correlation`], reading the raw
+    /// header lines that path buffers instead of an [`HttpRequest`].
+    fn probe_correlation_plain(headers: &[String]) -> Option<String> {
+        plain_http_header_value(headers, PROBE_CORRELATION_HEADER)
+            .as_deref()
+            .and_then(ProbeCorrelation::parse)
+            .map(|c| c.as_str().to_owned())
     }
 
     /// Which decision event, if any, a forwarding verdict writes.
@@ -828,12 +863,15 @@ impl ProxyServer {
                 "credential_action=Block on non-LLM MitM host: refusing forward, returning 403",
             );
             self.emit_audit_entry(
-                host,
-                &req.method,
-                &req.target,
+                RequestIdentity {
+                    host,
+                    method: &req.method,
+                    target: &req.target,
+                },
                 &verdict,
                 ProxyAuditDecision::Blocked,
                 transmission_evidence::not_forwarded(verdict.decision, self.config.credential_action),
+                Self::probe_correlation(&req),
             )
             .await;
             let mut client_tls = client_reader.into_inner();
@@ -850,11 +888,14 @@ impl ProxyServer {
         let authorized = self
             .record_forwarding(
                 self.observe_forwarding(&verdict),
-                host,
-                &req.method,
-                &req.target,
+                RequestIdentity {
+                    host,
+                    method: &req.method,
+                    target: &req.target,
+                },
                 &verdict,
                 Self::forwarding_audit_decision(verdict.decision),
+                Self::probe_correlation(&req),
             )
             .await;
         let forward_body: &[u8] = match verdict.decision {
@@ -1056,9 +1097,13 @@ impl ProxyServer {
         // path would forward it to the real provider.
         //
         // Only this (LLM-pattern) handler speaks the protocol. A probe request
-        // that lands anywhere else is forwarded like any other request, so a
+        // that lands anywhere else is *handled* like any other request — which
+        // under `credential_action=block` means refused, not forwarded — so a
         // probe must establish that it is talking to an adjudicating proxy
-        // *before* it sends anything sensitive.
+        // before it sends anything sensitive. Those other handlers still mark
+        // the record with the correlation id (AAASM-5358), because a refusal
+        // there is a real refusal of synthetic traffic and a consumer has to be
+        // able to exclude it.
         if let Some(correlation) = req.header(PROBE_CORRELATION_HEADER).and_then(ProbeCorrelation::parse) {
             let (audit_decision, forwarded_is_clean) = match verdict.decision {
                 VerdictDecision::Block => (ProxyAuditDecision::Blocked, None),
@@ -1088,9 +1133,11 @@ impl ProxyServer {
             // marker each probe run would contribute a prevented transmission
             // indistinguishable from a real leak that was stopped.
             self.decision_record(
-                host,
-                &req.method,
-                &req.target,
+                RequestIdentity {
+                    host,
+                    method: &req.method,
+                    target: &req.target,
+                },
                 &verdict,
                 audit_decision,
                 execution,
@@ -1110,12 +1157,15 @@ impl ProxyServer {
                 "credential_action=Block: refusing forward, returning 403",
             );
             self.emit_audit_entry(
-                host,
-                &req.method,
-                &req.target,
+                RequestIdentity {
+                    host,
+                    method: &req.method,
+                    target: &req.target,
+                },
                 &verdict,
                 ProxyAuditDecision::Blocked,
                 transmission_evidence::not_forwarded(verdict.decision, self.config.credential_action),
+                Self::probe_correlation(&req),
             )
             .await;
             let mut client_tls = client_reader.into_inner();
@@ -1133,11 +1183,14 @@ impl ProxyServer {
         let authorized = self
             .record_forwarding(
                 self.observe_forwarding(&verdict),
-                host,
-                &req.method,
-                &req.target,
+                RequestIdentity {
+                    host,
+                    method: &req.method,
+                    target: &req.target,
+                },
                 &verdict,
                 Self::forwarding_audit_decision(verdict.decision),
+                Self::probe_correlation(&req),
             )
             .await;
 
@@ -1506,12 +1559,15 @@ impl ProxyServer {
                     "plain-HTTP credential_action=Block: refusing forward, returning 403",
                 );
                 self.emit_audit_entry(
-                    deny_host,
-                    method,
-                    target,
+                    RequestIdentity {
+                        host: deny_host,
+                        method,
+                        target,
+                    },
                     &scanned,
                     ProxyAuditDecision::Blocked,
                     execution,
+                    Self::probe_correlation_plain(&headers),
                 )
                 .await;
                 self.interceptor.emit_policy_decision(deny_host, true).await;
@@ -1554,11 +1610,14 @@ impl ProxyServer {
             Some(verdict) => {
                 self.record_forwarding(
                     self.observe_forwarding(verdict),
-                    deny_host,
-                    method,
-                    target,
+                    RequestIdentity {
+                        host: deny_host,
+                        method,
+                        target,
+                    },
                     verdict,
                     Self::forwarding_audit_decision(verdict.decision),
+                    Self::probe_correlation_plain(&headers),
                 )
                 .await
             }
@@ -2324,12 +2383,15 @@ mod tests {
         let execution = server.observe_forwarding(&verdict).evidence();
         server
             .emit_audit_entry(
-                "api.example.com",
-                &req.method,
-                &req.target,
+                RequestIdentity {
+                    host: "api.example.com",
+                    method: &req.method,
+                    target: &req.target,
+                },
                 &verdict,
                 ProxyAuditDecision::Forwarded,
                 execution,
+                None,
             )
             .await;
 
