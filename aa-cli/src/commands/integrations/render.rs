@@ -350,12 +350,27 @@ impl Report for VerifyReport {
 impl Report for RepairReport {
     fn render_human(&self) -> String {
         let mut out = String::new();
+        // The outcome rides on the one line that is always printed. Every block
+        // below it is conditional, so a reader who does not already know which
+        // ones are optional cannot tell a repair that restored nothing from one
+        // that had nothing to restore — which is the whole of AAASM-5455.
         out.push_str(&format!(
-            "{} — {}\n",
+            "{} — {}{}\n",
             self.tool_id,
-            if self.dry_run { "repair preview" } else { "repair" }
+            if self.dry_run { "repair preview" } else { "repair" },
+            if self.nothing_to_repair.is_some() {
+                " (nothing to repair)"
+            } else {
+                ""
+            }
         ));
         bullets(&mut out, "Drifted", &self.drifted);
+        if let Some(reason) = &self.nothing_to_repair {
+            // Unconditional for this case, and phrased as a fact about the
+            // host rather than about the command, so it reads the same way
+            // `remove` states its own no-op.
+            out.push_str(&format!("\nNothing was repaired: {reason}.\n"));
+        }
         if self.dry_run {
             out.push_str("\nNothing has been changed. Re-run without --dry-run to restore the AASM-owned state.\n");
         } else {
