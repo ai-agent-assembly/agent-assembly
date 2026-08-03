@@ -14,6 +14,25 @@
 //! `--dry-run` shows what drifted and stops. Without it the drift is shown and
 //! a confirmation is asked for, so the destructive-looking half never happens
 //! before the user has seen what it will rewrite.
+//!
+//! # Repairing nothing exits `0`, and says so (AAASM-5455)
+//!
+//! Two states repair nothing: no receipt accounts for the tool, and the
+//! AASM-owned state already matches the receipt it has. Both exit `0`, because
+//! [`Outcome::Success`](super::exit::Outcome::Success) means "the command did
+//! what it was asked to do" and neither state is a failure of the command —
+//! the same reading that makes a second `remove` a success rather than an
+//! error. The distinction they need is carried by the output, not the code:
+//! `nothing_to_repair` states which of the two happened, on the report's
+//! always-printed first line and in `--output json`.
+//!
+//! No *new* exit code is minted for the uninstalled case, and no existing one
+//! is borrowed for it. `unsupported` is about a tool, mechanism or verb this
+//! host does not have, which an uninstalled-but-detected tool is not; `aborted`
+//! is about a decision nobody made here; `internal_error` is about a failure
+//! that did not happen. Widening [`Outcome`](super::exit::Outcome) is a change
+//! to a documented contract that `--help` prints and a test pins, so it is a
+//! product decision rather than a bug fix's to take.
 
 use std::process::ExitCode;
 
@@ -54,6 +73,46 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
         let before = session.client.status(&args.tool).await.map_err(verb_failure)?;
         let drifted = before.drift_mismatched.clone();
 
+        // Repair can only act on state a receipt accounts for, and the service
+        // agrees: the Repair verb refuses outright with "no integration receipt
+        // records <tool> at <scope> scope; run an install first". That refusal
+        // never used to be seen, because the `drifted.is_empty()` branch below
+        // returned success before the verb was ever sent — a tool with no
+        // receipt has no drift to report, so "nothing drifted" and "nothing is
+        // installed" arrived at this command as the same empty list and left it
+        // as the same silent success (AAASM-5455).
+        //
+        // They are different facts and are answered differently here. Decided
+        // from the lifecycle *phase* rather than by spending a round trip on a
+        // refusal — the same way `remove` decides it, and for the same reason:
+        // prose is for people. The allowlist is closed on purpose, so a phase
+        // this build does not recognise is one this mutating command declines
+        // to act on rather than guesses about.
+        if !matches!(
+            before.phase.as_str(),
+            "installed" | "partially_installed" | "removal_pending"
+        ) {
+            let reason = format!(
+                "{} has no Agent Assembly integration to repair (lifecycle phase: {})",
+                args.tool, before.phase
+            );
+            eprintln!("{reason}.");
+            emit(
+                &RepairReport {
+                    runtime: runtime.clone(),
+                    tool_id: args.tool.clone(),
+                    dry_run: args.dry_run,
+                    drifted: Vec::new(),
+                    repaired: Vec::new(),
+                    unresolved: Vec::new(),
+                    nothing_to_repair: Some(reason),
+                    status: Some(Box::new(StatusReport::from_view(runtime, &before, Some(&summary)))),
+                },
+                output,
+            );
+            return Ok(Outcome::Success);
+        }
+
         if args.dry_run {
             emit(
                 &RepairReport {
@@ -63,6 +122,9 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
                     drifted: drifted.clone(),
                     repaired: Vec::new(),
                     unresolved: Vec::new(),
+                    // A preview reports what *would* be restored; it is not
+                    // itself a run that repaired nothing.
+                    nothing_to_repair: None,
                     status: Some(Box::new(StatusReport::from_view(runtime, &before, Some(&summary)))),
                 },
                 output,
@@ -76,7 +138,10 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
 
         if drifted.is_empty() {
             // Nothing to do is a success, and saying so beats performing a
-            // no-op rewrite that would churn the receipt for no reason.
+            // no-op rewrite that would churn the receipt for no reason. An
+            // installed tool whose state matches its receipt reaches here — a
+            // different fact from the uninstalled case handled above, so it
+            // carries its own reason rather than sharing that one's wording.
             emit(
                 &RepairReport {
                     runtime: runtime.clone(),
@@ -85,6 +150,10 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
                     drifted,
                     repaired: Vec::new(),
                     unresolved: Vec::new(),
+                    nothing_to_repair: Some(format!(
+                        "AASM-owned state for {} already matches its receipt",
+                        args.tool
+                    )),
                     status: Some(Box::new(StatusReport::from_view(runtime, &before, Some(&summary)))),
                 },
                 output,
@@ -126,6 +195,9 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
                 drifted,
                 repaired: view.repaired.clone(),
                 unresolved,
+                // The repair verb ran. Whether it restored anything is what
+                // `repaired` says; this field is for runs that never got here.
+                nothing_to_repair: None,
                 status,
             },
             output,

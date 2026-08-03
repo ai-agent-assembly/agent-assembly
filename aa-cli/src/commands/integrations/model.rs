@@ -711,6 +711,15 @@ pub struct RepairReport {
     /// which are reported rather than silently left, because "we did not touch
     /// your edits" is information the user needs.
     pub unresolved: Vec<UnsupportedRow>,
+    /// Why this run repaired nothing, when it repaired nothing.
+    ///
+    /// `Some` is a *stated* no-op: either no receipt accounts for the tool, or
+    /// the AASM-owned state already matches the one it has. Both render as an
+    /// empty `repaired` list, and an empty list is exactly what a successful
+    /// repair of nothing looks like — so the reason is carried explicitly
+    /// rather than left to be inferred from which optional blocks are absent
+    /// (AAASM-5455). `None` means the run went through the repair verb.
+    pub nothing_to_repair: Option<String>,
     /// The status after the repair, when one ran.
     pub status: Option<Box<StatusReport>>,
 }

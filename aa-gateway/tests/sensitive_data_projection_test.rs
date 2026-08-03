@@ -62,6 +62,7 @@ contract_test!(every_projected_value_round_trips);
 contract_test!(one_blocked_action_with_three_findings_stays_one_event);
 contract_test!(a_row_count_disagreeing_with_the_tally_is_refused);
 contract_test!(a_neighbouring_tenant_sees_none_of_it);
+contract_test!(two_tenants_sharing_an_event_id_keep_their_own_rows);
 contract_test!(a_replayed_event_does_not_double_count);
 contract_test!(a_divergent_replay_cannot_desynchronise_parent_from_children);
 contract_test!(a_late_duplicate_cannot_rewrite_stored_tallies);

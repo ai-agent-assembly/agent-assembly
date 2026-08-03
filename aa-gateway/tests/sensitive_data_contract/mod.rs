@@ -1166,3 +1166,72 @@ pub const EXPECTED_FINDING_COLUMNS: &[&str] = &[
     "redaction_label",
     "aggregate_key",
 ];
+
+/// Two tenants writing the **same** `event_id` must each read back their own
+/// event and their own findings.
+///
+/// AAASM-5447: `event_id` was the sole primary key on a table every read scopes
+/// by `(org_id, tenant_id)`. The uniqueness scope did not match the read scope,
+/// so the second tenant's insert was skipped as a duplicate, its child rows were
+/// skipped with it, and the write still reported `Written`. The tenant then
+/// queried its own data and saw nothing.
+///
+/// `a_neighbouring_tenant_sees_none_of_it` does not cover this: it gives each
+/// tenant a distinct `event_id`, so it passes while the collision is live. The
+/// shared id here is the whole point — `event_id` is producer-supplied, so a
+/// collision is available to anyone who can influence their own id and arrives
+/// by accident across a large enough tenant population.
+pub async fn two_tenants_sharing_an_event_id_keep_their_own_rows<S: SensitiveDataProjection>(store: &Arc<S>) {
+    const SHARED: &str = "01HZX9V8ABCDEFGHJKMNSHARE1";
+
+    let (event_a, findings_a) = blocked_action_with_three_findings(SHARED, "t-alpha");
+    let (event_b, findings_b) = allowed_action_with_one_finding(SHARED, "t-beta", 1_700_000_000_000_000_000);
+
+    writer(store)
+        .write(&event_a, &findings_a, Timestamp::from_nanos(INGESTED))
+        .await
+        .expect("tenant A write");
+    writer(store)
+        .write(&event_b, &findings_b, Timestamp::from_nanos(INGESTED))
+        .await
+        .expect("tenant B write");
+
+    // Tenant B's write reported success, so its record must exist. A governance
+    // surface that returns zero here is indistinguishable from "nothing
+    // happened", which is the failure mode this Epic exists to eliminate.
+    let fb = filter("t-beta");
+    assert_eq!(
+        store.count_sensitive_data_events(&fb).await.expect("count B events"),
+        1,
+        "tenant B's event was discarded by a cross-tenant key collision while its \
+         write returned Written — a silent denial-of-recording"
+    );
+    assert_eq!(
+        store
+            .count_sensitive_data_findings(&fb)
+            .await
+            .expect("count B findings"),
+        1,
+        "tenant B's findings were skipped along with its parent event"
+    );
+
+    // And tenant A must be untouched by B's write — first-write-wins must not
+    // become first-tenant-wins.
+    let fa = filter("t-alpha");
+    assert_eq!(store.count_sensitive_data_events(&fa).await.expect("count A events"), 1);
+    assert_eq!(
+        store
+            .count_sensitive_data_findings(&fa)
+            .await
+            .expect("count A findings"),
+        3
+    );
+
+    let a = &store.query_sensitive_data_events(&fa).await.expect("A events")[0];
+    let b = &store.query_sensitive_data_events(&fb).await.expect("B events")[0];
+    assert_eq!(a.finding_count, 3, "tenant A keeps its own tallies");
+    assert_eq!(
+        b.finding_count, 1,
+        "tenant B keeps its own tallies rather than inheriting tenant A's"
+    );
+}
