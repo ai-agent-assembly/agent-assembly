@@ -89,8 +89,21 @@ split by how it was obtained:
 * **Checks that could not be made** — recorded so the gap is legible.
 
 Every rung of the ladder is listed, **including the ones this host cannot
-reach**. `host_enforced` is rendered as `unavailable on this platform` rather
-than omitted: silence there reads as "there is nothing above what I have".
+reach** — silence there reads as "there is nothing above what I have".
+
+What is said about a rung is the adapter's answer, not the CLI's. `host_enforced`
+reads one of three ways:
+
+* **not active** — the adapter supports the mechanism here and nothing has
+  reached it yet. The line underneath names the command that does, which for
+  Claude Code is `aasm integrations install claude-code --install-managed-settings`.
+* **unsupported by this integration** — the adapter declared it unsupported, and
+  its own reason is printed underneath.
+* **not established by this reading** — nothing was declared, so nothing is
+  claimed in either direction.
+
+`active` still means *measured*. A rung being reachable never implies anything
+was installed, exercised or attested.
 
 The timestamp is part of the claim. A status says "verified at T", not "true
 now".
