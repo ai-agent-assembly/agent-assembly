@@ -76,6 +76,7 @@
 //! of deferring is unbounded growth, which is visible, rather than data
 //! disappearing, which is not.
 
+mod postgres;
 mod rows;
 mod sqlite;
 mod store;
