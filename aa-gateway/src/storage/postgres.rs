@@ -289,6 +289,17 @@ impl PostgresBackend {
         })
     }
 
+    /// Borrow the connection pool.
+    ///
+    /// Crate-internal so a sibling module can implement a trait against this
+    /// backend without opening a second pool to the same cluster — used by
+    /// `storage::sensitive_data::postgres` (AAASM-5357), which persists a
+    /// projection that is deliberately not part of
+    /// [`StorageBackend`](super::backend::StorageBackend).
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Gate the TimescaleDB hypertable setup based on `config.enabled` and
     /// the presence of the `timescaledb` extension on the cluster.
     ///

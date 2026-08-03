@@ -144,9 +144,13 @@ impl SqliteBackend {
         Ok(Self { pool })
     }
 
-    /// Borrow the connection pool. Crate-internal helper for trait-impl
-    /// sub-modules that land in subsequent S-B sub-tasks.
-    #[allow(dead_code)] // first non-test consumer arrives with the trait impl methods
+    /// Borrow the connection pool.
+    ///
+    /// Crate-internal so a sibling module can implement a trait against this
+    /// backend without opening a second pool to the same file — used by
+    /// `storage::sensitive_data::sqlite` (AAASM-5357), which persists a
+    /// projection that is deliberately not part of
+    /// [`StorageBackend`](super::backend::StorageBackend).
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
