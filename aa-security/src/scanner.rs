@@ -3443,6 +3443,177 @@ mod tests {
     }
 
     #[test]
+    fn a_split_secret_is_redacted_to_exact_bytes() {
+        // Counting findings is not enough. The span deliberately covers the
+        // separator, so it is the one span in the scanner that is wider than the
+        // run it was derived from — an off-by-one either leaves a character of
+        // key material in the clear or eats the surrounding text. Assert the
+        // output bytes, including the words either side.
+        let scanner = CredentialScanner::new();
+        for (text, expected) in [
+            (
+                format!("log {SPLIT_SECRET_HEAD} {SPLIT_SECRET_TAIL} end"),
+                "log [REDACTED:GenericHighEntropy] end".to_string(),
+            ),
+            (
+                format!("log {SPLIT_SECRET_HEAD}中{SPLIT_SECRET_TAIL} end"),
+                "log [REDACTED:GenericHighEntropy] end".to_string(),
+            ),
+        ] {
+            let redacted = scanner.scan(&text).redact(&text);
+            assert_eq!(redacted, expected, "wrong redaction for {text:?}");
+        }
+    }
+
+    #[test]
+    fn split_pair_spans_are_char_boundaries_of_the_original_text() {
+        // The span contract `redact` depends on. This pass is the one that can
+        // put a *multi-byte* character inside a span it did not scan — the
+        // separator — so its bounds are the ones most likely to land
+        // mid-character if the walk ever advanced by bytes where it should have
+        // advanced by characters.
+        let scanner = CredentialScanner::new();
+        for splitter in ["中", "😀", "д", " "] {
+            let text = format!("log {SPLIT_SECRET_HEAD}{splitter}{SPLIT_SECRET_TAIL} end");
+            let result = scanner.scan(&text);
+            assert!(!result.findings.is_empty(), "no finding for {splitter:?}");
+            for f in &result.findings {
+                assert!(
+                    text.is_char_boundary(f.offset),
+                    "offset {} splits a character for {splitter:?}",
+                    f.offset
+                );
+                assert!(
+                    text.is_char_boundary(f.end),
+                    "end {} splits a character for {splitter:?}",
+                    f.end
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_at_the_pass_3_floor_is_not_joined_to_its_neighbour() {
+        // The constraint that keeps this pass from reaching past a secret it has
+        // already found and swallowing the next word. Both these payloads carry a
+        // run at or above `BASE64_RUN_MIN_LEN` followed by an innocent one; an
+        // earlier draft of this pass joined them and redacted ` done` and the PEM
+        // `-----END` marker along with the key. Asserted on the exact bytes,
+        // because the finding count is identical either way.
+        let scanner = CredentialScanner::new();
+
+        // The `tok=` prefix is swallowed by pass 1's whitespace-token span, which
+        // is long-standing behaviour and not this pass's to change. What matters
+        // here is the tail: ` done` is a separate run and must stay in the clear.
+        let text = "tok=ghp_abcdefABCDEF0123456789ABCDEF0123456789 done";
+        assert_eq!(
+            scanner.scan(text).redact(text),
+            "[REDACTED:GitHubPat] done",
+            "the word after an already-detected secret must survive"
+        );
+
+        let pem = "KEY=-----BEGIN EC PRIVATE KEY-----\n\
+                   MHQCAQEEIOaRgVBExLFbHznv7gHsepSPpLUFKr\n\
+                   -----END EC PRIVATE KEY-----";
+        assert!(
+            scanner.scan(pem).redact(pem).contains("-----END EC PRIVATE KEY-----"),
+            "the END marker must not be swallowed into the body span"
+        );
+    }
+
+    #[test]
+    fn multi_character_gaps_and_many_way_splits_are_documented_residuals() {
+        // What AAASM-5368 does **not** close, asserted as not detected so the gap
+        // stays visible instead of being rediscovered by an attacker.
+        //
+        // A gap of two characters is a genuine text boundary rather than an
+        // inserted separator, and a split into pieces short enough that no
+        // adjacent pair reaches `BASE64_RUN_MIN_LEN` leaves nothing for a pairwise
+        // rule to score. Closing either means joining more than two runs, which is
+        // the clause-swallowing shape this pass is built to avoid — so widening
+        // needs its own false-positive measurement, not a one-line change here.
+        let scanner = CredentialScanner::new();
+        let (head, tail) = (SPLIT_SECRET_HEAD, SPLIT_SECRET_TAIL);
+
+        // Only gaps that break pass 1's whitespace token are residuals. A gap of
+        // ASCII punctuation (`..`) leaves the two halves inside one token, and
+        // pass 1 scores that token whole — so punctuation gaps of any length are
+        // already covered and are not listed here.
+        for gap in ["  ", " \n", "中文", " \t", "\n\n"] {
+            let text = format!("log {head}{gap}{tail} end");
+            assert!(
+                scanner.scan(&text).is_clean(),
+                "residual changed for gap {gap:?} — if it is now closed, update this test"
+            );
+        }
+
+        // The same 36 characters cut into four 9-character pieces: every adjacent
+        // pair is 18, below the floor.
+        let joined = format!("{head}{tail}");
+        let quartered = joined
+            .as_bytes()
+            .chunks(9)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            scanner.scan(&quartered).is_clean(),
+            "a many-way split is a documented residual: {:?}",
+            scanner.scan(&quartered).findings
+        );
+    }
+
+    #[test]
+    fn the_distinct_byte_fast_path_cannot_change_a_verdict() {
+        // `MIN_DISTINCT_BYTES_FOR_GATE` is a fast path, not a filter: Shannon
+        // entropy over d distinct symbols is at most log2(d), so a candidate below
+        // the bar could never have cleared `ENTROPY_BITS_GATE` anyway. Pinned from
+        // both sides so it can neither reject a candidate the gate would accept
+        // (too high) nor stop being a useful skip (too low).
+        let below = f64::from(MIN_DISTINCT_BYTES_FOR_GATE - 1);
+        assert!(
+            below.log2() <= ENTROPY_BITS_GATE,
+            "{} distinct bytes can still clear the gate, so skipping it changes verdicts",
+            MIN_DISTINCT_BYTES_FOR_GATE - 1,
+        );
+        let at = f64::from(MIN_DISTINCT_BYTES_FOR_GATE);
+        assert!(
+            at.log2() > ENTROPY_BITS_GATE,
+            "the fast path is looser than it needs to be at {MIN_DISTINCT_BYTES_FOR_GATE}",
+        );
+    }
+
+    #[test]
+    fn english_technical_prose_stays_clean_under_the_split_pass() {
+        // The measured false-positive corpus, reduced to the lines that actually
+        // fired. Each of these joined pairs cleared the 4.5-bit gate in a draft of
+        // this pass that let the candidate contain punctuation: a near-all-distinct
+        // string of 27-35 characters scores about log2(n) whatever it says, so
+        // ordinary mixed-case technical English sailed over the bar. Restricting
+        // the candidate to the base64 alphabet is what excludes them, and it is
+        // the only thing that does — the entropy gate cannot tell these from key
+        // material at this length.
+        //
+        // Measured over 1.8 MB of this repository's English and Chinese prose,
+        // the pass adds zero findings; these are the seven that a weaker rule
+        // added.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "upgrades, RBAC/NetworkPolicy hardening). Those remain SaaS surface.",
+            "The `policy_engine` is `Arc<PolicyEngine>` (`state.rs:45`); the test code that uses it",
+            "`0.5` approval-rejection, `MIN_ACTIONS = 20`) are product-owned",
+            "the value is replaced with a `[REDACTED:<kind>]` placeholder and the request continues",
+        ] {
+            let result = scanner.scan(text);
+            assert!(
+                result.is_clean(),
+                "prose false positive returned: {:?} in {text:?}",
+                result.findings.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
         let config_scanner = CredentialScanner::with_config(ScannerConfig::default());
