@@ -241,11 +241,18 @@ impl JsonlWriter {
     ///
     /// The file is `0600`, and an existing file's mode is re-asserted on every
     /// open — the same discipline `CaStore` applies to the CA private key. The
-    /// default `0644` would have been world-readable, and these records carry
-    /// `CredentialFinding.offset`, which ADR 0032 §9 permits only in the
-    /// tamper-evident audit tier; this module is explicitly not that tier (see
-    /// the module docs). A byte offset into a body is a pointer at where the
-    /// secret was, and it does not belong to every local account.
+    /// default `0644` would have been world-readable.
+    ///
+    /// What justifies that is what the record *does* carry: the destination
+    /// host, the redacted request path, the redacted body, and which credential
+    /// categories an agent was caught sending. That is a per-agent behavioural
+    /// trail, and it does not belong to every local account on the machine.
+    ///
+    /// It is **not** justified by byte offsets: [`PersistedFinding`] discards
+    /// `CredentialFinding.offset`, because ADR 0032 §9 permits offsets only in
+    /// the tamper-evident tier and this module is explicitly not that tier.
+    /// Permissions are access control; §9 is about what may exist in the record
+    /// at all, and the two are not substitutes for one another.
     pub async fn new(path: &Path, receiver: mpsc::Receiver<ProxyAuditEntry>) -> io::Result<Self> {
         let file = tokio::fs::OpenOptions::new()
             .create(true)
@@ -618,10 +625,13 @@ mod tests {
         assert_eq!(omitted, 0);
     }
 
-    /// The sink is a new durable file holding `CredentialFinding.offset` —
-    /// pointers at where a secret sat in a body — which ADR 0032 §9 permits
-    /// only in the tamper-evident tier this module explicitly is not. The
-    /// default `0644` would have published them to every local account.
+    /// The sink is a new durable file holding a per-agent behavioural trail —
+    /// destination hosts, redacted paths and bodies, and which credential
+    /// categories an agent was caught sending. The default `0644` would have
+    /// published all of it to every local account.
+    ///
+    /// Byte offsets are handled separately and are not on disk at all; see
+    /// [`PersistedFinding`] and `a_persisted_finding_carries_no_byte_offset`.
     #[tokio::test]
     async fn the_audit_file_is_not_world_readable() {
         let tmp = tempfile::tempdir().unwrap();

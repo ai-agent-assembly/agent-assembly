@@ -34,8 +34,12 @@
 //!   was no decision about would change what the audit trail counts.
 //! * It does not stop a branch writing an *additional* record through
 //!   [`ProxyServer::emit_audit_entry`], which the refusal branches need. That
-//!   gap is covered by tests asserting one record per forwarded request, not by
-//!   the type system.
+//!   gap is covered by tests, not by the type system — and the tests have to
+//!   count records on a **successful** forward as well as a failed dial. A
+//!   first draft of them asserted the count only where the upstream dial
+//!   failed, so a false record emitted after the dial sat outside the window
+//!   entirely: the assertion was right and the fixture had scoped it to the
+//!   case where no bytes went.
 //! * The earlier shape it replaces issued the token alongside the evidence and
 //!   left the two separable, so a branch could hold a genuine token, persist a
 //!   hand-built `NotForwarded`, and still dial — a manufactured prevented
