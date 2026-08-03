@@ -11,7 +11,7 @@ use sqlx::{Row, SqlitePool};
 use crate::storage::error::{StorageError, StorageResult};
 use crate::storage::sqlite::SqliteBackend;
 
-use super::rows::{CategoryTally, SensitiveDataEventRow, SensitiveDataFindingRow};
+use super::rows::{check_readable, narrow, CategoryTally, SensitiveDataEventRow, SensitiveDataFindingRow};
 use super::store::{CategoryFindingAggregate, SensitiveDataEventFilter, SensitiveDataProjection};
 
 /// The projection's DDL, applied by
@@ -80,6 +80,7 @@ const PROJECTION_SCHEMA: &[&str] = &[
         org_id               TEXT    NOT NULL,
         tenant_id            TEXT    NOT NULL,
         occurred_at_ns       INTEGER NOT NULL,
+        verdict              TEXT    NOT NULL,
         category             TEXT    NOT NULL,
         severity             TEXT    NOT NULL,
         confidence           TEXT    NOT NULL,
@@ -93,7 +94,7 @@ const PROJECTION_SCHEMA: &[&str] = &[
         PRIMARY KEY (event_id, finding_ordinal)
     )",
     "CREATE INDEX IF NOT EXISTS idx_sd_findings_scope_category
-        ON sensitive_data_findings(org_id, tenant_id, category)",
+        ON sensitive_data_findings(org_id, tenant_id, verdict, category)",
     "CREATE INDEX IF NOT EXISTS idx_sd_findings_scope_ts
         ON sensitive_data_findings(org_id, tenant_id, occurred_at_ns)",
 ];
@@ -119,7 +120,7 @@ const EVENT_COLUMNS: &str = "schema_version_major, schema_version_minor, event_i
 
 /// The finding columns, in the order the row struct declares them.
 const FINDING_COLUMNS: &str = "schema_version_major, schema_version_minor, event_id, finding_ordinal, \
-     org_id, tenant_id, occurred_at_ns, category, severity, confidence, method, status, recognizer, \
+     org_id, tenant_id, occurred_at_ns, verdict, category, severity, confidence, method, status, recognizer, \
      recognizer_version, field_path, redaction_label, aggregate_key";
 
 /// Encode a list column as a JSON array.
@@ -146,24 +147,28 @@ where
 }
 
 fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StorageResult<SensitiveDataEventRow> {
+    let event_id: String = column(row, "event_id")?;
+    let schema_version_major: u16 = narrow(column::<i64>(row, "schema_version_major")?, "schema_version_major")?;
+    check_readable(&event_id, schema_version_major)?;
+
     let matched_rule_ids: String = column(row, "matched_rule_ids")?;
     let inspected_field_paths: String = column(row, "inspected_field_paths")?;
     let by_category: String = column(row, "finding_count_by_category")?;
     let reason_codes: String = column(row, "reason_codes")?;
 
     Ok(SensitiveDataEventRow {
-        schema_version_major: column::<i64>(row, "schema_version_major")? as u16,
-        schema_version_minor: column::<i64>(row, "schema_version_minor")? as u16,
-        event_id: column(row, "event_id")?,
-        occurred_at_ns: column::<i64>(row, "occurred_at_ns")? as u64,
-        ingested_at_ns: column::<i64>(row, "ingested_at_ns")? as u64,
+        schema_version_major,
+        schema_version_minor: narrow(column::<i64>(row, "schema_version_minor")?, "schema_version_minor")?,
+        event_id,
+        occurred_at_ns: narrow(column::<i64>(row, "occurred_at_ns")?, "occurred_at_ns")?,
+        ingested_at_ns: narrow(column::<i64>(row, "ingested_at_ns")?, "ingested_at_ns")?,
         org_id: column(row, "org_id")?,
         tenant_id: column(row, "tenant_id")?,
         team_id: column(row, "team_id")?,
         acting_agent_id: column(row, "acting_agent_id")?,
         root_agent_id: column(row, "root_agent_id")?,
         parent_agent_id: column(row, "parent_agent_id")?,
-        delegation_depth: column::<i64>(row, "delegation_depth")? as u32,
+        delegation_depth: narrow(column::<i64>(row, "delegation_depth")?, "delegation_depth")?,
         session_id: column(row, "session_id")?,
         trace_id: column(row, "trace_id")?,
         request_id: column(row, "request_id")?,
@@ -174,7 +179,9 @@ fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StorageResult<SensitiveDataEve
         trust_zone: column(row, "trust_zone")?,
         direction: column(row, "direction")?,
         policy_document_id: column(row, "policy_document_id")?,
-        policy_version: column::<Option<i64>>(row, "policy_version")?.map(|v| v as u64),
+        policy_version: column::<Option<i64>>(row, "policy_version")?
+            .map(|v| narrow(v, "policy_version"))
+            .transpose()?,
         matched_rule_ids: decode_json(&matched_rule_ids, "matched_rule_ids")?,
         inspected_field_paths: decode_json(&inspected_field_paths, "inspected_field_paths")?,
         verdict: column(row, "verdict")?,
@@ -186,25 +193,33 @@ fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StorageResult<SensitiveDataEve
         confidence: column(row, "confidence")?,
         method: column(row, "method")?,
         status: column(row, "status")?,
-        event_count: column::<i64>(row, "event_count")? as u32,
-        blocked_event_count: column::<i64>(row, "blocked_event_count")? as u32,
-        finding_count: column::<i64>(row, "finding_count")? as u32,
-        blocked_finding_count: column::<i64>(row, "blocked_finding_count")? as u32,
-        transformed_finding_count: column::<i64>(row, "transformed_finding_count")? as u32,
+        event_count: narrow(column::<i64>(row, "event_count")?, "event_count")?,
+        blocked_event_count: narrow(column::<i64>(row, "blocked_event_count")?, "blocked_event_count")?,
+        finding_count: narrow(column::<i64>(row, "finding_count")?, "finding_count")?,
+        blocked_finding_count: narrow(column::<i64>(row, "blocked_finding_count")?, "blocked_finding_count")?,
+        transformed_finding_count: narrow(
+            column::<i64>(row, "transformed_finding_count")?,
+            "transformed_finding_count",
+        )?,
         finding_count_by_category: decode_json::<Vec<CategoryTally>>(&by_category, "finding_count_by_category")?,
         reason_codes: decode_json(&reason_codes, "reason_codes")?,
     })
 }
 
 fn row_to_finding(row: &sqlx::sqlite::SqliteRow) -> StorageResult<SensitiveDataFindingRow> {
+    let event_id: String = column(row, "event_id")?;
+    let schema_version_major: u16 = narrow(column::<i64>(row, "schema_version_major")?, "schema_version_major")?;
+    check_readable(&event_id, schema_version_major)?;
+
     Ok(SensitiveDataFindingRow {
-        schema_version_major: column::<i64>(row, "schema_version_major")? as u16,
-        schema_version_minor: column::<i64>(row, "schema_version_minor")? as u16,
-        event_id: column(row, "event_id")?,
-        finding_ordinal: column::<i64>(row, "finding_ordinal")? as u32,
+        schema_version_major,
+        schema_version_minor: narrow(column::<i64>(row, "schema_version_minor")?, "schema_version_minor")?,
+        event_id,
+        finding_ordinal: narrow(column::<i64>(row, "finding_ordinal")?, "finding_ordinal")?,
         org_id: column(row, "org_id")?,
         tenant_id: column(row, "tenant_id")?,
-        occurred_at_ns: column::<i64>(row, "occurred_at_ns")? as u64,
+        occurred_at_ns: narrow(column::<i64>(row, "occurred_at_ns")?, "occurred_at_ns")?,
+        verdict: column(row, "verdict")?,
         category: column(row, "category")?,
         severity: column(row, "severity")?,
         confidence: column(row, "confidence")?,
@@ -222,11 +237,7 @@ fn row_to_finding(row: &sqlx::sqlite::SqliteRow) -> StorageResult<SensitiveDataF
 ///
 /// `org_id` and `tenant_id` are pushed unconditionally and first, so there is
 /// no code path through this function that produces an unscoped `WHERE`.
-fn push_scope<'a>(
-    qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
-    filter: &'a SensitiveDataEventFilter,
-    with_verdict: bool,
-) {
+fn push_scope<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>, filter: &'a SensitiveDataEventFilter) {
     qb.push(" WHERE org_id = ").push_bind(filter.scope().org_id());
     qb.push(" AND tenant_id = ").push_bind(filter.scope().tenant_id());
     if let Some(from) = filter.from {
@@ -235,10 +246,10 @@ fn push_scope<'a>(
     if let Some(to) = filter.to {
         qb.push(" AND occurred_at_ns < ").push_bind(to.as_nanos() as i64);
     }
-    if with_verdict {
-        if let Some(verdict) = filter.verdict.as_deref() {
-            qb.push(" AND verdict = ").push_bind(verdict);
-        }
+    // No `with_verdict` switch: both tables carry the column, so there is no
+    // caller that can be handed a filter whose verdict is quietly dropped.
+    if let Some(verdict) = filter.verdict.as_deref() {
+        qb.push(" AND verdict = ").push_bind(verdict);
     }
 }
 
@@ -271,7 +282,7 @@ impl SensitiveDataProjection for SqliteBackend {
         // `OR IGNORE` is the idempotency rule: a replayed event is a no-op, so
         // a retried publish cannot double-count. First write wins.
         let placeholders = vec!["?"; 41].join(", ");
-        sqlx::query(&format!(
+        let inserted = sqlx::query(&format!(
             "INSERT OR IGNORE INTO sensitive_data_events ({EVENT_COLUMNS}) VALUES ({placeholders})"
         ))
         .bind(i64::from(event.schema_version_major))
@@ -319,7 +330,25 @@ impl SensitiveDataProjection for SqliteBackend {
         .await
         .map_err(|e| StorageError::QueryFailed(format!("insert event: {e}")))?;
 
-        let finding_placeholders = vec!["?"; 17].join(", ");
+        // First-write-wins has to cover the children, not just the parent.
+        // `OR IGNORE` on the child rows alone is *additive*: a replay carrying
+        // more findings than the stored event would insert the new ordinals
+        // while the parent's `finding_count` stayed frozen, leaving the tally
+        // disagreeing with the rows it describes — and the per-category
+        // aggregate, which reads the child table, over-reporting against it.
+        // A no-op parent insert therefore ends the transaction here.
+        if inserted.rows_affected() == 0 {
+            tracing::debug!(
+                event_id = %event.event_id,
+                "sensitive-data projection: event already stored, ignoring replay"
+            );
+            return tx
+                .commit()
+                .await
+                .map_err(|e| StorageError::QueryFailed(format!("commit: {e}")));
+        }
+
+        let finding_placeholders = vec!["?"; 18].join(", ");
         for finding in findings {
             sqlx::query(&format!(
                 "INSERT OR IGNORE INTO sensitive_data_findings ({FINDING_COLUMNS}) \
@@ -332,6 +361,7 @@ impl SensitiveDataProjection for SqliteBackend {
             .bind(&finding.org_id)
             .bind(&finding.tenant_id)
             .bind(finding.occurred_at_ns as i64)
+            .bind(&finding.verdict)
             .bind(&finding.category)
             .bind(&finding.severity)
             .bind(&finding.confidence)
@@ -358,7 +388,7 @@ impl SensitiveDataProjection for SqliteBackend {
     ) -> StorageResult<Vec<SensitiveDataEventRow>> {
         let mut qb =
             sqlx::QueryBuilder::<sqlx::Sqlite>::new(format!("SELECT {EVENT_COLUMNS} FROM sensitive_data_events"));
-        push_scope(&mut qb, filter, true);
+        push_scope(&mut qb, filter);
         qb.push(" ORDER BY occurred_at_ns DESC, event_id ASC");
         if let Some(limit) = filter.limit {
             qb.push(" LIMIT ").push_bind(i64::from(limit));
@@ -377,7 +407,7 @@ impl SensitiveDataProjection for SqliteBackend {
     ) -> StorageResult<Vec<SensitiveDataFindingRow>> {
         let mut qb =
             sqlx::QueryBuilder::<sqlx::Sqlite>::new(format!("SELECT {FINDING_COLUMNS} FROM sensitive_data_findings"));
-        push_scope(&mut qb, filter, false);
+        push_scope(&mut qb, filter);
         qb.push(" ORDER BY occurred_at_ns DESC, event_id ASC, finding_ordinal ASC");
         if let Some(limit) = filter.limit {
             qb.push(" LIMIT ").push_bind(i64::from(limit));
@@ -392,7 +422,7 @@ impl SensitiveDataProjection for SqliteBackend {
 
     async fn count_sensitive_data_events(&self, filter: &SensitiveDataEventFilter) -> StorageResult<u64> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT COUNT(*) FROM sensitive_data_events");
-        push_scope(&mut qb, filter, true);
+        push_scope(&mut qb, filter);
         let count: i64 = qb
             .build_query_scalar()
             .fetch_one(self.pool())
@@ -403,7 +433,7 @@ impl SensitiveDataProjection for SqliteBackend {
 
     async fn count_sensitive_data_findings(&self, filter: &SensitiveDataEventFilter) -> StorageResult<u64> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT COUNT(*) FROM sensitive_data_findings");
-        push_scope(&mut qb, filter, false);
+        push_scope(&mut qb, filter);
         let count: i64 = qb
             .build_query_scalar()
             .fetch_one(self.pool())
@@ -440,8 +470,14 @@ impl SensitiveDataProjection for SqliteBackend {
             "SELECT category, COUNT(*) AS finding_count, COUNT(DISTINCT event_id) AS event_count \
              FROM sensitive_data_findings",
         );
-        push_scope(&mut qb, filter, false);
+        push_scope(&mut qb, filter);
         qb.push(" GROUP BY category ORDER BY category ASC");
+        // The category vocabulary is not closed (see `CategoryFindingAggregate`),
+        // so the row cap is also the group cap — the only bound available
+        // against an attacker-influenced grouping value.
+        if let Some(limit) = filter.limit {
+            qb.push(" LIMIT ").push_bind(i64::from(limit));
+        }
         let rows = qb
             .build()
             .fetch_all(self.pool())
@@ -460,12 +496,24 @@ impl SensitiveDataProjection for SqliteBackend {
     }
 }
 
+/// Apply a DDL set atomically.
+///
+/// In one transaction because both SQLite and PostgreSQL support transactional
+/// DDL: a migration that fails on its fourth statement should leave no tables
+/// at all, rather than a half-created schema that the next `IF NOT EXISTS` run
+/// would silently accept as complete.
 async fn apply_statements(pool: &SqlitePool, statements: &[&str]) -> StorageResult<()> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| StorageError::MigrationFailed(format!("begin: {e}")))?;
     for stmt in statements {
         sqlx::query(stmt)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::MigrationFailed(e.to_string()))?;
     }
-    Ok(())
+    tx.commit()
+        .await
+        .map_err(|e| StorageError::MigrationFailed(format!("commit: {e}")))
 }

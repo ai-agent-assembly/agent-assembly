@@ -24,8 +24,19 @@ pub struct SensitiveDataEventFilter {
     /// Exclusive upper bound on `occurred_at`.
     pub to: Option<Timestamp>,
     /// Restrict to one enforcement outcome.
+    ///
+    /// Honoured on **every** read, findings included — `sensitive_data_findings`
+    /// replicates the parent's verdict for exactly this. It previously applied
+    /// only to the events table and was silently dropped elsewhere, so a
+    /// "blocked findings by category" read returned every finding under a
+    /// "denied" label.
     pub verdict: Option<String>,
-    /// Maximum rows to return. Applies to whichever table is being read.
+    /// Maximum rows to return — groups, for
+    /// [`aggregate_sensitive_data_by_category`](SensitiveDataProjection::aggregate_sensitive_data_by_category).
+    ///
+    /// Applies to every read. On the aggregate it is the cap on how many
+    /// distinct categories a caller can be handed, which is the one bound
+    /// available against a category vocabulary that is not closed.
     pub limit: Option<u32>,
 }
 
@@ -77,11 +88,21 @@ impl SensitiveDataEventFilter {
 /// that picks one and labels it the other. A consumer wanting only one still
 /// has to name which.
 ///
-/// `category` is the only grouping dimension this aggregate offers, and that is
-/// deliberate: it is bounded by `aa-security`'s compiled-in catalogue, whereas
-/// the destination, the agent id and the tenant id are not. ADR 0032 §9
-/// restricts metric labels to bounded-cardinality values, so an aggregate that
-/// grouped by destination would hand a caller a ready-made unbounded label set.
+/// `category` is the only grouping dimension this aggregate offers. That is
+/// deliberate but it is **not** a bounded-cardinality guarantee, and an earlier
+/// draft of this doc claimed it was: `CategoryLabel::new` is a shape check, so a
+/// stored category is whatever the writing build put there — the projection's
+/// own tests persist `acme_internal_customer_ssn_v3_9f2c1b` on purpose. Three
+/// unknown categories are three groups.
+///
+/// What the single dimension does buy is that the *other* dimensions — the
+/// destination, the agent id, the tenant id — cannot be grouped by at all, and
+/// those are unbounded by nature rather than by accident. The remaining risk is
+/// bounded two ways: [`SensitiveDataEventFilter::limit`] caps the number of
+/// groups returned, and a caller minting a metric series from a group must
+/// resolve the category through
+/// [`SensitiveDataMetricLabels`](aa_core::types::sensitive_data::SensitiveDataMetricLabels),
+/// which returns `None` for anything this build cannot name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CategoryFindingAggregate {
     /// The category, as the writing build spelled it. Not guaranteed to
@@ -137,7 +158,11 @@ pub trait SensitiveDataProjection: Send + Sync + 'static {
     /// restarted consumer, a duplicate delivery — does not double-count. The
     /// consequence is that **first write wins**: an event that arrives late,
     /// after a row with the same id is already durable, is discarded rather
-    /// than allowed to rewrite the tallies a reader may already have seen. An
+    /// than allowed to rewrite the tallies a reader may already have seen.
+    /// First-write-wins covers the children too — an implementation must not
+    /// insert child rows when the parent insert was a no-op, or a replay
+    /// carrying *more* findings would add ordinals beneath a frozen
+    /// `finding_count` and desynchronise the parent from its own rows. An
     /// event arriving late but *for the first time* is stored normally and
     /// lands in its own `occurred_at` bucket, with `ingested_at` recording that
     /// it was late; a window already reported on can therefore gain rows, which
@@ -214,6 +239,64 @@ pub trait SensitiveDataProjection: Send + Sync + 'static {
     ///
     /// `StorageError::QueryFailed` when the catalogue cannot be read.
     async fn sensitive_data_projection_columns(&self) -> StorageResult<Vec<(String, String)>>;
+}
+
+/// Delegates to the wrapped store.
+///
+/// Exists so a single store can back several
+/// [`SensitiveDataProjectionWriter`]s — which the writer's by-value `store`
+/// otherwise prevents — and so the shared cross-backend contract test can hand
+/// the same handle to a writer and to a direct reader.
+#[async_trait]
+impl<T: SensitiveDataProjection> SensitiveDataProjection for std::sync::Arc<T> {
+    async fn migrate_sensitive_data_projection(&self) -> StorageResult<()> {
+        (**self).migrate_sensitive_data_projection().await
+    }
+
+    async fn rollback_sensitive_data_projection(&self) -> StorageResult<()> {
+        (**self).rollback_sensitive_data_projection().await
+    }
+
+    async fn append_sensitive_data_decision(
+        &self,
+        event: &SensitiveDataEventRow,
+        findings: &[SensitiveDataFindingRow],
+    ) -> StorageResult<()> {
+        (**self).append_sensitive_data_decision(event, findings).await
+    }
+
+    async fn query_sensitive_data_events(
+        &self,
+        filter: &SensitiveDataEventFilter,
+    ) -> StorageResult<Vec<SensitiveDataEventRow>> {
+        (**self).query_sensitive_data_events(filter).await
+    }
+
+    async fn query_sensitive_data_findings(
+        &self,
+        filter: &SensitiveDataEventFilter,
+    ) -> StorageResult<Vec<SensitiveDataFindingRow>> {
+        (**self).query_sensitive_data_findings(filter).await
+    }
+
+    async fn count_sensitive_data_events(&self, filter: &SensitiveDataEventFilter) -> StorageResult<u64> {
+        (**self).count_sensitive_data_events(filter).await
+    }
+
+    async fn count_sensitive_data_findings(&self, filter: &SensitiveDataEventFilter) -> StorageResult<u64> {
+        (**self).count_sensitive_data_findings(filter).await
+    }
+
+    async fn aggregate_sensitive_data_by_category(
+        &self,
+        filter: &SensitiveDataEventFilter,
+    ) -> StorageResult<Vec<CategoryFindingAggregate>> {
+        (**self).aggregate_sensitive_data_by_category(filter).await
+    }
+
+    async fn sensitive_data_projection_columns(&self) -> StorageResult<Vec<(String, String)>> {
+        (**self).sensitive_data_projection_columns().await
+    }
 }
 
 /// Whether the projection is written at all.
@@ -321,18 +404,14 @@ impl<S: SensitiveDataProjection> SensitiveDataProjectionWriter<S> {
         }
 
         let event_row = SensitiveDataEventRow::project(event, findings, ingested_at)?;
-        let scope = TenantScope::new(&event_row.org_id, &event_row.tenant_id)?;
+        // Children are projected from the parent *row*, not from the event and a
+        // separately-derived scope: it is the only way a child cannot disagree
+        // with its parent about tenant, timestamp or verdict.
         let finding_rows = findings
             .iter()
             .enumerate()
             .map(|(ordinal, record)| {
-                SensitiveDataFindingRow::project(
-                    record,
-                    &event_row.event_id,
-                    &scope,
-                    event.occurred_at,
-                    u32::try_from(ordinal).unwrap_or(u32::MAX),
-                )
+                SensitiveDataFindingRow::project(record, &event_row, u32::try_from(ordinal).unwrap_or(u32::MAX))
             })
             .collect::<Result<Vec<_>, _>>()?;
 

@@ -63,6 +63,21 @@
 //! unscoped read: the isolation is in the type, not in a convention the next
 //! caller has to remember.
 //!
+//! # Authorised access and audit-access logging — deferred, with the reason
+//!
+//! ADR 0032 §9 requires reads of this tier to be authorised and themselves
+//! audited. Neither is implemented here and neither belongs here: this module
+//! has no caller-identity concept and no request surface — the only way to
+//! reach it is a Rust method call from inside the gateway process.
+//! Authorisation and access logging attach where a *request* exists, which is
+//! the HTTP layer (AAASM-5359's endpoints) and the wiring in AAASM-5440.
+//! Implementing a second, weaker check here would produce an authorisation
+//! decision made without a principal, which is worse than none: it reads as
+//! coverage.
+//!
+//! What this module does owe that layer is a read API that cannot be called
+//! without a tenant, which [`TenantScope`] is.
+//!
 //! # Retention tiering — deferred, with the reason
 //!
 //! Not implemented here. [`RetentionEngine`](crate::storage::RetentionEngine)

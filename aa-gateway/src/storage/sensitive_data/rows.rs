@@ -10,7 +10,7 @@
 use aa_core::policy::EnforcementMode;
 use aa_core::time::Timestamp;
 use aa_core::types::sensitive_data::{
-    EnforcementPoint, RuntimeVerdictLabel, SensitiveDataDecisionEvent, SensitiveDataFindingRecord,
+    EnforcementPoint, ExecutionEvidence, RuntimeVerdictLabel, SensitiveDataDecisionEvent, SensitiveDataFindingRecord,
     TransmissionEvidence, SENSITIVE_DATA_SCHEMA_VERSION,
 };
 
@@ -81,6 +81,33 @@ pub enum ProjectionError {
         /// The serializer's message.
         source_message: String,
     },
+    /// A stored row was written against a schema major this build cannot read.
+    ///
+    /// The refusal [`SchemaVersion`](aa_core::types::sensitive_data::SchemaVersion)
+    /// documents as mandatory. Returned on the *read* path rather than silently
+    /// decoding: a major bump means a field this build would misinterpret, and
+    /// a misinterpreted governance row is worse than a missing one.
+    #[error("row `{event_id}` was written against schema major {found}, this build reads {expected}")]
+    UnreadableSchemaVersion {
+        /// The row that could not be read.
+        event_id: String,
+        /// The major the row carries.
+        found: u16,
+        /// The major this build reads.
+        expected: u16,
+    },
+    /// A stored integer column did not fit the field it decodes into.
+    ///
+    /// A silent `as` truncation here would turn a corrupt count into a
+    /// plausible one, which is the failure mode this projection exists to make
+    /// impossible.
+    #[error("column `{column}` value {value} does not fit its field")]
+    ColumnOutOfRange {
+        /// The column that did not fit.
+        column: &'static str,
+        /// The value read.
+        value: i64,
+    },
     /// The store rejected an otherwise well-formed write.
     ///
     /// Carries the message rather than the [`StorageError`] so this type stays
@@ -124,7 +151,14 @@ impl TenantScope {
         if tenant_id.trim().is_empty() {
             return Err(ProjectionError::EmptyTenancy("tenant_id"));
         }
-        Ok(Self { org_id, tenant_id })
+        // Store what was validated, not what was passed. Validating the trimmed
+        // form and storing the untrimmed one makes `" acme "` a scope that
+        // passes construction and then matches no row — an isolation bug that
+        // presents as an empty dashboard rather than as an error.
+        Ok(Self {
+            org_id: org_id.trim().to_string(),
+            tenant_id: tenant_id.trim().to_string(),
+        })
     }
 
     /// The owning organisation.
@@ -161,7 +195,14 @@ pub struct CategoryTally {
 /// the last is derived from evidence by
 /// [`counts_as_prevented_transmission`](Self::counts_as_prevented_transmission)
 /// so it cannot disagree with the evidence it is drawn from.
+///
+/// `#[non_exhaustive]` so a downstream crate cannot mint one by struct literal
+/// and hand it to
+/// [`append_sensitive_data_decision`](super::SensitiveDataProjection::append_sensitive_data_decision),
+/// which is a `pub` trait method taking rows directly. That closes the door the
+/// writer's type signature alone does not.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SensitiveDataEventRow {
     /// Major of the schema the row was written against. A reader of a
     /// different major must refuse the row.
@@ -376,32 +417,63 @@ impl SensitiveDataEventRow {
     /// scrubbed bytes, so it reaches `true` only when the evidence separately
     /// records that the payload did not leave.
     ///
-    /// Each clause is compared against the `aa-core` vocabulary rather than a
-    /// literal, so a renamed variant is a compile-time change here instead of a
-    /// silently-never-true predicate. `narrow` is excluded because it scopes
-    /// the action without transforming the payload — asking
-    /// [`RuntimeVerdictLabel::is_deny_or_transforming`] rather than listing
-    /// verdicts is what keeps that decision in one place.
+    /// The three evidence columns are parsed back into their `aa-core` enums and
+    /// handed to [`ExecutionEvidence::establishes_non_transmission`], rather
+    /// than compared against strings here. That matters because both enums are
+    /// `#[non_exhaustive]`: a future `EnforcementPoint` that also establishes
+    /// non-transmission would be handled by `aa-core` and silently missed by a
+    /// string copy of its logic. Condition 2 comes from the verdict, which is
+    /// the one clause `ExecutionEvidence` deliberately does not hold.
+    ///
+    /// An unparseable column yields `false` — a row this build cannot interpret
+    /// has not proved prevention, and guessing in the permissive direction is
+    /// how an unwired producer ends up claiming a block it never made.
     pub fn counts_as_prevented_transmission(&self) -> bool {
-        self.enforcement_point == EnforcementPoint::PreTransmission.as_str()
-            && self.transmission_evidence == TransmissionEvidence::NotForwarded.as_str()
-            && self.enforcement_mode == EnforcementMode::Enforce.as_wire()
-            && RuntimeVerdictLabel::from_wire(&self.verdict).is_some_and(|v| v.is_deny_or_transforming())
+        let Some(evidence) = self.execution_evidence() else {
+            return false;
+        };
+        let Some(verdict) = RuntimeVerdictLabel::from_wire(&self.verdict) else {
+            return false;
+        };
+        evidence.establishes_non_transmission() && verdict.is_deny_or_transforming()
+    }
+
+    /// Reassemble the stored evidence columns into `aa-core`'s record.
+    ///
+    /// `None` when any of the three does not name a variant this build knows —
+    /// see [`counts_as_prevented_transmission`](Self::counts_as_prevented_transmission)
+    /// for why that is not treated as "no objection".
+    pub fn execution_evidence(&self) -> Option<ExecutionEvidence> {
+        let enforcement_point = from_wire_enum::<EnforcementPoint>(&self.enforcement_point)?;
+        let transmission = from_wire_enum::<TransmissionEvidence>(&self.transmission_evidence)?;
+        let mode = from_wire_enum::<EnforcementMode>(&self.enforcement_mode)?;
+        Some(ExecutionEvidence::new(enforcement_point, transmission, mode))
     }
 }
 
 /// One normalized finding, as it is persisted beneath its event.
 ///
-/// # Span-free by construction, twice over
+/// # What is actually true about spans here
 ///
-/// It is projected only from [`SensitiveDataFindingRecord`], which discards the
-/// [`ByteSpan`](aa_security::canonical::ByteSpan) when it is built from a
-/// `CanonicalFinding`, and it has no field that could hold one if a caller had
-/// it. The struct is deliberately *not* `#[non_exhaustive]`: an added field is
-/// meant to be a visible, reviewable diff here, and the integration test pins
-/// the exact key set so adding one fails the suite rather than silently
-/// publishing an offset.
+/// Stated narrowly, because "span-free by construction" has been overclaimed on
+/// this Epic before and the honest version is still strong enough:
+///
+/// * **This type has no offset, length or span field**, and neither does the
+///   table behind it — asserted from `tests/` against the live SQL catalogue and
+///   against the serialized key set, not against the DDL constant.
+/// * **The writer accepts only [`SensitiveDataFindingRecord`]**, which discards
+///   the [`ByteSpan`](aa_security::canonical::ByteSpan) when it is built from a
+///   `CanonicalFinding`, so the production path has nothing to leak.
+/// * `#[non_exhaustive]` stops a downstream crate minting a row by struct
+///   literal, so [`append_sensitive_data_decision`](super::SensitiveDataProjection::append_sensitive_data_decision)
+///   cannot be handed one assembled outside this module.
+///
+/// What that does **not** say: the fields are `pub`, `Deserialize` rebuilds a
+/// row from whatever bytes it is given, and `field_path` is a string that an
+/// in-crate caller could put an offset into. A row in hand is evidence about
+/// the writer, not an unrepresentable state.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SensitiveDataFindingRow {
     /// Major of the schema the row was written against.
     pub schema_version_major: u16,
@@ -425,6 +497,16 @@ pub struct SensitiveDataFindingRow {
     /// When the parent action was inspected. Replicated so a time-windowed
     /// finding aggregate needs no join either.
     pub occurred_at_ns: u64,
+    /// The parent action's enforcement outcome.
+    ///
+    /// Replicated for the same reason `org_id` and `occurred_at_ns` are: a
+    /// "blocked findings by category" read is the headline query, and without
+    /// this column the verdict predicate on
+    /// [`SensitiveDataEventFilter`](super::SensitiveDataEventFilter) is
+    /// inapplicable to the findings table. Ignoring it silently — which is what
+    /// the first cut did — makes a "denied" dashboard return *every* finding,
+    /// over-reporting by exactly the factor forbidden design #11 is about.
+    pub verdict: String,
     /// What was found, in provider-neutral terms.
     pub category: String,
     /// How damaging its exposure would be.
@@ -460,14 +542,13 @@ impl SensitiveDataFindingRow {
     /// # Errors
     ///
     /// [`ProjectionError::FindingEventIdMismatch`] when the record names an
-    /// event other than `event_id`.
+    /// event other than the parent row's.
     pub fn project(
         record: &SensitiveDataFindingRecord,
-        event_id: &str,
-        scope: &TenantScope,
-        occurred_at: Timestamp,
+        event: &SensitiveDataEventRow,
         ordinal: u32,
     ) -> Result<Self, ProjectionError> {
+        let event_id = event.event_id.as_str();
         if record.event_id.as_str() != event_id {
             return Err(ProjectionError::FindingEventIdMismatch {
                 ordinal: ordinal as usize,
@@ -481,9 +562,10 @@ impl SensitiveDataFindingRow {
             schema_version_minor: record.schema_version.minor,
             event_id: event_id.to_string(),
             finding_ordinal: ordinal,
-            org_id: scope.org_id().to_string(),
-            tenant_id: scope.tenant_id().to_string(),
-            occurred_at_ns: occurred_at.as_nanos(),
+            org_id: event.org_id.clone(),
+            tenant_id: event.tenant_id.clone(),
+            occurred_at_ns: event.occurred_at_ns,
+            verdict: event.verdict.clone(),
             category: record.category.as_str().to_string(),
             severity: record.severity.as_str().to_string(),
             confidence: record.confidence.as_str().to_string(),
@@ -496,11 +578,44 @@ impl SensitiveDataFindingRow {
             aggregate_key: record.aggregate_key().as_str().to_string(),
         })
     }
+}
 
-    /// Whether this build can interpret the row.
-    ///
-    /// Majors must agree; a newer minor only adds fields and is readable.
-    pub fn is_readable(&self) -> bool {
-        self.schema_version_major == SENSITIVE_DATA_SCHEMA_VERSION.major
+/// Refuse a row whose schema major this build does not read.
+///
+/// Called by both backends' decoders. Centralised rather than duplicated so
+/// there is one place the rule lives, and so a backend that forgets to call it
+/// is a visible omission rather than a silently permissive read path.
+///
+/// # Errors
+///
+/// [`ProjectionError::UnreadableSchemaVersion`] when the majors differ. The
+/// minor is deliberately not compared — a newer minor only adds fields, and
+/// refusing it would make an additive change breaking.
+pub(super) fn check_readable(event_id: &str, major: u16) -> Result<(), ProjectionError> {
+    if major == SENSITIVE_DATA_SCHEMA_VERSION.major {
+        return Ok(());
     }
+    Err(ProjectionError::UnreadableSchemaVersion {
+        event_id: event_id.to_string(),
+        found: major,
+        expected: SENSITIVE_DATA_SCHEMA_VERSION.major,
+    })
+}
+
+/// Narrow a stored integer column, refusing rather than truncating.
+///
+/// # Errors
+///
+/// [`ProjectionError::ColumnOutOfRange`] when the stored value does not fit.
+pub(super) fn narrow<T: TryFrom<i64>>(value: i64, column: &'static str) -> Result<T, ProjectionError> {
+    T::try_from(value).map_err(|_| ProjectionError::ColumnOutOfRange { column, value })
+}
+
+/// Parse a stored column back into the `aa-core` enum it was rendered from.
+///
+/// Goes through serde because every one of these enums is `#[non_exhaustive]`
+/// with a `snake_case` representation and no `FromStr` — and because a
+/// hand-written match would be a second copy of a vocabulary `aa-core` owns.
+fn from_wire_enum<T: serde::de::DeserializeOwned>(wire: &str) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(wire.to_string())).ok()
 }
