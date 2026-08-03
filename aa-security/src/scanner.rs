@@ -886,6 +886,49 @@ pub(crate) fn ascii_digit_of(c: char) -> Option<char> {
     }
 }
 
+/// The ASCII separator equivalent of `c` for [`digit_segment`]'s walk — `' '`
+/// for the space forms, `'-'` for the hyphen forms, `None` for anything else.
+///
+/// AAASM-5364: [`ascii_digit_of`] closed the full-width *digit* evasion, which
+/// is the whole of the credit-card case because a bare card carries no
+/// separators. It is not the whole of the SSN case: [`is_ssn`] matches the exact
+/// shape `DDD-DD-DDDD`, so the hyphens have to normalise too, and the
+/// space-grouped card form has the same problem. A CJK input method in full-width
+/// mode emits **U+FF0D** when the hyphen key is pressed and **U+3000** for the
+/// space bar, so an SSN or a grouped card typed the natural way by a Taiwanese or
+/// Japanese user went undetected while its ASCII twin did not.
+///
+/// The normalisation is for **matching only**, exactly as for digits: both
+/// full-width forms are three UTF-8 bytes against ASCII's one, so the caller
+/// pushes the ASCII equivalent into the normalised string while advancing `end`
+/// by the *original* character's width.
+///
+/// # The boundary, and why it stops here
+///
+/// U+2010–U+2015 (hyphen, non-breaking hyphen, figure/en/em dash, horizontal bar)
+/// and U+00A0 (no-break space) were considered and **declined**:
+///
+/// * No input method emits any of them for the hyphen or space key, so admitting
+///   them buys nothing against the evasion this rule exists to close — the threat
+///   is an input-mode switch, not an arbitrary look-alike glyph.
+/// * Each admitted separator lengthens the run [`digit_segment`] will join, and
+///   every additional joined run is an independent ~10% chance of a coincidental
+///   Luhn pass. The en dash is the standard glyph for a numeric *range*
+///   (`1990–2000`, `第 12–15 頁`) — precisely where two unrelated numbers sit
+///   adjacent with a dash between them — so it carries that risk at the highest
+///   rate of the set for no coverage in return.
+///
+/// The boundary is cheap to move if a payload is ever observed using one of them;
+/// `digit_separator_boundary_declines_en_dash_and_nbsp` pins it so the decision
+/// is visible rather than implicit.
+fn ascii_separator_of(c: char) -> Option<char> {
+    match c {
+        ' ' | '\u{3000}' => Some(' '),
+        '-' | '\u{FF0D}' => Some('-'),
+        _ => None,
+    }
+}
+
 /// Result of walking one digit segment (see [`digit_segment`]).
 struct DigitSegment {
     /// Byte offset just past the segment — where the outer scan resumes, and
@@ -931,19 +974,23 @@ fn digit_segment(text: &str, start: usize) -> DigitSegment {
         // separator must not be swallowed into the segment, or an SSN like
         // "123-45-6789 " would become 12 bytes and fail the exact-11-byte
         // `is_ssn` check, letting the PII through unredacted (AAASM-4820).
-        if matches!(c, ' ' | '-')
-            && !digits.is_empty()
-            && chars + 1 < DIGIT_SEGMENT_MAX_CHARS
-            && text[end + c.len_utf8()..]
-                .chars()
-                .next()
-                .and_then(ascii_digit_of)
-                .is_some()
-        {
-            normalised.push(c);
-            end += c.len_utf8();
-            chars += 1;
-            continue;
+        if let Some(sep) = ascii_separator_of(c) {
+            if !digits.is_empty()
+                && chars + 1 < DIGIT_SEGMENT_MAX_CHARS
+                && text[end + c.len_utf8()..]
+                    .chars()
+                    .next()
+                    .and_then(ascii_digit_of)
+                    .is_some()
+            {
+                // The ASCII equivalent, so `is_ssn`'s exact-11-byte shape check
+                // sees `DDD-DD-DDDD` whichever width the hyphens were typed in
+                // (AAASM-5364). `end` still advances by the original width.
+                normalised.push(sep);
+                end += c.len_utf8();
+                chars += 1;
+                continue;
+            }
         }
 
         break;
@@ -958,10 +1005,12 @@ fn digit_segment(text: &str, start: usize) -> DigitSegment {
 
 /// Scans `text` for credit card numbers (Luhn-validated) and SSN patterns (`DDD-DD-DDDD`).
 ///
-/// Digits are normalised by [`ascii_digit_of`], so a value written in full-width
-/// digits is detected as the same kind as its ASCII equivalent (AAASM-5345).
-/// Findings still span the **original** text: normalisation never reaches the
-/// offsets, only the strings the two checks are run against.
+/// Digits are normalised by [`ascii_digit_of`] and the separators between them by
+/// [`ascii_separator_of`], so a value written in full-width digits (AAASM-5345)
+/// or grouped by a full-width hyphen / ideographic space (AAASM-5364) is detected
+/// as the same kind as its ASCII equivalent. Findings still span the **original**
+/// text: normalisation never reaches the offsets, only the strings the two checks
+/// are run against.
 fn scan_digit_sequences(text: &str, findings: &mut Vec<CredentialFinding>) {
     let mut i = 0usize;
     while i < text.len() {
