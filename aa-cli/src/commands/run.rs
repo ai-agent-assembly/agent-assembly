@@ -1843,4 +1843,42 @@ mod tests {
             "a preview must not claim an adjudicated rung: {proxied}"
         );
     }
+
+    /// AAASM-5350 AC 4: an operator-supplied `HTTPS_PROXY` is not AASM
+    /// interception, and no surface may report it as though it were.
+    ///
+    /// The property was documented on `build_child_env` and enforced there, but
+    /// never asserted — so nothing would have caught a later change that read
+    /// the ambient value back out as evidence of protection. The protection
+    /// label derives from what `aasm` resolved, so an ambient proxy cannot
+    /// produce `proxy_configured`.
+    #[test]
+    fn an_ambient_proxy_is_never_reported_as_aasm_interception() {
+        let _guard = crate::test_support::env_guard();
+        let prior = std::env::var("HTTPS_PROXY").ok();
+        std::env::set_var("HTTPS_PROXY", "http://corporate.example:3128");
+
+        // A `--no-proxy` launch with an ambient proxy set is still unprotected:
+        // the operator's own route is left alone, and it governs nothing.
+        assert_eq!(
+            crate::commands::run_audit::protection_label(true),
+            "unprotected",
+            "an ambient HTTPS_PROXY must not upgrade an unprotected launch"
+        );
+
+        // And the child keeps the operator's route rather than having it
+        // removed or overwritten — the documented opt-out behaviour.
+        let handle = stub_handle(None);
+        let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
+        assert_eq!(
+            env.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://corporate.example:3128"),
+            "--no-proxy leaves the operator's own proxy configuration alone"
+        );
+
+        match prior {
+            Some(v) => std::env::set_var("HTTPS_PROXY", v),
+            None => std::env::remove_var("HTTPS_PROXY"),
+        }
+    }
 }
