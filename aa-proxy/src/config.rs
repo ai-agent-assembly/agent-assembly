@@ -468,6 +468,21 @@ fn parse_credential_action_env() -> Result<CredentialAction, ProxyError> {
     }
 }
 
+/// Path the proxy should append its audit JSONL to, if the operator configured
+/// one.
+///
+/// Deliberately **not** a [`ProxyConfig`] field: the sink is a process-lifetime
+/// resource (a file handle and a writer task built once in [`crate::run`]),
+/// whereas `ProxyConfig` carries the per-request knobs `ProxyServer` consults on
+/// the data path — which is handed a channel `Sender`, never a path.
+///
+/// Env: `AA_PROXY_AUDIT_JSONL_PATH`. Unset (or empty) means no persistence,
+/// which is the historical behaviour: before AAASM-5358 nothing constructed the
+/// writer at all, so every proxy finding was discarded on process exit.
+pub fn audit_jsonl_path_from_env() -> Option<PathBuf> {
+    env_optional("AA_PROXY_AUDIT_JSONL_PATH").map(PathBuf::from)
+}
+
 /// Read an env var as `Some(value)` when set and non-empty, otherwise `None`.
 fn env_optional(name: &str) -> Option<String> {
     match std::env::var(name) {
@@ -534,7 +549,35 @@ mod tests {
         std::env::remove_var("AA_PROXY_CREDENTIAL_ACTION");
         std::env::remove_var("AA_PROXY_GATEWAY_ENDPOINT");
         std::env::remove_var("AA_PROXY_MCP_FAIL_OPEN");
+        std::env::remove_var("AA_PROXY_AUDIT_JSONL_PATH");
         std::env::remove_var("AASM_STATE_DIR");
+    }
+
+    /// Audit persistence is opt-in. An unset variable must reproduce the
+    /// pre-AAASM-5358 behaviour exactly — no writer, nothing on disk — so
+    /// wiring the sink cannot change an existing deployment by itself.
+    #[test]
+    fn an_unset_audit_path_means_no_persistence() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env_vars();
+        assert_eq!(audit_jsonl_path_from_env(), None);
+        // An empty value is an operator who set nothing, not a request to
+        // append to a file named "".
+        std::env::set_var("AA_PROXY_AUDIT_JSONL_PATH", "");
+        assert_eq!(audit_jsonl_path_from_env(), None);
+        clear_env_vars();
+    }
+
+    #[test]
+    fn a_configured_audit_path_is_read_from_the_environment() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_AUDIT_JSONL_PATH", "/tmp/aa-proxy-audit.jsonl");
+        assert_eq!(
+            audit_jsonl_path_from_env(),
+            Some(PathBuf::from("/tmp/aa-proxy-audit.jsonl"))
+        );
+        clear_env_vars();
     }
 
     fn addr(s: &str) -> SocketAddr {

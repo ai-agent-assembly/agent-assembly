@@ -12,13 +12,16 @@
 //! commit for how this struct reaches disk.
 
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
-use aa_security::CredentialFinding;
+use aa_core::types::sensitive_data::ExecutionEvidence;
+use aa_security::{CredentialFinding, CredentialKind};
 
 /// Decision recorded for a single intercepted request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,10 +56,173 @@ pub struct ProxyAuditEntry {
     pub path: String,
     /// What the proxy did with the request.
     pub decision: ProxyAuditDecision,
-    /// Per-match scanner output. Empty when no secrets were detected.
-    pub credential_findings: Vec<CredentialFinding>,
-    /// Post-scan body content. `None` when the proxy bypassed the scanner.
+    /// What was **observed** about whether the payload left this process.
+    ///
+    /// [`Self::decision`] is what the proxy resolved to do; this is what
+    /// happened to the bytes, and the two are not the same claim. A
+    /// [`ProxyAuditDecision::ForwardedRedacted`] is a *transformed
+    /// transmission* — the scrubbed bytes went — and only evidence recorded
+    /// here can distinguish that from a payload that never left, which is the
+    /// distinction ADR 0032 §8's prevention rule turns on (AAASM-5358).
+    ///
+    /// Built by [`crate::transmission_evidence`]; there is no default, because
+    /// a record that omitted it would be an event with no execution evidence,
+    /// and the whole point is that such an event exists and says so out loud
+    /// rather than being absent.
+    pub execution: ExecutionEvidence,
+    /// Correlation id when this record describes a protection probe's own
+    /// request, `None` for ordinary traffic.
+    ///
+    /// Probe traffic is synthetic. Under `credential_action=block` a probe's
+    /// request is genuinely refused before any dial, so its record satisfies
+    /// every condition of ADR 0032 §8 and would be counted as a prevented
+    /// transmission — one per probe run, indistinguishable from a real leak
+    /// that was stopped. A consumer computing a prevention rate has to be able
+    /// to exclude synthetic traffic, and can only do that if the record says
+    /// which it is (AAASM-5359/5360).
+    ///
+    /// The value is an opaque caller-minted id whose grammar is enforced by
+    /// [`ProbeCorrelation`](crate::probe_adjudication::ProbeCorrelation) — 32
+    /// lowercase hex characters, which is deliberately too short to be a
+    /// content digest.
+    pub probe_correlation: Option<String>,
+    /// Per-match scanner output, projected for this tier. Empty when no secrets
+    /// were detected.
+    ///
+    /// Capped at [`MAX_PERSISTED_FINDINGS`]; the overflow is counted in
+    /// [`Self::findings_omitted`] rather than dropped silently.
+    pub credential_findings: Vec<PersistedFinding>,
+    /// How many findings the cap dropped from
+    /// [`Self::credential_findings`].
+    ///
+    /// A truncated list that said nothing about being truncated would make the
+    /// finding count on this record quietly wrong, and finding counts are a
+    /// measure ADR 0032 §8 keeps deliberately separate from event counts.
+    pub findings_omitted: u32,
+    /// Post-scan body content.
+    ///
+    /// `None` when the proxy bypassed the scanner, when the caller had no body
+    /// to persist, **and** when re-inspection reported the post-scan bytes as
+    /// still carrying a sensitive value — see
+    /// [`crate::proxy::ProxyServer::observe_forwarding`]. Persisting bytes the
+    /// proxy has itself just declared unscrubbed would make the "no raw value
+    /// on disk" guarantee exactly as strong as the scrubber, in the one case
+    /// where the proxy knows the scrubber did not hold.
     pub redacted_body: Option<String>,
+}
+
+/// A scanner finding as it may be persisted **outside** the tamper-evident
+/// audit tier.
+///
+/// `aa_security::CredentialFinding` carries a `pub offset` — the byte position
+/// of the match in the original body — and ADR 0032 §9 permits offsets and
+/// lengths **only** in the tamper-evident tier. This module's own header states
+/// it is not that tier, and AAASM-5358 is what first constructs the writer in
+/// production, so this PR is what would first put those offsets on disk.
+///
+/// `aa-security` already drew this line and drew it half-way: `end` is private
+/// and `#[serde(skip)]` citing §9, while `offset` stays public and serializes.
+/// Projecting here rather than widening that skip keeps the decision local to
+/// the tier that has the constraint — the tamper-evident writer still needs the
+/// offset.
+///
+/// File permissions are not a substitute. `0600` is access control; §9 is about
+/// what may exist in the record at all, and an offset paired with a category
+/// can identify a value in a small domain regardless of who can read the file.
+///
+/// `matched` is the redaction **label** (`[REDACTED:AwsAccessKey]`), derived
+/// from `kind` and never the secret. It is kept because it is what a consumer
+/// already reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedFinding {
+    /// Category of the detected credential.
+    pub kind: CredentialKind,
+    /// Redaction label, e.g. `[REDACTED:AwsAccessKey]`.
+    pub matched: String,
+}
+
+impl PersistedFinding {
+    /// Project a scanner finding, discarding the byte offset.
+    pub fn project(finding: &CredentialFinding) -> Self {
+        Self {
+            kind: finding.kind.clone(),
+            matched: finding.matched.clone(),
+        }
+    }
+}
+
+/// Most findings persisted on a single record.
+///
+/// `redacted_body` alone does not bound a line: a 64 MiB body densely packed
+/// with detectable patterns yields on the order of a million findings at ~50-80
+/// serialized bytes each, so an uncapped vector turns one request into a line of
+/// hundreds of megabytes on a sink with no rotation.
+pub const MAX_PERSISTED_FINDINGS: usize = 256;
+
+/// Project and cap a finding list, returning the retained rows and how many
+/// were dropped.
+pub fn bound_persisted_findings(findings: &[CredentialFinding]) -> (Vec<PersistedFinding>, u32) {
+    let kept: Vec<PersistedFinding> = findings
+        .iter()
+        .take(MAX_PERSISTED_FINDINGS)
+        .map(PersistedFinding::project)
+        .collect();
+    let omitted = findings.len().saturating_sub(kept.len()) as u32;
+    (kept, omitted)
+}
+
+/// Longest post-scan body persisted on a single record.
+///
+/// The MitM path accepts bodies up to `MAX_BODY_LEN` (64 MiB), and the JSONL
+/// sink has no rotation or retention, so an unbounded body turns one oversized
+/// request into an unbounded line and an unbounded file. Truncation is on a
+/// character boundary and marked, so a reader can tell a short body from a cut
+/// one.
+pub const MAX_PERSISTED_BODY_BYTES: usize = 8 * 1024;
+
+/// Marker appended to a body that was cut at [`MAX_PERSISTED_BODY_BYTES`].
+pub const BODY_TRUNCATION_MARKER: &str = "…[truncated]";
+
+/// Bound a post-scan body to [`MAX_PERSISTED_BODY_BYTES`], on a character
+/// boundary.
+pub fn bound_persisted_body(body: String) -> String {
+    if body.len() <= MAX_PERSISTED_BODY_BYTES {
+        return body;
+    }
+    let cut = body
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|i| *i <= MAX_PERSISTED_BODY_BYTES)
+        .last()
+        .unwrap_or(0);
+    let mut out = body[..cut].to_owned();
+    out.push_str(BODY_TRUNCATION_MARKER);
+    out
+}
+
+/// Count of audit entries dropped because the channel was full or closed.
+///
+/// A prevention metric derived from a silently lossy record is not
+/// authoritative. `try_send` is the right call on the data path — a slow writer
+/// must not stall an intercepted request — so the loss is *counted* rather than
+/// prevented.
+///
+/// Scope, stated because the obvious reading overstates it: today the only
+/// surfacing is the running total on the `warn!` each drop emits. Nothing in
+/// this repo reads [`dropped_entries`] outside its own tests, so a consumer
+/// cannot yet gate a published rate on it. Putting it on the proxy's metrics
+/// output is follow-up work; the counter exists so that work has something to
+/// read, not because the plumbing is finished.
+static DROPPED_ENTRIES: AtomicU64 = AtomicU64::new(0);
+
+/// Record one dropped entry, returning the new running total.
+pub fn record_dropped_entry() -> u64 {
+    DROPPED_ENTRIES.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+/// Entries dropped since process start.
+pub fn dropped_entries() -> u64 {
+    DROPPED_ENTRIES.load(Ordering::Relaxed)
 }
 
 /// Append-only JSONL writer.
@@ -72,12 +238,35 @@ pub struct JsonlWriter {
 impl JsonlWriter {
     /// Open `path` in append mode (creating it if missing) and bind the
     /// supplied receiver. Parent directories must already exist.
+    ///
+    /// The file is `0600`, and an existing file's mode is re-asserted on every
+    /// open — the same discipline `CaStore` applies to the CA private key. The
+    /// default `0644` would have been world-readable.
+    ///
+    /// What justifies that is what the record *does* carry: the destination
+    /// host, the redacted request path, the redacted body, and which credential
+    /// categories an agent was caught sending. That is a per-agent behavioural
+    /// trail, and it does not belong to every local account on the machine.
+    ///
+    /// It is **not** justified by byte offsets: [`PersistedFinding`] discards
+    /// `CredentialFinding.offset`, because ADR 0032 §9 permits offsets only in
+    /// the tamper-evident tier and this module is explicitly not that tier.
+    /// Permissions are access control; §9 is about what may exist in the record
+    /// at all, and the two are not substitutes for one another.
     pub async fn new(path: &Path, receiver: mpsc::Receiver<ProxyAuditEntry>) -> io::Result<Self> {
         let file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(0o600)
             .open(path)
             .await?;
+        // `mode()` applies only at creation, so an already-existing file keeps
+        // whatever it had. Re-assert rather than trust.
+        let mut perms = file.metadata().await?.permissions();
+        if perms.mode() & 0o777 != 0o600 {
+            perms.set_mode(0o600);
+            file.set_permissions(perms).await?;
+        }
         Ok(Self {
             receiver,
             file: tokio::io::BufWriter::new(file),
@@ -118,9 +307,39 @@ impl JsonlWriter {
     }
 }
 
+/// Bounded capacity of the audit channel.
+///
+/// The data path uses `try_send` and drops on overflow rather than
+/// back-pressuring an intercepted request, so this bound is the amount of
+/// writer lag the proxy will absorb before audit lines start being lost.
+const AUDIT_CHANNEL_CAPACITY: usize = 1024;
+
+/// Open the audit sink an operator asked for, and spawn the writer that drains
+/// it.
+///
+/// `None` in, `None` out: no path configured means no persistence, which is
+/// the historical default and leaves the data path byte-identical.
+///
+/// # Errors
+///
+/// Propagates the open failure rather than degrading to `None`. An operator who
+/// configured an audit trail and silently got none would be in exactly the state
+/// this whole work stream exists to prevent — believing a record exists when it
+/// does not — so the proxy refuses to start instead.
+pub async fn build_audit_sink(path: Option<&Path>) -> io::Result<Option<mpsc::Sender<ProxyAuditEntry>>> {
+    let Some(path) = path else { return Ok(None) };
+    let (tx, rx) = mpsc::channel(AUDIT_CHANNEL_CAPACITY);
+    let writer = JsonlWriter::new(path, rx).await?;
+    tokio::spawn(writer.run());
+    Ok(Some(tx))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use aa_core::policy::EnforcementMode;
+    use aa_core::types::sensitive_data::{EnforcementPoint, TransmissionEvidence};
 
     /// Synthetic AWS access key from AWS public documentation. Not a real credential.
     const FAKE_AWS_ACCESS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
@@ -149,7 +368,14 @@ mod tests {
             method: "POST".into(),
             path: "/v1/chat/completions".into(),
             decision: ProxyAuditDecision::ForwardedRedacted,
-            credential_findings: scan.findings,
+            execution: ExecutionEvidence::new(
+                EnforcementPoint::PreTransmission,
+                TransmissionEvidence::ForwardedClean,
+                EnforcementMode::Enforce,
+            ),
+            probe_correlation: None,
+            credential_findings: scan.findings.iter().map(PersistedFinding::project).collect(),
+            findings_omitted: 0,
             redacted_body: Some(redacted),
         };
 
@@ -189,7 +415,10 @@ mod tests {
             method: "GET".into(),
             path: "/".into(),
             decision,
+            execution: ExecutionEvidence::unrecorded(EnforcementMode::Enforce),
+            probe_correlation: None,
             credential_findings: vec![],
+            findings_omitted: 0,
             redacted_body: None,
         }
     }
@@ -316,7 +545,14 @@ mod tests {
             method: "POST".into(),
             path: "/v1/do".into(),
             decision: ProxyAuditDecision::ForwardedRedacted,
+            execution: ExecutionEvidence::new(
+                EnforcementPoint::PreTransmission,
+                TransmissionEvidence::ForwardedClean,
+                EnforcementMode::Enforce,
+            ),
+            probe_correlation: None,
             credential_findings: vec![],
+            findings_omitted: 0,
             redacted_body: Some("clean body".into()),
         };
         let json = serde_json::to_string(&entry).unwrap();
@@ -326,5 +562,244 @@ mod tests {
         assert_eq!(back.host, "api.example");
         assert_eq!(back.decision, ProxyAuditDecision::ForwardedRedacted);
         assert_eq!(back.redacted_body.as_deref(), Some("clean body"));
+        assert_eq!(back.execution, entry.execution);
+    }
+
+    /// ADR 0032 §9 permits byte offsets only in the tamper-evident tier, and
+    /// this sink is not it. AAASM-5358 is what first constructs the writer in
+    /// production, so without the projection this would be the change that put
+    /// them on disk.
+    #[tokio::test]
+    async fn a_persisted_finding_carries_no_byte_offset() {
+        use aa_security::CredentialScanner;
+
+        let body = format!(r#"{{"k":"{FAKE_AWS_ACCESS_KEY}"}}"#);
+        let scan = CredentialScanner::new().scan(&body);
+        assert!(!scan.findings.is_empty(), "scanner fixture invariant");
+        // Non-vacuity: the source finding really does carry an offset, and the
+        // body is long enough that the offset is not coincidentally 0.
+        let source_offset = scan.findings[0].offset;
+        assert!(source_offset > 0, "fixture must produce a non-zero offset");
+
+        let (projected, omitted) = bound_persisted_findings(&scan.findings);
+        assert_eq!(omitted, 0);
+        assert!(!projected.is_empty(), "otherwise the assertions below are vacuous");
+        assert_eq!(projected[0].kind, scan.findings[0].kind);
+        assert_eq!(projected[0].matched, scan.findings[0].matched);
+
+        let entry = ProxyAuditEntry {
+            credential_findings: projected,
+            ..clean_entry("api.example", ProxyAuditDecision::ForwardedRedacted)
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !json.contains("\"offset\""),
+            "ADR 0032 §9: a byte offset must not reach this tier: {json}"
+        );
+        // The category — which §9 does permit — survives, so the record is
+        // still useful.
+        assert!(json.contains("AwsAccessKey"), "the category must survive: {json}");
+    }
+
+    /// `redacted_body` alone does not bound a line: the findings vector does
+    /// too, and a densely-matching 64 MiB body produces on the order of a
+    /// million of them.
+    #[test]
+    fn an_oversized_finding_list_is_capped_and_the_remainder_counted() {
+        use aa_security::CredentialScanner;
+
+        let one = CredentialScanner::new().scan(&format!(r#"{{"k":"{FAKE_AWS_ACCESS_KEY}"}}"#));
+        assert!(!one.findings.is_empty(), "scanner fixture invariant");
+        let many: Vec<_> = std::iter::repeat_with(|| one.findings[0].clone())
+            .take(MAX_PERSISTED_FINDINGS + 37)
+            .collect();
+
+        let (kept, omitted) = bound_persisted_findings(&many);
+        assert_eq!(kept.len(), MAX_PERSISTED_FINDINGS);
+        assert_eq!(omitted, 37, "the remainder must be counted, not silently dropped");
+
+        // Under the cap nothing is omitted, so the counter is not simply
+        // always-positive.
+        let (kept, omitted) = bound_persisted_findings(&many[..3]);
+        assert_eq!(kept.len(), 3);
+        assert_eq!(omitted, 0);
+    }
+
+    /// The sink is a new durable file holding a per-agent behavioural trail —
+    /// destination hosts, redacted paths and bodies, and which credential
+    /// categories an agent was caught sending. The default `0644` would have
+    /// published all of it to every local account.
+    ///
+    /// Byte offsets are handled separately and are not on disk at all; see
+    /// [`PersistedFinding`] and `a_persisted_finding_carries_no_byte_offset`.
+    #[tokio::test]
+    async fn the_audit_file_is_not_world_readable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let (_tx, rx) = mpsc::channel(1);
+        let _writer = JsonlWriter::new(&path, rx).await.unwrap();
+        let mode = tokio::fs::metadata(&path).await.unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "audit file mode was {mode:o}");
+    }
+
+    /// A file left over from an earlier, looser build must be tightened rather
+    /// than inherited — `mode()` applies only at creation.
+    #[tokio::test]
+    async fn an_existing_loose_audit_file_is_tightened_on_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        tokio::fs::write(&path, b"").await.unwrap();
+        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .await
+            .unwrap();
+        // Non-vacuity: the file really is loose before the writer opens it.
+        let before = tokio::fs::metadata(&path).await.unwrap().permissions().mode() & 0o777;
+        assert_eq!(before, 0o644);
+
+        let (_tx, rx) = mpsc::channel(1);
+        let _writer = JsonlWriter::new(&path, rx).await.unwrap();
+        let after = tokio::fs::metadata(&path).await.unwrap().permissions().mode() & 0o777;
+        assert_eq!(after, 0o600, "an existing audit file kept mode {after:o}");
+    }
+
+    /// The MitM path accepts bodies up to 64 MiB and this sink has no rotation,
+    /// so one oversized request must not become an unbounded line.
+    #[test]
+    fn an_oversized_body_is_truncated_on_a_character_boundary_and_marked() {
+        let short = "already small".to_owned();
+        assert_eq!(bound_persisted_body(short.clone()), short);
+
+        // Multi-byte characters, so a naive byte slice would panic.
+        let big = "é".repeat(MAX_PERSISTED_BODY_BYTES);
+        assert!(big.len() > MAX_PERSISTED_BODY_BYTES);
+        let bounded = bound_persisted_body(big);
+        assert!(bounded.ends_with(BODY_TRUNCATION_MARKER), "truncation must be visible");
+        assert!(
+            bounded.len() <= MAX_PERSISTED_BODY_BYTES + BODY_TRUNCATION_MARKER.len(),
+            "bounded body was {} bytes",
+            bounded.len()
+        );
+    }
+
+    /// A prevention metric computed over a silently lossy record is not
+    /// authoritative. The data path is right to drop rather than block, so the
+    /// loss has to be countable.
+    #[test]
+    fn dropped_entries_are_counted() {
+        let before = dropped_entries();
+        let first = record_dropped_entry();
+        let second = record_dropped_entry();
+        assert_eq!(first, before + 1);
+        assert_eq!(second, before + 2);
+        assert_eq!(dropped_entries(), before + 2);
+    }
+
+    /// A probe's own traffic must be identifiable in the record, so a consumer
+    /// can exclude synthetic preventions from a rate.
+    #[test]
+    fn a_probe_record_round_trips_its_correlation_id() {
+        let entry = ProxyAuditEntry {
+            probe_correlation: Some("0123456789abcdef0123456789abcdef".into()),
+            ..clean_entry("api.example", ProxyAuditDecision::Blocked)
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: ProxyAuditEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.probe_correlation.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        // Ordinary traffic stays distinguishable from synthetic traffic.
+        let ordinary = clean_entry("api.example", ProxyAuditDecision::Blocked);
+        assert!(ordinary.probe_correlation.is_none());
+    }
+
+    /// `build_audit_sink(None)` is the historical default: no path, no writer,
+    /// nothing on disk.
+    #[tokio::test]
+    async fn no_configured_path_builds_no_sink() {
+        let sink = build_audit_sink(None).await.expect("no path is not an error");
+        assert!(sink.is_none(), "an unconfigured proxy must not construct a writer");
+    }
+
+    /// The wiring `run()` depends on: a configured path really does produce a
+    /// live sender whose entries reach the file. Without this the sink would be
+    /// constructed-in-name-only, which is the exact defect this ticket found in
+    /// production.
+    #[tokio::test]
+    async fn a_configured_path_builds_a_sink_that_reaches_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let sink = build_audit_sink(Some(&path))
+            .await
+            .expect("open succeeds")
+            .expect("a configured path yields a sender");
+
+        sink.send(clean_entry("wired.example", ProxyAuditDecision::Blocked))
+            .await
+            .expect("the writer task is alive and draining");
+        drop(sink);
+
+        // The writer task owns the file; poll briefly for the flushed line
+        // rather than assuming the spawn has been scheduled.
+        let mut on_disk = String::new();
+        for _ in 0..200 {
+            on_disk = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+            if !on_disk.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            on_disk.contains("wired.example"),
+            "the sink returned by build_audit_sink never reached disk: {on_disk:?}"
+        );
+    }
+
+    /// An operator who asked for an audit trail and cannot have one must be
+    /// told, not silently given a proxy that records nothing.
+    #[tokio::test]
+    async fn an_unopenable_path_is_an_error_not_a_silent_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("does/not/exist/audit.jsonl");
+        match build_audit_sink(Some(&path)).await {
+            Ok(_) => panic!("a configured-but-unopenable audit path must not degrade to no sink"),
+            Err(e) => assert_eq!(e.kind(), io::ErrorKind::NotFound),
+        }
+    }
+
+    /// The evidence has to survive serialisation to reach a reader at all, and
+    /// it has to survive it *as the thing that was recorded* — a round trip that
+    /// silently normalised `not_forwarded` into anything else would leave the
+    /// prevention rule reading a value the proxy never observed.
+    #[tokio::test]
+    async fn non_transmission_evidence_survives_the_trip_to_disk() {
+        let entry = ProxyAuditEntry {
+            execution: ExecutionEvidence::new(
+                EnforcementPoint::PreTransmission,
+                TransmissionEvidence::NotForwarded,
+                EnforcementMode::Enforce,
+            ),
+            ..clean_entry("api.example", ProxyAuditDecision::Blocked)
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let (tx, rx) = mpsc::channel(4);
+        let writer = JsonlWriter::new(&path, rx).await.unwrap();
+        let handle = tokio::spawn(writer.run());
+        tx.send(entry).await.unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            on_disk.contains("\"not_forwarded\""),
+            "the on-disk line must spell the evidence: {on_disk}"
+        );
+        let back: ProxyAuditEntry = serde_json::from_str(on_disk.trim()).expect("the line parses");
+        assert!(
+            back.execution.establishes_non_transmission(),
+            "the persisted record lost the only observation that can support a prevention claim"
+        );
     }
 }
