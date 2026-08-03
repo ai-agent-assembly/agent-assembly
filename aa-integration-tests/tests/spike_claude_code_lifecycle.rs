@@ -11,9 +11,12 @@
 //! # Portability
 //!
 //! CI runs on Linux, where there is no `claude` binary and no macOS keychain.
-//! Scenarios needing the real binary call `require_claude()` and return early
-//! with `SKIP: …` printed. Everything else — the adapter, the receipt, the
-//! proxy, the scanner, the mock provider — is pure Rust and runs everywhere.
+//! Scenarios needing the real binary call `require_claude(scenario)` and return
+//! early with `SKIP [...]` printed *and* a `tool_absent` record written to the
+//! evidence ledger (AAASM-5465), so the decline is legible to the CI summary and
+//! not only to a human reading stdout. Everything else — the adapter, the
+//! receipt, the proxy, the scanner, the mock provider — is pure Rust and runs
+//! everywhere; none of it emits a skip line.
 //!
 //! # Safety
 //!
