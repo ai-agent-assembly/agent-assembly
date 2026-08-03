@@ -23,11 +23,40 @@ use super::store::{CategoryFindingAggregate, SensitiveDataEventFilter, Sensitive
 /// tamper-evident tier, and `tests/sensitive_data_contract/` asserts
 /// the column sets from outside this module so the omission cannot be undone
 /// quietly.
+///
+/// # Why the primary key carries the tenant keys
+///
+/// AAASM-5447: `event_id` alone was the key on a table every read scopes by
+/// `(org_id, tenant_id)`. Uniqueness that is narrower than the read scope is a
+/// cross-tenant denial-of-recording: a second tenant writing an `event_id` the
+/// first had already used had its insert skipped as a duplicate, its child rows
+/// skipped with it, and its write still returned `Written`. The tenant then read
+/// its own data and saw nothing — and on a governance surface a missing record
+/// reads as "nothing happened".
+///
+/// `event_id` is producer-supplied, so the collision is available to anyone able
+/// to influence their own id and arrives by accident across a large enough
+/// tenant population. Keying on `(org_id, tenant_id, event_id)` makes the
+/// uniqueness scope and the read scope the same thing, which is the invariant
+/// that was actually wanted; first-write-wins is preserved *within* a tenant.
+///
+/// Every `ON CONFLICT` target names exactly these columns. A conflict target
+/// that drifts from the key silently stops matching, so the two must be changed
+/// together.
+///
+/// # Migration position
+///
+/// These statements are `CREATE TABLE IF NOT EXISTS`, so they do **not** alter
+/// the key of a table that already exists. That is acceptable only because this
+/// tier is off by default and has no producer: nothing writes to it until
+/// AAASM-5440 lands, so there is no deployed data to migrate today. That is a
+/// statement about right now, not a property of the design — once a producer
+/// exists, changing this key needs a real migration that recreates the tables.
 const PROJECTION_SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sensitive_data_events (
         schema_version_major      INTEGER NOT NULL,
         schema_version_minor      INTEGER NOT NULL,
-        event_id                  TEXT    NOT NULL PRIMARY KEY,
+        event_id                  TEXT    NOT NULL,
         occurred_at_ns            INTEGER NOT NULL,
         ingested_at_ns            INTEGER NOT NULL,
         org_id                    TEXT    NOT NULL,
@@ -65,7 +94,8 @@ const PROJECTION_SCHEMA: &[&str] = &[
         blocked_finding_count     INTEGER NOT NULL,
         transformed_finding_count INTEGER NOT NULL,
         finding_count_by_category TEXT    NOT NULL,
-        reason_codes              TEXT    NOT NULL
+        reason_codes              TEXT    NOT NULL,
+        PRIMARY KEY (org_id, tenant_id, event_id)
     )",
     // Every read is tenant-scoped, so every index leads with the tenant keys.
     "CREATE INDEX IF NOT EXISTS idx_sd_events_scope_ts
@@ -91,7 +121,7 @@ const PROJECTION_SCHEMA: &[&str] = &[
         field_path           TEXT    NOT NULL,
         redaction_label      TEXT    NOT NULL,
         aggregate_key        TEXT    NOT NULL,
-        PRIMARY KEY (event_id, finding_ordinal)
+        PRIMARY KEY (org_id, tenant_id, event_id, finding_ordinal)
     )",
     "CREATE INDEX IF NOT EXISTS idx_sd_findings_scope_category
         ON sensitive_data_findings(org_id, tenant_id, verdict, category)",
@@ -279,7 +309,7 @@ impl SensitiveDataProjection for SqliteBackend {
             .await
             .map_err(|e| StorageError::QueryFailed(format!("begin: {e}")))?;
 
-        // `ON CONFLICT(event_id) DO NOTHING` is the idempotency rule: a
+        // `ON CONFLICT(org_id, tenant_id, event_id) DO NOTHING` is the idempotency rule: a
         // replayed event is a no-op, so a retried publish cannot double-count.
         // First write wins.
         //
@@ -294,7 +324,7 @@ impl SensitiveDataProjection for SqliteBackend {
         let placeholders = vec!["?"; 41].join(", ");
         let inserted = sqlx::query(&format!(
             "INSERT INTO sensitive_data_events ({EVENT_COLUMNS}) VALUES ({placeholders}) \
-             ON CONFLICT(event_id) DO NOTHING"
+             ON CONFLICT(org_id, tenant_id, event_id) DO NOTHING"
         ))
         .bind(i64::from(event.schema_version_major))
         .bind(i64::from(event.schema_version_minor))
@@ -365,7 +395,7 @@ impl SensitiveDataProjection for SqliteBackend {
             sqlx::query(&format!(
                 "INSERT INTO sensitive_data_findings ({FINDING_COLUMNS}) \
                  VALUES ({finding_placeholders}) \
-                 ON CONFLICT(event_id, finding_ordinal) DO NOTHING"
+                 ON CONFLICT(org_id, tenant_id, event_id, finding_ordinal) DO NOTHING"
             ))
             .bind(i64::from(finding.schema_version_major))
             .bind(i64::from(finding.schema_version_minor))

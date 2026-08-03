@@ -69,6 +69,7 @@ async fn the_projection_contract_holds_on_postgres() {
     contract::one_blocked_action_with_three_findings_stays_one_event(&store).await;
     contract::a_row_count_disagreeing_with_the_tally_is_refused(&store).await;
     contract::a_neighbouring_tenant_sees_none_of_it(&store).await;
+    contract::two_tenants_sharing_an_event_id_keep_their_own_rows(&store).await;
     contract::a_replayed_event_does_not_double_count(&store).await;
     contract::a_divergent_replay_cannot_desynchronise_parent_from_children(&store).await;
     contract::a_late_duplicate_cannot_rewrite_stored_tallies(&store).await;
