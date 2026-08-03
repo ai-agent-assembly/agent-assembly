@@ -13,13 +13,27 @@
 //!
 //! # The invariant this module exists to make structural
 //!
-//! [`ForwardAuthorized`] has a private field and is minted by exactly one
-//! function — [`forwarded`]. [`ProxyServer::dial_upstream_tls`] and the
-//! plain-HTTP dial take one by value. So **no code path can reach the wire
-//! while holding evidence that says the payload was withheld**: the key to the
-//! dial is only issued together with evidence that says the opposite. That is a
-//! compile-time property of the call graph, not a timing coincidence a test has
-//! to chase.
+//! Every route to the wire — [`ProxyServer::dial_upstream_tls`], the plain-HTTP
+//! dial, and the transparent tunnel — takes a [`ForwardAuthorized`] by value.
+//! That token has a private field and is minted in exactly one place:
+//! [`ForwardObservation::persist`], **after** the observation it was created
+//! with has been handed to the sink.
+//!
+//! The binding matters more than the unforgeability. An earlier shape issued
+//! the token alongside the evidence and left the two separable, so a branch
+//! could hold a genuine token, persist some *other* evidence — say a
+//! hand-built `NotForwarded` — and still dial: a manufactured prevented
+//! transmission for bytes that went on the wire, with nothing to catch it.
+//! `persist` closes that by never taking evidence as a parameter. The caller
+//! supplies the identifying fields of the record; the evidence written is the
+//! observation's own. So the record that reaches the sink and the
+//! authorization that reaches the dial necessarily describe the same
+//! observation.
+//!
+//! What this does **not** claim: it does not stop a branch from writing an
+//! unrelated second record through [`ProxyServer::emit_audit_entry`], which the
+//! refusal branches still need. It guarantees that *the record a dial was
+//! authorized by* says the bytes went.
 //!
 //! # Naming rule
 //!
@@ -31,21 +45,133 @@
 //! attribute its non-transmission to the policy.
 //!
 //! [`ProxyServer::dial_upstream_tls`]: crate::proxy::ProxyServer
+//! [`ProxyServer::emit_audit_entry`]: crate::proxy::ProxyServer
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use tokio::sync::mpsc;
 
 use aa_core::policy::EnforcementMode;
 use aa_core::types::sensitive_data::{EnforcementPoint, ExecutionEvidence, TransmissionEvidence};
+use aa_security::CredentialFinding;
 
+use crate::audit_jsonl::{record_dropped_entry, ProxyAuditDecision, ProxyAuditEntry};
 use crate::config::CredentialAction;
 use crate::intercept::VerdictDecision;
 
 /// Permission to dial upstream for one request.
 ///
 /// Carries no data: its whole value is that it cannot be constructed outside
-/// this module, and the only function that produces one — [`forwarded`] — also
-/// produces evidence that the bytes were forwarded. A branch that observed
-/// non-transmission therefore has no way to obtain one.
+/// this module, and the only place that produces one is
+/// [`ForwardObservation::persist`], after that observation has been handed to
+/// the sink. A branch that observed non-transmission has no way to obtain one,
+/// and a branch that persisted a *different* observation has no way to obtain
+/// one either.
 #[must_use = "a dial authorization exists only to be handed to the dial it authorizes"]
 pub struct ForwardAuthorized(());
+
+/// The identifying half of a decision record: everything a
+/// [`ProxyAuditEntry`] carries **except** the execution evidence.
+///
+/// The evidence is deliberately absent. It is supplied by the observation that
+/// persists the record, so no caller is in a position to pair one observation's
+/// authorization with another observation's evidence.
+pub struct DecisionRecord {
+    /// Target host, no port.
+    pub host: String,
+    /// HTTP method of the intercepted request.
+    pub method: String,
+    /// Request target, **already redacted** by the caller (AAASM-4738).
+    pub path: String,
+    /// What the proxy resolved to do.
+    pub decision: ProxyAuditDecision,
+    /// Per-match scanner output.
+    pub findings: Vec<CredentialFinding>,
+    /// Post-scan body, when the caller has one it is willing to persist.
+    pub redacted_body: Option<String>,
+    /// Correlation id when this request was a protection probe's own traffic.
+    ///
+    /// Probe traffic is synthetic: its refusals are real refusals of a request
+    /// that was never going to be a leak. A consumer computing a prevention
+    /// rate has to be able to exclude it, and can only do that if the record
+    /// says so (AAASM-5359/5360).
+    pub probe_correlation: Option<String>,
+}
+
+impl DecisionRecord {
+    /// Attach `execution` and hand the finished entry to the sink.
+    ///
+    /// `try_send` rather than `send`: a slow JSONL writer must not stall an
+    /// intercepted request. Drops are counted so a lossy period is visible
+    /// rather than inferred from a gap.
+    pub(crate) fn send(self, sink: Option<&mpsc::Sender<ProxyAuditEntry>>, execution: ExecutionEvidence) {
+        let Some(tx) = sink else { return };
+        let ts_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let entry = ProxyAuditEntry {
+            ts_ms,
+            agent_id: None,
+            host: self.host,
+            method: self.method,
+            path: self.path,
+            decision: self.decision,
+            execution,
+            probe_correlation: self.probe_correlation,
+            credential_findings: self.findings,
+            redacted_body: self.redacted_body,
+        };
+        if let Err(e) = tx.try_send(entry) {
+            let dropped = record_dropped_entry();
+            tracing::warn!(
+                error = %e,
+                dropped_total = dropped,
+                "proxy audit jsonl channel full or closed, dropping entry",
+            );
+        }
+    }
+}
+
+/// An observation that the proxy resolved to forward these bytes, not yet
+/// recorded.
+///
+/// Produced only by [`forwarded`]. Holds its evidence privately and offers no
+/// way to extract the dial authorization except through
+/// [`persist`](Self::persist).
+#[must_use = "an unpersisted forwarding observation is an unrecorded decision, and yields no dial key"]
+pub struct ForwardObservation {
+    evidence: ExecutionEvidence,
+}
+
+impl ForwardObservation {
+    /// What was observed. Read-only — for logging and assertions, never as an
+    /// input to the record.
+    pub fn evidence(&self) -> ExecutionEvidence {
+        self.evidence
+    }
+
+    /// Persist this observation and take the key to the wire.
+    ///
+    /// `record` is `None` for a branch with no decision event to write — a
+    /// clean body decided nothing, and inventing an event for it would change
+    /// what the audit trail counts. The key is issued either way, because the
+    /// invariant is about *what a persisted record says*, not about forcing a
+    /// record to exist for traffic there was no decision about.
+    ///
+    /// The evidence written is [`self.evidence`](Self::evidence). It is not a
+    /// parameter, and that is the whole point.
+    pub fn persist(
+        self,
+        sink: Option<&mpsc::Sender<ProxyAuditEntry>>,
+        record: Option<DecisionRecord>,
+    ) -> ForwardAuthorized {
+        if let Some(record) = record {
+            record.send(sink, self.evidence);
+        }
+        ForwardAuthorized(())
+    }
+}
 
 /// The enforcement mode the observed decision was actually taken under.
 ///
@@ -129,8 +255,11 @@ pub const fn terminated_by_probe_protocol(decision: VerdictDecision, action: Cre
     )
 }
 
-/// Evidence for bytes the proxy resolved to forward, plus the authorization to
-/// dial.
+/// Observe that the proxy resolved to forward these bytes.
+///
+/// Returns the observation, not a dial key: the key comes from
+/// [`ForwardObservation::persist`], so the only route to the wire runs through
+/// having recorded this observation.
 ///
 /// `reinspection` is `Some(true)` when the bytes that will go were re-scanned
 /// and found free of credentials, `Some(false)` when they still carry one, and
@@ -146,23 +275,23 @@ pub const fn terminated_by_probe_protocol(decision: VerdictDecision, action: Cre
 /// that is the only direction that is safe: an over-stated transmission can
 /// never turn a forwarded action into a prevented one, whereas the converse
 /// would invent a block that never happened.
-#[must_use = "the authorization is the only key to the dial this evidence describes"]
 pub fn forwarded(
     decision: VerdictDecision,
     action: CredentialAction,
     reinspection: Option<bool>,
-) -> (ExecutionEvidence, ForwardAuthorized) {
+) -> ForwardObservation {
     let transmission = match reinspection {
         Some(true) => TransmissionEvidence::ForwardedClean,
         Some(false) => TransmissionEvidence::ForwardedCarryingSensitiveValue,
         None => TransmissionEvidence::ForwardedNotInspected,
     };
-    let evidence = ExecutionEvidence::new(
-        EnforcementPoint::PreTransmission,
-        transmission,
-        observed_mode(decision, action),
-    );
-    (evidence, ForwardAuthorized(()))
+    ForwardObservation {
+        evidence: ExecutionEvidence::new(
+            EnforcementPoint::PreTransmission,
+            transmission,
+            observed_mode(decision, action),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -191,7 +320,7 @@ mod tests {
         for decision in DECISIONS {
             for action in ACTIONS {
                 for reinspection in [Some(true), Some(false), None] {
-                    let (evidence, _authorized) = forwarded(decision, action, reinspection);
+                    let evidence = forwarded(decision, action, reinspection).evidence();
                     assert!(
                         !evidence.transmission.proves_non_transmission(),
                         "{decision:?}/{action:?}/{reinspection:?} authorized a dial while claiming the payload was withheld"
@@ -214,11 +343,12 @@ mod tests {
     /// a transformed transmission.
     #[test]
     fn a_clean_redaction_records_transmitted_not_prevented() {
-        let (evidence, _authorized) = forwarded(
+        let evidence = forwarded(
             VerdictDecision::ForwardRedacted,
             CredentialAction::RedactOnly,
             Some(true),
-        );
+        )
+        .evidence();
         assert_eq!(evidence.transmission, TransmissionEvidence::ForwardedClean);
         assert!(evidence.transmission.proves_transmission());
         assert!(!evidence.establishes_non_transmission());
@@ -228,11 +358,12 @@ mod tests {
     /// evidence is about the bytes, not about what the decision meant to do.
     #[test]
     fn a_redaction_that_did_not_scrub_records_the_payload_still_carrying_a_value() {
-        let (evidence, _authorized) = forwarded(
+        let evidence = forwarded(
             VerdictDecision::ForwardRedacted,
             CredentialAction::RedactOnly,
             Some(false),
-        );
+        )
+        .evidence();
         assert_eq!(
             evidence.transmission,
             TransmissionEvidence::ForwardedCarryingSensitiveValue
@@ -243,7 +374,7 @@ mod tests {
     /// An uninspected payload must never read as clean.
     #[test]
     fn an_uninspected_forward_says_so() {
-        let (evidence, _authorized) = forwarded(VerdictDecision::Forward, CredentialAction::RedactOnly, None);
+        let evidence = forwarded(VerdictDecision::Forward, CredentialAction::RedactOnly, None).evidence();
         assert_eq!(evidence.transmission, TransmissionEvidence::ForwardedNotInspected);
     }
 
@@ -344,7 +475,7 @@ mod tests {
             for action in ACTIONS {
                 out.push(not_forwarded(decision, action).enforcement_point);
                 out.push(terminated_by_probe_protocol(decision, action).enforcement_point);
-                out.push(forwarded(decision, action, Some(true)).0.enforcement_point);
+                out.push(forwarded(decision, action, Some(true)).evidence().enforcement_point);
             }
         }
         out

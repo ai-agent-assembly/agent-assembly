@@ -6,7 +6,7 @@
 pub mod http;
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
@@ -19,7 +19,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use aa_runtime::gateway_client::GatewayClient;
 use aa_runtime::pipeline::PipelineEvent;
 
-use crate::audit_jsonl::{ProxyAuditDecision, ProxyAuditEntry};
+use crate::audit_jsonl::{bound_persisted_body, ProxyAuditDecision, ProxyAuditEntry};
 use crate::config::ProxyConfig;
 use crate::credentials::CredentialStore;
 use crate::error::ProxyError;
@@ -34,9 +34,9 @@ use crate::proxy::http::{
     serialize_http_response, HttpRequest, MAX_BODY_LEN, MAX_HEADER_BYTES, MAX_HEADER_COUNT, MAX_HEADER_LINE_LEN,
 };
 use crate::tls::{CaStore, CertCache};
-use crate::transmission_evidence::{self, ForwardAuthorized};
+use crate::transmission_evidence::{self, DecisionRecord, ForwardAuthorized, ForwardObservation};
 
-use aa_core::types::sensitive_data::ExecutionEvidence;
+use aa_core::types::sensitive_data::{ExecutionEvidence, TransmissionEvidence};
 
 /// A TLS `ServerCertVerifier` that accepts any certificate.
 ///
@@ -82,6 +82,23 @@ impl ServerCertVerifier for NoCertVerifier {
             .supported_schemes()
     }
 }
+
+/// The observation shared by every rule that refuses a request before a
+/// credential verdict exists (AAASM-5358).
+///
+/// These are the *most* provable preventions the proxy makes — the denylist,
+/// the network allowlist, in-tunnel host forgery, a plaintext downgrade to an
+/// LLM host, a gateway `tools/call` deny — because the 403 or JSON-RPC error is
+/// written in place of a dial that has no code path after it.
+///
+/// It is **logged and not persisted**. These branches refuse before
+/// `intercept_request` runs, so there is no sensitive-data decision event to
+/// attach evidence to, and synthesising one would invent events the audit trail
+/// has never counted. The consequence is real and should be stated rather than
+/// glossed: until a producer exists for them, the §8 prevention metric cannot
+/// see the proxy's strongest refusals. Persisting them is follow-up work, not
+/// something this constant achieves.
+const NOT_FORWARDED_BY_RULE: ExecutionEvidence = transmission_evidence::not_forwarded_by_rule();
 
 /// Build a JSON-RPC 2.0 error response body carrying the policy reason.
 ///
@@ -295,11 +312,11 @@ impl ProxyServer {
     /// a slow JSONL writer must not stall the data path; a dropped entry
     /// is preferable to back-pressuring the proxy.
     ///
-    /// `execution` is required rather than derived from `decision`: the
-    /// decision says what the proxy resolved to do, and only the caller knows
-    /// what was observed about the bytes (AAASM-5358). Every call site that
-    /// reaches here has already had to name its observation in order to
-    /// continue — see [`crate::transmission_evidence`].
+    /// This is the **refusal** path's recorder: it takes evidence as a
+    /// parameter and produces no dial key, because a branch that returns to the
+    /// client has no wire to reach. Forwarding branches must go through
+    /// [`ForwardObservation::persist`], which supplies its own evidence and is
+    /// the only source of a [`ForwardAuthorized`] (AAASM-5358).
     async fn emit_audit_entry(
         self: &Arc<Self>,
         host: &str,
@@ -309,18 +326,37 @@ impl ProxyServer {
         decision: ProxyAuditDecision,
         execution: ExecutionEvidence,
     ) {
-        let Some(tx) = self.audit_jsonl_tx.as_ref() else { return };
-        let ts_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-        let redacted_body = verdict
-            .redacted_body
-            .as_ref()
-            .and_then(|b| std::str::from_utf8(b).ok().map(|s| s.to_owned()));
-        let entry = ProxyAuditEntry {
-            ts_ms,
-            agent_id: None,
+        self.decision_record(host, method, target, verdict, decision, execution, None)
+            .send(self.audit_jsonl_tx.as_ref(), execution);
+    }
+
+    /// Assemble the identifying half of a decision record.
+    ///
+    /// `execution` is consulted, not stored: a body the proxy has just reported
+    /// as *still carrying a sensitive value* is not persisted. The "no raw
+    /// value on disk" guarantee would otherwise be exactly as strong as the
+    /// scrubber, in the one branch where the proxy itself says the scrubber did
+    /// not hold.
+    #[allow(clippy::too_many_arguments)]
+    fn decision_record(
+        &self,
+        host: &str,
+        method: &str,
+        target: &str,
+        verdict: &InterceptVerdict,
+        decision: ProxyAuditDecision,
+        execution: ExecutionEvidence,
+        probe_correlation: Option<String>,
+    ) -> DecisionRecord {
+        let redacted_body = if execution.transmission == TransmissionEvidence::ForwardedCarryingSensitiveValue {
+            None
+        } else {
+            verdict
+                .redacted_body
+                .as_ref()
+                .and_then(|b| std::str::from_utf8(b).ok().map(|s| bound_persisted_body(s.to_owned())))
+        };
+        DecisionRecord {
             host: host.to_owned(),
             method: method.to_owned(),
             // The target can carry a secret in its query string (`?key=…`,
@@ -329,17 +365,54 @@ impl ProxyServer {
             // body-only redaction left target secrets in cleartext (AAASM-4738).
             path: self.interceptor.redact_target(target),
             decision,
-            execution,
-            credential_findings: verdict.findings.clone(),
+            findings: verdict.findings.clone(),
             redacted_body,
-        };
-        if let Err(e) = tx.try_send(entry) {
-            tracing::warn!(error = %e, "proxy audit jsonl channel full or closed, dropping entry");
+            probe_correlation,
         }
     }
 
-    /// State what will be on the wire for a verdict that resolved to forward,
-    /// and take the authorization that permits the dial (AAASM-5358).
+    /// Persist a forwarding decision and take the key to the wire.
+    ///
+    /// The single choke point between "we resolved to forward" and any dial.
+    /// The evidence written is the observation's own — this function never sees
+    /// an `ExecutionEvidence` parameter, so it cannot record one observation
+    /// and authorize another.
+    ///
+    /// `decision` is `None` for a branch with no decision event to write: a
+    /// clean body decided nothing, and minting an event for it would change
+    /// what the audit trail counts.
+    async fn record_forwarding(
+        self: &Arc<Self>,
+        observation: ForwardObservation,
+        host: &str,
+        method: &str,
+        target: &str,
+        verdict: &InterceptVerdict,
+        decision: Option<ProxyAuditDecision>,
+    ) -> ForwardAuthorized {
+        let record = decision.map(|decision| {
+            self.decision_record(host, method, target, verdict, decision, observation.evidence(), None)
+        });
+        observation.persist(self.audit_jsonl_tx.as_ref(), record)
+    }
+
+    /// Which decision event, if any, a forwarding verdict writes.
+    ///
+    /// `ForwardRedacted` and `AlertAndForward` both found something and both
+    /// forwarded; a clean `Forward` decided nothing. Shared by all three
+    /// forwarding paths so plain-HTTP cannot drift from the MitM handlers
+    /// again — it previously omitted `alert_only` entirely, silently emptying
+    /// the detected-but-forwarded numerator for cleartext traffic.
+    fn forwarding_audit_decision(decision: VerdictDecision) -> Option<ProxyAuditDecision> {
+        match decision {
+            VerdictDecision::ForwardRedacted => Some(ProxyAuditDecision::ForwardedRedacted),
+            VerdictDecision::AlertAndForward => Some(ProxyAuditDecision::Forwarded),
+            VerdictDecision::Forward | VerdictDecision::Block => None,
+        }
+    }
+
+    /// State what will be on the wire for a verdict that resolved to forward
+    /// (AAASM-5358).
     ///
     /// The re-inspection question is "what do the bytes that are about to go
     /// carry", which is not answerable from the verdict alone:
@@ -354,7 +427,7 @@ impl ProxyServer {
     ///   first may be reported as clean — hence
     ///   [`Interceptor::inspects`](crate::intercept::Interceptor::inspects)
     ///   rather than a second full scan on the hot path.
-    fn observe_forwarding(&self, verdict: &InterceptVerdict) -> (ExecutionEvidence, ForwardAuthorized) {
+    fn observe_forwarding(&self, verdict: &InterceptVerdict) -> ForwardObservation {
         let reinspection = match verdict.decision {
             VerdictDecision::ForwardRedacted => verdict
                 .redacted_body
@@ -399,7 +472,13 @@ impl ProxyServer {
     /// time the proxy actually dials. We refuse any such address here. Resolved
     /// addresses are filtered, not just the first, so a poisoned A-record set
     /// cannot slip an internal IP through behind a public one.
-    async fn connect_revalidated(&self, target: &str) -> Result<TcpStream, ProxyError> {
+    ///
+    /// Takes a [`ForwardAuthorized`] because this is the *shared* bottom of
+    /// every route to the wire — the TLS dial, the plain-HTTP dial, and the
+    /// transparent tunnel all end here. Gating only the first two left the
+    /// tunnel (which under the default `llm_only: true` carries all non-LLM
+    /// traffic) reachable without an observation (AAASM-5358).
+    async fn connect_revalidated(&self, target: &str, _authorized: ForwardAuthorized) -> Result<TcpStream, ProxyError> {
         let addrs: Vec<_> = tokio::net::lookup_host(target)
             .await
             .map_err(|e| ProxyError::Config(format!("dns resolution failed for {target}: {e}")))?
@@ -447,7 +526,7 @@ impl ProxyServer {
             // mock, so the SSRF re-validation below would (correctly) reject it.
             // Skip it here; the override is never set in production.
             Some(addr) => TcpStream::connect(addr).await?,
-            None => self.connect_revalidated(target).await?,
+            None => self.connect_revalidated(target, _authorized).await?,
         };
         let client_config = if self.config.skip_upstream_tls_verify {
             // Integration-test-only path: skip certificate verification so tests
@@ -491,7 +570,7 @@ impl ProxyServer {
     ) -> Result<TcpStream, ProxyError> {
         match self.config.upstream_override {
             Some(addr) => Ok(TcpStream::connect(addr).await?),
-            None => self.connect_revalidated(upstream_addr).await,
+            None => self.connect_revalidated(upstream_addr, _authorized).await,
         }
     }
 
@@ -704,7 +783,7 @@ impl ProxyServer {
             tracing::info!(
                 connect_host = %host,
                 in_tunnel_host = %in_host,
-                transmission = transmission_evidence::not_forwarded_by_rule().transmission.as_str(),
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "in-tunnel egress denied: {reason}",
             );
             self.interceptor.emit_policy_decision(in_host, true).await;
@@ -723,7 +802,7 @@ impl ProxyServer {
                 McpEvalOutcome::Deny(resp) => {
                     tracing::info!(
                         %host,
-                        transmission = transmission_evidence::not_forwarded_by_rule().transmission.as_str(),
+                        transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                         "MCP call refused; answering the client instead of dialling upstream",
                     );
                     let mut client_tls = client_reader.into_inner();
@@ -766,37 +845,24 @@ impl ProxyServer {
             return Ok(());
         }
 
-        // AAASM-5358: name the observation before anything can reach the wire.
-        // `authorized` is the only key to `dial_upstream_tls`.
-        let (execution, authorized) = self.observe_forwarding(&verdict);
+        // AAASM-5358: record the observation, and take the key the dial needs.
+        // The evidence persisted here is the observation's own — there is no
+        // route from this branch to the wire that does not go through it.
+        let authorized = self
+            .record_forwarding(
+                self.observe_forwarding(&verdict),
+                host,
+                &req.method,
+                &req.target,
+                &verdict,
+                Self::forwarding_audit_decision(verdict.decision),
+            )
+            .await;
         let forward_body: &[u8] = match verdict.decision {
-            VerdictDecision::ForwardRedacted => {
-                self.emit_audit_entry(
-                    host,
-                    &req.method,
-                    &req.target,
-                    &verdict,
-                    ProxyAuditDecision::ForwardedRedacted,
-                    execution,
-                )
-                .await;
-                verdict
-                    .redacted_body
-                    .as_deref()
-                    .expect("ForwardRedacted always carries redacted_body")
-            }
-            VerdictDecision::AlertAndForward => {
-                self.emit_audit_entry(
-                    host,
-                    &req.method,
-                    &req.target,
-                    &verdict,
-                    ProxyAuditDecision::Forwarded,
-                    execution,
-                )
-                .await;
-                &req.body
-            }
+            VerdictDecision::ForwardRedacted => verdict
+                .redacted_body
+                .as_deref()
+                .expect("ForwardRedacted always carries redacted_body"),
             _ => &req.body,
         };
 
@@ -951,7 +1017,7 @@ impl ProxyServer {
             tracing::info!(
                 connect_host = %host,
                 in_tunnel_host = %in_host,
-                transmission = transmission_evidence::not_forwarded_by_rule().transmission.as_str(),
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "in-tunnel egress denied: {reason}",
             );
             self.interceptor.emit_policy_decision(in_host, true).await;
@@ -1018,8 +1084,20 @@ impl ProxyServer {
                 transmission = execution.transmission.as_str(),
                 "adjudicated a protection probe request; answering it instead of forwarding upstream",
             );
-            self.emit_audit_entry(host, &req.method, &req.target, &verdict, audit_decision, execution)
-                .await;
+            // AAASM-5358: mark the record as synthetic. Under `block` this
+            // refusal is real and satisfies every §8 condition, so without the
+            // marker each probe run would contribute a prevented transmission
+            // indistinguishable from a real leak that was stopped.
+            self.decision_record(
+                host,
+                &req.method,
+                &req.target,
+                &verdict,
+                audit_decision,
+                execution,
+                Some(correlation.as_str().to_owned()),
+            )
+            .send(self.audit_jsonl_tx.as_ref(), execution);
             let mut client_tls = client_reader.into_inner();
             client_tls.write_all(&adjudication.http_response()).await?;
             let _ = client_tls.shutdown().await;
@@ -1051,36 +1129,18 @@ impl ProxyServer {
 
         // AAASM-5358: the audit entry for a forwarding branch used to be emitted
         // *after* the dial, so a request whose dial failed left no record at
-        // all. It is now emitted here, before the dial, and `authorized` is the
-        // only key to `dial_upstream_tls`.
-        let (execution, authorized) = self.observe_forwarding(&verdict);
-        match verdict.decision {
-            VerdictDecision::ForwardRedacted => {
-                self.emit_audit_entry(
-                    host,
-                    &req.method,
-                    &req.target,
-                    &verdict,
-                    ProxyAuditDecision::ForwardedRedacted,
-                    execution,
-                )
-                .await;
-            }
-            // Emit an audit entry so operators can see the alert-mode decision
-            // (findings are still recorded, body is not).
-            VerdictDecision::AlertAndForward => {
-                self.emit_audit_entry(
-                    host,
-                    &req.method,
-                    &req.target,
-                    &verdict,
-                    ProxyAuditDecision::Forwarded,
-                    execution,
-                )
-                .await;
-            }
-            _ => {}
-        }
+        // all. It is now written here, before the dial, and writing it is what
+        // produces the key `dial_upstream_tls` demands.
+        let authorized = self
+            .record_forwarding(
+                self.observe_forwarding(&verdict),
+                host,
+                &req.method,
+                &req.target,
+                &verdict,
+                Self::forwarding_audit_decision(verdict.decision),
+            )
+            .await;
 
         // Dial upstream only after we have decided not to block.
         let upstream_tls = self.dial_upstream_tls(host, target, authorized).await?;
@@ -1283,9 +1343,20 @@ impl ProxyServer {
     /// this path too — it is the most likely SSRF vector when the host resolves
     /// to an internal address.
     async fn transparent_tunnel(self: &Arc<Self>, stream: TcpStream, target: &str) -> Result<(), ProxyError> {
+        // AAASM-5358: this path relays bytes it never inspected, so the honest
+        // observation is "forwarded, and nothing looked at it" — never clean.
+        // There is no decision event to write (no verdict was taken), but the
+        // observation still has to exist, because it is what unlocks the dial.
+        let authorized = transmission_evidence::forwarded(
+            VerdictDecision::Forward,
+            self.config.credential_action,
+            // Not "the scanner is disabled" but "this route does not scan".
+            None,
+        )
+        .persist(self.audit_jsonl_tx.as_ref(), None);
         let upstream = match self.config.upstream_override {
             Some(addr) => TcpStream::connect(addr).await?,
-            None => self.connect_revalidated(target).await?,
+            None => self.connect_revalidated(target, authorized).await?,
         };
         let (mut cr, mut cw) = tokio::io::split(stream);
         let (mut ur, mut uw) = tokio::io::split(upstream);
@@ -1352,7 +1423,7 @@ impl ProxyServer {
         if let Some(reason) = self.connect_deny_reason(deny_host) {
             tracing::info!(
                 host = %deny_host,
-                transmission = transmission_evidence::not_forwarded_by_rule().transmission.as_str(),
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress denied: {reason}",
             );
             self.interceptor.emit_policy_decision(deny_host, true).await;
@@ -1378,7 +1449,7 @@ impl ProxyServer {
         if detect_api(deny_host) != LlmApiPattern::Unknown {
             tracing::info!(
                 host = %deny_host,
-                transmission = transmission_evidence::not_forwarded_by_rule().transmission.as_str(),
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress to LLM host refused: cleartext downgrade bypasses DLP",
             );
             self.interceptor.emit_policy_decision(deny_host, true).await;
@@ -1472,26 +1543,29 @@ impl ProxyServer {
             None
         };
 
-        // AAASM-5358: state what is about to go before the dial can happen.
-        // A bodyless request had nothing to inspect, which is reported as
-        // "forwarded, not inspected" — never as clean.
-        let (execution, authorized) = match verdict.as_ref() {
-            Some(verdict) => self.observe_forwarding(verdict),
-            None => transmission_evidence::forwarded(VerdictDecision::Forward, self.config.credential_action, None),
-        };
-        if let Some(verdict) = verdict.as_ref() {
-            if verdict.decision == VerdictDecision::ForwardRedacted {
-                self.emit_audit_entry(
+        // AAASM-5358: state what is about to go, and let writing that record be
+        // what unlocks the dial. A bodyless request had nothing to inspect,
+        // which is reported as "forwarded, not inspected" — never as clean.
+        //
+        // The audit decision comes from the same helper the MitM handlers use.
+        // This path previously wrote a record only for `ForwardRedacted`, so an
+        // `alert_only` deployment detected a credential in cleartext traffic,
+        // forwarded it, and persisted nothing at all.
+        let authorized = match verdict.as_ref() {
+            Some(verdict) => {
+                self.record_forwarding(
+                    self.observe_forwarding(verdict),
                     deny_host,
                     method,
                     target,
                     verdict,
-                    ProxyAuditDecision::ForwardedRedacted,
-                    execution,
+                    Self::forwarding_audit_decision(verdict.decision),
                 )
-                .await;
+                .await
             }
-        }
+            None => transmission_evidence::forwarded(VerdictDecision::Forward, self.config.credential_action, None)
+                .persist(self.audit_jsonl_tx.as_ref(), None),
+        };
 
         // Connect to upstream via plain TCP.
         let upstream_addr = if host.contains(':') {
@@ -2248,7 +2322,7 @@ mod tests {
             findings: Vec::new(),
             redacted_body: None,
         };
-        let (execution, _authorized) = server.observe_forwarding(&verdict);
+        let execution = server.observe_forwarding(&verdict).evidence();
         server
             .emit_audit_entry(
                 "api.example.com",
@@ -2496,10 +2570,11 @@ mod tests {
     /// A bodyless request has nothing to inspect. "Not inspected" is the honest
     /// answer; "clean" would be a claim no scan supports.
     #[tokio::test]
-    async fn a_bodyless_forward_is_recorded_as_uninspected_not_clean() {
+    async fn a_bodyless_forward_observes_an_uninspected_payload_not_a_clean_one() {
         let (server, _audit_rx) = server_with_audit(crate::config::CredentialAction::RedactOnly, None).await;
-        let (evidence, _authorized) =
-            transmission_evidence::forwarded(VerdictDecision::Forward, server.config.credential_action, None);
+        let evidence =
+            transmission_evidence::forwarded(VerdictDecision::Forward, server.config.credential_action, None)
+                .evidence();
         assert_eq!(evidence.transmission.as_str(), "forwarded_not_inspected");
         assert!(!evidence.transmission.proves_non_transmission());
     }
@@ -2568,7 +2643,7 @@ mod tests {
             },
         ];
         for verdict in verdicts {
-            let (evidence, _authorized) = server.observe_forwarding(&verdict);
+            let evidence = server.observe_forwarding(&verdict).evidence();
             assert!(
                 evidence.transmission.proves_transmission(),
                 "{:?} authorized a dial without recording that bytes went",
@@ -2582,19 +2657,120 @@ mod tests {
         }
     }
 
-    /// `alert_only` computes a decision and applies nothing, so its forwards are
-    /// dry-run and can never be counted as prevention.
+    /// `alert_only` detects a credential, forwards it unchanged, and must still
+    /// leave a record — the detected-but-forwarded numerator is exactly what a
+    /// dry-run deployment exists to produce.
+    ///
+    /// The plain-HTTP path wrote a record only for `ForwardRedacted`, so every
+    /// cleartext alert-mode detection was silently invisible. Driven end to end
+    /// through `handle_connection` rather than asserted on `observe_forwarding`,
+    /// which cannot see the sink and so could never have caught the omission.
     #[tokio::test]
-    async fn an_alert_only_forward_is_recorded_as_observed_not_enforced() {
-        let (server, mut audit_rx) = server_with_audit(crate::config::CredentialAction::AlertOnly, None).await;
-        let verdict = InterceptVerdict {
-            decision: VerdictDecision::AlertAndForward,
-            findings: Vec::new(),
-            redacted_body: None,
-        };
-        let (evidence, _authorized) = server.observe_forwarding(&verdict);
-        assert_eq!(evidence.mode, aa_core::policy::EnforcementMode::Observe);
-        assert!(!evidence.establishes_non_transmission());
-        assert!(audit_rx.try_recv().is_err(), "observing a verdict must not persist one");
+    async fn an_alert_only_plain_http_detection_is_recorded_as_an_observed_transmission() {
+        use tokio::io::AsyncReadExt as _;
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (mut sock, _) = upstream.accept().await.unwrap();
+            let mut chunk = [0u8; 4096];
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), sock.read(&mut chunk)).await;
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
+            let _ = sock.shutdown().await;
+        });
+
+        let (server, mut audit_rx) =
+            server_with_audit(crate::config::CredentialAction::AlertOnly, Some(upstream_addr)).await;
+        drive_plain_http(
+            &server,
+            &credential_post_with("http://example.com/v1/ingest", "example.com", &scrubbable_body()),
+        )
+        .await;
+        let _ = upstream_task.await;
+
+        let entry = audit_rx
+            .try_recv()
+            .expect("an alert-mode detection that was forwarded must still be recorded");
+        assert_eq!(entry.decision, ProxyAuditDecision::Forwarded);
+        assert!(
+            !entry.credential_findings.is_empty(),
+            "the record must carry the findings that were detected, else it counts nothing"
+        );
+        assert_eq!(entry.execution.mode, aa_core::policy::EnforcementMode::Observe);
+        assert!(entry.execution.transmission.proves_transmission());
+        assert!(
+            !entry.execution.establishes_non_transmission(),
+            "a dry-run forward is never a prevention"
+        );
+    }
+
+    /// The record must not carry bytes the proxy has just reported as still
+    /// carrying a sensitive value. In that branch the proxy's own re-inspection
+    /// says the scrubber did not hold, so persisting its output would rest the
+    /// "no raw value on disk" guarantee on the thing it just distrusted.
+    #[tokio::test]
+    async fn a_body_that_reinspects_dirty_is_not_persisted() {
+        use tokio::io::AsyncReadExt as _;
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (mut sock, _) = upstream.accept().await.unwrap();
+            let mut chunk = [0u8; 4096];
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), sock.read(&mut chunk)).await;
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
+            let _ = sock.shutdown().await;
+        });
+
+        let (server, mut audit_rx) =
+            server_with_audit(crate::config::CredentialAction::RedactOnly, Some(upstream_addr)).await;
+        drive_plain_http(
+            &server,
+            &credential_post_with("http://example.com/v1/ingest", "example.com", &unscrubbable_body()),
+        )
+        .await;
+        let _ = upstream_task.await;
+
+        let entry = audit_rx.try_recv().expect("the redaction persisted a decision record");
+        // Non-vacuity: this is the dirty branch, and the record has content.
+        assert_eq!(
+            entry.execution.transmission.as_str(),
+            "forwarded_carrying_sensitive_value"
+        );
+        assert!(!entry.credential_findings.is_empty());
+        assert!(
+            entry.redacted_body.is_none(),
+            "bytes the proxy reported as still carrying a value must not be persisted, got {:?}",
+            entry.redacted_body
+        );
+    }
+
+    /// The control for the previous test: it must be possible for a body to be
+    /// persisted at all, otherwise "not persisted" asserts nothing.
+    #[tokio::test]
+    async fn a_body_that_reinspects_clean_is_persisted() {
+        use tokio::io::AsyncReadExt as _;
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (mut sock, _) = upstream.accept().await.unwrap();
+            let mut chunk = [0u8; 4096];
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), sock.read(&mut chunk)).await;
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
+            let _ = sock.shutdown().await;
+        });
+
+        let (server, mut audit_rx) =
+            server_with_audit(crate::config::CredentialAction::RedactOnly, Some(upstream_addr)).await;
+        drive_plain_http(
+            &server,
+            &credential_post_with("http://example.com/v1/ingest", "example.com", &scrubbable_body()),
+        )
+        .await;
+        let _ = upstream_task.await;
+
+        let entry = audit_rx.try_recv().expect("the redaction persisted a decision record");
+        assert_eq!(entry.execution.transmission.as_str(), "forwarded_clean");
+        let body = entry.redacted_body.expect("a clean scrub is persisted");
+        assert!(body.contains("[REDACTED:"), "got {body}");
+        assert!(!body.contains(EVIDENCE_TEST_SECRET));
     }
 }
