@@ -1,9 +1,15 @@
 {
-  "description": "AAASM-5368: a 40-character secret split 20+20, the band that no pass could score. Entropy over n bytes is at most log2(n), and log2(22) = 4.4594 is below the 4.5 gate, so a contiguous run of 20, 21 or 22 characters cannot be scored by the contiguous base64 rule at any content — while an earlier form of the split rule declined runs of 20 or more on the reasoning that they were the contiguous rule's to score. A 40-character secret split anywhere from 17+23 to 22+18 therefore produced zero findings with both halves in the clear. Keying the split rule off 23 instead of 20 makes the two rules partition the runs with no gap and no overlap. This vector sits in the middle of that former dead band.",
+  "description": "AAASM-5368: a 40-character secret split 20+20, inside the band that no pass could score. Entropy over n bytes is at most log2(n), and log2(22) = 4.4594 is below the 4.5 gate, so a contiguous run of 20, 21 or 22 characters cannot be scored by the contiguous base64 rule at any content — while an earlier form of the split rule declined runs of 20 or more on the reasoning that they were the contiguous rule's to score, leaving those three lengths to nobody. Raising that cutoff to 23 was only a partial fix and its claim of a clean partition was wrong: length says whether the contiguous rule *could* have scored a run, not whether it *did*, and a random 23-24 character run clears the gate only about 5% of the time. Admission now asks whether an earlier pass actually produced a finding overlapping the run, which covers the literal, digit, email and entropy passes alike. See entropy_split_23_plus_17_detected.json for the case the length cutoff still missed.",
   "input_text": "authorization: aB3dEf7hJk9mNp2qRs5t Uv8wXy4zC6gLhQ1VdYtP end",
   "expected_findings": [
-    { "kind": "GenericHighEntropy", "offset": 15 },
-    { "kind": "GenericHighEntropy", "offset": 36 }
+    {
+      "kind": "GenericHighEntropy",
+      "offset": 15
+    },
+    {
+      "kind": "GenericHighEntropy",
+      "offset": 36
+    }
   ],
   "expected_redacted": "authorization: [REDACTED:GenericHighEntropy] [REDACTED:GenericHighEntropy] end"
 }
