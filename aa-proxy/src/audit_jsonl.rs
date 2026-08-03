@@ -133,6 +133,33 @@ impl JsonlWriter {
     }
 }
 
+/// Bounded capacity of the audit channel.
+///
+/// The data path uses `try_send` and drops on overflow rather than
+/// back-pressuring an intercepted request, so this bound is the amount of
+/// writer lag the proxy will absorb before audit lines start being lost.
+const AUDIT_CHANNEL_CAPACITY: usize = 1024;
+
+/// Open the audit sink an operator asked for, and spawn the writer that drains
+/// it.
+///
+/// `None` in, `None` out: no path configured means no persistence, which is
+/// the historical default and leaves the data path byte-identical.
+///
+/// # Errors
+///
+/// Propagates the open failure rather than degrading to `None`. An operator who
+/// configured an audit trail and silently got none would be in exactly the state
+/// this whole work stream exists to prevent — believing a record exists when it
+/// does not — so the proxy refuses to start instead.
+pub async fn build_audit_sink(path: Option<&Path>) -> io::Result<Option<mpsc::Sender<ProxyAuditEntry>>> {
+    let Some(path) = path else { return Ok(None) };
+    let (tx, rx) = mpsc::channel(AUDIT_CHANNEL_CAPACITY);
+    let writer = JsonlWriter::new(path, rx).await?;
+    tokio::spawn(writer.run());
+    Ok(Some(tx))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +383,60 @@ mod tests {
         assert_eq!(back.decision, ProxyAuditDecision::ForwardedRedacted);
         assert_eq!(back.redacted_body.as_deref(), Some("clean body"));
         assert_eq!(back.execution, entry.execution);
+    }
+
+    /// `build_audit_sink(None)` is the historical default: no path, no writer,
+    /// nothing on disk.
+    #[tokio::test]
+    async fn no_configured_path_builds_no_sink() {
+        let sink = build_audit_sink(None).await.expect("no path is not an error");
+        assert!(sink.is_none(), "an unconfigured proxy must not construct a writer");
+    }
+
+    /// The wiring `run()` depends on: a configured path really does produce a
+    /// live sender whose entries reach the file. Without this the sink would be
+    /// constructed-in-name-only, which is the exact defect this ticket found in
+    /// production.
+    #[tokio::test]
+    async fn a_configured_path_builds_a_sink_that_reaches_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let sink = build_audit_sink(Some(&path))
+            .await
+            .expect("open succeeds")
+            .expect("a configured path yields a sender");
+
+        sink.send(clean_entry("wired.example", ProxyAuditDecision::Blocked))
+            .await
+            .expect("the writer task is alive and draining");
+        drop(sink);
+
+        // The writer task owns the file; poll briefly for the flushed line
+        // rather than assuming the spawn has been scheduled.
+        let mut on_disk = String::new();
+        for _ in 0..200 {
+            on_disk = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+            if !on_disk.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            on_disk.contains("wired.example"),
+            "the sink returned by build_audit_sink never reached disk: {on_disk:?}"
+        );
+    }
+
+    /// An operator who asked for an audit trail and cannot have one must be
+    /// told, not silently given a proxy that records nothing.
+    #[tokio::test]
+    async fn an_unopenable_path_is_an_error_not_a_silent_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("does/not/exist/audit.jsonl");
+        match build_audit_sink(Some(&path)).await {
+            Ok(_) => panic!("a configured-but-unopenable audit path must not degrade to no sink"),
+            Err(e) => assert_eq!(e.kind(), io::ErrorKind::NotFound),
+        }
     }
 
     /// The evidence has to survive serialisation to reach a reader at all, and

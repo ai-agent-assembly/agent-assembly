@@ -68,7 +68,21 @@ pub async fn run(
         tracing::info!("CA installed successfully");
     }
 
-    let server = proxy::ProxyServer::new(config, ca, event_tx);
+    // AAASM-5358: until now nothing in production ever constructed the JSONL
+    // writer — this call site passed `None` unconditionally, so every finding,
+    // every block and every redaction the proxy recorded was discarded when the
+    // process exited. Persistence stays **opt-in** (an unset
+    // `AA_PROXY_AUDIT_JSONL_PATH` reproduces exactly that behaviour), but it is
+    // now reachable at all, which is what makes the execution evidence recorded
+    // on each entry worth recording. A configured-but-unopenable path is an
+    // error rather than a silent `None`: an operator who believes an audit trail
+    // exists and has none is the failure mode this work stream is about.
+    let audit_jsonl_tx = audit_jsonl::build_audit_sink(config::audit_jsonl_path_from_env().as_deref()).await?;
+    if audit_jsonl_tx.is_some() {
+        tracing::info!("proxy audit JSONL persistence enabled via AA_PROXY_AUDIT_JSONL_PATH");
+    }
+
+    let server = proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
     server.run().await?;
     Ok(())
 }
