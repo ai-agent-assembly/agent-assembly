@@ -29,6 +29,10 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"
+      # AAASM-5385: the Rust jobs' own shell implementations (the commit-range
+      # gate, the compat-matrix check). Without this, editing a gate's script
+      # does not re-run the gate that the script IS.
+      - ".ci/*.sh"
       - "openapi/v1.yaml"
       - "schemas/**/*.json"
       - "schemas/**/*.yaml"
@@ -84,6 +88,10 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"
+      # AAASM-5385: the Rust jobs' own shell implementations (the commit-range
+      # gate, the compat-matrix check). Without this, editing a gate's script
+      # does not re-run the gate that the script IS.
+      - ".ci/*.sh"
       - "openapi/v1.yaml"
       - "schemas/**/*.json"
       - "schemas/**/*.yaml"
@@ -174,6 +182,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'deny.toml'
+              - '.ci/*.sh'
               - 'openapi/v1.yaml'
               - '.spectral.yaml'
               - '.github/workflows/ci.yml'
@@ -317,6 +326,43 @@ jobs:
         # aa-ebpf requires nightly (aya-build invokes rustup run nightly).
         # It is validated by the dedicated ebpf-build job.
         run: cargo build --workspace --exclude aa-ebpf
+
+  # AAASM-5385. Every other Rust job builds exactly one tree: the merge result.
+  # That is the right tree to build (this repository never overrides `ref:`, so
+  # `actions/checkout` gives `refs/pull/N/merge` on a pull_request, not the PR
+  # head), but building only it leaves every INTERMEDIATE commit unbuilt, and an
+  # intermediate commit that a later commit repairs reaches `main` with every
+  # check green. c596246a2 did exactly that. `git bisect` then cannot run a test
+  # at that point in history, which is the cost CONTRIBUTING's "keep commits
+  # small and bisectable" was meant to buy.
+  #
+  # This job asserts behaviour — does each commit compile — so per CONTRIBUTING
+  # ("Which CI jobs block a merge") it is a member of `ci-success` and blocks.
+  # It is pull_request-only: a `push` to main has no merge ref, so there is no
+  # range to walk, and `ci-success` treats a skipped need as passing.
+  commit-range-build:
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
+    name: Every commit in the range builds
+    runs-on: ubuntu-latest
+    env:
+      # AAASM-2581: select mold for host-target links only.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The whole job is a walk over history, so the default shallow clone
+          # cannot serve it: `git rev-list HEAD^1..HEAD` needs the base's
+          # ancestry present. No `ref:` — the default merge ref is the point.
+          fetch-depth: 0
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+      - name: Install mold linker
+        run: sudo apt-get install -y mold
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Build every commit the merge introduces
+        run: .ci/verify-range-builds.sh
 
   fmt:
     needs: [changes]
@@ -1662,6 +1708,11 @@ jobs:
       - changes
       - dashboard-assets
       - build
+      # AAASM-5385: asserts behaviour (does every commit in the range compile),
+      # not a metric, so it blocks — see CONTRIBUTING, "Which CI jobs block a
+      # merge". A gate that catches an unbuildable commit but does not block is
+      # a report nobody reads, which is the condition it exists to end.
+      - commit-range-build
       - fmt
       - clippy
       - docs
