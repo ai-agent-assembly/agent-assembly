@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-5364: the mixed case — ASCII digits typed with the input method still in full-width mode, so only the two separators differ from pii_ssn.json. It is the cheapest form of the evasion and the one a user reaches by accident, and it is the least uniform span in the suite: nine 1-byte digits interleaved with two 3-byte separators, so an end offset derived from the normalised 11-byte string lands four bytes short of the value.",
+  "input_text": "ssn=123－45－6789",
+  "expected_findings": [
+    { "kind": "SsnPattern", "offset": 4 }
+  ],
+  "expected_redacted": "ssn=[REDACTED:SsnPattern]"
+}

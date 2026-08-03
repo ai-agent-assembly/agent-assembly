@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5364 negative: clean Traditional-Chinese prose whose numbers are written with U+FF0D and U+3000 — a date range, a phone number with an extension and a version range. These are ordinary content in zh-TW and ja documents and are far more common there than the SSN the widened separator set exists to catch, so they are the false-positive class the widening risks. Every line reaches the joined-segment walk that only ASCII-separated text reached before this ticket, and each joined run is an independent chance of a coincidental Luhn pass; none may be reported.",
+  "input_text": "報表期間　２０２４－０１－０１　至　２０２４－１２－３１，共 365 天。 聯絡電話　０２－１２３４－５６７８，分機 21。 版本區間　１．０．０－２．３．４，共 12 個修訂。",
+  "expected_findings": [],
+  "expected_redacted": "報表期間　２０２４－０１－０１　至　２０２４－１２－３１，共 365 天。 聯絡電話　０２－１２３４－５６７８，分機 21。 版本區間　１．０．０－２．３．４，共 12 個修訂。"
+}
