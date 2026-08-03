@@ -52,7 +52,12 @@ set -uo pipefail
 
 SKIP_LIST_PATH=".ci/bisect-skip.txt"
 
-BUILD_CMD=${AA_BISECT_BUILD:-"cargo check --workspace --all-targets --exclude aa-ebpf"}
+# Deliberately identical to `.ci/verify-range-builds.sh`'s command, so that
+# "does not build" means one thing across the gate, this predicate, and the
+# reasons recorded in `.ci/bisect-skip.txt`. If they diverged, a commit could be
+# unbuildable by the gate's definition and buildable by this one, and the skip
+# list would document a failure the harness could not reproduce.
+BUILD_CMD=${AA_BISECT_BUILD:-"cargo check --workspace --all-targets --all-features --exclude aa-ebpf"}
 TEST_CMD=${AA_BISECT_TEST:-}
 
 EXIT_GOOD=0
