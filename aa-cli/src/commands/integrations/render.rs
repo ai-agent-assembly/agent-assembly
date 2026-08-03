@@ -458,6 +458,91 @@ mod tests {
         assert!(rendered.contains("protected path exercised: no"), "{rendered}");
     }
 
+    /// A status whose adapter declared `support` about host enforcement, or
+    /// declared nothing at all when `support` is `None`.
+    fn status_declaring(support: Option<&str>) -> StatusReport {
+        use aa_proto::assembly::devint::v1 as wire;
+
+        let view = wire::StatusView {
+            tool_id: "claude-code".to_string(),
+            phase: "installed".to_string(),
+            state: "ladder".to_string(),
+            achieved_level: "gateway_protected".to_string(),
+            planned_level: "gateway_protected".to_string(),
+            adapter_ceiling: "l2_enforce".to_string(),
+            compatibility: "compatible".to_string(),
+            evidence: Vec::new(),
+            next_level: None,
+            observed_at_unix_secs: 1,
+            drift_mismatched: Vec::new(),
+            state_reason: String::new(),
+            state_remediation: String::new(),
+            policy: None,
+        };
+        let summary = support.map(|support| wire::ToolSummary {
+            tool_id: "claude-code".to_string(),
+            display_name: "Claude Code".to_string(),
+            detected: true,
+            detected_version: "2.1.220".to_string(),
+            compatibility: "compatible".to_string(),
+            capabilities: vec![wire::CapabilityView {
+                capability: "host_enforcement".to_string(),
+                support: support.to_string(),
+                reason: String::new(),
+            }],
+            adapter_ceiling: "l2_enforce".to_string(),
+        });
+        StatusReport::from_view(runtime(), &view, summary.as_ref())
+    }
+
+    fn host_mark(report: &StatusReport) -> String {
+        report
+            .render_human()
+            .lines()
+            .find_map(|line| line.trim_start().strip_prefix("host_enforced"))
+            .expect("the ladder must name host_enforced")
+            .trim()
+            .to_string()
+    }
+
+    /// Three availability states, three marks (AAASM-5454).
+    ///
+    /// Collapsing any two is the defect: "the adapter says this platform
+    /// cannot" and "nobody declared anything" shared one mark, so a mechanism
+    /// nobody had asked about was reported as impossible. A state this client
+    /// did not establish must not borrow the wording of one it did.
+    #[test]
+    fn the_three_availability_states_render_as_three_distinct_marks() {
+        let available = host_mark(&status_declaring(Some("supported")));
+        let unsupported = host_mark(&status_declaring(Some("unsupported")));
+        let unmeasured = host_mark(&status_declaring(None));
+
+        assert_ne!(available, unsupported);
+        assert_ne!(available, unmeasured);
+        assert_ne!(
+            unsupported, unmeasured,
+            "a declared refusal and an absent declaration read as the same thing"
+        );
+        for mark in [&available, &unsupported, &unmeasured] {
+            assert!(
+                !mark.to_ascii_lowercase().contains("platform"),
+                "the CLI made a claim about the host: {mark}"
+            );
+        }
+    }
+
+    /// Availability is a claim about a path; `active` is a claim about a
+    /// measurement. Becoming available must never promote a rung to active.
+    #[test]
+    fn an_available_rung_never_renders_as_active() {
+        let report = status_declaring(Some("supported"));
+        assert_eq!(host_mark(&report), "not active");
+        assert!(
+            report.levels.iter().any(|l| l.level == "host_enforced" && l.available),
+            "the rung under test was not the available one"
+        );
+    }
+
     /// Every field a person can read must be readable by a script, because both
     /// come out of one struct. Asserted on the JSON so a future `render_human`
     /// that computed something extra locally would show up here as a field the

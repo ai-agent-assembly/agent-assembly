@@ -404,13 +404,85 @@ fn status_separates_exercised_evidence_from_read_back_in_json() {
     assert!(!json["exercised_evidence"].as_array().expect("array").is_empty());
     assert!(json["read_back_evidence"].is_array());
     assert!(json["observed_at_unix_secs"].as_u64().is_some());
-    let host = json["levels"]
+    let host = host_level(&json);
+    assert_eq!(host["available"], serde_json::json!(false));
+    assert_eq!(
+        host["availability"],
+        serde_json::json!("unsupported"),
+        "an adapter that declared a refusal must not read as one that declared nothing"
+    );
+}
+
+/// The `host_enforced` rung of a JSON status.
+fn host_level(json: &serde_json::Value) -> &serde_json::Value {
+    json["levels"]
         .as_array()
         .expect("levels")
         .iter()
         .find(|l| l["level"] == "host_enforced")
-        .expect("host_enforced must be listed");
-    assert_eq!(host["available"], serde_json::json!(false));
+        .expect("host_enforced must be listed")
+}
+
+/// AAASM-5454's headline symptom: two surfaces of the same binary, on the same
+/// host, in the same minute, contradicting each other about whether the rung is
+/// reachable — and the discouraging one being the false one.
+///
+/// Both directions are asserted, because agreement that only holds when the
+/// answer is "no" is what the bug already had.
+#[test]
+fn plan_and_status_agree_on_whether_host_enforcement_is_reachable() {
+    for supported in [true, false] {
+        let h = Harness::start(|f| if supported { f.supporting_host_enforcement() } else { f });
+        assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
+
+        let plan: serde_json::Value =
+            serde_json::from_str(&stdout(&h.aasm(&["plan", "claude-code", "--output", "json"]))).expect("plan JSON");
+        let status: serde_json::Value =
+            serde_json::from_str(&stdout(&h.aasm(&["status", "claude-code", "--output", "json"])))
+                .expect("status JSON");
+
+        let plan_says_reachable = !plan["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|u| u["capability"] == "host_enforcement");
+        let status_says_reachable = host_level(&status)["available"] == serde_json::json!(true);
+
+        assert_eq!(
+            plan_says_reachable, supported,
+            "the plan disagreed with the adapter's declaration (supported={supported})"
+        );
+        assert_eq!(
+            status_says_reachable, plan_says_reachable,
+            "plan and status disagree about host enforcement (supported={supported}): \
+             plan reachable={plan_says_reachable}, status reachable={status_says_reachable}"
+        );
+    }
+}
+
+/// Availability is a statement about a path. It must never carry an implication
+/// that something was installed, exercised or attested — the three states stay
+/// three, and none of them is `achieved`.
+#[test]
+fn a_reachable_rung_is_not_reported_as_a_measured_one() {
+    let h = Harness::start(|f| f.supporting_host_enforcement());
+    assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
+
+    let status: serde_json::Value =
+        serde_json::from_str(&stdout(&h.aasm(&["status", "claude-code", "--output", "json"]))).expect("status JSON");
+    let host = host_level(&status);
+    assert_eq!(host["available"], serde_json::json!(true));
+    assert_eq!(host["availability"], serde_json::json!("available"));
+    assert_eq!(
+        host["achieved"],
+        serde_json::json!(false),
+        "a reachable rung was reported as reached"
+    );
+    assert_ne!(
+        status["achieved_level"],
+        serde_json::json!("host_enforced"),
+        "the ladder claimed a level no evidence supports"
+    );
 }
 
 // ── drift and repair ─────────────────────────────────────────────────────────

@@ -1253,6 +1253,67 @@ mod tests {
         }
     }
 
+    /// A plan from an adapter that either did or did not rule host enforcement
+    /// out.
+    fn plan_view(declares_unsupported: bool) -> wire::PlanView {
+        wire::PlanView {
+            schema_version: 1,
+            plan_id: "plan-1".to_string(),
+            tool_id: "claude-code".to_string(),
+            profile: "recommended".to_string(),
+            settings_scope: "managed".to_string(),
+            policy_profile: None,
+            planned_level: if declares_unsupported {
+                "gateway_protected"
+            } else {
+                "host_enforced"
+            }
+            .to_string(),
+            adapter_ceiling: "l2_enforce".to_string(),
+            steps: Vec::new(),
+            unsupported: if declares_unsupported {
+                vec![wire::UnsupportedMechanismView {
+                    capability: "host_enforcement".to_string(),
+                    reason: "the adapter's own sentence".to_string(),
+                }]
+            } else {
+                Vec::new()
+            },
+            warnings: Vec::new(),
+        }
+    }
+
+    /// The two surfaces a user compares must not contradict each other.
+    ///
+    /// AAASM-5454 was reported as exactly this contradiction, on one host in
+    /// one minute: `plan` answered `planned level: host_enforced` while
+    /// `status` answered `unavailable on this platform`. Both derive from the
+    /// same adapter declaration, so both must reach the same answer.
+    #[test]
+    fn plan_and_status_agree_on_whether_host_enforcement_is_reachable() {
+        for (support, reachable) in [("supported", true), ("unsupported", false)] {
+            let plan = PlanReport::from_view(runtime(), &plan_view(!reachable));
+            let status = StatusReport::from_view(
+                runtime(),
+                &status_view("integrated"),
+                Some(&summary_declaring(support, "the adapter's own sentence")),
+            );
+
+            let plan_says_reachable = !plan.unsupported.iter().any(|u| u.capability == "host_enforcement");
+            let status_says_reachable = host_rung(&status).available;
+
+            assert_eq!(
+                plan_says_reachable, reachable,
+                "the plan fixture is wrong for {support:?}"
+            );
+            assert_eq!(
+                status_says_reachable, plan_says_reachable,
+                "plan and status disagree about host enforcement for a {support:?} adapter: \
+                 plan reachable={plan_says_reachable}, status reachable={status_says_reachable}"
+            );
+        }
+    }
+
     /// A supported-but-not-yet-reached rung must tell the user how to reach it,
     /// even when the adapter volunteered nothing.
     #[test]

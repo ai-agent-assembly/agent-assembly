@@ -325,6 +325,74 @@ fn the_command_family_drives_the_native_claude_code_integration() {
     assert!(restored.get("permissions").is_none(), "{restored}");
 }
 
+/// AAASM-5454, against the **real** adapter: `plan` and `status` must not
+/// contradict each other about whether `Host Enforced` can be reached here.
+///
+/// The bug was reported from exactly this pair, one after the other on one
+/// macOS host: `plan --install-managed-settings` answered
+/// `planned level: host_enforced` while `status` answered
+/// `unavailable on this platform`. The two surfaces read the same adapter
+/// declaration, so the assertion is agreement rather than a fixed verdict —
+/// which is also what keeps it honest on a Linux host that happens to have the
+/// tool installed, where the adapter genuinely answers unsupported.
+#[test]
+fn status_and_plan_agree_with_the_real_adapter_about_host_enforcement() {
+    if !require_claude() {
+        return;
+    }
+    let h = Harness::start();
+    assert!(h
+        .aasm(&["install", "claude-code", "--scope", "user", "--yes"])
+        .status
+        .success());
+
+    let status: serde_json::Value =
+        serde_json::from_str(&stdout(&h.aasm(&["status", "claude-code", "--output", "json"]))).expect("status JSON");
+    let host = status["levels"]
+        .as_array()
+        .expect("levels")
+        .iter()
+        .find(|l| l["level"] == "host_enforced")
+        .expect("the rung must be named, never omitted");
+    let reachable = host["available"] == serde_json::json!(true);
+
+    let plan = h.aasm(&["plan", "claude-code", "--install-managed-settings"]);
+    let planned = format!("{}{}", stdout(&plan), stderr(&plan));
+    let plan_says_reachable = planned.contains("planned level:   host_enforced");
+    assert_eq!(
+        reachable, plan_says_reachable,
+        "plan and status disagree about host enforcement.\n--- status ---\n{status:#}\n--- plan ---\n{planned}"
+    );
+
+    let rendered = stdout(&h.aasm(&["status", "claude-code"]));
+    if reachable {
+        assert!(
+            !rendered.contains("unavailable on this platform"),
+            "a mechanism this adapter supports was reported as impossible here:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("--install-managed-settings"),
+            "a reachable rung did not name the command that reaches it:\n{rendered}"
+        );
+        assert_eq!(
+            host["achieved"],
+            serde_json::json!(false),
+            "nothing attested an endpoint-managed policy, so the rung is not reached"
+        );
+    }
+
+    // macOS is the platform the mechanism exists for, and the one the defect
+    // told it was impossible. `MacOsAdminAuthority::availability` answers
+    // `Unavailable` only off macOS; a non-terminal stdin is `NonInteractive`,
+    // which is a runtime condition and not a missing capability.
+    if cfg!(target_os = "macos") {
+        assert!(
+            reachable,
+            "macOS must report host enforcement as reachable:\n{status:#}"
+        );
+    }
+}
+
 /// `--scope managed` alone is not the explicit opt-in the privileged write needs.
 #[test]
 fn a_managed_scope_install_is_refused_and_names_the_flag_that_opts_in() {
