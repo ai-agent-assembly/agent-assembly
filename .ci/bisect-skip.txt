@@ -28,3 +28,5 @@
 # auditable, so state what fails to build and what repaired it.
 
 c596246a2100e706d20fcaf6e61d88f3cb77e840  Clean-but-semantic merge on the AAASM-5354 branch: rename detection carried a validator into aa-policy referencing crate::engine::detection::LocalePack, which exists only in aa-gateway. `cargo check --workspace --all-targets` exits 101 with E0433. Both parents build. Repaired by the next commit, 8cbe2c1d7. Disclosed rather than rebased away (AAASM-5385, out of scope: rewriting history).
+
+72b67f44f0a84e56effd82fa962db80f146a29a1  Partial staging on the AAASM-5355 branch (PR #1894): aa-core/src/types/sensitive_data/finding_record.rs changed `SensitiveDataFindingRecord::from_finding` to take 3 arguments, but the two call sites in counts.rs:150 and event.rs:642 were left at 2 and committed separately. `cargo check --workspace --all-targets` exits 101 with two E0061. Visible only under --all-targets — the failing unit is `aa-core (lib test)`, so a lib-only build passes. This is the reproduction AAASM-5385 was raised from; disclosed rather than rebased away.
