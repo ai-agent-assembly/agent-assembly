@@ -30,9 +30,9 @@ An ADR records **only** durable product or system decisions — product and busi
 | [0017](0017-dashboard-design-parity-ratified-evolutions.md) | Dashboard Design-Parity — Ratified Evolutions | Accepted |
 | [0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) | Canonical Runtime Verdict & Enriched Decision Record | Accepted |
 | [0019](0019-agent-trust-score-derivation.md) | Agent Trust-Score Derivation | Accepted |
-| [0020](0020-rolling-monthly-budget-window.md) | Rolling vs Calendar Monthly Budget Windows — and the Missing Team Tier | Proposed |
+| [0020](0020-rolling-monthly-budget-window.md) | Rolling vs Calendar Monthly Budget Windows — and the Missing Team Tier | Accepted (rolling window still decision-gated) |
 | [0021](0021-topology-enforcement-mode-mutation-safety.md) | Topology Enforcement-Mode Mutation — Authorization, Blast Radius & Reversibility | Accepted |
-| [0022](0022-agent-config-projection-and-quantified-recommendations.md) | Agent-Detail Config Projection & Quantified Posture Recommendations | Proposed |
+| [0022](0022-agent-config-projection-and-quantified-recommendations.md) | Agent-Detail Config Projection & Quantified Posture Recommendations | Accepted |
 | [0023](0023-aa-api-policy-cascade-wiring.md) | Is `aa-api` Meant to Carry a Policy Cascade? | Accepted |
 | [0024](0024-empty-cascade-semantics.md) | Semantics of an Empty or Unavailable Policy Cascade | Accepted |
 | [0025](0025-design-v2-authoritative-visual-spec.md) | `design/v2/` Is the Authoritative Visual Specification | Proposed |
