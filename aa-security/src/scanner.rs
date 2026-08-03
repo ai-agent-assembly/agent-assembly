@@ -1035,28 +1035,30 @@ fn scan_digit_sequences(text: &str, findings: &mut Vec<CredentialFinding>) {
     }
 }
 
-/// Computes the Shannon entropy of `s` in bits per **byte**.
-///
-/// Callers must pass an ASCII-only slice. Bytes and characters coincide only
-/// for ASCII, and every threshold this result is compared against
-/// ([`ENTROPY_BITS_GATE`]) is specified per character. Feeding it multi-byte
-/// UTF-8 measures the encoding rather than the text: Han characters spread
-/// their bytes widely and land at 4.6-4.9 bits, above a gate calibrated on
-/// English prose, which is how ordinary Chinese was reported as leaked secrets
-/// (AAASM-5344). Every call site therefore narrows to an ASCII run first.
+/// Single-slice form of [`shannon_entropy_joined`], for the tests that score one
+/// string. Production callers reach entropy through [`clears_entropy_bar`], which
+/// needs both halves, so this exists only under `cfg(test)`.
+#[cfg(test)]
 fn shannon_entropy(s: &str) -> f64 {
     shannon_entropy_joined(s, "")
 }
 
 /// Shannon entropy of `a` followed by `b`, in bits per **byte**, without
-/// materialising the concatenation.
+/// materialising the concatenation. Pass `""` as `b` to score a single slice.
 ///
 /// [`scan_separated_base64_runs`] scores a *pair* of runs, because the pair —
 /// not either half — is the candidate once a secret has been split. Joining them
 /// into a `String` first would put one allocation on the scanner's hot path for
 /// every word boundary in the payload, so the frequency table is accumulated over
-/// both slices instead. The ASCII-only precondition [`shannon_entropy`] documents
-/// applies to both halves for the same reason.
+/// both slices instead.
+///
+/// Callers must pass ASCII-only slices, both of them. Bytes and characters
+/// coincide only for ASCII, and every threshold this result is compared against
+/// ([`ENTROPY_BITS_GATE`]) is specified per character. Feeding it multi-byte
+/// UTF-8 measures the encoding rather than the text: Han characters spread
+/// their bytes widely and land at 4.6-4.9 bits, above a gate calibrated on
+/// English prose, which is how ordinary Chinese was reported as leaked secrets
+/// (AAASM-5344). Every call site therefore narrows to an ASCII run first.
 fn shannon_entropy_joined(a: &str, b: &str) -> f64 {
     let total = a.len() + b.len();
     if total == 0 {
@@ -1081,12 +1083,155 @@ fn shannon_entropy_joined(a: &str, b: &str) -> f64 {
 /// Base64/base85 encodings of random bytes sit around 5-6 bits/char, while
 /// English prose and `snake_case` / `kebab-case` identifiers stay below this.
 /// The corpus behind that calibration is ASCII, and the gate is only meaningful
-/// against ASCII — see [`shannon_entropy`] for why non-ASCII input measures the
+/// against ASCII — see [`shannon_entropy_joined`] for why non-ASCII input measures the
 /// UTF-8 encoding instead of the text (AAASM-5344).
 /// Note hex tops out at `log2(16) = 4.0` bits/char, so hex-encoded secrets never
 /// trip this gate — they are caught by the dedicated hex rule (see
 /// [`HEX_RUN_MIN_LEN`]).
 const ENTROPY_BITS_GATE: f64 = 4.5;
+
+/// Length at which a candidate becomes eligible for the relaxed bar below.
+///
+/// Entropy is capped at `log2(len)`, so the *same* absolute gate is a different
+/// demand at each length: at 64 characters 4.5 bits is 75% of the attainable
+/// maximum, at 40 it is 85%, and at 23 it is 99.5%. A uniformly random draw does
+/// not reach its own alphabet's entropy at short lengths — it falls short by the
+/// finite-sample bias, which shrinks as length grows. At 40 characters over a
+/// 62-64 symbol alphabet that bias puts roughly 2% of genuinely random secrets
+/// **below** 4.5 bits by ordinary repetition, and they were missed (AAASM-5502).
+///
+/// 40 is the shortest secret the guaranteed 23+17 split band produces, and the
+/// threshold is set from that band rather than from any measurement of any
+/// corpus. Holding everything shorter to the strict gate keeps the relaxation
+/// off the identifier and encoded-fragment lengths that dominate real payloads
+/// — including PEM body lines, which run 36 characters at the standard 64-column
+/// wrapping minus its final group, and which the committed conformance vectors
+/// pin as *not* independently flagged (ADR 0015).
+const DENSE_CANDIDATE_MIN_LEN: usize = 40;
+
+/// Entropy bar for a candidate that clears [`DENSE_CANDIDATE_MIN_LEN`] and
+/// [`MIN_DISTINCT_BYTES_FOR_GATE`].
+///
+/// Set from the measured shortfall, not by taste: across 2,000 samples per
+/// alphabet the missed 40-character secrets scored 4.2531-4.4964 bits, a deficit
+/// of at most 0.2469 below the gate. 4.25 clears that whole band with margin
+/// while staying far above where prose and identifiers sit, and the false-
+/// positive ceiling is re-measured against it rather than assumed.
+const DENSE_CANDIDATE_ENTROPY_BITS_GATE: f64 = 4.25;
+
+/// Whether `a` followed by `b` clears the entropy evidence bar.
+///
+/// Two ways to clear it, and the first is [`ENTROPY_BITS_GATE`] exactly as
+/// before — no candidate that used to be flagged stops being flagged.
+///
+/// The second admits a candidate that is long *and* dense: at least
+/// [`DENSE_CANDIDATE_MIN_LEN`] bytes, at least [`MIN_DISTINCT_BYTES_FOR_GATE`]
+/// distinct values, and above [`DENSE_CANDIDATE_ENTROPY_BITS_GATE`]. It is
+/// keyed on the candidate's own length and shape — never on which pass called,
+/// what surrounds it, or which corpus it came from — so a contiguous run and a
+/// run rejoined across one separator are held to the identical bar. That
+/// equality is the point: the split form must face what the unsplit form faces.
+///
+/// The distinct-byte floor is deliberately the *strict* branch's floor rather
+/// than the ~20 that 4.25 bits alone would require. Density is what separates
+/// key material from a long identifier, so the relaxation spends length, not
+/// evidence.
+///
+/// # Why the relaxed branch demands a homogeneous alphabet
+///
+/// Because distinct-byte count alone is not evidence of randomness — structural
+/// punctuation inflates it for free. Relaxing on length and density alone
+/// reported `application/vnd.agent-assembly.decision-event+json;version=3` as a
+/// secret 4,052 times across the 20 MB corpus: 60 characters, 25 distinct
+/// values, 4.4 bits, every threshold cleared. Its diversity comes from
+/// `/ . ; = + -`, which is what a *structured* token looks like, not what a
+/// uniform draw from an encoding alphabet looks like.
+///
+/// The bias the relaxation compensates for is a property of sampling one
+/// alphabet uniformly, so the relaxation is confined to candidates that are
+/// drawn from one. Passes 3 and 5 see base64 runs by construction and are
+/// unaffected; this constrains pass 1, which scores whole whitespace tokens and
+/// is where the inflation arises.
+///
+/// The two O(n) tests are ordered after the entropy comparison, and
+/// `distinct_bytes` last, because the strict gate already implies the distinct
+/// floor — `log2(22) = 4.4594 < 4.5` — so neither runs except for a candidate
+/// that failed the strict gate and is long enough to matter.
+fn clears_entropy_bar(a: &str, b: &str) -> bool {
+    let entropy = shannon_entropy_joined(a, b);
+    if entropy > ENTROPY_BITS_GATE {
+        return true;
+    }
+    a.len() + b.len() >= DENSE_CANDIDATE_MIN_LEN
+        && entropy > DENSE_CANDIDATE_ENTROPY_BITS_GATE
+        && a.bytes().chain(b.bytes()).all(is_base64_char)
+        && symbol_percent(a, b) <= DENSE_CANDIDATE_MAX_SYMBOL_PERCENT
+        && longest_repeat_run(a, b) <= DENSE_CANDIDATE_MAX_REPEAT_RUN
+        && distinct_bytes(a, b) >= MIN_DISTINCT_BYTES_FOR_GATE
+}
+
+/// Percentage of `a` followed by `b` that is base64's non-alphanumeric symbols
+/// (`+ / - _`), rounded down.
+fn symbol_percent(a: &str, b: &str) -> usize {
+    let total = a.len() + b.len();
+    if total == 0 {
+        return 0;
+    }
+    let symbols = a
+        .bytes()
+        .chain(b.bytes())
+        .filter(|b| !b.is_ascii_alphanumeric())
+        .count();
+    symbols * 100 / total
+}
+
+/// Share of `+ / - _` the relaxed bar tolerates, as a percentage.
+///
+/// These four are 2-of-64 symbols in any one base64 variant, so encoded key
+/// material carries them at about 3% — roughly one character in a 40-character
+/// secret. Path, URL and namespace text carries them far more heavily, because
+/// there they are *structure*: `/var/log/agent-assembly/gateway/policy-
+/// evaluation-2026-08-03.log` is one unbroken base64 run by the alphabet test
+/// alone, 26 distinct values, no repeated run, and it was reported as a secret
+/// until this bound existed.
+///
+/// 10% is about three standard deviations above the expected share, so the
+/// measured cost to base64 recall is a fraction of a percent and the alphanumeric
+/// alphabet is untouched. Both figures are measured on AAASM-5502, not assumed.
+const DENSE_CANDIDATE_MAX_SYMBOL_PERCENT: usize = 10;
+
+/// Longest run of one repeated byte across `a` followed by `b`.
+///
+/// Counted across the join because the pair is the candidate: a marker like
+/// `-----END` contributes its run whether it arrived contiguously or was
+/// rejoined over a separator, and the answer must not depend on which.
+fn longest_repeat_run(a: &str, b: &str) -> usize {
+    let mut longest = 0usize;
+    let mut current = 0usize;
+    let mut prev: Option<u8> = None;
+    for byte in a.bytes().chain(b.bytes()) {
+        current = if prev == Some(byte) { current + 1 } else { 1 };
+        prev = Some(byte);
+        longest = longest.max(current);
+    }
+    longest
+}
+
+/// Longest repeated-byte run the relaxed bar tolerates.
+///
+/// The relaxed branch admits candidates *below* the calibrated gate, so it owes
+/// positive evidence of uniformity rather than merely an absence of structure.
+/// A repeated run is the signature of padding and markers — `-----END`,
+/// `====`, `0000` — which lengthen a candidate without making it any more
+/// random, and length is precisely what the relaxation spends.
+///
+/// Rejecting runs of 4 or more costs effectively no recall: in a uniform draw of
+/// 40 symbols from a 62-64 symbol alphabet a run of 4 appears with probability
+/// about 1.5e-4, and such a draw still has the strict gate available to it.
+/// Without this bound, pass 5 joined a PEM body line to the `-----END` marker
+/// that follows it and reported two findings where the committed vector pins one
+/// (ADR 0015).
+const DENSE_CANDIDATE_MAX_REPEAT_RUN: usize = 3;
 
 /// Minimum length of a contiguous hex run (`[0-9a-fA-F]`) flagged as a secret.
 ///
@@ -1120,7 +1265,7 @@ const BASE64_RUN_MIN_LEN: usize = 20;
 /// The whitespace-token entropy pass needs this because both halves of its gate
 /// are byte-denominated while their thresholds are character-denominated: a
 /// 7-character Han phrase is 21 bytes, already inside the 20-64 "looks like a
-/// secret" window, and [`shannon_entropy`] then scores its UTF-8 bytes above a
+/// secret" window, and [`shannon_entropy_joined`] then scores its UTF-8 bytes above a
 /// gate calibrated on English. Narrowing to ASCII runs restores bytes ==
 /// characters, which is what both thresholds were written for (AAASM-5344).
 ///
@@ -1224,7 +1369,7 @@ fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
         // every pre-existing finding is reproduced byte-identically.
         for (run_offset, run) in ascii_runs(token) {
             let run_start = token_offset + run_offset;
-            if (20..=64).contains(&run.len()) && shannon_entropy(run) > ENTROPY_BITS_GATE {
+            if (20..=64).contains(&run.len()) && clears_entropy_bar(run, "") {
                 // The whitespace token can still carry trailing delimiters when a
                 // secret is embedded in structured text (e.g. `...key"}]}` in compact
                 // JSON). Clamp the finding's `end` at the first token-terminating
@@ -1285,7 +1430,7 @@ fn scan_long_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
             i += 1;
         }
         let run = &text[start..i];
-        if run.len() >= BASE64_RUN_MIN_LEN && shannon_entropy(run) > ENTROPY_BITS_GATE {
+        if run.len() >= BASE64_RUN_MIN_LEN && clears_entropy_bar(run, "") {
             findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
         }
     }
@@ -1636,8 +1781,13 @@ fn scan_separated_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>)
                 // and the gates above reject almost every pair; `earlier` is the
                 // prefix of `findings` that existed before this pass began, so a
                 // pass-5 finding never blocks the next pair in a chain.
+                // The distinct-byte test stays ahead of the entropy work as its
+                // own fast path: it is necessary for *both* branches of
+                // `clears_entropy_bar` (see its docs), so testing it here skips
+                // the frequency table for the overwhelming majority of adjacent
+                // run pairs without changing a single verdict.
                 if distinct_bytes(a, b) >= MIN_DISTINCT_BYTES_FOR_GATE
-                    && shannon_entropy_joined(a, b) > ENTROPY_BITS_GATE
+                    && clears_entropy_bar(a, b)
                     && !overlaps_earlier_finding(&findings[..earlier], p_start, p_end)
                     && !overlaps_earlier_finding(&findings[..earlier], start, end)
                 {
@@ -1735,6 +1885,98 @@ fn scan_emails(text: &str, findings: &mut Vec<CredentialFinding>) {
 
 #[cfg(test)]
 mod tests {
+
+    /// AAASM-5502 — a secret whose entropy lands in the band the relaxed bar
+    /// exists for, split across the 23+17 boundary the product guarantees.
+    ///
+    /// 4.3939 bits: below `ENTROPY_BITS_GATE`, above
+    /// `DENSE_CANDIDATE_ENTROPY_BITS_GATE`. Synthetic, generated for this test;
+    /// not a real credential.
+    const MISSED_BASE64_SECRET: &str = "gCfEX1ggX6sUTGX4DVf1/gD2s8m1Dtc7X7RjUg3K";
+
+    /// AAASM-5502 — the same class over the alphanumeric alphabet, 4.4964 bits.
+    const MISSED_ALNUM_SECRET: &str = "1MwNMa48aWhrchr8SJs4haK4mJDvnA6xF8t6uhBr";
+
+    #[test]
+    fn a_sub_gate_secret_is_found_whether_split_or_contiguous() {
+        // The split form must face exactly what the unsplit form faces — that
+        // equality is the property AAASM-5368 was opened for, and measuring only
+        // one of the two is how the shortfall stayed invisible.
+        for secret in [MISSED_BASE64_SECRET, MISSED_ALNUM_SECRET] {
+            assert!(
+                !CredentialScanner::new().scan(secret).findings.is_empty(),
+                "contiguous form went undetected: {secret}"
+            );
+            for separator in [" ", "-", "\n", "\t", "\u{3000}", "\u{FF0D}"] {
+                let split = format!("{}{}{}", &secret[..23], separator, &secret[23..]);
+                assert!(
+                    !CredentialScanner::new().scan(&split).findings.is_empty(),
+                    "split form went undetected over separator {separator:?}: {secret}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_relaxed_bar_is_what_finds_them() {
+        // Falsification: if these cleared `ENTROPY_BITS_GATE` on their own the
+        // test above would pass with the relaxation deleted, and would be
+        // proving nothing. Both must sit strictly inside the relaxed band.
+        for secret in [MISSED_BASE64_SECRET, MISSED_ALNUM_SECRET] {
+            let entropy = shannon_entropy(secret);
+            assert!(
+                entropy <= ENTROPY_BITS_GATE,
+                "{secret} clears the strict gate at {entropy} — it cannot demonstrate the relaxed bar"
+            );
+            assert!(
+                entropy > DENSE_CANDIDATE_ENTROPY_BITS_GATE,
+                "{secret} is below the relaxed bar at {entropy}"
+            );
+        }
+    }
+
+    #[test]
+    fn structured_text_stays_clean_under_the_relaxed_bar() {
+        // Each of these is one unbroken base64 run that clears length, distinct
+        // bytes and the relaxed entropy bar. Each was reported as a secret by an
+        // earlier form of the rule; each is held out by one of its shape tests.
+        for text in [
+            "application/vnd.agent-assembly.decision-event+json;version=3",
+            "/var/log/agent-assembly/gateway/policy-evaluation-2026-08-03.log",
+            "https://docs.agent-assembly.example/reference/policy-schema#matched-rule-ids",
+            "aa_gateway::storage::sensitive_data::projection_writer::ProjectionWriter",
+            "getUserAccountPreferencesForTenantScopeAndOrganisation",
+        ] {
+            assert!(
+                CredentialScanner::new().scan(text).findings.is_empty(),
+                "structured text reported as a secret: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_relaxed_bar_does_not_reach_below_the_guaranteed_band() {
+        // A 36-character PEM body line clears every other relaxed test. Only the
+        // length bound holds it out, and the committed conformance vectors pin
+        // it as not independently flagged (ADR 0015).
+        let pem_body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcw";
+        assert_eq!(pem_body.len(), 36);
+        assert!(pem_body.len() < DENSE_CANDIDATE_MIN_LEN);
+        assert!(CredentialScanner::new().scan(pem_body).findings.is_empty());
+    }
+
+    #[test]
+    fn a_marker_run_cannot_lengthen_a_candidate_into_the_relaxed_bar() {
+        // Without the repeated-run bound, pass 5 joined the PEM body above to the
+        // `-----END` that follows it: 44 bytes, all base64, dense enough — and
+        // padding supplied every one of the extra characters.
+        let pem = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcw\n-----END PRIVATE KEY-----";
+        assert!(
+            longest_repeat_run("-----END", "") > DENSE_CANDIDATE_MAX_REPEAT_RUN,
+            "the marker no longer trips the repeat bound, so this test proves nothing"
+        );
+        assert!(CredentialScanner::new().scan(pem).findings.is_empty());
+    }
     use super::*;
 
     // --- CredentialKind::as_str ---
