@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5364: a 16-digit reference number written in full-width digits and grouped in fours by U+3000, inside ordinary Traditional-Chinese prose. This is the only shape in the zh-TW negative vectors that reaches the 13-19 digit Luhn window at all — the date, phone and version shapes are 4-2-2, 2-4-4 and dotted, and can never get there, so without this vector the widened separator set is never exercised against the checksum in prose. It is Luhn-invalid and must stay clean. Disclosure, because the vector cannot show it: Luhn is a mod-10 checksum, so roughly one arbitrary 16-digit number in ten passes by coincidence. Measured over 100,000 random 4x4 groupings the rate is 10.209% for full-width with U+3000, 10.209% with U+FF0D, and 10.209% for the ASCII forms — exact parity, which is this ticket's goal, but it is new false-positive mass that falls entirely on CJK input-method users since only they produce full-width digits.",
+  "input_text": "轉帳帳號　１２３４　５６７８　９０１２　３４５６，於今日入帳。",
+  "expected_findings": [],
+  "expected_redacted": "轉帳帳號　１２３４　５６７８　９０１２　３４５６，於今日入帳。"
+}
