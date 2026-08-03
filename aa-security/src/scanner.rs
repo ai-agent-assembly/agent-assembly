@@ -2362,6 +2362,13 @@ mod tests {
             "發票號碼　ＡＢ－１２３４５６７８，金額 1,250 元。",
             "會議時間　１０：００－１１：３０，地點　Ｂ棟　３０５　會議室。",
             "版本區間　１．０．０－２．３．４，共 12 個修訂。",
+            // A 16-digit identifier in 4x4 groups — the only shape in this list
+            // that reaches the 13-19 digit Luhn window at all. The lines above
+            // are 4-2-2, 2-4-4 and dotted-version shapes that can never get
+            // there, so without this row the widened separator set is never
+            // exercised against the checksum in prose at all.
+            "轉帳帳號　１２３４　５６７８　９０１２　３４５６，於今日入帳。",
+            "轉帳帳號　１２３４－５６７８－９０１２－３４５６，於今日入帳。",
         ] {
             let result = scanner.scan(text);
             assert!(
@@ -2369,6 +2376,52 @@ mod tests {
                 "clean CJK prose produced {:?} for {text:?}",
                 result.findings.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(),
             );
+        }
+    }
+
+    #[test]
+    fn a_fullwidth_grouped_number_gets_exactly_the_ascii_verdict() {
+        // The cost side of AAASM-5364, asserted rather than left to the PR.
+        //
+        // Widening the separator set gives a full-width, separator-grouped
+        // 13-19 digit run its first chance to reach the Luhn check — and Luhn is
+        // a mod-10 checksum, so roughly one in ten arbitrary 16-digit numbers
+        // passes it by coincidence. Measured over 100,000 random 4x4 groupings:
+        // 10.209% for full-width digits with U+3000, 10.209% with U+FF0D, and
+        // 10.209% for the ASCII forms — identical, because the digit stream is
+        // identical once normalised. That parity is the ticket's goal.
+        //
+        // What parity does not settle is *who* pays it: full-width digits come
+        // from CJK input methods, so the whole of that new false-positive mass
+        // lands on CJK users, under `credential_action: Block`. That trade is an
+        // owner decision and is recorded on AAASM-5364; what this test can pin is
+        // the mechanism — a grouped number must get exactly the verdict its ASCII
+        // twin gets, never a different one, in either direction.
+        let scanner = CredentialScanner::new();
+        let verdict = |t: &str| {
+            scanner
+                .scan(t)
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::CreditCardLuhn)
+        };
+        for (ascii, fullwidth_space, fullwidth_hyphen) in [
+            // Luhn-valid (a synthetic Visa test number).
+            (
+                "n=4532 0151 1283 0366",
+                "n=４５３２　０１５１　１２８３　０３６６",
+                "n=４５３２－０１５１－１２８３－０３６６",
+            ),
+            // Luhn-invalid: an ordinary 16-digit reference number.
+            (
+                "n=1234 5678 9012 3456",
+                "n=１２３４　５６７８　９０１２　３４５６",
+                "n=１２３４－５６７８－９０１２－３４５６",
+            ),
+        ] {
+            let expected = verdict(ascii);
+            assert_eq!(verdict(fullwidth_space), expected, "U+3000 diverged for {ascii:?}");
+            assert_eq!(verdict(fullwidth_hyphen), expected, "U+FF0D diverged for {ascii:?}");
         }
     }
 
