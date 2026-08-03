@@ -1393,6 +1393,17 @@ fn scan_separated_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
 /// `the_split_pass_owns_exactly_what_pass_3_cannot_score` pins both edges.
 const ENTROPY_REACHABLE_MIN_LEN: usize = 23;
 
+/// The joined-length window in [`scan_separated_base64_runs`] keeps pass 1's
+/// upper bound of 64 so the two cannot drift, but with both runs held under
+/// [`ENTROPY_REACHABLE_MIN_LEN`] the longest pair it can ever see is 44 — the
+/// ceiling is unreachable by construction rather than by coincidence. Asserted at
+/// compile time so that if the per-run bound is ever raised past 33 the build
+/// says so, instead of the window quietly starting to bite.
+const _: () = assert!(
+    2 * (ENTROPY_REACHABLE_MIN_LEN - 1) <= 64,
+    "the joined window's upper bound is now reachable and must be justified against pass 1's window"
+);
+
 /// Returns `true` for the characters that count as a secret-splitting separator.
 ///
 /// Whitespace and non-ASCII only — deliberately **not** ASCII punctuation.
@@ -3689,6 +3700,124 @@ mod tests {
             scanner.scan(&quartered).is_clean(),
             "a many-way split is a documented residual: {:?}",
             scanner.scan(&quartered).findings
+        );
+    }
+
+    #[test]
+    fn the_split_pass_owns_exactly_what_pass_3_cannot_score() {
+        // The band this ticket's first draft left unscored by *anybody*.
+        //
+        // Pass 3 gates a contiguous run at BASE64_RUN_MIN_LEN (20), but entropy
+        // over n bytes is at most log2(n), and log2(22) = 4.4594 is below the 4.5
+        // gate — so a run of 20, 21 or 22 characters cannot be scored by pass 3 at
+        // any content. Keying pass 5 off 20, on the reasoning that longer runs are
+        // "pass 3's to score", handed those three lengths to a pass mathematically
+        // incapable of taking them: a 40-character secret split anywhere in
+        // 17+23 … 22+18 produced zero findings with both halves in the clear.
+        //
+        // Both edges are asserted, so the constant cannot drift in either
+        // direction: 22 must still be pass 5's, and 23 must not be.
+        let below = f64::from(u32::try_from(ENTROPY_REACHABLE_MIN_LEN).unwrap() - 1);
+        assert!(
+            below.log2() <= ENTROPY_BITS_GATE,
+            "a run of {} can clear the gate alone, so pass 5 must not claim it",
+            ENTROPY_REACHABLE_MIN_LEN - 1
+        );
+        let at = f64::from(u32::try_from(ENTROPY_REACHABLE_MIN_LEN).unwrap());
+        assert!(
+            at.log2() > ENTROPY_BITS_GATE,
+            "a run of {ENTROPY_REACHABLE_MIN_LEN} cannot clear the gate, so leaving it \
+             to pass 3 leaves it to nobody"
+        );
+
+        // And the behaviour that bound produces, over the whole split sweep of a
+        // 40-character secret. Every split position must lose both halves.
+        let scanner = CredentialScanner::new();
+        let secret = "aB3dEf7hJk9mNp2qRs5tUv8wXy4zC6gLhQ1VdYtP";
+        assert_eq!(secret.len(), 40);
+        for k in 18..=22 {
+            let (a, b) = secret.split_at(k);
+            for splitter in [" ", "\t", "\n", "中"] {
+                let text = format!("log {a}{splitter}{b} end");
+                let redacted = scanner.scan(&text).redact(&text);
+                assert!(
+                    !redacted.contains(a) && !redacted.contains(b),
+                    "split {k}+{} with {splitter:?} left key material in the clear: {redacted}",
+                    40 - k
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn punctuation_joined_halves_are_left_to_pass_1_which_clamps_them() {
+        // `is_split_separator` excludes ASCII punctuation, and this is why.
+        //
+        // A pair joined by `,` sits inside one whitespace token, so pass 1 already
+        // scores it and clamps the finding at the first delimiter — the secret is
+        // reported and the neighbouring column name is left intact. Admitting
+        // punctuation into pass 5 added no detection and replaced that correctly
+        // clamped span with a wider one, because `dedupe_same_kind_overlaps` keeps
+        // the union: `replicasCount` was redacted out of both a SQL projection and
+        // a CSV row.
+        let scanner = CredentialScanner::new();
+        let run = "aB3dEf7hJk9mNp2qR";
+        for (text, expected) in [
+            (
+                format!("SELECT {run},replicasCount FROM t"),
+                "SELECT [REDACTED:GenericHighEntropy],replicasCount FROM t".to_string(),
+            ),
+            (
+                format!("{run},replicasCount,3"),
+                "[REDACTED:GenericHighEntropy],replicasCount,3".to_string(),
+            ),
+        ] {
+            assert_eq!(
+                scanner.scan(&text).redact(&text),
+                expected,
+                "adjacent structure must survive for {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_split_secret_never_consumes_the_separator_between_its_halves() {
+        // Two findings, not one span. The separator is the evasion rather than
+        // part of the secret, so it is no more part of the span than it is part of
+        // the scored string — and leaving it in place is what keeps the document
+        // around it parseable. A single joined span ate the newline out of this
+        // YAML and left a document that no longer parses.
+        let scanner = CredentialScanner::new();
+        let run = "aB3dEf7hJk9mNp2qRs5";
+        let text = format!("token: {run}\nreplicas: 3");
+        let redacted = scanner.scan(&text).redact(&text);
+        assert!(
+            redacted.contains('\n'),
+            "the newline between the two runs must survive: {redacted:?}"
+        );
+        assert_eq!(
+            redacted, "token: [REDACTED:GenericHighEntropy]\n[REDACTED:GenericHighEntropy]: 3",
+            "structure around a split finding must be preserved byte for byte"
+        );
+    }
+
+    #[test]
+    fn an_adjacent_word_shares_the_fate_of_a_split_secret() {
+        // This pass's honest limit, pinned rather than hidden.
+        //
+        // Pairwise scoring cannot attribute the joined entropy to one half, so an
+        // ordinary word next to a genuine short secret is redacted with it. That
+        // is over-redaction on a payload that did contain secret-shaped material,
+        // and what makes it tolerable is the measured firing rate — one finding
+        // across 23 MB of code — not the reasoning. Asserted so the cost is
+        // visible here rather than discovered in production.
+        let scanner = CredentialScanner::new();
+        let run = "aB3dEf7hJk9mNp2qRs5";
+        let text = format!("hardening {run} done");
+        assert_eq!(
+            scanner.scan(&text).redact(&text),
+            "[REDACTED:GenericHighEntropy] [REDACTED:GenericHighEntropy] done",
+            "if this pass learns to attribute entropy to one half, update this test"
         );
     }
 
