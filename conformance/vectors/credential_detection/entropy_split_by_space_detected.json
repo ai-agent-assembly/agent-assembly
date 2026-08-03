@@ -1,8 +1,9 @@
 {
-  "description": "AAASM-5368: a 36-character base64 secret cut in two by a single space. Each half is 18 characters, under the 20-character floor pass 3 gates a contiguous base64 run at, so neither half was scored and the whole secret passed through — separator-splitting defeated the length gate on main for every separator class at once, a plain space included. Scored as the rejoined run, excluding the separator, exactly as AAASM-4075's separator-grouped hex rule counts only hex digits. The span covers both halves and the separator between them. The secret is constructed with near-all-distinct characters so its entropy sits clearly above the 4.5 gate rather than straddling it; a genuinely random 36-character run clears that gate about 90% of the time whether split or not, and this ticket does not change that calibration in either direction.",
+  "description": "AAASM-5368: a 36-character base64 secret cut in two by a single space. Each half is 18 characters, short enough that neither can reach the entropy gate alone (entropy over n bytes is at most log2(n), and log2(22) = 4.4594 is below the 4.5 gate), so neither half was scored and the whole secret passed through — separator-splitting defeated the length gate on main for every separator class at once, a plain space included. Scored as the rejoined runs, excluding the separator, as AAASM-4075's separator-grouped hex rule counts only hex digits. Two findings rather than one: the separator is the evasion rather than part of the secret, so it is excluded from the spans exactly as it is excluded from the scored string, and the surrounding text keeps its structure. The secret is constructed with near-all-distinct characters so its entropy sits clearly above the gate rather than straddling it; a genuinely random 36-character run clears that gate about 90% of the time whether split or not, and this ticket does not change that calibration in either direction.",
   "input_text": "authorization: aB3dEf7hJk9mNp2qRs 5tUv8wXy4zC6gLhQ1V trailing",
   "expected_findings": [
-    { "kind": "GenericHighEntropy", "offset": 15 }
+    { "kind": "GenericHighEntropy", "offset": 15 },
+    { "kind": "GenericHighEntropy", "offset": 34 }
   ],
-  "expected_redacted": "authorization: [REDACTED:GenericHighEntropy] trailing"
+  "expected_redacted": "authorization: [REDACTED:GenericHighEntropy] [REDACTED:GenericHighEntropy] trailing"
 }

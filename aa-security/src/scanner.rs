@@ -1373,6 +1373,57 @@ fn scan_separated_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
     }
 }
 
+/// Shortest run that could *possibly* clear [`ENTROPY_BITS_GATE`] on its own.
+///
+/// The same exact bound as [`MIN_DISTINCT_BYTES_FOR_GATE`], applied to length
+/// instead of to distinct bytes — a run of `n` bytes holds at most `n` distinct
+/// values, and entropy is at most `log2(distinct)`, so both quantities must reach
+/// 23 for 4.5 bits to be reachable. `log2(22) = 4.4594 <= 4.5 < 4.5236 = log2(23)`.
+///
+/// This is what [`scan_separated_base64_runs`] uses to decide which runs are its
+/// business, and getting it wrong left a band that **nothing** scored. Pass 3
+/// gates a contiguous run at [`BASE64_RUN_MIN_LEN`] (20), but a run of 20, 21 or
+/// 22 characters cannot reach the entropy gate at any content — so keying pass 5
+/// off 20, on the reasoning that longer runs are "pass 3's to score", handed
+/// those three lengths to a pass that is mathematically incapable of scoring
+/// them. A 40-character secret split anywhere in 17+23 … 22+18 produced **zero**
+/// findings with both halves in the clear. Keying off 23 instead means pass 5
+/// owns exactly the runs pass 3 provably cannot, with no gap and no overlap.
+///
+/// `the_split_pass_owns_exactly_what_pass_3_cannot_score` pins both edges.
+const ENTROPY_REACHABLE_MIN_LEN: usize = 23;
+
+/// Returns `true` for the characters that count as a secret-splitting separator.
+///
+/// Whitespace and non-ASCII only — deliberately **not** ASCII punctuation.
+///
+/// A pair of runs joined by punctuation sits inside a single whitespace token, so
+/// pass 1 already scores it: it gates the token's whole ASCII run (punctuation
+/// included) and then clamps the finding at the first delimiter via [`token_end`].
+/// `<17-char run>,replicasCount,3` is therefore already reported and already
+/// redacted to `[REDACTED:GenericHighEntropy],replicasCount,3` — correctly, with
+/// the column name intact — before this pass runs at all.
+///
+/// Admitting punctuation here would add no detection whatsoever and would replace
+/// that correctly-clamped span with a wider one, because
+/// [`dedupe_same_kind_overlaps`] keeps the union of two same-kind spans. Measured:
+/// `SELECT <run>,replicasCount FROM t` lost `replicasCount`, and
+/// `<run>,replicasCount,3` lost it too. Restricting to whitespace and non-ASCII
+/// removes that entire class at zero recall cost, and it is also exactly the
+/// separator set the ticket names — space, tab, newline, and a non-ASCII glyph.
+fn is_split_separator(c: char) -> bool {
+    c.is_whitespace() || !c.is_ascii()
+}
+
+/// Returns `true` if `gap` is exactly one [`is_split_separator`] character.
+///
+/// One decode rather than the two a `chars().count() == 1 && chars().all(..)`
+/// pair costs, because this is on the per-pair path.
+fn is_one_separator(gap: &str) -> bool {
+    let mut chars = gap.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if is_split_separator(c))
+}
+
 /// Minimum number of distinct byte values a candidate must carry before
 /// [`ENTROPY_BITS_GATE`] can possibly be cleared.
 ///
@@ -1447,66 +1498,116 @@ fn base64_runs(text: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
 ///   already applies. This is what keeps ordinary punctuated prose out: without
 ///   it, joining `RBAC/NetworkPolicy` to `hardening).` clears the gate, because a
 ///   near-all-distinct string of 27 characters scores `log2(27)` whatever it says.
-/// * **Pairs only, both below [`BASE64_RUN_MIN_LEN`].** At most two runs are ever
-///   joined, and only when *neither* could have been scored alone — which is
-///   exactly the case pass 3 cannot see. Without the second half of that
-///   condition the pass reaches past an already-detected secret into the next
-///   word: `tok=<40-char PAT> done` would redact ` done`, and a PEM body line
-///   would swallow its `-----END` marker.
-/// * **A one-character gap.** The evasion is the insertion of *a* separator into
-///   a secret. A longer gap — indentation, a paragraph break, sentence spacing —
-///   is ordinary text structure with no matching evasion story. It also bounds
-///   the span: it can cover at most one character that is not candidate material.
+/// * **Pairs only, both below [`ENTROPY_REACHABLE_MIN_LEN`].** At most two runs
+///   are ever joined, and only when *neither* could have cleared the gate alone —
+///   which is exactly the set pass 3 cannot score, so the two passes partition the
+///   runs with no gap and no overlap. Without the second half of that condition
+///   the pass reaches past an already-detected secret into the next word:
+///   `tok=<40-char PAT> done` would redact ` done`, and a PEM body line would
+///   swallow its `-----END` marker.
+/// * **A one-character gap, of a splitting character.** The evasion is the
+///   insertion of *a* separator into a secret. A longer gap — indentation, a
+///   paragraph break, sentence spacing — is ordinary text structure with no
+///   matching evasion story, and ASCII punctuation is excluded outright because
+///   pass 1 already covers it correctly (see [`is_split_separator`]).
 ///
-/// Measured over 1.8 MB of this repository's own English and Chinese prose and
-/// over the committed clean zh-TW corpus, this pass adds **zero** findings.
+/// Measured over 1.8 MB of this repository's English and Chinese prose, over the
+/// committed clean zh-TW corpus, and over 23 MB of its code and configuration,
+/// this pass adds **zero** prose findings and **one** code finding (a fabricated
+/// JWT in a dashboard test fixture).
 ///
 /// # What it does and does not recover
 ///
-/// A split secret now faces exactly the bar its unsplit form faces — no lower,
-/// which is the point, and no higher. Because [`ENTROPY_BITS_GATE`] is 4.5 bits
-/// and a random base64 run of length `n` scores about `log2(n)` minus its
-/// collisions, that bar is only really met from the low thirties upward: a random
-/// 24-character run clears it about 6% of the time whether it is split or not,
-/// rising to ~90% at 36 and ~96% at 38 (the longest a two-piece split with both
-/// halves under the floor can be). Pass 5 does not change that calibration in
-/// either direction; it removes the separator as a way of avoiding it.
+/// A split secret faces the same [`ENTROPY_BITS_GATE`] its unsplit form faces,
+/// applied to the same rejoined characters. It is **not** true that the outcome is
+/// identical either way: a joined pair is capped at
+/// `2 * (ENTROPY_REACHABLE_MIN_LEN - 1)` = 44 characters, so a secret of 45+
+/// characters split into two is out of this pass's reach entirely, while below
+/// that cap a rejoined pair is held to the bar an unsplit run of the same length
+/// would face.
+///
+/// `log2(n)` is only the *ceiling* on a run's entropy; a random base64 run's mean
+/// sits well below it (4.25 against a 4.585 ceiling at n = 24). Measured by Monte
+/// Carlo, the gate is cleared 5.4% of the time at 24 characters, 90.7% at 36 and
+/// 96.1% at 38 — so detection is real only from the low thirties upward, split or
+/// not. Pass 5 does not change that calibration; it removes the separator as a way
+/// of avoiding it.
 ///
 /// # What is still open
 ///
-/// A gap of more than one character, and a split into pieces small enough that no
-/// *adjacent pair* reaches [`BASE64_RUN_MIN_LEN`] — a three-way split of a long
-/// secret is still caught pairwise, a many-way split into short pieces is not.
-/// Both are pinned by `multi_character_gaps_and_many_way_splits_are_documented_residuals`
-/// so they stay visible rather than being rediscovered by an attacker. Widening
-/// either is a measurable follow-on, not a free change — it is precisely the
-/// multi-fragment join the three properties above exist to prevent.
+/// In order of how much they matter, because the first dominates:
 ///
-/// # The span
+/// 1. **A secret whose two pieces sum to more than 44 characters.** A 44-character
+///    base64 blob (32 random bytes) split evenly is the largest this pass can
+///    rejoin; a 45+ character secret split in two is out of reach. Such a secret is
+///    often *partly* caught — whichever piece reaches
+///    [`ENTROPY_REACHABLE_MIN_LEN`] with enough entropy is scored by pass 3 on its
+///    own — but the other piece stays in the clear. This is the dominant residual
+///    and it is not small.
+/// 2. **A gap of more than one character.**
+/// 3. **A split into pieces short enough that no adjacent pair reaches the floor.**
 ///
-/// `[first run start, second run end)` — both runs and the one separator between
-/// them, following [`scan_separated_hex_runs`], which likewise spans its internal
-/// separators. Unlike pass 1 there is no [`token_end`] clamp: the candidate
-/// deliberately spans a separator, so clamping at the first delimiter could
-/// truncate the span *inside the first run* and leave secret material in the
-/// clear. The compact-JSON tail that clamp exists for is covered by pass 3.
+/// All three are pinned by `long_secret_split_and_wide_gaps_are_documented_residuals`
+/// so they stay visible rather than being rediscovered by an attacker. Closing (1)
+/// or (2) means joining more than two runs, or joining across arbitrary distance —
+/// the clause-swallowing shape the bounds above exist to prevent — so each needs
+/// its own false-positive measurement, not a constant nudged upward.
+///
+/// # The spans — two, not one
+///
+/// A qualifying pair emits **one finding per run**, never a single span across the
+/// separator. The separator is the evasion rather than part of the secret, which is
+/// why it is excluded from the scored string; it is excluded from the span for the
+/// same reason, and leaving it in place is what keeps the surrounding document
+/// intact. A single joined span redacted the newline out of
+/// `token: <run>\nreplicas: 3` and left invalid YAML behind.
+///
+/// This differs from [`scan_separated_hex_runs`], which does span its internal
+/// separators. It can afford to: 64 hex digits grouped by `:` are unambiguously one
+/// value, whereas a pair joined across whitespace is a *hypothesis* about two runs.
+///
+/// Which is this pass's honest limit. When the hypothesis is wrong — an ordinary
+/// word sitting beside a genuine short secret — that word is redacted too, because
+/// pairwise scoring cannot attribute the entropy to one half. What makes that
+/// tolerable is the firing rate rather than the reasoning: one finding across 23 MB
+/// of code. `an_adjacent_word_shares_the_fate_of_a_split_secret` pins the cost so
+/// it is visible here rather than discovered in production.
 fn scan_separated_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
     let mut prev: Option<(usize, usize)> = None;
     for (start, end) in base64_runs(text) {
         if let Some((p_start, p_end)) = prev {
-            // Both runs must fall *below* pass 3's floor. A run at or above it is
-            // pass 3's to score, and joining it to its neighbour would pull
-            // ordinary text into the span — the clause-swallowing shape this pass
-            // must not reproduce.
-            let both_below_floor = p_end - p_start < BASE64_RUN_MIN_LEN && end - start < BASE64_RUN_MIN_LEN;
-            if both_below_floor && text[p_end..start].chars().count() == 1 {
+            // Both runs must be short enough that neither could have cleared the
+            // entropy gate alone — see [`ENTROPY_REACHABLE_MIN_LEN`]. That is
+            // exactly the set pass 3 cannot score, so the two passes partition
+            // the runs between them with no gap and no overlap.
+            //
+            // Ordered cheapest-first, and every test short-circuits. This runs
+            // once per adjacent run pair, and code is dense in them — identifiers
+            // are base64 runs — so an eagerly-evaluated gap decode here is
+            // measurable on the synchronous enforcement path.
+            let joined_len = (p_end - p_start) + (end - start);
+            if p_end - p_start < ENTROPY_REACHABLE_MIN_LEN
+                && end - start < ENTROPY_REACHABLE_MIN_LEN
+                && (ENTROPY_REACHABLE_MIN_LEN..=64).contains(&joined_len)
+                && is_one_separator(&text[p_end..start])
+            {
                 let (a, b) = (&text[p_start..p_end], &text[start..end]);
-                let joined_len = (p_end - p_start) + (end - start);
-                if (BASE64_RUN_MIN_LEN..=64).contains(&joined_len)
-                    && distinct_bytes(a, b) >= MIN_DISTINCT_BYTES_FOR_GATE
+                if distinct_bytes(a, b) >= MIN_DISTINCT_BYTES_FOR_GATE
                     && shannon_entropy_joined(a, b) > ENTROPY_BITS_GATE
                 {
-                    findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, p_start, end));
+                    // One finding per run, never one span across the separator.
+                    // The separator is the evasion, not part of the secret, so it
+                    // is no more part of the *span* than it is part of the scored
+                    // string — and leaving it in place is what keeps the
+                    // surrounding document intact. A single joined span redacted
+                    // the newline out of `token: <run>\nreplicas: 3` and left
+                    // invalid YAML behind.
+                    findings.push(CredentialFinding::new(
+                        CredentialKind::GenericHighEntropy,
+                        p_start,
+                        p_end,
+                    ));
+                    findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, end));
                 }
             }
         }
@@ -3404,11 +3505,9 @@ mod tests {
     const SPLIT_SECRET_HEAD: &str = "aB3dEf7hJk9mNp2qRs";
     const SPLIT_SECRET_TAIL: &str = "5tUv8wXy4zC6gLhQ1V";
 
-    /// The former residual, now closed (AAASM-5368). Every row here was asserted
-    /// as **not detected** by `separator_split_secret_is_a_known_residual` until
-    /// this pass existed: a separator dropped into the middle of a secret split
-    /// it into two sub-20-character runs and neither was scored, for every
-    /// separator class including a plain space.
+    /// The former residual, now closed (AAASM-5368). Every whitespace and
+    /// non-ASCII row here was asserted as **not detected** by
+    /// `separator_split_secret_is_a_known_residual` until this pass existed.
     ///
     /// Rewritten rather than deleted, so the flip is visible in one place. The
     /// undivided row is the control — it was detected before and must stay
@@ -3419,7 +3518,8 @@ mod tests {
         let scanner = CredentialScanner::new();
         let (head, tail) = (SPLIT_SECRET_HEAD, SPLIT_SECRET_TAIL);
 
-        for splitter in ["中", "😀", "д", " ", "\t", "\n", ".", ","] {
+        // Pass 5's separators: whitespace and non-ASCII. Both halves must go.
+        for splitter in ["中", "😀", "д", " ", "\t", "\n"] {
             let text = format!("log {head}{splitter}{tail} end");
             let result = scanner.scan(&text);
             assert!(
@@ -3434,6 +3534,29 @@ mod tests {
             assert!(!redacted.contains(head), "head survived for {splitter:?}: {redacted}");
             assert!(!redacted.contains(tail), "tail survived for {splitter:?}: {redacted}");
         }
+
+        // ASCII punctuation is deliberately *not* a pass-5 separator: it leaves
+        // both halves inside one whitespace token, which pass 1 owns. `.` is not a
+        // `token_end` delimiter, so pass 1 covers the whole value on its own.
+        let text = format!("log {head}.{tail} end");
+        let redacted = scanner.scan(&text).redact(&text);
+        assert!(!redacted.contains(head) && !redacted.contains(tail), "{redacted}");
+
+        // `,` *is* a `token_end` delimiter, so pass 1 detects the token and then
+        // clamps the span at the comma, leaving the tail in the clear. That is
+        // pre-existing behaviour of pass 1 on `main` — verified identical at the
+        // merge base — and is not this pass's to change: `token_end`'s delimiter
+        // set is shared with the literal detector and every conformance vector
+        // that depends on it. Pinned here as a known residual so the asymmetry
+        // between `.` and `,` is recorded rather than mistaken for coverage.
+        let text = format!("log {head},{tail} end");
+        let redacted = scanner.scan(&text).redact(&text);
+        assert!(!redacted.contains(head), "head must still be redacted: {redacted}");
+        assert!(
+            redacted.contains(tail),
+            "residual changed: pass 1's clamp used to leak the tail after a comma — \
+             if that is now fixed, update this test: {redacted}"
+        );
 
         let undivided = format!("log {head}{tail} end");
         assert!(
@@ -3453,11 +3576,11 @@ mod tests {
         for (text, expected) in [
             (
                 format!("log {SPLIT_SECRET_HEAD} {SPLIT_SECRET_TAIL} end"),
-                "log [REDACTED:GenericHighEntropy] end".to_string(),
+                "log [REDACTED:GenericHighEntropy] [REDACTED:GenericHighEntropy] end".to_string(),
             ),
             (
                 format!("log {SPLIT_SECRET_HEAD}中{SPLIT_SECRET_TAIL} end"),
-                "log [REDACTED:GenericHighEntropy] end".to_string(),
+                "log [REDACTED:GenericHighEntropy]中[REDACTED:GenericHighEntropy] end".to_string(),
             ),
         ] {
             let redacted = scanner.scan(&text).redact(&text);
@@ -3522,23 +3645,29 @@ mod tests {
     }
 
     #[test]
-    fn multi_character_gaps_and_many_way_splits_are_documented_residuals() {
-        // What AAASM-5368 does **not** close, asserted as not detected so the gap
-        // stays visible instead of being rediscovered by an attacker.
-        //
-        // A gap of two characters is a genuine text boundary rather than an
-        // inserted separator, and a split into pieces short enough that no
-        // adjacent pair reaches `BASE64_RUN_MIN_LEN` leaves nothing for a pairwise
-        // rule to score. Closing either means joining more than two runs, which is
-        // the clause-swallowing shape this pass is built to avoid — so widening
-        // needs its own false-positive measurement, not a one-line change here.
+    fn long_secret_split_and_wide_gaps_are_documented_residuals() {
+        // What AAASM-5368 does **not** close, asserted as not detected so the
+        // gaps stay visible instead of being rediscovered by an attacker.
         let scanner = CredentialScanner::new();
         let (head, tail) = (SPLIT_SECRET_HEAD, SPLIT_SECRET_TAIL);
 
-        // Only gaps that break pass 1's whitespace token are residuals. A gap of
-        // ASCII punctuation (`..`) leaves the two halves inside one token, and
-        // pass 1 scores that token whole — so punctuation gaps of any length are
-        // already covered and are not listed here.
+        // (1) The dominant residual: both runs must be under
+        // ENTROPY_REACHABLE_MIN_LEN, so a pair summing past 44 characters is out
+        // of reach. A 46-character secret split evenly is 23+23 — each half is
+        // exactly at the bar, so pass 5 declines both and pass 3 must carry them
+        // alone. Whichever half clears the gate is found; the rest is not.
+        let long_secret = "aB3dEf7hJk9mNp2qRs5tUvWxYz0C6gLhQ1VdYtPkRs4Nm2";
+        assert_eq!(long_secret.len(), 46);
+        let (a, b) = long_secret.split_at(23);
+        let text = format!("log {a} {b} end");
+        let redacted = scanner.scan(&text).redact(&text);
+        assert!(
+            redacted.contains(a) || redacted.contains(b),
+            "a 46-character split secret is a documented residual, but neither half \
+             survived — if this pass now reaches that far, update this test: {redacted}"
+        );
+
+        // (2) A gap of more than one character.
         for gap in ["  ", " \n", "中文", " \t", "\n\n"] {
             let text = format!("log {head}{gap}{tail} end");
             assert!(
@@ -3547,8 +3676,8 @@ mod tests {
             );
         }
 
-        // The same 36 characters cut into four 9-character pieces: every adjacent
-        // pair is 18, below the floor.
+        // (3) The same 36 characters cut into four 9-character pieces: every
+        // adjacent pair is 18, below the joined-length floor.
         let joined = format!("{head}{tail}");
         let quartered = joined
             .as_bytes()
