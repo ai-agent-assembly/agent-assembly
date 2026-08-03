@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-5368: the same split secret cut by U+3000 IDEOGRAPHIC SPACE inside Traditional-Chinese prose. A non-ASCII glyph in the middle of a secret is the specific residual AAASM-5344 left behind when it made non-ASCII a run boundary, and it is the case where the span is least likely to survive: the separator is three bytes, so the reported end offset is 39 bytes past a start that is itself 15 bytes into multi-byte text. The surrounding prose must be returned untouched — a span that swallowed the clause would be the AAASM-5344 defect returning by another route.",
+  "input_text": "授權標頭：aB3dEf7hJk9mNp2qRs　5tUv8wXy4zC6gLhQ1V，請儘速處理。",
+  "expected_findings": [
+    { "kind": "GenericHighEntropy", "offset": 15 }
+  ],
+  "expected_redacted": "授權標頭：[REDACTED:GenericHighEntropy]，請儘速處理。"
+}

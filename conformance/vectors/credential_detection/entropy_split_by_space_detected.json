@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-5368: a 36-character base64 secret cut in two by a single space. Each half is 18 characters, under the 20-character floor pass 3 gates a contiguous base64 run at, so neither half was scored and the whole secret passed through — separator-splitting defeated the length gate on main for every separator class at once, a plain space included. Scored as the rejoined run, excluding the separator, exactly as AAASM-4075's separator-grouped hex rule counts only hex digits. The span covers both halves and the separator between them. The secret is constructed with near-all-distinct characters so its entropy sits clearly above the 4.5 gate rather than straddling it; a genuinely random 36-character run clears that gate about 90% of the time whether split or not, and this ticket does not change that calibration in either direction.",
+  "input_text": "authorization: aB3dEf7hJk9mNp2qRs 5tUv8wXy4zC6gLhQ1V trailing",
+  "expected_findings": [
+    { "kind": "GenericHighEntropy", "offset": 15 }
+  ],
+  "expected_redacted": "authorization: [REDACTED:GenericHighEntropy] trailing"
+}
