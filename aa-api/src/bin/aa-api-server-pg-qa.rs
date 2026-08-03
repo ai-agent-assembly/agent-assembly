@@ -53,8 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build the same hardened local state the shipped binary uses, then inject
     // the real Postgres native-account store so the password auth path is live.
-    let mut state =
-        aa_api::AppState::local_hardened_at(auth, aa_api::state::resolve_local_registry_db_path()).await?;
+    let mut state = aa_api::AppState::local_hardened_at(auth, aa_api::state::resolve_local_registry_db_path()).await?;
     state.auth_store = Some(Arc::new(PgUserStore::new(pool)));
     eprintln!("aa-api-pg-qa: auth_store wired — native email/password auth is ENABLED");
 
@@ -68,7 +67,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spa_dist = aa_gateway::dashboard_server::find_dashboard_dist();
     eprintln!(
         "aa-api-pg-qa serving full /api/v1/* + dashboard on http://{addr} (Postgres native-auth ENABLED){}",
-        if spa_dist.is_some() { "" } else { " [REST only — no dashboard/dist resolved]" }
+        if spa_dist.is_some() {
+            ""
+        } else {
+            " [REST only — no dashboard/dist resolved]"
+        }
     );
 
     aa_api::run_server_with_spa(config, state, spa_dist.as_deref()).await
