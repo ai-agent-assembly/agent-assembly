@@ -2181,6 +2181,197 @@ mod tests {
         }
     }
 
+    // --- AAASM-5364: the full-width hyphen (U+FF0D) and the ideographic space
+    //     (U+3000) are what a CJK input method emits for the hyphen and space
+    //     keys, so they must separate digits exactly as their ASCII twins do.
+    //     All fixtures are synthetic. ---
+
+    #[test]
+    fn detects_an_ssn_grouped_by_the_fullwidth_hyphen() {
+        // The case AAASM-5345 left open: it normalised the digits, but `is_ssn`
+        // still demanded ASCII hyphens, so a wholly full-width SSN — what a
+        // full-width IME actually produces — read as an ungrouped 9-digit run
+        // and was not SSN-shaped at all.
+        let scanner = CredentialScanner::new();
+        let ascii = scanner.scan("ssn=123-45-6789");
+        let fullwidth = scanner.scan("ssn=１２３－４５－６７８９");
+
+        let kinds = |r: &ScanResult| r.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&ascii), vec![CredentialKind::SsnPattern]);
+        assert_eq!(kinds(&fullwidth), kinds(&ascii));
+    }
+
+    #[test]
+    fn detects_an_ssn_whose_digits_are_ascii_but_whose_hyphens_are_not() {
+        // The cheapest form of the evasion, and the one a user reaches by
+        // accident: ASCII digits typed with the IME still in full-width mode, so
+        // only the two separators differ from the detected form.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("ssn=123－45－6789");
+        assert_eq!(
+            result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+            vec![CredentialKind::SsnPattern],
+        );
+    }
+
+    #[test]
+    fn detects_a_card_grouped_by_the_ideographic_space() {
+        // The space-grouped card form. Grouping is how card numbers are written
+        // on the card itself, so this is the *natural* rendering rather than an
+        // adversarial one — and U+3000 is what the space bar emits in full-width
+        // mode.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("card=４５３２　０１５１　１２８３　０３６６");
+        assert_eq!(
+            result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+            vec![CredentialKind::CreditCardLuhn],
+        );
+    }
+
+    #[test]
+    fn redacts_fullwidth_separated_values_to_exact_bytes() {
+        // Counting findings is not enough: a separator is three bytes here
+        // against ASCII's one, so an end offset computed on the normalised form
+        // splices the wrong region — one finding, digits still in the clear.
+        let scanner = CredentialScanner::new();
+        for (text, expected) in [
+            ("ssn=１２３－４５－６７８９", "ssn=[REDACTED:SsnPattern]"),
+            ("ssn=123－45－6789", "ssn=[REDACTED:SsnPattern]"),
+            (
+                "card=４５３２　０１５１　１２８３　０３６６",
+                "card=[REDACTED:CreditCardLuhn]",
+            ),
+        ] {
+            let redacted = scanner.scan(text).redact(text);
+            assert_eq!(redacted, expected, "wrong redaction for {text:?}");
+            assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+        }
+    }
+
+    #[test]
+    fn fullwidth_separated_spans_are_char_boundaries_of_the_original_text() {
+        // The span contract `redact` depends on, asserted directly. A separator
+        // is the newest way for an offset to land mid-character, since it is the
+        // one part of the segment whose normalised width (1 byte) differs from
+        // its original width (3 bytes) *and* which the walk may or may not
+        // consume depending on what follows it.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "ssn=１２３－４５－６７８９",
+            "ssn=123－45－6789",
+            "card=４５３２　０１５１　１２８３　０３６６",
+        ] {
+            let result = scanner.scan(text);
+            assert!(!result.findings.is_empty(), "no finding for {text:?}");
+            for f in &result.findings {
+                assert!(
+                    text.is_char_boundary(f.offset),
+                    "offset {} splits a character in {text:?}",
+                    f.offset
+                );
+                assert!(
+                    text.is_char_boundary(f.end),
+                    "end {} splits a character in {text:?}",
+                    f.end
+                );
+                // The span must cover the whole value, not a prefix of it.
+                assert!(contains_no_digit(&text[..f.offset]));
+                assert!(contains_no_digit(&text[f.end..]));
+            }
+        }
+    }
+
+    #[test]
+    fn does_not_flag_a_fullwidth_separated_number_that_fails_luhn() {
+        // Widening what reaches the checksum must not weaken the checksum. The
+        // final digit is altered from the detected form above, so the only
+        // difference between this and a reported card is the Luhn result.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("num=４５３２　０１５１　１２８３　０３６７");
+        assert!(
+            !result.findings.iter().any(|f| f.kind == CredentialKind::CreditCardLuhn),
+            "Luhn gate must reject a full-width-separated number too: {:?}",
+            result.findings,
+        );
+    }
+
+    #[test]
+    fn a_grouped_19_digit_card_still_fits_the_segment_budget_in_full_width() {
+        // `DIGIT_SEGMENT_MAX_CHARS` is 24 because the binding case is a 19-digit
+        // card written in groups of four — 19 digits plus 4 separators, 23
+        // characters. That arithmetic is in *characters*, so it has to survive
+        // separators that are three bytes each, not just digits that are. A
+        // budget accidentally counted in bytes would truncate this segment
+        // one-third of the way in and lose the card entirely.
+        //
+        // The 19-digit number is Luhn-valid by construction, not observed.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "card=4532-0151-1283-0366-500",
+            "card=４５３２－０１５１－１２８３－０３６６－５００",
+            "card=４５３２　０１５１　１２８３　０３６６　５００",
+        ] {
+            let result = scanner.scan(text);
+            assert_eq!(
+                result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+                vec![CredentialKind::CreditCardLuhn],
+                "grouped 19-digit card must fit the segment budget: {text:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn digit_separator_boundary_declines_en_dash_and_nbsp() {
+        // Pins the boundary [`ascii_separator_of`] documents, so the decision is
+        // visible rather than implicit. U+2013 (en dash) and U+00A0 (no-break
+        // space) are *not* separators: no input method emits either for the
+        // hyphen or space key, so admitting them would buy no coverage against
+        // the input-mode evasion while adding runs for the Luhn check to trip
+        // over — the en dash being the standard glyph for a numeric range, i.e.
+        // exactly where two unrelated numbers sit adjacent with a dash between.
+        //
+        // Asserted as **not detected**, deliberately. If a payload is ever
+        // observed using one of these, widen `ascii_separator_of` and rewrite
+        // this test — do not delete it.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "card=4532\u{2013}0151\u{2013}1283\u{2013}0366",
+            "card=4532\u{00A0}0151\u{00A0}1283\u{00A0}0366",
+            "ssn=123\u{2013}45\u{2013}6789",
+            "ssn=123\u{00A0}45\u{00A0}6789",
+        ] {
+            assert!(
+                scanner.scan(text).is_clean(),
+                "separator set widened past its stated boundary for {text:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn fullwidth_separators_do_not_flag_ordinary_cjk_prose() {
+        // The false-positive guard the widened separator set needs. Dates,
+        // phone numbers, ranges and identifiers written with U+FF0D and U+3000
+        // are ordinary content in Traditional-Chinese and Japanese documents —
+        // they are, in fact, *more* common than the SSN this rule exists to
+        // catch. Every line below now reaches the joined-segment path that only
+        // ASCII text reached before, and must still produce nothing.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "報表期間　２０２４－０１－０１　至　２０２４－１２－３１，共 365 天。",
+            "聯絡電話　０２－１２３４－５６７８，分機 21。",
+            "發票號碼　ＡＢ－１２３４５６７８，金額 1,250 元。",
+            "會議時間　１０：００－１１：３０，地點　Ｂ棟　３０５　會議室。",
+            "版本區間　１．０．０－２．３．４，共 12 個修訂。",
+        ] {
+            let result = scanner.scan(text);
+            assert!(
+                result.is_clean(),
+                "clean CJK prose produced {:?} for {text:?}",
+                result.findings.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
     #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
