@@ -84,12 +84,51 @@ fn install_crypto() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-/// An address nothing is listening on: bound to claim it, then dropped.
-async fn dead_upstream() -> SocketAddr {
+/// An upstream that accepts the TCP connection and then closes it, so the
+/// proxy's TLS handshake fails.
+///
+/// Deliberately *not* a bound-then-dropped port: that leaves the address free
+/// for the OS to re-hand to the proxy's own listener, which would point
+/// `upstream_override` at the proxy itself and let the dial succeed — silently
+/// inverting what these tests measure. Holding the listener keeps the address
+/// exclusively ours, and refusing at the TLS layer makes the dial failure
+/// deterministic.
+async fn refusing_upstream() -> SocketAddr {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
-    drop(listener);
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            drop(sock);
+        }
+    });
     addr
+}
+
+/// Drain everything the sink received and assert the request left exactly one
+/// decision record, none of which claims the payload was withheld.
+///
+/// A forwarded request that also produced a `NotForwarded` line is B1's outcome
+/// reached additively — the natural drift, and the one that actually corrupts
+/// the metric, because consumers count lines rather than first-lines. Asserting
+/// only on the first entry cannot see it.
+async fn assert_one_forwarding_record(rx: &mut mpsc::Receiver<ProxyAuditEntry>) -> ProxyAuditEntry {
+    let first = next_entry(rx).await;
+    // Give any additional emission time to land before concluding there is none.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let mut extra = Vec::new();
+    while let Ok(entry) = rx.try_recv() {
+        extra.push(entry);
+    }
+    assert!(
+        extra.is_empty(),
+        "a forwarded request wrote {} extra record(s): {extra:#?}",
+        extra.len()
+    );
+    assert!(
+        !first.execution.establishes_non_transmission(),
+        "a forwarded request must not leave a record claiming the payload was withheld: {first:#?}"
+    );
+    first
 }
 
 /// Start a proxy with a live audit sink, and hand back its address plus the
@@ -234,12 +273,12 @@ async fn llm_mitm_refusal_persists_non_transmission_evidence() {
 #[tokio::test]
 async fn llm_mitm_redaction_records_a_transmission_not_a_prevention() {
     let dir = tempfile::tempdir().unwrap();
-    let dead = dead_upstream().await;
+    let dead = refusing_upstream().await;
     let (proxy, mut audit) = start_proxy(CredentialAction::RedactOnly, Some(dead), Vec::new(), dir.path()).await;
 
     let _ = mitm_roundtrip(proxy, LLM_HOST, &post(LLM_HOST, &scrubbable_body())).await;
 
-    let entry = next_entry(&mut audit).await;
+    let entry = assert_one_forwarding_record(&mut audit).await;
     assert_eq!(entry.decision, ProxyAuditDecision::ForwardedRedacted);
     assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
     assert_eq!(entry.execution.transmission.as_str(), "forwarded_clean");
@@ -256,12 +295,12 @@ async fn llm_mitm_redaction_records_a_transmission_not_a_prevention() {
 #[tokio::test]
 async fn llm_mitm_records_the_forward_before_the_dial_that_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let dead = dead_upstream().await;
+    let dead = refusing_upstream().await;
     let (proxy, mut audit) = start_proxy(CredentialAction::RedactOnly, Some(dead), Vec::new(), dir.path()).await;
 
     let _ = mitm_roundtrip(proxy, LLM_HOST, &post(LLM_HOST, &scrubbable_body())).await;
 
-    let entry = next_entry(&mut audit).await;
+    let entry = assert_one_forwarding_record(&mut audit).await;
     assert_eq!(entry.decision, ProxyAuditDecision::ForwardedRedacted);
     assert!(
         entry.execution.transmission.proves_transmission(),
@@ -274,12 +313,12 @@ async fn llm_mitm_records_the_forward_before_the_dial_that_fails() {
 #[tokio::test]
 async fn llm_mitm_alert_only_records_an_observed_transmission() {
     let dir = tempfile::tempdir().unwrap();
-    let dead = dead_upstream().await;
+    let dead = refusing_upstream().await;
     let (proxy, mut audit) = start_proxy(CredentialAction::AlertOnly, Some(dead), Vec::new(), dir.path()).await;
 
     let _ = mitm_roundtrip(proxy, LLM_HOST, &post(LLM_HOST, &scrubbable_body())).await;
 
-    let entry = next_entry(&mut audit).await;
+    let entry = assert_one_forwarding_record(&mut audit).await;
     assert_eq!(entry.decision, ProxyAuditDecision::Forwarded);
     assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
     assert_eq!(entry.execution.mode, aa_core::policy::EnforcementMode::Observe);
@@ -384,7 +423,7 @@ async fn non_llm_mitm_refusal_persists_non_transmission_evidence() {
 #[tokio::test]
 async fn non_llm_mitm_records_the_forward_before_the_dial_that_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let dead = dead_upstream().await;
+    let dead = refusing_upstream().await;
     let (proxy, mut audit) = start_proxy(
         CredentialAction::RedactOnly,
         Some(dead),
@@ -395,7 +434,7 @@ async fn non_llm_mitm_records_the_forward_before_the_dial_that_fails() {
 
     let _ = mitm_roundtrip(proxy, MITM_HOST, &post(MITM_HOST, &scrubbable_body())).await;
 
-    let entry = next_entry(&mut audit).await;
+    let entry = assert_one_forwarding_record(&mut audit).await;
     assert_eq!(entry.decision, ProxyAuditDecision::ForwardedRedacted);
     assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
     assert_eq!(entry.execution.transmission.as_str(), "forwarded_clean");
@@ -407,7 +446,7 @@ async fn non_llm_mitm_records_the_forward_before_the_dial_that_fails() {
 #[tokio::test]
 async fn non_llm_mitm_alert_only_records_an_observed_transmission() {
     let dir = tempfile::tempdir().unwrap();
-    let dead = dead_upstream().await;
+    let dead = refusing_upstream().await;
     let (proxy, mut audit) = start_proxy(
         CredentialAction::AlertOnly,
         Some(dead),
@@ -418,9 +457,131 @@ async fn non_llm_mitm_alert_only_records_an_observed_transmission() {
 
     let _ = mitm_roundtrip(proxy, MITM_HOST, &post(MITM_HOST, &scrubbable_body())).await;
 
-    let entry = next_entry(&mut audit).await;
+    let entry = assert_one_forwarding_record(&mut audit).await;
     assert_eq!(entry.decision, ProxyAuditDecision::Forwarded);
     assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
     assert_eq!(entry.execution.mode, aa_core::policy::EnforcementMode::Observe);
     assert!(!entry.execution.establishes_non_transmission());
+}
+
+// ── the probe marker on the handlers that do not adjudicate ────────────────
+
+/// `handle_non_llm_mitm` never speaks the probe protocol, but it can still
+/// *receive* a probe — and under `block` it refuses it before any dial,
+/// producing a record that satisfies every ADR 0032 §8 condition. Unmarked,
+/// that is a synthetic prevention indistinguishable from a real one.
+#[tokio::test]
+async fn a_probe_refused_by_the_non_llm_handler_is_marked_synthetic() {
+    let dir = tempfile::tempdir().unwrap();
+    let (proxy, mut audit) = start_proxy(CredentialAction::Block, None, vec![MITM_HOST.to_string()], dir.path()).await;
+
+    let body = scrubbable_body();
+    let correlation = "0123456789abcdef0123456789abcdef";
+    let request = format!(
+        "POST /ingest HTTP/1.1\r\nHost: {MITM_HOST}\r\n\
+         x-agent-assembly-probe: {correlation}\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body,
+    );
+    let _ = mitm_roundtrip(proxy, MITM_HOST, &request).await;
+
+    let entry = next_entry(&mut audit).await;
+    // Non-vacuity: this really is the refusal branch, with content.
+    assert_eq!(entry.decision, ProxyAuditDecision::Blocked);
+    assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
+    assert!(
+        entry.execution.establishes_non_transmission(),
+        "the refusal is genuine — the marker is what makes it excludable"
+    );
+    assert_eq!(
+        entry.probe_correlation.as_deref(),
+        Some(correlation),
+        "a probe refused by the non-LLM handler must still be identifiable as synthetic"
+    );
+}
+
+/// The same gap on the plain-HTTP path.
+#[tokio::test]
+async fn a_probe_refused_by_the_plain_http_handler_is_marked_synthetic() {
+    let dir = tempfile::tempdir().unwrap();
+    let (proxy, mut audit) = start_proxy(CredentialAction::Block, None, Vec::new(), dir.path()).await;
+
+    let body = scrubbable_body();
+    let correlation = "abcdef0123456789abcdef0123456789";
+    let request = format!(
+        "POST http://plain.example.com/ingest HTTP/1.1\r\nHost: plain.example.com\r\n\
+         x-agent-assembly-probe: {correlation}\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body,
+    );
+    let mut client = TcpStream::connect(proxy).await.unwrap();
+    client.write_all(request.as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), client.read_to_end(&mut out)).await;
+    assert!(
+        String::from_utf8_lossy(&out).contains("403"),
+        "the probe body must be refused: {:?}",
+        String::from_utf8_lossy(&out)
+    );
+
+    let entry = next_entry(&mut audit).await;
+    assert_eq!(entry.decision, ProxyAuditDecision::Blocked);
+    assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
+    assert_eq!(entry.probe_correlation.as_deref(), Some(correlation));
+}
+
+// ── the transparent tunnel, the third route to the wire ────────────────────
+
+/// Under the default `llm_only: true` this path carries every non-LLM
+/// connection, and it was the route S6 found ungated. It inspects nothing, so
+/// the honest outcome is that it writes **no** decision event — inventing one
+/// would change what the audit trail counts. Pinned here because nothing
+/// persisted means no other test can catch a regression in it.
+#[tokio::test]
+async fn the_transparent_tunnel_relays_and_records_no_decision_event() {
+    // A plain TCP echo-ish upstream: the tunnel is a raw byte relay, so no TLS.
+    let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = upstream.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        assert!(n > 0, "the tunnel relayed nothing upstream");
+        let _ = sock.write_all(b"pong").await;
+        let _ = sock.shutdown().await;
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    // `llm_only: true` with no `mitm_hosts` entry ⇒ a non-LLM CONNECT is
+    // transparently tunnelled rather than MitM'd.
+    let (proxy, mut audit) = start_proxy(CredentialAction::Block, Some(upstream_addr), Vec::new(), dir.path()).await;
+
+    let mut stream = TcpStream::connect(proxy).await.unwrap();
+    stream
+        .write_all(b"CONNECT plain.example.com:443 HTTP/1.1\r\nHost: plain.example.com:443\r\n\r\n")
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(line.contains("200"), "tunnel not established: {line}");
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header).await.unwrap();
+        if header.trim().is_empty() {
+            break;
+        }
+    }
+    // Raw bytes through the tunnel — no TLS, no inspection.
+    let mut stream = reader.into_inner();
+    stream.write_all(b"ping").await.unwrap();
+    let mut out = Vec::new();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stream.read_to_end(&mut out)).await;
+    assert_eq!(&out, b"pong", "the tunnel must relay the upstream response");
+
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        audit.try_recv().is_err(),
+        "the transparent tunnel took no decision, so it must invent no decision event"
+    );
 }
