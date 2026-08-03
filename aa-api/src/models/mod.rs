@@ -2,6 +2,7 @@
 
 pub mod alert_ws_payloads;
 pub mod capability;
+pub mod disposition;
 pub mod event;
 pub mod event_type;
 pub mod retention;
