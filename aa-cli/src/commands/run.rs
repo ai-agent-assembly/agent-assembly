@@ -341,6 +341,30 @@ fn build_child_env(
 /// outcome is either a vouched-for endpoint or a refusal: there is no path from
 /// "the proxy could not be verified" to "launch anyway", because that path is a
 /// direct, uninspected connection made by a session presenting as governed.
+/// The authoritative refusal, if any, for a `--no-proxy` launch of `tool`.
+///
+/// Reads both sources AC 1 names and lets
+/// [`crate::commands::run_no_proxy_guard::refusal_for`] decide, so the decision lives in one
+/// tested place rather than being spelled out at the call site.
+///
+/// A receipt that cannot be read is treated as **no receipt** rather than as a
+/// refusal: an unreadable receipt is not evidence that someone required managed
+/// operation, and refusing on it would turn a corrupt file into a policy. The
+/// managed-settings source is unaffected and still refuses on its own.
+fn no_proxy_refusal(tool: &str) -> Option<crate::commands::run_no_proxy_guard::RefusalSource> {
+    let kind = aa_devtool::registry::kind_for(tool)?;
+    let scope = aa_core::integration::step::SettingsScope::User;
+
+    let receipt_profile = aa_core::integration::ReceiptStore::default_location()
+        .ok()
+        .and_then(|store| store.load_receipt(&kind, scope).ok().flatten())
+        .map(|receipt| receipt.profile);
+
+    let managed = aa_devtool_claude_code::managed_settings::managed_installation_evidence().ok();
+
+    crate::commands::run_no_proxy_guard::refusal_for(&kind, scope, receipt_profile, managed)
+}
+
 fn resolve_launch_proxy(no_proxy: bool) -> Result<Option<String>> {
     if no_proxy {
         eprintln!(
@@ -664,6 +688,17 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // Resolved before registration on purpose: a launch that is going to be
     // refused should not first create a gateway registration it then abandons.
     let proxy = resolve_launch_proxy(args.no_proxy)?;
+
+    // AAASM-5350 AC 1: `--no-proxy` is refused where a party other than the
+    // invoking user has already decided this host runs managed. Checked here,
+    // before the policy resolves and before anything is registered or started,
+    // for the same reason the policy refusal is: refusing after a launch has
+    // begun is not refusing.
+    if args.no_proxy {
+        if let Some(refusal) = no_proxy_refusal(&args.tool) {
+            anyhow::bail!("{refusal}");
+        }
+    }
 
     // Same reason, and the same ordering rule: a session with no effective
     // policy is refused here, before any registration exists, because a

@@ -44,6 +44,10 @@ aa-security          = { path = "../aa-security", version = "0.0.1-rc.6", featur
 # `aasm tools` cannot resolve different adapters for the same tool. Adding
 # a tool therefore needs no change to this manifest.
 aa-devtool           = { path = "../aa-devtool", version = "0.0.1-rc.6" }
+# AAASM-5350: the endpoint managed-settings file is Claude Code's canonical
+# artifact, and its path plus validator live with that adapter. `aasm run` reads
+# it to decide whether --no-proxy is permitted.
+aa-devtool-claude-code = { path = "../aa-devtool-claude-code", version = "0.0.1-rc.6" }
 # strip-for-publish:end devtool
 aa-gateway           = { path = "../aa-gateway", version = "0.0.1-rc.6" }
 aa-policy            = { path = "../aa-policy", version = "0.0.1-rc.6" }
