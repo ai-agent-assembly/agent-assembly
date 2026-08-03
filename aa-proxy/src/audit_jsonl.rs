@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
+use aa_core::types::sensitive_data::ExecutionEvidence;
 use aa_security::CredentialFinding;
 
 /// Decision recorded for a single intercepted request.
@@ -53,6 +54,20 @@ pub struct ProxyAuditEntry {
     pub path: String,
     /// What the proxy did with the request.
     pub decision: ProxyAuditDecision,
+    /// What was **observed** about whether the payload left this process.
+    ///
+    /// [`Self::decision`] is what the proxy resolved to do; this is what
+    /// happened to the bytes, and the two are not the same claim. A
+    /// [`ProxyAuditDecision::ForwardedRedacted`] is a *transformed
+    /// transmission* — the scrubbed bytes went — and only evidence recorded
+    /// here can distinguish that from a payload that never left, which is the
+    /// distinction ADR 0032 §8's prevention rule turns on (AAASM-5358).
+    ///
+    /// Built by [`crate::transmission_evidence`]; there is no default, because
+    /// a record that omitted it would be an event with no execution evidence,
+    /// and the whole point is that such an event exists and says so out loud
+    /// rather than being absent.
+    pub execution: ExecutionEvidence,
     /// Per-match scanner output. Empty when no secrets were detected.
     pub credential_findings: Vec<CredentialFinding>,
     /// Post-scan body content. `None` when the proxy bypassed the scanner.
@@ -122,6 +137,9 @@ impl JsonlWriter {
 mod tests {
     use super::*;
 
+    use aa_core::policy::EnforcementMode;
+    use aa_core::types::sensitive_data::{EnforcementPoint, TransmissionEvidence};
+
     /// Synthetic AWS access key from AWS public documentation. Not a real credential.
     const FAKE_AWS_ACCESS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
 
@@ -149,6 +167,11 @@ mod tests {
             method: "POST".into(),
             path: "/v1/chat/completions".into(),
             decision: ProxyAuditDecision::ForwardedRedacted,
+            execution: ExecutionEvidence::new(
+                EnforcementPoint::PreTransmission,
+                TransmissionEvidence::ForwardedClean,
+                EnforcementMode::Enforce,
+            ),
             credential_findings: scan.findings,
             redacted_body: Some(redacted),
         };
@@ -189,6 +212,7 @@ mod tests {
             method: "GET".into(),
             path: "/".into(),
             decision,
+            execution: ExecutionEvidence::unrecorded(EnforcementMode::Enforce),
             credential_findings: vec![],
             redacted_body: None,
         }
@@ -316,6 +340,11 @@ mod tests {
             method: "POST".into(),
             path: "/v1/do".into(),
             decision: ProxyAuditDecision::ForwardedRedacted,
+            execution: ExecutionEvidence::new(
+                EnforcementPoint::PreTransmission,
+                TransmissionEvidence::ForwardedClean,
+                EnforcementMode::Enforce,
+            ),
             credential_findings: vec![],
             redacted_body: Some("clean body".into()),
         };
@@ -326,5 +355,42 @@ mod tests {
         assert_eq!(back.host, "api.example");
         assert_eq!(back.decision, ProxyAuditDecision::ForwardedRedacted);
         assert_eq!(back.redacted_body.as_deref(), Some("clean body"));
+        assert_eq!(back.execution, entry.execution);
+    }
+
+    /// The evidence has to survive serialisation to reach a reader at all, and
+    /// it has to survive it *as the thing that was recorded* — a round trip that
+    /// silently normalised `not_forwarded` into anything else would leave the
+    /// prevention rule reading a value the proxy never observed.
+    #[tokio::test]
+    async fn non_transmission_evidence_survives_the_trip_to_disk() {
+        let entry = ProxyAuditEntry {
+            execution: ExecutionEvidence::new(
+                EnforcementPoint::PreTransmission,
+                TransmissionEvidence::NotForwarded,
+                EnforcementMode::Enforce,
+            ),
+            ..clean_entry("api.example", ProxyAuditDecision::Blocked)
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let (tx, rx) = mpsc::channel(4);
+        let writer = JsonlWriter::new(&path, rx).await.unwrap();
+        let handle = tokio::spawn(writer.run());
+        tx.send(entry).await.unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            on_disk.contains("\"not_forwarded\""),
+            "the on-disk line must spell the evidence: {on_disk}"
+        );
+        let back: ProxyAuditEntry = serde_json::from_str(on_disk.trim()).expect("the line parses");
+        assert!(
+            back.execution.establishes_non_transmission(),
+            "the persisted record lost the only observation that can support a prevention claim"
+        );
     }
 }
