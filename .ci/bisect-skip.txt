@@ -14,8 +14,12 @@
 # Returning 125 is the only answer that preserves correctness: it tells bisect
 # to pick a neighbouring commit instead of drawing a conclusion.
 #
-# `.ci/verify-range-builds.sh` prevents new entries from being needed. This file
-# records the ones that predate that gate. It should stop growing.
+# `.ci/verify-range-builds.sh` is what stops new entries being needed, on every
+# PR that triggers CI. It is not airtight: `ci.yml`'s `on.pull_request.paths` is
+# evaluated against a PR's NET diff, so a PR whose net diff touches no listed
+# path never starts CI, and its intermediate commits go unchecked. This file
+# should therefore grow rarely — not never — and every entry that does appear
+# is worth asking how it got past the gate.
 #
 # FORMAT
 # ------
