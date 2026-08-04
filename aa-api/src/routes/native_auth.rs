@@ -246,21 +246,7 @@ pub async fn login(
     let password_ok = verify_password(&user.password_hash, &body.password);
     let credentials_ok = password_ok & (user.status == UserStatus::Active);
     if !credentials_ok {
-        // Record the failure and, if this attempt crossed the lockout threshold,
-        // return 423 + retry-after immediately (rather than a plain 401 that
-        // silently hides the just-applied lock until the next attempt). A
-        // non-active account has nothing to lock — it still returns a uniform 401.
-        if user.status == UserStatus::Active {
-            if let Ok(state_) = store
-                .record_login_failure(org, user.id, cfg.lockout_threshold, cfg.lockout_window_secs)
-                .await
-            {
-                if let Some(retry_after) = state_.retry_after_secs(now()) {
-                    return locked(retry_after).into_response();
-                }
-            }
-        }
-        return unauthorized().into_response();
+        return failed_login_response(store, cfg, org, &user).await;
     }
 
     // Success: clear the failed-attempt counter and issue tokens.
@@ -272,6 +258,31 @@ pub async fn login(
         .await
         .map(|(json, cookie)| with_cookie(StatusCode::OK, json, cookie))
         .unwrap_or_else(|e| e.into_response())
+}
+
+/// The response for a failed credentials check.
+///
+/// Records the failure and, if this attempt crossed the lockout threshold,
+/// returns `423` + retry-after immediately (rather than a plain `401` that
+/// silently hides the just-applied lock until the next attempt). A non-active
+/// account has nothing to lock — it still returns a uniform `401`.
+async fn failed_login_response(
+    store: Arc<PgUserStore>,
+    cfg: &NativeAuthConfig,
+    org: Uuid,
+    user: &UserRecord,
+) -> Response {
+    if user.status == UserStatus::Active {
+        if let Ok(state_) = store
+            .record_login_failure(org, user.id, cfg.lockout_threshold, cfg.lockout_window_secs)
+            .await
+        {
+            if let Some(retry_after) = state_.retry_after_secs(now()) {
+                return locked(retry_after).into_response();
+            }
+        }
+    }
+    unauthorized().into_response()
 }
 
 /// Register the first account (bootstrap owner) or a self-registered account when

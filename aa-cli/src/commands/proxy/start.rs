@@ -220,37 +220,78 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
 
     if args.no_detach {
         // Foreground: inherit stdio, block until the process exits.
-        return match cmd.status() {
-            Ok(s) if s.success() => ExitCode::SUCCESS,
-            Ok(_) => ExitCode::FAILURE,
-            Err(e) => {
-                eprintln!("error: failed to run aa-proxy: {e}");
-                ExitCode::FAILURE
-            }
-        };
+        return run_foreground(&mut cmd);
     }
 
-    // Background: redirect stdout/stderr to the log file.
-    let log_file = args.log_file.unwrap_or_else(default_log_path);
+    run_background(cmd, args, &binary)
+}
+
+/// Foreground start: inherit stdio and block until the process exits.
+fn run_foreground(cmd: &mut std::process::Command) -> ExitCode {
+    match cmd.status() {
+        Ok(s) if s.success() => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: failed to run aa-proxy: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Open (creating) the log file and a duplicated handle for stderr.
+fn open_log_handles(log_file: &std::path::Path) -> Result<(std::fs::File, std::fs::File), ExitCode> {
     if let Some(parent) = log_file.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!("warning: could not create log directory {}: {e}", parent.display());
         }
     }
 
-    let log_out = match std::fs::OpenOptions::new().create(true).append(true).open(&log_file) {
+    let log_out = match std::fs::OpenOptions::new().create(true).append(true).open(log_file) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("error: could not open log file {}: {e}", log_file.display());
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     let log_err = match log_out.try_clone() {
         Ok(f) => f,
         Err(e) => {
             eprintln!("error: could not duplicate log file handle: {e}");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
+    };
+    Ok((log_out, log_err))
+}
+
+/// Record the spawned child's PID state, warning (never failing) on any gap that
+/// would stop `aasm run` verifying this proxy later.
+fn record_proxy_state(child_pid: u32, binary: &std::path::Path, listen: &str) {
+    let state = state_for_child(child_pid, binary, listen);
+    // A record `aasm run` cannot verify is worth saying out loud here rather
+    // than only at the next launch: the operator is standing in front of this
+    // command, not the one that will refuse.
+    if state.start_token.is_empty() {
+        eprintln!(
+            "warning: this platform ({}) does not report process start times, so `aasm run` \
+             will not be able to verify this proxy and will refuse to launch.",
+            std::env::consts::OS
+        );
+    }
+    if let Err(e) = trust::verify_proxy_binary(&state.exe_path) {
+        eprintln!("warning: {e}; `aasm run` will refuse to launch against this proxy.");
+    }
+    if let Err(e) = pid::write_state(&state) {
+        eprintln!("warning: could not write PID file: {e}");
+    }
+}
+
+/// Background start: redirect stdio to the log file, spawn detached, record the
+/// PID state, then wait for the proxy to bind.
+fn run_background(mut cmd: std::process::Command, args: StartArgs, binary: &std::path::Path) -> ExitCode {
+    let log_file = args.log_file.unwrap_or_else(default_log_path);
+    let (log_out, log_err) = match open_log_handles(&log_file) {
+        Ok(handles) => handles,
+        Err(code) => return code,
     };
 
     cmd.stdout(Stdio::from(log_out))
@@ -273,24 +314,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     };
 
     let child_pid = child.id();
-
-    let state = state_for_child(child_pid, &binary, &args.listen);
-    // A record `aasm run` cannot verify is worth saying out loud here rather
-    // than only at the next launch: the operator is standing in front of this
-    // command, not the one that will refuse.
-    if state.start_token.is_empty() {
-        eprintln!(
-            "warning: this platform ({}) does not report process start times, so `aasm run` \
-             will not be able to verify this proxy and will refuse to launch.",
-            std::env::consts::OS
-        );
-    }
-    if let Err(e) = trust::verify_proxy_binary(&state.exe_path) {
-        eprintln!("warning: {e}; `aasm run` will refuse to launch against this proxy.");
-    }
-    if let Err(e) = pid::write_state(&state) {
-        eprintln!("warning: could not write PID file: {e}");
-    }
+    record_proxy_state(child_pid, binary, &args.listen);
 
     println!("Starting aa-proxy on {} (PID {child_pid})...", args.listen);
 

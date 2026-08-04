@@ -15,6 +15,9 @@
 .iam-page__audit-link {
   flex-shrink: 0;
   white-space: nowrap;
+  font-size: 0.875rem;
+  color: var(--shell-accent);
+  text-decoration: none;
 }
 
 .iam-page__header h1 {
@@ -33,12 +36,6 @@
 .iam-page__sub code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 0.8rem;
-}
-
-.iam-page__audit-link {
-  font-size: 0.875rem;
-  color: var(--shell-accent);
-  text-decoration: none;
 }
 
 .iam-page__audit-link:hover {

@@ -322,46 +322,7 @@ impl<E: StepExecutor> IntegrationEngine<E> {
         let mut mutated = false;
 
         for step in &plan.steps {
-            match self.executor.apply(step) {
-                Ok(outcome) => {
-                    mutated |= outcome.mutated;
-
-                    let mut receipt = StepReceipt::applied(step, outcome.fingerprint);
-                    if let Some(doc) = outcome.document_fingerprint {
-                        receipt = receipt.with_document_fingerprint(doc);
-                    }
-                    if let Some(prior) = outcome.prior_state {
-                        receipt = receipt.with_prior_state(prior);
-                    }
-
-                    // Journalled with its reversal information *before* the next
-                    // step runs: a crash from here on has to be undoable from
-                    // the journal alone, because no receipt exists yet.
-                    journal.record_applied(receipt.clone());
-                    self.store.save_journal(&journal)?;
-                    step_receipts.push(receipt);
-                }
-                Err(source) => {
-                    journal.mark(
-                        &step.id,
-                        StepProgress::Failed {
-                            reason: source.to_string(),
-                        },
-                    );
-                    self.store.save_journal(&journal)?;
-
-                    if step.requirement == StepRequirement::Required {
-                        self.reverse_all(&mut journal, &step_receipts)?;
-                        self.store.delete_journal(&plan.tool, plan.settings_scope)?;
-                        return Err(EngineError::RequiredStepFailed {
-                            step_id: step.id.clone(),
-                            source,
-                        });
-                    }
-                    skipped.push((step.id.clone(), source.to_string()));
-                    step_receipts.push(StepReceipt::not_applied(step));
-                }
-            }
+            self.apply_step(plan, step, &mut journal, &mut step_receipts, &mut skipped, &mut mutated)?;
         }
 
         // Reusing the prior receipt's id when the plan is the same is what stops
@@ -414,6 +375,63 @@ impl<E: StepExecutor> IntegrationEngine<E> {
             mutated,
             skipped,
         })
+    }
+
+    /// Execute one plan step, journalling its outcome. A failed **required**
+    /// step reverses everything already applied and returns
+    /// [`EngineError::RequiredStepFailed`]; a failed **optional** step is
+    /// recorded in `skipped` and applies a `not_applied` receipt.
+    fn apply_step(
+        &mut self,
+        plan: &IntegrationPlan,
+        step: &IntegrationStep,
+        journal: &mut OperationJournal,
+        step_receipts: &mut Vec<StepReceipt>,
+        skipped: &mut Vec<(String, String)>,
+        mutated: &mut bool,
+    ) -> Result<(), EngineError> {
+        let source = match self.executor.apply(step) {
+            Ok(outcome) => {
+                *mutated |= outcome.mutated;
+
+                let mut receipt = StepReceipt::applied(step, outcome.fingerprint);
+                if let Some(doc) = outcome.document_fingerprint {
+                    receipt = receipt.with_document_fingerprint(doc);
+                }
+                if let Some(prior) = outcome.prior_state {
+                    receipt = receipt.with_prior_state(prior);
+                }
+
+                // Journalled with its reversal information *before* the next
+                // step runs: a crash from here on has to be undoable from
+                // the journal alone, because no receipt exists yet.
+                journal.record_applied(receipt.clone());
+                self.store.save_journal(journal)?;
+                step_receipts.push(receipt);
+                return Ok(());
+            }
+            Err(source) => source,
+        };
+
+        journal.mark(
+            &step.id,
+            StepProgress::Failed {
+                reason: source.to_string(),
+            },
+        );
+        self.store.save_journal(journal)?;
+
+        if step.requirement == StepRequirement::Required {
+            self.reverse_all(journal, step_receipts)?;
+            self.store.delete_journal(&plan.tool, plan.settings_scope)?;
+            return Err(EngineError::RequiredStepFailed {
+                step_id: step.id.clone(),
+                source,
+            });
+        }
+        skipped.push((step.id.clone(), source.to_string()));
+        step_receipts.push(StepReceipt::not_applied(step));
+        Ok(())
     }
 
     /// Observe every applied step and classify what diverged.

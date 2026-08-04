@@ -1438,25 +1438,7 @@ impl ProxyServer {
         tracing::debug!(method = method, target = %redacted_target, "plain HTTP request");
 
         // Consume remaining request headers.
-        // AAASM-3922: cap the head (per-line + total budget + count) so an
-        // unbounded header read cannot OOM the proxy.
-        let mut headers = Vec::new();
-        let mut head_budget = MAX_HEADER_BYTES;
-        let mut header_line = String::new();
-        loop {
-            header_line.clear();
-            let n = read_line_capped(&mut reader, &mut header_line, MAX_HEADER_LINE_LEN, head_budget).await?;
-            head_budget -= n;
-            if header_line.trim().is_empty() {
-                break;
-            }
-            if headers.len() >= MAX_HEADER_COUNT {
-                return Err(ProxyError::Config(format!(
-                    "plain-HTTP request exceeds maximum {MAX_HEADER_COUNT} header lines; refusing (fail-closed)"
-                )));
-            }
-            headers.push(header_line.clone());
-        }
+        let mut headers = read_plain_http_headers(&mut reader).await?;
 
         // Parse host from the target URL or Host header.
         //
@@ -1478,13 +1460,7 @@ impl ProxyServer {
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress denied: {reason}",
             );
-            self.interceptor.emit_policy_decision(deny_host, true).await;
-            let mut stream = reader.into_inner();
-            stream
-                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-                .await?;
-            let _ = stream.shutdown().await;
-            return Ok(());
+            return self.refuse_plain_http_403(reader, deny_host).await;
         }
 
         // AAASM-3984: refuse plaintext (`http://`) egress to a known LLM
@@ -1504,13 +1480,7 @@ impl ProxyServer {
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress to LLM host refused: cleartext downgrade bypasses DLP",
             );
-            self.interceptor.emit_policy_decision(deny_host, true).await;
-            let mut stream = reader.into_inner();
-            stream
-                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-                .await?;
-            let _ = stream.shutdown().await;
-            return Ok(());
+            return self.refuse_plain_http_403(reader, deny_host).await;
         }
 
         // AAASM-4897: close the plain-HTTP DLP bypass. The HTTPS MitM path scans
@@ -1524,78 +1494,22 @@ impl ProxyServer {
         // A `Transfer-Encoding: chunked` body is un-inspectable by this parser
         // (the same gap the MitM path fails closed on), so refuse it rather than
         // stream it past the scanner.
-        if headers.iter().any(|h| {
-            let l = h.to_ascii_lowercase();
-            l.starts_with("transfer-encoding:") && l.contains("chunked")
-        }) {
+        if plain_http_body_is_chunked(&headers) {
             return Err(ProxyError::Config(
                 "plain-HTTP chunked request bodies are not inspectable; refusing (fail-closed)".into(),
             ));
         }
 
-        let content_length = plain_http_content_length(&headers)?;
         // Only requests that carry a body are buffered+scanned; a bodyless
         // request (GET) has nothing to scan. Either way the forward path below
         // now forces `Connection: close` and relays only the upstream response,
         // so exactly one request/response crosses this connection (AAASM-4934).
-        let mut verdict: Option<InterceptVerdict> = None;
-        let scanned_body: Option<Vec<u8>> = if content_length > 0 {
-            let mut body = vec![0u8; content_length];
-            reader.read_exact(&mut body).await?;
-
-            let content_encoding = plain_http_header_value(&headers, "content-encoding");
-            let scanned =
-                self.interceptor
-                    .intercept_request(&body, content_encoding.as_deref(), self.config.credential_action);
-            if scanned.decision == VerdictDecision::Block {
-                // AAASM-5358: this refusal is as pre-transmission as the MitM
-                // path's — the 403 is written and no dial follows — but it
-                // persisted nothing at all before now.
-                let execution = transmission_evidence::not_forwarded(scanned.decision, self.config.credential_action);
-                tracing::info!(
-                    host = %deny_host,
-                    findings = scanned.findings.len(),
-                    transmission = execution.transmission.as_str(),
-                    "plain-HTTP credential_action=Block: refusing forward, returning 403",
-                );
-                self.emit_audit_entry(
-                    RequestIdentity {
-                        host: deny_host,
-                        method,
-                        target,
-                    },
-                    &scanned,
-                    ProxyAuditDecision::Blocked,
-                    execution,
-                    Self::probe_correlation_plain(&headers),
-                )
-                .await;
-                self.interceptor.emit_policy_decision(deny_host, true).await;
-                let mut stream = reader.into_inner();
-                stream
-                    .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-                    .await?;
-                let _ = stream.shutdown().await;
-                return Ok(());
-            }
-            let forwarded = match scanned.decision {
-                VerdictDecision::ForwardRedacted => {
-                    let redacted = scanned
-                        .redacted_body
-                        .as_deref()
-                        .expect("ForwardRedacted always carries redacted_body")
-                        .to_vec();
-                    // The redacted body length differs, so rewrite Content-Length
-                    // to keep the framing the upstream sees accurate.
-                    rewrite_plain_http_content_length(&mut headers, redacted.len());
-                    Some(redacted)
-                }
-                _ => Some(body),
-            };
-            verdict = Some(scanned);
-            forwarded
-        } else {
-            None
+        let (verdict, scanned_body) = match self
+            .scan_plain_http_body(&mut reader, &mut headers, deny_host, method, target)
+            .await?
+        {
+            PlainHttpScan::Refused => return self.refuse_plain_http_403(reader, deny_host).await,
+            PlainHttpScan::Forward { verdict, body } => (verdict, body),
         };
 
         // AAASM-5358: state what is about to go, and let writing that record be
@@ -1679,6 +1593,141 @@ impl ProxyServer {
 
         Ok(())
     }
+
+    /// Emit the policy decision for `deny_host`, write a `403 Forbidden`, and
+    /// tear the connection down. Consumes `reader`; the plain-HTTP refusal paths
+    /// all end here.
+    async fn refuse_plain_http_403(
+        self: &Arc<Self>,
+        reader: BufReader<TcpStream>,
+        deny_host: &str,
+    ) -> Result<(), ProxyError> {
+        self.interceptor.emit_policy_decision(deny_host, true).await;
+        let mut stream = reader.into_inner();
+        stream
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+            .await?;
+        let _ = stream.shutdown().await;
+        Ok(())
+    }
+
+    /// Buffer (bounded by `content-length`) and DLP-scan a plain-HTTP request
+    /// body (AAASM-4897). A bodyless request yields `Forward` with no verdict. A
+    /// `Block` verdict emits its audit entry and returns [`PlainHttpScan::Refused`]
+    /// (the caller writes the 403); `ForwardRedacted` rewrites `Content-Length`
+    /// in `headers` to match the redacted body.
+    async fn scan_plain_http_body(
+        self: &Arc<Self>,
+        reader: &mut BufReader<TcpStream>,
+        headers: &mut [String],
+        deny_host: &str,
+        method: &str,
+        target: &str,
+    ) -> Result<PlainHttpScan, ProxyError> {
+        let content_length = plain_http_content_length(headers)?;
+        if content_length == 0 {
+            return Ok(PlainHttpScan::Forward {
+                verdict: None,
+                body: None,
+            });
+        }
+
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body).await?;
+
+        let content_encoding = plain_http_header_value(headers, "content-encoding");
+        let scanned =
+            self.interceptor
+                .intercept_request(&body, content_encoding.as_deref(), self.config.credential_action);
+        if scanned.decision == VerdictDecision::Block {
+            // AAASM-5358: this refusal is as pre-transmission as the MitM
+            // path's — the 403 is written and no dial follows — but it
+            // persisted nothing at all before now.
+            let execution = transmission_evidence::not_forwarded(scanned.decision, self.config.credential_action);
+            tracing::info!(
+                host = %deny_host,
+                findings = scanned.findings.len(),
+                transmission = execution.transmission.as_str(),
+                "plain-HTTP credential_action=Block: refusing forward, returning 403",
+            );
+            self.emit_audit_entry(
+                RequestIdentity {
+                    host: deny_host,
+                    method,
+                    target,
+                },
+                &scanned,
+                ProxyAuditDecision::Blocked,
+                execution,
+                Self::probe_correlation_plain(headers),
+            )
+            .await;
+            return Ok(PlainHttpScan::Refused);
+        }
+
+        let body = match scanned.decision {
+            VerdictDecision::ForwardRedacted => {
+                let redacted = scanned
+                    .redacted_body
+                    .as_deref()
+                    .expect("ForwardRedacted always carries redacted_body")
+                    .to_vec();
+                // The redacted body length differs, so rewrite Content-Length
+                // to keep the framing the upstream sees accurate.
+                rewrite_plain_http_content_length(headers, redacted.len());
+                redacted
+            }
+            _ => body,
+        };
+        Ok(PlainHttpScan::Forward {
+            verdict: Some(scanned),
+            body: Some(body),
+        })
+    }
+}
+
+/// Outcome of scanning a plain-HTTP request body: either the request is refused
+/// (the caller writes the 403) or it may be forwarded with an optional verdict
+/// and the (possibly redacted) body.
+enum PlainHttpScan {
+    Refused,
+    Forward {
+        verdict: Option<InterceptVerdict>,
+        body: Option<Vec<u8>>,
+    },
+}
+
+/// Consume plain-HTTP request headers from `reader`, capping the head (per-line +
+/// total budget + count) so an unbounded header read cannot OOM the proxy
+/// (AAASM-3922).
+async fn read_plain_http_headers(reader: &mut BufReader<TcpStream>) -> Result<Vec<String>, ProxyError> {
+    let mut headers = Vec::new();
+    let mut head_budget = MAX_HEADER_BYTES;
+    let mut header_line = String::new();
+    loop {
+        header_line.clear();
+        let n = read_line_capped(reader, &mut header_line, MAX_HEADER_LINE_LEN, head_budget).await?;
+        head_budget -= n;
+        if header_line.trim().is_empty() {
+            break;
+        }
+        if headers.len() >= MAX_HEADER_COUNT {
+            return Err(ProxyError::Config(format!(
+                "plain-HTTP request exceeds maximum {MAX_HEADER_COUNT} header lines; refusing (fail-closed)"
+            )));
+        }
+        headers.push(header_line.clone());
+    }
+    Ok(headers)
+}
+
+/// Whether the plain-HTTP head declares a `Transfer-Encoding: chunked` body,
+/// which this parser cannot inspect and therefore refuses.
+fn plain_http_body_is_chunked(headers: &[String]) -> bool {
+    headers.iter().any(|h| {
+        let l = h.to_ascii_lowercase();
+        l.starts_with("transfer-encoding:") && l.contains("chunked")
+    })
 }
 
 /// Canonicalise a host for policy comparison and LLM-pattern detection

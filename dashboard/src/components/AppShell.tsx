@@ -33,7 +33,12 @@ const GROUP_LABEL: Record<RouteGroup, string> = {
 // from the build mode (real, not a placeholder org/env): a production bundle
 // reads `prod`, a dev server `dev`, anything else (e.g. the test runner) its
 // raw mode. See design/v1/hi-fi/shell.jsx (`acme · prod · v3.4.1`).
-const ENV_LABEL = import.meta.env.PROD ? 'prod' : import.meta.env.DEV ? 'dev' : import.meta.env.MODE
+function resolveEnvLabel(): string {
+  if (import.meta.env.PROD) return 'prod'
+  if (import.meta.env.DEV) return 'dev'
+  return import.meta.env.MODE
+}
+const ENV_LABEL = resolveEnvLabel()
 
 // Non-canonical shell destinations that still deserve a breadcrumb label
 // (they live outside CANONICAL_ROUTES because they aren't rail entries).

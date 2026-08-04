@@ -353,11 +353,17 @@ export function AlertsPage() {
                 />
               )}
             </span>
-            <div
+            <fieldset
               data-testid="alerts-view-toggle"
-              role="group"
               aria-label="Alert view"
-              style={{ display: 'flex', gap: '0.25rem' }}
+              style={{
+                display: 'flex',
+                gap: '0.25rem',
+                margin: 0,
+                padding: 0,
+                border: 0,
+                minInlineSize: 0,
+              }}
             >
               {(['table', 'cards'] as const).map((mode) => {
                 const active = viewMode === mode
@@ -382,7 +388,7 @@ export function AlertsPage() {
                   </button>
                 )
               })}
-            </div>
+            </fieldset>
           </div>
 
           <AlertsFeedBody

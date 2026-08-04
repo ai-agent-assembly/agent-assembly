@@ -76,6 +76,35 @@ interface CrossTeamEdge {
   readonly peerTeam: string
 }
 
+/**
+ * The selected node's edges that cross a team boundary, resolved to their peer.
+ * An edge counts when it touches `node` and its other end lives on a different
+ * team; edges to unknown peers or same-team peers are skipped.
+ */
+function deriveCrossTeamEdges(
+  node: TopologyNode,
+  nodes: readonly TopologyNode[],
+  edges: readonly TopologyEdge[],
+): CrossTeamEdge[] {
+  const teamById = new Map(nodes.map((n) => [n.id, n]))
+  const out: CrossTeamEdge[] = []
+  edges.forEach((e, i) => {
+    const touches = e.source === node.id || e.target === node.id
+    if (!touches) return
+    const peerId = e.source === node.id ? e.target : e.source
+    const peer = teamById.get(peerId)
+    if (!peer || peer.team === node.team) return
+    out.push({
+      key: `${e.source}->${e.target}-${e.kind}-${i}`,
+      kind: e.kind,
+      outgoing: e.source === node.id,
+      peerName: peer.name,
+      peerTeam: peer.team,
+    })
+  })
+  return out
+}
+
 export interface NodeDetailPanelProps {
   readonly node: TopologyNode | null
   readonly onClose: () => void
@@ -118,26 +147,10 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
 
   const isSuspended = node?.status === 'suspended'
 
-  const crossTeamEdges = useMemo<readonly CrossTeamEdge[]>(() => {
-    if (!node) return []
-    const teamById = new Map(nodes.map((n) => [n.id, n]))
-    const out: CrossTeamEdge[] = []
-    edges.forEach((e, i) => {
-      const touches = e.source === node.id || e.target === node.id
-      if (!touches) return
-      const peerId = e.source === node.id ? e.target : e.source
-      const peer = teamById.get(peerId)
-      if (!peer || peer.team === node.team) return
-      out.push({
-        key: `${e.source}->${e.target}-${e.kind}-${i}`,
-        kind: e.kind,
-        outgoing: e.source === node.id,
-        peerName: peer.name,
-        peerTeam: peer.team,
-      })
-    })
-    return out
-  }, [node, nodes, edges])
+  const crossTeamEdges = useMemo<readonly CrossTeamEdge[]>(
+    () => (node ? deriveCrossTeamEdges(node, nodes, edges) : []),
+    [node, nodes, edges],
+  )
 
   useEffect(() => {
     if (!node || suspendOpen || shadowOpen) return

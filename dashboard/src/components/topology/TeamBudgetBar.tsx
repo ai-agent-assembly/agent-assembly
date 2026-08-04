@@ -69,6 +69,8 @@ export function TeamBudgetBar({ team, spent, limit }: TeamBudgetBarProps) {
   if (!hasSpend) truthState = 'unknown'
   else if (!hasLimit) truthState = 'unconfigured'
 
+  const unmeasurableDetail = hasSpend ? NO_LIMIT_DETAIL.toLowerCase() : NO_SPEND_DETAIL.toLowerCase()
+
   return (
     <div
       className="team-budget-bar"
@@ -83,7 +85,7 @@ export function TeamBudgetBar({ team, spent, limit }: TeamBudgetBarProps) {
       aria-label={
         measurable
           ? `${team} budget burn ${percent}%`
-          : `${team} budget burn unknown — ${hasSpend ? NO_LIMIT_DETAIL.toLowerCase() : NO_SPEND_DETAIL.toLowerCase()}`
+          : `${team} budget burn unknown — ${unmeasurableDetail}`
       }
     >
       <div className="team-budget-bar__head">

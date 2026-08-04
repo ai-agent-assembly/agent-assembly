@@ -104,7 +104,7 @@ export function ShadowModeDialog({
 
   const iso = useMemo(() => toIso(expiresLocal), [expiresLocal])
 
-  function handleScrimClick(e: MouseEvent<HTMLDivElement>) {
+  function handleScrimClick(e: MouseEvent<HTMLDialogElement>) {
     if (e.target === e.currentTarget) onCancel()
   }
 
@@ -135,26 +135,27 @@ export function ShadowModeDialog({
   }
 
   const needsPreview = cascade && !preview
-  const confirmLabel = pending
-    ? 'Applying…'
-    : cascade
-      ? `Shadow ${preview?.count ?? ''} agents`.trim()
-      : 'Switch to shadow'
+  let confirmLabel: string
+  if (pending) {
+    confirmLabel = 'Applying…'
+  } else if (cascade) {
+    confirmLabel = `Shadow ${preview?.count ?? ''} agents`.trim()
+  } else {
+    confirmLabel = 'Switch to shadow'
+  }
 
   return (
-    <div
+    <dialog
+      open
       className="suspend-dialog__scrim"
       onClick={handleScrimClick}
       onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
-      role="button"
-      tabIndex={-1}
+      aria-modal="true"
       aria-label="Close dialog"
       data-testid="shadow-dialog-scrim"
     >
       <form
         className="suspend-dialog"
-        role="dialog"
-        aria-modal="true"
         aria-labelledby="shadow-dialog-title"
         onSubmit={handleSubmit}
         data-testid="shadow-dialog"
@@ -267,6 +268,6 @@ export function ShadowModeDialog({
           )}
         </div>
       </form>
-    </div>
+    </dialog>
   )
 }
