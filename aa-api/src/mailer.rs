@@ -38,6 +38,14 @@ pub const SMTP_FROM_ENV: &str = "AA_SMTP_FROM";
 const DEFAULT_SMTP_PORT: u16 = 587;
 
 /// Default `From:` when `AA_SMTP_FROM` is unset.
+///
+/// Deliberately a safe, unconfigured placeholder — NOT a production-ready
+/// sender. A deployment that never wired up SMTP therefore never looks like it
+/// can deliver mail from a real domain. The hosted service sets
+/// `AA_SMTP_FROM=no-reply@mail.agent-assembly.com` (a dedicated transactional
+/// subdomain kept off the human Workspace sending reputation — AAASM-5521); the
+/// DKIM/SPF DNS that makes that domain deliverable is owned by AAASM-5517, not
+/// this crate. Self-hosters set a sender on their own verified domain.
 const DEFAULT_FROM: &str = "no-reply@localhost";
 
 /// An outbound email transport (AAASM-5306).
@@ -299,5 +307,30 @@ mod tests {
             from: "not an email".to_string(),
         };
         assert!(matches!(SmtpMailer::from_config(cfg), Err(MailerError::InvalidAddress)));
+    }
+
+    /// AAASM-5521: the canonical production transactional sender parses as a
+    /// valid `From:` mailbox, and building a message stamps it as the `From`
+    /// header without leaking the body/token into any header. Mirrors the
+    /// message construction in `SmtpMailer::send` so a regression in the From
+    /// wiring is caught without a network transport.
+    #[test]
+    fn canonical_from_is_stamped_and_body_stays_out_of_headers() {
+        let from: lettre::message::Mailbox = "no-reply@mail.agent-assembly.com"
+            .parse()
+            .expect("canonical From must parse");
+        let to: lettre::message::Mailbox = "user@example.com".parse().expect("to parses");
+        let token_body = "your reset token is reset-token-abc123";
+        let message = lettre::Message::builder()
+            .from(from)
+            .to(to)
+            .subject("Reset your password")
+            .body(token_body.to_string())
+            .expect("message builds");
+
+        let headers = format!("{:?}", message.headers());
+        assert!(headers.contains("no-reply@mail.agent-assembly.com"));
+        // The token-bearing body must never end up in the header set.
+        assert!(!headers.contains("reset-token-abc123"));
     }
 }
