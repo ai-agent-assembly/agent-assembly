@@ -328,7 +328,7 @@ export function LiveOpsPage() {
       <header className="live-page__header">
         <div className="live-page__header-lead">
           <h1 className="live-page__title">
-            Live Operations
+            Live Operations{' '}
             <span
               className={`live-page__pill live-page__pill--${pill.tone}`}
               data-testid="live-ops-state-pill"
