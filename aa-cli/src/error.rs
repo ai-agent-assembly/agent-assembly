@@ -22,10 +22,12 @@ pub enum CliError {
     Api(#[from] reqwest::Error),
 
     /// The gateway rejected the request as unauthenticated (`401`): no
-    /// credential, or one that is invalid/expired/revoked. Carries no detail
-    /// on purpose — the caller decides the actionable hint (run `aasm login`
-    /// vs. re-login) from whether a local session exists (AAASM-5513).
-    #[error("authentication required")]
+    /// credential, or one that is invalid/expired/revoked. The message is
+    /// actionable — it points the user at `aasm login` — because a raw
+    /// "401 Unauthorized" left users with no idea what to do (AAASM-5513).
+    #[error(
+        "authentication required — run `aasm login` to authenticate (or set AASM_API_KEY for non-interactive use)"
+    )]
     AuthRequired,
 
     /// The gateway rejected the request as forbidden (`403`): the caller is

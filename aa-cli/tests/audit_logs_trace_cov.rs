@@ -574,8 +574,7 @@ async fn trace_not_found_returns_failure() {
 }
 
 #[test]
-fn trace_build_url_trims_trailing_slash() {
-    let ctx = make_context("http://localhost:8080/");
-    let url = aa_cli::commands::trace::client::build_trace_url(&ctx, "sess-xyz");
-    assert_eq!(url, "http://localhost:8080/api/v1/traces/sess-xyz");
+fn trace_build_path_targets_traces_endpoint() {
+    let path = aa_cli::commands::trace::client::build_trace_path("sess-xyz");
+    assert_eq!(path, "/api/v1/traces/sess-xyz");
 }
