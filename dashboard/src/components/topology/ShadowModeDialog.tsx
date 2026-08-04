@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type MouseEvent, type SyntheticEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from 'react'
 import type {
   CascadeConfirmation,
   EnforcementModeCascadePreviewResponse,
@@ -83,6 +83,7 @@ export function ShadowModeDialog({
   const [cascade, setCascade] = useState(false)
   const [touched, setTouched] = useState(false)
   const [preview, setPreview] = useState<EnforcementModeCascadePreviewResponse | null>(null)
+  const dialogRef = useRef<HTMLDialogElement>(null)
 
   const trimmed = reason.trim()
   const reasonInvalid = trimmed === ''
@@ -104,9 +105,19 @@ export function ShadowModeDialog({
 
   const iso = useMemo(() => toIso(expiresLocal), [expiresLocal])
 
-  function handleScrimClick(e: MouseEvent<HTMLDialogElement>) {
-    if (e.target === e.currentTarget) onCancel()
-  }
+  // Backdrop dismiss: a click landing outside the box's bounds means the scrim
+  // was hit. Attached imperatively rather than via a React `onClick` prop
+  // because a <dialog> is a non-interactive element — a JSX listener on it trips
+  // jsx-a11y (S6847); the keyboard dismiss path is the Escape handler above.
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const onBackdrop = (e: globalThis.MouseEvent) => {
+      if (e.target === dialog) onCancel()
+    }
+    dialog.addEventListener('click', onBackdrop)
+    return () => dialog.removeEventListener('click', onBackdrop)
+  }, [onCancel])
 
   async function runPreview() {
     setTouched(true)
@@ -146,10 +157,9 @@ export function ShadowModeDialog({
 
   return (
     <dialog
+      ref={dialogRef}
       open
       className="suspend-dialog__scrim"
-      onClick={handleScrimClick}
-      onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
       aria-modal="true"
       aria-label="Close dialog"
       data-testid="shadow-dialog-scrim"
