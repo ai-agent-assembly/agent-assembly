@@ -41,6 +41,12 @@ pub enum CliError {
     #[error("token exchange failed: {0}")]
     AuthExchange(String),
 
+    /// `aasm login` was given no API key (empty prompt / unset env / no flag).
+    /// Distinct from [`AuthExchange`] because no exchange is attempted — the
+    /// message must not claim one "failed" (AAASM-5560).
+    #[error("no API key provided")]
+    NoApiKey,
+
     /// Generic I/O error.
     #[error("{0}")]
     Io(#[from] std::io::Error),
