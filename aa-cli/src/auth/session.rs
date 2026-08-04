@@ -287,12 +287,10 @@ mod tests {
         let prev_home = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp.path());
 
-        let result = (|| {
-            let dir = config_dir();
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(credentials_path(), "this: is: not: valid: yaml: [").unwrap();
-            load_session("anything")
-        })();
+        let dir = config_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(credentials_path(), "this: is: not: valid: yaml: [").unwrap();
+        let result = load_session("anything");
 
         match prev_home {
             Some(v) => std::env::set_var("HOME", v),
