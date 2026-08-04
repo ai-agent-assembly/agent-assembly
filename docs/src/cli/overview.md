@@ -30,9 +30,17 @@ These flags are defined on the root parser (`aa-cli/src/lib.rs`) and are
 | `--context <CONTEXT>` | string | _(default context, if any)_ | Named context from `~/.aa/config.yaml` to use for the API URL and key. |
 | `--output <OUTPUT>` | `table` \| `json` \| `yaml` | `table` | Output format for list/get commands. |
 | `--api-url <API_URL>` | string | `http://localhost:8080` | Override the gateway API base URL. Takes precedence over the resolved context. |
-| `--api-key <API_KEY>` | string | _(none)_ | Override the API key. Takes precedence over the context's stored key. |
+| `--api-key <API_KEY>` | string | _(none)_ | Override the API key. Takes precedence over the context's stored key. For interactive use prefer [`aasm login`](auth.md) over putting the key on argv/env (see the note below). |
 | `-h, --help` | flag | — | Print help. |
 | `-V, --version` | flag | — | Print the `aasm` version. |
+
+> **Authenticating.** `--api-key` / `AASM_API_KEY` still work and are the right
+> choice for CI and other non-interactive environments. For interactive use,
+> prefer [`aasm login`](auth.md): it exchanges the key **once** for a short-lived
+> scoped session (stored per context) so the raw key never sits on argv, in your
+> shell history, or in the environment. See [Authentication](auth.md) for the
+> session model, expiry/auto-refresh, and the `login` / `logout` / `whoami`
+> commands.
 
 > Several commands also expose a local `--output` or `--json` flag that
 > overrides the global `--output` for that command only (e.g. `aasm logs
@@ -79,6 +87,12 @@ The active API URL and key are resolved with this precedence (highest first):
 
 Manage contexts with the [`aasm context`](context.md) command group.
 
+> **Sessions live separately from config.** When you [`aasm login`](auth.md), the
+> resulting scoped session is stored in **`~/.aa/credentials.yaml`** (locked
+> `0600`), kept distinct from `~/.aa/config.yaml` so that clearing a session
+> (`aasm logout`) never rewrites your context definitions. See
+> [Authentication](auth.md).
+
 > **Note on paths.** The CLI *config* file is `~/.aa/config.yaml`. Separately,
 > the locally-managed gateway uses `~/.aasm/` for its runtime artifacts —
 > `~/.aasm/config.yaml` (gateway config, see [`aasm start`](start-stop.md)),
@@ -108,6 +122,7 @@ Some commands give the exit code a documented meaning so it can gate CI:
 
 | Command | Talks to | Purpose |
 |---|---|---|
+| [`aasm login`](auth.md) / [`logout`](auth.md) / [`whoami`](auth.md) | Gateway HTTP + local | Exchange an API key for a scoped session, clear it, or inspect it. |
 | [`aasm status`](status.md) | Gateway HTTP | Fleet health, agents, approvals, budget at a glance. |
 | [`aasm agent`](agent.md) | Gateway HTTP | List, inspect, suspend, resume, kill registered agents. |
 | [`aasm policy`](policy.md) | Gateway HTTP + local | Apply, version, diff, simulate, validate, show policies. |
