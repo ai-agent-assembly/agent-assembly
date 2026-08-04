@@ -123,6 +123,27 @@ When `AA_SMTP_HOST` is set, `aa-api` builds a real SMTP transport (STARTTLS,
 authenticated when a user + pass are supplied) and password-reset emails are
 delivered.
 
+### Canonical production sender (AAASM-5521)
+
+The `no-reply@localhost` default is intentionally a **safe, unconfigured**
+placeholder — it keeps a self-hosted deployment that never wired up SMTP from
+looking production-ready. A production deployment of the hosted service **must**
+set `AA_SMTP_FROM` to a real, authenticated sender on the dedicated
+transactional subdomain:
+
+```
+AA_SMTP_FROM=no-reply@mail.agent-assembly.com
+```
+
+This keeps application (transactional) mail off the human Google Workspace
+sending reputation, matching the boundary described for the SaaS mailer. The
+DKIM/SPF/return-path DNS that makes `mail.agent-assembly.com` deliverable is
+owned by the DNS ticket (AAASM-5517) and is **not** part of `aa-api`. Setting
+`AA_SMTP_FROM` to a sender whose domain is not actually verified with the SMTP
+provider will send mail that fails authentication — configure the provider and
+DNS first. Self-hosters running their own relay should set `AA_SMTP_FROM` to a
+sender on **their own** verified domain.
+
 ### When SMTP is not configured
 
 When `AA_SMTP_HOST` is **unset**, `aa-api` falls back to a **logging mailer**: it

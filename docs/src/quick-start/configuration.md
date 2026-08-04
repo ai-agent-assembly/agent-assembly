@@ -197,7 +197,7 @@ the CLI.
 | `AA_SMTP_PORT` | `587` | SMTP port (submission with STARTTLS). |
 | `AA_SMTP_USER` | _(unset)_ | Username for authenticated SMTP submission. Optional. |
 | `AA_SMTP_PASS` | _(unset)_ | Password for authenticated SMTP submission. Optional. |
-| `AA_SMTP_FROM` | `no-reply@localhost` | The `From:` address stamped on outbound mail. |
+| `AA_SMTP_FROM` | `no-reply@localhost` | The `From:` address stamped on outbound mail. The `localhost` default is a safe unconfigured placeholder; production must set a real authenticated sender (canonical hosted value `no-reply@mail.agent-assembly.com`). See [Canonical production sender](../usage-guide/authentication.md#canonical-production-sender-aaasm-5521). |
 
 > Native email/password accounts also require a **Postgres-backed** deployment.
 > The `AA_SMTP_*` and `AA_AUTH_OPEN_REGISTRATION` variables only take effect once
