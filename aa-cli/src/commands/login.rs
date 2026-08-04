@@ -88,7 +88,7 @@ fn resolve_key(ctx: &ResolvedContext) -> Result<String, CliError> {
     let entered = Term::stdout().read_secure_line().map_err(CliError::Io)?;
     let key = entered.trim().to_string();
     if key.is_empty() {
-        return Err(CliError::AuthExchange("no API key provided".to_string()));
+        return Err(CliError::NoApiKey);
     }
     Ok(key)
 }
@@ -160,6 +160,15 @@ mod tests {
             scope: Some("read".to_string()),
         };
         assert_eq!(args.scope.map(|s| vec![s]), Some(vec!["read".to_string()]));
+    }
+
+    /// An empty prompt reports "no API key provided" verbatim — not the
+    /// "token exchange failed:" wording, since no exchange is attempted. Renders
+    /// via `run`'s `eprintln!("error: {e}")` as the documented `error: no API
+    /// key provided` (AAASM-5560).
+    #[test]
+    fn no_api_key_error_message_matches_docs() {
+        assert_eq!(CliError::NoApiKey.to_string(), "no API key provided");
     }
 
     #[test]
