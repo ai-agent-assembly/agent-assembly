@@ -63,8 +63,9 @@ function NumericCell({
   value,
   tone,
 }: Readonly<{ value: number | null; tone?: NumericCellTone }>) {
+  const toneClass = tone ? ` fleet-table__numeric--${tone}` : ''
   return (
-    <span className={`fleet-table__numeric${tone ? ` fleet-table__numeric--${tone}` : ''}`}>
+    <span className={`fleet-table__numeric${toneClass}`}>
       {value ?? '—'}
     </span>
   )
@@ -248,6 +249,49 @@ function clickOnInteractive(e: MouseEvent<HTMLTableRowElement>): boolean {
   return target?.closest('a, button, input, label') !== null
 }
 
+/** Ids whose bulk mutation rejected, in the original request order. */
+function rejectedIds(ids: string[], results: PromiseSettledResult<unknown>[]): Set<string> {
+  return new Set(
+    results
+      .map((r, i) => (r.status === 'rejected' ? ids[i] : null))
+      .filter((x): x is string => Boolean(x)),
+  )
+}
+
+/**
+ * The toast + selection change a bulk suspend/resume produces, derived purely.
+ *
+ * `selection === undefined` means leave the current selection untouched (the
+ * all-failed case, where nothing is deselected so the user can retry).
+ */
+interface BulkOutcome {
+  readonly selection?: Set<string>
+  readonly message: string
+  readonly tone: 'success' | 'error'
+}
+
+function bulkResultOutcome(
+  verb: 'suspended' | 'resumed',
+  ids: string[],
+  results: PromiseSettledResult<unknown>[],
+): BulkOutcome {
+  const okCount = results.filter((r) => r.status === 'fulfilled').length
+  const failCount = results.length - okCount
+  if (failCount === 0) {
+    return { selection: new Set(), message: `${okCount} ${verb}`, tone: 'success' }
+  }
+  if (okCount === 0) {
+    return { message: `${failCount} failed`, tone: 'error' }
+  }
+  // Keep failed ids in the selection so the user can retry without re-clicking
+  // each row.
+  return {
+    selection: rejectedIds(ids, results),
+    message: `${okCount} ${verb}, ${failCount} failed`,
+    tone: 'error',
+  }
+}
+
 export function FleetPage() {
   const navigate = useNavigate()
   const { toast } = useToast()
@@ -370,24 +414,9 @@ export function FleetPage() {
 
   const reportBulkResult = useCallback(
     (verb: 'suspended' | 'resumed', ids: string[], results: PromiseSettledResult<unknown>[]) => {
-      const okCount = results.filter((r) => r.status === 'fulfilled').length
-      const failCount = results.length - okCount
-      if (failCount === 0) {
-        setSelected(new Set())
-        toast(`${okCount} ${verb}`, 'success')
-      } else if (okCount === 0) {
-        toast(`${failCount} failed`, 'error')
-      } else {
-        // Keep failed ids in the selection so the user can retry without
-        // re-clicking each row.
-        const failedIds = new Set(
-          results
-            .map((r, i) => (r.status === 'rejected' ? ids[i] : null))
-            .filter((x): x is string => Boolean(x)),
-        )
-        setSelected(failedIds)
-        toast(`${okCount} ${verb}, ${failCount} failed`, 'error')
-      }
+      const { selection, message, tone } = bulkResultOutcome(verb, ids, results)
+      if (selection !== undefined) setSelected(selection)
+      toast(message, tone)
     },
     [toast],
   )
