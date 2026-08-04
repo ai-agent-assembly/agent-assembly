@@ -415,7 +415,7 @@ mdbook serve docs --open
 
 - **Security:** Report vulnerabilities **privately** via
   [GitHub Security Advisories](https://github.com/ai-agent-assembly/agent-assembly/security)
-  or email `security@agent-assembly.dev`. Please do not open public issues for
+  or email `security@agent-assembly.com`. Please do not open public issues for
   security reports. See [`SECURITY.md`](SECURITY.md) for the disclosure policy
   and response SLA.
 - **Bugs & features:** Open an issue using the
