@@ -335,15 +335,41 @@ mod tests {
         }
     }
 
-    fn redirect(dir: &Path) {
+    /// Point the DI socket/token env vars at `dir` for the duration of the
+    /// returned guard, then remove them on drop.
+    ///
+    /// The vars are process-global, so leaving them set leaks into unrelated
+    /// tests that inherit the environment — e.g. `run`'s
+    /// `no_gateway_credential_reaches_the_launched_tool`, which asserts no
+    /// `AA_*TOKEN*` key reaches a launched tool and would fail on our stray
+    /// `AA_DEVINT_TOKEN_FILE` under the shared-process `cargo test` harness.
+    /// Holding [`env_guard`] serializes the mutation; the drop restores the
+    /// prior (unset) state. The caller must bind the guard (`let _g = …`).
+    #[must_use]
+    fn redirect(dir: &Path) -> RedirectGuard {
+        let lock = crate::test_support::env_guard();
         std::env::set_var("AA_DEVINT_SOCKET", dir.join("devint.sock"));
         std::env::set_var("AA_DEVINT_TOKEN_FILE", dir.join("devint.token"));
+        RedirectGuard { _lock: lock }
+    }
+
+    /// Removes the DI env vars set by [`redirect`] when dropped, so they never
+    /// outlive the test that set them.
+    struct RedirectGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for RedirectGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("AA_DEVINT_SOCKET");
+            std::env::remove_var("AA_DEVINT_TOKEN_FILE");
+        }
     }
 
     #[tokio::test]
     async fn no_autostart_reports_a_stopped_runtime_without_spawning_anything() {
         let dir = tempfile::tempdir().expect("tempdir");
-        redirect(dir.path());
+        let _redirect = redirect(dir.path());
         let mut notices = Vec::new();
         let error = connect_with(
             SessionOptions {
@@ -367,7 +393,7 @@ mod tests {
     #[tokio::test]
     async fn autostart_announces_itself_on_the_notice_stream() {
         let dir = tempfile::tempdir().expect("tempdir");
-        redirect(dir.path());
+        let _redirect = redirect(dir.path());
         let mut notices = Vec::new();
         let error = connect_with(
             SessionOptions {
@@ -391,7 +417,7 @@ mod tests {
     #[tokio::test]
     async fn a_runtime_that_cannot_be_started_is_actionable_rather_than_a_panic() {
         let dir = tempfile::tempdir().expect("tempdir");
-        redirect(dir.path());
+        let _redirect = redirect(dir.path());
         let mut notices = Vec::new();
         let error = connect_with(SessionOptions::default(), &Unspawnable, &mut notices)
             .await
