@@ -882,6 +882,107 @@ fn check_layer_availability(active_layers: crate::layer::LayerSet, degraded_laye
     }
 }
 
+/// Bring up the eBPF interception layer.
+///
+/// The default path drives the privileged `aa-ebpf-loaderd` daemon; the legacy
+/// in-process spawns are retained ONLY for the privileged in-process
+/// dev/integration scenario, behind the off-by-default `AA_EBPF_INPROCESS_LOAD`
+/// opt-in (AAASM-4011).
+async fn bring_up_ebpf_layer(
+    tracker: &TaskTracker,
+    broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
+    token: &CancellationToken,
+    seq: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    config: &RuntimeConfig,
+    degraded_layers: &mut Vec<String>,
+) {
+    if crate::ebpf_control::use_inprocess_load() {
+        tracing::warn!(
+            "AA_EBPF_INPROCESS_LOAD set — using legacy in-process eBPF load path \
+             (requires CAP_BPF; NOT the production posture)"
+        );
+        spawn_ebpf_tls(tracker, broadcast_tx, degraded_layers);
+        spawn_ebpf_file_io(tracker, broadcast_tx, seq, &config.agent_id, degraded_layers);
+        spawn_ebpf_exec_tracepoints(tracker, broadcast_tx, token, degraded_layers);
+    } else {
+        crate::ebpf_control::drive_ebpf_layer(broadcast_tx, degraded_layers).await;
+    }
+}
+
+/// Spawn the IPC server task, signalling readiness once the socket binds. A bind
+/// failure is logged and the runtime continues without IPC — dropping
+/// `inbound_tx` lets the pipeline see the channel close and exit cleanly.
+#[allow(clippy::too_many_arguments)]
+fn spawn_ipc_server(
+    tracker: &TaskTracker,
+    config: &RuntimeConfig,
+    token: &CancellationToken,
+    ready_tx: &tokio::sync::watch::Sender<bool>,
+    inbound_tx: tokio::sync::mpsc::Sender<(u64, crate::ipc::IpcFrame)>,
+    active_connections: &std::sync::Arc<std::sync::atomic::AtomicI64>,
+    response_router: &crate::ipc::ResponseRouter,
+    verified_identities: &crate::ipc::VerifiedIdentityStore,
+) {
+    let ipc_config = crate::ipc::server::IpcServerConfig::from_runtime_config(config);
+    let ipc_server = match crate::ipc::server::IpcServer::bind(ipc_config) {
+        Ok(ipc_server) => ipc_server,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to bind IPC socket — continuing without IPC");
+            // Without an IPC server the inbound_tx is dropped here;
+            // the pipeline will see the channel closed and exit cleanly.
+            return;
+        }
+    };
+    let _ = ready_tx.send(true);
+    let ipc_tracker = tracker.clone();
+    let ipc_token = token.clone();
+    let ipc_active_connections = std::sync::Arc::clone(active_connections);
+    let ipc_router = std::sync::Arc::clone(response_router);
+    let ipc_verified = std::sync::Arc::clone(verified_identities);
+    tracker.spawn(async move {
+        ipc_server
+            .run(
+                ipc_tracker,
+                ipc_token,
+                inbound_tx,
+                ipc_active_connections,
+                ipc_router,
+                ipc_verified,
+            )
+            .await;
+    });
+    tracing::info!("IPC server task spawned");
+}
+
+/// Spawn the health/metrics HTTP server task, binding to the configured
+/// `metrics_addr` and serving until the cancellation token fires.
+fn spawn_health_server(
+    tracker: &TaskTracker,
+    config: &RuntimeConfig,
+    token: CancellationToken,
+    health_state: crate::health::HealthState,
+) {
+    let addr: std::net::SocketAddr = config
+        .metrics_addr
+        .parse()
+        .expect("invalid AA_METRICS_ADDR — must be a valid socket address");
+    tracker.spawn(async move {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                tracing::info!(%addr, "health server bound");
+                axum::serve(listener, crate::health::router(health_state))
+                    .with_graceful_shutdown(async move { token.cancelled().await })
+                    .await
+                    .ok();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, %addr, "failed to bind health server");
+            }
+        }
+    });
+    tracing::info!(%addr, "health server task spawned");
+}
+
 /// Start the runtime and block until graceful shutdown completes.
 ///
 /// This is the main async entry point called from `main()`. It creates the
@@ -990,35 +1091,16 @@ pub async fn run(config: RuntimeConfig) {
     let inbound_tx_health = inbound_tx.clone();
 
     // Spawn the IPC server task.
-    let ipc_config = crate::ipc::server::IpcServerConfig::from_runtime_config(&config);
-    match crate::ipc::server::IpcServer::bind(ipc_config) {
-        Ok(ipc_server) => {
-            let _ = ready_tx.send(true);
-            let ipc_tracker = tracker.clone();
-            let ipc_token = token.clone();
-            let ipc_active_connections = std::sync::Arc::clone(&active_connections);
-            let ipc_router = std::sync::Arc::clone(&response_router);
-            let ipc_verified = std::sync::Arc::clone(&verified_identities);
-            tracker.spawn(async move {
-                ipc_server
-                    .run(
-                        ipc_tracker,
-                        ipc_token,
-                        inbound_tx,
-                        ipc_active_connections,
-                        ipc_router,
-                        ipc_verified,
-                    )
-                    .await;
-            });
-            tracing::info!("IPC server task spawned");
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to bind IPC socket — continuing without IPC");
-            // Without an IPC server the inbound_tx is dropped here;
-            // the pipeline will see the channel closed and exit cleanly.
-        }
-    }
+    spawn_ipc_server(
+        &tracker,
+        &config,
+        &token,
+        &ready_tx,
+        inbound_tx,
+        &active_connections,
+        &response_router,
+        &verified_identities,
+    );
 
     // strip-for-publish:begin devtool
     // The Developer Integration API, when this runtime was asked to serve one.
@@ -1045,17 +1127,7 @@ pub async fn run(config: RuntimeConfig) {
     // dev/integration scenario, behind the off-by-default AA_EBPF_INPROCESS_LOAD
     // opt-in, so they can never silently mask a failure in production.
     if active_layers.contains(crate::layer::LayerSet::EBPF) {
-        if crate::ebpf_control::use_inprocess_load() {
-            tracing::warn!(
-                "AA_EBPF_INPROCESS_LOAD set — using legacy in-process eBPF load path \
-                 (requires CAP_BPF; NOT the production posture)"
-            );
-            spawn_ebpf_tls(&tracker, &broadcast_tx, &mut degraded_layers);
-            spawn_ebpf_file_io(&tracker, &broadcast_tx, &seq, &config.agent_id, &mut degraded_layers);
-            spawn_ebpf_exec_tracepoints(&tracker, &broadcast_tx, &token, &mut degraded_layers);
-        } else {
-            crate::ebpf_control::drive_ebpf_layer(&broadcast_tx, &mut degraded_layers).await;
-        }
+        bring_up_ebpf_layer(&tracker, &broadcast_tx, &token, &seq, &config, &mut degraded_layers).await;
     }
 
     // AAASM-3430: build the gateway client when an endpoint is configured so
@@ -1105,38 +1177,17 @@ pub async fn run(config: RuntimeConfig) {
     spawn_correlation_subscriber(&tracker, &config, token.clone(), correlation_rx);
 
     // Spawn the health/metrics HTTP server task.
-    {
-        let health_state = crate::health::HealthState {
-            start_time: std::time::Instant::now(),
-            pipeline_metrics: std::sync::Arc::clone(&pipeline_metrics),
-            ready_rx,
-            prometheus_handle,
-            active_connections: std::sync::Arc::clone(&active_connections),
-            inbound_tx: inbound_tx_health,
-            active_layers,
-            degraded_layers,
-        };
-        let addr: std::net::SocketAddr = config
-            .metrics_addr
-            .parse()
-            .expect("invalid AA_METRICS_ADDR — must be a valid socket address");
-        let health_token = token.clone();
-        tracker.spawn(async move {
-            match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => {
-                    tracing::info!(%addr, "health server bound");
-                    axum::serve(listener, crate::health::router(health_state))
-                        .with_graceful_shutdown(async move { health_token.cancelled().await })
-                        .await
-                        .ok();
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, %addr, "failed to bind health server");
-                }
-            }
-        });
-        tracing::info!(%addr, "health server task spawned");
-    }
+    let health_state = crate::health::HealthState {
+        start_time: std::time::Instant::now(),
+        pipeline_metrics: std::sync::Arc::clone(&pipeline_metrics),
+        ready_rx,
+        prometheus_handle,
+        active_connections: std::sync::Arc::clone(&active_connections),
+        inbound_tx: inbound_tx_health,
+        active_layers,
+        degraded_layers,
+    };
+    spawn_health_server(&tracker, &config, token.clone(), health_state);
 
     // Wait for an OS shutdown signal.
     wait_for_shutdown_signal().await;
