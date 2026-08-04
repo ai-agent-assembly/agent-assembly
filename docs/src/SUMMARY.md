@@ -19,6 +19,7 @@
 # CLI Reference
 
 - [Overview](cli/overview.md)
+- [Authentication (login / logout / whoami)](cli/auth.md)
 - [aasm status](cli/status.md)
 - [aasm agent](cli/agent.md)
 - [aasm policy](cli/policy.md)

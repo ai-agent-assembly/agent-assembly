@@ -23,6 +23,8 @@ pub mod gw_probe;
 // strip-for-publish:begin devtool
 pub mod integrations;
 // strip-for-publish:end devtool
+pub mod login;
+pub mod logout;
 pub mod logs;
 pub mod permissions;
 pub mod pidfile;
@@ -45,10 +47,17 @@ pub mod topology;
 pub mod trace;
 pub mod uninstall;
 pub mod version;
+pub mod whoami;
 
 /// Top-level subcommands for the `aasm` CLI.
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Log in: exchange an API key for a short-lived scoped session token.
+    Login(login::LoginArgs),
+    /// Log out: end the local session for the active context.
+    Logout(logout::LogoutArgs),
+    /// Show the active session identity, scopes, and expiry.
+    Whoami(whoami::WhoamiArgs),
     /// Gateway administrative operations.
     Admin(admin::AdminArgs),
     /// Manage monitored agent processes.
@@ -109,6 +118,9 @@ pub enum Commands {
 /// Dispatch the parsed CLI command to the appropriate handler.
 pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
     match cmd {
+        Commands::Login(args) => login::run(args, ctx),
+        Commands::Logout(args) => logout::run(args, ctx),
+        Commands::Whoami(args) => whoami::run(args, ctx, output),
         Commands::Admin(args) => admin::dispatch(args, ctx, output),
         Commands::Agent(args) => agent::dispatch(args, ctx, output),
         Commands::Alerts(args) => alerts::dispatch(args, ctx, output),

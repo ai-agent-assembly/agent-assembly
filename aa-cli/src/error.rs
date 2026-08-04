@@ -21,6 +21,26 @@ pub enum CliError {
     #[error("API request failed: {0}")]
     Api(#[from] reqwest::Error),
 
+    /// The gateway rejected the request as unauthenticated (`401`): no
+    /// credential, or one that is invalid/expired/revoked. The message is
+    /// actionable — it points the user at `aasm login` — because a raw
+    /// "401 Unauthorized" left users with no idea what to do (AAASM-5513).
+    #[error(
+        "authentication required — run `aasm login` to authenticate (or set AASM_API_KEY for non-interactive use)"
+    )]
+    AuthRequired,
+
+    /// The gateway rejected the request as forbidden (`403`): the caller is
+    /// authenticated but the session's scope is insufficient. The string is the
+    /// server's problem-detail message where available (AAASM-5513).
+    #[error("{0}")]
+    ScopeDenied(String),
+
+    /// The `/auth/token` exchange failed for a reason other than `401`/`403`
+    /// (e.g. an unexpected status or malformed body).
+    #[error("token exchange failed: {0}")]
+    AuthExchange(String),
+
     /// Generic I/O error.
     #[error("{0}")]
     Io(#[from] std::io::Error),
