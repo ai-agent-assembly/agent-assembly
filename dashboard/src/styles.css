@@ -540,6 +540,9 @@ body,
   line-height: 1.45;
 }
 .login-page__notice {
+  /* display:block keeps the box-model layout identical now that the element
+     is an <output> (implicit role="status"), which is inline by default. */
+  display: block;
   font-size: 13px;
   color: var(--ok);
   background: var(--ok-bg);

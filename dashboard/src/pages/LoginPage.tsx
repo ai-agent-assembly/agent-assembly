@@ -72,7 +72,7 @@ export function LoginPage() {
         <p className="login-page__brand-tagline">Governance-native AI agent runtime</p>
       </header>
 
-      <section className="login-page__card" role="region" aria-label="Authentication">
+      <section className="login-page__card" aria-label="Authentication">
         {passwordAuthEnabled ? (
           <AccountAuth
             onSignIn={loginWithCredentials}
@@ -135,6 +135,13 @@ function AccountAuth({
     } finally {
       setLoading(false)
     }
+  }
+
+  let submitLabel: string
+  if (loading) {
+    submitLabel = tab === 'signin' ? 'Signing in…' : 'Creating account…'
+  } else {
+    submitLabel = tab === 'signin' ? 'Sign in' : 'Create account'
   }
 
   return (
@@ -212,13 +219,7 @@ function AccountAuth({
         )}
 
         <button type="submit" className="login-page__submit" disabled={loading}>
-          {loading
-            ? tab === 'signin'
-              ? 'Signing in…'
-              : 'Creating account…'
-            : tab === 'signin'
-              ? 'Sign in'
-              : 'Create account'}
+          {submitLabel}
         </button>
       </form>
 
