@@ -54,9 +54,10 @@
  * (`import { certainFromQuery as fold }`) or a namespace call (`T.certainFromQuery`)
  * would slip past. The compiler-enforced half of the ratchet is the
  * `no-restricted-imports` rule in `.eslintrc.cjs`, whose allowlist is the same
- * set of files (five, since AAASM-5380 migrated the two approvals surfaces, then
+ * set of files (four, since AAASM-5380 migrated the two approvals surfaces, then
  * the Fleet and Step-5-enroll agent lists, then the step-2 gateway-health
- * probe, and then the AlertsPage rules/alerts/total folds); it
+ * probe, then the AlertsPage rules/alerts/total folds, and then the agent-detail
+ * posture panel); it
  * catches aliasing and namespace access for free. Neither half
  * is sufficient alone — the lint rule cannot count folds within a file, and this
  * scan cannot see through a rename.
@@ -107,13 +108,6 @@ const AUDIT: readonly FoldSite[] = [
     disposition: 'guarded-at-fetch',
     reason:
       'The alerts fold. `readAlertsPage` runs `parseAlertList` (features/alerts/parseAlert.ts), which throws `AlertShapeError` on a non-array `items` and on any row without a string id or with an unrecognised severity/status. So `alerts.data` is a validated `Alert[]` or the query is in error. This is the one fold that runs outside every ErrorBoundary in the tree — the sibling policies fold in the same component was AAASM-5369 site 1 — and it is safe only because that parse throws first.',
-  },
-  {
-    file: 'components/agentDetail/agentPosture.ts',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'A non-array `resources` throws inside the generator `tallyVerdicts` consumes, at render, outside any queryFn. A truthy non-array `policies` makes `cascadeEvidenceOf` read `.length` as `undefined`, which is not `0`, so the empty-cascade guard is skipped and counting proceeds on unread data. `api/capability.ts` casts the body (`data as CapabilityMatrix`); the hook only incidentally checks `agents` via `.find`. Follow-up: AAASM-5380.',
   },
   {
     file: 'pages/CostsPage.tsx',
