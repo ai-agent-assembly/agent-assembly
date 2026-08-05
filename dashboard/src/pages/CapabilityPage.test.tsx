@@ -278,15 +278,39 @@ describe('CapabilityPage', () => {
     expect(document.body.textContent ?? '').not.toMatch(/no agents (are )?registered/i)
   })
 
+  it('folds a caps-less agent row to an absence, not the ErrorBoundary (AC3)', async () => {
+    // AAASM-5380 slice S6. `{ agents: [{}], resources: [{}], policies: [{}],
+    // sampleCalls: [{}] }` used to pass `decodeMatrixShape` — all four
+    // collections present, absence guard skipped — and then `populatedCellCount`
+    // read `agent.caps[resource.id]` and threw `TypeError: Cannot read
+    // properties of undefined`, dying into the shell ErrorBoundary. Tightening
+    // the decoder to require a readable `caps` on each agent row and an `id` on
+    // each resource row makes this a "could not be read" absence on the page
+    // instead — a visible failure, not a plausible-looking one.
+    getMatrix.mockResolvedValue({
+      agents: [{}],
+      resources: [{}],
+      policies: [{}],
+      sampleCalls: [{}],
+    } as unknown as CapabilityMatrix)
+    renderPage()
+
+    const absence = await screen.findByTestId('capability-unreadable-state')
+    expect(absence).toHaveAttribute('data-truth-state', 'unknown')
+    // The page rendered — the assertion that fails if the TypeError comes back.
+    expect(screen.getByTestId('capability-page')).toBeInTheDocument()
+    expect(absence).toHaveTextContent(/could not be read/i)
+    expect(absence).toHaveTextContent(/capability matrix came back in a shape/i)
+  })
+
   it('still renders the grid for the conforming fixture', async () => {
-    // Without this the two cases above would pass against a page that reported
+    // Without this the cases above would pass against a page that reported
     // every matrix as unreadable.
     //
     // Deliberately the full fixture, not "any body whose four collections are
-    // present": presence is not sufficient, and claiming it was is the defect
-    // the delta review caught. `{ agents: [{}], … }` passes the decoder and
-    // still throws in `populatedCellCount` — see `decodeMatrixShape` and
-    // AAASM-5380.
+    // present": presence is not sufficient, which the caps-less-row test above
+    // proves — that body passed the pre-S6 decoder and still threw in
+    // `populatedCellCount`. See `decodeMatrixShape` (AAASM-5380 slice S6).
     getMatrix.mockResolvedValue(FIXTURE)
     renderPage()
 
