@@ -3,8 +3,7 @@ import { useNavigate } from 'react-router'
 import { useToast } from '../components/Toast'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EmptyState } from '../components/EmptyState'
-import { ErrorState } from '../components/states'
-import { TruthfulValue } from '../components/truthfulness'
+import { StatusState, TruthfulValue } from '../components/truthfulness'
 import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 import { certainFromShapedQuery, mapCertain } from '../lib/truthfulness'
 import { useAgentsQuery } from '../features/agents/api'
@@ -293,7 +292,8 @@ export function LiveOpsPage() {
     // data the truthfulness vocabulary exists to forbid. `ErrorState` maps to
     // StatusState's `unavailable` (role="alert"), so the severity is announced.
     streamBody = (
-      <ErrorState
+      <StatusState
+        state="unavailable"
         title="P1 · Runtime disconnected"
         description={
           <>
@@ -302,8 +302,12 @@ export function LiveOpsPage() {
             will propagate until the stream reconnects.
           </>
         }
-        onRetry={reconnect}
-        retryLabel="Reconnect"
+        testId="error-state"
+        action={
+          <button type="button" className="truth-state__retry" onClick={reconnect}>
+            Reconnect
+          </button>
+        }
       />
     )
   } else if (status === 'connected' && ops.length === 0) {
