@@ -374,6 +374,30 @@ describe('TeamsPage — every agent is reachable from some grouping (AAASM-5157)
     expect(screen.queryByTestId('orphan-agents-list')).not.toBeInTheDocument()
   })
 
+  it('reports the census as unknown, never NaN, when the overview omits total_agent_count (AAASM-5380)', async () => {
+    // The defect this closes: `useTopologyOverviewQuery` ends in `data as
+    // TopologyOverview`, so a `200` missing the required `total_agent_count`
+    // reached `reconcileAgentCensus` intact and made `unaccountedFor` compute to
+    // `undefined - grouped === NaN`; `NaN === 0` is false, so `CensusNotice`
+    // rendered a disagreement worded with `NaN`. `decodeTopologyOverview` now
+    // folds the body to `unknown` before the census sees it, so the notice is
+    // withheld rather than shown with a nonsense figure.
+    const overview = makeOverview(2, ORPHANS)
+    const { total_agent_count: _t, ...noTotal } = overview
+    void _t
+    setupMocks(noTotal as unknown as TopologyOverview, [...TEAM_MEMBERS, ...ORPHANS])
+    await openOrphans()
+
+    // The orphan pane still renders (the nodes fold is unaffected).
+    expect(screen.getByTestId('orphan-detail-pane')).toBeInTheDocument()
+    expect(screen.getAllByTestId('orphan-agent-row')).toHaveLength(2)
+
+    // The census could not be reconciled, so no mismatch notice is shown — and
+    // crucially nothing renders `NaN`.
+    expect(screen.queryByTestId('orphan-census-mismatch')).not.toBeInTheDocument()
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument()
+  })
+
   it('keeps the unclaimed section reachable while the team list is failing', async () => {
     setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
     vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(

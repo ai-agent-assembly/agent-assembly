@@ -801,6 +801,53 @@ describe('CostsPage — AAASM-5160: the per-team tab is a table with Agents and 
   })
 })
 
+describe('CostsPage — AAASM-5380: a malformed 200 is an absence, never a fabricated known(0)', () => {
+  it('reports Blocked-by-budget as unknown, not a measured 0, on a schema-invalid cost body', async () => {
+    // The defect this closes: `useCostSummaryQuery` ends in `data as CostSummary`,
+    // so a non-null body a proxy or a version-skewed API rewrote (here: missing
+    // the required `daily_spend_usd`, with a well-formed `per_team` so nothing
+    // throws — the silent case) reached the strip intact. `whenEmpty:
+    // "unconfigured"` never fired (the body is present), and
+    // `countBlockedByBudget` reported a measured-looking `known(0)` teams blocked
+    // by budget — a fabricated clean bill of health. `decodeCostSummary` now folds
+    // it to `unknown`.
+    const malformed = {
+      date: '2026-05-13',
+      per_team: [{ team_id: 'team-hot', daily_spend_usd: '190.00', date: '2026-05-13' }],
+    } as unknown as CostSummary
+    setupMocks(OVERVIEW, malformed)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
+    const value = within(blocked).getByTestId('costs-kpi-blocked-value')
+    expect(value.dataset.truthState).toBe('unknown')
+    // Never a numeral, and specifically never the fabricated compliant 0.
+    expect(within(blocked).queryByText('0')).not.toBeInTheDocument()
+    expect(within(blocked).queryByText('no teams over the daily limit')).not.toBeInTheDocument()
+
+    // The daily spend cell is an absence too, not $0.00.
+    const daily = screen.getByTestId('costs-kpi-daily')
+    expect(within(daily).getByTestId('costs-kpi-daily-value').dataset.truthState).toBe('unknown')
+    expect(within(daily).queryByText('$0.00')).not.toBeInTheDocument()
+  })
+
+  it('reports the strip as unknown when the overview body is missing total_agent_count', async () => {
+    // The overview fold shares `decodeTopologyOverview` with TeamsPage; a body
+    // missing `total_agent_count` is schema-invalid, so the joined per-team rows
+    // and thus the Blocked count fold to an absence rather than a fabricated 0.
+    const { total_agent_count: _t, ...noTotal } = OVERVIEW
+    void _t
+    setupMocks(noTotal as unknown as TopologyOverview, COSTS)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
+    expect(within(blocked).getByTestId('costs-kpi-blocked-value').dataset.truthState).toBe('unknown')
+    expect(within(blocked).queryByText('no teams over the daily limit')).not.toBeInTheDocument()
+  })
+})
+
 describe('CostsPage — AAASM-5159: Avg / agent today KPI restored per ADR-0017 item 14', () => {
   it('renders daily spend / agents tracked with the cost date as its sub-caption', async () => {
     setupMocks()
