@@ -54,12 +54,18 @@ export interface FleetAgentRow {
   readonly name: AgentResponse['name']
   readonly framework: AgentResponse['framework']
   readonly status: AgentResponse['status']
-  readonly is_flagged: AgentResponse['is_flagged']
+  // Optional on purpose: the grid reads `is_flagged` defensively (a missing
+  // flag renders as "not flagged", the honest default — absence of an
+  // audit flag is not a fabricated measurement), so requiring it would fold an
+  // otherwise-renderable agent list to absence, wider than the evidence.
+  readonly is_flagged?: AgentResponse['is_flagged']
 }
 
 /**
- * A conforming fleet row still carries these five fields, required, under those
- * names, as string / string / string / string / boolean.
+ * A conforming fleet row carries the four identifying fields required under
+ * those names (string / string / string / string), plus `is_flagged` as a
+ * boolean when present (optional — a missing audit flag renders as "not
+ * flagged", not a fault).
  *
  * The `satisfies` below binds the schema to {@link FleetAgentRow}; this binds
  * {@link FleetAgentRow} to the generated response, in the direction the indexed
@@ -75,7 +81,7 @@ const fleetAgentRowSchema = z.object({
   name: z.string(),
   framework: z.string(),
   status: z.string(),
-  is_flagged: z.boolean(),
+  is_flagged: z.boolean().optional(),
 }) satisfies z.ZodType<FleetAgentRow>
 
 const fleetAgentListSchema = z.array(fleetAgentRowSchema)
