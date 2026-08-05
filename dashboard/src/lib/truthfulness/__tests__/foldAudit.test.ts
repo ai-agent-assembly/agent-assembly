@@ -54,8 +54,9 @@
  * (`import { certainFromQuery as fold }`) or a namespace call (`T.certainFromQuery`)
  * would slip past. The compiler-enforced half of the ratchet is the
  * `no-restricted-imports` rule in `.eslintrc.cjs`, whose allowlist is the same
- * set of files (seven, since AAASM-5380 migrated the two approvals surfaces and
- * then the Fleet and Step-5-enroll agent lists); it
+ * set of files (six, since AAASM-5380 migrated the two approvals surfaces, then
+ * the Fleet and Step-5-enroll agent lists, and then the step-2 gateway-health
+ * probe); it
  * catches aliasing and namespace access for free. Neither half
  * is sufficient alone — the lint rule cannot count folds within a file, and this
  * scan cannot see through a rename.
@@ -113,13 +114,6 @@ const AUDIT: readonly FoldSite[] = [
     disposition: 'hazardous',
     reason:
       'A non-array `resources` throws inside the generator `tallyVerdicts` consumes, at render, outside any queryFn. A truthy non-array `policies` makes `cascadeEvidenceOf` read `.length` as `undefined`, which is not `0`, so the empty-cascade guard is skipped and counting proceeds on unread data. `api/capability.ts` casts the body (`data as CapabilityMatrix`); the hook only incidentally checks `agents` via `.find`. Follow-up: AAASM-5380.',
-  },
-  {
-    file: 'features/onboarding/steps/Step2InstallSdk.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'The non-2xx path is validated by `asHealthResponse`, but the 2xx path in features/onboarding/api.ts returns the body unchecked, and `buildProbeLines` calls `Object.entries(health.checks)` — a TypeError on a 200 without `checks`. It cannot emit a false "gateway reachable" (a missing `status` fails `!== "ok"`), so this is a crash rather than a fabrication. Follow-up: AAASM-5380.',
   },
   {
     file: 'pages/AlertsPage.tsx',
