@@ -4,7 +4,7 @@ import { CostBreakdownPanel } from '../features/analytics/CostBreakdownPanel'
 import { TruthfulValue } from '../components/truthfulness'
 import {
   certain,
-  certainFromQuery,
+  certainFromShapedQuery,
   isKnown,
   known,
   mapCertain,
@@ -18,8 +18,8 @@ import {
   useTopologyOverviewQuery,
   type CostSummary,
   type TeamListRow,
-  type TopologyOverview,
 } from '../features/teams/api'
+import { decodeCostSummary, decodeTopologyOverview } from '../features/teams/schema'
 import { useTopologyQuery } from '../features/topology/api'
 import { deriveCostKpis, type MeasuredCount, type PeriodSpend } from '../features/costs/costKpis'
 import { buildPerAgentRows } from '../features/costs/perAgentRows'
@@ -227,8 +227,8 @@ function blockedSub(count: MeasuredCount): Certain<ReactNode> {
     // so nothing was examined" and "rows were examined and none proved
     // measurable". Only the second may be reported as a failed measurement: an
     // in-flight request has not failed to measure anything, it has not
-    // finished, and `certainFromQuery` gives it the same `unknown` state as a
-    // genuinely unmeasurable roster. Keying off `total` rather than the
+    // finished, and `certainFromShapedQuery` gives it the same `unknown` state
+    // as a genuinely unmeasurable roster. Keying off `total` rather than the
     // absence `detail` keeps that distinction structural instead of a string
     // match (AAASM-5185).
     if (count.total === 0) {
@@ -299,20 +299,38 @@ export function CostsPage() {
   const costsQuery = useCostSummaryQuery()
   const topologyQuery = useTopologyQuery()
 
-  const teamRows = useMemo(
-    () => joinTeamRows(overviewQuery.data, costsQuery.data),
-    [overviewQuery.data, costsQuery.data],
-  )
-
   // The KPI strip is fed through the truthfulness vocabulary rather than the
   // raw query data, so an outage, an in-flight request and an unset budget stay
   // distinguishable all the way to the rendered card instead of collapsing into
   // a numeral (AAASM-5185). An empty `/costs` body is `unconfigured`: the
   // endpoint answers, there is simply no budget set up behind it.
-  const costsCertain = certainFromQuery<CostSummary>(costsQuery, { whenEmpty: 'unconfigured' })
-  const overviewCertain = certainFromQuery<TopologyOverview>(overviewQuery, {
+  //
+  // AAASM-5380: both bodies are folded through a decoder rather than cast — the
+  // hooks end in a bare `data as …`, so a non-null body a proxy or a
+  // version-skewed API rewrote used to reach the strip intact, `whenEmpty` never
+  // fired, and `countBlockedByBudget` reported a measured-looking `known(0)`
+  // teams blocked by budget. `decodeCostSummary` / `decodeTopologyOverview`
+  // (features/teams/schema.ts) fold a schema-invalid `200` to an absence naming
+  // the field instead.
+  const costsCertain = certainFromShapedQuery(costsQuery, decodeCostSummary, {
     whenEmpty: 'unconfigured',
   })
+  const overviewCertain = certainFromShapedQuery(overviewQuery, decodeTopologyOverview, {
+    whenEmpty: 'unconfigured',
+  })
+  // Join only the DECODED values: `joinTeamRows` does a `for…of`/`.map` over
+  // `per_team`/`teams`, so a truthy non-array a proxy rewrote would `TypeError`
+  // here on every render — before `teamRowsCertain` could gate it — unless it
+  // is handed bodies the decoders already proved are arrays. Fed the raw
+  // `*.data`, this `useMemo` was the one path in the file a malformed 200 could
+  // still crash (AAASM-5380).
+  const teamRows = useMemo(
+    () =>
+      isKnown(overviewCertain) && isKnown(costsCertain)
+        ? joinTeamRows(overviewCertain.value, costsCertain.value)
+        : [],
+    [overviewCertain, costsCertain],
+  )
   // Every per-team figure needs both halves — the roster from the overview and
   // the spend/ceiling from the summary — so either absence disqualifies the
   // rows. Joining them first would hand the derivation a full roster of null

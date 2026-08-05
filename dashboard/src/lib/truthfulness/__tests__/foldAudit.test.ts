@@ -54,10 +54,11 @@
  * (`import { certainFromQuery as fold }`) or a namespace call (`T.certainFromQuery`)
  * would slip past. The compiler-enforced half of the ratchet is the
  * `no-restricted-imports` rule in `.eslintrc.cjs`, whose allowlist is the same
- * set of files (four, since AAASM-5380 migrated the two approvals surfaces, then
+ * set of files (two, since AAASM-5380 migrated the two approvals surfaces, then
  * the Fleet and Step-5-enroll agent lists, then the step-2 gateway-health
- * probe, then the AlertsPage rules/alerts/total folds, and then the agent-detail
- * posture panel); it
+ * probe, then the AlertsPage rules/alerts/total folds, then the agent-detail
+ * posture panel, then the capability page, and finally the CostsPage cost/overview
+ * folds and the TeamsPage census overview fold); it
  * catches aliasing and namespace access for free. Neither half
  * is sufficient alone — the lint rule cannot count folds within a file, and this
  * scan cannot see through a rename.
@@ -110,25 +111,11 @@ const AUDIT: readonly FoldSite[] = [
       'The alerts fold. `readAlertsPage` runs `parseAlertList` (features/alerts/parseAlert.ts), which throws `AlertShapeError` on a non-array `items` and on any row without a string id or with an unrecognised severity/status. So `alerts.data` is a validated `Alert[]` or the query is in error. This is the one fold that runs outside every ErrorBoundary in the tree — the sibling policies fold in the same component was AAASM-5369 site 1 — and it is safe only because that parse throws first.',
   },
   {
-    file: 'pages/CostsPage.tsx',
-    calls: 2,
-    disposition: 'hazardous',
-    reason:
-      'Both hooks in features/teams/api.ts end in `data as CostSummary` / `data as TopologyOverview` — the module comment calls them accepted-risk casts. Every downstream read is optional-chained, so nothing throws; instead `whenEmpty: "unconfigured"` never fires (the body is non-null) and `countBlockedByBudget` returns a measured-looking `known(0)` teams blocked by budget. Follow-up: AAASM-5380.',
-  },
-  {
     file: 'pages/OverviewPage.tsx',
     calls: 3,
     disposition: 'hazardous',
     reason:
       'Mixed, and one fold lighter since AAASM-5380 slice S2. `alerts` is guarded by `parseAlertList`; `enforcement` is a Map built client-side. `approvals` inherits the `?? []` and renders a confident "0 pending approvals". The `policies` fold that used to live here is now decoded through `decodePolicyList` (features/policies/schema.ts) and no longer counts an unread body — closing AAASM-5379, the literal `undefined ACTIVE POLICIES` it rendered. Follow-up: AAASM-5378 (the approvals `?? []`), AAASM-5380 (the remaining three folds).',
-  },
-  {
-    file: 'pages/TeamsPage.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'One fold lighter since AAASM-5380 slice S3: the topology-nodes fold now runs through `decodeTopologyNodes` (features/agents/schema.ts) and the hook carries `nodes` intact rather than `?? []`, so a missing or non-array `nodes` reports an absence rather than a confident "0 unclaimed" chip or a `.filter` crash. The remaining fold is the overview census: `useTopologyOverviewQuery` is a bare cast, and a missing `total_agent_count` makes the census `unaccountedFor` compute to `NaN` rather than reporting the disagreement it exists to report. Follow-up: AAASM-5380.',
   },
 ]
 
@@ -188,8 +175,13 @@ describe('the undecoded-fold audit is complete', () => {
     // If the scanner broke — a renamed helper, a changed source root, a regex
     // that matches nothing — every assertion in this file would agree that the
     // empty set equals the empty set. It must see the real ones first.
-    expect(found.size).toBeGreaterThan(3)
-    expect([...found.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(5)
+    //
+    // Thresholds sit just below the real remaining counts (AAASM-5380 migrated
+    // CostsPage and TeamsPage out in slice S7, leaving two files — AppShell (1)
+    // and OverviewPage (3) — folding four times total), so the guard still
+    // asserts non-vacuously as the set shrinks.
+    expect(found.size).toBeGreaterThan(1)
+    expect([...found.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(3)
   })
 
   it('records every file that folds a query without a decoder', () => {

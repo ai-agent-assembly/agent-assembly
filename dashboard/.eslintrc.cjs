@@ -1,8 +1,9 @@
 // AAASM-5369: the modules still allowed to fold a query outcome without
-// first decoding the body (four, since AAASM-5380 migrated the two approvals
+// first decoding the body (two, since AAASM-5380 migrated the two approvals
 // surfaces, then the Fleet and Step-5-enroll agent lists, then the step-2
-// gateway-health probe, then the AlertsPage rules/alerts/total folds, and then
-// the agent-detail posture panel).
+// gateway-health probe, then the AlertsPage rules/alerts/total folds, then
+// the agent-detail posture panel, then the capability page, and finally the
+// CostsPage cost/overview folds and the TeamsPage census overview fold).
 // Every one of them
 // is recorded, with the disposition
 // of each fold and the ticket that carries it, in
@@ -30,9 +31,7 @@
 // here, in the open, rather than in the file that wants it.
 const UNDECODED_FOLD_ALLOWLIST = [
   'src/components/AppShell.tsx',
-  'src/pages/CostsPage.tsx',
   'src/pages/OverviewPage.tsx',
-  'src/pages/TeamsPage.tsx',
 ]
 
 const NO_UNDECODED_FOLD = {
@@ -112,7 +111,7 @@ module.exports = {
   },
   overrides: [
     {
-      // The audited modules (four, after AAASM-5380). Turning the rule off per-file rather than
+      // The audited modules (two, after AAASM-5380). Turning the rule off per-file rather than
       // exempting a directory keeps the exemption exactly as wide as the audit:
       // a *sibling* of an allowlisted page gets no exemption from its neighbour.
       files: UNDECODED_FOLD_ALLOWLIST,
