@@ -78,9 +78,9 @@ function firstFault(error: z.ZodError): string {
 export interface CostSummaryFields {
   readonly daily_spend_usd: WireCostSummary['daily_spend_usd']
   readonly date: WireCostSummary['date']
-  readonly daily_limit_usd?: WireCostSummary['daily_limit_usd']
-  readonly monthly_spend_usd?: WireCostSummary['monthly_spend_usd']
-  readonly monthly_limit_usd?: WireCostSummary['monthly_limit_usd']
+  readonly daily_limit_usd?: Exclude<WireCostSummary['daily_limit_usd'], undefined>
+  readonly monthly_spend_usd?: Exclude<WireCostSummary['monthly_spend_usd'], undefined>
+  readonly monthly_limit_usd?: Exclude<WireCostSummary['monthly_limit_usd'], undefined>
   readonly per_agent?: readonly unknown[]
   readonly per_team?: readonly {
     readonly team_id: WireTeamCostEntry['team_id']

@@ -138,7 +138,7 @@ export interface TopologyAgentNode {
   // `string`, so a rename or removal of `status` still fails the build.
   readonly status: string
   readonly flagged: AgentNode['flagged']
-  readonly team_id?: AgentNode['team_id']
+  readonly team_id?: Exclude<AgentNode['team_id'], undefined>
 }
 
 /**
