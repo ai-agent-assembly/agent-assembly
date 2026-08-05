@@ -41,11 +41,17 @@ describe('useApprovalsQuery', () => {
     })
   })
 
-  it('falls back to an empty array when items is absent', async () => {
+  it('returns null (an absence), not an empty array, when items is absent', async () => {
+    // AAASM-5380: the old `?? []` fabricated a known-empty queue from a body
+    // with no `items`, which the header bell and the Live-Ops pool then read as
+    // an affirmative "nothing is waiting". The hook now returns `null` — a
+    // no-payload the shaped folds report as an absence — so an unreadable body
+    // never becomes a confident zero. (`null`, not `undefined`, because
+    // TanStack Query v5 rejects a `queryFn` that resolves to `undefined`.)
     get.mockResolvedValue({ data: {} } satisfies FetchResult)
     const { result } = renderHook(() => useApprovalsQuery(), { wrapper: makeWrapper() })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data).toEqual([])
+    expect(result.current.data).toBeNull()
   })
 
   it('throws on failure', async () => {

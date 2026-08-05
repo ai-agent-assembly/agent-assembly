@@ -162,6 +162,69 @@ describe('Live-Ops approvals surfaces agree after a decision', () => {
     expect(screen.getByTestId('approvals-bell-badge')).toHaveTextContent('1')
   })
 
+  // ── AAASM-5380: a schema-invalid 200 must degrade, not fabricate a queue ───
+  //
+  // These run the real query hook and the real fold, so they exercise both the
+  // removed `?? []` and `decodeApprovalList`. A 200 whose body is not an
+  // approvals list used to become a known empty queue (the pool said "No
+  // pending approvals", the bell said nothing) or throw in `.map`. It must now
+  // render the shared absence on every surface.
+
+  it('degrades every surface to absence on a 200 whose rows lack the required id', async () => {
+    // Well-formed envelope, malformed rows: `items` is an array, but the rows
+    // have no `id` — schema-invalid, and the exact shape the old cast waved
+    // through. The bell counted it, the pool `.map`ped it.
+    get.mockResolvedValue({ data: { items: [{}, {}] } })
+    renderLive()
+
+    // Vacuity guard: the surfaces must actually mount before any "does not show
+    // a fabricated count" assertion can mean anything.
+    const pool = await screen.findByTestId('approval-pool')
+    expect(pool).toBeInTheDocument()
+    expect(await screen.findByTestId('approvals-bell')).toBeInTheDocument()
+
+    // Explicit absence, not a fabricated empty queue, on all three.
+    await waitFor(() =>
+      expect(screen.getByTestId('live-ops-approvals-count')).toHaveAttribute(
+        'data-truth-state',
+        'unknown',
+      ),
+    )
+    expect(screen.getByTestId('approval-pool-unavailable')).toBeInTheDocument()
+    expect(screen.queryByTestId('approval-pool-empty')).toBeNull()
+    expect(screen.getByTestId('approvals-bell-absent')).toHaveAttribute(
+      'data-truth-state',
+      'unknown',
+    )
+    expect(screen.queryByTestId('approvals-bell-badge')).toBeNull()
+  })
+
+  it('degrades every surface to absence on a 200 with no items at all', async () => {
+    // The body a proxy or a version skew produces: a 200 with no `items`. The
+    // `?? []` used to turn this into a confident empty queue; it now reaches the
+    // fold as absence.
+    get.mockResolvedValue({ data: { total: 0 } })
+    renderLive()
+
+    const pool = await screen.findByTestId('approval-pool')
+    expect(pool).toBeInTheDocument()
+    expect(await screen.findByTestId('approvals-bell')).toBeInTheDocument()
+
+    await waitFor(() =>
+      expect(screen.getByTestId('live-ops-approvals-count')).toHaveAttribute(
+        'data-truth-state',
+        'unknown',
+      ),
+    )
+    expect(screen.getByTestId('approval-pool-unavailable')).toBeInTheDocument()
+    expect(screen.queryByTestId('approval-pool-empty')).toBeNull()
+    expect(screen.getByTestId('approvals-bell-absent')).toHaveAttribute(
+      'data-truth-state',
+      'unknown',
+    )
+    expect(screen.queryByTestId('approvals-bell-badge')).toBeNull()
+  })
+
   it('never reads as a clear queue on any surface when the request fails', async () => {
     get.mockResolvedValue({ error: { status: 503 } })
     renderLive()
