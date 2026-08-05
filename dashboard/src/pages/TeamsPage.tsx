@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { ignorePromise } from '../lib/ignorePromise'
-import { absent, certainFromQuery, mapCertain } from '../lib/truthfulness'
+import { absent, certainFromQuery, certainFromShapedQuery, mapCertain } from '../lib/truthfulness'
 import {
   joinTeamRows,
   useCostSummaryQuery,
@@ -8,6 +8,7 @@ import {
   useTopologyOverviewQuery,
   type TopologyOverview,
 } from '../features/teams/api'
+import { decodeTopologyNodes } from '../features/agents/schema'
 import { reconcileAgentCensus, selectOrphanAgents } from '../features/teams/orphans'
 import { TeamListPane } from '../features/teams/TeamListPane'
 import { TeamDetailPane } from '../features/teams/TeamDetailPane'
@@ -45,7 +46,19 @@ export function TeamsPage() {
   // `standalone_root_agents` (AAASM-5157) — see `orphans.ts` for why. Kept as a
   // `Certain` all the way to the chip and the pane so a failed topology request
   // renders as "unavailable" rather than as a reassuring `0 unclaimed`.
-  const orphans = mapCertain(certainFromQuery(agentsQuery), a => selectOrphanAgents(a.nodes))
+  //
+  // AAASM-5380: the node list is folded through `decodeTopologyNodes` rather
+  // than cast — a `200` whose body has no `nodes` or a non-array `nodes` now
+  // reports an absence naming the field, rather than a fabricated "0 unclaimed"
+  // chip or a `.filter` crash. The outcome carries the raw `nodes` body (the
+  // hook no longer `?? []`s it); its error/pending flags come from the query.
+  const orphans = mapCertain(
+    certainFromShapedQuery(
+      { isError: agentsQuery.isError, isPending: agentsQuery.isPending, data: agentsQuery.data?.nodes },
+      decodeTopologyNodes,
+    ),
+    nodes => selectOrphanAgents(nodes),
+  )
   // AAASM-5183: whether the caller's scope can observe unclaimed agents at all.
   // A team-scoped caller cannot (its topology response structurally excludes
   // `team_id: None` agents), so an empty orphan set must read as "not available

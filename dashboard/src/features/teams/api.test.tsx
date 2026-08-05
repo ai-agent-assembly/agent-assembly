@@ -94,7 +94,9 @@ describe('useTopologyAgentsQuery', () => {
     const { wrapper } = makeWrapper()
     const { result } = renderHook(() => useTopologyAgentsQuery(), { wrapper })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data?.nodes.map(n => n.id)).toEqual(['a', 'b'])
+    // `nodes` is carried as `unknown` (AAASM-5380) so the render boundary must
+    // decode it; the hook still passes the raw wire array through untouched.
+    expect((result.current.data?.nodes as { id: string }[]).map(n => n.id)).toEqual(['a', 'b'])
     // AAASM-5183: the scope-observability flag is carried alongside the nodes.
     expect(result.current.data?.unclaimedObservable).toBe(true)
     expect(get).toHaveBeenCalledWith('/api/v1/topology')
