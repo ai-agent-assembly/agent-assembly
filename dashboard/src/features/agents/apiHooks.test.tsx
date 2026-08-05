@@ -45,11 +45,15 @@ describe('useAgentsQuery', () => {
     expect(get).toHaveBeenCalledWith('/api/v1/agents', { params: { query: { per_page: 100 } } })
   })
 
-  it('falls back to an empty array when data is nullish', async () => {
+  it('carries a nullish body as null rather than fabricating an empty fleet', async () => {
+    // AAASM-5380: the `?? []` used to fabricate a known-empty fleet from an
+    // unread body. The fallback is now `?? null` — an explicit no-payload that
+    // `decodeFleetAgents` reports as absence at the render boundary, never as a
+    // measured empty fleet.
     get.mockResolvedValue({ data: undefined } satisfies FetchResult)
     const { result } = renderHook(() => useAgentsQuery(), { wrapper: makeWrapper() })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data).toEqual([])
+    expect(result.current.data).toBeNull()
   })
 
   it('throws on failure', async () => {
