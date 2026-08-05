@@ -350,6 +350,52 @@ describe('OverviewPage', () => {
     expect(visibleText(count)).toBe('—')
   })
 
+  // ── AAASM-5379 / AAASM-5380 — the undecoded policies fold ────────────────
+  it('renders the active-policy count as unknown on a schema-invalid 200 — never a count, never undefined', () => {
+    // `{"items":[{}]}` used to reach this fold as two unread rows: the count
+    // read `.length` off a body nobody had decoded and the L2 card rendered the
+    // literal `undefined ACTIVE POLICIES` (AAASM-5379). `certainFromShapedQuery`
+    // decodes it first, so a row with no `name` degrades to an explicit absence.
+    setup({
+      agents: [makeAgent()],
+      policiesState: { data: [{}, {}] as unknown as Policy[] },
+    })
+    renderPage()
+    // Vacuity guard: the page and the count node render at all, so the
+    // assertions below are checking a real DOM rather than an empty one.
+    expect(screen.getByTestId('overview-page')).toBeInTheDocument()
+    const count = screen.getByTestId('overview-policy-count')
+    expect(count).toBeInTheDocument()
+    // The count is withheld, not fabricated: unknown state, a bare dash, and
+    // neither the confident "2" the unread rows would have produced nor the
+    // literal "undefined" AAASM-5379 observed.
+    expect(count).toHaveAttribute('data-truth-state', 'unknown')
+    // Assert on the *visible* text (screen-reader sentence stripped): the
+    // decoder's own reason contains the word "undefined" (Zod's "received
+    // undefined"), which is a legitimate part of the announcement — the defect
+    // is the word rendered *on the card*, and there the operator sees only `—`.
+    const visible = visibleText(count)
+    expect(visible).toBe('—')
+    expect(visible).not.toContain('2')
+    expect(visible).not.toContain('undefined')
+  })
+
+  it('renders the active-policy count as unknown when the policies body is not an array', () => {
+    // A truthy non-array `items` survived `!data?.items` and reached this fold as
+    // an object whose `.length` is `undefined` — the direct source of the
+    // literal `undefined` on the governance card.
+    setup({
+      agents: [makeAgent()],
+      policiesState: { data: { not: 'a list' } as unknown as Policy[] },
+    })
+    renderPage()
+    const count = screen.getByTestId('overview-policy-count')
+    expect(count).toHaveAttribute('data-truth-state', 'unknown')
+    const visible = visibleText(count)
+    expect(visible).toBe('—')
+    expect(visible).not.toContain('undefined')
+  })
+
   it('renders the firing-alert count and panels as unavailable when the alerts query fails', () => {
     setup({ agents: [makeAgent()], alertsState: FAILED })
     renderPage()
