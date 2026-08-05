@@ -20,10 +20,13 @@ import { TeamBudgetBar } from './TeamBudgetBar'
 import { Tooltip } from '../Tooltip'
 import './TopologyGraph.css'
 
+/** The three node-card size buckets, keyed by budget-burn ratio. */
+type SizeVariant = 'small' | 'medium' | 'large'
+
 // Inline closed 3-member literal union, not a raw wire string — narrow-union
 // Record gap (AAASM-5245 gap 2).
 // eslint-disable-next-line no-restricted-syntax
-const SIZE_VARIANT: Record<'small' | 'medium' | 'large', { w: number; h: number }> = {
+const SIZE_VARIANT: Record<SizeVariant, { w: number; h: number }> = {
   small: { w: 76, h: 44 },
   medium: { w: 96, h: 56 },
   large: { w: 116, h: 68 },
@@ -777,7 +780,7 @@ interface TopologyNodeCardProps {
   readonly node: TopologyNode
   readonly x: number
   readonly y: number
-  readonly bucket: 'small' | 'medium' | 'large'
+  readonly bucket: SizeVariant
   readonly dims: { w: number; h: number }
   readonly depth: number
   readonly isRoot: boolean
@@ -973,7 +976,7 @@ function CrossTeamBadge({ count, leadingSpace = false }: Readonly<{ count: numbe
  * budget — an unconfigured limit (`null`) has no ratio, so the card takes the
  * base size, exactly as a zero limit already did.
  */
-function bucketForRatio(spend: number, limit: number | null): 'small' | 'medium' | 'large' {
+function bucketForRatio(spend: number, limit: number | null): SizeVariant {
   if (limit === null || limit <= 0) return 'small'
   const ratio = spend / limit
   if (ratio < 0.5) return 'small'
