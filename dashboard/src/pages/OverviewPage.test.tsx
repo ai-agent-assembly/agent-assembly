@@ -419,13 +419,16 @@ describe('OverviewPage', () => {
 
   // ── AAASM-5380 slice S8 — the three folds migrated onto decoders ─────────
   it('renders the approvals count as unknown on a schema-invalid 200 — never a fabricated count', () => {
-    // A row missing `id`/`created_at` used to survive the `?? []` cast and be
-    // counted with `.length`, rendering a confident number the body could not
-    // support. `decodeApprovalList` now rejects it, so the count degrades to a
-    // dash and the sub-line does not read "queue clear".
+    // The Overview card reads only the count (and, defensively, `created_at`),
+    // so `decodeApprovalCount` accepts count-only rows — a row missing
+    // `agent_id`/`action` is a perfectly countable approval here. What it must
+    // still reject is a body that is not a readable list at all (non-object
+    // rows), which used to survive the `?? []` cast and be counted with
+    // `.length`, rendering a confident number the body could not support. That
+    // now degrades to a dash and the sub-line does not read "queue clear".
     setup({
       agents: [makeAgent()],
-      approvalsState: { data: [{ agent_id: 'a' }, { agent_id: 'b' }] as unknown as Approval[] },
+      approvalsState: { data: ['nope', 42] as unknown as Approval[] },
     })
     renderPage()
     // Vacuity guard: the page and the count node render at all.

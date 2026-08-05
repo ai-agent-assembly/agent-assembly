@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router'
 import { useAgentsQuery, useAgentEnforcementQuery } from '../features/agents/api'
 import { toFleetAgent } from '../features/agents/fleetTypes'
 import { useApprovalsQuery } from '../features/approvals/api'
-import { decodeApprovalList, type ApprovalRow } from '../features/approvals/schema'
+import { decodeApprovalCount, type ApprovalCountRow } from '../features/approvals/schema'
 import { decodeEnforcementLookup } from '../features/agents/schema'
 import { deriveApprovalsSummary, formatApprovalsSummary } from '../features/approvals/summary'
 import { usePoliciesQuery } from '../features/policies/api'
@@ -286,7 +286,7 @@ function RecentAlertRow({ alert }: Readonly<{ alert: Alert }>) {
  * already-loaded approvals. The mock's "(PII)" category tag is intentionally
  * absent: nothing on the approval record classifies a request as PII.
  */
-function queueNote(approvals: Certain<readonly ApprovalRow[]>): string {
+function queueNote(approvals: Certain<readonly ApprovalCountRow[]>): string {
   if (!isKnown(approvals)) return `queue ${TRUTH_STATE_META[approvals.state].label.toLowerCase()}`
   if (approvals.value.length === 0) return 'queue clear'
   return (
@@ -339,7 +339,7 @@ export function OverviewPage() {
   // into a lookup keyed by agent id, and `decodeEnforcementLookup` verifies that
   // lookup's value shape before `deriveOverviewKpis` treats its presence as a
   // reason to sum the per-agent counts off `fleet`.
-  const approvals = certainFromShapedQuery(approvalsQuery, decodeApprovalList)
+  const approvals = certainFromShapedQuery(approvalsQuery, decodeApprovalCount)
   const policies = certainFromShapedQuery(policiesQuery, decodePolicyList)
   const alerts = certainFromShapedQuery(alertsQuery, decodeAlertList)
   const enforcement = certainFromShapedQuery(enforcementQuery, decodeEnforcementLookup)

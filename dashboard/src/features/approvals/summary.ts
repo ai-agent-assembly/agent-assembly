@@ -12,7 +12,11 @@ import { getUrgency } from './urgency'
  * what a surface actually reads.
  */
 interface HasCreatedAt {
-  readonly created_at: string
+  // Optional: a count-only surface (Overview) may decode rows without proving
+  // `created_at`. A row missing it contributes no urgency/age tier — the same
+  // graceful degradation an unparseable timestamp already gets — so a missing
+  // timestamp costs the headline, never the count.
+  readonly created_at?: string
 }
 
 /**
@@ -40,6 +44,9 @@ export function deriveApprovalsSummary(
   let oldestCreatedMs: number | null = null
 
   for (const approval of approvals) {
+    // A row that never proved a timestamp contributes no urgency/age — the
+    // count still holds. (Overview's count-only decoder leaves `created_at` off.)
+    if (approval.created_at === undefined) continue
     if (getUrgency(approval.created_at, now) === 'high') urgentCount += 1
 
     const createdMs = new Date(approval.created_at).getTime()

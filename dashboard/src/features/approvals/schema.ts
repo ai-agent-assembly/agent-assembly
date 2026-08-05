@@ -103,3 +103,37 @@ export const decodeApprovalList: Decoder<readonly ApprovalRow[]> = (body: unknow
     `The approvals queue came back in a shape this dashboard cannot read (${firstFault(parsed.error)}), so whether anything is waiting for a human decision cannot be stated — including whether the queue is empty. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
   )
 }
+
+/**
+ * The subset a *count-only* surface (the Overview approvals card) is entitled to
+ * read: how many approvals are waiting, and — for the "{n} urgent · oldest {age}"
+ * sub-line — each row's `created_at`.
+ *
+ * Narrower than {@link ApprovalRow} on purpose (absence no wider than the
+ * evidence): Overview never puts `agent_id`/`action`/`status`/`expires_at` on
+ * screen, so a row missing them must not blank a determinable *count*. And
+ * `created_at` is optional because `deriveApprovalsSummary` already tolerates its
+ * absence (a `NaN` date is skipped, contributing no urgency), so a missing
+ * timestamp costs the urgency headline, not the count.
+ */
+export interface ApprovalCountRow {
+  readonly created_at?: ApprovalResponse['created_at']
+}
+
+const approvalCountRowSchema = z.object({
+  created_at: z.string().optional(),
+}) satisfies z.ZodType<ApprovalCountRow>
+
+const approvalCountListSchema = z.array(approvalCountRowSchema)
+
+/**
+ * Decode the approvals queue down to just the count-and-age evidence the
+ * Overview card reads, or say why it could not be read.
+ */
+export const decodeApprovalCount: Decoder<readonly ApprovalCountRow[]> = (body: unknown) => {
+  const parsed = approvalCountListSchema.safeParse(body)
+  if (parsed.success) return conforms(parsed.data)
+  return violates(
+    `The approvals queue came back in a shape this dashboard cannot read (${firstFault(parsed.error)}), so how many approvals are waiting cannot be stated — including whether the queue is empty. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
+  )
+}
