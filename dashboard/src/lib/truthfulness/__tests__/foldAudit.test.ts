@@ -54,9 +54,9 @@
  * (`import { certainFromQuery as fold }`) or a namespace call (`T.certainFromQuery`)
  * would slip past. The compiler-enforced half of the ratchet is the
  * `no-restricted-imports` rule in `.eslintrc.cjs`, whose allowlist is the same
- * set of files (six, since AAASM-5380 migrated the two approvals surfaces, then
- * the Fleet and Step-5-enroll agent lists, and then the step-2 gateway-health
- * probe); it
+ * set of files (five, since AAASM-5380 migrated the two approvals surfaces, then
+ * the Fleet and Step-5-enroll agent lists, then the step-2 gateway-health
+ * probe, and then the AlertsPage rules/alerts/total folds); it
  * catches aliasing and namespace access for free. Neither half
  * is sufficient alone — the lint rule cannot count folds within a file, and this
  * scan cannot see through a rename.
@@ -114,13 +114,6 @@ const AUDIT: readonly FoldSite[] = [
     disposition: 'hazardous',
     reason:
       'A non-array `resources` throws inside the generator `tallyVerdicts` consumes, at render, outside any queryFn. A truthy non-array `policies` makes `cascadeEvidenceOf` read `.length` as `undefined`, which is not `0`, so the empty-cascade guard is skipped and counting proceeds on unread data. `api/capability.ts` casts the body (`data as CapabilityMatrix`); the hook only incidentally checks `agents` via `.find`. Follow-up: AAASM-5380.',
-  },
-  {
-    file: 'pages/AlertsPage.tsx',
-    calls: 3,
-    disposition: 'hazardous',
-    reason:
-      'Two of the three are safe — `alertsState` and `totalState` come through `parseAlertList` / `finiteOrNull`. The third, `rulesState`, comes from `useAlertRulesQuery`, which is a bare `as` cast over `response.json()`; `indexRulesById` then builds a Map from it and throws on a non-array. Recorded as hazardous because the file contains a live one. Follow-up: AAASM-5380.',
   },
   {
     file: 'pages/CostsPage.tsx',
@@ -201,8 +194,8 @@ describe('the undecoded-fold audit is complete', () => {
     // If the scanner broke — a renamed helper, a changed source root, a regex
     // that matches nothing — every assertion in this file would agree that the
     // empty set equals the empty set. It must see the real ones first.
-    expect(found.size).toBeGreaterThan(5)
-    expect([...found.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(10)
+    expect(found.size).toBeGreaterThan(3)
+    expect([...found.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(5)
   })
 
   it('records every file that folds a query without a decoder', () => {
