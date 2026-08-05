@@ -1,6 +1,7 @@
 // AAASM-5369: the modules still allowed to fold a query outcome without
-// first decoding the body (seven, since AAASM-5380 migrated the two approvals
-// surfaces and then the Fleet and Step-5-enroll agent lists). Every one of them
+// first decoding the body (six, since AAASM-5380 migrated the two approvals
+// surfaces, then the Fleet and Step-5-enroll agent lists, and then the step-2
+// gateway-health probe). Every one of them
 // is recorded, with the disposition
 // of each fold and the ticket that carries it, in
 // `src/lib/truthfulness/__tests__/foldAudit.test.ts` — keep the two in step.
@@ -28,7 +29,6 @@
 const UNDECODED_FOLD_ALLOWLIST = [
   'src/components/AppShell.tsx',
   'src/components/agentDetail/agentPosture.ts',
-  'src/features/onboarding/steps/Step2InstallSdk.tsx',
   'src/pages/AlertsPage.tsx',
   'src/pages/CostsPage.tsx',
   'src/pages/OverviewPage.tsx',
@@ -112,7 +112,7 @@ module.exports = {
   },
   overrides: [
     {
-      // The audited modules (seven, after AAASM-5380). Turning the rule off per-file rather than
+      // The audited modules (six, after AAASM-5380). Turning the rule off per-file rather than
       // exempting a directory keeps the exemption exactly as wide as the audit:
       // a *sibling* of an allowlisted page gets no exemption from its neighbour.
       files: UNDECODED_FOLD_ALLOWLIST,

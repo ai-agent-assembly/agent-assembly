@@ -49,8 +49,15 @@ function isChecksMap(value: unknown): value is Record<string, string> {
  * status]` pairs and renders both as opaque text; it is never used as an
  * object-lookup key itself. `status` / `version` / `api_version` are likewise
  * rendered as plain text, not indexed into a `Record`.
+ *
+ * Exported so the render boundary can decode a 2xx body with the *same*
+ * recognise/decline rule the probe already applies to the non-2xx path — see
+ * `decodeGatewayHealth` in `features/onboarding/schema.ts`. AAASM-5380 folds the
+ * 2xx path through that decoder so a schema-invalid `200` degrades to an absence
+ * instead of crashing `Object.entries(health.checks)` in `probeLines.ts`; both
+ * paths recognising a health body by the same predicate is the point.
  */
-function asHealthResponse(body: unknown): GatewayHealth | null {
+export function asHealthResponse(body: unknown): GatewayHealth | null {
   if (typeof body !== 'object' || body === null) return null
   const candidate = body as Partial<GatewayHealth>
   const shaped =

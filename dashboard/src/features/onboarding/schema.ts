@@ -1,5 +1,7 @@
 /**
- * Runtime shape for the registry answer the enroll step reports (AAASM-5380).
+ * Runtime shapes for the two production answers the onboarding wizard reads
+ * (AAASM-5380): the registry answer the enroll step reports, and the gateway
+ * health report step 2's probe renders.
  *
  * ## Why this exists
  *
@@ -35,10 +37,11 @@
 import { z } from 'zod'
 import type { components } from '../../api/generated/schema'
 import { conforms, violates, type Decoder } from '../../lib/truthfulness'
-import type { RegisteredAgents } from './api'
+import { asHealthResponse, type GatewayHealth, type RegisteredAgents } from './api'
 
 type PaginatedAgentResponse = components['schemas']['PaginatedAgentResponse']
 type AgentResponse = components['schemas']['AgentResponse']
+type HealthResponse = components['schemas']['HealthResponse']
 
 /**
  * The fields the enroll step reads off one listed registry row.
@@ -118,5 +121,58 @@ export const decodeRegistryAnswer: Decoder<RegisteredAgents> = (body: unknown) =
   if (parsed.success) return conforms(body as RegisteredAgents)
   return violates(
     `The agent registry came back in a shape this dashboard cannot read (${firstFault(parsed.error)}), so how many agents are registered cannot be stated — including whether none are yet. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
+  )
+}
+
+/**
+ * The fields step 2's probe transcript reads off a gateway health report
+ * (AAASM-5380).
+ *
+ * `buildProbeLines` (`steps/probeLines.ts`) reads exactly `status` (compared
+ * against `"ok"`), `version` and `api_version` (rendered as text) and iterates
+ * `checks` with `Object.entries` — the read that threw a `TypeError` on a `200`
+ * without `checks`. So a conforming report carries `status`/`version`/
+ * `api_version` as strings and `checks` as a string-valued map, and nothing
+ * more: the probe never reads `uptime_secs`, `active_connections` or
+ * `pipeline_lag_ms`, so a malformed one of those must not blank a transcript
+ * whose version and subsystems render fine — an absence no wider than the
+ * evidence.
+ *
+ * The `extends` guard binds these read fields to the generated response, in the
+ * direction the field reads in `probeLines.ts` cannot. If `openapi/v1.yaml`
+ * makes any of them optional or retypes it, this resolves to `never` and the
+ * assignment stops compiling. Mirrors `features/agents/schema.ts`'s
+ * `FLEET_AGENT_ROW_IS_ON_THE_WIRE`.
+ */
+type GeneratedCarriesHealthReport = HealthResponse extends {
+  status: string
+  version: string
+  api_version: string
+  checks: Record<string, string>
+}
+  ? true
+  : never
+export const HEALTH_RESPONSE_IS_ON_THE_WIRE: GeneratedCarriesHealthReport = true
+
+/**
+ * Decode a gateway health report down to what the probe transcript renders, or
+ * say why it could not be read.
+ *
+ * Reuses `asHealthResponse` (`./api`) rather than re-deriving the shape check in
+ * zod: that predicate is the *same* recognise/decline rule the probe already
+ * applies to the non-2xx path, so the 2xx and non-2xx paths cannot drift into
+ * disagreeing on what counts as a health body. It validates precisely the four
+ * fields `probeLines.ts` reads — `status` (non-empty string), `version`,
+ * `api_version` (strings) and `checks` (a string-valued map via `isChecksMap`).
+ *
+ * Total, per the {@link Decoder} contract — `asHealthResponse` returns `null`
+ * rather than throwing on an unreadable body, so this never re-creates the
+ * render-time `Object.entries` crash it exists to prevent.
+ */
+export const decodeGatewayHealth: Decoder<GatewayHealth> = (body: unknown) => {
+  const health = asHealthResponse(body)
+  if (health !== null) return conforms(health)
+  return violates(
+    'The gateway health check came back in a shape this dashboard cannot read (it is missing a status, version, or the per-subsystem checks map, or one of them is the wrong type), so whether the gateway is reachable and healthy cannot be stated. A reverse proxy returning its own error page, a partial deploy, or a dashboard newer or older than the API all produce this.',
   )
 }
