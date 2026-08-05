@@ -1,6 +1,6 @@
 /**
- * Runtime shape for the pending-approvals rows the two Live-Ops surfaces read
- * (AAASM-5380).
+ * Runtime shape for the pending-approvals rows the Live-Ops surfaces and the
+ * Overview approvals card read (AAASM-5380).
  *
  * ## Why this exists
  *
@@ -18,22 +18,23 @@
  *
  * An absence must be no wider than the evidence for it — the rule
  * `features/policies/schema.ts` and `features/capability/schema.ts` both follow.
- * The two migrated surfaces read exactly:
+ * The three surfaces that fold through this decoder read exactly:
  *
  *  - the bell: `items.length` and nothing off any row;
  *  - the pool: per row `id` (React key, `data-approval-id`, and the id the
  *    decide endpoints parse with `Uuid::parse_str`), `agent_id`, `action`, and
- *    `expires_at` (truthiness-guarded before the countdown).
+ *    `expires_at` (truthiness-guarded before the countdown);
+ *  - the Overview approvals card (AAASM-5380 slice S8): `items.length` for the
+ *    count, and `created_at` per row for the derived "{n} urgent · oldest {age}"
+ *    headline (`deriveApprovalsSummary`, `features/approvals/summary.ts`).
  *
  * So the row schema requires `id`, `agent_id`, `action` and `status` as strings
- * — the fields these two surfaces put on screen or key off — and `expires_at` as
- * a string, since the pool reads it. Everything else the generated
- * `ApprovalResponse` carries (`created_at`, `reason`, `quorum`, `routing_status`,
- * `team_id`) is not read by either surface and is deliberately not validated:
- * a malformed `quorum` must not blank a queue whose ids and actions are
- * perfectly renderable. The Approvals *page* renders more of this payload and is
- * a separate lane (still `certainFromQuery`); see the disposition table in
- * `src/lib/truthfulness/__tests__/foldAudit.test.ts`.
+ * — the fields these surfaces put on screen or key off — plus `expires_at` (the
+ * pool's countdown) and `created_at` (the Overview urgency headline) as strings.
+ * Everything else the generated `ApprovalResponse` carries (`reason`, `quorum`,
+ * `routing_status`, `team_id`) is not read by any of them and is deliberately
+ * not validated: a malformed `quorum` must not blank a queue whose ids and
+ * actions are perfectly renderable.
  */
 import { z } from 'zod'
 import type { components } from '../../api/generated/schema'
@@ -54,6 +55,7 @@ export interface ApprovalRow {
   readonly action: ApprovalResponse['action']
   readonly status: ApprovalResponse['status']
   readonly expires_at: ApprovalResponse['expires_at']
+  readonly created_at: ApprovalResponse['created_at']
 }
 
 /**
@@ -75,6 +77,7 @@ const approvalRowSchema = z.object({
   action: z.string(),
   status: z.string(),
   expires_at: z.string(),
+  created_at: z.string(),
 }) satisfies z.ZodType<ApprovalRow>
 
 const approvalListSchema = z.array(approvalRowSchema)

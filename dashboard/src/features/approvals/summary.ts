@@ -1,5 +1,19 @@
-import type { Approval } from './api'
 import { getUrgency } from './urgency'
+
+/**
+ * The one field this module reads off an approval — its creation time.
+ *
+ * Structural, not `Approval`, so the summary is computable from any row that
+ * proves `created_at`: the full `Approval` the fetch path carries, and the
+ * narrower `ApprovalRow` the Overview card folds through `decodeApprovalList`
+ * (AAASM-5380 slice S8), which validates `created_at` and nothing this function
+ * does not read. Widening the parameter here rather than the decoded row keeps
+ * the absence no wider than the evidence — the row schema still requires only
+ * what a surface actually reads.
+ */
+interface HasCreatedAt {
+  readonly created_at: string
+}
 
 /**
  * Derived headline for the pending-approvals queue, computed client-side from
@@ -19,7 +33,7 @@ export interface ApprovalsSummary {
 }
 
 export function deriveApprovalsSummary(
-  approvals: readonly Approval[],
+  approvals: readonly HasCreatedAt[],
   now: number = Date.now(),
 ): ApprovalsSummary {
   let urgentCount = 0
