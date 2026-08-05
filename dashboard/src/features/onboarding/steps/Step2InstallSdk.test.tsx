@@ -270,6 +270,48 @@ describe('Step2InstallSdk — AAASM-5132 gateway probe', () => {
     expect(onProbed).toHaveBeenCalledWith(false)
   })
 
+  it('renders a 200 with no `checks` as an absence, not a crash (AAASM-5380)', async () => {
+    // The exact defect S4 closes: the 2xx path returned this body unchecked and
+    // `buildProbeLines` threw a TypeError in `Object.entries(health.checks)`. It
+    // must now degrade to a failure line rather than unmounting the step.
+    apiGet.mockResolvedValue(ok({ status: 'ok', version: '0.0.1', api_version: 'v1' }))
+    const onProbed = vi.fn()
+    render(<Step2InstallSdk onProbed={onProbed} />)
+
+    await clickProbe()
+
+    // Vacuity guard: the step is still on screen — it did not throw and unmount.
+    expect(screen.getByTestId('onboarding-step-install')).toBeInTheDocument()
+    expect(screen.getByTestId('onboarding-install-terminal')).toBeInTheDocument()
+    // And it reports the absence rather than a healthy gateway.
+    expect(screen.getByTestId('onboarding-install-absent')).toHaveAttribute(
+      'data-truth-state',
+      'unknown',
+    )
+    expect(screen.queryByTestId('onboarding-install-ok')).toBeNull()
+    expect(onProbed).toHaveBeenCalledWith(false)
+  })
+
+  it('renders a 200 whose `checks` is not a string map as an absence, not a crash', async () => {
+    // A non-map `checks` survived the old cast and `Object.entries` would iterate
+    // it into `[index, char]` pairs or throw; the decoder declines it up front.
+    apiGet.mockResolvedValue(
+      ok({ status: 'ok', version: '0.0.1', api_version: 'v1', checks: ['storage', 'policy'] }),
+    )
+    const onProbed = vi.fn()
+    render(<Step2InstallSdk onProbed={onProbed} />)
+
+    await clickProbe()
+
+    expect(screen.getByTestId('onboarding-step-install')).toBeInTheDocument()
+    expect(screen.getByTestId('onboarding-install-absent')).toHaveAttribute(
+      'data-truth-state',
+      'unknown',
+    )
+    expect(screen.queryByTestId('onboarding-install-ok')).toBeNull()
+    expect(onProbed).toHaveBeenCalledWith(false)
+  })
+
   it('ignores a second click while a probe is in flight', async () => {
     let release: (() => void) | undefined
     apiGet.mockImplementation(
