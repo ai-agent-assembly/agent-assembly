@@ -18,9 +18,17 @@ export type TeamPolicy = components['schemas']['TeamPolicyResponse']
  * scope-derived `unclaimedObservable` flag (AAASM-5183). `false` means the
  * caller's scope structurally cannot see unclaimed agents, so an empty orphan
  * set must not be reported as "no unclaimed agents".
+ *
+ * `nodes` is `unknown`, not `readonly AgentNode[]` (AAASM-5380): the wire body
+ * is carried intact so `decodeTopologyNodes` (`features/agents/schema.ts`) can
+ * validate it at the render boundary. The old `nodes: data.nodes ?? []`
+ * fabricated a known-empty fleet — a missing `nodes` rendered a confident
+ * "0 unclaimed" chip and a non-array threw in `selectOrphanAgents`' `.filter`.
+ * Typing it `unknown` makes reading `.nodes` without decoding it a type error,
+ * not a convention.
  */
 export interface TopologyAgents {
-  readonly nodes: readonly AgentNode[]
+  readonly nodes: unknown
   readonly unclaimedObservable: boolean
 }
 
@@ -99,11 +107,15 @@ export function useTopologyAgentsQuery() {
       // team-scoped caller structurally cannot see `team_id: None` agents, so an
       // empty orphan set must read as "not available in your scope", not a
       // confident "no unclaimed agents". The flag is the backend's scope-derived
-      // signal for that distinction. Both fields default defensively (nodes → [],
-      // observable → false, fail-closed) so a partial/degraded payload renders an
-      // honest empty/absent state rather than crashing the page.
+      // signal for that distinction, and stays fail-closed (`?? false`).
+      //
+      // AAASM-5380: `nodes` is carried *intact* (`?? null`, not `?? []`) — the
+      // `?? []` fabricated a known-empty fleet from a body with no `nodes`, and a
+      // non-array `nodes` threw in the orphan filter. `decodeTopologyNodes`
+      // validates it at the render boundary; `null` is the explicit no-payload it
+      // reports as absence.
       return {
-        nodes: data.nodes ?? [],
+        nodes: data.nodes ?? null,
         unclaimedObservable: data.unclaimed_observable ?? false,
       }
     },

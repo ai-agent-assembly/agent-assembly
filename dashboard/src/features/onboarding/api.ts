@@ -102,6 +102,9 @@ export async function probeGatewayHealth(): Promise<QueryOutcome<GatewayHealth>>
 /** How often the enroll step re-asks the registry while it is listening. */
 export const ENROLLED_AGENTS_POLL_MS = 3000
 
+/** The paginated registry envelope, as the wire delivers it. */
+export type RegistryPage = components['schemas']['PaginatedAgentResponse']
+
 /**
  * Poll the agent registry while the enroll step is listening.
  *
@@ -109,9 +112,19 @@ export const ENROLLED_AGENTS_POLL_MS = 3000
  * step claims; `items` is the first page, used to show *which* agents answered.
  * The query is only enabled while the step is actually watching, so a wizard
  * parked on step 1 does not sit polling the gateway.
+ *
+ * The body is returned intact (or `null` for an absent payload) rather than
+ * reshaped here: AAASM-5380 folds it through `decodeRegistryAnswer`
+ * (`features/onboarding/schema.ts`) at the render boundary, so a `200` whose
+ * body has no `total` or a non-array `items` reaches the step as a decoded
+ * absence instead of a cast that renders an empty meter or throws in `.map`. The
+ * fallback is `?? null`, not `?? {}` or a fabricated `{ total: 0 }`: `null` is an
+ * explicit no-payload the decoder reports as absence. (`null` rather than bare
+ * `undefined` because TanStack Query v5 rejects a `queryFn` resolving to
+ * `undefined`.)
  */
 export function useRegisteredAgentsQuery(enabled: boolean) {
-  return useQuery<RegisteredAgents>({
+  return useQuery<RegistryPage | null>({
     queryKey: ['onboarding', 'registered-agents'],
     enabled,
     refetchInterval: enabled ? ENROLLED_AGENTS_POLL_MS : false,
@@ -126,11 +139,7 @@ export function useRegisteredAgentsQuery(enabled: boolean) {
         params: { query: { per_page: 100 } },
       })
       if (error) throw new Error('Failed to fetch registered agents')
-      // A 200 with no body answers nothing. Coercing it to `total: 0` would be
-      // the exact substitution this lane exists to remove: an absent answer
-      // rendered as a counted, confirmed zero.
-      if (!data) throw new Error('Agent registry returned no payload')
-      return { total: data.total, items: data.items }
+      return data ?? null
     },
   })
 }

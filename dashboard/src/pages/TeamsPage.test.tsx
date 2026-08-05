@@ -340,6 +340,40 @@ describe('TeamsPage — every agent is reachable from some grouping (AAASM-5157)
     expect(screen.queryByTestId('orphan-census-mismatch')).not.toBeInTheDocument()
   })
 
+  it('reports a schema-invalid 200 as unknown, never as zero unclaimed (AAASM-5573)', async () => {
+    setupMocks(makeOverview(2), TEAM_MEMBERS)
+    // A 200 whose `nodes` are rows missing the fields the orphan list reads (and
+    // that a non-array would defeat too). Before the decoder the `?? []` cast
+    // rendered a confident "0 unclaimed" chip from an unread body, and a
+    // non-array threw in `selectOrphanAgents`' `.filter`. `decodeTopologyNodes`
+    // now folds it to `unknown`.
+    vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
+      mockQuery<TopologyAgents>({
+        data: { nodes: [{ id: 'x' }], unclaimedObservable: true } as unknown as TopologyAgents,
+        isPending: false,
+        isFetching: false,
+        isError: false,
+        error: null,
+      }),
+    )
+    await openOrphans()
+
+    // Vacuity guard: the orphan pane renders.
+    expect(screen.getByTestId('orphan-detail-pane')).toBeInTheDocument()
+
+    // Explicit absence, not a fabricated "0 unclaimed" chip or count. The count
+    // value carries the `unknown` marker and renders the NO_DATA dash rather
+    // than a numeral. (A bare `.not.toHaveTextContent('0')` would false-fail:
+    // the operator-facing reason string names the offending array index `0`.)
+    const countValue = screen.getByTestId('team-list-orphan-count-value')
+    expect(countValue).toHaveAttribute('data-truth-state', 'unknown')
+    expect(countValue).toHaveTextContent('—')
+    const absent = screen.getByTestId('orphan-agents-absent')
+    expect(absent).toHaveAttribute('data-truth-state', 'unknown')
+    expect(screen.queryByTestId('orphan-agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('orphan-agents-list')).not.toBeInTheDocument()
+  })
+
   it('keeps the unclaimed section reachable while the team list is failing', async () => {
     setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
     vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(
