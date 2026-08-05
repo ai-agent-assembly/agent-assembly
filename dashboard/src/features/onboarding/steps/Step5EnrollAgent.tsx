@@ -16,12 +16,13 @@ import { StatusState, TruthfulValue } from '../../../components/truthfulness'
 import {
   absent,
   certain,
-  certainFromQuery,
+  certainFromShapedQuery,
   isKnown,
   mapCertain,
   type Certain,
 } from '../../../lib/truthfulness'
 import { useRegisteredAgentsQuery, type RegisteredAgents } from '../api'
+import { decodeRegistryAnswer } from '../schema'
 import type { WizardState } from '../types'
 import './Steps.css'
 
@@ -40,8 +41,12 @@ export function Step5EnrollAgent({ state, onEnrolled }: Readonly<Step5EnrollAgen
   const [polling, setPolling] = useState(state.enrolled)
 
   const query = useRegisteredAgentsQuery(polling)
+  // AAASM-5380: folded through `decodeRegistryAnswer` so a `200` whose body has
+  // no `total` or a non-array `items` reports an absence naming the field,
+  // rather than a cast that rendered an empty meter and "no agents registered
+  // yet" or threw in `.map`. Off the poll it stays `not-evaluated`.
   const registry: Certain<RegisteredAgents> = polling
-    ? certainFromQuery(query)
+    ? certainFromShapedQuery(query, decodeRegistryAnswer)
     : absent('not-evaluated', NOT_ASKED)
   const enrolledCount = mapCertain(registry, (r) => r.total)
   const agents = isKnown(registry) ? registry.value.items : []
