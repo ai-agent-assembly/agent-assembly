@@ -5,6 +5,7 @@ import { toFleetAgent } from '../features/agents/fleetTypes'
 import { useApprovalsQuery, type Approval } from '../features/approvals/api'
 import { deriveApprovalsSummary, formatApprovalsSummary } from '../features/approvals/summary'
 import { usePoliciesQuery } from '../features/policies/api'
+import { decodePolicyList } from '../features/policies/schema'
 import { useAlertsQuery } from '../features/alerts/api'
 import type { Alert, AlertFilters } from '../features/alerts/types'
 import { useEnforcementTimelineQuery } from '../features/overview/api'
@@ -15,6 +16,7 @@ import {
   TRUTH_STATE_META,
   absent,
   certainFromQuery,
+  certainFromShapedQuery,
   isKnown,
   mapCertain,
   type Certain,
@@ -325,7 +327,13 @@ export function OverviewPage() {
   // into "0" and, for approvals, into the affirmative "queue clear"
   // (AAASM-5115).
   const approvals = certainFromQuery(approvalsQuery)
-  const policies = certainFromQuery(policiesQuery)
+  // AAASM-5380 / AAASM-5379: decoded before the count reads `.length`. The other
+  // three folds on this page (approvals, alerts, enforcement) are later slices
+  // and stay on `certainFromQuery`. `usePoliciesQuery` checked `!data?.items`
+  // for truthiness only, so `{"items":[{}]}` reached this fold as rows nobody
+  // could read and rendered the literal `undefined ACTIVE POLICIES` (AAASM-5379);
+  // a malformed body now decodes to an absence the L2 card renders as `—`.
+  const policies = certainFromShapedQuery(policiesQuery, decodePolicyList)
   const alerts = certainFromQuery(alertsQuery)
   const enforcement = certainFromQuery(enforcementQuery)
 

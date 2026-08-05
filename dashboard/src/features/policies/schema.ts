@@ -90,3 +90,58 @@ export const decodePolicyActivity: Decoder<readonly PolicyActivity[]> = (body: u
     `The policy list came back in a shape this dashboard cannot read (${firstFault(parsed.error)}), so how many policy versions are inactive cannot be stated. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
   )
 }
+
+/**
+ * The one field the Overview L2 card's `active policies` count reads off a row
+ * (AAASM-5379 / AAASM-5380).
+ *
+ * The card renders only `items.length`, so this decoder validates that the body
+ * is an *array of policy rows* and reads nothing off any row — an absence no
+ * wider than the evidence, the same rule {@link PolicyActivity} follows for the
+ * badge. `name` rather than nothing at all: `PolicyResponse` carries no `id`, so
+ * `name` is the required field that makes a row a policy row rather than an
+ * arbitrary object. Without it, `{ "items": [{}, {}] }` — the body AAASM-5379
+ * observed rendering the literal `undefined ACTIVE POLICIES` before the fold
+ * decoded anything — would validate as a confident count of two rows nobody
+ * could read.
+ *
+ * Typed from the generated response rather than written out, so *renaming*
+ * `name` in `openapi/v1.yaml` fails this module's build.
+ */
+export interface PolicyIdentity {
+  readonly name: PolicyResponse['name']
+}
+
+/**
+ * A conforming policy row still carries `name` under that name, required, as a
+ * string.
+ *
+ * Same two-way binding as {@link POLICY_ACTIVITY_IS_ON_THE_WIRE}: the
+ * `satisfies` below binds the schema to {@link PolicyIdentity}, and this binds
+ * {@link PolicyIdentity} to the generated response in the direction the indexed
+ * access cannot. If `openapi/v1.yaml` makes `name` optional or retypes it, this
+ * resolves to `never` and the assignment stops compiling.
+ */
+type GeneratedCarriesPolicyIdentity = PolicyResponse extends PolicyIdentity ? true : never
+export const POLICY_IDENTITY_IS_ON_THE_WIRE: GeneratedCarriesPolicyIdentity = true
+
+const policyIdentitySchema = z.object({
+  name: z.string(),
+}) satisfies z.ZodType<PolicyIdentity>
+
+const policyIdentityListSchema = z.array(policyIdentitySchema)
+
+/**
+ * Decode the policy list down to what the Overview count needs, or say why it
+ * could not be read.
+ *
+ * Total, per the {@link Decoder} contract — a decoder that threw would re-create
+ * the render-time crash it exists to prevent, one stack frame further in.
+ */
+export const decodePolicyList: Decoder<readonly PolicyIdentity[]> = (body: unknown) => {
+  const parsed = policyIdentityListSchema.safeParse(body)
+  if (parsed.success) return conforms(parsed.data)
+  return violates(
+    `The policy list came back in a shape this dashboard cannot read (${firstFault(parsed.error)}), so how many policies are active cannot be stated. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
+  )
+}
