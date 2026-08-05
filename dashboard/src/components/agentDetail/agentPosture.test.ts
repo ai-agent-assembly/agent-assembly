@@ -165,6 +165,75 @@ describe('deriveAgentPosture — absence of a trustworthy matrix', () => {
   })
 })
 
+describe('deriveAgentPosture — a body that is not a scoped matrix (AAASM-5380 S6)', () => {
+  // The fold is now `certainFromShapedQuery(outcome, decodeScopedMatrix)`. Each
+  // body below used to reach the counting path intact — `api/capability.ts`
+  // casts the wire — and either threw at render or fabricated a count. Every one
+  // must now fold to an explicit `unknown` and, above all, must not throw.
+
+  it('reports unknown for a non-array `resources`, which threw inside the tally generator', () => {
+    // `agentCells` does `for (const resource of resources)`; a non-iterable
+    // `resources` threw there, at render, outside any queryFn.
+    const posture = deriveAgentPosture(
+      success({
+        agent: makeAgent({ gmail: cell({ read: 'allow' }) }),
+        resources: { length: 2 },
+        policies: POLICIES,
+        sampleCalls: [],
+      } as unknown as ScopedCapabilityMatrix),
+    )
+    expect(shape(posture)).toEqual({ allow: 'unknown', deny: 'unknown' })
+  })
+
+  it('reports unknown for a truthy non-array `policies`, which skipped the empty-cascade guard', () => {
+    // `cascadeEvidenceOf` reads `.length`; on `{ count: 3 }` that is `undefined`,
+    // not `0`, so the empty-cascade guard was skipped and counting proceeded on
+    // an unread cascade.
+    const posture = deriveAgentPosture(
+      success({
+        agent: makeAgent({ gmail: cell({ read: 'allow' }) }),
+        resources: RESOURCES,
+        policies: { count: 3 },
+        sampleCalls: [],
+      } as unknown as ScopedCapabilityMatrix),
+    )
+    expect(shape(posture)).toEqual({ allow: 'unknown', deny: 'unknown' })
+  })
+
+  it('reports unknown for an agent row with no readable caps, which the index throws on', () => {
+    const posture = deriveAgentPosture(
+      success({
+        agent: { id: 'a1', name: 'alpha' },
+        resources: RESOURCES,
+        policies: POLICIES,
+        sampleCalls: [],
+      } as unknown as ScopedCapabilityMatrix),
+    )
+    expect(shape(posture)).toEqual({ allow: 'unknown', deny: 'unknown' })
+  })
+
+  it('reports unknown for a bare `{}` body without throwing', () => {
+    const posture = deriveAgentPosture(success({} as unknown as ScopedCapabilityMatrix))
+    expect(shape(posture)).toEqual({ allow: 'unknown', deny: 'unknown' })
+  })
+
+  it('carries the decoder reason so the operator has somewhere to go', () => {
+    const posture = deriveAgentPosture(success({} as unknown as ScopedCapabilityMatrix))
+    expect(isAbsent(posture.allow) && posture.allow.detail).toMatch(
+      /capability matrix came back in a shape/i,
+    )
+  })
+
+  it('still counts a null agent as not-evaluated, not unreadable', () => {
+    // `agent: null` is a real answer the decoder must let through — the agent has
+    // no row — distinct from a body that could not be read.
+    const posture = deriveAgentPosture(
+      success({ agent: null, resources: RESOURCES, policies: POLICIES, sampleCalls: [] }),
+    )
+    expect(shape(posture)).toEqual({ allow: 'not-evaluated', deny: 'not-evaluated' })
+  })
+})
+
 describe('postureScale', () => {
   it('sums only the figures that were measured', () => {
     const posture = deriveAgentPosture(
