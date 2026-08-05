@@ -53,7 +53,14 @@ export function selectTeamBudget(tree: BudgetTree | undefined, teamId: string): 
  * the live routing target/escalation the card surfaces. Ordering falls back to
  * insertion order when `created_at` is missing.
  */
-export function selectTeamApprovals(approvals: Approval[] | undefined, teamId: string): Approval[] {
+export function selectTeamApprovals(
+  // `null` since AAASM-5380: `useApprovalsQuery` now returns `null` (not `[]`)
+  // for a body with no `items`, so a missing queue reaches this selector as
+  // `null` rather than `undefined`. Both mean "no rows to scope" and the `?? []`
+  // below already handled it — this only widens the annotation to match.
+  approvals: Approval[] | null | undefined,
+  teamId: string,
+): Approval[] {
   const scoped = (approvals ?? []).filter(a => a.team_id === teamId)
   return scoped.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
 }

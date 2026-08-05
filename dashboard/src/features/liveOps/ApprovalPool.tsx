@@ -3,17 +3,21 @@ import { StatusState } from '../../components/truthfulness'
 import { isKnown, type Certain } from '../../lib/truthfulness'
 import { ApprovalActions } from '../approvals/ApprovalActions'
 import { ApprovalCountdown } from '../approvals/ApprovalCountdown'
-import type { Approval } from '../approvals/api'
+import type { ApprovalRow } from '../approvals/schema'
 import './ApprovalPool.css'
 
 interface ApprovalPoolProps {
   /**
    * The pending approvals, or why there are none to show.
    *
-   * Deliberately not `Approval[]`: an empty array and a failed queue request
-   * are different answers and must reach the operator as different answers.
+   * Deliberately not a bare array: an empty array and a failed queue request
+   * are different answers and must reach the operator as different answers. The
+   * element type is `ApprovalRow` — the fields `decodeApprovalList`
+   * (`features/approvals/schema.ts`) validates and this pool reads — not the
+   * full `ApprovalResponse`, because a `known` value here is one the decoder
+   * passed, and it only vouches for those fields.
    */
-  approvals: Certain<readonly Approval[]>
+  approvals: Certain<readonly ApprovalRow[]>
   /**
    * Surfaced when an inline approve / reject mutation rejects. The host owns
    * toast / restore behaviour; the pool only optimistically hides on success.
@@ -26,10 +30,15 @@ interface ApprovalPoolProps {
 /**
  * Copy for an absence.
  *
- * `certainFromQuery` only produces `unknown` here while the request is in
- * flight — `useApprovalsQuery` returns `data.items ?? []` and so never yields a
- * null payload — which is why in-flight gets its own, non-alarming title. Every
- * other state means the queue could not be obtained, and says so.
+ * AAASM-5380: `unknown` no longer means only "in flight". `useApprovalsQuery`
+ * used to return `data.items ?? []` — so it never yielded a null payload and the
+ * only `unknown` was the pending one, which this comment relied on. That `?? []`
+ * was the fail-open, not a safety property: it fabricated an empty queue from an
+ * unreadable body. The fold now runs through `decodeApprovalList`, so a `200`
+ * whose body is not an approvals list is `unknown` too. Both share the pending
+ * title only when the request is genuinely pending (`approvals.state` distinct
+ * from the decoder's absence, told apart by the caller); every other state means
+ * the queue could not be obtained or could not be read, and says so.
  */
 function absenceTitle(pending: boolean): string {
   return pending ? 'Loading the approval queue…' : 'Approval queue unavailable'
@@ -79,7 +88,7 @@ export function ApprovalPool({ approvals, onError, onRetry }: Readonly<ApprovalP
 }
 
 interface ApprovalPoolBodyProps {
-  approvals: Certain<readonly Approval[]>
+  approvals: Certain<readonly ApprovalRow[]>
   onError?: (action: 'approve' | 'reject', detail: string) => void
   onRetry?: () => void
 }

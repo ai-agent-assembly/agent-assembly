@@ -54,7 +54,8 @@
  * (`import { certainFromQuery as fold }`) or a namespace call (`T.certainFromQuery`)
  * would slip past. The compiler-enforced half of the ratchet is the
  * `no-restricted-imports` rule in `.eslintrc.cjs`, whose allowlist is the same
- * eleven files; it catches aliasing and namespace access for free. Neither half
+ * set of files (nine, since AAASM-5380 migrated the two approvals surfaces); it
+ * catches aliasing and namespace access for free. Neither half
  * is sufficient alone — the lint rule cannot count folds within a file, and this
  * scan cannot see through a rename.
  */
@@ -113,13 +114,6 @@ const AUDIT: readonly FoldSite[] = [
       'A non-array `resources` throws inside the generator `tallyVerdicts` consumes, at render, outside any queryFn. A truthy non-array `policies` makes `cascadeEvidenceOf` read `.length` as `undefined`, which is not `0`, so the empty-cascade guard is skipped and counting proceeds on unread data. `api/capability.ts` casts the body (`data as CapabilityMatrix`); the hook only incidentally checks `agents` via `.find`. Follow-up: AAASM-5380.',
   },
   {
-    file: 'features/approvals/ApprovalsBellButton.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'features/approvals/api.ts returns `data?.items ?? []`, so a body with no `items` becomes a known empty queue and the header aria-label reads "no approvals are waiting" — an affirmative all-clear from an unread body. The AAASM-5167 comment claiming "the three cases are now distinct" holds for a transport failure only. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
-  },
-  {
     file: 'features/onboarding/steps/Step2InstallSdk.tsx',
     calls: 1,
     disposition: 'hazardous',
@@ -153,13 +147,6 @@ const AUDIT: readonly FoldSite[] = [
     disposition: 'hazardous',
     reason:
       'features/agents/api.ts returns `data?.items ?? []`, so a body with no `items` renders the "no agents registered" empty state — an affirmative claim about the fleet from an unread body. A truthy non-array `items` throws in a sibling `.map` on the same render. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
-  },
-  {
-    file: 'pages/LiveOpsPage.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'Same `?? []` in features/approvals/api.ts as the bell. ApprovalPool then renders "No pending approvals / Nothing is waiting for a human decision right now" with no absence badge. The comment there frames the `?? []` as a safety property; it is the fail-open. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
   },
   {
     file: 'pages/OverviewPage.tsx',

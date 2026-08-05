@@ -131,4 +131,73 @@ describe('ApprovalsBellButton', () => {
     const link = await screen.findByTestId('approvals-bell')
     expect(link).toHaveAttribute('href', '/approvals')
   })
+
+  // ── AAASM-5380: a schema-invalid 200 must not become "0 waiting" ──────────
+  //
+  // `data?.items ?? []` used to make a body with no readable rows a known empty
+  // queue, and the header then announced a clear queue from a body nobody could
+  // parse. The fold now runs through `decodeApprovalList`, so an unreadable body
+  // is an explicit absence, not a fabricated zero. `data` here is what
+  // `useApprovalsQuery` resolves to (its `?? []` is gone), so a body that fails
+  // the decoder arrives as a mistyped value.
+
+  it('marks the queue unknown when a 200 body has rows missing the required id', async () => {
+    vi.spyOn(approvalsApi, 'useApprovalsQuery').mockReturnValue(
+      // A row with no `id` — the field the decode endpoints key off and the
+      // decoder requires. Cast because this is precisely the shape the wire can
+      // send but the `Approval[]` annotation forbids.
+      mockQuery<Approval[]>({ data: [{}] as unknown as Approval[] }),
+    )
+    render(<ApprovalsBellButton />, { wrapper: Wrapper })
+    // Guard against vacuity first: the component must render at all. An empty
+    // DOM would pass every "does not show a count" assertion below for free.
+    const link = await screen.findByTestId('approvals-bell')
+    expect(link).toBeInTheDocument()
+    // Then the explicit absence, and no fabricated count.
+    const marker = await screen.findByTestId('approvals-bell-absent')
+    expect(marker).toHaveAttribute('data-truth-state', 'unknown')
+    expect(screen.queryByTestId('approvals-bell-badge')).not.toBeInTheDocument()
+    expect(link.getAttribute('aria-label')).not.toMatch(/no approvals are waiting/i)
+  })
+
+  it('marks the queue unknown when items is present but not an array', async () => {
+    vi.spyOn(approvalsApi, 'useApprovalsQuery').mockReturnValue(
+      // `{ items: {} }` is the body `useApprovalsQuery` would forward as `{}`
+      // once its `?? []` is gone: a truthy non-array that used to throw in the
+      // fold. Modelled here as the value the hook resolves the query to.
+      mockQuery<Approval[]>({ data: {} as unknown as Approval[] }),
+    )
+    render(<ApprovalsBellButton />, { wrapper: Wrapper })
+    const link = await screen.findByTestId('approvals-bell')
+    expect(link).toBeInTheDocument()
+    const marker = await screen.findByTestId('approvals-bell-absent')
+    expect(marker).toHaveAttribute('data-truth-state', 'unknown')
+    expect(screen.queryByTestId('approvals-bell-badge')).not.toBeInTheDocument()
+    expect(link.getAttribute('aria-label')).not.toMatch(/no approvals are waiting/i)
+  })
+
+  it('marks the queue unknown when the body carried no payload at all', async () => {
+    // A body with no `items` now reaches the fold as `undefined` (the `?? []`
+    // that faked an empty queue is gone), which is an absence, not a clear
+    // queue.
+    vi.spyOn(approvalsApi, 'useApprovalsQuery').mockReturnValue(
+      mockQuery<Approval[]>({ data: undefined }),
+    )
+    render(<ApprovalsBellButton />, { wrapper: Wrapper })
+    const link = await screen.findByTestId('approvals-bell')
+    expect(link).toBeInTheDocument()
+    const marker = await screen.findByTestId('approvals-bell-absent')
+    expect(marker).toHaveAttribute('data-truth-state', 'unknown')
+    expect(screen.queryByTestId('approvals-bell-badge')).not.toBeInTheDocument()
+    expect(link.getAttribute('aria-label')).not.toMatch(/no approvals are waiting/i)
+  })
+
+  it('still shows the real count for a well-formed body', async () => {
+    vi.spyOn(approvalsApi, 'useApprovalsQuery').mockReturnValue(
+      mockQuery<Approval[]>({ data: [MOCK_APPROVAL, { ...MOCK_APPROVAL, id: 'a2' }] }),
+    )
+    render(<ApprovalsBellButton />, { wrapper: Wrapper })
+    expect(await screen.findByTestId('approvals-bell-badge')).toHaveTextContent('2')
+    expect(screen.queryByTestId('approvals-bell-absent')).not.toBeInTheDocument()
+  })
 })
