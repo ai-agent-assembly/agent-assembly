@@ -38,6 +38,7 @@ import { z } from 'zod'
 import type { components } from '../../api/generated/schema'
 import { conforms, violates, type Decoder } from '../../lib/truthfulness'
 import type { Agent } from './api'
+import type { AgentEnforcementCount, AgentEnforcementLookup } from './fleetTypes'
 import type { AgentNode } from '../teams/api'
 
 type AgentResponse = components['schemas']['AgentResponse']
@@ -184,4 +185,67 @@ export const decodeTopologyNodes: Decoder<readonly AgentNode[]> = (body: unknown
   return violates(
     `The topology fleet came back in a shape this dashboard cannot read (${firstFault(parsed.error)}), so how many agents no team claims cannot be stated — including whether none are unclaimed. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
   )
+}
+
+/**
+ * The counts one entry of the per-agent enforcement lookup carries.
+ *
+ * `useAgentEnforcementQuery` (`features/agents/api.ts`) folds the wire's
+ * `AgentEnforcementCounts[]` into a `Map` keyed by `agent_id`, so the value the
+ * Overview fold reads is not the array but the constructed `Map`. This binds the
+ * mapped-value shape to the generated per-row response in the direction the
+ * indexed access below cannot: if `openapi/v1.yaml` retypes `blocked`/`scrubbed`
+ * off `number`, `GeneratedCarriesEnforcementCount` resolves to `never` and this
+ * module stops compiling. Mirrors `FLEET_AGENT_ROW_IS_ON_THE_WIRE`, one level in
+ * — the row's numeric columns rather than the row itself, because the query has
+ * already dropped `agent_id` into the Map key.
+ */
+type WireEnforcementRow = components['schemas']['AgentEnforcementCounts']
+type GeneratedCarriesEnforcementCount = Pick<WireEnforcementRow, 'blocked' | 'scrubbed'> extends
+  AgentEnforcementCount
+  ? true
+  : never
+export const ENFORCEMENT_COUNT_IS_ON_THE_WIRE: GeneratedCarriesEnforcementCount = true
+
+const enforcementCountSchema = z.object({
+  blocked: z.number(),
+  scrubbed: z.number(),
+}) satisfies z.ZodType<AgentEnforcementCount>
+
+/**
+ * A `Map<string, { blocked, scrubbed }>`, or say why it could not be read.
+ *
+ * Where the sibling decoders validate a wire array before it is read, this one
+ * validates the lookup the query function already built from that array
+ * (`useAgentEnforcementQuery`): the Overview fold receives the `Map`, not the
+ * response body. Zod has no `Map` primitive, so the check is done explicitly —
+ * every value must be a finite `{ blocked: number, scrubbed: number }`. A `Map`
+ * whose keys are not strings, or whose values mistype either count (the shape a
+ * proxy or a version-skewed API would leave the query to build from a malformed
+ * row), degrades to an absence the Overview KPIs propagate rather than summing a
+ * `NaN` into a fabricated "blocked / 24h".
+ *
+ * Total, per the {@link Decoder} contract — a decoder that threw would re-create
+ * the render crash it exists to prevent, one stack frame further in.
+ */
+export const decodeEnforcementLookup: Decoder<AgentEnforcementLookup> = (body: unknown) => {
+  if (!(body instanceof Map)) {
+    return violates(
+      'The per-agent enforcement counts came back in a shape this dashboard cannot read (not a lookup), so how many decisions each agent blocked or scrubbed cannot be stated. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.',
+    )
+  }
+  for (const [key, value] of body.entries()) {
+    if (typeof key !== 'string') {
+      return violates(
+        'The per-agent enforcement counts came back keyed by something other than an agent id, so which agent each count belongs to cannot be stated. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.',
+      )
+    }
+    const parsed = enforcementCountSchema.safeParse(value)
+    if (!parsed.success) {
+      return violates(
+        `The enforcement counts for ${key} came back in a shape this dashboard cannot read (${firstFault(parsed.error)}), so how many decisions were blocked or scrubbed cannot be stated. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
+      )
+    }
+  }
+  return conforms(body as AgentEnforcementLookup)
 }

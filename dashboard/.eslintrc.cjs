@@ -1,39 +1,13 @@
-// AAASM-5369: the modules still allowed to fold a query outcome without
-// first decoding the body (two, since AAASM-5380 migrated the two approvals
-// surfaces, then the Fleet and Step-5-enroll agent lists, then the step-2
-// gateway-health probe, then the AlertsPage rules/alerts/total folds, then
-// the agent-detail posture panel, then the capability page, and finally the
-// CostsPage cost/overview folds and the TeamsPage census overview fold).
-// Every one of them
-// is recorded, with the disposition
-// of each fold and the ticket that carries it, in
-// `src/lib/truthfulness/__tests__/foldAudit.test.ts` — keep the two in step.
-//
-// This list and that test are the two halves of one ratchet, and neither is
-// sufficient alone. The test scans source *text*, so it counts folds per file
-// but an `import { certainFromQuery as fold }` or a `T.certainFromQuery`
-// namespace call walks straight past it (both were demonstrated in review).
-// This rule resolves imports, so aliasing and namespace access are caught for
-// free — but it cannot tell one fold in a file from five. Removing either half
-// re-opens a hole the other does not cover.
-//
-// Adding a file here is a decision to ship an undecoded fold. The alternative
-// is `certainFromShapedQuery`, which cannot be called without a decoder because
-// its parameter is `unknown`.
-//
-// This list is not the only door, and saying it was would be the overclaim this
-// ticket exists to remove: an `// eslint-disable-next-line
-// no-restricted-imports` above an aliased import silences this rule *and* is
-// invisible to the text scan, because the directive is genuinely used (so
-// `--report-unused-disable-directives` stays quiet) and the scan skips `import`
-// lines. That door is closed from the other side — the audit test asserts no
-// source file carries such a directive — so a suppression has to be argued for
-// here, in the open, rather than in the file that wants it.
-const UNDECODED_FOLD_ALLOWLIST = [
-  'src/components/AppShell.tsx',
-  'src/pages/OverviewPage.tsx',
-]
-
+// AAASM-5369/AAASM-5380: `certainFromQuery` folds a query outcome without first
+// decoding the body, so a schema-invalid `200` can be read as if it matched —
+// that unmounted AppShell and reported an unread capability matrix as zero
+// policy documents. AAASM-5380 migrated the last app-code caller (S8: the
+// Overview approvals/alerts/enforcement folds and the shell alerts badge), so
+// there is no longer an allowlist: every fold in app code goes through
+// `certainFromShapedQuery`, which cannot be called without a decoder because its
+// parameter is `unknown`. The rule below now points any new caller at that
+// helper unconditionally; the only exemption left is the vocabulary's own
+// modules and the tests that exercise `certainFromQuery` as their subject.
 const NO_UNDECODED_FOLD = {
   'no-restricted-imports': [
     'error',
@@ -43,7 +17,7 @@ const NO_UNDECODED_FOLD = {
           group: ['**/lib/truthfulness', '**/lib/truthfulness/query'],
           importNames: ['certainFromQuery'],
           message:
-            'Use `certainFromShapedQuery` with a decoder (see src/lib/truthfulness/shape.ts). `certainFromQuery` takes a `QueryOutcome<T>` whose `T` is an unverified wire claim, so a fold can read a field off a body that never matched the schema - that unmounted AppShell and reported an unread capability matrix as zero policy documents (AAASM-5369). If this module genuinely must fold undecoded, add it to UNDECODED_FOLD_ALLOWLIST in .eslintrc.cjs and record the disposition in src/lib/truthfulness/__tests__/foldAudit.test.ts.',
+            'Use `certainFromShapedQuery` with a decoder (see src/lib/truthfulness/shape.ts). `certainFromQuery` takes a `QueryOutcome<T>` whose `T` is an unverified wire claim, so a fold can read a field off a body that never matched the schema - that unmounted AppShell and reported an unread capability matrix as zero policy documents (AAASM-5369). Every app-code fold was migrated off it in AAASM-5380; there is no allowlist to add to.',
         },
       ],
     },
@@ -110,13 +84,6 @@ module.exports = {
     ...NO_UNDECODED_FOLD,
   },
   overrides: [
-    {
-      // The audited modules (two, after AAASM-5380). Turning the rule off per-file rather than
-      // exempting a directory keeps the exemption exactly as wide as the audit:
-      // a *sibling* of an allowlisted page gets no exemption from its neighbour.
-      files: UNDECODED_FOLD_ALLOWLIST,
-      rules: { 'no-restricted-imports': 'off' },
-    },
     {
       // The vocabulary's own tests exercise `certainFromQuery` directly - that
       // is their subject, and the fold audit imports it to prove the ratchet

@@ -1,5 +1,23 @@
-import type { Approval } from './api'
 import { getUrgency } from './urgency'
+
+/**
+ * The one field this module reads off an approval — its creation time.
+ *
+ * Structural, not `Approval`, so the summary is computable from any row that
+ * proves `created_at`: the full `Approval` the fetch path carries, and the
+ * narrower `ApprovalRow` the Overview card folds through `decodeApprovalList`
+ * (AAASM-5380 slice S8), which validates `created_at` and nothing this function
+ * does not read. Widening the parameter here rather than the decoded row keeps
+ * the absence no wider than the evidence — the row schema still requires only
+ * what a surface actually reads.
+ */
+interface HasCreatedAt {
+  // Optional: a count-only surface (Overview) may decode rows without proving
+  // `created_at`. A row missing it contributes no urgency/age tier — the same
+  // graceful degradation an unparseable timestamp already gets — so a missing
+  // timestamp costs the headline, never the count.
+  readonly created_at?: string
+}
 
 /**
  * Derived headline for the pending-approvals queue, computed client-side from
@@ -19,13 +37,16 @@ export interface ApprovalsSummary {
 }
 
 export function deriveApprovalsSummary(
-  approvals: readonly Approval[],
+  approvals: readonly HasCreatedAt[],
   now: number = Date.now(),
 ): ApprovalsSummary {
   let urgentCount = 0
   let oldestCreatedMs: number | null = null
 
   for (const approval of approvals) {
+    // A row that never proved a timestamp contributes no urgency/age — the
+    // count still holds. (Overview's count-only decoder leaves `created_at` off.)
+    if (approval.created_at === undefined) continue
     if (getUrgency(approval.created_at, now) === 'high') urgentCount += 1
 
     const createdMs = new Date(approval.created_at).getTime()
