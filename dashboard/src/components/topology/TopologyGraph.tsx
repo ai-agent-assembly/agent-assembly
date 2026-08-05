@@ -812,17 +812,23 @@ function nodeCardHandlers(node: TopologyNode, onNodeClick?: (node: TopologyNode)
   return { handleClick, handleKeyDown }
 }
 
+/** The subset of a node card's props that drive its `data-*` attributes. */
+type NodeCardDataInput = Pick<
+  TopologyNodeCardProps,
+  'node' | 'bucket' | 'selected' | 'dimmed' | 'depth' | 'isRoot' | 'inCycle' | 'crossTeamCount'
+>
+
 /** The `data-*` attribute bag for a node card's outer `<g>`. */
-function nodeCardDataAttrs(
-  node: TopologyNode,
-  bucket: SizeVariant,
-  selected: boolean,
-  dimmed: boolean,
-  depth: number,
-  isRoot: boolean,
-  inCycle: boolean,
-  crossTeamCount: number,
-): Record<string, string | number | undefined> {
+function nodeCardDataAttrs({
+  node,
+  bucket,
+  selected,
+  dimmed,
+  depth,
+  isRoot,
+  inCycle,
+  crossTeamCount,
+}: NodeCardDataInput): Record<string, string | number | undefined> {
   return {
     'data-testid': 'topology-node',
     'data-status': node.status,
@@ -947,7 +953,7 @@ function TopologyNodeCard({
   return (
     <g
       className="topology-node"
-      {...nodeCardDataAttrs(node, bucket, selected, dimmed, depth, isRoot, inCycle, crossTeamCount)}
+      {...nodeCardDataAttrs({ node, bucket, selected, dimmed, depth, isRoot, inCycle, crossTeamCount })}
       transform={`translate(${x}, ${y})`}
       role={onNodeClick ? 'button' : undefined}
       tabIndex={onNodeClick ? 0 : undefined}
