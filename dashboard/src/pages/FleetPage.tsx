@@ -23,7 +23,8 @@ import {
   DEFAULT_FLEET_FILTERS,
   type FleetFilters,
 } from '../features/agents/fleetFilters'
-import { certainFromQuery, certainText, isKnown, NO_DATA, type Certain } from '../lib/truthfulness'
+import { certainFromShapedQuery, certainText, isKnown, NO_DATA, type Certain } from '../lib/truthfulness'
+import { decodeFleetAgents } from '../features/agents/schema'
 import { StatusChip } from '../components/fleet/StatusChip'
 import { ModeChip } from '../components/fleet/ModeChip'
 import { TrustBar } from '../components/fleet/TrustBar'
@@ -235,7 +236,7 @@ type FleetTableState = 'loading' | 'unavailable' | 'fleet-empty' | 'filter-empty
  * means "asked, do not yet know", and that is the skeleton, not a failure
  * banner for a request that was never sent.
  */
-function fleetTableState(agents: Certain<Agent[]>, filteredCount: number): FleetTableState {
+function fleetTableState(agents: Certain<readonly Agent[]>, filteredCount: number): FleetTableState {
   if (!isKnown(agents)) return agents.state === 'unavailable' ? 'unavailable' : 'loading'
   if (agents.value.length === 0) return 'fleet-empty'
   return filteredCount === 0 ? 'filter-empty' : 'rows'
@@ -507,9 +508,23 @@ export function FleetPage() {
     [setSearchParams],
   )
 
+  // AAASM-5380: folded through `decodeFleetAgents` so a `200` whose body is not
+  // an agent list reports an absence naming the offending field, rather than the
+  // old `?? []` cast that rendered "No agents registered yet" from an unread body
+  // and threw in the grid's `.map` on a non-array. Everything downstream — the
+  // grid, the counts, the empty-state classifier — reads this `Certain`, so a
+  // bad body reaches none of them.
+  const agentsCertain = useMemo<Certain<readonly Agent[]>>(
+    () => certainFromShapedQuery({ isError, isPending, data: agents }, decodeFleetAgents),
+    [isError, isPending, agents],
+  )
+  const decodedAgents = useMemo<readonly Agent[]>(
+    () => (isKnown(agentsCertain) ? agentsCertain.value : []),
+    [agentsCertain],
+  )
   const fleetAgents = useMemo(
-    () => (agents ?? []).map((a) => toFleetAgent(a, enforcement, trust)),
-    [agents, enforcement, trust],
+    () => decodedAgents.map((a) => toFleetAgent(a, enforcement, trust)),
+    [decodedAgents, enforcement, trust],
   )
   const frameworks = useMemo(() => frameworkOptions(fleetAgents), [fleetAgents])
   const filteredFleet = useMemo(
@@ -582,10 +597,6 @@ export function FleetPage() {
     getSortedRowModel: getSortedRowModel(),
   })
 
-  const agentsCertain = useMemo<Certain<Agent[]>>(
-    () => certainFromQuery<Agent[]>({ isError, isPending, data: agents }),
-    [isError, isPending, agents],
-  )
   const filteredCount = filteredFleet.length
   const tableState = fleetTableState(agentsCertain, filteredCount)
   // Counts are claims about the fleet, so they fold to `—` rather than `0`

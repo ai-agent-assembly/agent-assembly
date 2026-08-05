@@ -18,13 +18,22 @@ export type AgentDecisions = components['schemas']['AgentDecisionsResponse']
 export function useAgentsQuery() {
   return useQuery({
     queryKey: ['agents'],
-    queryFn: async () => {
+    queryFn: async (): Promise<Agent[] | null> => {
       const { data, error } = await api.GET('/api/v1/agents', {
         params: { query: { per_page: 100 } },
       })
       if (error) throw new Error('Failed to fetch agents')
       // AAASM-4892: /agents and /logs return a paginated { items, total } object.
-      return data?.items ?? []
+      // AAASM-5380: `?? []` used to fabricate a known-empty fleet — a `200` whose
+      // body had no `items` rendered "No agents registered yet" on the strength
+      // of a body nobody parsed, and a non-array `items` threw in the grid's
+      // `.map`. The fallback is `?? null`, not `?? []`: `null` is an explicit
+      // no-payload that `decodeFleetAgents` (features/agents/schema.ts) reports
+      // as absence, and a present-but-malformed `items` is returned intact for
+      // the decoder to reject rather than cast. (`null` rather than bare
+      // `undefined` because TanStack Query v5 rejects a `queryFn` resolving to
+      // `undefined`.)
+      return data?.items ?? null
     },
   })
 }
