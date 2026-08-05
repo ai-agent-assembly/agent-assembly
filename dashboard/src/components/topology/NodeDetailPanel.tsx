@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useAgentLineageQuery, useTopologyNodeRecentEvents } from '../../features/topology/api'
+import { useAgentLineageQuery, useTopologyNodeRecentEvents, type LineageStep } from '../../features/topology/api'
 import {
   usePreviewEnforcementCascade,
   useResumeAgent,
@@ -67,6 +67,25 @@ function burnRatio(spend: number, limit: Certain<number>): number | null {
   return Math.min(1, spend / limit.value)
 }
 
+/** The budget-burn fields the panel renders, derived from a node in one pass. */
+interface BudgetDisplay {
+  readonly budgetLimit: Certain<number>
+  /** Burn as a whole percent, or `null` when there is no ratio to report. */
+  readonly percent: number | null
+  /** Tone bucket for the progress fill, or `undefined` when there is no ratio. */
+  readonly ratioBucket: ReturnType<typeof bucketForRatio> | undefined
+}
+
+function deriveBudgetDisplay(node: TopologyNode): BudgetDisplay {
+  const budgetLimit = certain(node.budgetLimit, 'unconfigured', NO_LIMIT_DETAIL)
+  const ratio = burnRatio(node.budgetSpend, budgetLimit)
+  return {
+    budgetLimit,
+    percent: ratio === null ? null : Math.round(ratio * 100),
+    ratioBucket: ratio === null ? undefined : bucketForRatio(ratio),
+  }
+}
+
 /** A cross-team relationship for the selected node: direction + peer. */
 interface CrossTeamEdge {
   readonly key: string
@@ -103,6 +122,51 @@ function deriveCrossTeamEdges(
     })
   })
   return out
+}
+
+/**
+ * The lineage section body: loading/error hints, the root affordance for a
+ * chain of one, or the delegation chain (root → this agent) for longer ones.
+ * Its own component so the nested chain map and its four branch points do not
+ * sit inside the panel's already-large render.
+ */
+function LineageBody({
+  isLoading,
+  isError,
+  chain,
+}: Readonly<{ isLoading: boolean; isError: boolean; chain: readonly LineageStep[] }>) {
+  if (isLoading) return <div className="node-detail-panel__hint">Loading lineage…</div>
+  if (isError) {
+    return <div className="node-detail-panel__hint node-detail-panel__hint--err">Failed to load lineage.</div>
+  }
+  if (chain.length <= 1) {
+    return (
+      <div className="node-detail-panel__hint" data-testid="node-detail-lineage-root">
+        Root agent — no parent (depth 0).
+      </div>
+    )
+  }
+  return (
+    <ol className="node-detail-panel__lineage" data-testid="node-detail-lineage-chain">
+      {chain.map((step, i) => {
+        const isCurrent = i === chain.length - 1
+        const isRoot = i === 0
+        return (
+          <li
+            key={step.id}
+            className={`node-detail-panel__lineage-step${isCurrent ? ' node-detail-panel__lineage-step--current' : ''}`}
+            data-testid="node-detail-lineage-step"
+            style={{ paddingLeft: `${i * 0.75}rem` }}
+          >
+            {i > 0 ? '└ ' : ''}
+            <span className="node-detail-panel__lineage-name">{step.name}</span>
+            {isCurrent && <span className="node-detail-panel__lineage-tag">← here</span>}
+            {isRoot && !isCurrent && <span className="node-detail-panel__lineage-tag">root</span>}
+          </li>
+        )
+      })}
+    </ol>
+  )
 }
 
 export interface NodeDetailPanelProps {
@@ -174,10 +238,8 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
 
   if (!node) return null
 
-  const budgetLimit = certain(node.budgetLimit, 'unconfigured', NO_LIMIT_DETAIL)
-  const ratio = burnRatio(node.budgetSpend, budgetLimit)
-  const percent = ratio === null ? null : Math.round(ratio * 100)
-  const ratioBucket = ratio === null ? undefined : bucketForRatio(ratio)
+  const budget = deriveBudgetDisplay(node)
+  const { budgetLimit, percent, ratioBucket } = budget
   const recent = (recentEventsQuery.data ?? []).slice(0, RECENT_EVENT_LIMIT)
   const lineageChain = lineageQuery.data?.ancestors ?? []
   const mutationBusy = suspendMutation.isPending || resumeMutation.isPending
@@ -186,8 +248,7 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
   // Enforcement-mode toggle state (AAASM-5341). The node's canonical `mode`
   // (AAASM-5289) drives which affordance shows; a node from an older payload
   // with no `mode` is treated as `enforce` (the server-wide default).
-  const currentMode = node.mode ?? 'enforce'
-  const isShadow = currentMode === 'shadow'
+  const isShadow = (node.mode ?? 'enforce') === 'shadow'
   // The shadow (weaken) action is Admin-only, matching the backend authz. The
   // server remains authoritative — this only hides a control the caller can't
   // use. Strengthen (→ enforce) needs only write.
@@ -355,36 +416,11 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
             GET /topology/lineage/{id} (AAASM-5071). */}
         <section className="node-detail-panel__section" data-testid="node-detail-lineage">
           <div className="node-detail-panel__section-label">lineage</div>
-          {lineageQuery.isLoading && <div className="node-detail-panel__hint">Loading lineage…</div>}
-          {lineageQuery.isError && (
-            <div className="node-detail-panel__hint node-detail-panel__hint--err">Failed to load lineage.</div>
-          )}
-          {!lineageQuery.isLoading && !lineageQuery.isError && lineageChain.length <= 1 && (
-            <div className="node-detail-panel__hint" data-testid="node-detail-lineage-root">
-              Root agent — no parent (depth 0).
-            </div>
-          )}
-          {lineageChain.length > 1 && (
-            <ol className="node-detail-panel__lineage" data-testid="node-detail-lineage-chain">
-              {lineageChain.map((step, i) => {
-                const isCurrent = i === lineageChain.length - 1
-                const isRoot = i === 0
-                return (
-                  <li
-                    key={step.id}
-                    className={`node-detail-panel__lineage-step${isCurrent ? ' node-detail-panel__lineage-step--current' : ''}`}
-                    data-testid="node-detail-lineage-step"
-                    style={{ paddingLeft: `${i * 0.75}rem` }}
-                  >
-                    {i > 0 ? '└ ' : ''}
-                    <span className="node-detail-panel__lineage-name">{step.name}</span>
-                    {isCurrent && <span className="node-detail-panel__lineage-tag">← here</span>}
-                    {isRoot && !isCurrent && <span className="node-detail-panel__lineage-tag">root</span>}
-                  </li>
-                )
-              })}
-            </ol>
-          )}
+          <LineageBody
+            isLoading={lineageQuery.isLoading}
+            isError={lineageQuery.isError}
+            chain={lineageChain}
+          />
         </section>
 
         {/* Cross-team edges — relationships to agents on other teams. */}
