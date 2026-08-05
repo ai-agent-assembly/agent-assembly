@@ -54,7 +54,8 @@
  * (`import { certainFromQuery as fold }`) or a namespace call (`T.certainFromQuery`)
  * would slip past. The compiler-enforced half of the ratchet is the
  * `no-restricted-imports` rule in `.eslintrc.cjs`, whose allowlist is the same
- * set of files (nine, since AAASM-5380 migrated the two approvals surfaces); it
+ * set of files (seven, since AAASM-5380 migrated the two approvals surfaces and
+ * then the Fleet and Step-5-enroll agent lists); it
  * catches aliasing and namespace access for free. Neither half
  * is sufficient alone — the lint rule cannot count folds within a file, and this
  * scan cannot see through a rename.
@@ -121,13 +122,6 @@ const AUDIT: readonly FoldSite[] = [
       'The non-2xx path is validated by `asHealthResponse`, but the 2xx path in features/onboarding/api.ts returns the body unchecked, and `buildProbeLines` calls `Object.entries(health.checks)` — a TypeError on a 200 without `checks`. It cannot emit a false "gateway reachable" (a missing `status` fails `!== "ok"`), so this is a crash rather than a fabrication. Follow-up: AAASM-5380.',
   },
   {
-    file: 'features/onboarding/steps/Step5EnrollAgent.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'features/onboarding/api.ts reads `data.total` / `data.items` off a cast body. A missing `total` renders an empty meter and the pane prints "the registry answered: no agents registered yet"; a non-array `items` throws in `.map` at render. Note there is no `?? []` here — the hook throws on an absent body and then reads `data.total` / `data.items` raw, so this is a cast, not a fail-open. Follow-up: AAASM-5380.',
-  },
-  {
     file: 'pages/AlertsPage.tsx',
     calls: 3,
     disposition: 'hazardous',
@@ -142,13 +136,6 @@ const AUDIT: readonly FoldSite[] = [
       'Both hooks in features/teams/api.ts end in `data as CostSummary` / `data as TopologyOverview` — the module comment calls them accepted-risk casts. Every downstream read is optional-chained, so nothing throws; instead `whenEmpty: "unconfigured"` never fires (the body is non-null) and `countBlockedByBudget` returns a measured-looking `known(0)` teams blocked by budget. Follow-up: AAASM-5380.',
   },
   {
-    file: 'pages/FleetPage.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'features/agents/api.ts returns `data?.items ?? []`, so a body with no `items` renders the "no agents registered" empty state — an affirmative claim about the fleet from an unread body. A truthy non-array `items` throws in a sibling `.map` on the same render. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
-  },
-  {
     file: 'pages/OverviewPage.tsx',
     calls: 3,
     disposition: 'hazardous',
@@ -157,10 +144,10 @@ const AUDIT: readonly FoldSite[] = [
   },
   {
     file: 'pages/TeamsPage.tsx',
-    calls: 2,
+    calls: 1,
     disposition: 'hazardous',
     reason:
-      'The topology-agents hook constructs its object but passes `nodes` through a `?? []`, so a missing `nodes` renders a confident "0 unclaimed" chip and a truthy non-array throws in `.filter`. The overview hook is a bare cast, and a missing `total_agent_count` makes the census `unaccountedFor` compute to `NaN` rather than reporting the disagreement it exists to report. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
+      'One fold lighter since AAASM-5380 slice S3: the topology-nodes fold now runs through `decodeTopologyNodes` (features/agents/schema.ts) and the hook carries `nodes` intact rather than `?? []`, so a missing or non-array `nodes` reports an absence rather than a confident "0 unclaimed" chip or a `.filter` crash. The remaining fold is the overview census: `useTopologyOverviewQuery` is a bare cast, and a missing `total_agent_count` makes the census `unaccountedFor` compute to `NaN` rather than reporting the disagreement it exists to report. Follow-up: AAASM-5380.',
   },
 ]
 
