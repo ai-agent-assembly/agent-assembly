@@ -119,12 +119,18 @@ const scopedMatrixSchema = z.object({
  * not be read. Total, per the {@link Decoder} contract — a decoder that throws
  * re-creates the render-time unmount this migration exists to prevent.
  */
+/** The first thing wrong with the body, as a short operator-facing phrase. */
+function firstFault(error: z.ZodError): string {
+  const issue = error.issues[0]
+  if (!issue) return 'unreadable'
+  const path = issue.path.join('.')
+  return path === '' ? issue.message : `${path}: ${issue.message}`
+}
+
 export const decodeScopedMatrix: Decoder<ScopedMatrixShape> = (body: unknown) => {
   const parsed = scopedMatrixSchema.safeParse(body)
   if (parsed.success) return conforms(parsed.data)
-  const issue = parsed.error.issues[0]
-  const path = issue?.path.join('.') ?? ''
-  const fault = issue ? (path === '' ? issue.message : `${path}: ${issue.message}`) : 'unreadable'
+  const fault = firstFault(parsed.error)
   return violates(
     `The capability matrix came back in a shape this dashboard cannot read (${fault}), so this agent's posture cannot be stated. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
   )

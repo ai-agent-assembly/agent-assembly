@@ -5,7 +5,7 @@ import { useSandboxSummaryQuery } from '../features/audit/api'
 import { extractEnforcementMode, extractScope } from '../features/policies/policyYamlHelpers'
 import { SandboxEnableLiveDialog } from '../features/policies/SandboxEnableLiveDialog'
 import { SandboxSummaryCard } from '../components/SandboxSummaryCard'
-import { EmptyState, ErrorState } from '../components/states'
+import { StatusState } from '../components/truthfulness'
 import { OverlayHost } from '../components/OverlayHost'
 import { useOverlay } from '../components/useOverlay'
 import { useToast } from '../components/Toast'
@@ -337,10 +337,16 @@ function PoliciesContent({
 }: PoliciesContentProps) {
   if (isError) {
     return (
-      <ErrorState
+      <StatusState
+        state="unavailable"
         title="Failed to load policies"
         description="The gateway returned an unexpected error."
-        onRetry={onRetry}
+        testId="error-state"
+        action={
+          <button type="button" className="truth-state__retry" onClick={onRetry}>
+            Retry
+          </button>
+        }
       />
     )
   }
@@ -355,9 +361,11 @@ function PoliciesContent({
   }
   if (filtered.length === 0) {
     return (
-      <EmptyState
+      <StatusState
+        state={null}
         title={emptyStateTitle(filter)}
         description={emptyStateDescription(filter)}
+        testId="empty-state"
         action={
           filter === 'all' ? (
             <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
