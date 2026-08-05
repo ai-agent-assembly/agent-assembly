@@ -107,7 +107,7 @@ interface RawAlertsPage {
   per_page?: unknown
 }
 
-function finiteOrNull(value: unknown): number | null {
+export function finiteOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
