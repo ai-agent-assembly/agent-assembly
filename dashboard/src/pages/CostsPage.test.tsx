@@ -846,6 +846,28 @@ describe('CostsPage — AAASM-5380: a malformed 200 is an absence, never a fabri
     expect(within(blocked).getByTestId('costs-kpi-blocked-value').dataset.truthState).toBe('unknown')
     expect(within(blocked).queryByText('no teams over the daily limit')).not.toBeInTheDocument()
   })
+
+  it('does not crash when per_team is a truthy non-array (the joinTeamRows path)', async () => {
+    // The other half of the same defect: `joinTeamRows` does a `for…of` over
+    // `per_team`, so a truthy non-array body a proxy rewrote used to TypeError
+    // in the `teamRows` useMemo on every render — before the certain-gating
+    // could protect it — ErrorBoundary-ing the page. The join now runs only on
+    // decoder-proven arrays, so this folds to an absence and the page still
+    // renders. Vacuity-guarded: assert the strip mounts before asserting state.
+    const badPerTeam = {
+      date: '2026-05-13',
+      daily_spend_usd: '190.00',
+      per_team: {} as unknown,
+    } as unknown as CostSummary
+    setupMocks(OVERVIEW, badPerTeam)
+    mockBreakdownFetch()
+    render(<CostsPage />, { wrapper: Wrapper })
+
+    // The page mounted (no ErrorBoundary), and the strip degraded to an absence.
+    const blocked = await screen.findByTestId('costs-kpi-blocked')
+    expect(blocked).toBeInTheDocument()
+    expect(within(blocked).getByTestId('costs-kpi-blocked-value').dataset.truthState).toBe('unknown')
+  })
 })
 
 describe('CostsPage — AAASM-5159: Avg / agent today KPI restored per ADR-0017 item 14', () => {

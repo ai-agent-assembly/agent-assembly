@@ -299,11 +299,6 @@ export function CostsPage() {
   const costsQuery = useCostSummaryQuery()
   const topologyQuery = useTopologyQuery()
 
-  const teamRows = useMemo(
-    () => joinTeamRows(overviewQuery.data, costsQuery.data),
-    [overviewQuery.data, costsQuery.data],
-  )
-
   // The KPI strip is fed through the truthfulness vocabulary rather than the
   // raw query data, so an outage, an in-flight request and an unset budget stay
   // distinguishable all the way to the rendered card instead of collapsing into
@@ -323,6 +318,19 @@ export function CostsPage() {
   const overviewCertain = certainFromShapedQuery(overviewQuery, decodeTopologyOverview, {
     whenEmpty: 'unconfigured',
   })
+  // Join only the DECODED values: `joinTeamRows` does a `for…of`/`.map` over
+  // `per_team`/`teams`, so a truthy non-array a proxy rewrote would `TypeError`
+  // here on every render — before `teamRowsCertain` could gate it — unless it
+  // is handed bodies the decoders already proved are arrays. Fed the raw
+  // `*.data`, this `useMemo` was the one path in the file a malformed 200 could
+  // still crash (AAASM-5380).
+  const teamRows = useMemo(
+    () =>
+      isKnown(overviewCertain) && isKnown(costsCertain)
+        ? joinTeamRows(overviewCertain.value, costsCertain.value)
+        : [],
+    [overviewCertain, costsCertain],
+  )
   // Every per-team figure needs both halves — the roster from the overview and
   // the spend/ceiling from the summary — so either absence disqualifies the
   // rows. Joining them first would hand the derivation a full roster of null
