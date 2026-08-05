@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
-import { ErrorState } from '../../components/states'
+import { StatusState } from '../../components/truthfulness'
 
 interface PanelErrorBoundaryProps {
   /** Human-readable panel name, surfaced in the fallback card. */
@@ -37,11 +37,20 @@ export class PanelErrorBoundary extends Component<
   render() {
     if (this.state.error) {
       return (
-        <ErrorState
+        <StatusState
+          state="unavailable"
           title={`${this.props.panelName} couldn't be displayed`}
           description="This panel hit an unexpected error. The rest of your analytics are unaffected."
-          onRetry={() => this.setState({ error: null })}
-          retryLabel="Try again"
+          testId="error-state"
+          action={
+            <button
+              type="button"
+              className="truth-state__retry"
+              onClick={() => this.setState({ error: null })}
+            >
+              Try again
+            </button>
+          }
         />
       )
     }
