@@ -227,6 +227,33 @@ describe('FleetPage loading and error states', () => {
     expect(screen.getByTestId('agents-empty')).toBeInTheDocument()
   })
 
+  it('reports a schema-invalid 200 as absence, never as an empty fleet (AAASM-5573)', () => {
+    // A 200 whose body is an array of rows missing the required fields the grid
+    // reads. Before the decoder the old `?? []` cast rendered "No agents
+    // registered yet" — an affirmative claim about the fleet from an unread body
+    // — and a non-array reached the grid's `.map`. `decodeFleetAgents` now folds
+    // it to `unknown`, which the classifier treats as not-yet-known (skeleton),
+    // never as `fleet-empty`.
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [{ id: 'x' } as unknown as Agent],
+        isLoading: false,
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+
+    // Vacuity guard: the page renders something rather than crashing.
+    expect(screen.getAllByTestId('agent-row-skeleton').length).toBeGreaterThan(0)
+
+    // Explicit absence, not a fabricated empty fleet or a counted zero.
+    expect(screen.queryByTestId('agents-empty')).toBeNull()
+    expect(screen.queryByTestId('agents-error')).toBeNull()
+    expect(screen.getByTestId('fleet-tab-agents-count')).toHaveTextContent('—')
+  })
+
   it('renders the error banner with retry when the query fails', () => {
     const refetch = vi.fn()
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(

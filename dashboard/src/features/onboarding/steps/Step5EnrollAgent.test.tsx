@@ -194,6 +194,36 @@ describe('Step5EnrollAgent — AAASM-5133 real enrollment', () => {
     expect(screen.queryByTestId('onboarding-enroll-empty')).toBeNull()
   })
 
+  it('reports a schema-invalid 200 as unknown, never as an empty registry (AAASM-5573)', async () => {
+    // A 200 whose body is not a registry answer — a missing `total`, and rows
+    // that carry no id/name/framework. Before the decoder this rendered an empty
+    // meter and "the registry answered: no agents registered yet", an
+    // affirmative all-clear from a body nobody parsed; a non-array `items` threw
+    // in `.map`. Both are the untruth this fold removes.
+    apiGet.mockResolvedValue({
+      data: { items: [{}], per_page: 100, page: 1 },
+      error: undefined,
+      response: { ok: true, status: 200 } as Response,
+    })
+    const { onEnrolled } = renderStep(EMPTY_STATE)
+
+    fireEvent.click(screen.getByTestId('onboarding-enroll-start'))
+
+    // Vacuity guard: the step must still render something.
+    const absence = await screen.findByTestId('onboarding-enroll-absent')
+
+    // Explicit absence, not a fabricated zero or empty state.
+    expect(screen.getByTestId('onboarding-enroll-count-value')).toHaveAttribute(
+      'data-truth-state',
+      'unknown',
+    )
+    expect(screen.getByTestId('onboarding-enroll-count')).not.toHaveTextContent('0')
+    expect(absence).toHaveAttribute('data-truth-state', 'unknown')
+    expect(screen.queryByTestId('onboarding-enroll-empty')).toBeNull()
+    expect(screen.queryByTestId('onboarding-enroll-connected')).toBeNull()
+    expect(onEnrolled).not.toHaveBeenCalled()
+  })
+
   it('does not poll while idle', () => {
     apiGet.mockResolvedValue(page([AGENT], 1))
     renderStep(EMPTY_STATE)
